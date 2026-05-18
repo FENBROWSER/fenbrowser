@@ -19,6 +19,7 @@ namespace FenBrowser.Core.Verification
     /// </summary>
     public static class ContentVerifier
     {
+        private static readonly object _stateLock = new();
         private static string _lastUrl;
         private static long _sourceLengthBytes;
         private static int _sourceHash;
@@ -36,44 +37,50 @@ namespace FenBrowser.Core.Verification
 
         public static void ResetForNavigation(string url = null)
         {
-            _lastUrl = url;
-            _sourceLengthBytes = 0;
-            _sourceHash = 0;
-            _renderedTextLength = 0;
-            _domNodeCount = 0;
-            _screenshotSaved = false;
-            _screenshotPath = null;
-            _cssTimedOut = false;
-            _cssRuleCount = 0;
-            _sourceDumpPath = null;
-            _engineDumpPath = null;
-            _renderedDumpPath = null;
-            _lastZeroSizedCount = 0;
-            _hasAuthoritativeSource = false;
-            _hasAuthoritativeRendered = false;
+            lock (_stateLock)
+            {
+                _lastUrl = url;
+                _sourceLengthBytes = 0;
+                _sourceHash = 0;
+                _renderedTextLength = 0;
+                _domNodeCount = 0;
+                _screenshotSaved = false;
+                _screenshotPath = null;
+                _cssTimedOut = false;
+                _cssRuleCount = 0;
+                _sourceDumpPath = null;
+                _engineDumpPath = null;
+                _renderedDumpPath = null;
+                _lastZeroSizedCount = 0;
+                _hasAuthoritativeSource = false;
+                _hasAuthoritativeRendered = false;
+            }
         }
 
         public static void RegisterSource(string url, long length, int hash, bool authoritative = false)
         {
-            if (authoritative)
+            lock (_stateLock)
             {
-                _lastUrl = url;
-                _sourceLengthBytes = Math.Max(0, length);
-                _sourceHash = hash;
-                _hasAuthoritativeSource = true;
-            }
-            else
-            {
-                if (_hasAuthoritativeSource)
+                if (authoritative)
                 {
-                    return;
-                }
-
-                _lastUrl = url;
-                if (length > _sourceLengthBytes)
-                {
+                    _lastUrl = url;
                     _sourceLengthBytes = Math.Max(0, length);
                     _sourceHash = hash;
+                    _hasAuthoritativeSource = true;
+                }
+                else
+                {
+                    if (_hasAuthoritativeSource)
+                    {
+                        return;
+                    }
+
+                    _lastUrl = url;
+                    if (length > _sourceLengthBytes)
+                    {
+                        _sourceLengthBytes = Math.Max(0, length);
+                        _sourceHash = hash;
+                    }
                 }
             }
 
@@ -85,17 +92,26 @@ namespace FenBrowser.Core.Verification
 
         public static void RegisterSourceFile(string path)
         {
-            _sourceDumpPath = path;
+            lock (_stateLock)
+            {
+                _sourceDumpPath = path;
+            }
         }
 
         public static void RegisterEngineSourceFile(string path)
         {
-            _engineDumpPath = path;
+            lock (_stateLock)
+            {
+                _engineDumpPath = path;
+            }
         }
 
         public static void RegisterRenderedFile(string path)
         {
-            _renderedDumpPath = path;
+            lock (_stateLock)
+            {
+                _renderedDumpPath = path;
+            }
         }
 
         /// <summary>
@@ -103,23 +119,26 @@ namespace FenBrowser.Core.Verification
         /// </summary>
         public static void RegisterRendered(string url, int nodeCount, int textLength, bool authoritative = false)
         {
-            if (authoritative)
+            lock (_stateLock)
             {
-                _lastUrl = url;
-                _domNodeCount = Math.Max(0, nodeCount);
-                _renderedTextLength = Math.Max(0, textLength);
-                _hasAuthoritativeRendered = true;
-            }
-            else
-            {
-                if (_hasAuthoritativeRendered)
+                if (authoritative)
                 {
-                    return;
+                    _lastUrl = url;
+                    _domNodeCount = Math.Max(0, nodeCount);
+                    _renderedTextLength = Math.Max(0, textLength);
+                    _hasAuthoritativeRendered = true;
                 }
+                else
+                {
+                    if (_hasAuthoritativeRendered)
+                    {
+                        return;
+                    }
 
-                _lastUrl = url;
-                _domNodeCount = Math.Max(_domNodeCount, nodeCount);
-                _renderedTextLength = Math.Max(_renderedTextLength, textLength);
+                    _lastUrl = url;
+                    _domNodeCount = Math.Max(_domNodeCount, nodeCount);
+                    _renderedTextLength = Math.Max(_renderedTextLength, textLength);
+                }
             }
 
             if (DebugConfig.LogVerification)
@@ -162,16 +181,24 @@ namespace FenBrowser.Core.Verification
         {
             if (DebugConfig.LogVerification)
             {
-                _screenshotPath = path;
-                _screenshotSaved = File.Exists(path);
-                EngineLogCompat.Log($"[Visual] Screenshot saved to: {path} (Exists: {_screenshotSaved})", LogCategory.Verification, LogLevel.Info);
+                bool screenshotSaved;
+                lock (_stateLock)
+                {
+                    _screenshotPath = path;
+                    _screenshotSaved = File.Exists(path);
+                    screenshotSaved = _screenshotSaved;
+                }
+                EngineLogCompat.Log($"[Visual] Screenshot saved to: {path} (Exists: {screenshotSaved})", LogCategory.Verification, LogLevel.Info);
             }
         }
 
         public static void RegisterCssState(bool timedOut, int ruleCount)
         {
-            _cssTimedOut = timedOut;
-            _cssRuleCount = ruleCount;
+            lock (_stateLock)
+            {
+                _cssTimedOut = timedOut;
+                _cssRuleCount = ruleCount;
+            }
             
             if (DebugConfig.LogVerification && timedOut)
             {
@@ -187,16 +214,43 @@ namespace FenBrowser.Core.Verification
         {
             if (!DebugConfig.LogVerification) return;
 
+            long sourceLengthBytes;
+            int renderedTextLength;
+            int domNodeCount;
+            bool screenshotSaved;
+            string screenshotPath;
+            bool cssTimedOut;
+            int cssRuleCount;
+            string sourceDumpPath;
+            string engineDumpPath;
+            string renderedDumpPath;
+            int lastZeroSizedCount;
+
+            lock (_stateLock)
+            {
+                sourceLengthBytes = _sourceLengthBytes;
+                renderedTextLength = _renderedTextLength;
+                domNodeCount = _domNodeCount;
+                screenshotSaved = _screenshotSaved;
+                screenshotPath = _screenshotPath;
+                cssTimedOut = _cssTimedOut;
+                cssRuleCount = _cssRuleCount;
+                sourceDumpPath = _sourceDumpPath;
+                engineDumpPath = _engineDumpPath;
+                renderedDumpPath = _renderedDumpPath;
+                lastZeroSizedCount = _lastZeroSizedCount;
+            }
+
             EngineLogCompat.Log("--------------------------------------------------", LogCategory.Verification, LogLevel.Info);
             EngineLogCompat.Log("              CONTENT VERIFICATION REPORT         ", LogCategory.Verification, LogLevel.Info);
             EngineLogCompat.Log("--------------------------------------------------", LogCategory.Verification, LogLevel.Info);
 
             // 1. Network Source Check
-            if (_sourceLengthBytes > 0)
+            if (sourceLengthBytes > 0)
             {
-                EngineLogCompat.Log($"[1] CURL/Fetch (Network): PASS ({_sourceLengthBytes} bytes)", LogCategory.Verification, LogLevel.Info);
-                if (!string.IsNullOrEmpty(_sourceDumpPath))
-                    EngineLogCompat.Log($"    - Raw Path:    {Path.GetFileName(_sourceDumpPath)}", LogCategory.Verification, LogLevel.Info);
+                EngineLogCompat.Log($"[1] CURL/Fetch (Network): PASS ({sourceLengthBytes} bytes)", LogCategory.Verification, LogLevel.Info);
+                if (!string.IsNullOrEmpty(sourceDumpPath))
+                    EngineLogCompat.Log($"    - Raw Path:    {Path.GetFileName(sourceDumpPath)}", LogCategory.Verification, LogLevel.Info);
             }
             else
             {
@@ -204,11 +258,11 @@ namespace FenBrowser.Core.Verification
             }
 
             // 2. Engine Source Check
-            if (_domNodeCount > 0)
+            if (domNodeCount > 0)
             {
-                EngineLogCompat.Log($"[2] Fen Engine (Source):  PASS ({_domNodeCount} DOM nodes)", LogCategory.Verification, LogLevel.Info);
-                if (!string.IsNullOrEmpty(_engineDumpPath))
-                    EngineLogCompat.Log($"    - Engine Path: {Path.GetFileName(_engineDumpPath)}", LogCategory.Verification, LogLevel.Info);
+                EngineLogCompat.Log($"[2] Fen Engine (Source):  PASS ({domNodeCount} DOM nodes)", LogCategory.Verification, LogLevel.Info);
+                if (!string.IsNullOrEmpty(engineDumpPath))
+                    EngineLogCompat.Log($"    - Engine Path: {Path.GetFileName(engineDumpPath)}", LogCategory.Verification, LogLevel.Info);
             }
             else
             {
@@ -216,11 +270,11 @@ namespace FenBrowser.Core.Verification
             }
 
             // 3. Rendered Result Check
-            if (_renderedTextLength == 0 && !string.IsNullOrEmpty(_renderedDumpPath) && File.Exists(_renderedDumpPath))
+            if (renderedTextLength == 0 && !string.IsNullOrEmpty(renderedDumpPath) && File.Exists(renderedDumpPath))
             {
                 try
                 {
-                    _renderedTextLength = File.ReadAllText(_renderedDumpPath).Length;
+                    renderedTextLength = File.ReadAllText(renderedDumpPath).Length;
                 }
                 catch
                 {
@@ -229,26 +283,26 @@ namespace FenBrowser.Core.Verification
             }
 
             double ratio = 0;
-            if (_sourceLengthBytes > 0)
+            if (sourceLengthBytes > 0)
             {
-                ratio = (double)_renderedTextLength / _sourceLengthBytes * 100.0;
+                ratio = (double)renderedTextLength / sourceLengthBytes * 100.0;
             }
 
-            if (_renderedTextLength > 0)
+            if (renderedTextLength > 0)
             {
-                EngineLogCompat.Log($"[3] Visual Text Result:   PASS ({_renderedTextLength} characters)", LogCategory.Verification, LogLevel.Info);
-                if (!string.IsNullOrEmpty(_renderedDumpPath))
-                    EngineLogCompat.Log($"    - Text Path:   {Path.GetFileName(_renderedDumpPath)}", LogCategory.Verification, LogLevel.Info);
+                EngineLogCompat.Log($"[3] Visual Text Result:   PASS ({renderedTextLength} characters)", LogCategory.Verification, LogLevel.Info);
+                if (!string.IsNullOrEmpty(renderedDumpPath))
+                    EngineLogCompat.Log($"    - Text Path:   {Path.GetFileName(renderedDumpPath)}", LogCategory.Verification, LogLevel.Info);
                 
-                if (_sourceLengthBytes > 0)
+                if (sourceLengthBytes > 0)
                 {
-                    double charsPerNode = _domNodeCount > 0
-                        ? (double)_renderedTextLength / _domNodeCount
+                    double charsPerNode = domNodeCount > 0
+                        ? (double)renderedTextLength / domNodeCount
                         : 0;
-                    var healthDisposition = AssessContentHealth(_sourceLengthBytes, _renderedTextLength, _domNodeCount, _screenshotSaved, _cssRuleCount);
+                    var healthDisposition = AssessContentHealth(sourceLengthBytes, renderedTextLength, domNodeCount, screenshotSaved, cssRuleCount);
 
                     EngineLogCompat.Log($"    - Content Health: {ratio:F2}% (Source -> Result)", LogCategory.Verification, LogLevel.Info);
-                    if (_domNodeCount > 0)
+                    if (domNodeCount > 0)
                     {
                         EngineLogCompat.Log($"    - Text Density: {charsPerNode:F2} chars/node", LogCategory.Verification, LogLevel.Info);
                     }
@@ -269,7 +323,7 @@ namespace FenBrowser.Core.Verification
             }
             else
             {
-                if (string.IsNullOrEmpty(_renderedDumpPath))
+                if (string.IsNullOrEmpty(renderedDumpPath))
                 {
                     EngineLogCompat.Log("[3] Visual Text Result:   PENDING (rendered text snapshot not produced yet)", LogCategory.Verification, LogLevel.Info);
                 }
@@ -280,9 +334,9 @@ namespace FenBrowser.Core.Verification
             }
 
             // 4. Visual Check
-            if (_screenshotSaved)
+            if (screenshotSaved)
             {
-                EngineLogCompat.Log($"[4] Visual Artifact:     PASS ({Path.GetFileName(_screenshotPath)})", LogCategory.Verification, LogLevel.Info);
+                EngineLogCompat.Log($"[4] Visual Artifact:     PASS ({Path.GetFileName(screenshotPath)})", LogCategory.Verification, LogLevel.Info);
             }
             else
             {
@@ -290,25 +344,25 @@ namespace FenBrowser.Core.Verification
             }
 
             // 4. Quality Check (CSS/Performance/Layout)
-            if (_cssTimedOut)
+            if (cssTimedOut)
             {
                 EngineLogCompat.Log("[4] Rendering Quality: FAIL (CSS Loading Timeout - 10s limit)", LogCategory.Verification, LogLevel.Warn);
             }
             else 
             {
                 // Check for high number of zero-sized elements (indicates layout regressions)
-                int zeroCount = _lastZeroSizedCount;
-                if (_domNodeCount > 10 && (zeroCount > _domNodeCount * 0.2 || zeroCount > 50))
+                int zeroCount = lastZeroSizedCount;
+                if (domNodeCount > 10 && (zeroCount > domNodeCount * 0.2 || zeroCount > 50))
                 {
                     EngineLogCompat.Log($"[4] Rendering Quality: WARN ({zeroCount} zero-sized elements detected - possible FLEX-ZERO issue)", LogCategory.Verification, LogLevel.Warn);
                 }
-                else if (_domNodeCount > 10 && _cssRuleCount < 5)
+                else if (domNodeCount > 10 && cssRuleCount < 5)
                 {
-                    EngineLogCompat.Log($"[4] Rendering Quality: WARN (Few rules matched: {_cssRuleCount} rules for {_domNodeCount} nodes)", LogCategory.Verification, LogLevel.Warn);
+                    EngineLogCompat.Log($"[4] Rendering Quality: WARN (Few rules matched: {cssRuleCount} rules for {domNodeCount} nodes)", LogCategory.Verification, LogLevel.Warn);
                 }
-                else if (_cssRuleCount > 0)
+                else if (cssRuleCount > 0)
                 {
-                    EngineLogCompat.Log($"[4] Rendering Quality: PASS ({_cssRuleCount} rules matched)", LogCategory.Verification, LogLevel.Info);
+                    EngineLogCompat.Log($"[4] Rendering Quality: PASS ({cssRuleCount} rules matched)", LogCategory.Verification, LogLevel.Info);
                 }
                 else
                 {
@@ -322,7 +376,10 @@ namespace FenBrowser.Core.Verification
         private static int _lastZeroSizedCount = 0;
         public static void RegisterZeroSizedCount(int count)
         {
-            _lastZeroSizedCount = count;
+            lock (_stateLock)
+            {
+                _lastZeroSizedCount = count;
+            }
         }
 
         internal static ContentHealthDisposition AssessContentHealth(long sourceLengthBytes, int renderedTextLength, int domNodeCount, bool screenshotSaved, int cssRuleCount)
