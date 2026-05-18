@@ -12,38 +12,42 @@ namespace FenBrowser.FenEngine.DOM
         // when the Node is garbage-collected.
         private static readonly ConditionalWeakTable<Node, IObject> _wrapperCache
             = new ConditionalWeakTable<Node, IObject>();
+        private static readonly object _wrapperCacheLock = new object();
 
         public static FenValue Wrap(Node node, IExecutionContext context)
         {
             if (node == null) return FenValue.Null;
 
-            if (_wrapperCache.TryGetValue(node, out var cached))
+            lock (_wrapperCacheLock)
             {
-                ApplyRuntimePrototype(cached, node, context);
-                return FenValue.FromObject(cached);
+                if (_wrapperCache.TryGetValue(node, out var cached))
+                {
+                    ApplyRuntimePrototype(cached, node, context);
+                    return FenValue.FromObject(cached);
+                }
+
+                IObject wrapper;
+                if (node is Document doc)
+                    wrapper = new DocumentWrapper(doc, context);
+                else if (node is Element element)
+                    wrapper = new ElementWrapper(element, context);
+                else if (node is Text text)
+                    wrapper = new TextWrapper(text, context);
+                else if (node is Comment comment)
+                    wrapper = new CommentWrapper(comment, context);
+                else if (node is ShadowRoot shadow)
+                    wrapper = new ShadowRootWrapper(shadow, context);
+                else if (node is DocumentType documentType)
+                    wrapper = new DocumentTypeWrapper(documentType, context);
+                else if (node is DocumentFragment fragment)
+                    wrapper = new NodeWrapper(fragment, context);
+                else
+                    wrapper = new NodeWrapper(node, context);
+
+                ApplyRuntimePrototype(wrapper, node, context);
+                _wrapperCache.Add(node, wrapper);
+                return FenValue.FromObject(wrapper);
             }
-
-            IObject wrapper;
-            if (node is Document doc)
-                wrapper = new DocumentWrapper(doc, context);
-            else if (node is Element element)
-                wrapper = new ElementWrapper(element, context);
-            else if (node is Text text)
-                wrapper = new TextWrapper(text, context);
-            else if (node is Comment comment)
-                wrapper = new CommentWrapper(comment, context);
-            else if (node is ShadowRoot shadow)
-                wrapper = new ShadowRootWrapper(shadow, context);
-            else if (node is DocumentType documentType)
-                wrapper = new DocumentTypeWrapper(documentType, context);
-            else if (node is DocumentFragment fragment)
-                wrapper = new NodeWrapper(fragment, context);
-            else
-                return FenValue.Null;
-
-            ApplyRuntimePrototype(wrapper, node, context);
-            _wrapperCache.Add(node, wrapper);
-            return FenValue.FromObject(wrapper);
         }
 
         /// <summary>Clear the identity cache on page navigation so stale wrappers are not reused.</summary>
