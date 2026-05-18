@@ -104,7 +104,6 @@ namespace FenBrowser.Core
     public sealed class ResourceManager
     {
         public static System.Action<string> LogSink;
-        private readonly HttpClient _http;
 
         // Phase 2.3: Sharded Caches
         public sealed class TextEntry { public string Body; public string ContentType; }
@@ -383,6 +382,22 @@ namespace FenBrowser.Core
                 Environment.GetEnvironmentVariable("FEN_ALLOW_AUTOMATION_FILE_NAVIGATION"),
                 "1",
                 StringComparison.Ordinal);
+        }
+
+        private static bool IsSupportedFetchScheme(Uri url)
+        {
+            if (url == null || !url.IsAbsoluteUri)
+            {
+                return false;
+            }
+
+            var scheme = url.Scheme;
+            return string.Equals(scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(scheme, "data", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(scheme, "about", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(scheme, "fen", StringComparison.OrdinalIgnoreCase);
         }
 
         private static ReferrerPolicyDirective ParseReferrerPolicy(HttpResponseMessage response)
@@ -784,6 +799,11 @@ namespace FenBrowser.Core
         public async Task<string> FetchTextAsync(Uri url, Uri referer = null, string accept = null, string secFetchDest = null)
         {
             if (url == null) return null;
+            if (!IsSupportedFetchScheme(url))
+            {
+                EngineLogCompat.Warn($"[FetchText] Blocked unsupported scheme '{url.Scheme}' for {url}", LogCategory.Security);
+                return null;
+            }
 
             // Handle data: URI scheme (e.g., data:text/css,.picture%20%7B%20background%3A%20none%3B%20%7D)
             if (string.Equals(url.Scheme, "data", StringComparison.OrdinalIgnoreCase))
@@ -1080,6 +1100,16 @@ namespace FenBrowser.Core
         public async Task<FetchResult> FetchTextDetailedAsync(Uri url, Uri referer = null, string accept = null, string secFetchDest = null)
         {
             if (url == null) return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "URL is null" };
+            if (!IsSupportedFetchScheme(url))
+            {
+                return new FetchResult
+                {
+                    Status = FetchStatus.UnknownError,
+                    ErrorDetail = $"Unsupported URL scheme: {url.Scheme}",
+                    FinalUri = url,
+                    FailureReason = FetchFailureReasonCode.MalformedInput
+                };
+            }
             
             /* [PERF-REMOVED] */
 
@@ -1630,6 +1660,11 @@ namespace FenBrowser.Core
         public async Task<Stream> FetchImageAsync(Uri url, Uri referer = null)
         {
             if (url == null) return null;
+            if (!IsSupportedFetchScheme(url))
+            {
+                EngineLogCompat.Warn($"[FetchImage] Blocked unsupported scheme '{url.Scheme}' for {url}", LogCategory.Security);
+                return null;
+            }
             if (referer != null &&
                 referer.IsAbsoluteUri &&
                 url.IsAbsoluteUri &&
@@ -1836,6 +1871,11 @@ namespace FenBrowser.Core
         public async Task<byte[]> FetchBytesAsync(Uri url, Uri referer = null, string accept = null, string secFetchDest = null)
         {
             if (url == null) return null;
+            if (!IsSupportedFetchScheme(url))
+            {
+                EngineLogCompat.Warn($"[FetchBytes] Blocked unsupported scheme '{url.Scheme}' for {url}", LogCategory.Security);
+                return null;
+            }
             if (string.Equals(secFetchDest, "image", StringComparison.OrdinalIgnoreCase) &&
                 referer != null &&
                 referer.IsAbsoluteUri &&
@@ -2187,7 +2227,7 @@ namespace FenBrowser.Core
                 {
                     NetworkRequestCompleted?.Invoke(id, resp);
                 }
-                catch (Exception invokeEx) 
+                catch (Exception) 
                 {
                     /* [PERF-REMOVED] */
                 }

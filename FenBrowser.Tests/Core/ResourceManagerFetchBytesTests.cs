@@ -252,6 +252,32 @@ namespace FenBrowser.Tests.Core
             }
         }
 
+        [Fact]
+        public async Task FetchTextDetailedAsync_UnsupportedScheme_IsRejected()
+        {
+            using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)));
+            var manager = new ResourceManager(client, isPrivate: true);
+            var uri = new Uri("ftp://example.test/file.txt");
+
+            var result = await manager.FetchTextDetailedAsync(uri, secFetchDest: "document");
+
+            Assert.Equal(FetchStatus.UnknownError, result.Status);
+            Assert.Equal(FetchFailureReasonCode.MalformedInput, result.FailureReason);
+            Assert.Contains("Unsupported URL scheme", result.ErrorDetail);
+        }
+
+        [Fact]
+        public async Task FetchBytesAsync_UnsupportedScheme_ReturnsNull()
+        {
+            using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)));
+            var manager = new ResourceManager(client, isPrivate: true);
+            var uri = new Uri("ftp://example.test/image.png");
+
+            var bytes = await manager.FetchBytesAsync(uri, secFetchDest: "image");
+
+            Assert.Null(bytes);
+        }
+
         private static void TryDelete(string path)
         {
             try

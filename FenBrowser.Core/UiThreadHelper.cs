@@ -22,7 +22,7 @@ namespace FenBrowser.Core
             Configure(null);
         }
 
-        public static async Task RunAsync(Action action)
+        public static Task RunAsync(Action action)
         {
             try
             {
@@ -32,19 +32,19 @@ namespace FenBrowser.Core
             {
                 EngineLogCompat.Error($"[UiThreadHelper] Error executing action: {ex.Message}", LogCategory.General, ex);
             }
-            await Task.CompletedTask;
+            return Task.CompletedTask;
         }
 
-        public static async Task<T> RunAsync<T>(Func<T> func)
+        public static Task<T> RunAsync<T>(Func<T> func)
         {
             try
             {
-                return func != null ? func() : default;
+                return Task.FromResult(func != null ? func() : default);
             }
             catch (Exception ex)
             {
                 EngineLogCompat.Error($"[UiThreadHelper] Error executing func: {ex.Message}", LogCategory.General, ex);
-                return default;
+                return Task.FromResult(default(T));
             }
         }
 

@@ -40,7 +40,7 @@ namespace FenBrowser.Core.Network.Handlers
                 // Handle timeout/cancellation
                 throw;
             }
-            catch (System.Exception ex)
+            catch (System.Exception)
             {
                 // Log or wrap exception? For now, let it bubble up or set error response
                 // context.Response = new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable) { ReasonPhrase = ex.Message };
