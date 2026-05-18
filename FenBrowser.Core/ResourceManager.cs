@@ -348,6 +348,43 @@ namespace FenBrowser.Core
                    string.Equals(request.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase);
         }
 
+        private static bool IsAutomationContext()
+        {
+            var webdriverEnabled = string.Equals(
+                Environment.GetEnvironmentVariable("FEN_WEBDRIVER"),
+                "1",
+                StringComparison.Ordinal);
+            var automationMode = string.Equals(
+                Environment.GetEnvironmentVariable("FEN_AUTOMATION_MODE"),
+                "1",
+                StringComparison.Ordinal);
+            return webdriverEnabled || automationMode;
+        }
+
+        private static bool IsFileSchemeAccessAllowed()
+        {
+            var settings = BrowserSettings.Instance;
+            if (!settings.AllowFileSchemeNavigation)
+            {
+                return false;
+            }
+
+            if (!IsAutomationContext())
+            {
+                return true;
+            }
+
+            if (settings.AllowAutomationFileNavigation)
+            {
+                return true;
+            }
+
+            return string.Equals(
+                Environment.GetEnvironmentVariable("FEN_ALLOW_AUTOMATION_FILE_NAVIGATION"),
+                "1",
+                StringComparison.Ordinal);
+        }
+
         private static ReferrerPolicyDirective ParseReferrerPolicy(HttpResponseMessage response)
         {
             if (response?.Headers == null || !response.Headers.TryGetValues("Referrer-Policy", out var values))
@@ -817,6 +854,12 @@ namespace FenBrowser.Core
             // Handle file scheme locally
             if (string.Equals(url.Scheme, "file", StringComparison.OrdinalIgnoreCase))
             {
+                if (!IsFileSchemeAccessAllowed())
+                {
+                    EngineLogCompat.Warn($"[FetchText] Blocked file scheme load by policy: {url}", LogCategory.Security);
+                    return null;
+                }
+
                 try
                 {
                     return await File.ReadAllTextAsync(url.LocalPath).ConfigureAwait(false);
@@ -1086,6 +1129,17 @@ namespace FenBrowser.Core
             // Handle file scheme locally
             if (string.Equals(url.Scheme, "file", StringComparison.OrdinalIgnoreCase))
             {
+                if (!IsFileSchemeAccessAllowed())
+                {
+                    return new FetchResult
+                    {
+                        Status = FetchStatus.UnknownError,
+                        ErrorDetail = "Blocked by file scheme navigation policy",
+                        FinalUri = url,
+                        FailureReason = FetchFailureReasonCode.MalformedInput
+                    };
+                }
+
                 try
                 {
                     var text = await File.ReadAllTextAsync(url.LocalPath).ConfigureAwait(false);
@@ -1598,6 +1652,12 @@ namespace FenBrowser.Core
             // Handle file scheme locally
             if (string.Equals(url.Scheme, "file", StringComparison.OrdinalIgnoreCase))
             {
+                if (!IsFileSchemeAccessAllowed())
+                {
+                    EngineLogCompat.Warn($"[FetchImage] Blocked file scheme load by policy: {url}", LogCategory.Security);
+                    return null;
+                }
+
                 try
                 {
                     return File.OpenRead(url.LocalPath);

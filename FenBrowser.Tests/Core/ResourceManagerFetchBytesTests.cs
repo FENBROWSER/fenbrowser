@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using FenBrowser.Core;
 using SkiaSharp;
 using Xunit;
+using System.IO;
 
 namespace FenBrowser.Tests.Core
 {
@@ -204,6 +205,67 @@ namespace FenBrowser.Tests.Core
             Assert.DoesNotContain("\u00E0\u00A4", result.Content);
             Assert.DoesNotContain("\u00D0\u00A0\u00D1", result.Content);
         }
+
+        [Fact]
+        public async Task FetchTextDetailedAsync_FileSchemeBlockedWhenDisabled()
+        {
+            var originalAllowFile = BrowserSettings.Instance.AllowFileSchemeNavigation;
+            var path = Path.GetTempFileName();
+            try
+            {
+                await File.WriteAllTextAsync(path, "<html>local</html>");
+                BrowserSettings.Instance.AllowFileSchemeNavigation = false;
+                using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)));
+                var manager = new ResourceManager(client, isPrivate: true);
+
+                var result = await manager.FetchTextDetailedAsync(new Uri(path), secFetchDest: "document");
+
+                Assert.Equal(FetchStatus.UnknownError, result.Status);
+                Assert.Contains("Blocked by file scheme navigation policy", result.ErrorDetail);
+            }
+            finally
+            {
+                BrowserSettings.Instance.AllowFileSchemeNavigation = originalAllowFile;
+                TryDelete(path);
+            }
+        }
+
+        [Fact]
+        public async Task FetchImageAsync_FileSchemeBlockedWhenDisabled()
+        {
+            var originalAllowFile = BrowserSettings.Instance.AllowFileSchemeNavigation;
+            var path = Path.GetTempFileName();
+            try
+            {
+                await File.WriteAllTextAsync(path, "bytes");
+                BrowserSettings.Instance.AllowFileSchemeNavigation = false;
+                using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)));
+                var manager = new ResourceManager(client, isPrivate: true);
+
+                using var stream = await manager.FetchImageAsync(new Uri(path));
+                Assert.Null(stream);
+            }
+            finally
+            {
+                BrowserSettings.Instance.AllowFileSchemeNavigation = originalAllowFile;
+                TryDelete(path);
+            }
+        }
+
+        private static void TryDelete(string path)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch
+            {
+            }
+        }
+
         private static byte[] CreatePngBytes(SKColor color)
         {
             using var surface = SKSurface.Create(new SKImageInfo(2, 2));
