@@ -78,6 +78,22 @@ namespace FenBrowser.Tests.Core.Parsing
             Assert.Equal("TH", th.TagName);
             Assert.Equal("Header", th.Text);
         }
+
+        [Fact]
+        public void Caption_ParsesAsSingleCaptionElement()
+        {
+            var html = "<table><caption>Title</caption><tr><td>Cell</td></tr></table>";
+            var doc = Parse(html);
+            var body = GetBody(doc);
+            Assert.NotNull(body);
+
+            var table = body.Children.FirstOrDefault(c => (c as Element)?.TagName == "TABLE") as Element;
+            Assert.NotNull(table);
+
+            var captions = table.Children.Where(c => (c as Element)?.TagName == "CAPTION").Cast<Element>().ToList();
+            Assert.Single(captions);
+            Assert.Equal("Title", captions[0].Text);
+        }
         
         [Fact]
         public void ColGroup_ParsesCorrectly()
@@ -117,6 +133,96 @@ namespace FenBrowser.Tests.Core.Parsing
 
             Assert.DoesNotContain(pictureChildren[1].ChildNodes, n => (n as Element)?.TagName == "P");
             Assert.DoesNotContain(pictureChildren[2].ChildNodes, n => (n as Element)?.TagName == "TABLE");
+        }
+
+        [Fact]
+        public void FosterParenting_ClosesMisnestedElementBeforeLeavingTableMode()
+        {
+            var html = "<table><div>a</div></table>b";
+            var doc = Parse(html);
+            var body = GetBody(doc);
+            Assert.NotNull(body);
+
+            var bodyChildren = body.ChildNodes.ToList();
+            var tableIndex = bodyChildren.FindIndex(c => (c as Element)?.TagName == "TABLE");
+            Assert.True(tableIndex > 0, "Expected foster-parented element before table.");
+
+            var table = bodyChildren[tableIndex] as Element;
+            Assert.NotNull(table);
+            Assert.DoesNotContain(table.Descendants().OfType<Element>(), el => el.TagName == "DIV");
+            Assert.DoesNotContain(table.Descendants().OfType<Text>(), text => text.Data.Contains("b"));
+
+            Assert.True(tableIndex + 1 < bodyChildren.Count, "Expected trailing text node after table.");
+            var trailingText = bodyChildren[tableIndex + 1] as Text;
+            Assert.NotNull(trailingText);
+            Assert.Equal("b", trailingText.Data);
+        }
+
+        [Fact]
+        public void FosterParenting_UnclosedMisnestedElement_DoesNotCaptureTrailingTextAfterTable()
+        {
+            var html = "<table><div><span>a</table>b";
+            var doc = Parse(html);
+            var body = GetBody(doc);
+            Assert.NotNull(body);
+
+            var bodyChildren = body.ChildNodes.ToList();
+            var tableIndex = bodyChildren.FindIndex(c => (c as Element)?.TagName == "TABLE");
+            Assert.True(tableIndex > 0, "Expected foster-parented element before table.");
+
+            var table = bodyChildren[tableIndex] as Element;
+            Assert.NotNull(table);
+            Assert.DoesNotContain(table.Descendants().OfType<Element>(), el => el.TagName == "DIV" || el.TagName == "SPAN");
+            Assert.DoesNotContain(table.Descendants().OfType<Text>(), text => text.Data.Contains("b"));
+
+            Assert.True(tableIndex + 1 < bodyChildren.Count, "Expected trailing text node after table.");
+            var trailingText = bodyChildren[tableIndex + 1] as Text;
+            Assert.NotNull(trailingText);
+            Assert.Equal("b", trailingText.Data);
+        }
+
+        [Fact]
+        public void FosterParenting_MisnestedFormattingElement_DoesNotWrapTableCellContent()
+        {
+            var html = "<table><b>lead<tr><td>cell</td></tr></table>";
+            var doc = Parse(html);
+            var body = GetBody(doc);
+            Assert.NotNull(body);
+
+            var bodyElements = body.ChildNodes.OfType<Element>().ToList();
+            var table = bodyElements.FirstOrDefault(e => e.TagName == "TABLE");
+            Assert.NotNull(table);
+
+            var b = bodyElements.FirstOrDefault(e => e.TagName == "B");
+            Assert.NotNull(b);
+            Assert.Contains("lead", b!.TextContent);
+
+            var td = table!.Descendants().OfType<Element>().FirstOrDefault(e => e.TagName == "TD");
+            Assert.NotNull(td);
+            Assert.Equal("cell", td!.TextContent);
+            Assert.DoesNotContain(td.Ancestors().OfType<Element>(), e => e.TagName == "B");
+        }
+
+        [Fact]
+        public void TableText_MixedWhitespaceAndContent_IsFosterParentedBeforeTable()
+        {
+            var html = "<table> \nX<tr><td>cell</td></tr></table>";
+            var doc = Parse(html);
+            var body = GetBody(doc);
+            Assert.NotNull(body);
+
+            var bodyChildren = body.ChildNodes.ToList();
+            var tableIndex = bodyChildren.FindIndex(c => (c as Element)?.TagName == "TABLE");
+            Assert.True(tableIndex > 0, "Expected foster-parented text before table.");
+
+            var textBeforeTable = bodyChildren[tableIndex - 1] as Text;
+            Assert.NotNull(textBeforeTable);
+            Assert.Equal(" \nX", textBeforeTable!.Data);
+
+            var table = bodyChildren[tableIndex] as Element;
+            var td = table!.Descendants().OfType<Element>().FirstOrDefault(e => e.TagName == "TD");
+            Assert.NotNull(td);
+            Assert.Equal("cell", td!.TextContent);
         }
     }
 }

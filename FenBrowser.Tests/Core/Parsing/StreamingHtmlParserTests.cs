@@ -60,6 +60,100 @@ namespace FenBrowser.Tests.Core.Parsing
             Assert.Equal("done", paragraph!.TextContent);
         }
 
+        [Fact]
+        public async Task ParseIncrementallyAsync_ReportsProgressAcrossChunks()
+        {
+            const string html = "<html><body><div id='a'>one</div><div id='b'>two</div></body></html>";
+            using var stream = new ChunkedMemoryStream(html, 8);
+            using var parser = new StreamingHtmlParser(stream);
+
+            var progressCallbacks = 0;
+            parser.OnDocumentComplete += _ => progressCallbacks++;
+
+            await parser.ParseIncrementallyAsync(_ => progressCallbacks++);
+
+            Assert.True(progressCallbacks >= 3);
+        }
+
+        [Fact]
+        public async Task ParseIncrementallyAsync_BuildsExpectedDocument()
+        {
+            const string html = "<html><body><p>hello</p><p>world</p></body></html>";
+            using var stream = new ChunkedMemoryStream(html, 7);
+            using var parser = new StreamingHtmlParser(stream);
+
+            Document? snapshot = null;
+            await parser.ParseIncrementallyAsync(doc => snapshot = doc);
+
+            Assert.NotNull(snapshot);
+            var paragraphs = snapshot!.Descendants().OfType<Element>()
+                .Where(e => string.Equals(e.TagName, "p", System.StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            Assert.Equal(2, paragraphs.Count);
+            Assert.Equal("hello", paragraphs[0].TextContent);
+            Assert.Equal("world", paragraphs[1].TextContent);
+        }
+
+        [Fact]
+        public async Task ParseAsync_WhenReaderFails_ThrowsInvalidOperationException()
+        {
+            using var parser = new StreamingHtmlParser(new ThrowingTextReader());
+            await Assert.ThrowsAsync<InvalidOperationException>(() => parser.ParseAsync());
+        }
+
+        [Fact]
+        public async Task ParseAsync_UnquotedAttributeValueWithSlash_PreservesFullValue()
+        {
+            const string html = "<html><body><img src=https://example.com/a/b.png alt=test></body></html>";
+            using var parser = new StreamingHtmlParser(html);
+            var document = await parser.ParseAsync();
+
+            var img = document.Descendants().OfType<Element>()
+                .FirstOrDefault(e => string.Equals(e.TagName, "img", System.StringComparison.OrdinalIgnoreCase));
+            Assert.NotNull(img);
+            Assert.Equal("https://example.com/a/b.png", img!.GetAttribute("src"));
+            Assert.Equal("test", img.GetAttribute("alt"));
+        }
+
+        [Fact]
+        public async Task ParseAsync_UnquotedAttributeValueBeforeSelfClosing_DoesNotIncludeSlashClose()
+        {
+            const string html = "<html><body><img src=https://example.com/a/b.png/></body></html>";
+            using var parser = new StreamingHtmlParser(html);
+            var document = await parser.ParseAsync();
+
+            var img = document.Descendants().OfType<Element>()
+                .FirstOrDefault(e => string.Equals(e.TagName, "img", System.StringComparison.OrdinalIgnoreCase));
+            Assert.NotNull(img);
+            Assert.Equal("https://example.com/a/b.png/", img!.GetAttribute("src"));
+        }
+
+        [Fact]
+        public async Task ParseAsync_UnquotedAttributeValueWithWhitespaceBeforeSelfClosing_ExcludesSlashClose()
+        {
+            const string html = "<html><body><img src=https://example.com/a/b.png /></body></html>";
+            using var parser = new StreamingHtmlParser(html);
+            var document = await parser.ParseAsync();
+
+            var img = document.Descendants().OfType<Element>()
+                .FirstOrDefault(e => string.Equals(e.TagName, "img", System.StringComparison.OrdinalIgnoreCase));
+            Assert.NotNull(img);
+            Assert.Equal("https://example.com/a/b.png", img!.GetAttribute("src"));
+        }
+
+        [Fact]
+        public async Task ParseAsync_DuplicateAttributes_PreservesFirstValue()
+        {
+            const string html = "<html><body><img alt=first alt=second></body></html>";
+            using var parser = new StreamingHtmlParser(html);
+            var document = await parser.ParseAsync();
+
+            var img = document.Descendants().OfType<Element>()
+                .FirstOrDefault(e => string.Equals(e.TagName, "img", System.StringComparison.OrdinalIgnoreCase));
+            Assert.NotNull(img);
+            Assert.Equal("first", img!.GetAttribute("alt"));
+        }
+
         private sealed class ChunkedMemoryStream : MemoryStream
         {
             private readonly int _chunkSize;
@@ -73,6 +167,18 @@ namespace FenBrowser.Tests.Core.Parsing
             public override int Read(byte[] buffer, int offset, int count)
             {
                 return base.Read(buffer, offset, System.Math.Min(count, _chunkSize));
+            }
+        }
+
+        private sealed class ThrowingTextReader : StringReader
+        {
+            public ThrowingTextReader() : base(string.Empty)
+            {
+            }
+
+            public override Task<string> ReadToEndAsync()
+            {
+                throw new IOException("synthetic read failure");
             }
         }
     }

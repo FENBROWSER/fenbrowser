@@ -116,6 +116,38 @@ namespace FenBrowser.Tests.Html5lib
             var tokens = Tokenize("<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01//EN\">");
             var doctype = tokens.OfType<DoctypeToken>().FirstOrDefault();
             Assert.NotNull(doctype);
+            Assert.Equal("html", doctype!.Name);
+            Assert.Equal("-//W3C//DTD HTML 4.01//EN", doctype.PublicIdentifier);
+            Assert.False(doctype.ForceQuirks);
+        }
+
+        [Fact]
+        public void Tokenize_DoctypeWithSystemIdentifier_ParsesSystemIdentifier()
+        {
+            var tokens = Tokenize("<!DOCTYPE html SYSTEM \"about:legacy-compat\">");
+            var doctype = tokens.OfType<DoctypeToken>().FirstOrDefault();
+            Assert.NotNull(doctype);
+            Assert.Equal("html", doctype!.Name);
+            Assert.Equal("about:legacy-compat", doctype.SystemIdentifier);
+            Assert.False(doctype.ForceQuirks);
+        }
+
+        [Fact]
+        public void Tokenize_MalformedPublicDoctype_ForcesQuirks()
+        {
+            var tokens = Tokenize("<!DOCTYPE html PUBLIC -//W3C//DTD HTML 4.01//EN>");
+            var doctype = tokens.OfType<DoctypeToken>().FirstOrDefault();
+            Assert.NotNull(doctype);
+            Assert.True(doctype!.ForceQuirks);
+        }
+
+        [Fact]
+        public void Tokenize_DoctypeNameWithNull_ReplacesWithReplacementCharacter()
+        {
+            var tokens = Tokenize("<!DOCTYPE ht\0ml>");
+            var doctype = tokens.OfType<DoctypeToken>().FirstOrDefault();
+            Assert.NotNull(doctype);
+            Assert.Equal("ht\uFFFDml", doctype!.Name);
         }
         
         // --- Comment Tests ---
@@ -158,6 +190,32 @@ namespace FenBrowser.Tests.Html5lib
             var endTag = tokens.OfType<EndTagToken>().FirstOrDefault(t => string.Equals(t.TagName, "style", StringComparison.OrdinalIgnoreCase));
             Assert.NotNull(startTag);
             Assert.NotNull(endTag);
+        }
+
+        [Fact]
+        public void Tokenize_RawTextEndTagWithWhitespace_ClosesElement()
+        {
+            var tokens = Tokenize("<style>a</style >b");
+            var endTag = tokens.OfType<EndTagToken>().FirstOrDefault(t => string.Equals(t.TagName, "style", StringComparison.OrdinalIgnoreCase));
+            Assert.NotNull(endTag);
+
+            var text = string.Concat(tokens.OfType<CharacterToken>().Select(t => t.Data));
+            Assert.Contains("a", text);
+            Assert.Contains("b", text);
+        }
+
+        [Fact]
+        public void Tokenize_RawTextMalformedEndTag_FallsBackToText()
+        {
+            var tokens = Tokenize("<style>x</sty!le>y</style>");
+            var endTags = tokens.OfType<EndTagToken>()
+                .Where(t => string.Equals(t.TagName, "style", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            Assert.Single(endTags);
+
+            var text = string.Concat(tokens.OfType<CharacterToken>().Select(t => t.Data));
+            Assert.Contains("x", text);
+            Assert.Contains("y", text);
         }
         
         // --- Entity in Attribute Tests ---

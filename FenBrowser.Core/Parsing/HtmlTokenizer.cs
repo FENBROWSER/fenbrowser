@@ -31,6 +31,7 @@ namespace FenBrowser.Core.Parsing
         
         private string _lastAttrName;
         private StringBuilder _attrValueBuffer = new StringBuilder();
+        private bool _skipCurrentAttributeValue;
         
         private TokenizerState _returnState;
         private uint _charRefValue;
@@ -583,8 +584,8 @@ namespace FenBrowser.Core.Parsing
                         else
                         {
                             SwitchTo(TokenizerState.RcData);
-                            return EmitCharacter('<'); // And '/' ? Spec is complex here.
-                            // Simplified: Just emit characters
+                            _pendingChars.Enqueue('/');
+                            return EmitCharacter('<');
                         }
                         break;
                         
@@ -603,7 +604,9 @@ namespace FenBrowser.Core.Parsing
                             {
                                  // Fail -> Treat as raw text
                                  SwitchTo(TokenizerState.RcData);
-                                 return EmitCharacter('<'); // Rough approximation, proper rollback needed for full spec
+                                 _pendingChars.Enqueue('/');
+                                 foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
+                                 return EmitCharacter('<');
                             }
                         }
                         else if (c == '/')
@@ -616,6 +619,8 @@ namespace FenBrowser.Core.Parsing
                             else
                             {
                                  SwitchTo(TokenizerState.RcData);
+                                 _pendingChars.Enqueue('/');
+                                 foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
                                  return EmitCharacter('<');
                             }
                         }
@@ -630,6 +635,8 @@ namespace FenBrowser.Core.Parsing
                              else
                             {
                                  SwitchTo(TokenizerState.RcData);
+                                 _pendingChars.Enqueue('/');
+                                 foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
                                  return EmitCharacter('<'); 
                             }
                         }
@@ -641,6 +648,8 @@ namespace FenBrowser.Core.Parsing
                         else
                         {
                              SwitchTo(TokenizerState.RcData);
+                             _pendingChars.Enqueue('/');
+                             foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
                              return EmitCharacter('<');
                         }
                         break;
@@ -698,7 +707,8 @@ namespace FenBrowser.Core.Parsing
                         else
                         {
                             SwitchTo(TokenizerState.RawText);
-                             return EmitCharacter('<'); // And /
+                            _pendingChars.Enqueue('/');
+                            return EmitCharacter('<');
                         }
                         break;
                         
@@ -715,6 +725,8 @@ namespace FenBrowser.Core.Parsing
                              else
                             {
                                  SwitchTo(TokenizerState.RawText);
+                                 _pendingChars.Enqueue('/');
+                                 foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
                                  return EmitCharacter('<'); 
                             }
                         }
@@ -722,6 +734,21 @@ namespace FenBrowser.Core.Parsing
                         {
                             Consume();
                             _currentTag.TagName += char.ToLowerInvariant(c);
+                        }
+                        else if (c == '/')
+                        {
+                            if (isAppropriateRaw)
+                            {
+                                Consume();
+                                SwitchTo(TokenizerState.SelfClosingStartTag);
+                            }
+                            else
+                            {
+                                SwitchTo(TokenizerState.RawText);
+                                _pendingChars.Enqueue('/');
+                                foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
+                                return EmitCharacter('<');
+                            }
                         }
                         else
                         {
@@ -734,6 +761,8 @@ namespace FenBrowser.Core.Parsing
                              else
                              {
                                 SwitchTo(TokenizerState.RawText);
+                                _pendingChars.Enqueue('/');
+                                foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
                                 return EmitCharacter('<');
                              }
                         }
@@ -812,9 +841,38 @@ namespace FenBrowser.Core.Parsing
                         break;
 
                      case TokenizerState.ScriptDataEndTagName:
-                        // Simplified
                          bool isAppropriateScript = _currentTag.TagName == LastStartTagName; // Usually "script"
-                         if (c == '>')
+                         if (char.IsWhiteSpace(c))
+                        {
+                            if (isAppropriateScript)
+                            {
+                                Consume();
+                                SwitchTo(TokenizerState.BeforeAttributeName);
+                            }
+                            else
+                            {
+                                SwitchTo(TokenizerState.ScriptData);
+                                _pendingChars.Enqueue('/');
+                                foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
+                                return EmitCharacter('<');
+                            }
+                        }
+                        else if (c == '/')
+                        {
+                            if (isAppropriateScript)
+                            {
+                                Consume();
+                                SwitchTo(TokenizerState.SelfClosingStartTag);
+                            }
+                            else
+                            {
+                                SwitchTo(TokenizerState.ScriptData);
+                                _pendingChars.Enqueue('/');
+                                foreach (var ch in _currentTag.TagName) _pendingChars.Enqueue(ch);
+                                return EmitCharacter('<');
+                            }
+                        }
+                        else if (c == '>')
                         {
                             if (isAppropriateScript)
                             {
@@ -1293,6 +1351,7 @@ namespace FenBrowser.Core.Parsing
                         {
                             SwitchTo(TokenizerState.AttributeName);
                             _buffer.Clear();
+                            _skipCurrentAttributeValue = false;
                         }
                         break;
 
@@ -1301,9 +1360,14 @@ namespace FenBrowser.Core.Parsing
                         {
                             // End of attribute name
                             _lastAttrName = _buffer.ToString();
-                            if (_currentTag.Attributes.Find(a => a.Name == _lastAttrName) == null)
+                            if (_currentTag.Attributes.Find(a => string.Equals(a.Name, _lastAttrName, StringComparison.OrdinalIgnoreCase)) == null)
                             {
                                  _currentTag.AddAttribute(_lastAttrName, "");
+                                 _skipCurrentAttributeValue = false;
+                            }
+                            else
+                            {
+                                 _skipCurrentAttributeValue = true;
                             }
                             
                             _buffer.Clear();
@@ -1320,9 +1384,14 @@ namespace FenBrowser.Core.Parsing
                             Consume();
                             _lastAttrName = _buffer.ToString();
                              // Create attribute if not exists
-                             if (_currentTag.Attributes.Find(a => a.Name == _lastAttrName) == null)
+                             if (_currentTag.Attributes.Find(a => string.Equals(a.Name, _lastAttrName, StringComparison.OrdinalIgnoreCase)) == null)
                             {
                                  _currentTag.AddAttribute(_lastAttrName, "");
+                                 _skipCurrentAttributeValue = false;
+                            }
+                            else
+                            {
+                                 _skipCurrentAttributeValue = true;
                             }
                              _buffer.Clear();
                             SwitchTo(TokenizerState.BeforeAttributeValue);
@@ -1792,6 +1861,14 @@ namespace FenBrowser.Core.Parsing
                         {
                             Consume();
                         }
+                        else if (c == '\0')
+                        {
+                             EmitError("Unexpected Null Character In Doctype");
+                             _currentDoctype = _pool != null ? _pool.RentDoctype() : new DoctypeToken();
+                             _currentDoctype.Name = "\uFFFD";
+                             Consume();
+                             SwitchTo(TokenizerState.DoctypeName);
+                        }
                         else if (c == '>')
                         {
                              Consume();
@@ -1824,6 +1901,12 @@ namespace FenBrowser.Core.Parsing
                             Consume();
                             SwitchTo(TokenizerState.AfterDoctypeName);
                         }
+                        else if (c == '\0')
+                        {
+                            Consume();
+                            EmitError("Unexpected Null Character In Doctype Name");
+                            _currentDoctype.Name += '\uFFFD';
+                        }
                         else if (c == '>')
                         {
                             Consume();
@@ -1845,7 +1928,11 @@ namespace FenBrowser.Core.Parsing
                         
                     // Simplified Doctype (skipping PUBLIC/SYSTEM specifics for brevity, just consuming until >)
                     case TokenizerState.AfterDoctypeName:
-                         if (c == '>')
+                        if (char.IsWhiteSpace(c))
+                        {
+                            Consume();
+                        }
+                        else if (c == '>')
                         {
                             Consume();
                             SwitchTo(TokenizerState.Data);
@@ -1857,10 +1944,220 @@ namespace FenBrowser.Core.Parsing
                              _currentDoctype.ForceQuirks = true;
                              return EmitCurrentDoctype();
                         }
+                        else if (Matches("PUBLIC", ignoreCase: true))
+                        {
+                            Consume(6);
+                            while (!IsEof() && char.IsWhiteSpace(Peek()))
+                            {
+                                Consume();
+                            }
+
+                            if (IsEof())
+                            {
+                                EmitError("Eof In Doctype");
+                                _currentDoctype.ForceQuirks = true;
+                                return EmitCurrentDoctype();
+                            }
+
+                            var publicQuote = Peek();
+                            if (publicQuote != '"' && publicQuote != '\'')
+                            {
+                                EmitError("Missing Quote Before Doctype Public Identifier");
+                                _currentDoctype.ForceQuirks = true;
+                                SwitchTo(TokenizerState.BogusDoctype);
+                                continue;
+                            }
+
+                            Consume(); // opening quote
+                            var publicStart = _position;
+                            while (!IsEof() && Peek() != publicQuote && Peek() != '>')
+                            {
+                                Consume();
+                            }
+
+                            _currentDoctype.PublicIdentifier = _input.Substring(publicStart, _position - publicStart);
+                            if (IsEof())
+                            {
+                                EmitError("Eof In Doctype Public Identifier");
+                                _currentDoctype.ForceQuirks = true;
+                                return EmitCurrentDoctype();
+                            }
+
+                            if (Peek() == '>')
+                            {
+                                EmitError("Abrupt Doctype Public Identifier");
+                                _currentDoctype.ForceQuirks = true;
+                                Consume();
+                                SwitchTo(TokenizerState.Data);
+                                return EmitCurrentDoctype();
+                            }
+
+                            Consume(); // closing quote
+                            while (!IsEof() && char.IsWhiteSpace(Peek()))
+                            {
+                                Consume();
+                            }
+
+                            if (IsEof())
+                            {
+                                EmitError("Eof In Doctype");
+                                _currentDoctype.ForceQuirks = true;
+                                return EmitCurrentDoctype();
+                            }
+
+                            if (Peek() == '>')
+                            {
+                                Consume();
+                                SwitchTo(TokenizerState.Data);
+                                return EmitCurrentDoctype();
+                            }
+
+                            var systemQuote = Peek();
+                            if (systemQuote == '"' || systemQuote == '\'')
+                            {
+                                Consume(); // opening quote
+                                var systemStart = _position;
+                                while (!IsEof() && Peek() != systemQuote && Peek() != '>')
+                                {
+                                    Consume();
+                                }
+
+                                _currentDoctype.SystemIdentifier = _input.Substring(systemStart, _position - systemStart);
+                                if (IsEof())
+                                {
+                                    EmitError("Eof In Doctype System Identifier");
+                                    _currentDoctype.ForceQuirks = true;
+                                    return EmitCurrentDoctype();
+                                }
+
+                                if (Peek() == '>')
+                                {
+                                    EmitError("Abrupt Doctype System Identifier");
+                                    _currentDoctype.ForceQuirks = true;
+                                    Consume();
+                                    SwitchTo(TokenizerState.Data);
+                                    return EmitCurrentDoctype();
+                                }
+
+                                Consume(); // closing quote
+                                while (!IsEof() && char.IsWhiteSpace(Peek()))
+                                {
+                                    Consume();
+                                }
+
+                                if (IsEof())
+                                {
+                                    EmitError("Eof In Doctype");
+                                    _currentDoctype.ForceQuirks = true;
+                                    return EmitCurrentDoctype();
+                                }
+
+                                if (Peek() == '>')
+                                {
+                                    Consume();
+                                    SwitchTo(TokenizerState.Data);
+                                    return EmitCurrentDoctype();
+                                }
+                            }
+
+                            EmitError("Unexpected Character After Doctype Public Identifier");
+                            _currentDoctype.ForceQuirks = true;
+                            SwitchTo(TokenizerState.BogusDoctype);
+                        }
+                        else if (Matches("SYSTEM", ignoreCase: true))
+                        {
+                            Consume(6);
+                            while (!IsEof() && char.IsWhiteSpace(Peek()))
+                            {
+                                Consume();
+                            }
+
+                            if (IsEof())
+                            {
+                                EmitError("Eof In Doctype");
+                                _currentDoctype.ForceQuirks = true;
+                                return EmitCurrentDoctype();
+                            }
+
+                            var systemQuote = Peek();
+                            if (systemQuote != '"' && systemQuote != '\'')
+                            {
+                                EmitError("Missing Quote Before Doctype System Identifier");
+                                _currentDoctype.ForceQuirks = true;
+                                SwitchTo(TokenizerState.BogusDoctype);
+                                continue;
+                            }
+
+                            Consume(); // opening quote
+                            var systemStart = _position;
+                            while (!IsEof() && Peek() != systemQuote && Peek() != '>')
+                            {
+                                Consume();
+                            }
+
+                            _currentDoctype.SystemIdentifier = _input.Substring(systemStart, _position - systemStart);
+                            if (IsEof())
+                            {
+                                EmitError("Eof In Doctype System Identifier");
+                                _currentDoctype.ForceQuirks = true;
+                                return EmitCurrentDoctype();
+                            }
+
+                            if (Peek() == '>')
+                            {
+                                EmitError("Abrupt Doctype System Identifier");
+                                _currentDoctype.ForceQuirks = true;
+                                Consume();
+                                SwitchTo(TokenizerState.Data);
+                                return EmitCurrentDoctype();
+                            }
+
+                            Consume(); // closing quote
+                            while (!IsEof() && char.IsWhiteSpace(Peek()))
+                            {
+                                Consume();
+                            }
+
+                            if (IsEof())
+                            {
+                                EmitError("Eof In Doctype");
+                                _currentDoctype.ForceQuirks = true;
+                                return EmitCurrentDoctype();
+                            }
+
+                            if (Peek() == '>')
+                            {
+                                Consume();
+                                SwitchTo(TokenizerState.Data);
+                                return EmitCurrentDoctype();
+                            }
+
+                            EmitError("Unexpected Character After Doctype System Identifier");
+                            _currentDoctype.ForceQuirks = true;
+                            SwitchTo(TokenizerState.BogusDoctype);
+                        }
+                        else
+                        {
+                            EmitError("Invalid Character Sequence After Doctype Name");
+                            _currentDoctype.ForceQuirks = true;
+                            SwitchTo(TokenizerState.BogusDoctype);
+                        }
+                        break;
+
+                    case TokenizerState.BogusDoctype:
+                        if (c == '>')
+                        {
+                            Consume();
+                            SwitchTo(TokenizerState.Data);
+                            return EmitCurrentDoctype();
+                        }
+                        else if (IsEof())
+                        {
+                            return EmitCurrentDoctype();
+                        }
                         else
                         {
                             Consume();
-                            // Effectively BogusDoctype behavior for now
                         }
                         break;
                         
@@ -1943,9 +2240,15 @@ namespace FenBrowser.Core.Parsing
         
         private void SetAttributeValue()
         {
+            if (_skipCurrentAttributeValue)
+            {
+                return;
+            }
+
             if (_currentTag != null && !string.IsNullOrEmpty(_lastAttrName))
             {
-                var attrIndex = _currentTag.Attributes.FindIndex(a => a.Name == _lastAttrName);
+                var attrIndex = _currentTag.Attributes.FindIndex(
+                    a => string.Equals(a.Name, _lastAttrName, StringComparison.OrdinalIgnoreCase));
                 if (attrIndex >= 0)
                 {
                     _currentTag.Attributes[attrIndex].Value = _attrValueBuffer.ToString();

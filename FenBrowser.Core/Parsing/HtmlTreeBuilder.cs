@@ -58,6 +58,7 @@ namespace FenBrowser.Core.Parsing
         
         // List of Active Formatting Elements (for Adoption Agency Algorithm)
         private readonly List<Element> _activeFormattingElements = new List<Element>();
+        private readonly List<CharacterToken> _pendingTableCharacterTokens = new List<CharacterToken>();
         
         // Current insertion mode
         private InsertionMode _insertionMode = InsertionMode.Initial;
@@ -556,6 +557,9 @@ namespace FenBrowser.Core.Parsing
                     case InsertionMode.InTable:
                         processed = HandleInTable(token);
                         break;
+                    case InsertionMode.InTableText:
+                        processed = HandleInTableText(token);
+                        break;
                     case InsertionMode.InTableBody:
                         processed = HandleInTableBody(token);
                         break;
@@ -564,6 +568,12 @@ namespace FenBrowser.Core.Parsing
                         break;
                     case InsertionMode.InCell:
                         processed = HandleInCell(token);
+                        break;
+                    case InsertionMode.InSelect:
+                        processed = HandleInSelect(token);
+                        break;
+                    case InsertionMode.InSelectInTable:
+                        processed = HandleInSelectInTable(token);
                         break;
                     case InsertionMode.InCaption:
                         processed = HandleInCaption(token);
@@ -696,7 +706,7 @@ namespace FenBrowser.Core.Parsing
 
         private bool HandleInHeadNoscript(HtmlToken token)
         {
-             if (token is EndTagToken et && et.TagName == "noscript")
+             if (token is EndTagToken et && string.Equals(et.TagName, "noscript", StringComparison.OrdinalIgnoreCase))
              {
                  SafePopOpenElement();
                  SwitchTo(InsertionMode.InHead);
@@ -706,9 +716,14 @@ namespace FenBrowser.Core.Parsing
              {
                  return HandleInHead(token);
              }
-             if (token is StartTagToken st && (st.TagName == "basefont" || st.TagName == "bgsound" || st.TagName == "link" || st.TagName == "meta" || st.TagName == "noframes" || st.TagName == "style"))
+             if (token is StartTagToken st)
              {
-                 return HandleInHead(token); 
+                 var tagLower = st.TagName?.ToLowerInvariant() ?? string.Empty;
+                 if (tagLower == "basefont" || tagLower == "bgsound" || tagLower == "link" ||
+                     tagLower == "meta" || tagLower == "noframes" || tagLower == "style")
+                 {
+                     return HandleInHead(token);
+                 }
              }
              // Anything else -> Error, pop noscript, reprocess
              SafePopOpenElement();
@@ -733,7 +748,7 @@ namespace FenBrowser.Core.Parsing
             if (token is CharacterToken ct && string.IsNullOrWhiteSpace(ct.Data))
                 return true; // Ignore
                 
-            if (token is StartTagToken st && st.TagName == "html")
+            if (token is StartTagToken st && string.Equals(st.TagName, "html", StringComparison.OrdinalIgnoreCase))
             {
                 var html = CreateElement(st);
                 _document.AppendChild(html);
@@ -763,12 +778,12 @@ namespace FenBrowser.Core.Parsing
             
             if (token is DoctypeToken) return true; // Ignore
             
-            if (token is StartTagToken st && st.TagName == "html")
+            if (token is StartTagToken st && string.Equals(st.TagName, "html", StringComparison.OrdinalIgnoreCase))
             {
                 return HandleInBody(token); // Process "in body" rules for html tag? Spec says: "Process the token using rules for In Body"
             }
             
-            if (token is StartTagToken headTag && headTag.TagName == "head")
+            if (token is StartTagToken headTag && string.Equals(headTag.TagName, "head", StringComparison.OrdinalIgnoreCase))
             {
                 var head = InsertHtmlElement(headTag);
                 _headElement = head;
@@ -819,7 +834,7 @@ namespace FenBrowser.Core.Parsing
                     return true;
                 }
                 
-                if (st.TagName == "meta")
+                if (tagLower == "meta")
                 {
                    InsertHtmlElement(st);
                    SafePopOpenElement();
@@ -827,19 +842,19 @@ namespace FenBrowser.Core.Parsing
                    return true;
                 }
                 
-                if (st.TagName == "title")
+                if (tagLower == "title")
                 {
                     InsertGenericRCDATAElement(st);
                     return true;
                 }
                 
                 // NOSCRIPT, NOFRAMES, STYLE -> "Generic Raw Text Element"
-                if (st.TagName == "style" || st.TagName == "noframes") // NoFrames is rawtext?
+                if (tagLower == "style" || tagLower == "noframes") // NoFrames is rawtext?
                 {
                      InsertGenericRawTextElement(st);
                      return true;
                 }
-                 if (st.TagName == "noscript")
+                 if (tagLower == "noscript")
                 {
                     // If scripting enabled -> Generic raw text. else -> normal implementation.
                     // Assuming enabled:
@@ -847,7 +862,7 @@ namespace FenBrowser.Core.Parsing
                     return true;
                 }
                 
-                if (st.TagName == "script")
+                if (tagLower == "script")
                 {
                     // Complex script handling
                      var script = InsertHtmlElement(st);
@@ -863,7 +878,7 @@ namespace FenBrowser.Core.Parsing
                      return true;
                 }
 
-                if (st.TagName == "template")
+                if (tagLower == "template")
                 {
                     InsertHtmlElement(st);
                     _activeFormattingElements.Add(null); // Marker
@@ -872,23 +887,25 @@ namespace FenBrowser.Core.Parsing
                     return true;
                 }
                 
-                if (st.TagName == "head") return true; // Ignore
+                if (tagLower == "head") return true; // Ignore
             }
             
             if (token is EndTagToken et)
             {
-                if (et.TagName == "template")
+                var endTagLower = et.TagName?.ToLowerInvariant() ?? string.Empty;
+
+                if (endTagLower == "template")
                 {
                     return CloseTemplateElement();
                 }
 
-                if (et.TagName == "head")
+                if (endTagLower == "head")
                 {
                     SafePopOpenElement(); // Pop head
                     SwitchTo(InsertionMode.AfterHead);
                     return true;
                 }
-                if (et.TagName == "body" || et.TagName == "html" || et.TagName == "br")
+                if (endTagLower == "body" || endTagLower == "html" || endTagLower == "br")
                 {
                      // Act as if head closed
                      SafePopOpenElement();
@@ -921,15 +938,17 @@ namespace FenBrowser.Core.Parsing
             
             if (token is StartTagToken st)
             {
-                if (st.TagName == "html") return HandleInBody(token);
-                if (st.TagName == "body")
+                var tagLower = st.TagName?.ToLowerInvariant() ?? string.Empty;
+
+                if (tagLower == "html") return HandleInBody(token);
+                if (tagLower == "body")
                 {
                     InsertHtmlElement(st);
                     SwitchTo(InsertionMode.InBody);
                     return true;
                 }
                 
-                if (st.TagName == "frameset")
+                if (tagLower == "frameset")
                 {
                     InsertHtmlElement(st);
                     SwitchTo(InsertionMode.InFrameset);
@@ -939,15 +958,17 @@ namespace FenBrowser.Core.Parsing
                 // These head-content elements must be processed via HandleInHead to ensure
                 // the tokenizer state is correctly switched (ScriptData/RawText/RcData).
                 // Without this, the body of <script>/<style> gets parsed as regular HTML.
-                if (st.TagName == "base" || st.TagName == "link" || st.TagName == "meta" ||
-                    st.TagName == "script" || st.TagName == "style" || st.TagName == "title" ||
-                    st.TagName == "noframes" || st.TagName == "template")
+                if (tagLower == "base" || tagLower == "link" || tagLower == "meta" ||
+                    tagLower == "script" || tagLower == "style" || tagLower == "title" ||
+                    tagLower == "noframes" || tagLower == "noscript" ||
+                    tagLower == "basefont" || tagLower == "bgsound" ||
+                    tagLower == "template")
                 {
                     // Spec says: "Process the token using the rules for the in head insertion mode."
                     return HandleInHead(token);
                 }
                  
-                 if (st.TagName == "head") return true; // Ignore
+                 if (tagLower == "head") return true; // Ignore
             }
             
             // Anything else? Create <body> and reprocess
@@ -1093,6 +1114,20 @@ namespace FenBrowser.Core.Parsing
                 if (st.TagName == "textarea")
                 {
                     InsertGenericRCDATAElement(st);
+                    return true;
+                }
+
+                if (st.TagName == "select")
+                {
+                    InsertHtmlElement(st);
+                    if (StackHas("table"))
+                    {
+                        SwitchTo(InsertionMode.InSelectInTable);
+                    }
+                    else
+                    {
+                        SwitchTo(InsertionMode.InSelect);
+                    }
                     return true;
                 }
                 
@@ -1270,14 +1305,10 @@ namespace FenBrowser.Core.Parsing
         {
             if (token is CharacterToken ct)
             {
-                if (IsTableWhitespace(ct))
-                {
-                    // In Table Text (pending whitespace)
-                    InsertCharacter(ct);
-                    return true;
-                }
-                // Anything else -> Foster Parent
-                // Fallthrough to Foster Parenting below
+                _pendingTableCharacterTokens.Clear();
+                _originalInsertionMode = _insertionMode;
+                SwitchTo(InsertionMode.InTableText);
+                return false; // Reprocess in InTableText.
             }
 
             if (token is CommentToken comment)
@@ -1293,7 +1324,6 @@ namespace FenBrowser.Core.Parsing
                 if (st.TagName == "caption")
                 {
                     ClearStackBackToTableContext();
-                    InsertHtmlElement(st); // Marker
                     InsertHtmlElement(st);
                     SwitchTo(InsertionMode.InCaption);
                     return true;
@@ -1399,6 +1429,35 @@ namespace FenBrowser.Core.Parsing
             // --- Foster Parenting ---
             // "Enable foster parenting, process the token using the rules for the In Body insertion mode"
             return FosterParent(token);
+        }
+
+        private bool HandleInTableText(HtmlToken token)
+        {
+            if (token is CharacterToken ct)
+            {
+                _pendingTableCharacterTokens.Add(ct);
+                return true;
+            }
+
+            bool hasNonWhitespace = _pendingTableCharacterTokens.Any(t => !IsTableWhitespace(t));
+            if (hasNonWhitespace)
+            {
+                foreach (var pending in _pendingTableCharacterTokens)
+                {
+                    FosterParent(pending);
+                }
+            }
+            else
+            {
+                foreach (var pending in _pendingTableCharacterTokens)
+                {
+                    InsertCharacter(pending);
+                }
+            }
+
+            _pendingTableCharacterTokens.Clear();
+            SwitchTo(_originalInsertionMode);
+            return false; // Reprocess the non-character token.
         }
 
         private bool HandleInTableBody(HtmlToken token)
@@ -1561,6 +1620,183 @@ namespace FenBrowser.Core.Parsing
             
             return HandleInBody(token);
         }
+
+        private bool HandleInSelect(HtmlToken token)
+        {
+            if (token is CharacterToken ct)
+            {
+                InsertCharacter(ct);
+                return true;
+            }
+
+            if (token is CommentToken comment)
+            {
+                CurrentNode.AppendChild(new Comment(comment.Data));
+                return true;
+            }
+
+            if (token is DoctypeToken)
+            {
+                return true;
+            }
+
+            if (token is StartTagToken st)
+            {
+                if (st.TagName == "html")
+                {
+                    return HandleInBody(token);
+                }
+
+                if (st.TagName == "option")
+                {
+                    if ((CurrentNode as Element)?.TagName == "OPTION")
+                    {
+                        SafePopOpenElement();
+                    }
+
+                    InsertHtmlElement(st);
+                    return true;
+                }
+
+                if (st.TagName == "optgroup")
+                {
+                    if ((CurrentNode as Element)?.TagName == "OPTION")
+                    {
+                        SafePopOpenElement();
+                    }
+
+                    if ((CurrentNode as Element)?.TagName == "OPTGROUP")
+                    {
+                        SafePopOpenElement();
+                    }
+
+                    InsertHtmlElement(st);
+                    return true;
+                }
+
+                if (st.TagName == "select")
+                {
+                    if (!StackHas("select"))
+                    {
+                        return true;
+                    }
+
+                    PopUntil("select");
+                    ResetInsertionMode();
+                    return true;
+                }
+
+                if (st.TagName == "input" || st.TagName == "keygen" || st.TagName == "textarea")
+                {
+                    if (!StackHas("select"))
+                    {
+                        return true;
+                    }
+
+                    PopUntil("select");
+                    ResetInsertionMode();
+                    return false; // Reprocess in new mode.
+                }
+
+                if (st.TagName == "script" || st.TagName == "template")
+                {
+                    return HandleInHead(token);
+                }
+            }
+
+            if (token is EndTagToken et)
+            {
+                if (et.TagName == "optgroup")
+                {
+                    if ((CurrentNode as Element)?.TagName == "OPTION" &&
+                        _openElements.Count > 1 &&
+                        string.Equals(_openElements.ElementAt(1).TagName, "OPTGROUP", StringComparison.OrdinalIgnoreCase))
+                    {
+                        SafePopOpenElement(); // option
+                    }
+
+                    if ((CurrentNode as Element)?.TagName == "OPTGROUP")
+                    {
+                        SafePopOpenElement();
+                    }
+
+                    return true;
+                }
+
+                if (et.TagName == "option")
+                {
+                    if ((CurrentNode as Element)?.TagName == "OPTION")
+                    {
+                        SafePopOpenElement();
+                    }
+
+                    return true;
+                }
+
+                if (et.TagName == "select")
+                {
+                    if (!StackHas("select"))
+                    {
+                        return true;
+                    }
+
+                    PopUntil("select");
+                    ResetInsertionMode();
+                    return true;
+                }
+
+                if (et.TagName == "template")
+                {
+                    return HandleInHead(token);
+                }
+            }
+
+            if (token is EofToken)
+            {
+                return true;
+            }
+
+            return true;
+        }
+
+        private bool HandleInSelectInTable(HtmlToken token)
+        {
+            if (token is StartTagToken st && IsSelectTableRelatedTag(st.TagName))
+            {
+                if (StackHas("select"))
+                {
+                    PopUntil("select");
+                    ResetInsertionMode();
+                }
+
+                return false; // Reprocess token in new mode.
+            }
+
+            if (token is EndTagToken et && IsSelectTableRelatedTag(et.TagName))
+            {
+                if (StackHas("select"))
+                {
+                    PopUntil("select");
+                    ResetInsertionMode();
+                }
+
+                return false; // Reprocess token in new mode.
+            }
+
+            return HandleInSelect(token);
+        }
+
+        private static bool IsSelectTableRelatedTag(string tagName)
+        {
+            return string.Equals(tagName, "caption", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tagName, "table", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tagName, "tbody", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tagName, "tfoot", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tagName, "thead", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tagName, "tr", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tagName, "td", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tagName, "th", StringComparison.OrdinalIgnoreCase);
+        }
         
         private void CloseCell()
         {
@@ -1615,6 +1851,16 @@ namespace FenBrowser.Core.Parsing
             
             if (token is CharacterToken ct)
             {
+                // If we're currently inside a non-table element that was foster-parented
+                // (for example <b> inside <table>), text should continue flowing into that
+                // element rather than always being re-fostered before the table.
+                if (CurrentNode is Element currentElement &&
+                    !IsCharacterFosterBoundaryElement(currentElement.TagName))
+                {
+                    InsertCharacter(ct);
+                    return true;
+                }
+
                 // Attempt to coalesce with previous text node
                 Node prev = null;
                 if (parent is ContainerNode parentContainer && nextSibling != null)
@@ -1679,8 +1925,35 @@ namespace FenBrowser.Core.Parsing
                 }
                 return true;
             }
+
+            if (token is EndTagToken fosterEndTag)
+            {
+                // Foster-parenting still processes end tags with InBody semantics.
+                // If we foster-parented a non-void element (for example <div> inside <table>),
+                // we must honor its explicit end tag to avoid leaking stack state past </table>.
+                if (StackHas(fosterEndTag.TagName))
+                {
+                    if (string.Equals(fosterEndTag.TagName, "form", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _formElement = null;
+                    }
+
+                    PopUntil(fosterEndTag.TagName);
+                }
+
+                return true;
+            }
             
             return true;
+        }
+
+        private static bool IsCharacterFosterBoundaryElement(string tagName)
+        {
+            return string.Equals(tagName, "table", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tagName, "tbody", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tagName, "tfoot", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tagName, "thead", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tagName, "tr", StringComparison.OrdinalIgnoreCase);
         }
 
         private bool HandleInCaption(HtmlToken token)
@@ -1869,14 +2142,38 @@ namespace FenBrowser.Core.Parsing
 
         private void ResetInsertionMode()
         {
-            // Simplified Reset logic based on stack
-             foreach (var node in _openElements) // Top to bottom?
+            var stackSnapshot = _openElements.ToArray(); // Top -> bottom
+            for (int i = 0; i < stackSnapshot.Length; i++)
             {
-                var el = node as Element;
+                var el = stackSnapshot[i];
                 if (el == null) continue;
                 var tagName = el.TagName;
                 
-                if (tagName.Equals("select", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InSelect); return; }
+                if (tagName.Equals("select", StringComparison.OrdinalIgnoreCase))
+                {
+                    for (int j = i + 1; j < stackSnapshot.Length; j++)
+                    {
+                        var ancestorTag = stackSnapshot[j]?.TagName;
+                        if (ancestorTag == null)
+                        {
+                            continue;
+                        }
+
+                        if (ancestorTag.Equals("template", StringComparison.OrdinalIgnoreCase))
+                        {
+                            break;
+                        }
+
+                        if (ancestorTag.Equals("table", StringComparison.OrdinalIgnoreCase))
+                        {
+                            SwitchTo(InsertionMode.InSelectInTable);
+                            return;
+                        }
+                    }
+
+                    SwitchTo(InsertionMode.InSelect);
+                    return;
+                }
                 if (tagName.Equals("td", StringComparison.OrdinalIgnoreCase) || tagName.Equals("th", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InCell); return; }
                 if (tagName.Equals("tr", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InRow); return; }
                 if (tagName.Equals("tbody", StringComparison.OrdinalIgnoreCase) || tagName.Equals("thead", StringComparison.OrdinalIgnoreCase) || tagName.Equals("tfoot", StringComparison.OrdinalIgnoreCase)) { SwitchTo(InsertionMode.InTableBody); return; }

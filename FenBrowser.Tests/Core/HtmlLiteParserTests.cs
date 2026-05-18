@@ -39,14 +39,14 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
-        public void Parse_LegacyDoctype_SetsNoQuirksCheck_ForNow()
+        public void Parse_LegacyDoctype_SetsLimitedQuirksCheck()
         {
-            // Current implementation treats any DOCTYPE as NoQuirks to prefer Standards
+            // Legacy HTML4 transitional PUBLIC doctypes map to limited-quirks mode.
             var html = "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.01 Transitional//EN\"><html></html>";
             var parser = new HtmlParser(html);
             var doc = parser.Parse();
 
-            Assert.Equal(QuirksMode.NoQuirks, doc.Mode);
+            Assert.Equal(QuirksMode.LimitedQuirks, doc.Mode);
         }
     }
 }

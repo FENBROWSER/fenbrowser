@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using FenBrowser.Core.Network;
@@ -26,26 +27,33 @@ namespace FenBrowser.Core.Parsing
 
         public Task ScanAsync()
         {
-            return Task.Run(() =>
+            return Task.Run(async () =>
             {
                 if (string.IsNullOrEmpty(_html) || _prefetcher == null) return;
 
                 // Simple regex-based scanning for speed. 
                 // A full tokenizer would be more accurate but slower.
                 // We scan for <link>, <script>, <img> tags.
-                
+
+                var tasks = new List<Task>();
+
                 // Matches <link ... href="..." ... >
-                ScanLinks();
+                ScanLinks(tasks);
 
                 // Matches <script ... src="..." ... >
-                ScanScripts();
+                ScanScripts(tasks);
 
                 // Matches <img ... src="..." ... >
-                ScanImages();
+                ScanImages(tasks);
+
+                if (tasks.Count > 0)
+                {
+                    await Task.WhenAll(tasks).ConfigureAwait(false);
+                }
             });
         }
 
-        private void ScanLinks()
+        private void ScanLinks(List<Task> tasks)
         {
             try 
             {
@@ -62,17 +70,20 @@ namespace FenBrowser.Core.Parsing
                             var fullTag = match.Value;
                             var relMatch = Regex.Match(fullTag, @"rel=[""']([^""']+)[""']", RegexOptions.IgnoreCase);
                             
-                            ResourceHint hint = ResourceHint.Preload; // Default to preload-ish behavior? Or just fetch?
+                            ResourceHint hint = ResourceHint.Preload;
                             PreloadAs asType = PreloadAs.Fetch;
 
                             if (relMatch.Success)
                             {
-                                var rel = relMatch.Groups[1].Value.ToLowerInvariant();
-                                if (rel == "stylesheet") 
+                                var rel = relMatch.Groups[1].Value;
+                                var relTokens = TokenizeRel(rel);
+
+                                if (relTokens.Contains("stylesheet")) 
                                 {
                                     asType = PreloadAs.Style; 
                                 }
-                                else if (rel == "preload")
+
+                                if (relTokens.Contains("preload"))
                                 {
                                     hint = ResourceHint.Preload;
                                     // extract 'as'
@@ -85,9 +96,10 @@ namespace FenBrowser.Core.Parsing
                                         else if (asStr == "image") asType = PreloadAs.Image;
                                     }
                                 }
-                                else
+
+                                if (!relTokens.Contains("stylesheet") && !relTokens.Contains("preload"))
                                 {
-                                    // Ignore verification/icons for now
+                                    // Ignore non-fetching links (icons, verification, alternates, etc.).
                                     continue; 
                                 }
                             }
@@ -97,15 +109,18 @@ namespace FenBrowser.Core.Parsing
                                 continue;
                             }
 
-                            _prefetcher.QueueHintAsync(url, hint, asType).ConfigureAwait(false);
+                            tasks.Add(_prefetcher.QueueHintAsync(url, hint, asType));
                         }
                     }
                 }
             }
-            catch { /* Ignore regex errors in speculative scan */ }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Debug($"[PreloadScanner] Link scan failed: {ex.Message}", LogCategory.HtmlParsing);
+            }
         }
 
-        private void ScanScripts()
+        private void ScanScripts(List<Task> tasks)
         {
             try 
             {
@@ -117,7 +132,7 @@ namespace FenBrowser.Core.Parsing
                         var urlStr = match.Groups[1].Value;
                         if (Uri.TryCreate(_baseUri, urlStr, out var url))
                         {
-                            _prefetcher.QueueHintAsync(url, ResourceHint.Preload, PreloadAs.Script).ConfigureAwait(false);
+                            tasks.Add(_prefetcher.QueueHintAsync(url, ResourceHint.Preload, PreloadAs.Script));
                         }
                     }
                 }
@@ -128,7 +143,7 @@ namespace FenBrowser.Core.Parsing
             }
         }
 
-        private void ScanImages()
+        private void ScanImages(List<Task> tasks)
         {
             try
             {
@@ -140,7 +155,7 @@ namespace FenBrowser.Core.Parsing
                         var urlStr = match.Groups[1].Value;
                         if (Uri.TryCreate(_baseUri, urlStr, out var url))
                         {
-                            _prefetcher.QueueHintAsync(url, ResourceHint.Preload, PreloadAs.Image).ConfigureAwait(false);
+                            tasks.Add(_prefetcher.QueueHintAsync(url, ResourceHint.Preload, PreloadAs.Image));
                         }
                     }
                 }
@@ -149,6 +164,19 @@ namespace FenBrowser.Core.Parsing
             {
                 EngineLogCompat.Debug($"[PreloadScanner] Image scan failed: {ex.Message}", LogCategory.HtmlParsing);
             }
+        }
+
+        private static HashSet<string> TokenizeRel(string rel)
+        {
+            if (string.IsNullOrWhiteSpace(rel))
+            {
+                return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            return rel.Split((char[])null, StringSplitOptions.RemoveEmptyEntries)
+                .Select(static t => t.Trim())
+                .Where(static t => t.Length > 0)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
         }
     }
 }

@@ -61,5 +61,24 @@ namespace FenBrowser.Tests.Core
             var (pending, completed, queued) = prefetcher.GetStats();
             Assert.True(pending + completed + queued >= 1, "Should have queued theme.css");
         }
+
+        [Fact]
+        public async Task Scanner_Recognizes_MultiTokenRel_StylesheetAndPreload()
+        {
+            var html = @"
+                <html><head>
+                    <link rel=""preload stylesheet"" href=""bundle.css"" as=""style"">
+                </head></html>";
+
+            var baseUri = new Uri("http://example.com/");
+            var manager = new ResourceManager(new System.Net.Http.HttpClient(), false);
+            using var prefetcher = new ResourcePrefetcher(manager);
+
+            var scanner = new PreloadScanner(html, baseUri, prefetcher);
+            await scanner.ScanAsync();
+
+            var (pending, completed, queued) = prefetcher.GetStats();
+            Assert.Equal(1, pending + completed + queued);
+        }
     }
 }

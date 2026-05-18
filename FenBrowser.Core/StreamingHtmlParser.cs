@@ -92,7 +92,7 @@ namespace FenBrowser.Core
             catch (Exception ex)
             {
                 EngineLogCompat.Error($"[StreamingHtmlParser] Error during parsing: {ex.Message}", LogCategory.HtmlParsing);
-                return new Document();
+                throw new InvalidOperationException("Streaming HTML parsing failed.", ex);
             }
         }
 
@@ -113,8 +113,38 @@ namespace FenBrowser.Core
         /// </summary>
         public async Task ParseIncrementallyAsync(Action<Document> onProgress = null, CancellationToken ct = default)
         {
-            var doc = await ParseAsync(ct);
-            onProgress?.Invoke(doc);
+            var document = new Document();
+            var state = new IncrementalParseState(document);
+            var chunk = new char[ChunkSize];
+
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                var read = await ReadChunkAsync(chunk, ct);
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                _buffer.Append(chunk, 0, read);
+                ParseBufferedContent(state, isFinalChunk: false);
+                TrimBuffer();
+
+                if (_buffer.Length > MaxBufferSize)
+                {
+                    throw new InvalidOperationException(
+                        $"Streaming parser buffer exceeded {MaxBufferSize} bytes while waiting for a complete token.");
+                }
+
+                onProgress?.Invoke(document);
+            }
+
+            ParseBufferedContent(state, isFinalChunk: true);
+            state.Finish();
+            TrimBuffer();
+
+            onProgress?.Invoke(document);
+            OnDocumentComplete?.Invoke(document);
         }
 
         /// <summary>
@@ -513,9 +543,13 @@ namespace FenBrowser.Core
                             {
                                 // Unquoted value
                                 int valueStart = i;
-                                while (i < attrString.Length && 
-                                       !char.IsWhiteSpace(attrString[i]) && attrString[i] != '/')
+                                while (i < attrString.Length)
                                 {
+                                    if (char.IsWhiteSpace(attrString[i]) || attrString[i] == '>')
+                                    {
+                                        break;
+                                    }
+
                                     i++;
                                 }
                                 value = System.Net.WebUtility.HtmlDecode(
@@ -524,7 +558,7 @@ namespace FenBrowser.Core
                         }
                     }
                     
-                    if (!string.IsNullOrEmpty(name))
+                    if (!string.IsNullOrEmpty(name) && !element.HasAttribute(name))
                     {
                         element.SetAttribute(name, value);
                     }
