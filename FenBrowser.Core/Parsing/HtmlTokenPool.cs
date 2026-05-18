@@ -43,11 +43,10 @@ namespace FenBrowser.Core.Parsing
 
         // Telemetry
         private long _rented;
-        private long _allocated;
 
         public long TotalRented => _rented;
-        public long TotalAllocated => _allocated;
-        public double ReuseRatio => _rented > 0 ? 1.0 - ((double)_allocated / _rented) : 0.0;
+        public long TotalAllocated => 0;
+        public double ReuseRatio => _rented > 0 ? 1.0 : 0.0;
 
         public HtmlTokenPool()
         {

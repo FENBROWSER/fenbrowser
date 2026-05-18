@@ -67,7 +67,6 @@ namespace FenBrowser.Core.Parsing
         private Element _headElement;
         private Element _formElement;
         
-        private bool _framesetOk = true;
         public HtmlParseBuildMetrics LastBuildMetrics { get; private set; } = new HtmlParseBuildMetrics();
         public int ParseCheckpointTokenInterval { get; set; } = 256;
         public int InterleavedTokenBatchSize { get; set; }
@@ -926,7 +925,6 @@ namespace FenBrowser.Core.Parsing
                 if (st.TagName == "body")
                 {
                     InsertHtmlElement(st);
-                    _framesetOk = false;
                     SwitchTo(InsertionMode.InBody);
                     return true;
                 }

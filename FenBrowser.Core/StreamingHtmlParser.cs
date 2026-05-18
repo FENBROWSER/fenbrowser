@@ -424,7 +424,7 @@ namespace FenBrowser.Core
                 }
             }
 
-            public void Finalize()
+            public void Finish()
             {
                 // Close any remaining open tags
                 while (_stack.Count > 1)
