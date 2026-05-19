@@ -75,6 +75,42 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_UsesSummaryCrashCountWhenFailuresSectionIsMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            var payload = new
+            {
+                summary = new
+                {
+                    total = 0,
+                    passed = 0,
+                    unsupported = 0,
+                    parserErrors = 0,
+                    crashes = 1,
+                    expectedFailures = 0,
+                    unexpectedPasses = 0
+                },
+                tests = Array.Empty<object>()
+            };
+
+            File.WriteAllText(currentPath, JsonSerializer.Serialize(payload));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            Assert.False(result.Passed);
+            Assert.Contains(result.Violations, v => v.Contains("No unknown crashes violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_AllowsExpectedCrashWithoutUnknownCrashViolation()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
@@ -384,6 +420,48 @@ public sealed class Test262GateVerifierTests
                         expectedArea = "runtime",
                         expectedReason = "known limitation",
                         expiresAtMilestone = "M2.1"
+                    }
+                ]));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            Assert.DoesNotContain(result.Violations, v => v.Contains("No expected failure without owner/area/reason/milestone violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Verify_AllowsExpectedFailureTimeoutRecordWhenMetadataIsValid()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/runtime.js",
+                        status = "ExpectedFailure",
+                        category = "timeout"
+                    }
+                ],
+                failures:
+                [
+                    new
+                    {
+                        relativePath = "test/runtime.js",
+                        classification = "timeout",
+                        expected = true,
+                        expectedOwner = "js",
+                        expectedArea = "runtime",
+                        expectedReason = "known timeout debt",
+                        expiresAtMilestone = "M2"
                     }
                 ]));
 
