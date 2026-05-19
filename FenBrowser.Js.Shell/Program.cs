@@ -2,7 +2,9 @@ using System.Reflection;
 using System.Text.Json;
 using FenBrowser.Js.Ast;
 using FenBrowser.Js.AstValidation;
+using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Heap;
+using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Lexer;
 using FenBrowser.Js.Parser;
 using FenBrowser.Js.Runtime;
@@ -12,7 +14,7 @@ var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("Usage: fenjs --version | --eval <code> | --dump-tokens <file> | --dump-ast <file> [--gc-before-every-alloc|--gc-after-every-alloc|--gc-random|--verify-heap-before-gc|--verify-heap-after-gc|--trace-gc]");
+    Console.Error.WriteLine("Usage: fenjs --version | --eval <code> | --dump-tokens <file> | --dump-ast <file> | --dump-bytecode <file> [--gc-before-every-alloc|--gc-after-every-alloc|--gc-random|--verify-heap-before-gc|--verify-heap-after-gc|--trace-gc]");
     return 1;
 }
 
@@ -60,8 +62,11 @@ if (args.Length >= 2 && args[0] == "--eval")
         Console.Error.WriteLine($"[trace-gc] mode={gcStressMode}");
     }
 
-    // Placeholder expression execution until interpreter tranche lands.
-    Console.WriteLine("undefined");
+    var compiler = new BytecodeCompiler();
+    var function = compiler.CompileScript(new SourceText(code, "<eval>"));
+    new BytecodeVerifier().Verify(function);
+    var result = new BytecodeInterpreter().Execute(function);
+    Console.WriteLine(FormatValue(result));
     return 0;
 }
 
@@ -107,6 +112,29 @@ if (args.Length == 2 && args[0] == "--dump-ast")
     {
         ast = DumpProgram(ast),
         diagnostics = diagnostics.Items
+    };
+    Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+    return 0;
+}
+
+if (args.Length == 2 && args[0] == "--dump-bytecode")
+{
+    var path = args[1];
+    if (!File.Exists(path))
+    {
+        Console.Error.WriteLine($"File not found: {path}");
+        return 4;
+    }
+
+    var compiler = new BytecodeCompiler();
+    var function = compiler.CompileScript(new SourceText(File.ReadAllText(path), path));
+    new BytecodeVerifier().Verify(function);
+    var payload = new
+    {
+        registers = function.RegisterCount,
+        constants = function.Constants.Select((c, i) => new { index = i, value = FormatValue(c), tag = c.Tag.ToString() }).ToArray(),
+        variables = function.VariableSlots.OrderBy(kv => kv.Value).Select(kv => new { name = kv.Key, slot = kv.Value }).ToArray(),
+        instructions = function.Instructions.Select((ins, ip) => new { ip, op = ins.OpCode.ToString(), ins.A, ins.B, ins.C }).ToArray()
     };
     Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
     return 0;
@@ -250,3 +278,18 @@ static object DumpExpression(ExpressionNode expression)
 }
 
 static object DumpSpan(SourceSpan span) => new { span.Start, span.Length, span.Line, span.Column };
+
+static string FormatValue(JsValue value)
+{
+    return value.Tag switch
+    {
+        JsValueTag.Undefined => "undefined",
+        JsValueTag.Null => "null",
+        JsValueTag.Boolean => value.AsBoolean() ? "true" : "false",
+        JsValueTag.Int32 => value.AsInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
+        JsValueTag.Number => value.AsNumber().ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+        JsValueTag.Object => "[object]",
+        JsValueTag.HostObject => "[host-object]",
+        _ => value.Tag.ToString()
+    };
+}
