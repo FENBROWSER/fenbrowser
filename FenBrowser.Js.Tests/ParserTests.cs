@@ -512,6 +512,26 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesForHeaderWithInitializerThatContainsInOperatorSubset()
+    {
+        var program = JsParser.ParseScript(new SourceText("for (a = 0 in {});"));
+        var forStmt = Assert.IsType<ForStatementNode>(Assert.Single(program.Body));
+        Assert.NotNull(forStmt.Initializer);
+        Assert.Null(forStmt.Test);
+        Assert.Null(forStmt.Update);
+    }
+
+    [Fact]
+    public void ParsesForHeaderWithDeclarationInitializerContainingInOperatorSubset()
+    {
+        var program = JsParser.ParseScript(new SourceText("for (let a = 0 in {});"));
+        var forStmt = Assert.IsType<ForStatementNode>(Assert.Single(program.Body));
+        Assert.NotNull(forStmt.Initializer);
+        Assert.Null(forStmt.Test);
+        Assert.Null(forStmt.Update);
+    }
+
+    [Fact]
     public void ParsesThisExpression()
     {
         var program = JsParser.ParseScript(new SourceText("this.x;"));

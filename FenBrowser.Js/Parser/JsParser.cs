@@ -293,11 +293,31 @@ public sealed class JsParser
 
         if (requireInitializerSemicolon)
         {
-            ExpectPunctuator(";");
+            if (IsPunctuator(";"))
+            {
+                Advance();
+            }
+            else if (IsPunctuator(")"))
+            {
+                Advance();
+                var bodyWithImplicitlyEmptyRemainder = ParseStatement();
+                return new ForStatementNode(initializer, null, null, bodyWithImplicitlyEmptyRemainder, MergeSpan(start.Span, bodyWithImplicitlyEmptyRemainder.Span));
+            }
+            else
+            {
+                ExpectPunctuator(";");
+            }
         }
         else if (initializer is not null && !initializerIsDeclaration && IsPunctuator(";"))
         {
             Advance();
+        }
+
+        if (IsPunctuator(")"))
+        {
+            Advance();
+            var bodyWithImplicitlyEmptyRemainder = ParseStatement();
+            return new ForStatementNode(initializer, null, null, bodyWithImplicitlyEmptyRemainder, MergeSpan(start.Span, bodyWithImplicitlyEmptyRemainder.Span));
         }
 
         ExpressionNode? test = null;
