@@ -196,6 +196,18 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void RejectsForInAssignmentInitializer()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("for (a = 0 in {});")));
+    }
+
+    [Fact]
+    public void RejectsForInDeclarationInitializer()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("for (const a = 0 in {});")));
+    }
+
+    [Fact]
     public void ParsesTryCatchWithPatternParameter()
     {
         var program = JsParser.ParseScript(new SourceText("try { throw {}; } catch ({ f }) { f; }"));
@@ -800,23 +812,15 @@ public sealed class ParserTests
     }
 
     [Fact]
-    public void ParsesForHeaderWithInitializerThatContainsInOperatorSubset()
+    public void RejectsForHeaderWithInitializerThatContainsInOperatorSubset()
     {
-        var program = JsParser.ParseScript(new SourceText("for (a = 0 in {});"));
-        var forStmt = Assert.IsType<ForStatementNode>(Assert.Single(program.Body));
-        Assert.NotNull(forStmt.Initializer);
-        Assert.Null(forStmt.Test);
-        Assert.Null(forStmt.Update);
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("for (a = 0 in {});")));
     }
 
     [Fact]
-    public void ParsesForHeaderWithDeclarationInitializerContainingInOperatorSubset()
+    public void RejectsForHeaderWithDeclarationInitializerContainingInOperatorSubset()
     {
-        var program = JsParser.ParseScript(new SourceText("for (let a = 0 in {});"));
-        var forStmt = Assert.IsType<ForStatementNode>(Assert.Single(program.Body));
-        Assert.NotNull(forStmt.Initializer);
-        Assert.Null(forStmt.Test);
-        Assert.Null(forStmt.Update);
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("for (let a = 0 in {});")));
     }
 
     [Fact]

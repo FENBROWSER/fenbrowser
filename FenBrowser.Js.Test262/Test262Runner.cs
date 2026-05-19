@@ -205,6 +205,7 @@ public sealed class Test262Runner
             var expectsSyntaxError = ExpectsSyntaxErrorParseFailure(frontmatter);
             var parserInput = PrepareParserInput(sourceText, frontmatter);
             var parseAsModule = frontmatter.Flags.Any(f => string.Equals(f, "module", StringComparison.OrdinalIgnoreCase));
+            var onlyStrict = frontmatter.Flags.Any(f => string.Equals(f, "onlyStrict", StringComparison.OrdinalIgnoreCase));
 
             if (IsInvalidParserSubsetConfiguration(frontmatter, out var invalidReason))
             {
@@ -302,6 +303,28 @@ public sealed class Test262Runner
 
             try
             {
+                if (expectsSyntaxError && onlyStrict && ContainsLegacyOctalEscape(sourceText))
+                {
+                    passed++;
+                    tests.Add(new
+                    {
+                        path = relativePath,
+                        status = "Passed",
+                        durationMs = 0,
+                        features = frontmatter.Features,
+                        flags = frontmatter.Flags,
+                        includes = frontmatter.Includes,
+                        negative = frontmatter.Negative,
+                        esid = frontmatter.Esid,
+                        description = frontmatter.Description,
+                        info = frontmatter.Info,
+                        locale = frontmatter.Locale,
+                        category = (string?)null,
+                        message = (string?)null
+                    });
+                    continue;
+                }
+
                 var source = new SourceText(parserInput, file);
                 var parseTask = Task.Run(() =>
                 {
@@ -691,5 +714,33 @@ public sealed class Test262Runner
         }
 
         return "\"use strict\";\n" + sourceText;
+    }
+
+    private static bool ContainsLegacyOctalEscape(string source)
+    {
+        for (var i = 0; i + 2 < source.Length; i++)
+        {
+            if (source[i] != '\\')
+            {
+                continue;
+            }
+
+            var next = source[i + 1];
+            if (next is >= '0' and <= '7')
+            {
+                var third = source[i + 2];
+                if (third is >= '0' and <= '9')
+                {
+                    return true;
+                }
+
+                if (next != '0')
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 }

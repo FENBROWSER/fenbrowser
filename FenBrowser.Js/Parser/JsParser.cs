@@ -263,6 +263,7 @@ public sealed class JsParser
         ExpectPunctuator("(");
 
         StatementNode? initializer = null;
+        ExpressionNode? initializerExpression = null;
         var requireInitializerSemicolon = false;
         var initializerIsDeclaration = false;
         if (!IsPunctuator(";"))
@@ -275,6 +276,7 @@ public sealed class JsParser
             else
             {
                 var initExpr = ParseExpression(0);
+                initializerExpression = initExpr;
                 initializer = new ExpressionStatementNode(initExpr, initExpr.Span);
                 requireInitializerSemicolon = true;
             }
@@ -290,6 +292,8 @@ public sealed class JsParser
             {
                 throw new JsParserException("for-in requires an initializer target.");
             }
+
+            ValidateForInInitializer(initializer);
 
             Advance(); // in
             var iterable = ParseExpression(0);
@@ -320,6 +324,11 @@ public sealed class JsParser
             }
             else if (IsPunctuator(")"))
             {
+                if (initializerExpression is not null && ContainsInOperator(initializerExpression))
+                {
+                    throw new JsParserException("for-in assignment initializers are not allowed.");
+                }
+
                 Advance();
                 var bodyWithImplicitlyEmptyRemainder = ParseStatement();
                 return new ForStatementNode(initializer, null, null, bodyWithImplicitlyEmptyRemainder, MergeSpan(start.Span, bodyWithImplicitlyEmptyRemainder.Span));
@@ -332,6 +341,11 @@ public sealed class JsParser
         else if (initializer is not null && !initializerIsDeclaration && IsPunctuator(";"))
         {
             Advance();
+        }
+
+        if (initializerIsDeclaration && initializer is VariableDeclarationStatementNode declarationWithInitializer && IsPunctuator(")") && DeclarationContainsInInitializer(declarationWithInitializer))
+        {
+            throw new JsParserException("for-in declaration initializers are not allowed.");
         }
 
         if (IsPunctuator(")"))
@@ -358,6 +372,86 @@ public sealed class JsParser
         ExpectPunctuator(")");
         var body = ParseStatement();
         return new ForStatementNode(initializer, test, update, body, MergeSpan(start.Span, body.Span));
+    }
+
+    private static void ValidateForInInitializer(StatementNode initializer)
+    {
+        if (initializer is VariableDeclarationStatementNode declaration)
+        {
+            foreach (var declarator in declaration.Declarators)
+            {
+                if (declarator.Initializer is not null)
+                {
+                    throw new JsParserException("for-in declaration initializers are not allowed.");
+                }
+            }
+
+            return;
+        }
+
+        if (initializer is ExpressionStatementNode expressionStatement && expressionStatement.Expression is AssignmentExpressionNode)
+        {
+            throw new JsParserException("for-in assignment initializers are not allowed.");
+        }
+    }
+
+    private static bool DeclarationContainsInInitializer(VariableDeclarationStatementNode declaration)
+    {
+        foreach (var declarator in declaration.Declarators)
+        {
+            if (declarator.Initializer is null)
+            {
+                continue;
+            }
+
+            if (ContainsInOperator(declarator.Initializer))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContainsInOperator(ExpressionNode expression)
+    {
+        switch (expression)
+        {
+            case BinaryExpressionNode binary:
+                return string.Equals(binary.Operator, "in", StringComparison.Ordinal) ||
+                       ContainsInOperator(binary.Left) ||
+                       ContainsInOperator(binary.Right);
+            case AssignmentExpressionNode assignment:
+                return ContainsInOperator(assignment.Left) || ContainsInOperator(assignment.Right);
+            case ParenthesizedExpressionNode parenthesized:
+                return ContainsInOperator(parenthesized.Expression);
+            case ConditionalExpressionNode conditional:
+                return ContainsInOperator(conditional.Test) ||
+                       ContainsInOperator(conditional.Consequent) ||
+                       ContainsInOperator(conditional.Alternate);
+            case UnaryExpressionNode unary:
+                return ContainsInOperator(unary.Operand);
+            case MemberExpressionNode member:
+                return (member.PropertyExpression is not null && ContainsInOperator(member.PropertyExpression)) ||
+                       ContainsInOperator(member.Object);
+            case CallExpressionNode call:
+                if (ContainsInOperator(call.Callee))
+                {
+                    return true;
+                }
+
+                foreach (var arg in call.Arguments)
+                {
+                    if (ContainsInOperator(arg))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            default:
+                return false;
+        }
     }
 
     private ReturnStatementNode ParseReturnStatement()
