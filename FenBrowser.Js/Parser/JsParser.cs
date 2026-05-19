@@ -834,7 +834,7 @@ public sealed class JsParser
                 ExpectPunctuator("]");
                 isComputed = true;
             }
-            else if (keyToken.Kind == TokenKind.Identifier)
+            else if (keyToken.Kind == TokenKind.Identifier || keyToken.Kind == TokenKind.Keyword)
             {
                 key = Advance().Text;
             }
@@ -855,10 +855,23 @@ public sealed class JsParser
                 var body = ParseBlockStatement();
                 value = new FunctionExpressionNode(key, parameters, body, MergeSpan(keyToken.Span, body.Span));
             }
+            else if (IsPunctuator(":"))
+            {
+                Advance();
+                value = ParseExpression(2);
+            }
+            else if (IsPunctuator("="))
+            {
+                Advance();
+                value = ParseExpression(2);
+            }
+            else if (!isComputed && key is not null)
+            {
+                value = new IdentifierExpressionNode(key, keyToken.Span);
+            }
             else
             {
-                ExpectPunctuator(":");
-                value = ParseExpression(2);
+                throw new JsParserException($"Expected ':' or '=' after object property key, found '{Current().Text}'.");
             }
             properties.Add(new ObjectPropertyNode(key, computedKey, isComputed, value, value.Span));
             if (IsPunctuator(","))

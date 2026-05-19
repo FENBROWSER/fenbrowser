@@ -329,6 +329,32 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesObjectPatternStyleDefaultInAssignmentTarget()
+    {
+        var program = JsParser.ParseScript(new SourceText("({x = counter()} = {x: v});"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var outerParen = Assert.IsType<ParenthesizedExpressionNode>(stmt.Expression);
+        var assign = Assert.IsType<AssignmentExpressionNode>(outerParen.Expression);
+        var obj = assign.Left switch
+        {
+            ObjectLiteralExpressionNode o => o,
+            ParenthesizedExpressionNode p => Assert.IsType<ObjectLiteralExpressionNode>(p.Expression),
+            _ => throw new InvalidOperationException($"Unexpected assignment target node: {assign.Left.GetType().Name}")
+        };
+        Assert.Single(obj.Properties);
+        Assert.Equal("x", obj.Properties[0].Key);
+    }
+
+    [Fact]
+    public void ParsesObjectLiteralKeywordPropertyKey()
+    {
+        var program = JsParser.ParseScript(new SourceText("let o = { return: 1, throw: 2 };"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var obj = Assert.IsType<ObjectLiteralExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Equal(2, obj.Properties.Count);
+    }
+
+    [Fact]
     public void ParsesStrictEqualityOperators()
     {
         var program = JsParser.ParseScript(new SourceText("1 === 1; 1 !== 2;"));
