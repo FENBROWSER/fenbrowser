@@ -180,6 +180,7 @@ public sealed class JsParser
         ExpectPunctuator("(");
 
         StatementNode? initializer = null;
+        var requireInitializerSemicolon = false;
         if (!IsPunctuator(";"))
         {
             if (Current().Kind == TokenKind.Keyword && (Current().Text == "let" || Current().Text == "const" || Current().Text == "var"))
@@ -190,12 +191,26 @@ public sealed class JsParser
             {
                 var initExpr = ParseExpression(0);
                 initializer = new ExpressionStatementNode(initExpr, initExpr.Span);
-                ExpectPunctuator(";");
+                requireInitializerSemicolon = true;
             }
         }
         else
         {
             ExpectPunctuator(";");
+        }
+
+        if (Current().Kind == TokenKind.Keyword && Current().Text == "in")
+        {
+            if (initializer is null)
+            {
+                throw new JsParserException("for-in requires an initializer target.");
+            }
+
+            Advance(); // in
+            var iterable = ParseExpression(0);
+            ExpectPunctuator(")");
+            var forInBody = ParseStatement();
+            return new ForInStatementNode(initializer, iterable, forInBody, MergeSpan(start.Span, forInBody.Span));
         }
 
         if (Current().Kind == TokenKind.Keyword && Current().Text == "of")
@@ -210,6 +225,15 @@ public sealed class JsParser
             ExpectPunctuator(")");
             var forOfBody = ParseStatement();
             return new ForOfStatementNode(initializer, iterable, forOfBody, MergeSpan(start.Span, forOfBody.Span));
+        }
+
+        if (requireInitializerSemicolon)
+        {
+            ExpectPunctuator(";");
+        }
+        else if (initializer is not null && IsPunctuator(";"))
+        {
+            Advance();
         }
 
         ExpressionNode? test = null;
@@ -454,7 +478,21 @@ public sealed class JsParser
         ExpectPunctuator("(");
         while (!Is(TokenKind.EndOfFile) && !IsPunctuator(")"))
         {
-            parameters.Add(ExpectIdentifier().Text);
+            var rest = IsPunctuator("...");
+            if (rest)
+            {
+                Advance();
+            }
+
+            var identifier = ExpectIdentifier().Text;
+            parameters.Add(identifier);
+
+            if (IsPunctuator("="))
+            {
+                Advance();
+                _ = ParseExpression(2);
+            }
+
             if (IsPunctuator(","))
             {
                 Advance();

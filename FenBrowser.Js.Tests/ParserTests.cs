@@ -378,6 +378,13 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesForInStatement()
+    {
+        var program = JsParser.ParseScript(new SourceText("for (let k in obj) { k; }"));
+        Assert.IsType<ForInStatementNode>(Assert.Single(program.Body));
+    }
+
+    [Fact]
     public void ParsesThisExpression()
     {
         var program = JsParser.ParseScript(new SourceText("this.x;"));
@@ -401,5 +408,13 @@ public sealed class ParserTests
         var program = JsParser.ParseScript(new SourceText("function* g(){ yield 1; }"));
         var fn = Assert.IsType<FunctionDeclarationNode>(program.Body[0]);
         Assert.Equal("g", fn.Name);
+    }
+
+    [Fact]
+    public void ParsesFunctionParametersWithDefaultAndRestSubset()
+    {
+        var program = JsParser.ParseScript(new SourceText("function f(a = 1, ...rest) { return a; }"));
+        var fn = Assert.IsType<FunctionDeclarationNode>(program.Body[0]);
+        Assert.Equal(new[] { "a", "rest" }, fn.Parameters);
     }
 }
