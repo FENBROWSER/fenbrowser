@@ -409,6 +409,27 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesObjectLiteralGetterWithComputedName()
+    {
+        var program = JsParser.ParseScript(new SourceText("let o = { get [Symbol.iterator]() { return this; } };"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var obj = Assert.IsType<ObjectLiteralExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Single(obj.Properties);
+        Assert.True(obj.Properties[0].IsComputed);
+        Assert.IsType<FunctionExpressionNode>(obj.Properties[0].Value);
+    }
+
+    [Fact]
+    public void ParsesObjectLiteralGetterWithIdentifierName()
+    {
+        var program = JsParser.ParseScript(new SourceText("let o = { get maxByteLength() { return 1; } };"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var obj = Assert.IsType<ObjectLiteralExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Single(obj.Properties);
+        Assert.Equal("maxByteLength", obj.Properties[0].Key);
+    }
+
+    [Fact]
     public void ParsesDotMemberWithKeywordPropertyName()
     {
         var program = JsParser.ParseScript(new SourceText("obj.return(1);"));

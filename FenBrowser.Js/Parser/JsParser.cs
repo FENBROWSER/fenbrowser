@@ -926,6 +926,49 @@ public sealed class JsParser
         while (!Is(TokenKind.EndOfFile) && !IsPunctuator("}"))
         {
             var keyToken = Current();
+
+            if (IsAccessorPropertyStart())
+            {
+                var accessorKind = Advance();
+                string? accessorKey = null;
+                ExpressionNode? accessorComputedKey = null;
+                var accessorIsComputed = false;
+                var accessorKeyToken = Current();
+                if (IsPunctuator("["))
+                {
+                    Advance(); // [
+                    accessorComputedKey = ParseExpression(0);
+                    ExpectPunctuator("]");
+                    accessorIsComputed = true;
+                }
+                else if (accessorKeyToken.Kind == TokenKind.Identifier || accessorKeyToken.Kind == TokenKind.Keyword)
+                {
+                    accessorKey = Advance().Text;
+                }
+                else if (accessorKeyToken.Kind == TokenKind.String)
+                {
+                    var raw = Advance().Text;
+                    accessorKey = raw.Length >= 2 ? raw[1..^1] : string.Empty;
+                }
+                else
+                {
+                    throw new JsParserException($"Expected object property key, found '{accessorKeyToken.Text}'.");
+                }
+
+                var parameters = ParseParameterList();
+                var body = ParseBlockStatement();
+                var accessorFnName = accessorKey ?? accessorKind.Text;
+                var accessorFn = new FunctionExpressionNode(accessorFnName, parameters, body, MergeSpan(accessorKind.Span, body.Span));
+                properties.Add(new ObjectPropertyNode(accessorKey, accessorComputedKey, accessorIsComputed, accessorFn, accessorFn.Span));
+                if (IsPunctuator(","))
+                {
+                    Advance();
+                    continue;
+                }
+
+                break;
+            }
+
             string? key = null;
             ExpressionNode? computedKey = null;
             var isComputed = false;
@@ -1311,5 +1354,61 @@ public sealed class JsParser
         var right = new BinaryExpressionNode(binaryOp, target, numeric, MergeSpan(target.Span, numeric.Span));
         var span = isPostfix ? MergeSpan(target.Span, opSpan) : MergeSpan(opSpan, target.Span);
         return new AssignmentExpressionNode(target, right, span);
+    }
+
+    private bool IsAccessorPropertyStart()
+    {
+        var current = Current();
+        if (!((current.Kind == TokenKind.Identifier || current.Kind == TokenKind.Keyword) &&
+              (current.Text == "get" || current.Text == "set")))
+        {
+            return false;
+        }
+
+        var nextIndex = Math.Min(_index + 1, _tokens.Count - 1);
+        var next = _tokens[nextIndex];
+        if (next.Kind == TokenKind.Punctuator && next.Text == "[")
+        {
+            var depth = 1;
+            var scan = nextIndex + 1;
+            while (scan < _tokens.Count)
+            {
+                var token = _tokens[scan];
+                if (token.Kind == TokenKind.Punctuator)
+                {
+                    if (token.Text == "[")
+                    {
+                        depth++;
+                    }
+                    else if (token.Text == "]")
+                    {
+                        depth--;
+                        if (depth == 0)
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                scan++;
+            }
+
+            if (depth != 0)
+            {
+                return false;
+            }
+
+            var afterBracket = Math.Min(scan + 1, _tokens.Count - 1);
+            return _tokens[afterBracket].Kind == TokenKind.Punctuator && _tokens[afterBracket].Text == "(";
+        }
+
+        var isSimpleName = next.Kind == TokenKind.Identifier || next.Kind == TokenKind.Keyword || next.Kind == TokenKind.String;
+        if (!isSimpleName)
+        {
+            return false;
+        }
+
+        var afterName = Math.Min(nextIndex + 1, _tokens.Count - 1);
+        return _tokens[afterName].Kind == TokenKind.Punctuator && _tokens[afterName].Text == "(";
     }
 }
