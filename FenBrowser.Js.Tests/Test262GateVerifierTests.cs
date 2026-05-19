@@ -187,6 +187,50 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ReportIncludesCurrentSummaryValues()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/a.js",
+                        status = "Passed",
+                        category = (string?)null
+                    },
+                    new
+                    {
+                        path = "test/b.js",
+                        status = "UnexpectedPass",
+                        category = (string?)null
+                    }
+                ],
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 1,
+                passed: 1));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            using var report = JsonDocument.Parse(result.ReportJson);
+            var currentSummary = report.RootElement.GetProperty("summary").GetProperty("current");
+            Assert.Equal(2, currentSummary.GetProperty("Total").GetInt32());
+            Assert.Equal(1, currentSummary.GetProperty("Passed").GetInt32());
+            Assert.Equal(1, currentSummary.GetProperty("UnexpectedPasses").GetInt32());
+            Assert.Equal(0, currentSummary.GetProperty("Crashes").GetInt32());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_ReportIncludesNullPreviousSourceWhenBaselineIsOmitted()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
