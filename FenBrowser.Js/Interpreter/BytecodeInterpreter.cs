@@ -10,6 +10,8 @@ public sealed class BytecodeInterpreter
     private readonly JsHeap _heap;
     private ObjectHandle? _objectConstructorHandle;
     private ObjectHandle? _objectPrototypeHandle;
+    private ObjectHandle? _numberConstructorHandle;
+    private ObjectHandle? _numberPrototypeHandle;
     private ObjectHandle? _typeErrorConstructorHandle;
     private ObjectHandle? _typeErrorPrototypeHandle;
 
@@ -217,74 +219,65 @@ public sealed class BytecodeInterpreter
                 }
                 case OpCode.Call0:
                 {
-                    var callee = ResolveFunction(frame.Registers[ins.B]);
-                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, Array.Empty<JsValue>(), callee.CapturedVariables, JsValue.Undefined);
+                    frame.Registers[ins.A] = CallFunction(frame.Registers[ins.B], Array.Empty<JsValue>(), JsValue.Undefined);
                     break;
                 }
                 case OpCode.Call1:
                 {
-                    var callee = ResolveFunction(frame.Registers[ins.B]);
-                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, new[] { frame.Registers[ins.C] }, callee.CapturedVariables, JsValue.Undefined);
+                    frame.Registers[ins.A] = CallFunction(frame.Registers[ins.B], new[] { frame.Registers[ins.C] }, JsValue.Undefined);
                     break;
                 }
                 case OpCode.CallMethod0:
                 {
-                    var callee = ResolveFunction(frame.Registers[ins.B]);
-                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, Array.Empty<JsValue>(), callee.CapturedVariables, frame.Registers[ins.C]);
+                    frame.Registers[ins.A] = CallFunction(frame.Registers[ins.B], Array.Empty<JsValue>(), frame.Registers[ins.C]);
                     break;
                 }
                 case OpCode.CallMethod1:
                 {
-                    var callee = ResolveFunction(frame.Registers[ins.B]);
-                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, new[] { frame.Registers[ins.D] }, callee.CapturedVariables, frame.Registers[ins.C]);
+                    frame.Registers[ins.A] = CallFunction(frame.Registers[ins.B], new[] { frame.Registers[ins.D] }, frame.Registers[ins.C]);
                     break;
                 }
                 case OpCode.CallMethodN:
                 {
-                    var callee = ResolveFunction(frame.Registers[ins.B]);
                     var callArgs = new JsValue[ins.E];
                     for (var i = 0; i < ins.E; i++)
                     {
                         callArgs[i] = frame.Registers[ins.D + i];
                     }
 
-                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, callArgs, callee.CapturedVariables, frame.Registers[ins.C]);
+                    frame.Registers[ins.A] = CallFunction(frame.Registers[ins.B], callArgs, frame.Registers[ins.C]);
                     break;
                 }
                 case OpCode.CallN:
                 {
-                    var callee = ResolveFunction(frame.Registers[ins.B]);
                     var callArgs = new JsValue[ins.D];
                     for (var i = 0; i < ins.D; i++)
                     {
                         callArgs[i] = frame.Registers[ins.C + i];
                     }
 
-                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, callArgs, callee.CapturedVariables, JsValue.Undefined);
+                    frame.Registers[ins.A] = CallFunction(frame.Registers[ins.B], callArgs, JsValue.Undefined);
                     break;
                 }
                 case OpCode.Construct0:
                 {
-                    var callee = ResolveFunction(frame.Registers[ins.B]);
-                    frame.Registers[ins.A] = ExecuteConstruct(callee, Array.Empty<JsValue>());
+                    frame.Registers[ins.A] = ConstructFunction(frame.Registers[ins.B], Array.Empty<JsValue>());
                     break;
                 }
                 case OpCode.Construct1:
                 {
-                    var callee = ResolveFunction(frame.Registers[ins.B]);
-                    frame.Registers[ins.A] = ExecuteConstruct(callee, new[] { frame.Registers[ins.C] });
+                    frame.Registers[ins.A] = ConstructFunction(frame.Registers[ins.B], new[] { frame.Registers[ins.C] });
                     break;
                 }
                 case OpCode.ConstructN:
                 {
-                    var callee = ResolveFunction(frame.Registers[ins.B]);
                     var ctorArgs = new JsValue[ins.D];
                     for (var i = 0; i < ins.D; i++)
                     {
                         ctorArgs[i] = frame.Registers[ins.C + i];
                     }
 
-                    frame.Registers[ins.A] = ExecuteConstruct(callee, ctorArgs);
+                    frame.Registers[ins.A] = ConstructFunction(frame.Registers[ins.B], ctorArgs);
                     break;
                 }
                 case OpCode.Not:
@@ -406,6 +399,11 @@ public sealed class BytecodeInterpreter
             frame.Variables[objectSlot] = JsValue.FromObject(EnsureObjectConstructor());
         }
 
+        if (function.VariableSlots.TryGetValue("Number", out var numberSlot))
+        {
+            frame.Variables[numberSlot] = JsValue.FromObject(EnsureNumberConstructor());
+        }
+
         if (function.VariableSlots.TryGetValue("TypeError", out var typeErrorSlot))
         {
             frame.Variables[typeErrorSlot] = JsValue.FromObject(EnsureTypeErrorConstructor());
@@ -496,6 +494,43 @@ public sealed class BytecodeInterpreter
         _objectPrototypeHandle = prototypeHandle;
         _objectConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    private ObjectHandle EnsureNumberPrototype()
+    {
+        _ = EnsureNumberConstructor();
+        return _numberPrototypeHandle!.Value;
+    }
+
+    private ObjectHandle EnsureNumberConstructor()
+    {
+        if (_numberConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototypeHandle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "Number",
+            (_, args) => JsValue.FromNumber(args.Count > 0 ? ToNumber(args[0]) : 0d),
+            args => CreateNumberObject(args.Count > 0 ? ToNumber(args[0]) : 0d));
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.SetProperty("MAX_VALUE", JsValue.FromNumber(double.MaxValue));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        _numberPrototypeHandle = prototypeHandle;
+        _numberConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private JsValue CreateNumberObject(double value)
+    {
+        var obj = new NumberObject(value);
+        obj.SetPrototype(EnsureNumberPrototype());
+        return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
     private static BytecodeFunction CreateBuiltinFunction(string name)
@@ -650,15 +685,36 @@ public sealed class BytecodeInterpreter
         return value.AsObjectHandle();
     }
 
-    private JsFunctionObject ResolveFunction(JsValue value)
+    private JsValue CallFunction(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
     {
         var obj = ResolveObject(value);
-        if (obj is not JsFunctionObject fn)
+        if (obj is JsFunctionObject fn)
         {
-            throw new InvalidOperationException("Value is not callable.");
+            return ExecuteInternal(fn.Function, args, fn.CapturedVariables, thisValue);
         }
 
-        return fn;
+        if (obj is NativeFunctionObject native)
+        {
+            return native.Call(thisValue, args);
+        }
+
+        throw new InvalidOperationException("Value is not callable.");
+    }
+
+    private JsValue ConstructFunction(JsValue value, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(value);
+        if (obj is JsFunctionObject fn)
+        {
+            return ExecuteConstruct(fn, args);
+        }
+
+        if (obj is NativeFunctionObject native)
+        {
+            return native.Construct(args);
+        }
+
+        throw new InvalidOperationException("Value is not constructible.");
     }
 
     private static string ToPropertyKey(JsValue value)
@@ -766,7 +822,7 @@ public sealed class BytecodeInterpreter
         }
 
         var ctorObj = ResolveObject(right);
-        if (ctorObj is not JsFunctionObject)
+        if (ctorObj is not JsFunctionObject && ctorObj is not NativeFunctionObject)
         {
             ThrowTypeError(frame, "Right-hand side of 'instanceof' is not callable.");
             return false;
@@ -807,7 +863,7 @@ public sealed class BytecodeInterpreter
         if (value.Tag == JsValueTag.Object)
         {
             var obj = _heap.GetObject(value.AsObjectHandle());
-            if (obj is JsFunctionObject)
+            if (obj is JsFunctionObject or NativeFunctionObject)
             {
                 return "function";
             }
@@ -854,5 +910,37 @@ public sealed class BytecodeInterpreter
         var defaultInstance = JsValue.FromObject(_heap.AllocateObject(instanceObject, AllocationSite.Current()));
         var result = ExecuteInternal(callee.Function, args, callee.CapturedVariables, defaultInstance);
         return result.Tag == JsValueTag.Object ? result : defaultInstance;
+    }
+
+    private sealed class NativeFunctionObject : JsObject
+    {
+        private readonly Func<JsValue, IReadOnlyList<JsValue>, JsValue> _call;
+        private readonly Func<IReadOnlyList<JsValue>, JsValue> _construct;
+
+        public NativeFunctionObject(
+            string name,
+            Func<JsValue, IReadOnlyList<JsValue>, JsValue> call,
+            Func<IReadOnlyList<JsValue>, JsValue> construct)
+        {
+            Name = name;
+            _call = call;
+            _construct = construct;
+        }
+
+        public string Name { get; }
+
+        public JsValue Call(JsValue thisValue, IReadOnlyList<JsValue> args) => _call(thisValue, args);
+
+        public JsValue Construct(IReadOnlyList<JsValue> args) => _construct(args);
+    }
+
+    private sealed class NumberObject : JsObject
+    {
+        public NumberObject(double value)
+        {
+            Value = value;
+        }
+
+        public double Value { get; }
     }
 }

@@ -517,6 +517,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void NumberIntrinsicExposesMaxValueForInOperator()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("\"MAX_VALUE\" in Number;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void NumberCallReturnsPrimitiveAndConstructorCreatesInstance()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let callIsInstance = Number(0) instanceof Number; let constructIsInstance = new Number instanceof Number; (!callIsInstance) && constructIsInstance;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void InstanceOfReturnsTrueForConstructedInstance()
     {
         var compiler = new BytecodeCompiler();
