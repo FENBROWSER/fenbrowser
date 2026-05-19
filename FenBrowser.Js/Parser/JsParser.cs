@@ -1183,7 +1183,7 @@ public sealed class JsParser
     }
 
     private static bool IsUpdateTarget(ExpressionNode node) =>
-        node is IdentifierExpressionNode or MemberExpressionNode;
+        node is IdentifierExpressionNode or MemberExpressionNode or CallExpressionNode;
 
     private static AssignmentExpressionNode BuildUpdateAssignment(ExpressionNode target, string updateOp, SourceSpan opSpan, bool isPostfix)
     {

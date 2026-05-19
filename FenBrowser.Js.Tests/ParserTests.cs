@@ -393,6 +393,17 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesUpdateExpressionsOnCallTargetsInParserSubset()
+    {
+        var program = JsParser.ParseScript(new SourceText("f()++; ++f();"));
+        Assert.Equal(2, program.Body.Count);
+        var s1 = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        Assert.IsType<AssignmentExpressionNode>(s1.Expression);
+        var s2 = Assert.IsType<ExpressionStatementNode>(program.Body[1]);
+        Assert.IsType<AssignmentExpressionNode>(s2.Expression);
+    }
+
+    [Fact]
     public void ParsesArraySpreadElements()
     {
         var program = JsParser.ParseScript(new SourceText("let x = [1, ...arr, 3];"));
