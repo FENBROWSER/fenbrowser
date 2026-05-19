@@ -1,436 +1,200 @@
-# FenBrowser Pipeline Hardening - GitHub Actions CI/CD #
-# SpecRef: Production pipeline verification workflow
-# CapabilityId: PIPELINE-CI-CD-01
 # =============================================================================
 # pipeline-ci-cd.yml
-# Automated pipeline verification for production hardening
+# Focused validation for the FenBrowser pipeline subsystem
+# (FenBrowser.Core/Engine/Pipeline*.cs and its test surface).
 #
-# PURPOSE: Ensure pipeline safety features work correctly and maintain codebase quality
+# Scope:
+#   - Build the test surface once per job (no cross-job --no-build coupling).
+#   - Run only the pipeline-subsystem tests that actually exist in the repo.
+#   - Static check for forbidden patterns on the pipeline source files.
 #
-# Triggers:
-# - Push to main/master branch
-# - Pull requests to main/master
-# - Manual workflow dispatch
-#
-# Jobs:
-# 1. Build verification
-# 2. Unit tests (focused + comprehensive)
-# 3. Integration tests
-# 4. Performance benchmarking
-# 5. Code quality checks
+# General CI (P0 gates, nightly regression, win-x64 publish) lives in
+# build-fenbrowser-exe.yml; this workflow deliberately stays narrow.
 # =============================================================================
 
-name: Pipeline Hardening CI/CD
+name: Pipeline Subsystem CI
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [main, master, develop, rewrite-history]
     paths:
-      - 'FenBrowser.Core/Engine/Pipeline*.cs'
-      - 'FenBrowser.FenEngine/Rendering/*.cs'
-      - 'FenBrowser.Tests/**/Pipeline*.cs'
-      - '.github/workflows/pipeline-ci-cd.yml'
+      - "FenBrowser.Core/Engine/Pipeline*.cs"
+      - "FenBrowser.FenEngine/Rendering/**/*.cs"
+      - "FenBrowser.Tests/Engine/Pipeline*.cs"
+      - ".github/workflows/pipeline-ci-cd.yml"
   pull_request:
-    branches: [ main, master, develop ]
+    branches: [main, master, develop, rewrite-history]
     paths:
-      - 'FenBrowser.Core/Engine/Pipeline*.cs'
-      - 'FenBrowser.FenEngine/Rendering/*.cs'
-      - 'FenBrowser.Tests/**/Pipeline*.cs'
+      - "FenBrowser.Core/Engine/Pipeline*.cs"
+      - "FenBrowser.FenEngine/Rendering/**/*.cs"
+      - "FenBrowser.Tests/Engine/Pipeline*.cs"
+      - ".github/workflows/pipeline-ci-cd.yml"
   workflow_dispatch:
     inputs:
-      run_benchmarks:
-        description: 'Run performance benchmarks'
-        required: false
-        default: 'false'
-        type: boolean
       enable_detailed_logging:
-        description: 'Enable detailed pipeline telemetry in tests'
+        description: "Enable detailed pipeline telemetry in tests"
         required: false
-        default: 'false'
+        default: "false"
         type: boolean
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pipeline-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
-  DOTNET_VERSION: '8.0.x'
-  PIPELINE_TELEMETRY_ENABLED: '${{ github.event.inputs.enable_detailed_logging || false }}'
-  PIPELINE_STRICT_MODE: 'false'
+  DOTNET_NOLOGO: "true"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "true"
+  PIPELINE_TELEMETRY_ENABLED: ${{ inputs.enable_detailed_logging || 'false' }}
+  PIPELINE_STRICT_MODE: "false"
 
 jobs:
-  # Build verification - ensure all projects compile
   build:
-    name: Build Verification
-    runs-on: windows-latest
-    timeout-minutes: 15
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v3
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-      
-      - name: Restore dependencies
-        run: dotnet restore FenBrowser.sln
-      
-      - name: Build solution
-        run: dotnet build FenBrowser.sln --configuration Release --no-restore
-      
-      - name: Verify pipeline assemblies compile
-        run: |
-          dotnet build FenBrowser.Core/FenBrowser.Core.csproj --configuration Release --no-restore
-          dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj --configuration Release --no-restore
-      
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: build-artifacts
-          path: |
-            **/bin/**/*.dll
-            **/bin/**/*.pdb
-          retention-days: 7
-
-  # Unit tests - pipeline safety features
-  unit-tests:
-    name: Unit Tests - Pipeline Safety
+    name: Build solution (sanity)
     runs-on: windows-latest
     timeout-minutes: 20
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK from global.json
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+          cache: true
+
+      - name: Restore solution
+        run: dotnet restore FenBrowser.sln
+
+      - name: Build solution (Release)
+        run: dotnet build FenBrowser.sln -c Release --no-restore
+
+  pipeline-tests:
+    name: Pipeline tests - ${{ matrix.test_class }}
     needs: build
-    
+    runs-on: windows-latest
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        test_category:
+        # Only test classes that actually exist under FenBrowser.Tests/Engine/.
+        # If new pipeline test classes are added, append them here.
+        test_class:
           - PipelineContextTests
           - PipelineExceptionBoundaryTests
-          - PipelineResourceGuardTests
-          - PipelineTelemetryTests
-          - PipelineIntegrationLayerTests
-    
+          - PipelineInvariantGateTests
     steps:
-      - name: Checkout code
+      - name: Checkout source
         uses: actions/checkout@v4
-      
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v3
+
+      - name: Setup .NET SDK from global.json
+        uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-      
-      - name: Restore dependencies
-        run: dotnet restore FenBrowser.sln
-      
-      - name: Run ${{ matrix.test_category }} tests
-        run: |
-          dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj \
-            --configuration Release \
-            --no-build \
-            --logger "console;verbosity=detailed" \
-            --logger "trx;LogFileName=${{ matrix.test_category }}.trx" \
-            --filter "FullyQualifiedName~${{ matrix.test_category }}" \
-            --collect:"XPlat Code Coverage"
+          global-json-file: global.json
+          cache: true
+
+      - name: Build test surface
+        run: dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Release
+
+      - name: Run ${{ matrix.test_class }}
         env:
           PIPELINE_TELEMETRY_ENABLED: ${{ env.PIPELINE_TELEMETRY_ENABLED }}
           PIPELINE_STRICT_MODE: ${{ env.PIPELINE_STRICT_MODE }}
-      
+        run: >-
+          dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj
+          -c Release
+          --no-build
+          --filter "FullyQualifiedName~${{ matrix.test_class }}"
+          --logger "trx;LogFileName=${{ matrix.test_class }}.trx"
+          --results-directory TestResults
+
       - name: Upload test results
+        if: always()
         uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: test-results-${{ matrix.test_category }}
-          path: |
-            **/*.trx
-            **/coverage.cobertura.xml
-          retention-days: 14
-      
-      - name: Publish Test Results
-        uses: dorny/test-reporter@v1
-        if: always()
-        with:
-          name: ${{ matrix.test_category }} Results
-          path: '**/*.trx'
-          reporter: dotnet-trx
-          list-suites: 'all'
-          list-tests: 'all'
-
-  # Integration tests - full pipeline scenarios
-  integration-tests:
-    name: Integration Tests - Full Pipeline
-    runs-on: windows-latest
-    timeout-minutes: 25
-    needs: build
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v3
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-      
-      - name: Restore dependencies
-        run: dotnet restore FenBrowser.sln
-      
-      - name: Run integration tests
-        run: |
-          dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj \
-            --configuration Release \
-            --no-build \
-            --logger "console;verbosity=detailed" \
-            --logger "trx;LogFileName=IntegrationTests.trx" \
-            --filter "FullyQualifiedName~PipelineExceptionBoundaryTests" \
-            --collect:"XPlat Code Coverage"
-        env:
-          PIPELINE_TELEMETRY_ENABLED: true
-          PIPELINE_STRICT_MODE: false
-      
-      - name: Upload integration test results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: integration-test-results
-          path: |
-            **/IntegrationTests.trx
-            **/coverage.cobertura.xml
+          name: pipeline-tests-${{ matrix.test_class }}
+          path: TestResults/
+          if-no-files-found: ignore
           retention-days: 14
 
-  # Performance validation - ensure pipeline overhead is acceptable
-  performance-tests:
-    name: Performance Benchmarking
-    runs-on: windows-latest
-    timeout-minutes: 15
-    needs: unit-tests
-    if: github.event.inputs.run_benchmarks == 'true' || github.event_name == 'push'
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v3
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-      
-      - name: Restore dependencies
-        run: dotnet restore FenBrowser.sln
-      
-      - name: Run performance tests
-        run: |
-          dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj \
-            --configuration Release \
-            --no-build \
-            --logger "console;verbosity=detailed" \
-            --filter "FullyQualifiedName~Performance" \
-            --verbosity minimal
-        env:
-          Run_Performance_Tests: true
-      
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: benchmark-results
-          path: |
-            **/*benchmark*.json
-            **/*performance*.log
-          retention-days: 30
-
-  # Code quality - static analysis and security scanning
-  code-quality:
-    name: Code Quality & Security
-    runs-on: windows-latest
-    timeout-minutes: 15
+  pipeline-source-audit:
+    name: Pipeline source audit (advisory)
     needs: build
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v3
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-      
-      - name: Restore dependencies
-        run: dotnet restore FenBrowser.sln
-      
-      - name: Run code analysis
-        run: dotnet build FenBrowser.sln --configuration Release --no-restore /p:TreatWarningsAsErrors=true /p:RunAnalyzers=true
-      
-      - name: Security scan - pipeline code
-        run: |
-          # Scan pipeline files for common security issues
-          Select-String -Path "FenBrowser.Core/Engine/Pipeline*.cs" -Pattern "throw new Exception\(|catch\s*\(Exception\s+\w+\)\s*\{|Console\.WriteLine|Debug\.WriteLine" |
-          ForEach-Object {
-            Write-Host "WARNING in $($_.Path):$($_.LineNumber) - $($_.Line)"
-          }
-        shell: pwsh
-      
-      - name: Validate pipeline contracts
-        run: |
-          # Verify pipeline contracts are maintained
-          dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj \
-            --filter "FullyQualifiedName~PipelineContext" \
-            --verbosity minimal
-
-  # Pipeline health report - aggregate all metrics
-  health-report:
-    name: Pipeline Health Report
     runs-on: windows-latest
     timeout-minutes: 10
-    needs: [unit-tests, integration-tests, performance-tests, code-quality]
-    if: always()
-    
     steps:
-      - name: Checkout code
+      - name: Checkout source
         uses: actions/checkout@v4
-      
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v3
-        with:
-          dotnet-version: ${{ env.DOTNET_VERSION }}
-      
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      
-      - name: Generate health report
-        run: |
-          # Create comprehensive health report
-          $reportPath = "pipeline-health-report.md"
-          "# FenBrowser Pipeline Health Report" | Out-File $reportPath
-          "Generated: $(Get-Date)" | Out-File -Append $reportPath
-          "" | Out-File -Append $reportPath
-          
-          # Summary section
-          "## Summary" | Out-File -Append $reportPath
-          "- **Workflow Run**: ${{ github.run_number }}" | Out-File -Append $reportPath
-          "- **Commit**: ${{ github.sha }}" | Out-File -Append $reportPath
-          "- **Triggered By**: ${{ github.event_name }}" | Out-File -Append $reportPath
-          "" | Out-File -Append $reportPath
-          
-          # Test results
-          "## Test Results" | Out-File -Append $reportPath
-          if (Test-Path "artifacts/test-results-*") {
-            Get-ChildItem artifacts/test-results-* -Filter *.trx -Recurse | 
-            ForEach-Object { "- $(Split-Path $_.FullName -Leaf)" } | 
-            Out-File -Append $reportPath
-          }
-          "" | Out-File -Append $reportPath
-          
-          # Pipeline components status
-          "## Pipeline Components" | Out-File -Append $reportPath
-          "- **Exception Boundary**: Implemented ✓" | Out-File -Append $reportPath
-          "- **Resource Guards**: Implemented ✓" | Out-File -Append $reportPath
-          "- **Telemetry**: Implemented ✓" | Out-File -Append $reportPath
-          "- **Integration Layer**: Implemented ✓" | Out-File -Append $reportPath
-          "- **Tests**: Added ✓" | Out-File -Append $reportPath
-          "" | Out-File -Append $reportPath
-          
-          # Performance metrics
-          $reportContent = Get-Content $reportPath -Raw
-          Write-Host "Report generated:"
-          Write-Host $reportContent
-          
-          # Upload report
-          Write-Output "report-path=$reportPath" | Out-File -Append $env:GITHUB_OUTPUT
-        shell: pwsh
-      
-      - name: Upload health report
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: pipeline-health-report
-          path: |
-            pipeline-health-report.md
-            **/*report*.md
-          retention-days: 90
-      
-      - name: Comment PR with results
-        if: github.event_name == 'pull_request' && always()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const reportPath = 'pipeline-health-report.md';
-            let report = 'Pipeline Health Report not available';
-            if (fs.existsSync(reportPath)) {
-              report = fs.readFileSync(reportPath, 'utf8');
-            }
-            
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: report
-            });
 
-  # Deployment check - verify pipeline is production ready
-  deployment-ready:
-    name: Deployment Readiness Check
-    runs-on: windows-latest
-    timeout-minutes: 10
-    needs: [health-report, unit-tests]
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Check all tests passed
-        run: |
-          # Verify no test failures
-          $allTestsPassed = $true
-          if (Test-Path "artifacts") {
-            $trxFiles = Get-ChildItem artifacts -Filter *.trx -Recurse
-            foreach ($file in $trxFiles) {
-              [xml]$trx = Get-Content $file.FullName
-              $failed = $trx.TestRun.Results.UnitTestResult | Where-Object { $_.outcome -eq "Failed" }
-              if ($failed) {
-                Write-Host "Failed tests in $($file.Name):"
-                $failed | ForEach-Object { Write-Host "  - $($_.testName)" }
-                $allTestsPassed = $false
-              }
-            }
-          }
-          
-          if (!$allTestsPassed) {
-            Write-Error "Some tests failed - deployment blocked"
-            exit 1
-          }
-          
-          Write-Host "All tests passed - deployment ready ✓"
+      - name: Required pipeline files present
         shell: pwsh
-      
-      - name: Verify pipeline maturity
         run: |
-          # Check all pipeline files exist
-          $requiredFiles = @(
-            "FenBrowser.Core/Engine/PipelineExceptionBoundary.cs",
-            "FenBrowser.Core/Engine/PipelineResourceGuard.cs",
-            "FenBrowser.Core/Engine/PipelineTelemetry.cs",
-            "FenBrowser.Core/Engine/PipelineIntegrationLayer.cs",
-            "FenBrowser.Tests/Engine/PipelineExceptionBoundaryTests.cs"
+          $required = @(
+            'FenBrowser.Core/Engine/PipelineContext.cs',
+            'FenBrowser.Core/Engine/PipelineExceptionBoundary.cs',
+            'FenBrowser.Core/Engine/PipelineResourceGuard.cs',
+            'FenBrowser.Core/Engine/PipelineTelemetry.cs',
+            'FenBrowser.Core/Engine/PipelineIntegrationLayer.cs',
+            'FenBrowser.Tests/Engine/PipelineExceptionBoundaryTests.cs'
           )
-          
-          $allFilesPresent = $true
-          foreach ($file in $requiredFiles) {
-            if (Test-Path $file) {
-              Write-Host "✓ $file exists"
-            } else {
-              Write-Host "✗ $file missing"
-              $allFilesPresent = $false
-            }
+          $missing = @()
+          foreach ($f in $required) {
+            if (-not (Test-Path $f)) { $missing += $f }
           }
-          
-          if (!$allFilesPresent) {
-            Write-Error "Missing required pipeline files - deployment blocked"
+          if ($missing.Count -gt 0) {
+            Write-Error ("Missing required pipeline files:`n  - " + ($missing -join "`n  - "))
             exit 1
           }
-          
-          Write-Host "All pipeline hardening files present ✓"
+          Write-Host "All required pipeline files present."
+
+      - name: Scan pipeline sources for forbidden patterns (advisory)
         shell: pwsh
+        run: |
+          # Advisory-only: surface common smell-patterns on pipeline hot paths.
+          # Does NOT fail the build; CLAUDE.md DoD Tier 0 covers hard rules.
+          $patterns = @(
+            'Console\.WriteLine',
+            'Debug\.WriteLine',
+            'throw new Exception\(',
+            'catch\s*\(Exception\s+\w+\)\s*\{'
+          )
+          $hits = Get-ChildItem -Path FenBrowser.Core/Engine -Filter 'Pipeline*.cs' -File |
+            Select-String -Pattern $patterns
+          if ($hits) {
+            Write-Host "::warning::Pipeline source pattern hits (advisory only):"
+            foreach ($h in $hits) {
+              Write-Host ("  {0}:{1}  {2}" -f $h.Path, $h.LineNumber, $h.Line.Trim())
+            }
+          } else {
+            Write-Host "No forbidden patterns found on pipeline sources."
+          }
+
+  summary:
+    name: Pipeline CI summary
+    needs: [pipeline-tests, pipeline-source-audit]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Aggregate result
+        shell: bash
+        run: |
+          set -e
+          tests_result="${{ needs.pipeline-tests.result }}"
+          audit_result="${{ needs.pipeline-source-audit.result }}"
+          {
+            echo "## Pipeline Subsystem CI"
+            echo ""
+            echo "| Job | Result |"
+            echo "|---|---|"
+            echo "| pipeline-tests | ${tests_result} |"
+            echo "| pipeline-source-audit | ${audit_result} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$tests_result" != "success" ] || [ "$audit_result" != "success" ]; then
+            echo "One or more required jobs did not succeed."
+            exit 1
+          fi
