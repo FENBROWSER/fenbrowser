@@ -1,0 +1,63 @@
+using System.Text.Json;
+using FenBrowser.Js.Test262;
+using Xunit;
+
+namespace FenBrowser.Js.Tests;
+
+public sealed class Test262GateVerifierTests
+{
+    [Fact]
+    public void Verify_DoesNotTreatUnexpectedPassAsUncategorizedFailure()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(currentPath, BuildResultJson(
+                new[]
+                {
+                    new
+                    {
+                        path = "test/example.js",
+                        status = "UnexpectedPass",
+                        category = (string?)null
+                    }
+                },
+                failures: Array.Empty<object>()));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            Assert.True(result.Passed);
+
+            using var report = JsonDocument.Parse(result.ReportJson);
+            var uncategorized = report.RootElement.GetProperty("uncategorizedFailures").GetInt32();
+            Assert.Equal(0, uncategorized);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    private static string BuildResultJson(object[] tests, object[] failures)
+    {
+        var payload = new
+        {
+            summary = new
+            {
+                total = tests.Length,
+                passed = 0,
+                unsupported = 0,
+                parserErrors = 0,
+                crashes = 0,
+                expectedFailures = 0,
+                unexpectedPasses = 1
+            },
+            tests,
+            failures
+        };
+
+        return JsonSerializer.Serialize(payload);
+    }
+}

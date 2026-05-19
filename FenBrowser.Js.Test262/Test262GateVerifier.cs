@@ -161,7 +161,8 @@ public static class Test262GateVerifier
         foreach (var t in tests.EnumerateArray())
         {
             var status = t.TryGetProperty("status", out var st) && st.ValueKind == JsonValueKind.String ? st.GetString() : null;
-            if (string.Equals(status, "Passed", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(status, "Passed", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(status, "UnexpectedPass", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
