@@ -784,6 +784,49 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_DoesNotFailMetadataRuleWhenTestsSectionMissingAndNoExpectedFailures()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            var payload = new
+            {
+                summary = new
+                {
+                    total = 1,
+                    passed = 0,
+                    unsupported = 0,
+                    parserErrors = 1,
+                    crashes = 0,
+                    expectedFailures = 0,
+                    unexpectedPasses = 0
+                },
+                failures = new object[]
+                {
+                    new
+                    {
+                        relativePath = "test/runtime.js",
+                        classification = "runtime-error",
+                        expected = false
+                    }
+                }
+            };
+
+            File.WriteAllText(currentPath, JsonSerializer.Serialize(payload));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            Assert.DoesNotContain(result.Violations, v => v.Contains("No expected failure without owner/area/reason/milestone violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_FailsWhenExpectedFailureReasonIsMissing()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
