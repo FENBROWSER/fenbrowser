@@ -926,6 +926,57 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ReportIncludesPreviousSummaryUnexpectedPassesWhenNonZero()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var previousPath = Path.Combine(tempRoot, "previous.json");
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(previousPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/prev-unexpected.js",
+                        status = "UnexpectedPass",
+                        category = (string?)null
+                    }
+                ],
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 1,
+                passed: 0));
+
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/current.js",
+                        status = "Passed",
+                        category = (string?)null
+                    }
+                ],
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 0,
+                passed: 1));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousPath);
+            using var report = JsonDocument.Parse(result.ReportJson);
+            var previousSummary = report.RootElement.GetProperty("summary").GetProperty("previous");
+            Assert.Equal(1, previousSummary.GetProperty("UnexpectedPasses").GetInt32());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_ReportIncludesPreviousSummaryExpectedFailures()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
