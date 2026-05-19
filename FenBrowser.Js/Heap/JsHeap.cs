@@ -13,6 +13,9 @@ public sealed class JsHeap
     private readonly GcStressMode _stressMode;
     private readonly List<(ObjectHandle Owner, ObjectHandle Child)> _writeBarrierEdges = new();
     private int _writeBarrierCount;
+    private int _gcCollectionCount;
+    private int _lastGcMarkedCells;
+    private int _lastGcSweptCells;
 
     public JsHeap(GcStressMode stressMode = GcStressMode.None)
     {
@@ -21,6 +24,10 @@ public sealed class JsHeap
 
     public int RootCount => _roots.Count;
     public int WriteBarrierCount => _writeBarrierCount;
+    public int GcCollectionCount => _gcCollectionCount;
+    public int LastGcMarkedCells => _lastGcMarkedCells;
+    public int LastGcSweptCells => _lastGcSweptCells;
+    public int LiveCellCount => _cells.Count(c => c is not null);
 
     public ObjectHandle AllocateObject(JsObject obj, AllocationSite site)
     {
@@ -121,6 +128,10 @@ public sealed class JsHeap
 
     public void CollectGarbage()
     {
+        _gcCollectionCount++;
+        _lastGcMarkedCells = 0;
+        _lastGcSweptCells = 0;
+
         // Clear old mark bits.
         for (var i = 0; i < _cells.Count; i++)
         {
@@ -148,6 +159,7 @@ public sealed class JsHeap
             }
 
             _cells[i] = null;
+            _lastGcSweptCells++;
             if (!_isFree[i])
             {
                 _isFree[i] = true;
@@ -200,6 +212,7 @@ public sealed class JsHeap
         }
 
         cell.Marked = true;
+        _lastGcMarkedCells++;
         cell.Payload.Trace(new MarkingTracer(this));
     }
 

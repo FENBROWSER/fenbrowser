@@ -59,7 +59,7 @@ if (args.Length >= 2 && args[0] == "--eval")
 
     if (traceGc)
     {
-        Console.Error.WriteLine($"[trace-gc] mode={gcStressMode}");
+        Console.Error.WriteLine($"[trace-gc] mode={gcStressMode} collections={heap.GcCollectionCount} marked={heap.LastGcMarkedCells} swept={heap.LastGcSweptCells} live={heap.LiveCellCount}");
     }
 
     var compiler = new BytecodeCompiler();

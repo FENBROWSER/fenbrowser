@@ -77,6 +77,10 @@ public sealed class RuntimeHeapTests
         var handle = heap.AllocateObject(new JsObject(), AllocationSite.Current());
         heap.CollectGarbage();
 
+        Assert.Equal(1, heap.GcCollectionCount);
+        Assert.Equal(0, heap.LastGcMarkedCells);
+        Assert.Equal(1, heap.LastGcSweptCells);
+        Assert.Equal(0, heap.LiveCellCount);
         Assert.Throws<JsEngineFatalException>(() => heap.GetObject(handle));
     }
 
@@ -90,6 +94,10 @@ public sealed class RuntimeHeapTests
 
         var obj = heap.GetObject(handle);
         Assert.NotNull(obj);
+        Assert.Equal(1, heap.GcCollectionCount);
+        Assert.Equal(1, heap.LastGcMarkedCells);
+        Assert.Equal(0, heap.LastGcSweptCells);
+        Assert.Equal(1, heap.LiveCellCount);
     }
 
     [Fact]
