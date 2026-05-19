@@ -243,7 +243,12 @@ public static class Test262GateVerifier
                               area.ValueKind != JsonValueKind.String ||
                               string.IsNullOrWhiteSpace(area.GetString()) ||
                               string.Equals(area.GetString(), "unknown", StringComparison.OrdinalIgnoreCase);
-            if (ownerMissing || milestoneMissing || areaMissing)
+            var reasonMissing = !failure.TryGetProperty("expectedReason", out var reason) ||
+                                reason.ValueKind != JsonValueKind.String ||
+                                string.IsNullOrWhiteSpace(reason.GetString()) ||
+                                string.Equals(reason.GetString(), "unknown", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(reason.GetString(), "tbd", StringComparison.OrdinalIgnoreCase);
+            if (ownerMissing || milestoneMissing || areaMissing || reasonMissing)
             {
                 count++;
             }
