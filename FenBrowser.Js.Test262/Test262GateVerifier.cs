@@ -239,7 +239,11 @@ public static class Test262GateVerifier
             var milestoneMissing = string.IsNullOrWhiteSpace(milestoneText) ||
                                    string.Equals(milestoneText, "unknown", StringComparison.OrdinalIgnoreCase) ||
                                    !MilestonePattern.IsMatch(milestoneText);
-            if (ownerMissing || milestoneMissing)
+            var areaMissing = !failure.TryGetProperty("expectedArea", out var area) ||
+                              area.ValueKind != JsonValueKind.String ||
+                              string.IsNullOrWhiteSpace(area.GetString()) ||
+                              string.Equals(area.GetString(), "unknown", StringComparison.OrdinalIgnoreCase);
+            if (ownerMissing || milestoneMissing || areaMissing)
             {
                 count++;
             }
