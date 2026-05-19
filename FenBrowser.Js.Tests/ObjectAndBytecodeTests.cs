@@ -510,10 +510,40 @@ public sealed class ObjectAndBytecodeTests
     public void InstanceOfReturnsFalseForNonObjectLeft()
     {
         var compiler = new BytecodeCompiler();
-        var fn = compiler.CompileScript(new SourceText("1 instanceof Object;"));
+        var fn = compiler.CompileScript(new SourceText("function C(){}; 1 instanceof C;"));
         new BytecodeVerifier().Verify(fn);
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.False(result.AsBoolean());
+    }
+
+    [Fact]
+    public void InstanceOfThrowsCatchableTypeErrorWhenRightSideIsNotObject()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let ok = false; try { true instanceof true; } catch (e) { ok = e instanceof TypeError; } ok;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void InstanceOfThrowsCatchableTypeErrorWhenRightSideIsNotCallable()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let ok = false; try { 1 instanceof {}; } catch (e) { ok = e instanceof TypeError; } ok;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void InstanceOfThrowsCatchableTypeErrorWhenPrototypeIsNotObject()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("function C(){}; C.prototype = 1; let o = new C(); let ok = false; try { o instanceof C; } catch (e) { ok = e instanceof TypeError; } ok;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
     }
 
     [Fact]

@@ -347,7 +347,11 @@ public sealed class BytecodeInterpreter
                 }
                 case OpCode.InstanceOf:
                 {
-                    frame.Registers[ins.A] = JsValue.FromBoolean(InstanceOf(frame.Registers[ins.B], frame.Registers[ins.C]));
+                    if (TryInstanceOf(frame, frame.Registers[ins.B], frame.Registers[ins.C], out var instanceOfResult))
+                    {
+                        frame.Registers[ins.A] = JsValue.FromBoolean(instanceOfResult);
+                    }
+
                     break;
                 }
                 case OpCode.Lt:
@@ -694,28 +698,34 @@ public sealed class BytecodeInterpreter
         return ToNumber(left) >= ToNumber(right);
     }
 
-    private bool InstanceOf(JsValue left, JsValue right)
+    private bool TryInstanceOf(InterpreterFrame frame, JsValue left, JsValue right, out bool result)
     {
-        if (left.Tag != JsValueTag.Object)
-        {
-            return false;
-        }
+        result = false;
 
         if (right.Tag != JsValueTag.Object)
         {
-            throw new InvalidOperationException("Right-hand side of 'instanceof' must be an object.");
+            ThrowTypeError(frame, "Right-hand side of 'instanceof' must be an object.");
+            return false;
         }
 
         var ctorObj = ResolveObject(right);
         if (ctorObj is not JsFunctionObject)
         {
-            throw new InvalidOperationException("Right-hand side of 'instanceof' is not callable.");
+            ThrowTypeError(frame, "Right-hand side of 'instanceof' is not callable.");
+            return false;
+        }
+
+        if (left.Tag != JsValueTag.Object)
+        {
+            result = false;
+            return true;
         }
 
         if (!ctorObj.TryGetProperty("prototype", h => _heap.GetObject(h), out var prototypeDescriptor) ||
             prototypeDescriptor.Value.Tag != JsValueTag.Object)
         {
-            throw new InvalidOperationException("Function has non-object prototype in 'instanceof'.");
+            ThrowTypeError(frame, "Function has non-object prototype in 'instanceof'.");
+            return false;
         }
 
         var targetPrototype = prototypeDescriptor.Value.AsObjectHandle();
@@ -724,13 +734,15 @@ public sealed class BytecodeInterpreter
         {
             if (proto.Equals(targetPrototype))
             {
+                result = true;
                 return true;
             }
 
             currentObj = _heap.GetObject(proto);
         }
 
-        return false;
+        result = false;
+        return true;
     }
 
     private string TypeOfValue(JsValue value)
