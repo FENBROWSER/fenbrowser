@@ -409,6 +409,42 @@ public sealed class Test262ExpectationsTests
     }
 
     [Fact]
+    public void Load_AllowsDecimalMilestoneFormat()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var filePath = Path.Combine(tempRoot, "decimal-milestone.json");
+
+        try
+        {
+            File.WriteAllText(filePath, """
+            {
+              "metadata": {
+                "owner": "js",
+                "area": "runtime"
+              },
+              "expectations": [
+                {
+                  "path": "test/language/foo.js",
+                  "status": "RuntimeError",
+                  "reason": "known runtime limitation",
+                  "expiresAtMilestone": "M2.1"
+                }
+              ]
+            }
+            """);
+
+            var loaded = Test262Expectations.Load(filePath);
+            Assert.Single(loaded.Entries);
+            Assert.Equal("M2.1", loaded.Entries[0].ExpiresAtMilestone);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Load_Directory_ThrowsWhenOwnerMetadataConflicts()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
