@@ -329,6 +329,41 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ReportViolationsPreserveVerifierRuleOrder()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests: Array.Empty<object>(),
+                failures:
+                [
+                    new
+                    {
+                        relativePath = "test/crash.js",
+                        classification = "crash",
+                        expected = false
+                    }
+                ],
+                crashes: 1));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            using var report = JsonDocument.Parse(result.ReportJson);
+            var violations = report.RootElement.GetProperty("violations");
+            Assert.True(violations.GetArrayLength() >= 2);
+            Assert.Equal("No crashes violated: crashes=1.", violations[0].GetString());
+            Assert.Equal("No unknown crashes violated: crashes=1.", violations[1].GetString());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_ReportNewFailuresArrayMatchesExpectedDeterministicOrder()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
