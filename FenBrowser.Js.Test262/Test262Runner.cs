@@ -183,11 +183,18 @@ public sealed class Test262Runner
         var parserErrors = 0;
         var crashes = 0;
         var timedOut = 0;
+        var harnessUnsupported = 0;
         var expectedFailures = 0;
         var unexpectedPasses = 0;
         var failures = new List<object>();
         var unexpectedPassesList = new List<object>();
         var tests = new List<object>(subset.Count);
+        var supportedHarnessIncludes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "propertyHelper.js",
+            "sta.js",
+            "compareArray.js"
+        };
 
         foreach (var file in subset)
         {
@@ -197,6 +204,38 @@ public sealed class Test262Runner
             var expectsSyntaxError = ExpectsSyntaxErrorParseFailure(frontmatter);
             var parserInput = PrepareParserInput(sourceText, frontmatter);
             var parseAsModule = frontmatter.Flags.Any(f => string.Equals(f, "module", StringComparison.OrdinalIgnoreCase));
+
+            var unsupportedHarnessInclude = frontmatter.Includes.FirstOrDefault(include => !supportedHarnessIncludes.Contains(include));
+            if (unsupportedHarnessInclude is not null)
+            {
+                harnessUnsupported++;
+                failures.Add(new
+                {
+                    path = file,
+                    relativePath,
+                    classification = "harness-unsupported",
+                    include = unsupportedHarnessInclude,
+                    message = $"Harness include '{unsupportedHarnessInclude}' is not supported in parser-subset mode."
+                });
+
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "HarnessUnsupported",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = "host-not-applicable",
+                    message = $"Harness include '{unsupportedHarnessInclude}' is not supported in parser-subset mode."
+                });
+                continue;
+            }
 
             var unsupportedFeature = frontmatter.Features.FirstOrDefault(feature => supportedFeatures is not null && !supportedFeatures.Contains(feature));
             if (unsupportedFeature is not null)
@@ -521,6 +560,7 @@ public sealed class Test262Runner
             parserErrors,
             crashes,
             timedOut,
+            harnessUnsupported,
             expectedFailures,
             unexpectedPasses,
             failures,

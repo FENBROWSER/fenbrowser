@@ -33,6 +33,7 @@ public static class Test262ResultWriter
         int parserErrors,
         int crashes,
         int timedOut,
+        int harnessUnsupported,
         int expectedFailures,
         int unexpectedPasses,
         IReadOnlyList<object> failures,
@@ -59,7 +60,7 @@ public static class Test262ResultWriter
             unsupported,
             expectedFailures,
             unexpectedPasses,
-            harnessUnsupported = 0,
+            harnessUnsupported,
             categories = new
             {
                 parserMissing = unsupported,
@@ -87,6 +88,7 @@ public static class Test262ResultWriter
                 parserErrors,
                 crashes,
                 timedOut,
+                harnessUnsupported,
                 expectedFailures,
                 unexpectedPasses
             },
