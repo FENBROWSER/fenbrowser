@@ -204,6 +204,25 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesDecimalFractionAndExponentNumericLiterals()
+    {
+        var program = JsParser.ParseScript(new SourceText("50.999999; 1e3; 1E-2;"));
+        Assert.Equal(3, program.Body.Count);
+
+        var s1 = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var n1 = Assert.IsType<NumericLiteralExpressionNode>(s1.Expression);
+        Assert.Equal(50.999999, n1.Value);
+
+        var s2 = Assert.IsType<ExpressionStatementNode>(program.Body[1]);
+        var n2 = Assert.IsType<NumericLiteralExpressionNode>(s2.Expression);
+        Assert.Equal(1000, n2.Value);
+
+        var s3 = Assert.IsType<ExpressionStatementNode>(program.Body[2]);
+        var n3 = Assert.IsType<NumericLiteralExpressionNode>(s3.Expression);
+        Assert.Equal(0.01, n3.Value);
+    }
+
+    [Fact]
     public void ParsesRegexLiteralExpression()
     {
         var program = JsParser.ParseScript(new SourceText("let r = /abc/i; r;"));

@@ -83,11 +83,13 @@ public sealed class JsLexer
             {
                 _index++;
                 _column++;
+                var isNonDecimalRadix = false;
                 if (ch == '0' && _index < _source.Length)
                 {
                     var radix = _source[_index];
                     if (radix is 'x' or 'X')
                     {
+                        isNonDecimalRadix = true;
                         _index++;
                         _column++;
                         while (_index < _source.Length && IsHexDigit(_source[_index]))
@@ -98,6 +100,7 @@ public sealed class JsLexer
                     }
                     else if (radix is 'o' or 'O')
                     {
+                        isNonDecimalRadix = true;
                         _index++;
                         _column++;
                         while (_index < _source.Length && IsOctDigit(_source[_index]))
@@ -108,6 +111,7 @@ public sealed class JsLexer
                     }
                     else if (radix is 'b' or 'B')
                     {
+                        isNonDecimalRadix = true;
                         _index++;
                         _column++;
                         while (_index < _source.Length && IsBinDigit(_source[_index]))
@@ -131,6 +135,43 @@ public sealed class JsLexer
                     {
                         _index++;
                         _column++;
+                    }
+                }
+
+                if (!isNonDecimalRadix)
+                {
+                    if (_index < _source.Length && _source[_index] == '.' && _index + 1 < _source.Length && char.IsDigit(_source[_index + 1]))
+                    {
+                        _index++;
+                        _column++;
+                        while (_index < _source.Length && char.IsDigit(_source[_index]))
+                        {
+                            _index++;
+                            _column++;
+                        }
+                    }
+
+                    if (_index < _source.Length && (_source[_index] == 'e' || _source[_index] == 'E'))
+                    {
+                        var expStart = _index;
+                        var expIndex = _index + 1;
+                        if (expIndex < _source.Length && (_source[expIndex] == '+' || _source[expIndex] == '-'))
+                        {
+                            expIndex++;
+                        }
+
+                        var hasExponentDigits = false;
+                        while (expIndex < _source.Length && char.IsDigit(_source[expIndex]))
+                        {
+                            hasExponentDigits = true;
+                            expIndex++;
+                        }
+
+                        if (hasExponentDigits)
+                        {
+                            _column += expIndex - expStart;
+                            _index = expIndex;
+                        }
                     }
                 }
 
