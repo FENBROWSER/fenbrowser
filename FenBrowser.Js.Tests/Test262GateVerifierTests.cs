@@ -138,7 +138,7 @@ public sealed class Test262GateVerifierTests
 
             var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
             Assert.False(result.Passed);
-            Assert.Contains(result.Violations, v => v.Contains("No expected failure without owner/milestone violated", StringComparison.Ordinal));
+            Assert.Contains(result.Violations, v => v.Contains("No expected failure without owner/area/milestone violated", StringComparison.Ordinal));
         }
         finally
         {
@@ -179,7 +179,7 @@ public sealed class Test262GateVerifierTests
 
             var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
             Assert.False(result.Passed);
-            Assert.Contains(result.Violations, v => v.Contains("No expected failure without owner/milestone violated", StringComparison.Ordinal));
+            Assert.Contains(result.Violations, v => v.Contains("No expected failure without owner/area/milestone violated", StringComparison.Ordinal));
         }
         finally
         {
@@ -220,7 +220,7 @@ public sealed class Test262GateVerifierTests
 
             var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
             Assert.False(result.Passed);
-            Assert.Contains(result.Violations, v => v.Contains("No expected failure without owner/milestone violated", StringComparison.Ordinal));
+            Assert.Contains(result.Violations, v => v.Contains("No expected failure without owner/area/milestone violated", StringComparison.Ordinal));
         }
         finally
         {
@@ -261,7 +261,7 @@ public sealed class Test262GateVerifierTests
 
             var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
             Assert.False(result.Passed);
-            Assert.Contains(result.Violations, v => v.Contains("No expected failure without owner/milestone violated", StringComparison.Ordinal));
+            Assert.Contains(result.Violations, v => v.Contains("No expected failure without owner/area/milestone violated", StringComparison.Ordinal));
         }
         finally
         {
@@ -302,7 +302,7 @@ public sealed class Test262GateVerifierTests
 
             var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
             Assert.False(result.Passed);
-            Assert.Contains(result.Violations, v => v.Contains("No expected failure without owner/milestone violated", StringComparison.Ordinal));
+            Assert.Contains(result.Violations, v => v.Contains("No expected failure without owner/area/milestone violated", StringComparison.Ordinal));
         }
         finally
         {
@@ -344,7 +344,7 @@ public sealed class Test262GateVerifierTests
 
             var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
             Assert.False(result.Passed);
-            Assert.Contains(result.Violations, v => v.Contains("No expected failure without owner/milestone violated", StringComparison.Ordinal));
+            Assert.Contains(result.Violations, v => v.Contains("No expected failure without owner/area/milestone violated", StringComparison.Ordinal));
         }
         finally
         {
@@ -385,7 +385,48 @@ public sealed class Test262GateVerifierTests
                 ]));
 
             var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
-            Assert.DoesNotContain(result.Violations, v => v.Contains("No expected failure without owner/milestone violated", StringComparison.Ordinal));
+            Assert.DoesNotContain(result.Violations, v => v.Contains("No expected failure without owner/area/milestone violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Verify_MetadataViolationMessageMentionsOwnerAreaMilestone()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/runtime.js",
+                        status = "ExpectedFailure",
+                        category = "runtime-missing"
+                    }
+                ],
+                failures:
+                [
+                    new
+                    {
+                        relativePath = "test/runtime.js",
+                        classification = "runtime-error",
+                        expected = true,
+                        expectedOwner = "unknown",
+                        expectedArea = "unknown",
+                        expiresAtMilestone = "unknown"
+                    }
+                ]));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            Assert.Contains(result.Violations, v => string.Equals(v, "No expected failure without owner/area/milestone violated: entries=1.", StringComparison.Ordinal));
         }
         finally
         {
