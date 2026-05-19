@@ -24,11 +24,28 @@ public sealed class HeapVerifier
             {
                 throw new JsEngineFatalException($"Cell kind/payload mismatch at {i}.");
             }
+
+            cell.Payload.Trace(new ValidatingTracer(heap));
         }
 
         foreach (var root in heap.GetRootsSnapshotForTest())
         {
             heap.Validate(root);
+        }
+    }
+
+    private sealed class ValidatingTracer : IHeapTracer
+    {
+        private readonly JsHeap _heap;
+
+        public ValidatingTracer(JsHeap heap)
+        {
+            _heap = heap;
+        }
+
+        public void Trace(ObjectHandle handle)
+        {
+            _ = _heap.Validate(handle);
         }
     }
 }

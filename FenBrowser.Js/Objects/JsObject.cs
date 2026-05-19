@@ -61,5 +61,13 @@ public class JsObject : ITraceable
         {
             tracer.Trace(proto);
         }
+
+        foreach (var descriptor in _properties.Values)
+        {
+            if (descriptor.Value.Tag == JsValueTag.Object)
+            {
+                tracer.Trace(descriptor.Value.AsObjectHandle());
+            }
+        }
     }
 }

@@ -93,6 +93,22 @@ public sealed class RuntimeHeapTests
     }
 
     [Fact]
+    public void HeapVerifierRejectsStaleTracedPropertyHandle()
+    {
+        var heap = new JsHeap();
+        var verifier = new HeapVerifier();
+        var child = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        var owner = new JsObject();
+        _ = owner.SetProperty("child", JsValue.FromObject(child));
+        _ = heap.AllocateObject(owner, AllocationSite.Current());
+
+        verifier.Verify(heap);
+        heap.FreeForTest(child);
+
+        Assert.Throws<JsEngineFatalException>(() => verifier.Verify(heap));
+    }
+
+    [Fact]
     public void IsolateAllocatesObjectsInsideHandleScope()
     {
         var isolate = new JsIsolate(new JsHeap());
