@@ -1173,6 +1173,13 @@ public sealed class JsParser
         var elements = new List<ExpressionNode>();
         while (!Is(TokenKind.EndOfFile) && !IsPunctuator("]"))
         {
+            if (IsPunctuator(","))
+            {
+                var comma = Advance();
+                elements.Add(new IdentifierExpressionNode("undefined", comma.Span));
+                continue;
+            }
+
             if (IsPunctuator("..."))
             {
                 var spread = Advance();

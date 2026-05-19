@@ -231,6 +231,17 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesArrayLiteralWithElisionAsUndefinedSubset()
+    {
+        var program = JsParser.ParseScript(new SourceText("let arr = [0, 1, , 3];"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var arr = Assert.IsType<ArrayLiteralExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Equal(4, arr.Elements.Count);
+        var hole = Assert.IsType<IdentifierExpressionNode>(arr.Elements[2]);
+        Assert.Equal("undefined", hole.Name);
+    }
+
+    [Fact]
     public void ParsesUnaryAndConditionalExpressions()
     {
         var program = JsParser.ParseScript(new SourceText("let x = !0 ? -3 : 5; x;"));
