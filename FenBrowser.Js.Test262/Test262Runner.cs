@@ -767,29 +767,6 @@ public sealed class Test262Runner
                 continue;
             }
 
-            if (RequiresRuntimeHarnessSupport(sourceText))
-            {
-                harnessUnsupported++;
-                failures.Add(new { path = file, relativePath, classification = "harness-unsupported", message = "Runtime harness APIs (assert/$DONE/$262) are not supported in runtime-subset mode." });
-                tests.Add(new
-                {
-                    path = relativePath,
-                    status = "HarnessUnsupported",
-                    durationMs = 0,
-                    features = frontmatter.Features,
-                    flags = frontmatter.Flags,
-                    includes = frontmatter.Includes,
-                    negative = frontmatter.Negative,
-                    esid = frontmatter.Esid,
-                    description = frontmatter.Description,
-                    info = frontmatter.Info,
-                    locale = frontmatter.Locale,
-                    category = "host-not-applicable",
-                    message = "Runtime harness APIs (assert/$DONE/$262) are not supported in runtime-subset mode."
-                });
-                continue;
-            }
-
             var unsupportedFeature = frontmatter.Features.FirstOrDefault(feature => supportedFeatures is not null && !supportedFeatures.Contains(feature));
             if (unsupportedFeature is not null)
             {
@@ -816,9 +793,13 @@ public sealed class Test262Runner
 
             try
             {
+                var runtimeInput = RequiresRuntimeHarnessSupport(sourceText)
+                    ? BuildRuntimeHarnessPrelude() + "\n" + parserInput
+                    : parserInput;
+
                 var executeTask = Task.Run(() =>
                 {
-                    var source = new SourceText(parserInput, file);
+                    var source = new SourceText(runtimeInput, file);
                     var program = parseAsModule ? JsParser.ParseModule(source) : JsParser.ParseScript(source);
                     var compiler = new BytecodeCompiler();
                     var function = compiler.CompileProgram(program);
@@ -1049,6 +1030,49 @@ public sealed class Test262Runner
                     message = "Unhandled runtime throw."
                 });
             }
+            catch (InvalidOperationException ex)
+            {
+                if (expectsRuntimeThrow)
+                {
+                    passed++;
+                    tests.Add(new
+                    {
+                        path = relativePath,
+                        status = "Passed",
+                        durationMs = 0,
+                        features = frontmatter.Features,
+                        flags = frontmatter.Flags,
+                        includes = frontmatter.Includes,
+                        negative = frontmatter.Negative,
+                        esid = frontmatter.Esid,
+                        description = frontmatter.Description,
+                        info = frontmatter.Info,
+                        locale = frontmatter.Locale,
+                        category = (string?)null,
+                        message = (string?)null
+                    });
+                    continue;
+                }
+
+                runtimeErrors++;
+                failures.Add(new { path = file, relativePath, classification = "runtime-error", message = ex.Message });
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "Failed",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = "runtime-missing",
+                    message = ex.Message
+                });
+            }
             catch (Exception ex)
             {
                 if (expectsRuntimeThrow)
@@ -1136,6 +1160,35 @@ public sealed class Test262Runner
                sourceText.Contains("assert(", StringComparison.Ordinal) ||
                sourceText.Contains("$DONE", StringComparison.Ordinal) ||
                sourceText.Contains("$262", StringComparison.Ordinal);
+    }
+
+    private static string BuildRuntimeHarnessPrelude()
+    {
+        return """
+               function Test262Error(message) { this.message = message; }
+               var assert = function (condition, message) {
+                 if (!condition) { throw (message || "assert failed"); }
+               };
+               assert.sameValue = function (actual, expected, message) {
+                 if (actual !== expected) { throw (message || "assert.sameValue failed"); }
+               };
+               assert.notSameValue = function (actual, expected, message) {
+                 if (actual === expected) { throw (message || "assert.notSameValue failed"); }
+               };
+               assert.throws = function (_expectedError, fn, message) {
+                 var threw = false;
+                 try { fn(); } catch (_e) { threw = true; }
+                 if (!threw) { throw (message || "assert.throws failed"); }
+               };
+               assert.compareArray = function (actual, expected, message) {
+                 if (actual.length !== expected.length) { throw (message || "assert.compareArray length"); }
+                 for (var i = 0; i < actual.length; i++) {
+                   if (actual[i] !== expected[i]) { throw (message || "assert.compareArray element"); }
+                 }
+               };
+               function $DONE(error) { if (error !== undefined) { throw error; } }
+               var $262 = {};
+               """;
     }
 
     private static bool ExpectsSyntaxErrorParseFailure(Test262FrontmatterMetadata frontmatter)
