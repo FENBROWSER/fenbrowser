@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Collections.Concurrent;
 
 namespace FenBrowser.Js.Test262;
 
@@ -172,10 +173,15 @@ public sealed record Test262ExpectationEntry(
                BuildRegex(PathPattern).IsMatch(relativePath);
     }
 
+    private static readonly ConcurrentDictionary<string, Regex> RegexCache = new(StringComparer.Ordinal);
+
     private static Regex BuildRegex(string glob)
     {
         var normalized = glob.Replace('\\', '/');
-        var pattern = "^" + Regex.Escape(normalized).Replace("\\*", ".*") + "$";
-        return new Regex(pattern, RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        return RegexCache.GetOrAdd(normalized, static key =>
+        {
+            var pattern = "^" + Regex.Escape(key).Replace("\\*", ".*") + "$";
+            return new Regex(pattern, RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        });
     }
 }

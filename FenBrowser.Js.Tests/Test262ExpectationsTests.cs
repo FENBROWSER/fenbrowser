@@ -129,4 +129,20 @@ public sealed class Test262ExpectationsTests
             Directory.Delete(tempRoot, recursive: true);
         }
     }
+
+    [Fact]
+    public void Entry_Matches_WildcardAndCaseInsensitivePath()
+    {
+        var entry = new Test262ExpectationEntry(
+            PathPattern: "test/language/*/foo.js",
+            Status: "RuntimeError",
+            Reason: string.Empty,
+            ExpiresAtMilestone: "M3",
+            Owner: "js",
+            Area: "runtime");
+
+        Assert.True(entry.Matches("test/language/expressions/Foo.js", "runtimeerror"));
+        Assert.False(entry.Matches("test/language/expressions/bar.js", "runtimeerror"));
+        Assert.False(entry.Matches("test/language/expressions/Foo.js", "ParserError"));
+    }
 }
