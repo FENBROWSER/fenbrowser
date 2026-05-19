@@ -459,12 +459,41 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
-    public void InOperatorThrowsWhenRightSideIsNotObject()
+    public void InOperatorThrowsTypeErrorWhenRightSideIsNotObject()
+    {
+        var cases = new[]
+        {
+            "\"a\" in 1;",
+            "\"length\" in \"abc\";",
+            "\"a\" in true;",
+            "\"a\" in null;",
+            "\"a\" in undefined;"
+        };
+
+        var compiler = new BytecodeCompiler();
+        foreach (var source in cases)
+        {
+            var fn = compiler.CompileScript(new SourceText(source));
+            new BytecodeVerifier().Verify(fn);
+
+            var heap = new JsHeap();
+            var ex = Assert.Throws<JsThrownException>(() => new BytecodeInterpreter(heap).Execute(fn));
+            Assert.Equal(JsValueTag.Object, ex.Value.Tag);
+
+            var error = heap.GetObject(ex.Value.AsObjectHandle());
+            Assert.True(error.TryGetProperty("name", h => heap.GetObject(h), out var name));
+            Assert.Equal("TypeError", name.Value.AsString());
+        }
+    }
+
+    [Fact]
+    public void InOperatorThrowsCatchableTypeErrorForPrimitiveRightSide()
     {
         var compiler = new BytecodeCompiler();
-        var fn = compiler.CompileScript(new SourceText("\"a\" in 1;"));
+        var fn = compiler.CompileScript(new SourceText("let ok = false; try { \"length\" in \"abc\"; } catch (e) { ok = e instanceof TypeError; } ok;"));
         new BytecodeVerifier().Verify(fn);
-        Assert.Throws<InvalidOperationException>(() => new BytecodeInterpreter().Execute(fn));
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
     }
 
     [Fact]

@@ -8,6 +8,8 @@ namespace FenBrowser.Js.Interpreter;
 public sealed class BytecodeInterpreter
 {
     private readonly JsHeap _heap;
+    private ObjectHandle? _typeErrorConstructorHandle;
+    private ObjectHandle? _typeErrorPrototypeHandle;
 
     public BytecodeInterpreter(JsHeap? heap = null)
     {
@@ -28,6 +30,7 @@ public sealed class BytecodeInterpreter
         JsValue thisValue)
     {
         var frame = new InterpreterFrame(function, thisValue);
+        InitializeBuiltinGlobals(function, frame);
         if (capturedVariables is not null)
         {
             foreach (var kv in capturedVariables)
@@ -88,17 +91,7 @@ public sealed class BytecodeInterpreter
 
                     break;
                 case OpCode.Throw:
-                    if (frame.ExceptionHandlers.Count > 0)
-                    {
-                        var handlerIp = frame.ExceptionHandlers.Pop();
-                        frame.Registers[0] = frame.Registers[ins.A];
-                        frame.InstructionPointer = handlerIp;
-                    }
-                    else
-                    {
-                        throw new JsThrownException(frame.Registers[ins.A]);
-                    }
-
+                    ThrowOrHandle(frame, frame.Registers[ins.A]);
                     break;
                 case OpCode.NewObject:
                 {
@@ -343,7 +336,8 @@ public sealed class BytecodeInterpreter
                     var rhs = frame.Registers[ins.C];
                     if (rhs.Tag != JsValueTag.Object)
                     {
-                        throw new InvalidOperationException("Right-hand side of 'in' must be an object.");
+                        ThrowTypeError(frame, "Right-hand side of 'in' must be an object.");
+                        break;
                     }
 
                     var obj = ResolveObject(rhs);
@@ -382,6 +376,82 @@ public sealed class BytecodeInterpreter
         }
 
         return JsValue.Undefined;
+    }
+
+    private void InitializeBuiltinGlobals(BytecodeFunction function, InterpreterFrame frame)
+    {
+        if (function.VariableSlots.TryGetValue("TypeError", out var typeErrorSlot))
+        {
+            frame.Variables[typeErrorSlot] = JsValue.FromObject(EnsureTypeErrorConstructor());
+        }
+    }
+
+    private void ThrowTypeError(InterpreterFrame frame, string message)
+    {
+        ThrowOrHandle(frame, CreateTypeError(message));
+    }
+
+    private void ThrowOrHandle(InterpreterFrame frame, JsValue value)
+    {
+        if (frame.ExceptionHandlers.Count > 0)
+        {
+            var handlerIp = frame.ExceptionHandlers.Pop();
+            frame.Registers[0] = value;
+            frame.InstructionPointer = handlerIp;
+            return;
+        }
+
+        throw new JsThrownException(value);
+    }
+
+    private JsValue CreateTypeError(string message)
+    {
+        var error = new JsObject();
+        error.SetPrototype(EnsureTypeErrorPrototype());
+        _ = error.SetProperty("name", JsValue.FromString("TypeError"));
+        _ = error.SetProperty("message", JsValue.FromString(message));
+        return JsValue.FromObject(_heap.AllocateObject(error, AllocationSite.Current()));
+    }
+
+    private ObjectHandle EnsureTypeErrorPrototype()
+    {
+        _ = EnsureTypeErrorConstructor();
+        return _typeErrorPrototypeHandle!.Value;
+    }
+
+    private ObjectHandle EnsureTypeErrorConstructor()
+    {
+        if (_typeErrorConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototypeHandle = _heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new JsFunctionObject(CreateBuiltinFunction("TypeError"));
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        _typeErrorPrototypeHandle = prototypeHandle;
+        _typeErrorConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private static BytecodeFunction CreateBuiltinFunction(string name)
+    {
+        return new BytecodeFunction
+        {
+            Name = name,
+            Instructions = new[] { new Instruction(OpCode.Return, 0, 0, 0) },
+            Constants = Array.Empty<JsValue>(),
+            VariableSlots = new Dictionary<string, int>(StringComparer.Ordinal),
+            PropertyNames = Array.Empty<string>(),
+            ParameterNames = Array.Empty<string>(),
+            NestedFunctions = Array.Empty<BytecodeFunction>(),
+            RegisterCount = 1
+        };
     }
 
     private static bool IsTruthy(JsValue value)
