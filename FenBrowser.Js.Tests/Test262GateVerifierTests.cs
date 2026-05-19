@@ -1771,6 +1771,55 @@ public sealed class Test262GateVerifierTests
         }
     }
 
+    [Fact]
+    public void Verify_DoesNotTreatUnexpectedPassAsNewFailure()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var previousPath = Path.Combine(tempRoot, "previous.json");
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(previousPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/example.js",
+                        status = "Passed",
+                        category = (string?)null
+                    }
+                ],
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 0,
+                passed: 1));
+
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/example.js",
+                        status = "UnexpectedPass",
+                        category = (string?)null
+                    }
+                ],
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 1,
+                passed: 0));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousPath);
+            Assert.DoesNotContain(result.Violations, v => v.Contains("No new failure in enabled subset violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
     private static string BuildResultJson(object[] tests, object[] failures, int crashes = 0, int unexpectedPasses = 0, int? passed = null)
     {
         var payload = new
