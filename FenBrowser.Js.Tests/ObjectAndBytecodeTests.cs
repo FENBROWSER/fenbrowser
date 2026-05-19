@@ -482,6 +482,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void LogicalAndReturnsOriginalOperandValue()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("0 && 5;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(0, result.AsNumber());
+    }
+
+    [Fact]
+    public void LogicalOrReturnsOriginalOperandValue()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("\"x\" || 7;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal("x", result.AsString());
+    }
+
+    [Fact]
     public void InterpreterInvokesWriteBarrierForObjectStores()
     {
         var compiler = new BytecodeCompiler();

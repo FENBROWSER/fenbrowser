@@ -286,10 +286,10 @@ public sealed class BytecodeInterpreter
                     frame.Registers[ins.A] = JsValue.FromBoolean(IsGreaterThanOrEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
                     break;
                 case OpCode.And:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(IsTruthy(frame.Registers[ins.B]) && IsTruthy(frame.Registers[ins.C]));
+                    frame.Registers[ins.A] = IsTruthy(frame.Registers[ins.B]) ? frame.Registers[ins.C] : frame.Registers[ins.B];
                     break;
                 case OpCode.Or:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(IsTruthy(frame.Registers[ins.B]) || IsTruthy(frame.Registers[ins.C]));
+                    frame.Registers[ins.A] = IsTruthy(frame.Registers[ins.B]) ? frame.Registers[ins.B] : frame.Registers[ins.C];
                     break;
                 case OpCode.Return:
                     return frame.Registers[ins.A];
