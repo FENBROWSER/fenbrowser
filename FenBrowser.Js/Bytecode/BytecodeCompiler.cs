@@ -302,6 +302,13 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
                 return reg;
             }
+            case StringLiteralExpressionNode str:
+            {
+                var reg = AllocateRegister();
+                var ci = AddConstant(JsValue.FromString(str.Value));
+                _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
+                return reg;
+            }
             case IdentifierExpressionNode id:
             {
                 var reg = AllocateRegister();
@@ -391,6 +398,7 @@ public sealed class BytecodeCompiler
                 {
                     "!" => OpCode.Not,
                     "-" => OpCode.Neg,
+                    "typeof" => OpCode.TypeOf,
                     _ => throw new InvalidOperationException($"Unsupported unary operator {unary.Operator}.")
                 };
                 _instructions.Add(new Instruction(op, dest, operandReg, 0));

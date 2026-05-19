@@ -224,6 +224,9 @@ public sealed class BytecodeInterpreter
                 case OpCode.Neg:
                     frame.Registers[ins.A] = JsValue.FromNumber(-frame.Registers[ins.B].AsNumber());
                     break;
+                case OpCode.TypeOf:
+                    frame.Registers[ins.A] = JsValue.FromString(TypeOf(frame.Registers[ins.B]));
+                    break;
                 case OpCode.Add:
                     frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber() + frame.Registers[ins.C].AsNumber());
                     break;
@@ -294,6 +297,7 @@ public sealed class BytecodeInterpreter
                 JsValueTag.Boolean => left.AsBoolean() == right.AsBoolean(),
                 JsValueTag.Int32 => left.AsInt32() == right.AsInt32(),
                 JsValueTag.Number => left.AsNumber() == right.AsNumber(),
+                JsValueTag.String => left.AsString() == right.AsString(),
                 JsValueTag.Object => left.AsObjectHandle().Equals(right.AsObjectHandle()),
                 _ => false
             };
@@ -334,10 +338,29 @@ public sealed class BytecodeInterpreter
     {
         return value.Tag switch
         {
+            JsValueTag.String => value.AsString(),
             JsValueTag.Number => value.AsNumber().ToString("R", System.Globalization.CultureInfo.InvariantCulture),
             JsValueTag.Int32 => value.AsInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
             JsValueTag.Boolean => value.AsBoolean() ? "true" : "false",
             _ => value.Tag.ToString()
+        };
+    }
+
+    private static string TypeOf(JsValue value)
+    {
+        return value.Tag switch
+        {
+            JsValueTag.Undefined => "undefined",
+            JsValueTag.Null => "object",
+            JsValueTag.Boolean => "boolean",
+            JsValueTag.Int32 => "number",
+            JsValueTag.Number => "number",
+            JsValueTag.String => "string",
+            JsValueTag.Symbol => "symbol",
+            JsValueTag.BigInt => "bigint",
+            JsValueTag.Object => "object",
+            JsValueTag.HostObject => "object",
+            _ => "undefined"
         };
     }
 

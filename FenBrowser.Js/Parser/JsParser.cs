@@ -390,6 +390,13 @@ public sealed class JsParser
             return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
         }
 
+        if (token.Kind == TokenKind.Keyword && token.Text == "typeof")
+        {
+            var op = Advance();
+            var operand = ParseExpression(40);
+            return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
+        }
+
         if (token.Kind == TokenKind.Keyword && token.Text == "function")
         {
             return ParseFunctionExpression();

@@ -167,6 +167,7 @@ public sealed class BytecodeVerifier
                 break;
             case OpCode.Not:
             case OpCode.Neg:
+            case OpCode.TypeOf:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 break;

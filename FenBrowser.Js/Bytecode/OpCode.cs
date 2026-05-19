@@ -26,6 +26,7 @@ public enum OpCode : byte
     ConstructN,
     Not,
     Neg,
+    TypeOf,
     Eq,
     Neq,
     Lt,

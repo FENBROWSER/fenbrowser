@@ -2,6 +2,10 @@ namespace FenBrowser.Js.Runtime;
 
 public readonly struct JsValue
 {
+    private static long _nextStringId;
+    private static readonly Dictionary<long, string> StringPool = new();
+    private static readonly Lock StringPoolLock = new();
+
     public readonly JsValueTag Tag;
     private readonly long _payload;
     private readonly double _number;
@@ -27,6 +31,17 @@ public readonly struct JsValue
 
     public static JsValue FromHostObject(HostObjectHandle handle) => new(JsValueTag.HostObject, handle.ToInt64(), 0);
 
+    public static JsValue FromString(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        lock (StringPoolLock)
+        {
+            var id = ++_nextStringId;
+            StringPool[id] = value;
+            return new JsValue(JsValueTag.String, id, 0);
+        }
+    }
+
     public bool AsBoolean() => Tag == JsValueTag.Boolean && _payload != 0;
 
     public int AsInt32() => checked((int)_payload);
@@ -36,4 +51,17 @@ public readonly struct JsValue
     public ObjectHandle AsObjectHandle() => ObjectHandle.FromInt64(_payload);
 
     public HostObjectHandle AsHostObjectHandle(int realmId = 0, int documentEpoch = 0) => HostObjectHandle.FromInt64(_payload, realmId, documentEpoch);
+
+    public string AsString()
+    {
+        if (Tag != JsValueTag.String)
+        {
+            throw new InvalidOperationException($"Value is not a string (tag={Tag}).");
+        }
+
+        lock (StringPoolLock)
+        {
+            return StringPool.TryGetValue(_payload, out var value) ? value : string.Empty;
+        }
+    }
 }

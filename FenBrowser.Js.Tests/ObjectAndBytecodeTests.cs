@@ -279,4 +279,14 @@ public sealed class ObjectAndBytecodeTests
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.Equal(JsValueTag.Object, result.Tag);
     }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleTypeofUnary()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("typeof 1 == \"number\";"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
 }

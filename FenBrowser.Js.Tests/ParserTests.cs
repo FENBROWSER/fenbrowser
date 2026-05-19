@@ -166,4 +166,13 @@ public sealed class ParserTests
         var ne = Assert.IsType<NewExpressionNode>(decl.Declarators[0].Initializer);
         Assert.Equal(2, ne.Arguments.Count);
     }
+
+    [Fact]
+    public void ParsesTypeofUnaryExpression()
+    {
+        var program = JsParser.ParseScript(new SourceText("let t = typeof 1; t;"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var unary = Assert.IsType<UnaryExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Equal("typeof", unary.Operator);
+    }
 }

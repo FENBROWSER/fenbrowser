@@ -409,6 +409,7 @@ static string FormatValue(JsValue value)
         JsValueTag.Boolean => value.AsBoolean() ? "true" : "false",
         JsValueTag.Int32 => value.AsInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
         JsValueTag.Number => value.AsNumber().ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+        JsValueTag.String => value.AsString(),
         JsValueTag.Object => "[object]",
         JsValueTag.HostObject => "[host-object]",
         _ => value.Tag.ToString()
