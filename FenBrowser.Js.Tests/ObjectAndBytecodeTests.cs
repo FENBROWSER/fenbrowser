@@ -497,6 +497,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void InOperatorCoercesPrimitivePropertyKeysToSpecStrings()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = {}; o.Infinity = 1; o.undefined = 1; o[\"null\"] = 1; (Infinity in o) && (undefined in o) && (null in o);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void GlobalInfinityAndNaNAreSeededWhenReferenced()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("(Infinity > 1) && (NaN != NaN);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void InstanceOfReturnsTrueForConstructedInstance()
     {
         var compiler = new BytecodeCompiler();

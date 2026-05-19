@@ -386,6 +386,21 @@ public sealed class BytecodeInterpreter
 
     private void InitializeBuiltinGlobals(BytecodeFunction function, InterpreterFrame frame)
     {
+        if (function.VariableSlots.TryGetValue("Infinity", out var infinitySlot))
+        {
+            frame.Variables[infinitySlot] = JsValue.FromNumber(double.PositiveInfinity);
+        }
+
+        if (function.VariableSlots.TryGetValue("NaN", out var nanSlot))
+        {
+            frame.Variables[nanSlot] = JsValue.FromNumber(double.NaN);
+        }
+
+        if (function.VariableSlots.TryGetValue("undefined", out var undefinedSlot))
+        {
+            frame.Variables[undefinedSlot] = JsValue.Undefined;
+        }
+
         if (function.VariableSlots.TryGetValue("Object", out var objectSlot))
         {
             frame.Variables[objectSlot] = JsValue.FromObject(EnsureObjectConstructor());
@@ -650,6 +665,8 @@ public sealed class BytecodeInterpreter
     {
         return value.Tag switch
         {
+            JsValueTag.Undefined => "undefined",
+            JsValueTag.Null => "null",
             JsValueTag.String => value.AsString(),
             JsValueTag.Number => value.AsNumber().ToString("R", System.Globalization.CultureInfo.InvariantCulture),
             JsValueTag.Int32 => value.AsInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
