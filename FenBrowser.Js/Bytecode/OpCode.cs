@@ -36,6 +36,7 @@ public enum OpCode : byte
     Neq,
     StrictEq,
     StrictNeq,
+    In,
     Lt,
     Gt,
     Le,

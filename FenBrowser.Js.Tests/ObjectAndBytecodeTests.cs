@@ -382,6 +382,42 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void InOperatorFindsOwnProperty()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("\"a\" in { a: 1 };"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void InOperatorFindsPropertyOnPrototypeChain()
+    {
+        var heap = new JsHeap();
+        var parent = new JsObject();
+        parent.DefineOwnProperty("p", new JsPropertyDescriptor(JsValue.FromNumber(1), true, true, true));
+        var parentHandle = heap.AllocateObject(parent, AllocationSite.Current());
+
+        var child = new JsObject();
+        child.SetPrototype(parentHandle);
+        var childHandle = heap.AllocateObject(child, AllocationSite.Current());
+
+        var key = JsValue.FromString("p");
+        var has = heap.GetObject(childHandle).TryGetProperty(key.AsString(), h => heap.GetObject(h), out _);
+        Assert.True(has);
+    }
+
+    [Fact]
+    public void InOperatorThrowsWhenRightSideIsNotObject()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("\"a\" in 1;"));
+        new BytecodeVerifier().Verify(fn);
+        Assert.Throws<InvalidOperationException>(() => new BytecodeInterpreter().Execute(fn));
+    }
+
+    [Fact]
     public void TypeofFunctionObjectReturnsFunction()
     {
         var compiler = new BytecodeCompiler();

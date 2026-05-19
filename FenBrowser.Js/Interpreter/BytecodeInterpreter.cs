@@ -307,6 +307,20 @@ public sealed class BytecodeInterpreter
                 case OpCode.StrictNeq:
                     frame.Registers[ins.A] = JsValue.FromBoolean(!AreStrictlyEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
                     break;
+                case OpCode.In:
+                {
+                    var key = ToPropertyKey(frame.Registers[ins.B]);
+                    var rhs = frame.Registers[ins.C];
+                    if (rhs.Tag != JsValueTag.Object)
+                    {
+                        throw new InvalidOperationException("Right-hand side of 'in' must be an object.");
+                    }
+
+                    var obj = ResolveObject(rhs);
+                    var has = obj.TryGetProperty(key, h => _heap.GetObject(h), out _);
+                    frame.Registers[ins.A] = JsValue.FromBoolean(has);
+                    break;
+                }
                 case OpCode.Lt:
                     frame.Registers[ins.A] = JsValue.FromBoolean(IsLessThan(frame.Registers[ins.B], frame.Registers[ins.C]));
                     break;

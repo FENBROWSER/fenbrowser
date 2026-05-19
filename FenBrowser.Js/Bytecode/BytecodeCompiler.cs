@@ -642,6 +642,7 @@ public sealed class BytecodeCompiler
                     "!=" => OpCode.Neq,
                     "===" => OpCode.StrictEq,
                     "!==" => OpCode.StrictNeq,
+                    "in" => OpCode.In,
                     "<" => OpCode.Lt,
                     ">" => OpCode.Gt,
                     "<=" => OpCode.Le,
