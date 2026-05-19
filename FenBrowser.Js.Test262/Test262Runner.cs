@@ -8,6 +8,8 @@ namespace FenBrowser.Js.Test262;
 
 public sealed class Test262Runner
 {
+    public static Func<SourceText, bool, Task>? ParseInvokerForTests { get; set; }
+
     public int Run(
         string rootPath,
         bool list,
@@ -348,7 +350,12 @@ public sealed class Test262Runner
                 var source = new SourceText(parserInput, file);
                 var parseTask = Task.Run(() =>
                 {
-                    if (parseAsModule)
+                    var overrideInvoker = ParseInvokerForTests;
+                    if (overrideInvoker is not null)
+                    {
+                        overrideInvoker(source, parseAsModule).GetAwaiter().GetResult();
+                    }
+                    else if (parseAsModule)
                     {
                         JsParser.ParseModule(source);
                     }
