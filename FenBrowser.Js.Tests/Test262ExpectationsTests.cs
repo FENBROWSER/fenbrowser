@@ -187,6 +187,70 @@ public sealed class Test262ExpectationsTests
     }
 
     [Fact]
+    public void Load_ThrowsWhenOwnerIsMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var filePath = Path.Combine(tempRoot, "missing-owner.json");
+
+        try
+        {
+            File.WriteAllText(filePath, """
+            {
+              "metadata": {
+                "area": "runtime"
+              },
+              "expectations": [
+                {
+                  "path": "test/language/foo.js",
+                  "status": "RuntimeError"
+                }
+              ]
+            }
+            """);
+
+            var ex = Assert.Throws<InvalidDataException>(() => Test262Expectations.Load(filePath));
+            Assert.Contains("missing required 'owner'", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Load_ThrowsWhenAreaIsMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var filePath = Path.Combine(tempRoot, "missing-area.json");
+
+        try
+        {
+            File.WriteAllText(filePath, """
+            {
+              "metadata": {
+                "owner": "js"
+              },
+              "expectations": [
+                {
+                  "path": "test/language/foo.js",
+                  "status": "RuntimeError"
+                }
+              ]
+            }
+            """);
+
+            var ex = Assert.Throws<InvalidDataException>(() => Test262Expectations.Load(filePath));
+            Assert.Contains("missing required 'area'", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Entry_Matches_WildcardAndCaseInsensitivePath()
     {
         var entry = new Test262ExpectationEntry(

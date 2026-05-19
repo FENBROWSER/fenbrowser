@@ -132,6 +132,16 @@ public sealed class Test262Expectations
                     throw new InvalidDataException($"Invalid expectation status '{status}' in {filePath} at index {index}.");
                 }
 
+                if (string.IsNullOrWhiteSpace(itemOwner) || string.Equals(itemOwner, "unknown", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidDataException($"Expectation entry in {filePath} at index {index} is missing required 'owner'.");
+                }
+
+                if (string.IsNullOrWhiteSpace(itemArea) || string.Equals(itemArea, "unknown", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidDataException($"Expectation entry in {filePath} at index {index} is missing required 'area'.");
+                }
+
                 entries.Add(new Test262ExpectationEntry(
                     pattern,
                     status,
