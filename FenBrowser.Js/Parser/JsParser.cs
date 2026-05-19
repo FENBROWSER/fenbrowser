@@ -984,6 +984,15 @@ public sealed class JsParser
     private NewExpressionNode ParseNewExpression()
     {
         var start = Advance(); // new
+        if (IsPunctuator("."))
+        {
+            Advance();
+            var property = ExpectIdentifier();
+            var target = new IdentifierExpressionNode("new", start.Span);
+            var member = new MemberExpressionNode(target, property.Text, Computed: false, PropertyExpression: null, MergeSpan(start.Span, property.Span));
+            return new NewExpressionNode(member, Array.Empty<ExpressionNode>(), member.Span);
+        }
+
         var callee = ParsePrefix();
         callee = ParsePostfix(callee, minBindingPower: 35, allowCall: false);
 
@@ -1232,6 +1241,11 @@ public sealed class JsParser
                 {
                     while (true)
                     {
+                        if (IsPunctuator("..."))
+                        {
+                            Advance();
+                        }
+
                         if (!IsIdentifierLike(Current()))
                         {
                             asyncValid = false;
@@ -1295,6 +1309,11 @@ public sealed class JsParser
             {
                 while (true)
                 {
+                    if (IsPunctuator("..."))
+                    {
+                        Advance();
+                    }
+
                     if (!IsIdentifierLike(Current()))
                     {
                         valid = false;
@@ -1358,7 +1377,17 @@ public sealed class JsParser
         ExpectPunctuator("(");
         while (!Is(TokenKind.EndOfFile) && !IsPunctuator(")"))
         {
-            args.Add(ParseExpression(2));
+            if (IsPunctuator("..."))
+            {
+                var spread = Advance();
+                var argument = ParseExpression(2);
+                args.Add(new SpreadElementExpressionNode(argument, MergeSpan(spread.Span, argument.Span)));
+            }
+            else
+            {
+                args.Add(ParseExpression(2));
+            }
+
             if (IsPunctuator(","))
             {
                 Advance();
@@ -1462,6 +1491,12 @@ public sealed class JsParser
             case ">=":
                 leftBindingPower = 15;
                 rightBindingPower = 16;
+                return true;
+            case "<<":
+            case ">>":
+            case ">>>":
+                leftBindingPower = 18;
+                rightBindingPower = 19;
                 return true;
             case "*":
             case "%":

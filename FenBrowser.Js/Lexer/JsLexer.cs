@@ -6,7 +6,7 @@ public sealed class JsLexer
 {
     private static readonly HashSet<string> Keywords = new(StringComparer.Ordinal)
     {
-        "await", "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete",
+        "async", "await", "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete",
         "do", "else", "export", "extends", "finally", "for", "function", "if", "import", "in", "of",
         "instanceof", "let", "new", "return", "super", "switch", "this", "throw", "try", "typeof",
         "var", "void", "while", "with", "yield"
@@ -140,7 +140,7 @@ public sealed class JsLexer
 
                 if (!isNonDecimalRadix)
                 {
-                    if (_index < _source.Length && _source[_index] == '.' && _index + 1 < _source.Length && char.IsDigit(_source[_index + 1]))
+                    if (_index < _source.Length && _source[_index] == '.' && (_index + 1 >= _source.Length || _source[_index + 1] != '.'))
                     {
                         _index++;
                         _column++;
@@ -351,7 +351,7 @@ public sealed class JsLexer
         if (_index + 2 < _source.Length)
         {
             var three = _source.Substring(_index, 3);
-            if (three is "===" or "!==" or "..." or "&&=" or "||=" or "??=")
+            if (three is "===" or "!==" or "..." or "&&=" or "||=" or "??=" or ">>>" or "<<=" or ">>=")
             {
                 _index += 3;
                 _column += 3;
@@ -363,7 +363,7 @@ public sealed class JsLexer
         if (_index + 1 < _source.Length)
         {
             var two = _source.Substring(_index, 2);
-            if (two is "==" or "!=" or "<=" or ">=" or "&&" or "||" or "??" or "+=" or "-=" or "*=" or "/=" or "%=" or "++" or "--")
+            if (two is "==" or "!=" or "<=" or ">=" or "&&" or "||" or "??" or "+=" or "-=" or "*=" or "/=" or "%=" or "++" or "--" or "<<" or ">>")
             {
                 _index += 2;
                 _column += 2;

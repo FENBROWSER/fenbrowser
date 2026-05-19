@@ -324,6 +324,56 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesTrailingDotNumericLiteral()
+    {
+        var program = JsParser.ParseScript(new SourceText("var callCnt = 0.;"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var numeric = Assert.IsType<NumericLiteralExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Equal(0, numeric.Value);
+    }
+
+    [Fact]
+    public void ParsesShiftOperators()
+    {
+        var program = JsParser.ParseScript(new SourceText("1 << 2; 8 >> 1; 8 >>> 1;"));
+        var s1 = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        Assert.Equal("<<", Assert.IsType<BinaryExpressionNode>(s1.Expression).Operator);
+        var s2 = Assert.IsType<ExpressionStatementNode>(program.Body[1]);
+        Assert.Equal(">>", Assert.IsType<BinaryExpressionNode>(s2.Expression).Operator);
+        var s3 = Assert.IsType<ExpressionStatementNode>(program.Body[2]);
+        Assert.Equal(">>>", Assert.IsType<BinaryExpressionNode>(s3.Expression).Operator);
+    }
+
+    [Fact]
+    public void ParsesCallArgumentsWithSpread()
+    {
+        var program = JsParser.ParseScript(new SourceText("fn(ta, ...rest);"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var call = Assert.IsType<CallExpressionNode>(stmt.Expression);
+        Assert.Equal(2, call.Arguments.Count);
+        Assert.IsType<SpreadElementExpressionNode>(call.Arguments[1]);
+    }
+
+    [Fact]
+    public void ParsesNewTargetMetaProperty()
+    {
+        var program = JsParser.ParseScript(new SourceText("new.target;"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var ne = Assert.IsType<NewExpressionNode>(stmt.Expression);
+        Assert.IsType<MemberExpressionNode>(ne.Callee);
+    }
+
+    [Fact]
+    public void ParsesArrowFunctionWithRestParameter()
+    {
+        var program = JsParser.ParseScript(new SourceText("const fn = (ta, ...rest) => ta;"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var arrow = Assert.IsType<ArrowFunctionExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Equal(2, arrow.Parameters.Count);
+        Assert.Equal("rest", arrow.Parameters[1]);
+    }
+
+    [Fact]
     public void ParsesHexOctalBinaryNumericLiterals()
     {
         var program = JsParser.ParseScript(new SourceText("0x2A; 0o10; 0b11;"));
