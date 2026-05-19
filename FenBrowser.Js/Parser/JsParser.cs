@@ -359,11 +359,12 @@ public sealed class JsParser
                 continue;
             }
 
-            if (IsPunctuator("=") && minBindingPower <= 9)
+            if (IsAssignmentOperator(Current()) && minBindingPower <= 9)
             {
-                Advance();
+                var op = Advance().Text;
                 var assignmentRight = ParseExpression(10);
-                left = new AssignmentExpressionNode(left, assignmentRight, MergeSpan(left.Span, assignmentRight.Span));
+                var rhs = BuildAssignmentRight(left, op, assignmentRight);
+                left = new AssignmentExpressionNode(left, rhs, MergeSpan(left.Span, assignmentRight.Span));
                 continue;
             }
 
@@ -580,8 +581,18 @@ public sealed class JsParser
                 throw new JsParserException($"Expected object property key, found '{keyToken.Text}'.");
             }
 
-            ExpectPunctuator(":");
-            var value = ParseExpression(0);
+            ExpressionNode value;
+            if (IsPunctuator("("))
+            {
+                var parameters = ParseParameterList();
+                var body = ParseBlockStatement();
+                value = new FunctionExpressionNode(key, parameters, body, MergeSpan(keyToken.Span, body.Span));
+            }
+            else
+            {
+                ExpectPunctuator(":");
+                value = ParseExpression(0);
+            }
             properties.Add(new ObjectPropertyNode(key, value, value.Span));
             if (IsPunctuator(","))
             {
@@ -847,5 +858,23 @@ public sealed class JsParser
     {
         var length = Math.Max(0, (end.Start + end.Length) - start.Start);
         return new SourceSpan(start.Start, length, start.Line, start.Column);
+    }
+
+    private static bool IsAssignmentOperator(Token token)
+    {
+        return token.Kind == TokenKind.Punctuator && token.Text is "=" or "+=" or "-=" or "*=" or "/=";
+    }
+
+    private static ExpressionNode BuildAssignmentRight(ExpressionNode left, string op, ExpressionNode right)
+    {
+        return op switch
+        {
+            "=" => right,
+            "+=" => new BinaryExpressionNode("+", left, right, MergeSpan(left.Span, right.Span)),
+            "-=" => new BinaryExpressionNode("-", left, right, MergeSpan(left.Span, right.Span)),
+            "*=" => new BinaryExpressionNode("*", left, right, MergeSpan(left.Span, right.Span)),
+            "/=" => new BinaryExpressionNode("/", left, right, MergeSpan(left.Span, right.Span)),
+            _ => throw new JsParserException($"Unsupported assignment operator '{op}'.")
+        };
     }
 }

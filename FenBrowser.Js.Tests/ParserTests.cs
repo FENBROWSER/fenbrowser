@@ -198,4 +198,23 @@ public sealed class ParserTests
         var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
         Assert.IsType<RegexLiteralExpressionNode>(decl.Declarators[0].Initializer);
     }
+
+    [Fact]
+    public void ParsesCompoundAssignment()
+    {
+        var program = JsParser.ParseScript(new SourceText("let x = 1; x += 2;"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[1]);
+        var assign = Assert.IsType<AssignmentExpressionNode>(stmt.Expression);
+        Assert.IsType<BinaryExpressionNode>(assign.Right);
+    }
+
+    [Fact]
+    public void ParsesObjectMethodShorthand()
+    {
+        var program = JsParser.ParseScript(new SourceText("let o = { add(a,b) { return a + b; } };"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var obj = Assert.IsType<ObjectLiteralExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Single(obj.Properties);
+        Assert.IsType<FunctionExpressionNode>(obj.Properties[0].Value);
+    }
 }

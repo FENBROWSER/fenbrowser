@@ -309,4 +309,14 @@ public sealed class ObjectAndBytecodeTests
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.Equal(3, result.AsNumber());
     }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleCompoundAssignment()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let x = 1; x += 2; x;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(3, result.AsNumber());
+    }
 }
