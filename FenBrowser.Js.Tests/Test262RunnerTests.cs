@@ -1,5 +1,6 @@
 using System.Text.Json;
 using FenBrowser.Js.Test262;
+using FenBrowser.Js.Parser;
 using Xunit;
 
 namespace FenBrowser.Js.Tests;
@@ -748,6 +749,132 @@ public sealed class Test262RunnerTests
         finally
         {
             Test262Runner.RuntimeInvokerForTests = null;
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Run_ParserSubset_ParserErrorCanBeClassifiedAsExpectedFailure()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "parser-error.js");
+        var expectationsPath = Path.Combine(tempRoot, "expectations.json");
+        var outputPath = Path.Combine(tempRoot, "parser-error-expected.json");
+
+        try
+        {
+            File.WriteAllText(testFile, "1+1;");
+            File.WriteAllText(expectationsPath, """
+            {
+              "metadata": {
+                "owner": "js",
+                "area": "parser"
+              },
+              "expectations": [
+                {
+                  "path": "test/parser-error.js",
+                  "status": "ParserError",
+                  "reason": "known parser limitation",
+                  "owner": "js",
+                  "area": "parser",
+                  "expiresAtMilestone": "M2"
+                }
+              ]
+            }
+            """);
+
+            Test262Runner.ParseInvokerForTests = (_source, _isModule) =>
+                throw new JsParserException("forced parser error");
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: true,
+                runtimeSubset: false,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1000,
+                engine: "FenJS",
+                expectationsPath: expectationsPath,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(1, summary.GetProperty("expectedFailures").GetInt32());
+
+            var tests = doc.RootElement.GetProperty("tests");
+            var first = tests.EnumerateArray().First();
+            Assert.Equal("ExpectedFailure", first.GetProperty("status").GetString());
+        }
+        finally
+        {
+            Test262Runner.ParseInvokerForTests = null;
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Run_ParserSubset_ParserErrorWithoutExpectationRemainsFailed()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "parser-error.js");
+        var outputPath = Path.Combine(tempRoot, "parser-error-no-expectation.json");
+
+        try
+        {
+            File.WriteAllText(testFile, "1+1;");
+            Test262Runner.ParseInvokerForTests = (_source, _isModule) =>
+                throw new JsParserException("forced parser error");
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: true,
+                runtimeSubset: false,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1000,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
+
+            var tests = doc.RootElement.GetProperty("tests");
+            var first = tests.EnumerateArray().First();
+            Assert.Equal("Failed", first.GetProperty("status").GetString());
+        }
+        finally
+        {
+            Test262Runner.ParseInvokerForTests = null;
             Directory.Delete(tempRoot, recursive: true);
         }
     }
