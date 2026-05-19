@@ -85,6 +85,24 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesVariableDeclarationWithArrayBindingPatternSubset()
+    {
+        var program = JsParser.ParseScript(new SourceText("const [a] = arr;"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        Assert.StartsWith("__pattern", decl.Declarators[0].Identifier);
+        Assert.NotNull(decl.Declarators[0].Initializer);
+    }
+
+    [Fact]
+    public void ParsesVariableDeclarationWithObjectBindingPatternSubset()
+    {
+        var program = JsParser.ParseScript(new SourceText("const {x} = obj;"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        Assert.StartsWith("__pattern", decl.Declarators[0].Identifier);
+        Assert.NotNull(decl.Declarators[0].Initializer);
+    }
+
+    [Fact]
     public void ParsesIfElseAndWhileStatements()
     {
         var source = "if (x) { y = 1; } else { y = 2; } while (y) y = y - 1;";

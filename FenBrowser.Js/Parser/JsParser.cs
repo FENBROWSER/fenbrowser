@@ -10,6 +10,7 @@ public sealed class JsParser
 {
     private readonly IReadOnlyList<Token> _tokens;
     private int _index;
+    private int _syntheticBindingCounter;
 
     private JsParser(IReadOnlyList<Token> tokens)
     {
@@ -124,7 +125,7 @@ public sealed class JsParser
 
         while (true)
         {
-            var id = ExpectIdentifier();
+            var id = ParseBindingIdentifierOrPattern();
             ExpressionNode? initializer = null;
             if (IsPunctuator("="))
             {
@@ -150,6 +151,61 @@ public sealed class JsParser
 
         var end = Previous();
         return new VariableDeclarationStatementNode(start.Text, declarators, MergeSpan(start.Span, end.Span));
+    }
+
+    private Token ParseBindingIdentifierOrPattern()
+    {
+        if (Current().Kind == TokenKind.Identifier)
+        {
+            return Advance();
+        }
+
+        if (IsPunctuator("[") || IsPunctuator("{"))
+        {
+            var start = Current().Span;
+            ConsumeBindingPatternTarget();
+            var name = $"__pattern{_syntheticBindingCounter++}";
+            return new Token(TokenKind.Identifier, name, start);
+        }
+
+        throw new JsParserException($"Expected identifier, found '{Current().Text}'.");
+    }
+
+    private void ConsumeBindingPatternTarget()
+    {
+        var open = Current();
+        if (!(open.Kind == TokenKind.Punctuator && (open.Text == "[" || open.Text == "{")))
+        {
+            throw new JsParserException($"Expected binding pattern, found '{open.Text}'.");
+        }
+
+        var openText = open.Text;
+        var closeText = openText == "[" ? "]" : "}";
+        _ = Advance();
+        var depth = 1;
+
+        while (!Is(TokenKind.EndOfFile) && depth > 0)
+        {
+            var token = Advance();
+            if (token.Kind != TokenKind.Punctuator)
+            {
+                continue;
+            }
+
+            if (token.Text == openText)
+            {
+                depth++;
+            }
+            else if (token.Text == closeText)
+            {
+                depth--;
+            }
+        }
+
+        if (depth != 0)
+        {
+            throw new JsParserException("Unterminated binding pattern target.");
+        }
     }
 
     private IfStatementNode ParseIfStatement()
