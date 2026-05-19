@@ -5776,6 +5776,50 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_MissingCrashSummaryFromNullFailures_DoesNotEmitNewCrashViolationAgainstPreviousZero()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var previousPath = Path.Combine(tempRoot, "previous.json");
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            var previousPayload = new
+            {
+                summary = new
+                {
+                    total = 1,
+                    passed = 1,
+                    unsupported = 0,
+                    parserErrors = 0,
+                    crashes = 0,
+                    expectedFailures = 0,
+                    unexpectedPasses = 0
+                },
+                tests = Array.Empty<object>(),
+                failures = Array.Empty<object>()
+            };
+
+            var currentPayload = new
+            {
+                tests = Array.Empty<object>(),
+                failures = (object?)null
+            };
+
+            File.WriteAllText(previousPath, JsonSerializer.Serialize(previousPayload));
+            File.WriteAllText(currentPath, JsonSerializer.Serialize(currentPayload));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousPath);
+            Assert.DoesNotContain(result.Violations, v => v.Contains("No new crash violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_ZeroUnknownCrashesFromNullFailuresWithNullSummary_DoesNotEmitUnknownCrashViolation()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
