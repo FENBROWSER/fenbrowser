@@ -2,7 +2,7 @@ using FenBrowser.Js.Test262;
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("Usage: fenjs-test262 --list | --dry-run | --parser-subset | --dashboard [--root <path>] [--out <path>] [--max <n>] [--expectations <path>] [--in <result.json>] [--previous <result.json>]");
+    Console.Error.WriteLine("Usage: fenjs-test262 --list | --dry-run | --parser-subset | --dashboard | --verify-gates [--root <path>] [--out <path>] [--max <n>] [--expectations <path>] [--in <result.json>] [--previous <result.json>]");
     return 1;
 }
 
@@ -12,6 +12,7 @@ var list = false;
 var dryRun = false;
 var parserSubset = false;
 var dashboard = false;
+var verifyGates = false;
 var max = 200;
 string? expectationsPath = null;
 string? inputPath = null;
@@ -32,6 +33,9 @@ for (var i = 0; i < args.Length; i++)
             break;
         case "--dashboard":
             dashboard = true;
+            break;
+        case "--verify-gates":
+            verifyGates = true;
             break;
         case "--root" when i + 1 < args.Length:
             root = args[++i];
@@ -55,9 +59,9 @@ for (var i = 0; i < args.Length; i++)
     }
 }
 
-if (!list && !dryRun && !parserSubset && !dashboard)
+if (!list && !dryRun && !parserSubset && !dashboard && !verifyGates)
 {
-    Console.Error.WriteLine("Specify at least one of --list, --dry-run, --parser-subset, or --dashboard.");
+    Console.Error.WriteLine("Specify at least one of --list, --dry-run, --parser-subset, --dashboard, or --verify-gates.");
     return 2;
 }
 
@@ -68,4 +72,4 @@ if (!Directory.Exists(root))
 }
 
 var runner = new Test262Runner();
-return runner.Run(root, list, dryRun, parserSubset, dashboard, outPath, max, expectationsPath, inputPath, previousPath);
+return runner.Run(root, list, dryRun, parserSubset, dashboard, verifyGates, outPath, max, expectationsPath, inputPath, previousPath);

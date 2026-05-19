@@ -5,7 +5,7 @@ namespace FenBrowser.Js.Test262;
 
 public sealed class Test262Runner
 {
-    public int Run(string rootPath, bool list, bool dryRun, bool parserSubset, bool dashboard, string outputPath, int max, string? expectationsPath, string? inputPath, string? previousPath)
+    public int Run(string rootPath, bool list, bool dryRun, bool parserSubset, bool dashboard, bool verifyGates, string outputPath, int max, string? expectationsPath, string? inputPath, string? previousPath)
     {
         var manifest = new Test262Manifest { RootPath = rootPath };
         var files = manifest.EnumerateTestFiles().OrderBy(p => p, StringComparer.Ordinal).ToList();
@@ -48,6 +48,30 @@ public sealed class Test262Runner
 
             Test262DashboardWriter.WriteDashboard(inputPath, previousPath, outputPath);
             Console.WriteLine($"Dashboard written: {outputPath}");
+        }
+
+        if (verifyGates)
+        {
+            if (string.IsNullOrWhiteSpace(inputPath))
+            {
+                Console.Error.WriteLine("Specify --in <result.json> for --verify-gates mode.");
+                return 5;
+            }
+
+            var verify = Test262GateVerifier.Verify(inputPath, previousPath);
+            Console.WriteLine($"Gate verification written: {outputPath}");
+            Directory.CreateDirectory(Path.GetDirectoryName(outputPath) ?? ".");
+            File.WriteAllText(outputPath, verify.ReportJson);
+            if (!verify.Passed)
+            {
+                Console.Error.WriteLine("CI gates failed:");
+                foreach (var violation in verify.Violations)
+                {
+                    Console.Error.WriteLine($"- {violation}");
+                }
+
+                return 6;
+            }
         }
 
         return 0;
