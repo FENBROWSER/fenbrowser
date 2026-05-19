@@ -884,6 +884,75 @@ public sealed class Test262RunnerTests
     }
 
     [Fact]
+    public void Run_ParserSubset_PassWithTimeoutExpectationBecomesUnexpectedPass()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "pass-with-timeout-expectation.js");
+        var expectationsPath = Path.Combine(tempRoot, "expectations.json");
+        var outputPath = Path.Combine(tempRoot, "parser-unexpected-pass-timeout.json");
+
+        try
+        {
+            File.WriteAllText(testFile, "1 + 1;");
+            File.WriteAllText(expectationsPath, """
+            {
+              "metadata": {
+                "owner": "js",
+                "area": "parser"
+              },
+              "expectations": [
+                {
+                  "path": "test/pass-with-timeout-expectation.js",
+                  "status": "Timeout",
+                  "reason": "previous timeout debt",
+                  "owner": "js",
+                  "area": "parser",
+                  "expiresAtMilestone": "M2"
+                }
+              ]
+            }
+            """);
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: true,
+                runtimeSubset: false,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1000,
+                engine: "FenJS",
+                expectationsPath: expectationsPath,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(1, summary.GetProperty("unexpectedPasses").GetInt32());
+
+            var tests = doc.RootElement.GetProperty("tests");
+            var first = tests.EnumerateArray().First();
+            Assert.Equal("UnexpectedPass", first.GetProperty("status").GetString());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Run_ParserSubset_UnsupportedFeatureCanBeClassifiedAsExpectedFailure()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
