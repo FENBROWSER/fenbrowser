@@ -158,6 +158,26 @@ public sealed class RuntimeHeapTests
     }
 
     [Fact]
+    public void HeapVerifierAcceptsConsistentFreeListAcrossReuse()
+    {
+        var heap = new JsHeap();
+        var verifier = new HeapVerifier();
+        var h1 = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        var h2 = heap.AllocateString("s", AllocationSite.Current());
+        var h3 = heap.AllocateSymbol("x", AllocationSite.Current());
+
+        heap.FreeForTest(h1);
+        heap.FreeForTest(h2);
+        heap.FreeForTest(h3);
+        verifier.Verify(heap);
+
+        _ = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        _ = heap.AllocateString("next", AllocationSite.Current());
+        _ = heap.AllocateSymbol("next", AllocationSite.Current());
+        verifier.Verify(heap);
+    }
+
+    [Fact]
     public void HandleScopeRootsAndUnrootsHandles()
     {
         var heap = new JsHeap();

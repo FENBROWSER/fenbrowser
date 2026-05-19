@@ -7,12 +7,59 @@ public sealed class HeapVerifier
     public void Verify(JsHeap heap)
     {
         var cells = heap.GetCellsSnapshotForTest();
+        var generations = heap.GetGenerationsSnapshotForTest();
+        var freeFlags = heap.GetFreeFlagsSnapshotForTest();
+        var freeList = heap.GetFreeListSnapshotForTest();
+        if (generations.Count != cells.Count || freeFlags.Count != cells.Count)
+        {
+            throw new JsEngineFatalException("Heap table length mismatch.");
+        }
+
+        var seenFreeIndices = new HashSet<int>();
+        foreach (var freeIndex in freeList)
+        {
+            if ((uint)freeIndex >= (uint)cells.Count)
+            {
+                throw new JsEngineFatalException($"Free-list index out of range: {freeIndex}.");
+            }
+
+            if (!seenFreeIndices.Add(freeIndex))
+            {
+                throw new JsEngineFatalException($"Duplicate free-list index: {freeIndex}.");
+            }
+        }
+
         for (var i = 0; i < cells.Count; i++)
         {
             var cell = cells[i];
+            if (generations[i] <= 0)
+            {
+                throw new JsEngineFatalException($"Invalid generation table value at {i}.");
+            }
+
             if (cell is null)
             {
+                if (!freeFlags[i])
+                {
+                    throw new JsEngineFatalException($"Freed slot {i} is not marked free.");
+                }
+
+                if (!seenFreeIndices.Contains(i))
+                {
+                    throw new JsEngineFatalException($"Freed slot {i} missing from free-list.");
+                }
+
                 continue;
+            }
+
+            if (freeFlags[i])
+            {
+                throw new JsEngineFatalException($"Live slot {i} is incorrectly marked free.");
+            }
+
+            if (seenFreeIndices.Contains(i))
+            {
+                throw new JsEngineFatalException($"Live slot {i} appears in free-list.");
             }
 
             if (cell.Generation <= 0)

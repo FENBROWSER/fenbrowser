@@ -313,6 +313,9 @@ public sealed class JsHeap
 
     public IReadOnlyList<HeapCell?> GetCellsSnapshotForTest() => _cells;
     public int GetGenerationForCellIndexForTest(int index) => _generations[index];
+    public IReadOnlyList<int> GetGenerationsSnapshotForTest() => _generations;
+    public IReadOnlyList<bool> GetFreeFlagsSnapshotForTest() => _isFree;
+    public IReadOnlyList<int> GetFreeListSnapshotForTest() => _freeList.ToArray();
 
     public IReadOnlyList<ObjectHandle> GetRootsSnapshotForTest() => _roots.Snapshot();
     public IReadOnlyList<StringHandle> GetStringRootsSnapshotForTest() => _roots.StringSnapshot();
