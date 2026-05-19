@@ -325,14 +325,63 @@ public sealed class BytecodeInterpreter
             };
         }
 
-        // Minimal loose-equality subset for current numeric runtime surface.
+        if ((left.Tag == JsValueTag.Null && right.Tag == JsValueTag.Undefined) ||
+            (left.Tag == JsValueTag.Undefined && right.Tag == JsValueTag.Null))
+        {
+            return true;
+        }
+
         if ((left.Tag == JsValueTag.Int32 || left.Tag == JsValueTag.Number) &&
             (right.Tag == JsValueTag.Int32 || right.Tag == JsValueTag.Number))
         {
             return left.AsNumber() == right.AsNumber();
         }
 
+        if ((left.Tag == JsValueTag.Int32 || left.Tag == JsValueTag.Number) && right.Tag == JsValueTag.String)
+        {
+            return left.AsNumber() == ToNumberForEquality(right);
+        }
+
+        if (left.Tag == JsValueTag.String && (right.Tag == JsValueTag.Int32 || right.Tag == JsValueTag.Number))
+        {
+            return ToNumberForEquality(left) == right.AsNumber();
+        }
+
+        if (left.Tag == JsValueTag.Boolean)
+        {
+            return AreEqual(JsValue.FromNumber(left.AsBoolean() ? 1 : 0), right);
+        }
+
+        if (right.Tag == JsValueTag.Boolean)
+        {
+            return AreEqual(left, JsValue.FromNumber(right.AsBoolean() ? 1 : 0));
+        }
+
         return false;
+    }
+
+    private static double ToNumberForEquality(JsValue value)
+    {
+        if (value.Tag == JsValueTag.Int32 || value.Tag == JsValueTag.Number)
+        {
+            return value.AsNumber();
+        }
+
+        if (value.Tag == JsValueTag.String)
+        {
+            if (double.TryParse(
+                    value.AsString(),
+                    System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowLeadingWhite | System.Globalization.NumberStyles.AllowTrailingWhite,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var parsed))
+            {
+                return parsed;
+            }
+
+            return double.NaN;
+        }
+
+        return double.NaN;
     }
 
     private JsObject ResolveObject(JsValue value)

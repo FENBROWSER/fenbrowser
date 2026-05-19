@@ -352,6 +352,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void LooseEqualityConvertsStringAndNumber()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("\"1\" == 1;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void LooseEqualityConvertsBooleanAndNumber()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("!0 == 1;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void InterpreterInvokesWriteBarrierForObjectStores()
     {
         var compiler = new BytecodeCompiler();
