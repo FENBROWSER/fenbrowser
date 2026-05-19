@@ -33,3 +33,5 @@ public sealed record UnaryExpressionNode(string Operator, ExpressionNode Operand
 public sealed record ConditionalExpressionNode(ExpressionNode Test, ExpressionNode Consequent, ExpressionNode Alternate, SourceSpan Span) : ExpressionNode(Span);
 
 public sealed record FunctionExpressionNode(string? Name, IReadOnlyList<string> Parameters, BlockStatementNode Body, SourceSpan Span) : ExpressionNode(Span);
+
+public sealed record NewExpressionNode(ExpressionNode Callee, IReadOnlyList<ExpressionNode> Arguments, SourceSpan Span) : ExpressionNode(Span);

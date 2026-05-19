@@ -142,6 +142,29 @@ public sealed class BytecodeVerifier
                 }
 
                 break;
+            case OpCode.Construct0:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                break;
+            case OpCode.Construct1:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
+                break;
+            case OpCode.ConstructN:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                if (ins.D < 0)
+                {
+                    throw new InvalidOperationException($"Invalid ConstructN arg count {ins.D} at ip {ip}.");
+                }
+
+                if (ins.C < 0 || ins.C + Math.Max(0, ins.D - 1) >= function.RegisterCount)
+                {
+                    throw new InvalidOperationException($"Invalid ConstructN arg register window start={ins.C} count={ins.D} at ip {ip}.");
+                }
+
+                break;
             case OpCode.Not:
             case OpCode.Neg:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");

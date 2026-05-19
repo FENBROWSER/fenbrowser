@@ -395,6 +395,11 @@ public sealed class JsParser
             return ParseFunctionExpression();
         }
 
+        if (token.Kind == TokenKind.Keyword && token.Text == "new")
+        {
+            return ParseNewExpression();
+        }
+
         if (token.Kind == TokenKind.Identifier)
         {
             Advance();
@@ -453,6 +458,22 @@ public sealed class JsParser
         var parameters = ParseParameterList();
         var body = ParseBlockStatement();
         return new FunctionExpressionNode(name, parameters, body, MergeSpan(start.Span, body.Span));
+    }
+
+    private NewExpressionNode ParseNewExpression()
+    {
+        var start = Advance(); // new
+        var callee = ParsePrefix();
+        callee = ParsePostfix(callee, minBindingPower: 35, allowCall: false);
+
+        IReadOnlyList<ExpressionNode> args = Array.Empty<ExpressionNode>();
+        if (IsPunctuator("("))
+        {
+            args = ParseCallArguments();
+        }
+
+        var end = args.Count > 0 ? Previous().Span : callee.Span;
+        return new NewExpressionNode(callee, args, MergeSpan(start.Span, end));
     }
 
     private ObjectLiteralExpressionNode ParseObjectLiteral()
@@ -607,6 +628,47 @@ public sealed class JsParser
 
         ExpectPunctuator(")");
         return args;
+    }
+
+    private ExpressionNode ParsePostfix(ExpressionNode left, int minBindingPower, bool allowCall = true)
+    {
+        while (true)
+        {
+            if (IsPunctuator("."))
+            {
+                Advance();
+                var property = ExpectIdentifier();
+                left = new MemberExpressionNode(left, property.Text, Computed: false, PropertyExpression: null, MergeSpan(left.Span, property.Span));
+                continue;
+            }
+
+            if (IsPunctuator("["))
+            {
+                Advance();
+                var propExpr = ParseExpression(0);
+                ExpectPunctuator("]");
+                var close = Previous();
+                left = new MemberExpressionNode(left, string.Empty, Computed: true, PropertyExpression: propExpr, MergeSpan(left.Span, close.Span));
+                continue;
+            }
+
+            if (allowCall && IsPunctuator("("))
+            {
+                var args = ParseCallArguments();
+                var end = Previous();
+                left = new CallExpressionNode(left, args, MergeSpan(left.Span, end.Span));
+                continue;
+            }
+
+            if (!TryGetInfixBindingPower(Current(), out _, out var leftBp, out _) || leftBp < minBindingPower)
+            {
+                break;
+            }
+
+            break;
+        }
+
+        return left;
     }
 
     private bool TryGetInfixBindingPower(Token token, out string op, out int leftBindingPower, out int rightBindingPower)

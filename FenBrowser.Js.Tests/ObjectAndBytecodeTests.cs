@@ -269,4 +269,14 @@ public sealed class ObjectAndBytecodeTests
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.Equal(3, result.AsNumber());
     }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleNewExpressionReturnsObjectByDefault()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("function C(a,b){ return a + b; } let o = new C(1,2); o;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(JsValueTag.Object, result.Tag);
+    }
 }

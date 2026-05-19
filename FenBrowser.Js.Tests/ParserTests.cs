@@ -157,4 +157,13 @@ public sealed class ParserTests
         Assert.IsType<FunctionExpressionNode>(paren.Expression);
         Assert.Single(call.Arguments);
     }
+
+    [Fact]
+    public void ParsesNewExpression()
+    {
+        var program = JsParser.ParseScript(new SourceText("let x = new Foo(1,2); x;"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var ne = Assert.IsType<NewExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Equal(2, ne.Arguments.Count);
+    }
 }

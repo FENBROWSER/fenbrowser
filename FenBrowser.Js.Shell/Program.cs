@@ -387,6 +387,13 @@ static object DumpExpression(ExpressionNode expression)
             body = DumpStatement(fn.Body),
             span = DumpSpan(fn.Span)
         },
+        NewExpressionNode ne => new
+        {
+            type = "NewExpression",
+            callee = DumpExpression(ne.Callee),
+            arguments = ne.Arguments.Select(DumpExpression).ToArray(),
+            span = DumpSpan(ne.Span)
+        },
         _ => new { type = "UnknownExpression", span = DumpSpan(expression.Span) }
     };
 }

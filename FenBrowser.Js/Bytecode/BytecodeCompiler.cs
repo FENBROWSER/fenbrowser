@@ -423,6 +423,39 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.CreateFunction, dest, nestedIndex, 0));
                 return dest;
             }
+            case NewExpressionNode ne:
+            {
+                var calleeReg = CompileExpression(ne.Callee);
+                var dest = AllocateRegister();
+                switch (ne.Arguments.Count)
+                {
+                    case 0:
+                        _instructions.Add(new Instruction(OpCode.Construct0, dest, calleeReg, 0));
+                        return dest;
+                    case 1:
+                    {
+                        var arg0 = CompileExpression(ne.Arguments[0]);
+                        _instructions.Add(new Instruction(OpCode.Construct1, dest, calleeReg, arg0));
+                        return dest;
+                    }
+                    default:
+                    {
+                        var argStart = AllocateRegister();
+                        for (var i = 0; i < ne.Arguments.Count; i++)
+                        {
+                            var argReg = CompileExpression(ne.Arguments[i]);
+                            _instructions.Add(new Instruction(OpCode.Move, argStart + i, argReg, 0));
+                            if (i + 1 < ne.Arguments.Count)
+                            {
+                                _ = AllocateRegister();
+                            }
+                        }
+
+                        _instructions.Add(new Instruction(OpCode.ConstructN, dest, calleeReg, argStart, ne.Arguments.Count));
+                        return dest;
+                    }
+                }
+            }
             case ObjectLiteralExpressionNode obj:
             {
                 var dest = AllocateRegister();
