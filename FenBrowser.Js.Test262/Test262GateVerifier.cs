@@ -31,9 +31,11 @@ public static class Test262GateVerifier
 
         if (previousSummary is not null)
         {
-            if (currentSummary.Passed < previousSummary.Value.Passed)
+            var currentEffectivePasses = currentSummary.Passed + currentSummary.UnexpectedPasses;
+            var previousEffectivePasses = previousSummary.Value.Passed + previousSummary.Value.UnexpectedPasses;
+            if (currentEffectivePasses < previousEffectivePasses)
             {
-                violations.Add($"No regression in pass count violated: previous={previousSummary.Value.Passed}, current={currentSummary.Passed}.");
+                violations.Add($"No regression in pass count violated: previous={previousEffectivePasses}, current={currentEffectivePasses}.");
             }
 
             if (currentSummary.Crashes > previousSummary.Value.Crashes)
