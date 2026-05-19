@@ -112,9 +112,16 @@ public sealed class BytecodeInterpreter
                 }
                 case OpCode.SetPropByName:
                 {
-                    var obj = ResolveObject(frame.Registers[ins.A]);
+                    var ownerHandle = ResolveObjectHandle(frame.Registers[ins.A]);
+                    var obj = _heap.GetObject(ownerHandle);
                     var prop = function.PropertyNames[ins.B];
-                    _ = obj.SetProperty(prop, frame.Registers[ins.C]);
+                    var value = frame.Registers[ins.C];
+                    _ = obj.SetProperty(prop, value);
+                    if (value.Tag == JsValueTag.Object)
+                    {
+                        _heap.WriteBarrier(ownerHandle, value.AsObjectHandle());
+                    }
+
                     break;
                 }
                 case OpCode.GetPropByName:
@@ -134,9 +141,16 @@ public sealed class BytecodeInterpreter
                 }
                 case OpCode.SetElem:
                 {
-                    var obj = ResolveObject(frame.Registers[ins.A]);
+                    var ownerHandle = ResolveObjectHandle(frame.Registers[ins.A]);
+                    var obj = _heap.GetObject(ownerHandle);
                     var key = ToPropertyKey(frame.Registers[ins.B]);
-                    _ = obj.SetProperty(key, frame.Registers[ins.C]);
+                    var value = frame.Registers[ins.C];
+                    _ = obj.SetProperty(key, value);
+                    if (value.Tag == JsValueTag.Object)
+                    {
+                        _heap.WriteBarrier(ownerHandle, value.AsObjectHandle());
+                    }
+
                     if (double.TryParse(key, out var numericIndex))
                     {
                         var nextLength = numericIndex + 1;
@@ -323,12 +337,17 @@ public sealed class BytecodeInterpreter
 
     private JsObject ResolveObject(JsValue value)
     {
+        return _heap.GetObject(ResolveObjectHandle(value));
+    }
+
+    private static ObjectHandle ResolveObjectHandle(JsValue value)
+    {
         if (value.Tag != JsValueTag.Object)
         {
             throw new InvalidOperationException($"Expected object value, found {value.Tag}.");
         }
 
-        return _heap.GetObject(value.AsObjectHandle());
+        return value.AsObjectHandle();
     }
 
     private JsFunctionObject ResolveFunction(JsValue value)

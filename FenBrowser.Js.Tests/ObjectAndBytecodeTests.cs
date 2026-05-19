@@ -350,4 +350,18 @@ public sealed class ObjectAndBytecodeTests
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.Equal(5, result.AsNumber());
     }
+
+    [Fact]
+    public void InterpreterInvokesWriteBarrierForObjectStores()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = {}; let child = {}; o.ref = child; o[1] = child; o.p = 1;"));
+        new BytecodeVerifier().Verify(fn);
+
+        var heap = new JsHeap();
+        var interpreter = new BytecodeInterpreter(heap);
+        _ = interpreter.Execute(fn);
+
+        Assert.Equal(2, heap.WriteBarrierCount);
+    }
 }

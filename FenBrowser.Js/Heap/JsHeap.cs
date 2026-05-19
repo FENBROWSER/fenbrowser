@@ -9,6 +9,7 @@ public sealed class JsHeap
     private readonly Stack<int> _freeList = new();
     private readonly RootSet _roots = new();
     private readonly GcStressMode _stressMode;
+    private int _writeBarrierCount;
 
     public JsHeap(GcStressMode stressMode = GcStressMode.None)
     {
@@ -16,6 +17,7 @@ public sealed class JsHeap
     }
 
     public int RootCount => _roots.Count;
+    public int WriteBarrierCount => _writeBarrierCount;
 
     public ObjectHandle AllocateObject(JsObject obj, AllocationSite site)
     {
@@ -85,6 +87,7 @@ public sealed class JsHeap
     {
         _ = owner;
         _ = child;
+        _writeBarrierCount++;
         // No-op in v1. Required seam for future GC evolution.
     }
 
