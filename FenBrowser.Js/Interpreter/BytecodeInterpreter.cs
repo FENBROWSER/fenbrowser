@@ -14,6 +14,8 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _booleanPrototypeHandle;
     private ObjectHandle? _numberConstructorHandle;
     private ObjectHandle? _numberPrototypeHandle;
+    private ObjectHandle? _stringConstructorHandle;
+    private ObjectHandle? _stringPrototypeHandle;
     private ObjectHandle? _errorConstructorHandle;
     private ObjectHandle? _errorPrototypeHandle;
     private ObjectHandle? _typeErrorConstructorHandle;
@@ -413,6 +415,11 @@ public sealed class BytecodeInterpreter
             frame.Variables[numberSlot] = JsValue.FromObject(EnsureNumberConstructor());
         }
 
+        if (function.VariableSlots.TryGetValue("String", out var stringSlot))
+        {
+            frame.Variables[stringSlot] = JsValue.FromObject(EnsureStringConstructor());
+        }
+
         if (function.VariableSlots.TryGetValue("Error", out var errorSlot))
         {
             frame.Variables[errorSlot] = JsValue.FromObject(EnsureErrorConstructor());
@@ -624,6 +631,42 @@ public sealed class BytecodeInterpreter
     {
         var obj = new NumberObject(value);
         obj.SetPrototype(EnsureNumberPrototype());
+        return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
+    }
+
+    private ObjectHandle EnsureStringPrototype()
+    {
+        _ = EnsureStringConstructor();
+        return _stringPrototypeHandle!.Value;
+    }
+
+    private ObjectHandle EnsureStringConstructor()
+    {
+        if (_stringConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototypeHandle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "String",
+            (_, args) => JsValue.FromString(args.Count > 0 ? ToStringForConcat(args[0]) : string.Empty),
+            args => CreateStringObject(args.Count > 0 ? ToStringForConcat(args[0]) : string.Empty));
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        _stringPrototypeHandle = prototypeHandle;
+        _stringConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private JsValue CreateStringObject(string value)
+    {
+        var obj = new StringObject(value);
+        obj.SetPrototype(EnsureStringPrototype());
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
@@ -1046,5 +1089,15 @@ public sealed class BytecodeInterpreter
         }
 
         public double Value { get; }
+    }
+
+    private sealed class StringObject : JsObject
+    {
+        public StringObject(string value)
+        {
+            Value = value;
+        }
+
+        public string Value { get; }
     }
 }

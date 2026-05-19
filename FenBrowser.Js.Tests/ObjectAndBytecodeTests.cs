@@ -557,6 +557,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void StringCallReturnsPrimitiveAndConstructorCreatesInstance()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let callIsInstance = String(\"\") instanceof String; let constructIsInstance = new String instanceof String; (!callIsInstance) && constructIsInstance;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void InstanceOfReturnsTrueForConstructedInstance()
     {
         var compiler = new BytecodeCompiler();
