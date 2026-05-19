@@ -1730,6 +1730,44 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ToleratesNonNumericSummaryFieldsByDefaultingToZero()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            var payload = new
+            {
+                summary = new
+                {
+                    total = "one",
+                    passed = "zero",
+                    unsupported = "zero",
+                    parserErrors = "zero",
+                    crashes = "zero",
+                    expectedFailures = "zero",
+                    unexpectedPasses = "zero"
+                },
+                tests = Array.Empty<object>(),
+                failures = Array.Empty<object>()
+            };
+
+            File.WriteAllText(currentPath, JsonSerializer.Serialize(payload));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            Assert.True(result.Passed);
+            Assert.DoesNotContain(result.Violations, v => v.Contains("No crashes violated", StringComparison.Ordinal));
+            Assert.DoesNotContain(result.Violations, v => v.Contains("No unknown crashes violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_UsesFailuresFallbackForNewFailureDetectionWhenTestsMissing()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
