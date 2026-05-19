@@ -20,4 +20,16 @@ public sealed class JsIsolate
         var handle = Heap.AllocateObject(obj, site);
         return scope.Create(handle);
     }
+
+    public Handle<StringHandle> AllocateStringInScope(HandleScope scope, string value, AllocationSite site)
+    {
+        var handle = Heap.AllocateString(value, site);
+        return scope.Create(handle);
+    }
+
+    public Handle<SymbolHandle> AllocateSymbolInScope(HandleScope scope, string? description, AllocationSite site)
+    {
+        var handle = Heap.AllocateSymbol(description, site);
+        return scope.Create(handle);
+    }
 }

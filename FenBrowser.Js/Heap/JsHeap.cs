@@ -31,50 +31,65 @@ public sealed class JsHeap
 
     public ObjectHandle AllocateObject(JsObject obj, AllocationSite site)
     {
+        _ = site;
         MaybeStressGc();
 
-        int index;
-        int generation;
-
-        if (_freeList.Count > 0)
-        {
-            index = _freeList.Pop();
-            _isFree[index] = false;
-            generation = _generations[index] + 1;
-            _generations[index] = generation;
-            _cells[index] = new HeapCell
-            {
-                Generation = generation,
-                Kind = HeapCellKind.Object,
-                Payload = obj
-            };
-        }
-        else
-        {
-            index = _cells.Count;
-            generation = 1;
-            _generations.Add(generation);
-            _isFree.Add(false);
-            _cells.Add(new HeapCell
-            {
-                Generation = generation,
-                Kind = HeapCellKind.Object,
-                Payload = obj
-            });
-        }
+        var handle = AllocateCell(HeapCellKind.Object, obj);
 
         if (_stressMode == GcStressMode.AfterEveryAlloc)
         {
             CollectGarbage();
         }
 
-        return new ObjectHandle(index, generation);
+        return new ObjectHandle(handle.Index, handle.Generation);
+    }
+
+    public StringHandle AllocateString(string value, AllocationSite site)
+    {
+        _ = site;
+        MaybeStressGc();
+
+        var handle = AllocateCell(HeapCellKind.String, new StringPayload(value));
+
+        if (_stressMode == GcStressMode.AfterEveryAlloc)
+        {
+            CollectGarbage();
+        }
+
+        return new StringHandle(handle.Index, handle.Generation);
+    }
+
+    public SymbolHandle AllocateSymbol(string? description, AllocationSite site)
+    {
+        _ = site;
+        MaybeStressGc();
+
+        var handle = AllocateCell(HeapCellKind.Symbol, new SymbolPayload(description));
+
+        if (_stressMode == GcStressMode.AfterEveryAlloc)
+        {
+            CollectGarbage();
+        }
+
+        return new SymbolHandle(handle.Index, handle.Generation);
     }
 
     public JsObject GetObject(ObjectHandle handle)
     {
         var cell = Validate(handle);
         return (JsObject)cell.Payload;
+    }
+
+    public string GetString(StringHandle handle)
+    {
+        var cell = Validate(handle);
+        return ((StringPayload)cell.Payload).Value;
+    }
+
+    public string? GetSymbolDescription(SymbolHandle handle)
+    {
+        var cell = Validate(handle);
+        return ((SymbolPayload)cell.Payload).Description;
     }
 
     public void PushRoot(ObjectHandle handle) => _roots.Push(handle);
@@ -183,11 +198,28 @@ public sealed class JsHeap
     public void FreeForTest(ObjectHandle handle)
     {
         Validate(handle);
-        _cells[handle.Index] = null;
-        if (!_isFree[handle.Index])
+        FreeIndexForTest(handle.Index);
+    }
+
+    public void FreeForTest(StringHandle handle)
+    {
+        Validate(handle);
+        FreeIndexForTest(handle.Index);
+    }
+
+    public void FreeForTest(SymbolHandle handle)
+    {
+        Validate(handle);
+        FreeIndexForTest(handle.Index);
+    }
+
+    private void FreeIndexForTest(int index)
+    {
+        _cells[index] = null;
+        if (!_isFree[index])
         {
-            _isFree[handle.Index] = true;
-            _freeList.Push(handle.Index);
+            _isFree[index] = true;
+            _freeList.Push(index);
         }
     }
 
@@ -224,6 +256,41 @@ public sealed class JsHeap
         cell.Marked = true;
         _lastGcMarkedCells++;
         cell.Payload.Trace(new MarkingTracer(this));
+    }
+
+    private (int Index, int Generation) AllocateCell(HeapCellKind kind, ITraceable payload)
+    {
+        int index;
+        int generation;
+
+        if (_freeList.Count > 0)
+        {
+            index = _freeList.Pop();
+            _isFree[index] = false;
+            generation = _generations[index] + 1;
+            _generations[index] = generation;
+            _cells[index] = new HeapCell
+            {
+                Generation = generation,
+                Kind = kind,
+                Payload = payload
+            };
+        }
+        else
+        {
+            index = _cells.Count;
+            generation = 1;
+            _generations.Add(generation);
+            _isFree.Add(false);
+            _cells.Add(new HeapCell
+            {
+                Generation = generation,
+                Kind = kind,
+                Payload = payload
+            });
+        }
+
+        return (index, generation);
     }
 
     public IReadOnlyList<HeapCell?> GetCellsSnapshotForTest() => _cells;
@@ -273,6 +340,36 @@ public sealed class JsHeap
         public void Trace(SymbolHandle handle)
         {
             _ = _heap.Validate(handle);
+        }
+    }
+
+    private sealed class StringPayload : ITraceable
+    {
+        public StringPayload(string value)
+        {
+            Value = value;
+        }
+
+        public string Value { get; }
+
+        public void Trace(IHeapTracer tracer)
+        {
+            _ = tracer;
+        }
+    }
+
+    private sealed class SymbolPayload : ITraceable
+    {
+        public SymbolPayload(string? description)
+        {
+            Description = description;
+        }
+
+        public string? Description { get; }
+
+        public void Trace(IHeapTracer tracer)
+        {
+            _ = tracer;
         }
     }
 }

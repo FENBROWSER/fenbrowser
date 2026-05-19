@@ -71,6 +71,17 @@ public sealed class RuntimeHeapTests
     }
 
     [Fact]
+    public void HeapAllocatesAndResolvesStringAndSymbolHandles()
+    {
+        var heap = new JsHeap();
+        var stringHandle = heap.AllocateString("hello", AllocationSite.Current());
+        var symbolHandle = heap.AllocateSymbol("sym", AllocationSite.Current());
+
+        Assert.Equal("hello", heap.GetString(stringHandle));
+        Assert.Equal("sym", heap.GetSymbolDescription(symbolHandle));
+    }
+
+    [Fact]
     public void CollectGarbageSweepsUnrootedObjects()
     {
         var heap = new JsHeap();
@@ -108,6 +119,29 @@ public sealed class RuntimeHeapTests
         heap.FreeForTest(handle);
 
         Assert.Throws<JsEngineFatalException>(() => heap.GetObject(handle));
+    }
+
+    [Fact]
+    public void HeapDetectsStaleStringAndSymbolHandlesAfterFree()
+    {
+        var heap = new JsHeap();
+        var stringHandle = heap.AllocateString("s", AllocationSite.Current());
+        var symbolHandle = heap.AllocateSymbol("x", AllocationSite.Current());
+        heap.FreeForTest(stringHandle);
+        heap.FreeForTest(symbolHandle);
+
+        Assert.Throws<JsEngineFatalException>(() => heap.GetString(stringHandle));
+        Assert.Throws<JsEngineFatalException>(() => heap.GetSymbolDescription(symbolHandle));
+    }
+
+    [Fact]
+    public void HeapRejectsKindMismatchedHandleAccess()
+    {
+        var heap = new JsHeap();
+        var stringHandle = heap.AllocateString("kind", AllocationSite.Current());
+        var asObject = new ObjectHandle(stringHandle.Index, stringHandle.Generation);
+
+        Assert.Throws<JsEngineFatalException>(() => heap.GetObject(asObject));
     }
 
     [Fact]
@@ -235,6 +269,19 @@ public sealed class RuntimeHeapTests
         }
 
         Assert.Equal(0, isolate.Heap.RootCount);
+    }
+
+    [Fact]
+    public void IsolateAllocatesStringAndSymbolInsideHandleScope()
+    {
+        var isolate = new JsIsolate(new JsHeap());
+        using (var scope = isolate.EnterHandleScope())
+        {
+            var stringHandle = isolate.AllocateStringInScope(scope, "abc", AllocationSite.Current());
+            var symbolHandle = isolate.AllocateSymbolInScope(scope, "desc", AllocationSite.Current());
+            Assert.Equal("abc", isolate.Heap.GetString(stringHandle.Value));
+            Assert.Equal("desc", isolate.Heap.GetSymbolDescription(symbolHandle.Value));
+        }
     }
 
     [Fact]
