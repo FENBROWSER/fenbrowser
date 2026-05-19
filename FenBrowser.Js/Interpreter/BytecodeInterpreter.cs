@@ -274,16 +274,16 @@ public sealed class BytecodeInterpreter
                     frame.Registers[ins.A] = JsValue.FromBoolean(!AreStrictlyEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
                     break;
                 case OpCode.Lt:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(ToNumber(frame.Registers[ins.B]) < ToNumber(frame.Registers[ins.C]));
+                    frame.Registers[ins.A] = JsValue.FromBoolean(IsLessThan(frame.Registers[ins.B], frame.Registers[ins.C]));
                     break;
                 case OpCode.Gt:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(ToNumber(frame.Registers[ins.B]) > ToNumber(frame.Registers[ins.C]));
+                    frame.Registers[ins.A] = JsValue.FromBoolean(IsGreaterThan(frame.Registers[ins.B], frame.Registers[ins.C]));
                     break;
                 case OpCode.Le:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(ToNumber(frame.Registers[ins.B]) <= ToNumber(frame.Registers[ins.C]));
+                    frame.Registers[ins.A] = JsValue.FromBoolean(IsLessThanOrEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
                     break;
                 case OpCode.Ge:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(ToNumber(frame.Registers[ins.B]) >= ToNumber(frame.Registers[ins.C]));
+                    frame.Registers[ins.A] = JsValue.FromBoolean(IsGreaterThanOrEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
                     break;
                 case OpCode.And:
                     frame.Registers[ins.A] = JsValue.FromBoolean(IsTruthy(frame.Registers[ins.B]) && IsTruthy(frame.Registers[ins.C]));
@@ -487,6 +487,46 @@ public sealed class BytecodeInterpreter
             JsValueTag.String => ToNumberForEquality(value),
             _ => double.NaN
         };
+    }
+
+    private static bool IsLessThan(JsValue left, JsValue right)
+    {
+        if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.String)
+        {
+            return string.CompareOrdinal(left.AsString(), right.AsString()) < 0;
+        }
+
+        return ToNumber(left) < ToNumber(right);
+    }
+
+    private static bool IsGreaterThan(JsValue left, JsValue right)
+    {
+        if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.String)
+        {
+            return string.CompareOrdinal(left.AsString(), right.AsString()) > 0;
+        }
+
+        return ToNumber(left) > ToNumber(right);
+    }
+
+    private static bool IsLessThanOrEqual(JsValue left, JsValue right)
+    {
+        if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.String)
+        {
+            return string.CompareOrdinal(left.AsString(), right.AsString()) <= 0;
+        }
+
+        return ToNumber(left) <= ToNumber(right);
+    }
+
+    private static bool IsGreaterThanOrEqual(JsValue left, JsValue right)
+    {
+        if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.String)
+        {
+            return string.CompareOrdinal(left.AsString(), right.AsString()) >= 0;
+        }
+
+        return ToNumber(left) >= ToNumber(right);
     }
 
     private static string TypeOf(JsValue value)
