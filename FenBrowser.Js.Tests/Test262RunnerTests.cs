@@ -1,6 +1,8 @@
 using System.Text.Json;
 using FenBrowser.Js.Test262;
 using FenBrowser.Js.Parser;
+using FenBrowser.Js.AstValidation;
+using FenBrowser.Js.Source;
 using Xunit;
 
 namespace FenBrowser.Js.Tests;
@@ -875,6 +877,258 @@ public sealed class Test262RunnerTests
         finally
         {
             Test262Runner.ParseInvokerForTests = null;
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Run_ParserSubset_UnsupportedFeatureCanBeClassifiedAsExpectedFailure()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "unsupported.js");
+        var expectationsPath = Path.Combine(tempRoot, "expectations.json");
+        var outputPath = Path.Combine(tempRoot, "parser-unsupported-expected.json");
+
+        try
+        {
+            File.WriteAllText(testFile, "1+1;");
+            File.WriteAllText(expectationsPath, """
+            {
+              "metadata": {
+                "owner": "js",
+                "area": "parser"
+              },
+              "expectations": [
+                {
+                  "path": "test/unsupported.js",
+                  "status": "UnsupportedFeature",
+                  "reason": "known unsupported feature",
+                  "owner": "js",
+                  "area": "parser",
+                  "expiresAtMilestone": "M2"
+                }
+              ]
+            }
+            """);
+
+            Test262Runner.ParseInvokerForTests = (_source, _isModule) =>
+                throw new UnsupportedFeatureException("feature-x", FeatureSupportLevel.Unsupported, new SourceSpan(0, 1, 1, 1));
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: true,
+                runtimeSubset: false,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1000,
+                engine: "FenJS",
+                expectationsPath: expectationsPath,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(1, summary.GetProperty("expectedFailures").GetInt32());
+
+            var tests = doc.RootElement.GetProperty("tests");
+            var first = tests.EnumerateArray().First();
+            Assert.Equal("ExpectedFailure", first.GetProperty("status").GetString());
+        }
+        finally
+        {
+            Test262Runner.ParseInvokerForTests = null;
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Run_ParserSubset_UnsupportedFeatureWithoutExpectationRemainsUnsupportedFeature()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "unsupported.js");
+        var outputPath = Path.Combine(tempRoot, "parser-unsupported-no-expectation.json");
+
+        try
+        {
+            File.WriteAllText(testFile, "1+1;");
+            Test262Runner.ParseInvokerForTests = (_source, _isModule) =>
+                throw new UnsupportedFeatureException("feature-x", FeatureSupportLevel.Unsupported, new SourceSpan(0, 1, 1, 1));
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: true,
+                runtimeSubset: false,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1000,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
+
+            var tests = doc.RootElement.GetProperty("tests");
+            var first = tests.EnumerateArray().First();
+            Assert.Equal("UnsupportedFeature", first.GetProperty("status").GetString());
+        }
+        finally
+        {
+            Test262Runner.ParseInvokerForTests = null;
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Run_RuntimeSubset_UnsupportedFeatureCanBeClassifiedAsExpectedFailure()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "unsupported.js");
+        var expectationsPath = Path.Combine(tempRoot, "expectations.json");
+        var outputPath = Path.Combine(tempRoot, "runtime-unsupported-expected.json");
+
+        try
+        {
+            File.WriteAllText(testFile, "1+1;");
+            File.WriteAllText(expectationsPath, """
+            {
+              "metadata": {
+                "owner": "js",
+                "area": "runtime"
+              },
+              "expectations": [
+                {
+                  "path": "test/unsupported.js",
+                  "status": "UnsupportedFeature",
+                  "reason": "known unsupported feature",
+                  "owner": "js",
+                  "area": "runtime",
+                  "expiresAtMilestone": "M2"
+                }
+              ]
+            }
+            """);
+
+            Test262Runner.RuntimeInvokerForTests = (_input, _file, _isModule) =>
+                throw new UnsupportedFeatureException("feature-x", FeatureSupportLevel.Unsupported, new SourceSpan(0, 1, 1, 1));
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: false,
+                runtimeSubset: true,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1000,
+                engine: "FenJS",
+                expectationsPath: expectationsPath,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(1, summary.GetProperty("expectedFailures").GetInt32());
+
+            var tests = doc.RootElement.GetProperty("tests");
+            var first = tests.EnumerateArray().First();
+            Assert.Equal("ExpectedFailure", first.GetProperty("status").GetString());
+        }
+        finally
+        {
+            Test262Runner.RuntimeInvokerForTests = null;
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Run_RuntimeSubset_UnsupportedFeatureWithoutExpectationRemainsUnsupportedFeature()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "unsupported.js");
+        var outputPath = Path.Combine(tempRoot, "runtime-unsupported-no-expectation.json");
+
+        try
+        {
+            File.WriteAllText(testFile, "1+1;");
+            Test262Runner.RuntimeInvokerForTests = (_input, _file, _isModule) =>
+                throw new UnsupportedFeatureException("feature-x", FeatureSupportLevel.Unsupported, new SourceSpan(0, 1, 1, 1));
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: false,
+                runtimeSubset: true,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1000,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
+
+            var tests = doc.RootElement.GetProperty("tests");
+            var first = tests.EnumerateArray().First();
+            Assert.Equal("UnsupportedFeature", first.GetProperty("status").GetString());
+        }
+        finally
+        {
+            Test262Runner.RuntimeInvokerForTests = null;
             Directory.Delete(tempRoot, recursive: true);
         }
     }
