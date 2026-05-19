@@ -2284,6 +2284,39 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_DoesNotTreatLowercaseUnexpectedPassStatusAsUncategorizedFailure()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/unexpected-pass-lowercase.js",
+                        status = "unexpectedpass",
+                        category = (string?)null
+                    }
+                ],
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 1,
+                passed: 0));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            Assert.DoesNotContain(result.Violations, v => v.Contains("All enabled parser tests must be categorized violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_UsesFailuresFallbackForNewFailureDetectionWhenTestsMissing()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
