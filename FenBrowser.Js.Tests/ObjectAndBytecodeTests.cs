@@ -312,6 +312,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void TypeofFunctionObjectReturnsFunction()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("typeof function(){} == \"function\";"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void CompilerAndInterpreterHandleRegexLiteralAsObjectPlaceholder()
     {
         var compiler = new BytecodeCompiler();

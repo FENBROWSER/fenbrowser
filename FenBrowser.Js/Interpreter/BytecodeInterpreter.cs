@@ -244,7 +244,7 @@ public sealed class BytecodeInterpreter
                     frame.Registers[ins.A] = JsValue.FromNumber(-ToNumber(frame.Registers[ins.B]));
                     break;
                 case OpCode.TypeOf:
-                    frame.Registers[ins.A] = JsValue.FromString(TypeOf(frame.Registers[ins.B]));
+                    frame.Registers[ins.A] = JsValue.FromString(TypeOfValue(frame.Registers[ins.B]));
                     break;
                 case OpCode.Add:
                     frame.Registers[ins.A] = Add(frame.Registers[ins.B], frame.Registers[ins.C]);
@@ -529,8 +529,19 @@ public sealed class BytecodeInterpreter
         return ToNumber(left) >= ToNumber(right);
     }
 
-    private static string TypeOf(JsValue value)
+    private string TypeOfValue(JsValue value)
     {
+        if (value.Tag == JsValueTag.Object)
+        {
+            var obj = _heap.GetObject(value.AsObjectHandle());
+            if (obj is JsFunctionObject)
+            {
+                return "function";
+            }
+
+            return "object";
+        }
+
         return value.Tag switch
         {
             JsValueTag.Undefined => "undefined",
@@ -541,7 +552,6 @@ public sealed class BytecodeInterpreter
             JsValueTag.String => "string",
             JsValueTag.Symbol => "symbol",
             JsValueTag.BigInt => "bigint",
-            JsValueTag.Object => "object",
             JsValueTag.HostObject => "object",
             _ => "undefined"
         };
