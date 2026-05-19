@@ -767,6 +767,29 @@ public sealed class Test262Runner
                 continue;
             }
 
+            if (RequiresRuntimeHarnessSupport(sourceText))
+            {
+                harnessUnsupported++;
+                failures.Add(new { path = file, relativePath, classification = "harness-unsupported", message = "Runtime harness APIs (assert/$DONE/$262) are not supported in runtime-subset mode." });
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "HarnessUnsupported",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = "host-not-applicable",
+                    message = "Runtime harness APIs (assert/$DONE/$262) are not supported in runtime-subset mode."
+                });
+                continue;
+            }
+
             var unsupportedFeature = frontmatter.Features.FirstOrDefault(feature => supportedFeatures is not null && !supportedFeatures.Contains(feature));
             if (unsupportedFeature is not null)
             {
@@ -1105,6 +1128,14 @@ public sealed class Test262Runner
 
         var phase = frontmatter.Negative.Phase?.Trim();
         return string.Equals(phase, "runtime", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool RequiresRuntimeHarnessSupport(string sourceText)
+    {
+        return sourceText.Contains("assert.", StringComparison.Ordinal) ||
+               sourceText.Contains("assert(", StringComparison.Ordinal) ||
+               sourceText.Contains("$DONE", StringComparison.Ordinal) ||
+               sourceText.Contains("$262", StringComparison.Ordinal);
     }
 
     private static bool ExpectsSyntaxErrorParseFailure(Test262FrontmatterMetadata frontmatter)
