@@ -2046,6 +2046,58 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_FailsWhenTestStatusIsMissingAndCategoryIsMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            var payload = new
+            {
+                summary = new
+                {
+                    total = 1,
+                    passed = 0,
+                    unsupported = 0,
+                    parserErrors = 1,
+                    crashes = 0,
+                    expectedFailures = 0,
+                    unexpectedPasses = 0
+                },
+                tests = new object[]
+                {
+                    new
+                    {
+                        path = "test/missing-status.js",
+                        category = (string?)null
+                    }
+                },
+                failures = new object[]
+                {
+                    new
+                    {
+                        relativePath = "test/missing-status.js",
+                        classification = "parser-error",
+                        expected = false
+                    }
+                }
+            };
+
+            File.WriteAllText(currentPath, JsonSerializer.Serialize(payload));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            Assert.False(result.Passed);
+            Assert.Contains(result.Violations, v => v.Contains("All enabled parser tests must be categorized violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_DoesNotTreatPassedTestWithoutCategoryAsUncategorizedFailure()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
