@@ -88,4 +88,14 @@ public sealed class LexerTests
         Assert.Equal(TokenKind.Identifier, tokens[1].Kind);
         Assert.Equal("y", tokens[1].Text);
     }
+
+    [Fact]
+    public void LexesTemplateLiteralToken()
+    {
+        var lexer = new JsLexer(new SourceText("`a ${b}`"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Template, tokens[0].Kind);
+        Assert.Equal("`a ${b}`", tokens[0].Text);
+    }
 }

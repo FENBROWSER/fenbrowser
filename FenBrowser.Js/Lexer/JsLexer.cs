@@ -215,6 +215,15 @@ public sealed class JsLexer
                 continue;
             }
 
+            if (ch == '`')
+            {
+                var text = ReadTemplateLiteralToken();
+                var token = new Token(TokenKind.Template, text, new SourceSpan(start, text.Length, line, column));
+                tokens.Add(token);
+                _lastSignificantToken = token;
+                continue;
+            }
+
             if (TryReadPunctuator(out var punctuatorText))
             {
                 var token = new Token(TokenKind.Punctuator, punctuatorText, new SourceSpan(start, punctuatorText.Length, line, column));
@@ -470,4 +479,45 @@ public sealed class JsLexer
     private static bool IsBinDigit(char ch) => ch == '0' || ch == '1';
 
     private static bool IsLineTerminator(char ch) => ch == '\n' || ch == '\r' || ch == '\u2028' || ch == '\u2029';
+
+    private string ReadTemplateLiteralToken()
+    {
+        var start = _index;
+        _index++;
+        _column++;
+
+        var escaped = false;
+        while (_index < _source.Length)
+        {
+            var c = _source[_index++];
+            if (IsLineTerminator(c))
+            {
+                _line++;
+                _column = 1;
+            }
+            else
+            {
+                _column++;
+            }
+
+            if (escaped)
+            {
+                escaped = false;
+                continue;
+            }
+
+            if (c == '\\')
+            {
+                escaped = true;
+                continue;
+            }
+
+            if (c == '`')
+            {
+                break;
+            }
+        }
+
+        return _source[start.._index];
+    }
 }

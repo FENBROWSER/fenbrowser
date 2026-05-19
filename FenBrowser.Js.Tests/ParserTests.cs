@@ -355,4 +355,13 @@ public sealed class ParserTests
         var member = Assert.IsType<MemberExpressionNode>(stmt.Expression);
         Assert.IsType<ThisExpressionNode>(member.Object);
     }
+
+    [Fact]
+    public void ParsesTemplateLiteralAsStringSubset()
+    {
+        var program = JsParser.ParseScript(new SourceText("`hello ${name}`;"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var str = Assert.IsType<StringLiteralExpressionNode>(stmt.Expression);
+        Assert.Equal("hello ${name}", str.Value);
+    }
 }
