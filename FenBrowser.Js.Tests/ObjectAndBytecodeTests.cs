@@ -418,6 +418,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void InstanceOfReturnsTrueForConstructedInstance()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("function C(){}; let o = new C(); o instanceof C;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void InstanceOfReturnsFalseForNonObjectLeft()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("1 instanceof Object;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.False(result.AsBoolean());
+    }
+
+    [Fact]
     public void TypeofFunctionObjectReturnsFunction()
     {
         var compiler = new BytecodeCompiler();

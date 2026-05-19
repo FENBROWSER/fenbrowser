@@ -65,6 +65,7 @@ public sealed class BytecodeVerifier
             case OpCode.StrictEq:
             case OpCode.StrictNeq:
             case OpCode.In:
+            case OpCode.InstanceOf:
             case OpCode.Lt:
             case OpCode.Gt:
             case OpCode.Le:
