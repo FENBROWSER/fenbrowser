@@ -103,12 +103,22 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 ValidatePropertyName(function, ip, ins.C);
                 break;
+            case OpCode.DeletePropByName:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidatePropertyName(function, ip, ins.C);
+                break;
             case OpCode.SetElem:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 ValidateRegister(ins.C, function.RegisterCount, ip, "C");
                 break;
             case OpCode.GetElem:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
+                break;
+            case OpCode.DeleteElem:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 ValidateRegister(ins.C, function.RegisterCount, ip, "C");

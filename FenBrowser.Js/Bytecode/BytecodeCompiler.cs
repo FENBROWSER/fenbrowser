@@ -422,6 +422,33 @@ public sealed class BytecodeCompiler
             }
             case UnaryExpressionNode unary:
             {
+                if (unary.Operator == "delete")
+                {
+                    if (unary.Operand is MemberExpressionNode member)
+                    {
+                        var objReg = CompileExpression(member.Object);
+                        var deleteDest = AllocateRegister();
+                        if (member.Computed)
+                        {
+                            var keyReg = CompileExpression(member.PropertyExpression!);
+                            _instructions.Add(new Instruction(OpCode.DeleteElem, deleteDest, objReg, keyReg));
+                        }
+                        else
+                        {
+                            var nameIndex = GetOrCreatePropertyName(member.Property);
+                            _instructions.Add(new Instruction(OpCode.DeletePropByName, deleteDest, objReg, nameIndex));
+                        }
+
+                        return deleteDest;
+                    }
+
+                    _ = CompileExpression(unary.Operand);
+                    var defaultDeleteResult = AllocateRegister();
+                    var ciDeleteTrue = AddConstant(JsValue.FromBoolean(true));
+                    _instructions.Add(new Instruction(OpCode.LoadConst, defaultDeleteResult, ciDeleteTrue, 0));
+                    return defaultDeleteResult;
+                }
+
                 var operandReg = CompileExpression(unary.Operand);
                 var dest = AllocateRegister();
                 var op = unary.Operator switch
@@ -430,7 +457,6 @@ public sealed class BytecodeCompiler
                     "+" => OpCode.Pos,
                     "-" => OpCode.Neg,
                     "void" => OpCode.Void,
-                    "delete" => OpCode.Delete,
                     "typeof" => OpCode.TypeOf,
                     _ => throw new InvalidOperationException($"Unsupported unary operator {unary.Operator}.")
                 };

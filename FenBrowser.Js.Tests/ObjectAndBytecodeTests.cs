@@ -332,6 +332,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void DeleteRemovesNamedObjectProperty()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = { a: 1 }; delete o.a; o.a == undefined;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void DeleteRemovesComputedObjectProperty()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = { a: 1 }; let k = \"a\"; delete o[k]; o.a == undefined;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void TypeofFunctionObjectReturnsFunction()
     {
         var compiler = new BytecodeCompiler();

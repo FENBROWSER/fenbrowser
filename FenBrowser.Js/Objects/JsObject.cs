@@ -50,6 +50,17 @@ public class JsObject : ITraceable
         return true;
     }
 
+    public bool DeleteProperty(string key)
+    {
+        if (_properties.TryGetValue(key, out var existing) && !existing.Configurable)
+        {
+            return false;
+        }
+
+        _ = _properties.Remove(key);
+        return true;
+    }
+
     public void SetPrototype(ObjectHandle? prototypeHandle)
     {
         PrototypeHandle = prototypeHandle;

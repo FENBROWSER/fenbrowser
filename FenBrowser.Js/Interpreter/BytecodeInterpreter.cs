@@ -139,6 +139,13 @@ public sealed class BytecodeInterpreter
 
                     break;
                 }
+                case OpCode.DeletePropByName:
+                {
+                    var obj = ResolveObject(frame.Registers[ins.B]);
+                    var prop = function.PropertyNames[ins.C];
+                    frame.Registers[ins.A] = JsValue.FromBoolean(obj.DeleteProperty(prop));
+                    break;
+                }
                 case OpCode.SetElem:
                 {
                     var ownerHandle = ResolveObjectHandle(frame.Registers[ins.A]);
@@ -160,6 +167,13 @@ public sealed class BytecodeInterpreter
                         }
                     }
 
+                    break;
+                }
+                case OpCode.DeleteElem:
+                {
+                    var obj = ResolveObject(frame.Registers[ins.B]);
+                    var key = ToPropertyKey(frame.Registers[ins.C]);
+                    frame.Registers[ins.A] = JsValue.FromBoolean(obj.DeleteProperty(key));
                     break;
                 }
                 case OpCode.GetElem:
