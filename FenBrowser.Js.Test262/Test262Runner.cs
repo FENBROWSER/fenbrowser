@@ -282,19 +282,30 @@ public sealed class Test262Runner
             if (unsupportedFeature is not null)
             {
                 unsupported++;
+                var expected = FindMatchingExpectation(expectations, relativePath, "UnsupportedFeature");
+                if (expected is not null)
+                {
+                    expectedFailures++;
+                }
+
                 failures.Add(new
                 {
                     path = file,
                     relativePath,
                     classification = "unsupported",
                     feature = unsupportedFeature,
-                    message = $"Feature '{unsupportedFeature}' is not in supported feature set."
+                    message = $"Feature '{unsupportedFeature}' is not in supported feature set.",
+                    expected = expected is not null,
+                    expectedReason = expected?.Reason,
+                    expectedOwner = expected?.Owner,
+                    expectedArea = expected?.Area,
+                    expiresAtMilestone = expected?.ExpiresAtMilestone
                 });
 
                 tests.Add(new
                 {
                     path = relativePath,
-                    status = "UnsupportedFeature",
+                    status = expected is null ? "UnsupportedFeature" : "ExpectedFailure",
                     durationMs = 0,
                     features = frontmatter.Features,
                     flags = frontmatter.Flags,
@@ -771,11 +782,29 @@ public sealed class Test262Runner
             if (unsupportedFeature is not null)
             {
                 unsupported++;
-                failures.Add(new { path = file, relativePath, classification = "unsupported", feature = unsupportedFeature, message = $"Feature '{unsupportedFeature}' is not in supported feature set." });
+                var expected = FindMatchingExpectation(expectations, relativePath, "UnsupportedFeature");
+                if (expected is not null)
+                {
+                    expectedFailures++;
+                }
+
+                failures.Add(new
+                {
+                    path = file,
+                    relativePath,
+                    classification = "unsupported",
+                    feature = unsupportedFeature,
+                    message = $"Feature '{unsupportedFeature}' is not in supported feature set.",
+                    expected = expected is not null,
+                    expectedReason = expected?.Reason,
+                    expectedOwner = expected?.Owner,
+                    expectedArea = expected?.Area,
+                    expiresAtMilestone = expected?.ExpiresAtMilestone
+                });
                 tests.Add(new
                 {
                     path = relativePath,
-                    status = "UnsupportedFeature",
+                    status = expected is null ? "UnsupportedFeature" : "ExpectedFailure",
                     durationMs = 0,
                     features = frontmatter.Features,
                     flags = frontmatter.Flags,
