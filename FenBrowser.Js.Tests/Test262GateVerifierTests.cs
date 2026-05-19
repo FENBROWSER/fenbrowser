@@ -5023,6 +5023,43 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ReportPreservesMissingBaselinePathInSourcePrevious()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+        var missingPreviousPath = Path.Combine(tempRoot, "does-not-exist.json");
+
+        try
+        {
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/example.js",
+                        status = "Passed",
+                        category = (string?)null
+                    }
+                ],
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 0,
+                passed: 1));
+
+            var result = Test262GateVerifier.Verify(currentPath, missingPreviousPath);
+            using var report = JsonDocument.Parse(result.ReportJson);
+            var source = report.RootElement.GetProperty("source");
+            Assert.Equal(currentPath, source.GetProperty("current").GetString());
+            Assert.Equal(missingPreviousPath, source.GetProperty("previous").GetString());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_IgnoresWhitespacePreviousResultPath()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
