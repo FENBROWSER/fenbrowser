@@ -8,6 +8,8 @@ namespace FenBrowser.Js.Interpreter;
 public sealed class BytecodeInterpreter
 {
     private readonly JsHeap _heap;
+    private ObjectHandle? _objectConstructorHandle;
+    private ObjectHandle? _objectPrototypeHandle;
     private ObjectHandle? _typeErrorConstructorHandle;
     private ObjectHandle? _typeErrorPrototypeHandle;
 
@@ -95,13 +97,13 @@ public sealed class BytecodeInterpreter
                     break;
                 case OpCode.NewObject:
                 {
-                    var handle = _heap.AllocateObject(new JsObject(), AllocationSite.Current());
+                    var handle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
                     frame.Registers[ins.A] = JsValue.FromObject(handle);
                     break;
                 }
                 case OpCode.NewArray:
                 {
-                    var obj = new JsObject();
+                    var obj = CreateOrdinaryObject();
                     obj.SetProperty("length", JsValue.FromNumber(0));
                     var handle = _heap.AllocateObject(obj, AllocationSite.Current());
                     frame.Registers[ins.A] = JsValue.FromObject(handle);
@@ -207,7 +209,7 @@ public sealed class BytecodeInterpreter
                     var nested = function.NestedFunctions[ins.B];
                     var captured = CaptureFrameVariables(function, frame);
                     var fnObj = new JsFunctionObject(nested, captured);
-                    var prototypeHandle = _heap.AllocateObject(new JsObject(), AllocationSite.Current());
+                    var prototypeHandle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
                     _ = fnObj.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
                     var handle = _heap.AllocateObject(fnObj, AllocationSite.Current());
                     frame.Registers[ins.A] = JsValue.FromObject(handle);
@@ -384,10 +386,22 @@ public sealed class BytecodeInterpreter
 
     private void InitializeBuiltinGlobals(BytecodeFunction function, InterpreterFrame frame)
     {
+        if (function.VariableSlots.TryGetValue("Object", out var objectSlot))
+        {
+            frame.Variables[objectSlot] = JsValue.FromObject(EnsureObjectConstructor());
+        }
+
         if (function.VariableSlots.TryGetValue("TypeError", out var typeErrorSlot))
         {
             frame.Variables[typeErrorSlot] = JsValue.FromObject(EnsureTypeErrorConstructor());
         }
+    }
+
+    private JsObject CreateOrdinaryObject()
+    {
+        var obj = new JsObject();
+        obj.SetPrototype(EnsureObjectPrototype());
+        return obj;
     }
 
     private void ThrowTypeError(InterpreterFrame frame, string message)
@@ -430,7 +444,7 @@ public sealed class BytecodeInterpreter
             return existing;
         }
 
-        var prototypeHandle = _heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        var prototypeHandle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
         _heap.PushRoot(prototypeHandle);
 
         var constructor = new JsFunctionObject(CreateBuiltinFunction("TypeError"));
@@ -440,6 +454,32 @@ public sealed class BytecodeInterpreter
 
         _typeErrorPrototypeHandle = prototypeHandle;
         _typeErrorConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private ObjectHandle EnsureObjectPrototype()
+    {
+        _ = EnsureObjectConstructor();
+        return _objectPrototypeHandle!.Value;
+    }
+
+    private ObjectHandle EnsureObjectConstructor()
+    {
+        if (_objectConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototypeHandle = _heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new JsFunctionObject(CreateBuiltinFunction("Object"));
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        _objectPrototypeHandle = prototypeHandle;
+        _objectConstructorHandle = constructorHandle;
         return constructorHandle;
     }
 
@@ -787,7 +827,7 @@ public sealed class BytecodeInterpreter
     [MayExecuteJs]
     private JsValue ExecuteConstruct(JsFunctionObject callee, IReadOnlyList<JsValue> args)
     {
-        var instanceObject = new JsObject();
+        var instanceObject = CreateOrdinaryObject();
         if (callee.TryGetProperty("prototype", h => _heap.GetObject(h), out var prototypeDescriptor) &&
             prototypeDescriptor.Value.Tag == JsValueTag.Object)
         {

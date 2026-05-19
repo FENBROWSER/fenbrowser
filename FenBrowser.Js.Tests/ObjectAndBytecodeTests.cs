@@ -507,6 +507,36 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void ObjectLiteralPrototypeChainsToObjectIntrinsic()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("({}) instanceof Object;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectIntrinsicCanBeUsedThroughVariableAlias()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("var object = {}; var OBJECT = Object; object instanceof OBJECT;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ConstructedObjectsWithPrimitivePrototypeFallBackToObjectPrototype()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("function C(){}; C.prototype = 1; let o = new C(); o instanceof Object;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void InstanceOfReturnsFalseForNonObjectLeft()
     {
         var compiler = new BytecodeCompiler();
