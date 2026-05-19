@@ -322,6 +322,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void MethodCallBindsThisForZeroArgCall()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = { x: 7, getX: function(){ return this.x; } }; o.getX();"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(7, result.AsNumber());
+    }
+
+    [Fact]
+    public void MethodCallBindsThisForSingleArgCall()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = { x: 2, add: function(y){ return this.x + y; } }; o.add(5);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(7, result.AsNumber());
+    }
+
+    [Fact]
     public void CompilerAndInterpreterHandleTypeofUnary()
     {
         var compiler = new BytecodeCompiler();

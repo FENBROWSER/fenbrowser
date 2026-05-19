@@ -24,6 +24,8 @@ public enum OpCode : byte
     Call0,
     Call1,
     CallN,
+    CallMethod0,
+    CallMethod1,
     Construct0,
     Construct1,
     ConstructN,

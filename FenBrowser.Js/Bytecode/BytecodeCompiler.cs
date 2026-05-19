@@ -395,17 +395,45 @@ public sealed class BytecodeCompiler
             }
             case CallExpressionNode call:
             {
-                var calleeReg = CompileExpression(call.Callee);
+                var calleeReg = -1;
+                var thisReg = -1;
+                var isMethodCall = false;
+                if (call.Callee is MemberExpressionNode memberCallee)
+                {
+                    thisReg = CompileExpression(memberCallee.Object);
+                    calleeReg = AllocateRegister();
+                    if (memberCallee.Computed)
+                    {
+                        var keyReg = CompileExpression(memberCallee.PropertyExpression!);
+                        _instructions.Add(new Instruction(OpCode.GetElem, calleeReg, thisReg, keyReg));
+                    }
+                    else
+                    {
+                        var nameIndex = GetOrCreatePropertyName(memberCallee.Property);
+                        _instructions.Add(new Instruction(OpCode.GetPropByName, calleeReg, thisReg, nameIndex));
+                    }
+
+                    isMethodCall = true;
+                }
+                else
+                {
+                    calleeReg = CompileExpression(call.Callee);
+                }
+
                 var dest = AllocateRegister();
                 switch (call.Arguments.Count)
                 {
                     case 0:
-                        _instructions.Add(new Instruction(OpCode.Call0, dest, calleeReg, 0));
+                        _instructions.Add(isMethodCall
+                            ? new Instruction(OpCode.CallMethod0, dest, calleeReg, thisReg)
+                            : new Instruction(OpCode.Call0, dest, calleeReg, 0));
                         return dest;
                     case 1:
                     {
                         var arg0 = CompileExpression(call.Arguments[0]);
-                        _instructions.Add(new Instruction(OpCode.Call1, dest, calleeReg, arg0));
+                        _instructions.Add(isMethodCall
+                            ? new Instruction(OpCode.CallMethod1, dest, calleeReg, thisReg, arg0)
+                            : new Instruction(OpCode.Call1, dest, calleeReg, arg0));
                         return dest;
                     }
                     default:
