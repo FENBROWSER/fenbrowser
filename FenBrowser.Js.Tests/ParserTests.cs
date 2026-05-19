@@ -52,6 +52,23 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesLabeledFunctionDeclarationInStatementPosition()
+    {
+        var program = JsParser.ParseScript(new SourceText("label: function f() {}"));
+        var labeled = Assert.IsType<LabeledStatementNode>(program.Body[0]);
+        Assert.Equal("label", labeled.Label);
+        Assert.IsType<FunctionDeclarationNode>(labeled.Body);
+    }
+
+    [Fact]
+    public void ParsesFunctionNamedAsyncInNonStrictSubset()
+    {
+        var program = JsParser.ParseScript(new SourceText("function async() {}"));
+        var fn = Assert.IsType<FunctionDeclarationNode>(program.Body[0]);
+        Assert.Equal("async", fn.Name);
+    }
+
+    [Fact]
     public void ParsesClassExpressionInNewExpression()
     {
         var program = JsParser.ParseScript(new SourceText("new class extends B {}();"));
@@ -150,6 +167,16 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesArrowFunctionWithDefaultParameter()
+    {
+        var program = JsParser.ParseScript(new SourceText("const f = (x = 1) => x;"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var arrow = Assert.IsType<ArrowFunctionExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Single(arrow.Parameters);
+        Assert.Equal("x", arrow.Parameters[0]);
+    }
+
+    [Fact]
     public void ParsesTryCatchAndThrow()
     {
         var program = JsParser.ParseScript(new SourceText("try { throw 1; } catch (e) { e; }"));
@@ -219,6 +246,16 @@ public sealed class ParserTests
         var paren = Assert.IsType<ParenthesizedExpressionNode>(call.Callee);
         Assert.IsType<FunctionExpressionNode>(paren.Expression);
         Assert.Single(call.Arguments);
+    }
+
+    [Fact]
+    public void ParsesAsyncFunctionExpressionInCallArguments()
+    {
+        var program = JsParser.ParseScript(new SourceText("asyncTest(async function () { return 1; });"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var call = Assert.IsType<CallExpressionNode>(stmt.Expression);
+        Assert.Single(call.Arguments);
+        Assert.IsType<FunctionExpressionNode>(call.Arguments[0]);
     }
 
     [Fact]
@@ -581,6 +618,14 @@ public sealed class ParserTests
     public void ParsesGeneratorFunctionDeclarationSubset()
     {
         var program = JsParser.ParseScript(new SourceText("function* g(){ yield 1; }"));
+        var fn = Assert.IsType<FunctionDeclarationNode>(program.Body[0]);
+        Assert.Equal("g", fn.Name);
+    }
+
+    [Fact]
+    public void ParsesAsyncGeneratorFunctionDeclarationSubset()
+    {
+        var program = JsParser.ParseScript(new SourceText("async function* g(){ yield 1; }"));
         var fn = Assert.IsType<FunctionDeclarationNode>(program.Body[0]);
         Assert.Equal("g", fn.Name);
     }

@@ -48,6 +48,14 @@ public sealed class JsParser
 
     private StatementNode ParseStatement()
     {
+        if (Current().Kind == TokenKind.Identifier && PeekIsPunctuator(1, ":"))
+        {
+            var labelToken = Advance();
+            ExpectPunctuator(":");
+            var body = ParseStatement();
+            return new LabeledStatementNode(labelToken.Text, body, MergeSpan(labelToken.Span, body.Span));
+        }
+
         if (IsPunctuator(";"))
         {
             var semi = Advance();
@@ -80,6 +88,13 @@ public sealed class JsParser
                     return ParseForStatement();
                 case "switch":
                     return ParseSwitchStatement();
+                case "async":
+                    if (PeekKeyword(1, "function"))
+                    {
+                        return ParseFunctionDeclaration();
+                    }
+
+                    break;
                 case "function":
                     return ParseFunctionDeclaration();
                 case "return":
@@ -155,7 +170,7 @@ public sealed class JsParser
 
     private Token ParseBindingIdentifierOrPattern()
     {
-        if (Current().Kind == TokenKind.Identifier)
+        if (IsIdentifierLike(Current()))
         {
             return Advance();
         }
@@ -364,7 +379,22 @@ public sealed class JsParser
 
     private FunctionDeclarationNode ParseFunctionDeclaration()
     {
-        var start = Advance(); // function
+        Token start;
+        if (Current().Kind == TokenKind.Keyword && Current().Text == "async")
+        {
+            start = Advance(); // async
+            if (!(Current().Kind == TokenKind.Keyword && Current().Text == "function"))
+            {
+                throw new JsParserException($"Expected 'function', found '{Current().Text}'.");
+            }
+
+            _ = Advance(); // function
+        }
+        else
+        {
+            start = Advance(); // function
+        }
+
         if (IsPunctuator("*"))
         {
             Advance();
@@ -741,9 +771,20 @@ public sealed class JsParser
             return ParseFunctionExpression();
         }
 
+        if (token.Kind == TokenKind.Keyword && token.Text == "async" && PeekKeyword(1, "function"))
+        {
+            return ParseFunctionExpression();
+        }
+
         if (token.Kind == TokenKind.Keyword && token.Text == "new")
         {
             return ParseNewExpression();
+        }
+
+        if (token.Kind == TokenKind.Keyword && (token.Text == "async" || token.Text == "await"))
+        {
+            Advance();
+            return new IdentifierExpressionNode(token.Text, token.Span);
         }
 
         if (token.Kind == TokenKind.Keyword && token.Text == "class")
@@ -891,7 +932,22 @@ public sealed class JsParser
 
     private FunctionExpressionNode ParseFunctionExpression()
     {
-        var start = Advance(); // function
+        Token start;
+        if (Current().Kind == TokenKind.Keyword && Current().Text == "async")
+        {
+            start = Advance(); // async
+            if (!(Current().Kind == TokenKind.Keyword && Current().Text == "function"))
+            {
+                throw new JsParserException($"Expected 'function', found '{Current().Text}'.");
+            }
+
+            _ = Advance(); // function
+        }
+        else
+        {
+            start = Advance(); // function
+        }
+
         if (IsPunctuator("*"))
         {
             Advance();
@@ -1092,13 +1148,19 @@ public sealed class JsParser
             {
                 while (true)
                 {
-                    if (Current().Kind != TokenKind.Identifier)
+                    if (!IsIdentifierLike(Current()))
                     {
                         valid = false;
                         break;
                     }
 
                     parameters.Add(Advance().Text);
+                    if (IsPunctuator("="))
+                    {
+                        Advance();
+                        _ = ParseExpression(2);
+                    }
+
                     if (IsPunctuator(","))
                     {
                         Advance();
@@ -1292,9 +1354,16 @@ public sealed class JsParser
         return token.Kind == TokenKind.Punctuator && token.Text == text;
     }
 
+    private bool PeekKeyword(int offset, string text)
+    {
+        var idx = Math.Min(_index + offset, _tokens.Count - 1);
+        var token = _tokens[idx];
+        return token.Kind == TokenKind.Keyword && token.Text == text;
+    }
+
     private Token ExpectIdentifier()
     {
-        if (Current().Kind != TokenKind.Identifier)
+        if (!IsIdentifierLike(Current()))
         {
             throw new JsParserException($"Expected identifier, found '{Current().Text}'.");
         }
@@ -1311,6 +1380,10 @@ public sealed class JsParser
 
         return Advance();
     }
+
+    private static bool IsIdentifierLike(Token token) =>
+        token.Kind == TokenKind.Identifier ||
+        (token.Kind == TokenKind.Keyword && (token.Text == "async" || token.Text == "await"));
 
     private void ExpectPunctuator(string text)
     {
