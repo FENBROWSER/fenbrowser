@@ -46,6 +46,11 @@ public sealed class JsParser
 
     private StatementNode ParseStatement()
     {
+        if (IsPunctuator("{"))
+        {
+            return ParseBlockStatement();
+        }
+
         if (Current().Kind == TokenKind.Keyword)
         {
             switch (Current().Text)
@@ -54,6 +59,18 @@ public sealed class JsParser
                 case "import":
                 case "export":
                     throw new UnsupportedFeatureException(Current().Text, FeatureSupportLevel.ParserOnly, Current().Span);
+                case "let":
+                case "const":
+                case "var":
+                    return ParseVariableDeclarationStatement();
+                case "if":
+                    return ParseIfStatement();
+                case "while":
+                    return ParseWhileStatement();
+                case "function":
+                    return ParseFunctionDeclaration();
+                case "return":
+                    return ParseReturnStatement();
             }
         }
 
@@ -66,13 +83,158 @@ public sealed class JsParser
         return new ExpressionStatementNode(expression, expression.Span);
     }
 
+    private BlockStatementNode ParseBlockStatement()
+    {
+        var open = Advance();
+        var statements = new List<StatementNode>();
+        while (!Is(TokenKind.EndOfFile) && !IsPunctuator("}"))
+        {
+            statements.Add(ParseStatement());
+        }
+
+        ExpectPunctuator("}");
+        var close = Previous();
+        return new BlockStatementNode(statements, MergeSpan(open.Span, close.Span));
+    }
+
+    private VariableDeclarationStatementNode ParseVariableDeclarationStatement()
+    {
+        var start = Advance(); // let|const|var
+        var declarators = new List<VariableDeclaratorNode>();
+
+        while (true)
+        {
+            var id = ExpectIdentifier();
+            ExpressionNode? initializer = null;
+            if (IsPunctuator("="))
+            {
+                Advance();
+                initializer = ParseExpression(0);
+            }
+
+            var declaratorSpan = initializer is null ? id.Span : MergeSpan(id.Span, initializer.Span);
+            declarators.Add(new VariableDeclaratorNode(id.Text, initializer, declaratorSpan));
+
+            if (!IsPunctuator(","))
+            {
+                break;
+            }
+
+            Advance();
+        }
+
+        if (IsPunctuator(";"))
+        {
+            Advance();
+        }
+
+        var end = Previous();
+        return new VariableDeclarationStatementNode(start.Text, declarators, MergeSpan(start.Span, end.Span));
+    }
+
+    private IfStatementNode ParseIfStatement()
+    {
+        var start = Advance(); // if
+        ExpectPunctuator("(");
+        var test = ParseExpression(0);
+        ExpectPunctuator(")");
+        var consequent = ParseStatement();
+        StatementNode? alternate = null;
+        if (Current().Kind == TokenKind.Keyword && Current().Text == "else")
+        {
+            Advance();
+            alternate = ParseStatement();
+        }
+
+        var endSpan = alternate?.Span ?? consequent.Span;
+        return new IfStatementNode(test, consequent, alternate, MergeSpan(start.Span, endSpan));
+    }
+
+    private WhileStatementNode ParseWhileStatement()
+    {
+        var start = Advance(); // while
+        ExpectPunctuator("(");
+        var test = ParseExpression(0);
+        ExpectPunctuator(")");
+        var body = ParseStatement();
+        return new WhileStatementNode(test, body, MergeSpan(start.Span, body.Span));
+    }
+
+    private ReturnStatementNode ParseReturnStatement()
+    {
+        var start = Advance(); // return
+        ExpressionNode? argument = null;
+        if (!IsPunctuator(";") && !IsPunctuator("}") && !Is(TokenKind.EndOfFile))
+        {
+            argument = ParseExpression(0);
+        }
+
+        if (IsPunctuator(";"))
+        {
+            Advance();
+        }
+
+        var endSpan = argument?.Span ?? start.Span;
+        return new ReturnStatementNode(argument, MergeSpan(start.Span, endSpan));
+    }
+
+    private FunctionDeclarationNode ParseFunctionDeclaration()
+    {
+        var start = Advance(); // function
+        var name = ExpectIdentifier();
+        var parameters = ParseParameterList();
+        var body = ParseBlockStatement();
+        return new FunctionDeclarationNode(name.Text, parameters, body, MergeSpan(start.Span, body.Span));
+    }
+
+    private IReadOnlyList<string> ParseParameterList()
+    {
+        var parameters = new List<string>();
+        ExpectPunctuator("(");
+        while (!Is(TokenKind.EndOfFile) && !IsPunctuator(")"))
+        {
+            parameters.Add(ExpectIdentifier().Text);
+            if (IsPunctuator(","))
+            {
+                Advance();
+                continue;
+            }
+
+            break;
+        }
+
+        ExpectPunctuator(")");
+        return parameters;
+    }
+
     private ExpressionNode ParseExpression(int minBindingPower)
     {
+        if (TryParseArrowFunction(out var arrow))
+        {
+            return arrow;
+        }
+
         var left = ParsePrefix();
 
         while (true)
         {
-            if (!TryGetInfixBindingPower(Current(), out var op, out var leftBp, out var rightBp) || leftBp < minBindingPower)
+            if (IsPunctuator("("))
+            {
+                var args = ParseCallArguments();
+                var end = Previous();
+                left = new CallExpressionNode(left, args, MergeSpan(left.Span, end.Span));
+                continue;
+            }
+
+            if (IsPunctuator("=") && minBindingPower <= 9)
+            {
+                Advance();
+                var assignmentRight = ParseExpression(10);
+                left = new AssignmentExpressionNode(left, assignmentRight, MergeSpan(left.Span, assignmentRight.Span));
+                continue;
+            }
+
+            if (!TryGetInfixBindingPower(Current(), out _, out var leftBp, out var rightBp) || leftBp < minBindingPower)
             {
                 break;
             }
@@ -125,6 +287,100 @@ public sealed class JsParser
         throw new JsParserException($"Unexpected token '{token.Text}' ({token.Kind}).");
     }
 
+    private bool TryParseArrowFunction(out ExpressionNode expression)
+    {
+        expression = null!;
+        var saved = _index;
+
+        if (Current().Kind == TokenKind.Identifier && PeekIsPunctuator(1, "=") && PeekIsPunctuator(2, ">"))
+        {
+            var parameter = Advance().Text;
+            Advance(); // =
+            Advance(); // >
+            expression = ParseArrowFunctionBody(new[] { parameter }, _tokens[saved].Span);
+            return true;
+        }
+
+        if (IsPunctuator("("))
+        {
+            Advance();
+            var parameters = new List<string>();
+            var valid = true;
+            if (!IsPunctuator(")"))
+            {
+                while (true)
+                {
+                    if (Current().Kind != TokenKind.Identifier)
+                    {
+                        valid = false;
+                        break;
+                    }
+
+                    parameters.Add(Advance().Text);
+                    if (IsPunctuator(","))
+                    {
+                        Advance();
+                        continue;
+                    }
+
+                    break;
+                }
+            }
+
+            if (!valid || !IsPunctuator(")"))
+            {
+                _index = saved;
+                return false;
+            }
+
+            Advance(); // )
+            if (!(IsPunctuator("=") && PeekIsPunctuator(1, ">")))
+            {
+                _index = saved;
+                return false;
+            }
+
+            Advance(); // =
+            Advance(); // >
+            expression = ParseArrowFunctionBody(parameters, _tokens[saved].Span);
+            return true;
+        }
+
+        return false;
+    }
+
+    private ArrowFunctionExpressionNode ParseArrowFunctionBody(IReadOnlyList<string> parameters, SourceSpan start)
+    {
+        if (IsPunctuator("{"))
+        {
+            var block = ParseBlockStatement();
+            return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span));
+        }
+
+        var bodyExpression = ParseExpression(0);
+        return new ArrowFunctionExpressionNode(parameters, null, bodyExpression, MergeSpan(start, bodyExpression.Span));
+    }
+
+    private IReadOnlyList<ExpressionNode> ParseCallArguments()
+    {
+        var args = new List<ExpressionNode>();
+        ExpectPunctuator("(");
+        while (!Is(TokenKind.EndOfFile) && !IsPunctuator(")"))
+        {
+            args.Add(ParseExpression(0));
+            if (IsPunctuator(","))
+            {
+                Advance();
+                continue;
+            }
+
+            break;
+        }
+
+        ExpectPunctuator(")");
+        return args;
+    }
+
     private bool TryGetInfixBindingPower(Token token, out string op, out int leftBindingPower, out int rightBindingPower)
     {
         op = token.Text;
@@ -155,6 +411,8 @@ public sealed class JsParser
 
     private Token Current() => _tokens[Math.Min(_index, _tokens.Count - 1)];
 
+    private Token Previous() => _tokens[Math.Max(0, _index - 1)];
+
     private Token Advance()
     {
         var token = Current();
@@ -165,6 +423,23 @@ public sealed class JsParser
     private bool Is(TokenKind kind) => Current().Kind == kind;
 
     private bool IsPunctuator(string text) => Current().Kind == TokenKind.Punctuator && Current().Text == text;
+
+    private bool PeekIsPunctuator(int offset, string text)
+    {
+        var idx = Math.Min(_index + offset, _tokens.Count - 1);
+        var token = _tokens[idx];
+        return token.Kind == TokenKind.Punctuator && token.Text == text;
+    }
+
+    private Token ExpectIdentifier()
+    {
+        if (Current().Kind != TokenKind.Identifier)
+        {
+            throw new JsParserException($"Expected identifier, found '{Current().Text}'.");
+        }
+
+        return Advance();
+    }
 
     private void ExpectPunctuator(string text)
     {

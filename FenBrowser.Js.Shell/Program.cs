@@ -104,6 +104,54 @@ static object DumpStatement(StatementNode statement)
             expression = DumpExpression(expr.Expression),
             span = DumpSpan(expr.Span)
         },
+        BlockStatementNode block => new
+        {
+            type = "BlockStatement",
+            statements = block.Statements.Select(DumpStatement).ToArray(),
+            span = DumpSpan(block.Span)
+        },
+        VariableDeclarationStatementNode decl => new
+        {
+            type = "VariableDeclaration",
+            kind = decl.Kind,
+            declarations = decl.Declarators.Select(d => new
+            {
+                type = "VariableDeclarator",
+                id = d.Identifier,
+                init = d.Initializer is null ? null : DumpExpression(d.Initializer),
+                span = DumpSpan(d.Span)
+            }).ToArray(),
+            span = DumpSpan(decl.Span)
+        },
+        IfStatementNode ifs => new
+        {
+            type = "IfStatement",
+            test = DumpExpression(ifs.Test),
+            consequent = DumpStatement(ifs.Consequent),
+            alternate = ifs.Alternate is null ? null : DumpStatement(ifs.Alternate),
+            span = DumpSpan(ifs.Span)
+        },
+        WhileStatementNode ws => new
+        {
+            type = "WhileStatement",
+            test = DumpExpression(ws.Test),
+            body = DumpStatement(ws.Body),
+            span = DumpSpan(ws.Span)
+        },
+        ReturnStatementNode ret => new
+        {
+            type = "ReturnStatement",
+            argument = ret.Argument is null ? null : DumpExpression(ret.Argument),
+            span = DumpSpan(ret.Span)
+        },
+        FunctionDeclarationNode fn => new
+        {
+            type = "FunctionDeclaration",
+            name = fn.Name,
+            parameters = fn.Parameters.ToArray(),
+            body = DumpStatement(fn.Body),
+            span = DumpSpan(fn.Span)
+        },
         _ => new { type = "UnknownStatement", span = DumpSpan(statement.Span) }
     };
 }
@@ -123,6 +171,28 @@ static object DumpExpression(ExpressionNode expression)
             left = DumpExpression(bin.Left),
             right = DumpExpression(bin.Right),
             span = DumpSpan(bin.Span)
+        },
+        AssignmentExpressionNode assign => new
+        {
+            type = "AssignmentExpression",
+            left = DumpExpression(assign.Left),
+            right = DumpExpression(assign.Right),
+            span = DumpSpan(assign.Span)
+        },
+        CallExpressionNode call => new
+        {
+            type = "CallExpression",
+            callee = DumpExpression(call.Callee),
+            arguments = call.Arguments.Select(DumpExpression).ToArray(),
+            span = DumpSpan(call.Span)
+        },
+        ArrowFunctionExpressionNode arrow => new
+        {
+            type = "ArrowFunctionExpression",
+            parameters = arrow.Parameters.ToArray(),
+            blockBody = arrow.BlockBody is null ? null : DumpStatement(arrow.BlockBody),
+            expressionBody = arrow.ExpressionBody is null ? null : DumpExpression(arrow.ExpressionBody),
+            span = DumpSpan(arrow.Span)
         },
         _ => new { type = "UnknownExpression", span = DumpSpan(expression.Span) }
     };

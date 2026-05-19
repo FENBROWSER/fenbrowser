@@ -48,4 +48,49 @@ public sealed class ParserTests
         var ex = Assert.Throws<UnsupportedFeatureException>(() => JsParser.ParseScript(new SourceText("class A {}")));
         Assert.Equal("class", ex.FeatureName);
     }
+
+    [Fact]
+    public void ParsesVariableDeclarationsAndAssignments()
+    {
+        var program = JsParser.ParseScript(new SourceText("let x = 1; x = x + 1;"));
+        Assert.Equal(2, program.Body.Count);
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        Assert.Equal("let", decl.Kind);
+        Assert.Single(decl.Declarators);
+        Assert.Equal("x", decl.Declarators[0].Identifier);
+
+        var exprStmt = Assert.IsType<ExpressionStatementNode>(program.Body[1]);
+        Assert.IsType<AssignmentExpressionNode>(exprStmt.Expression);
+    }
+
+    [Fact]
+    public void ParsesIfElseAndWhileStatements()
+    {
+        var source = "if (x) { y = 1; } else { y = 2; } while (y) y = y - 1;";
+        var program = JsParser.ParseScript(new SourceText(source));
+        Assert.Equal(2, program.Body.Count);
+        Assert.IsType<IfStatementNode>(program.Body[0]);
+        Assert.IsType<WhileStatementNode>(program.Body[1]);
+    }
+
+    [Fact]
+    public void ParsesFunctionDeclarationWithReturn()
+    {
+        var program = JsParser.ParseScript(new SourceText("function add(a,b){ return a + b; }"));
+        var fn = Assert.IsType<FunctionDeclarationNode>(Assert.Single(program.Body));
+        Assert.Equal("add", fn.Name);
+        Assert.Equal(new[] { "a", "b" }, fn.Parameters);
+        Assert.Single(fn.Body.Statements);
+        Assert.IsType<ReturnStatementNode>(fn.Body.Statements[0]);
+    }
+
+    [Fact]
+    public void ParsesArrowFunctionExpressionBody()
+    {
+        var program = JsParser.ParseScript(new SourceText("const inc = x => x + 1;"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(Assert.Single(program.Body));
+        var arrow = Assert.IsType<ArrowFunctionExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Single(arrow.Parameters);
+        Assert.NotNull(arrow.ExpressionBody);
+    }
 }
