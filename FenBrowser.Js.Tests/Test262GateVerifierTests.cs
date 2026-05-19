@@ -4678,6 +4678,47 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ReportIncludesUncategorizedFailureCountForWhitespaceCategory()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/uncategorized-whitespace.js",
+                        status = "Failed",
+                        category = "   "
+                    }
+                ],
+                failures:
+                [
+                    new
+                    {
+                        relativePath = "test/uncategorized-whitespace.js",
+                        classification = "parser-error",
+                        expected = false
+                    }
+                ],
+                crashes: 0));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            using var report = JsonDocument.Parse(result.ReportJson);
+            var uncategorized = report.RootElement.GetProperty("uncategorizedFailures").GetInt32();
+            Assert.Equal(1, uncategorized);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_ReportIncludesZeroUncategorizedFailuresWhenPassing()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
