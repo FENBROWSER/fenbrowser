@@ -811,11 +811,28 @@ public sealed class Test262Runner
                 if (!ReferenceEquals(completedTask, executeTask))
                 {
                     timedOut++;
-                    failures.Add(new { path = file, relativePath, classification = "timeout", message = $"Runtime execution exceeded timeout of {timeoutMs} ms." });
+                    var expected = FindMatchingExpectation(expectations, relativePath, "Timeout");
+                    if (expected is not null)
+                    {
+                        expectedFailures++;
+                    }
+
+                    failures.Add(new
+                    {
+                        path = file,
+                        relativePath,
+                        classification = "timeout",
+                        message = $"Runtime execution exceeded timeout of {timeoutMs} ms.",
+                        expected = expected is not null,
+                        expectedReason = expected?.Reason,
+                        expectedOwner = expected?.Owner,
+                        expectedArea = expected?.Area,
+                        expiresAtMilestone = expected?.ExpiresAtMilestone
+                    });
                     tests.Add(new
                     {
                         path = relativePath,
-                        status = "TimedOut",
+                        status = expected is null ? "TimedOut" : "ExpectedFailure",
                         durationMs = timeoutMs,
                         features = frontmatter.Features,
                         flags = frontmatter.Flags,
@@ -836,11 +853,28 @@ public sealed class Test262Runner
                 if (expectsSyntaxError || expectsRuntimeThrow)
                 {
                     runtimeErrors++;
-                    failures.Add(new { path = file, relativePath, classification = "runtime-error", message = "Expected failure did not occur in runtime-subset execution." });
+                    var expected = FindMatchingExpectation(expectations, relativePath, "RuntimeError");
+                    if (expected is not null)
+                    {
+                        expectedFailures++;
+                    }
+
+                    failures.Add(new
+                    {
+                        path = file,
+                        relativePath,
+                        classification = "runtime-error",
+                        message = "Expected failure did not occur in runtime-subset execution.",
+                        expected = expected is not null,
+                        expectedReason = expected?.Reason,
+                        expectedOwner = expected?.Owner,
+                        expectedArea = expected?.Area,
+                        expiresAtMilestone = expected?.ExpiresAtMilestone
+                    });
                     tests.Add(new
                     {
                         path = relativePath,
-                        status = "Failed",
+                        status = expected is null ? "Failed" : "ExpectedFailure",
                         durationMs = 0,
                         features = frontmatter.Features,
                         flags = frontmatter.Flags,
@@ -859,7 +893,7 @@ public sealed class Test262Runner
                 passed++;
                 if (expectations is not null)
                 {
-                    var expected = expectations.Entries.FirstOrDefault(e => e.Matches(relativePath, "ParserError") || e.Matches(relativePath, "UnsupportedFeature") || e.Matches(relativePath, "Crash"));
+                    var expected = FindAnyMatchingExpectation(expectations, relativePath);
                     if (expected is not null)
                     {
                         unexpectedPasses++;
@@ -926,11 +960,29 @@ public sealed class Test262Runner
                 }
 
                 unsupported++;
-                failures.Add(new { path = file, relativePath, classification = "unsupported", feature = ex.FeatureName, location = $"{ex.Span.Line}:{ex.Span.Column}" });
+                var expected = FindMatchingExpectation(expectations, relativePath, "UnsupportedFeature");
+                if (expected is not null)
+                {
+                    expectedFailures++;
+                }
+
+                failures.Add(new
+                {
+                    path = file,
+                    relativePath,
+                    classification = "unsupported",
+                    feature = ex.FeatureName,
+                    location = $"{ex.Span.Line}:{ex.Span.Column}",
+                    expected = expected is not null,
+                    expectedReason = expected?.Reason,
+                    expectedOwner = expected?.Owner,
+                    expectedArea = expected?.Area,
+                    expiresAtMilestone = expected?.ExpiresAtMilestone
+                });
                 tests.Add(new
                 {
                     path = relativePath,
-                    status = "UnsupportedFeature",
+                    status = expected is null ? "UnsupportedFeature" : "ExpectedFailure",
                     durationMs = 0,
                     features = frontmatter.Features,
                     flags = frontmatter.Flags,
@@ -969,11 +1021,28 @@ public sealed class Test262Runner
                 }
 
                 parserErrors++;
-                failures.Add(new { path = file, relativePath, classification = "parser-error", message = ex.Message });
+                var expected = FindMatchingExpectation(expectations, relativePath, "ParserError");
+                if (expected is not null)
+                {
+                    expectedFailures++;
+                }
+
+                failures.Add(new
+                {
+                    path = file,
+                    relativePath,
+                    classification = "parser-error",
+                    message = ex.Message,
+                    expected = expected is not null,
+                    expectedReason = expected?.Reason,
+                    expectedOwner = expected?.Owner,
+                    expectedArea = expected?.Area,
+                    expiresAtMilestone = expected?.ExpiresAtMilestone
+                });
                 tests.Add(new
                 {
                     path = relativePath,
-                    status = "Failed",
+                    status = expected is null ? "Failed" : "ExpectedFailure",
                     durationMs = 0,
                     features = frontmatter.Features,
                     flags = frontmatter.Flags,
@@ -1012,11 +1081,28 @@ public sealed class Test262Runner
                 }
 
                 runtimeErrors++;
-                failures.Add(new { path = file, relativePath, classification = "runtime-error", message = "Unhandled runtime throw." });
+                var expected = FindMatchingExpectation(expectations, relativePath, "RuntimeError");
+                if (expected is not null)
+                {
+                    expectedFailures++;
+                }
+
+                failures.Add(new
+                {
+                    path = file,
+                    relativePath,
+                    classification = "runtime-error",
+                    message = "Unhandled runtime throw.",
+                    expected = expected is not null,
+                    expectedReason = expected?.Reason,
+                    expectedOwner = expected?.Owner,
+                    expectedArea = expected?.Area,
+                    expiresAtMilestone = expected?.ExpiresAtMilestone
+                });
                 tests.Add(new
                 {
                     path = relativePath,
-                    status = "Failed",
+                    status = expected is null ? "Failed" : "ExpectedFailure",
                     durationMs = 0,
                     features = frontmatter.Features,
                     flags = frontmatter.Flags,
@@ -1055,11 +1141,28 @@ public sealed class Test262Runner
                 }
 
                 runtimeErrors++;
-                failures.Add(new { path = file, relativePath, classification = "runtime-error", message = ex.Message });
+                var expected = FindMatchingExpectation(expectations, relativePath, "RuntimeError");
+                if (expected is not null)
+                {
+                    expectedFailures++;
+                }
+
+                failures.Add(new
+                {
+                    path = file,
+                    relativePath,
+                    classification = "runtime-error",
+                    message = ex.Message,
+                    expected = expected is not null,
+                    expectedReason = expected?.Reason,
+                    expectedOwner = expected?.Owner,
+                    expectedArea = expected?.Area,
+                    expiresAtMilestone = expected?.ExpiresAtMilestone
+                });
                 tests.Add(new
                 {
                     path = relativePath,
-                    status = "Failed",
+                    status = expected is null ? "Failed" : "ExpectedFailure",
                     durationMs = 0,
                     features = frontmatter.Features,
                     flags = frontmatter.Flags,
@@ -1098,11 +1201,28 @@ public sealed class Test262Runner
                 }
 
                 crashes++;
-                failures.Add(new { path = file, relativePath, classification = "crash", message = ex.Message });
+                var expected = FindMatchingExpectation(expectations, relativePath, "Crash");
+                if (expected is not null)
+                {
+                    expectedFailures++;
+                }
+
+                failures.Add(new
+                {
+                    path = file,
+                    relativePath,
+                    classification = "crash",
+                    message = ex.Message,
+                    expected = expected is not null,
+                    expectedReason = expected?.Reason,
+                    expectedOwner = expected?.Owner,
+                    expectedArea = expected?.Area,
+                    expiresAtMilestone = expected?.ExpiresAtMilestone
+                });
                 tests.Add(new
                 {
                     path = relativePath,
-                    status = "Crashed",
+                    status = expected is null ? "Crashed" : "ExpectedFailure",
                     durationMs = 0,
                     features = frontmatter.Features,
                     flags = frontmatter.Flags,
@@ -1270,5 +1390,25 @@ public sealed class Test262Runner
         }
 
         return false;
+    }
+
+    private static Test262ExpectationEntry? FindMatchingExpectation(Test262Expectations? expectations, string relativePath, params string[] statuses)
+    {
+        if (expectations is null || statuses.Length == 0)
+        {
+            return null;
+        }
+
+        return expectations.Entries.FirstOrDefault(entry => statuses.Any(status => entry.Matches(relativePath, status)));
+    }
+
+    private static Test262ExpectationEntry? FindAnyMatchingExpectation(Test262Expectations? expectations, string relativePath)
+    {
+        if (expectations is null)
+        {
+            return null;
+        }
+
+        return expectations.Entries.FirstOrDefault(entry => entry.Matches(relativePath, entry.Status));
     }
 }
