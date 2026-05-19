@@ -30,8 +30,8 @@ private bool _indexed = false;
 
 // PERF: Style cache to avoid recomputing styles for unchanged elements
 private readonly Dictionary<Node, CssComputed> _styleCache = new Dictionary<Node, CssComputed>();
-private int _domGeneration = 0;
-        
+
+
         // PERF: Track which pseudo-elements have any rules to skip cascade for unused ones
         private HashSet<string> _pseudoElementsWithRules;
         // Compatibility list for legacy single-colon pseudo-elements that may be

@@ -320,8 +320,7 @@ namespace FenBrowser.FenEngine.Core.Types
 
                  for(int k=0; k<Length; k++)
                  {
-                     var v = obj.Get(k.ToString());
-                     SetIndex(k, v != null ? v.ToNumber() : 0);
+                     SetIndex(k, obj.Get(k.ToString()).ToNumber());
                  }
              }
              else

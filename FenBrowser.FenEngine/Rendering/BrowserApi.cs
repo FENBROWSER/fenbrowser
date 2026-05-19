@@ -1919,7 +1919,7 @@ pre {{
                 }
 
             }
-            catch (Exception ex)
+            catch
             {
             }
 
@@ -6121,9 +6121,6 @@ pre {{
         private bool _hasLastMouseMovePosition;
 
         // Storage for async script callback result
-        private object _asyncScriptResult = null;
-        private bool _asyncScriptDone = false;
-        private bool _pointerDown = false;
         private readonly object _asyncScriptLock = new object();
 
         public async Task<object> ExecuteAsyncScriptAsync(string script, object[] args, int timeoutMs)
@@ -6186,12 +6183,6 @@ pre {{
                         }
                     } catch (e) {}
                 })();";
-            // Reset state
-            lock (_asyncScriptLock)
-            {
-                _asyncScriptResult = null;
-                _asyncScriptDone = false;
-            }
 
             // Create a unique callback ID for this execution.
             var callbackId = Guid.NewGuid().ToString("N");
@@ -6763,7 +6754,6 @@ pre {{
                         break;
 
                     case "pointerdown":
-                        _pointerDown = true;
                         // Simulate click on element at current position
                         var elementAtPoint = FindElementAtPoint(_pointerX, _pointerY);
                         if (elementAtPoint != null)
@@ -6774,7 +6764,6 @@ pre {{
                         break;
 
                     case "pointerup":
-                        _pointerDown = false;
                         break;
 
                     case "pause":
@@ -7696,7 +7685,7 @@ pre {{
             HashSet<FenBrowser.FenEngine.Core.Interfaces.IObject> visited,
             int depth)
         {
-            if (fenValue == null)
+            if (fenValue.IsNull || fenValue.IsUndefined)
             {
                 return null;
             }
@@ -7931,8 +7920,7 @@ pre {{
             try
             {
                 var frameElementValue = value.Get("frameElement");
-                if (frameElementValue != null &&
-                    frameElementValue.IsObject &&
+                if (frameElementValue.IsObject &&
                     TryExtractDomElementFromWrapper(frameElementValue.AsObject(), out var frameElement) &&
                     frameElement != null)
                 {
@@ -7953,8 +7941,7 @@ pre {{
             try
             {
                 var selfValue = value.Get("window");
-                if (selfValue != null &&
-                    selfValue.IsObject &&
+                if (selfValue.IsObject &&
                     ReferenceEquals(selfValue.AsObject(), value))
                 {
                     isFrameReference = false;
@@ -8009,7 +7996,7 @@ pre {{
             if (value is FenBrowser.FenEngine.Core.FenObject fenObj)
             {
                 var lengthValue = fenObj.Get("length");
-                if (lengthValue != null && lengthValue.IsNumber)
+                if (lengthValue.IsNumber)
                 {
                     var length = Math.Max(0, (int)lengthValue.AsNumber());
                     var list = new List<object>(length);
@@ -9160,7 +9147,6 @@ pre {{
         public Task ReleaseActionsAsync()
         {
             // Release all pressed keys and pointer buttons
-            _pointerDown = false;
             _pressedKeys.Clear();
             return Task.CompletedTask;
         }

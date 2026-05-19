@@ -284,7 +284,6 @@ namespace FenBrowser.FenEngine.Rendering
             double scrollOffset, double scrollMax)
         {
             string axis = "block";
-            double timelineStart = 0;
             double timelineEnd = scrollMax;
 
             // Parse animation-timeline value

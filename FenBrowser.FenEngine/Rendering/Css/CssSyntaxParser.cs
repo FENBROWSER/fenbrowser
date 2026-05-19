@@ -722,8 +722,6 @@ namespace FenBrowser.FenEngine.Rendering.Css
             }
         }
 
-        private int _nestingLevel = 0;
-
         private void ConsumeSimpleBlock()
         {
             // Iterative implementation to avoid StackOverflow and improve performance

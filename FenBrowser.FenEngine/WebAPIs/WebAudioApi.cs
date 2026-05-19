@@ -906,12 +906,8 @@ namespace FenBrowser.FenEngine.WebAPIs
         {
             internal readonly FnAudioParam _playbackRate;
             internal readonly FnAudioParam _detune;
-            private FnAudioBuffer _buffer;
             private bool _started;
             private bool _stopped;
-            private bool _loop;
-            private double _loopStart;
-            private double _loopEnd;
 
             public FnAudioBufferSourceNode(IObject context) : base(context)
             {

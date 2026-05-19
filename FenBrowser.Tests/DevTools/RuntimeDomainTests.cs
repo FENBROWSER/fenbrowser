@@ -158,7 +158,12 @@ public class RuntimeDomainTests
         public List<string> EvaluatedScripts { get; } = new();
 
         public Task<string> SendProtocolCommandAsync(string json) => Task.FromResult(json);
+#pragma warning disable CS0067
         public event Action<string>? ProtocolEventReceived;
+        public event Action? DomChanged;
+        public event Action<ConsoleMessageInfo>? ConsoleMessageAdded;
+        public event Action<NetworkRequestInfo>? NetworkRequestUpdated;
+#pragma warning restore CS0067
         public IEnumerable<NetworkRequestInfo> GetNetworkRequests() => Array.Empty<NetworkRequestInfo>();
         public IEnumerable<ConsoleMessageInfo> GetConsoleMessages() => Array.Empty<ConsoleMessageInfo>();
         public async Task<object?> EvaluateScriptAsync(string script)
@@ -170,9 +175,6 @@ public class RuntimeDomainTests
         public void ScrollToElement(Element element) { }
         public IEnumerable<ScriptSourceInfo> GetScriptSources() => Array.Empty<ScriptSourceInfo>();
         public string? CurrentUrl => "about:blank";
-        public event Action? DomChanged;
-        public event Action<ConsoleMessageInfo>? ConsoleMessageAdded;
-        public event Action<NetworkRequestInfo>? NetworkRequestUpdated;
         public void RequestCursorChange(CursorType cursor) { }
         public void CopyToClipboard(string text) { }
         public void SetCapture() { }

@@ -85,7 +85,6 @@ namespace FenBrowser.FenEngine.Rendering
     /// <summary>
     /// Clean, dependency-free wrapper suitable for WP8.1 without WebView.
     /// </summary>
-#nullable enable
     public sealed class CustomHtmlEngine : IDisposable
     {
         private const int IncrementalParseRepaintMaxCount = 8;
@@ -343,7 +342,6 @@ namespace FenBrowser.FenEngine.Rendering
         private JavaScriptEngine _activeJs;
         public BrowserCookieJar CookieJar { get; set; } = new BrowserCookieJar();
         private readonly System.Threading.SemaphoreSlim _repaintGate = new System.Threading.SemaphoreSlim(1, 1);
-        private int _repaintScheduled;
         private readonly object _uiDispatcher;
         
         // Cache view/renderer to avoid full recreation

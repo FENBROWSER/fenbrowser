@@ -66,7 +66,6 @@ public class AddressBarWidget : Widget
     /// </summary>
     private List<string> _suggestions = new();
 
-    private int _selectedSuggestionIndex = -1;
     private bool _showSuggestions = false;
 
     // Styling
@@ -675,7 +674,6 @@ public class AddressBarWidget : Widget
         {
             _suggestions = suggestions ?? new List<string>();
             _showSuggestions = _suggestions.Count > 0;
-            _selectedSuggestionIndex = -1;
             Invalidate();
         });
     }

@@ -32,8 +32,8 @@ namespace FenBrowser.FenEngine.Telemetry
         private long _frameCount;
         private long _layoutTimeTotal;
         private long _paintTimeTotal;
-        private long _gcPressure;
-        
+
+
         // Memory tracking
         private long _peakMemoryUsage;
         private readonly Process _currentProcess;

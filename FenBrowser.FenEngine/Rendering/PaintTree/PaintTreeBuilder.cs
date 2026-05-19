@@ -171,13 +171,11 @@ paintNode.ClipRect = (style?.Overflow?.ToLowerInvariant() == "hidden") ? box.Pad
             // 3. Normal Flow (Block/Inline/Float/Rel-Auto) -> Tree (preserves hierarchy and clip)
 
             StackingContext newContext = null;
-            bool isLayer = false;
 
             if (paintNode.CreatesStackingContext)
             {
                 newContext = GetStackingContext(node); newContext.RootNode = paintNode;
                 currentContext.AddChildContext(newContext);
-                isLayer = true;
             }
             else
             {
@@ -202,7 +200,6 @@ paintNode.ClipRect = (style?.Overflow?.ToLowerInvariant() == "hidden") ? box.Pad
                 if (isOutFlow)
                 {
                     currentContext.AddNode(paintNode); // Add to PositionedLayers
-                    isLayer = true;
                 }
                 else
                 {

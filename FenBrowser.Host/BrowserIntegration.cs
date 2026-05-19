@@ -101,9 +101,12 @@ public class BrowserIntegration
     public event Action<float, float> ScrollChanged;
     
     // --- NEW: Structured Navigation Events (10/10) ---
+    // Reserved for external subscribers; raising sites are pending in the navigation refactor.
+#pragma warning disable CS0067
     public event Action<NavigationEventArgs> OnNavigationStarted;
     public event Action<NavigationEventArgs> OnNavigationCompleted;
     public event Action<NavigationErrorArgs> OnNavigationFailed;
+#pragma warning restore CS0067
     
     // --- Scroll Physics ---
     private readonly ScrollPhysics _scrollPhysics = new();

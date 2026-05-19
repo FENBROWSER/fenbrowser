@@ -12,7 +12,6 @@ namespace FenBrowser.FenEngine.Layout
     public class ScrollAnchoring
     {
         private Node _anchorNode;
-        private float _lastAnchorOffset; // Offset of anchor top from scroll top
 
         /// <summary>
         /// Selects a candidate node to anchor to before layout happens.

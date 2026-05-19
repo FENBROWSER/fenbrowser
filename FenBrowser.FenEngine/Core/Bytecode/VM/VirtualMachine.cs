@@ -918,7 +918,6 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
         // Cooperative cancellation: checked every CANCEL_CHECK_INTERVAL instructions in RunLoop
         private CancellationToken _cancellationToken;
         private const int CANCEL_CHECK_INTERVAL = 4096;
-        private int _instructionsSinceCancelCheck;
 
         // Resource limits — instruction count and memory cap (checked in the amortized interval, zero per-instruction overhead)
         private long _totalInstructionCount;
@@ -2059,7 +2058,6 @@ namespace FenBrowser.FenEngine.Core.Bytecode.VM
             Security.IResourceLimits limits)
         {
             _cancellationToken = cancellationToken;
-            _instructionsSinceCancelCheck = 0;
             _totalInstructionCount = 0;
             _limits = limits;
             _generatorYielded = false;
@@ -2148,7 +2146,6 @@ run_loop_restart:
                         if (++dispatchCount >= CANCEL_CHECK_INTERVAL)
                         {
                             dispatchCount = 0;
-                            _instructionsSinceCancelCheck = 0;
                             if (_cancellationToken.IsCancellationRequested)
                                 throw new OperationCanceledException(_cancellationToken);
 

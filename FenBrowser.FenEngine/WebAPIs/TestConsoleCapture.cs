@@ -22,8 +22,8 @@ namespace FenBrowser.FenEngine.WebAPIs
     {
         private static bool _capturing = false;
         private static List<ConsoleEntry> _entries = new List<ConsoleEntry>();
-        private static Action<string> _originalConsoleHandler;
-        
+
+
         public class ConsoleEntry
         {
             public DateTime Timestamp { get; set; }

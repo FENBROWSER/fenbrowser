@@ -30,8 +30,11 @@ namespace FenBrowser.Host.ProcessIsolation
         private readonly Stopwatch _lifetimeStopwatch;
         private long _totalFramesRendered;
         private long _totalActivations;
+        // Reserved for IPC byte accounting; not yet wired up to NetworkProcessIpc dispatch.
+#pragma warning disable CS0649
         private long _totalBytesSent;
         private long _totalBytesReceived;
+#pragma warning restore CS0649
 
         // Underlying session and process
         internal RendererChildSession Session { get; private set; }

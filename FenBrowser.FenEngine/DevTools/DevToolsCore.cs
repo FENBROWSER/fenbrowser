@@ -1,4 +1,3 @@
-#nullable enable
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using System;

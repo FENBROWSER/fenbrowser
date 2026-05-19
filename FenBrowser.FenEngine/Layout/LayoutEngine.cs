@@ -27,8 +27,8 @@ namespace FenBrowser.FenEngine.Layout
         private readonly LayoutContext _context;
         private readonly ILayoutComputer _computer;
         private readonly FenBrowser.FenEngine.Layout.Tree.LayoutBoxStore _boxStore = new FenBrowser.FenEngine.Layout.Tree.LayoutBoxStore();
-        private int _layoutDepth = 0;
-        
+
+
         /// <summary>
         /// Creates a new layout engine with the given context and computer.
         /// </summary>

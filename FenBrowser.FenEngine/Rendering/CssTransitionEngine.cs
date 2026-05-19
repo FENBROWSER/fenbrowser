@@ -282,14 +282,14 @@ namespace FenBrowser.FenEngine.Rendering
                 case "right": return (float?)style.Right;
                 case "bottom": return (float?)style.Bottom;
                 case "font-size": return (float?)style.FontSize;
-                case "margin-left": return style.Margin != null ? (float?)style.Margin.Left : null;
-                case "margin-right": return style.Margin != null ? (float?)style.Margin.Right : null;
-                case "margin-top": return style.Margin != null ? (float?)style.Margin.Top : null;
-                case "margin-bottom": return style.Margin != null ? (float?)style.Margin.Bottom : null;
-                case "padding-left": return style.Padding != null ? (float?)style.Padding.Left : null;
-                case "padding-right": return style.Padding != null ? (float?)style.Padding.Right : null;
-                case "padding-top": return style.Padding != null ? (float?)style.Padding.Top : null;
-                case "padding-bottom": return style.Padding != null ? (float?)style.Padding.Bottom : null;
+                case "margin-left": return (float?)style.Margin.Left;
+                case "margin-right": return (float?)style.Margin.Right;
+                case "margin-top": return (float?)style.Margin.Top;
+                case "margin-bottom": return (float?)style.Margin.Bottom;
+                case "padding-left": return (float?)style.Padding.Left;
+                case "padding-right": return (float?)style.Padding.Right;
+                case "padding-top": return (float?)style.Padding.Top;
+                case "padding-bottom": return (float?)style.Padding.Bottom;
                 default: return null;
             }
         }
@@ -319,20 +319,16 @@ namespace FenBrowser.FenEngine.Rendering
                     break;
                 case "font-size": style.FontSize = value; break;
                 case "margin-left":
-                    var ml = style.Margin != null ? style.Margin : new Thickness();
-                    style.Margin = new Thickness(value, ml.Top, ml.Right, ml.Bottom);
+                    style.Margin = new Thickness(value, style.Margin.Top, style.Margin.Right, style.Margin.Bottom);
                     break;
                 case "margin-right":
-                    var mr = style.Margin != null ? style.Margin : new Thickness();
-                    style.Margin = new Thickness(mr.Left, mr.Top, value, mr.Bottom);
+                    style.Margin = new Thickness(style.Margin.Left, style.Margin.Top, value, style.Margin.Bottom);
                     break;
                 case "margin-top":
-                    var mt = style.Margin != null ? style.Margin : new Thickness();
-                    style.Margin = new Thickness(mt.Left, value, mt.Right, mt.Bottom);
+                    style.Margin = new Thickness(style.Margin.Left, value, style.Margin.Right, style.Margin.Bottom);
                     break;
                 case "margin-bottom":
-                    var mb = style.Margin != null ? style.Margin : new Thickness();
-                    style.Margin = new Thickness(mb.Left, mb.Top, mb.Right, value);
+                    style.Margin = new Thickness(style.Margin.Left, style.Margin.Top, style.Margin.Right, value);
                     break;
             }
         }

@@ -26,7 +26,6 @@ public class RuntimeDomain : IProtocolHandler
     private readonly Queue<string> _remoteObjectOrder = new();
     private readonly object _remoteObjectsLock = new();
     private long _nextRemoteObjectId;
-    private bool _enabled;
     private const int MaxRetainedRemoteObjects = 512;
 
     public RuntimeDomain(IDevToolsHost host)
@@ -50,13 +49,11 @@ public class RuntimeDomain : IProtocolHandler
 
     private Task<ProtocolResponse> EnableAsync(ProtocolRequest request)
     {
-        _enabled = true;
         return Task.FromResult(ProtocolResponse.Success(request.Id, new { }));
     }
 
     private Task<ProtocolResponse> DisableAsync(ProtocolRequest request)
     {
-        _enabled = false;
         lock (_remoteObjectsLock)
         {
             _remoteObjects.Clear();

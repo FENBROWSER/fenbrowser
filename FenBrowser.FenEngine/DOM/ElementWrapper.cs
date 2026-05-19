@@ -2713,14 +2713,13 @@ namespace FenBrowser.FenEngine.DOM
                     {
                         var obj = arg.AsObject();
                         var lenVal = obj.Get("length");
-                        if (lenVal != null && lenVal.IsNumber)
+                        if (lenVal.IsNumber)
                         {
                             int len = (int)lenVal.ToNumber();
                             var bytes = new byte[len];
                             for (int i = 0; i < len; i++)
                             {
-                                var v = obj.Get(i.ToString());
-                                bytes[i] = v != null ? (byte)v.ToNumber() : (byte)0;
+                                bytes[i] = (byte)obj.Get(i.ToString()).ToNumber();
                             }
                             return bytes;
                         }
@@ -2733,14 +2732,13 @@ namespace FenBrowser.FenEngine.DOM
                     {
                         var obj = arg.AsObject();
                         var lenVal = obj.Get("length");
-                        if (lenVal != null && lenVal.IsNumber)
+                        if (lenVal.IsNumber)
                         {
                             int len = (int)lenVal.ToNumber();
                             var floats = new float[len];
                             for (int i = 0; i < len; i++)
                             {
-                                var v = obj.Get(i.ToString());
-                                floats[i] = v != null ? (float)v.ToNumber() : 0f;
+                                floats[i] = (float)obj.Get(i.ToString()).ToNumber();
                             }
                             return floats;
                         }
@@ -5464,11 +5462,11 @@ namespace FenBrowser.FenEngine.DOM
             if (options != null)
             {
                 var delegatesFocus = options.Get("delegatesFocus");
-                if (delegatesFocus != null && delegatesFocus.IsBoolean)
+                if (delegatesFocus.IsBoolean)
                     init.DelegatesFocus = delegatesFocus.ToBoolean();
-                    
+
                 var slotAssignment = options.Get("slotAssignment");
-                if (slotAssignment != null && slotAssignment.ToString() == "manual")
+                if (slotAssignment.ToString() == "manual")
                     init.SlotAssignment = SlotAssignmentMode.Manual;
             }
 

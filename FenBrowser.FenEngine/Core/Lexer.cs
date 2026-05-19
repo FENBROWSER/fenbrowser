@@ -743,7 +743,6 @@ namespace FenBrowser.FenEngine.Core
                     token = new Token(TokenType.At, "@", _line, startColumn);
                     ReadChar();
                     break;
-                    break;
                 case '\0':
                     token = new Token(TokenType.Eof, "", _line, startColumn);
                     break;

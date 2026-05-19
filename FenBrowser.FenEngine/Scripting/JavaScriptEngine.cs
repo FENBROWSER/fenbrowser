@@ -1476,8 +1476,6 @@ namespace FenBrowser.FenEngine.Scripting
 
         // timers
         private readonly Dictionary<int, System.Threading.Timer> _timers = new Dictionary<int, System.Threading.Timer>();
-        // fields restored
-        private int _nextTimerId = 1;
         private readonly Dictionary<int, CancellationTokenSource> _geolocationWatches = new Dictionary<int, CancellationTokenSource>();
         private readonly object _geolocationWatchLock = new object();
         private int _nextGeolocationWatchId = 0;
@@ -1495,9 +1493,8 @@ namespace FenBrowser.FenEngine.Scripting
         private Dictionary<string, ResponseEntry> _responseRegistry = new Dictionary<string, ResponseEntry>();
         private int _responseCapacity = 100;
         private LinkedList<string> _responseLru = new LinkedList<string>();
-        // private int _scriptCap = 0; // Removing unused
-        private int _inlineThreshold = 1024;
-        
+
+
 
         private void SetupMutationObserver()
         {
@@ -1950,11 +1947,6 @@ namespace FenBrowser.FenEngine.Scripting
         }
 
 
-        // XHR state
-        // (XhrState is defined later)
-        private readonly Dictionary<string, XhrState> _xhr = new Dictionary<string, XhrState>(StringComparer.Ordinal);
-        private readonly object _xhrLock = new object();
-
         // flags
         private bool _allowExternalScripts;
         private bool _executeInlineScriptsOnInnerHTML;
@@ -2081,7 +2073,6 @@ namespace FenBrowser.FenEngine.Scripting
         // DOM visual registry
         private static readonly System.Collections.Generic.Dictionary<Element, System.WeakReference> _visualMap =
             new System.Collections.Generic.Dictionary<Element, System.WeakReference>(System.Collections.Generic.EqualityComparer<Element>.Default);
-        private static System.WeakReference _visualRoot;
 
         // DOM root exposed to the engine
         private Node _domRoot;
@@ -2133,13 +2124,6 @@ namespace FenBrowser.FenEngine.Scripting
         // Optional external script fetcher (e.g., wired to ResourceManager.FetchTextAsync)
         // Signature: (uri, referer) => script text or null.
         public Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
-
-        // Small in-memory LRU cache for script text, keyed by absolute URL.
-        private sealed class ScriptCacheEntry { public string Body; }
-        private readonly Dictionary<string, LinkedListNode<Tuple<string, ScriptCacheEntry>>> _scriptMap =
-            new Dictionary<string, LinkedListNode<Tuple<string, ScriptCacheEntry>>>(StringComparer.Ordinal);
-        private readonly LinkedList<Tuple<string, ScriptCacheEntry>> _scriptLru =
-            new LinkedList<Tuple<string, ScriptCacheEntry>>();
 
         // Prefetched module source cache keyed by absolute module URI.
         // This avoids sync-blocking network bridges in module-loader hot paths.
@@ -2412,7 +2396,7 @@ namespace FenBrowser.FenEngine.Scripting
                     
                     _fenRuntime.DispatchEvent(evt, eventObj);
                 }
-                catch (Exception ex)
+                catch
                 {
                     /* [PERF-REMOVED] */
                 }
@@ -3689,18 +3673,6 @@ namespace FenBrowser.FenEngine.Scripting
             }
         }
 
-        // ---- XHR shim state ----
-        private sealed class XhrState
-        {
-            public string Id;
-            public string Method;
-            public Uri Url;
-            public Dictionary<string, string> Headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            public string Body;
-            public string OnLoadFn;
-            public string OnErrorFn;
-        }
-
         private async Task<HttpResponseMessage> SendThroughNetworkHandlerAsync(Uri uri, Uri referer = null)
         {
             if (uri == null) throw new ArgumentNullException(nameof(uri));
@@ -3929,69 +3901,6 @@ namespace FenBrowser.FenEngine.Scripting
             public void removeItem(string key) { _engine.LocalStorageRemove(key, _engine._ctx); }
             public void clear() { _engine.LocalStorageClear(_engine._ctx); }
         }
-
-        private sealed class JsFuncDef
-        {
-            public List<string> Params = new List<string>();
-            public List<JsFuncParam> Parameters = new List<JsFuncParam>();
-            public string Body;        // block body source
-            public string Expr;        // expression body source (arrow)
-        }
-
-        // NilJS host classes removed
-
-        private abstract class JsBindingPattern
-        {
-            public string DefaultExpr;
-        }
-
-        private sealed class JsIdentifierPattern : JsBindingPattern
-        {
-            public string Name;
-        }
-
-        private sealed class JsObjectPattern : JsBindingPattern
-        {
-            public sealed class PropertyBinding
-            {
-                public string Key;
-                public JsBindingPattern Target;
-            }
-
-            public List<PropertyBinding> Properties = new List<PropertyBinding>();
-            public string RestIdentifier;
-        }
-
-        private sealed class JsArrayPattern : JsBindingPattern
-        {
-            public sealed class ElementBinding
-            {
-                public bool IsHole;
-                public JsBindingPattern Target;
-            }
-
-            public List<ElementBinding> Elements = new List<ElementBinding>();
-            public JsIdentifierPattern RestTarget;
-        }
-
-        private sealed class JsFuncParam
-        {
-            public string Raw;
-            public JsBindingPattern Pattern;
-            public bool IsRest;
-        }
-
-        private static JsFuncParam CreateIdentifierParam(string name, bool isRest = false)
-        {
-            return new JsFuncParam
-            {
-                Raw = name ?? string.Empty,
-                Pattern = new JsIdentifierPattern { Name = name },
-                IsRest = isRest
-            };
-        }
-
-        private readonly Dictionary<string, JsFuncDef> _userFunctionsEx = new Dictionary<string, JsFuncDef>(StringComparer.Ordinal);
 
         /// <summary>
         /// Synchronize document/window bindings for a new DOM without executing page scripts.

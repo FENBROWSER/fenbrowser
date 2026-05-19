@@ -528,7 +528,6 @@ public class SettingsPageWidget : Widget
         
         float contentLeft = finalRect.Left + _sidebarWidth + _padding * 2;
         float contentTop = finalRect.Top + 80;
-        float controlWidth = 250;
         // Position switches based on observed click coordinates - around X=900-950 for 1920px window
         float switchX = finalRect.Left + _sidebarWidth + 700; // ~900px from left edge
         

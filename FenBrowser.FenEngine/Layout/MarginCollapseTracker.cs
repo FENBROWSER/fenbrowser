@@ -38,8 +38,6 @@ namespace FenBrowser.FenEngine.Layout
         /// </summary>
         public float PendingMargin { get; private set; }
 
-        private bool _startMarginResolved = false;
-
         public float AddMargin(float childMT, float childMB, bool isFirst, bool isEmpty)
         {
             float spacing = 0;
@@ -102,7 +100,6 @@ namespace FenBrowser.FenEngine.Layout
                         ResultMarginStart = MarginCollapseComputer.Collapse(PendingMargin, childMT);
                         spacing = 0; // Starts at 0 (parent content edge)
                     }
-                    _startMarginResolved = true;
                 }
                 else
                 {

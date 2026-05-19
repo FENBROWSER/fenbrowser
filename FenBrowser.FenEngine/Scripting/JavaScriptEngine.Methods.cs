@@ -13,8 +13,6 @@ namespace FenBrowser.FenEngine.Scripting
     {
         // --------------------------- Missing Methods Restoration ---------------------------
 
-        private System.Net.Http.HttpClient _http;
-
         /// <summary>
         /// Canonical inline-script entry point used by DOM/event plumbing and runtime adapters.
         /// This intentionally routes through <see cref="Evaluate(string)"/> so inline execution

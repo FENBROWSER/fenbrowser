@@ -57,7 +57,11 @@ public class DevToolsHostAdapter : IDevToolsHost, IDisposable
     
     public event Action DomChanged;
     public event Action<ConsoleMessageInfo> ConsoleMessageAdded;
+    // Required by IDevToolsHost but adapter currently doesn't raise NetworkRequestUpdated;
+    // raising sites move with the network-request lifecycle work.
+#pragma warning disable CS0414
     public event Action<NetworkRequestInfo> NetworkRequestUpdated;
+#pragma warning restore CS0414
     public event Action<string>? ProtocolEventReceived;
     public event Action<CursorType>? CursorChanged;
     

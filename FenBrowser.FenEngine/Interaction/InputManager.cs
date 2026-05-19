@@ -77,9 +77,6 @@ namespace FenBrowser.FenEngine.Interaction
         // Current hover state for sending MouseEnter/MouseLeave
         private Element _hoveredElement;
         
-        // Drag state
-        private bool _isDragging;
-        
         public InputManager()
         {
             _focusManager = new FocusManager();

@@ -230,7 +230,6 @@ namespace FenBrowser.FenEngine.Scripting
                 ((ContainerNode)host._node).AppendChild(j._node);
                 try
                 {
-                    string __tmpId = null;
                     var name = j._node.IsText() ? (j._node.TextContent ?? "") : (j._node is Element je ? (je.Id != null ? "#" + je.Id : je.NodeName) : j._node.NodeName);
                     lock (_e._mutationLock)
                     {
@@ -254,7 +253,6 @@ namespace FenBrowser.FenEngine.Scripting
                         ((ContainerNode)host._node).RemoveChild(j._node);
                         lock (_e._mutationLock)
                         {
-                            string __tmpId3 = null;
                             var name = j._node.IsText() ? (j._node.TextContent ?? "") : (j._node is Element je ? (je.Id != null ? "#" + je.Id : je.NodeName) : j._node.NodeName);
                             _e._pendingMutations.Add(new MutationRecord { Type = MutationRecordType.ChildList, AddedNodes = new System.Collections.Generic.List<Node>(), RemovedNodes = new System.Collections.Generic.List<Node> { j._node } });
                         }
@@ -603,7 +601,6 @@ namespace FenBrowser.FenEngine.Scripting
                 ((ContainerNode)_node).AppendChild(j._node);
                 try
                 {
-                    string __tmpId2 = null;
                     var name = j._node.IsText() ? "#text" : (j._node is Element nodeEl ? (nodeEl.Id != null ? "#" + nodeEl.Id : nodeEl.NodeName) : j._node.NodeName);
                     lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = MutationRecordType.ChildList, AddedNodes = new System.Collections.Generic.List<Node> { j._node }, RemovedNodes = new System.Collections.Generic.List<Node>() }); }
                 }
@@ -680,7 +677,6 @@ namespace FenBrowser.FenEngine.Scripting
                 try
                 {
                     ((ContainerNode)_node).RemoveChild(j._node);
-                    string __tmpId4 = null;
                     var name = j._node.IsText() ? (j._node.TextContent ?? "") : (j._node is Element je ? (je.Id != null ? "#" + je.Id : je.NodeName) : j._node.NodeName);
                     lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = MutationRecordType.ChildList, AddedNodes = new System.Collections.Generic.List<Node>(), RemovedNodes = new System.Collections.Generic.List<Node> { j._node } }); }
                 }
@@ -961,7 +957,7 @@ namespace FenBrowser.FenEngine.Scripting
                         if (args.Length > 0 && args[0].IsObject && args[0].AsObject() is FenObject opt)
                         {
                             var m = opt.Get("mode");
-                            if (m != null && !m.IsUndefined) mode = m.ToString();
+                            if (!m.IsUndefined) mode = m.ToString();
                         }
                         try
                         {

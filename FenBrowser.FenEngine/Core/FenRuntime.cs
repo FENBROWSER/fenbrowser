@@ -1903,9 +1903,8 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
         private static string InspectObject(FenValue value, int depth)
         {
             if (depth > 3) return "..."; // Prevent infinite recursion
-            if (value == null) return "null";
             if (value.IsUndefined) return "undefined";
-            if (value == null) return "null";
+            if (value.IsNull) return "null";
             if (value.IsString) return $"\"{value.ToString()}\"";
             if (value.IsNumber) return value.ToNumber().ToString(System.Globalization.CultureInfo.InvariantCulture);
             if (value.IsBoolean) return value.ToBoolean() ? "true" : "false";
@@ -5527,35 +5526,6 @@ private static readonly List<AtomicWaiter> s_atomicsWaiters = new List<AtomicWai
                 }
 
                 return err;
-            }
-
-            // --- REFACTOR: Unified Constructor Registration ---
-            // This ensures built-in constructors are typeof 'function' and have correct prototype linkage.
-            void RegisterConstructor(string name, FenObject prototype, Func<FenValue[], FenValue, FenValue> ctorLogic,
-                FenObject staticMembers = null)
-            {
-                var ctor = new FenFunction(name, (args, thisVal) =>
-                {
-                    // Constructor call logic (handle 'new' vs function call)
-                    return ctorLogic(args, thisVal);
-                });
-
-                // Link prototype
-                if (prototype != null)
-                {
-                    ctor.Set("prototype", FenValue.FromObject(prototype));
-                    prototype.Set("constructor", FenValue.FromFunction(ctor));
-                }
-
-                // Add static members if any
-                if (staticMembers != null)
-                {
-                    foreach (var key in staticMembers.Keys())
-                        ctor.Set(key, staticMembers.Get(key));
-                }
-
-                SetGlobal(name, FenValue.FromFunction(ctor));
-                window.Set(name, FenValue.FromFunction(ctor));
             }
 
             // 2. Error Constructor
@@ -14851,7 +14821,7 @@ SetGlobal("BigInt", FenValue.FromFunction(bigIntCtor));
                     string[] replacerArray = null;
                     int spaces = 0;
 
-                    if (args.Length > 1 && args[1] != null && !args[1].IsUndefined)
+                    if (args.Length > 1 && !args[1].IsUndefined)
                     {
                         if (args[1].IsFunction)
                             replacer = args[1].AsFunction() as FenFunction;
@@ -15502,13 +15472,12 @@ SetGlobal("BigInt", FenValue.FromFunction(bigIntCtor));
                 if (argsListObj != null)
                 {
                     var lenVal = argsListObj.Get("length");
-                    if (lenVal != null && lenVal.IsNumber)
+                    if (lenVal.IsNumber)
                     {
                         int len = (int)lenVal.ToNumber();
                         for (int i = 0; i < len; i++)
                         {
-                            var item = argsListObj.Get(i.ToString());
-                            argsList.Add(item != null ? (FenValue)item : FenValue.Undefined);
+                            argsList.Add(argsListObj.Get(i.ToString()));
                         }
                     }
                 }
@@ -15517,8 +15486,7 @@ SetGlobal("BigInt", FenValue.FromFunction(bigIntCtor));
                 try
                 {
                     _context.ThisBinding = thisArg;
-                    var res = func.Invoke(argsList.ToArray(), _context);
-                    return res != null ? (FenValue)res : FenValue.Undefined;
+                    return func.Invoke(argsList.ToArray(), _context);
                 }
                 finally
                 {
@@ -15662,7 +15630,7 @@ SetGlobal("BigInt", FenValue.FromFunction(bigIntCtor));
                     {
                         var obj = algoArg.AsObject();
                         var name = obj.Get("name");
-                        if (name != null) algoName = name.ToString();
+                        algoName = name.ToString();
                     }
 
                     // Normalize algo name
@@ -15687,14 +15655,14 @@ SetGlobal("BigInt", FenValue.FromFunction(bigIntCtor));
                         {
                             // Fallback: read array-like
                             var lenVal = obj.Get("length");
-                            if (lenVal != null && lenVal.IsNumber)
+                            if (lenVal.IsNumber)
                             {
                                 int len = (int)lenVal.ToNumber();
                                 data = new byte[len];
                                 for (int i = 0; i < len; i++)
                                 {
                                     var b = obj.Get(i.ToString());
-                                    data[i] = (byte)(b != null && b.IsNumber ? b.ToNumber() : 0);
+                                    data[i] = (byte)(b.IsNumber ? b.ToNumber() : 0);
                                 }
                             }
                         }
@@ -16459,7 +16427,6 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             {
                 // Create a simple memory object
                 int initial = 1; // pages
-                int maximum = 100; // pages
                 if (args.Length > 0 && args[0].IsObject)
                 {
                     var descriptor = args[0].AsObject();
@@ -16598,7 +16565,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                 // Helper to generate unique key for any value type
                 Func<FenValue, string> getMapKey = (key) =>
                 {
-                    if (key == null || key == null) return "null";
+                    if (key.IsNull) return "null";
                     if (key.IsUndefined) return "undefined";
                     if (key.IsBoolean) return "bool:" + key.ToBoolean().ToString();
                     if (key.IsNumber) return "num:" + key.ToNumber().ToString();
@@ -16788,7 +16755,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
 
                 Func<FenValue, string> getSetKey = (val) =>
                 {
-                    if (val == null || val == null) return "null";
+                    if (val.IsNull) return "null";
                     if (val.IsUndefined) return "undefined";
                     if (val.IsBoolean) return "bool:" + val.ToBoolean().ToString();
                     if (val.IsNumber) return "num:" + val.ToNumber().ToString();
@@ -17771,7 +17738,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                 for (int i = 0; i < len; i++)
                 {
                     var segmentArg = raw.Get(i.ToString(), null);
-                    var segment = segmentArg != null ? segmentArg.ToString() : "";
+                    var segment = segmentArg.ToString();
                     sb.Append(segment);
 
                     if (i < len - 1 && i + 1 < args.Length)
@@ -17988,7 +17955,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
             if (value.IsString) return JsonSerializer.Serialize(value.ToString());
             if (value.IsNumber) return value.ToString();
             if (value.IsBoolean) return value.ToBoolean().ToString().ToLower();
-            if (value == null || value.IsNull) return "null";
+            if (value.IsNull) return "null";
             // ECMA-262 ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§25.5.2: undefined/function/symbol ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ null (caller handles context)
             if (value.IsUndefined || value.IsFunction || value.IsSymbol) return null;
 
@@ -18629,7 +18596,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                     }
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 /* [PERF-REMOVED] */
             }
@@ -18690,7 +18657,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                     _context.ThisBinding = FenValue.Undefined;
                     callback.Invoke(args, _context);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                     /* [PERF-REMOVED] */
                 }
@@ -20573,7 +20540,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
 
                         // Fire onclose
                         var onclose = ws.Get("onclose");
-                        if (onclose != null && onclose.IsFunction)
+                        if (onclose.IsFunction)
                         {
                             var cb = onclose.AsFunction();
                             if (cb.IsNative && cb.NativeImplementation != null)
@@ -20610,7 +20577,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
 
                     // Fire onopen
                     var onopen = ws.Get("onopen");
-                    if (onopen != null && onopen.IsFunction)
+                    if (onopen.IsFunction)
                     {
                         var cb = onopen.AsFunction();
                         if (cb.IsNative && cb.NativeImplementation != null)
@@ -20631,7 +20598,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                         {
                             ws.Set("readyState", FenValue.FromNumber(CLOSED));
                             var onclose = ws.Get("onclose");
-                            if (onclose != null && onclose.IsFunction)
+                            if (onclose.IsFunction)
                             {
                                 var cb = onclose.AsFunction();
                                 if (cb.IsNative && cb.NativeImplementation != null)
@@ -20653,7 +20620,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                         {
                             var msg = System.Text.Encoding.UTF8.GetString(buffer, 0, result.Count);
                             var onmessage = ws.Get("onmessage");
-                            if (onmessage != null && onmessage.IsFunction)
+                            if (onmessage.IsFunction)
                             {
                                 var cb = onmessage.AsFunction();
                                 if (cb.IsNative && cb.NativeImplementation != null)
@@ -20672,7 +20639,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                 {
                     ws.Set("readyState", FenValue.FromNumber(CLOSED));
                     var onerror = ws.Get("onerror");
-                    if (onerror != null && onerror.IsFunction)
+                    if (onerror.IsFunction)
                     {
                         var cb = onerror.AsFunction();
                         if (cb.IsNative && cb.NativeImplementation != null)
@@ -20856,7 +20823,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                 {
                     await Task.Delay(10);
                     var onmessage = worker.Get("onmessage");
-                    if (onmessage != null && onmessage.IsFunction)
+                    if (onmessage.IsFunction)
                     {
                         var cb = onmessage.AsFunction();
                         if (cb.IsNative && cb.NativeImplementation != null)
@@ -21147,7 +21114,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
         /// </summary>
         private FenValue ApplyReviver(FenValue value, FenFunction reviver, string key)
         {
-            if (value.IsObject && !value == null)
+            if (value.IsObject && !value.IsNull)
             {
                 var obj = value.AsObject() as FenObject;
                 if (obj != null)
@@ -21155,22 +21122,18 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                     foreach (var k in obj.Keys().ToList())
                     {
                         var v = obj.Get(k);
-                        if (v != null)
-                        {
-                            var newV = ApplyReviver((FenValue)v, reviver, k);
-                            if (newV.IsUndefined)
-                                obj.Delete(k);
-                            else
-                                obj.Set(k, newV);
-                        }
+                        var newV = ApplyReviver(v, reviver, k);
+                        if (newV.IsUndefined)
+                            obj.Delete(k);
+                        else
+                            obj.Set(k, newV);
                     }
                 }
             }
 
             var holder = new FenObject();
             holder.Set(key, value);
-            var result = reviver.Invoke(new FenValue[] { FenValue.FromString(key), value }, null);
-            return result != null ? (FenValue)result : FenValue.Undefined;
+            return reviver.Invoke(new FenValue[] { FenValue.FromString(key), value }, null);
         }
 
         /// <summary>
@@ -21181,7 +21144,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
         {
             // ECMA-262 ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â§25.5.2.5 SerializeJSONProperty: undefined, functions, and symbols ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ null return
             // (caller converts null to "null" in arrays, or omits in objects)
-            if (value == null || value.IsUndefined || value.IsFunction || value.IsSymbol) return null;
+            if (value.IsUndefined || value.IsFunction || value.IsSymbol) return null;
             if (value.IsNull) return "null";
 
             // Apply replacer function
@@ -21190,13 +21153,13 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                 var holder = new FenObject();
                 holder.Set("", (FenValue)value);
                 var result = replacer.Invoke(new FenValue[] { FenValue.FromString(""), value }, null);
-                if (result != null && !result.IsUndefined)
+                if (!result.IsUndefined)
                     value = result;
-                else if (result != null && result.IsUndefined)
+                else
                     return null;
             }
 
-            if (value == null) return "null";
+            if (value.IsNull) return "null";
             if (value.IsBoolean) return value.ToBoolean() ? "true" : "false";
             if (value.IsNumber)
             {
@@ -21218,7 +21181,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                     throw new InvalidOperationException("Converting circular structure to JSON");
 
                 var lenVal = obj.Get("length");
-                bool isArray = lenVal != null && lenVal.IsNumber;
+                bool isArray = lenVal.IsNumber;
 
                 var newIndent = spaces > 0 ? indent + new string(' ', spaces) : "";
                 var sep = spaces > 0 ? "\n" : "";
@@ -21248,7 +21211,7 @@ atomics.Set("wait", FenValue.FromFunction(new FenFunction("wait", (args, thisVal
                     foreach (var key in keys)
                     {
                         var val = obj.Get(key);
-                        if (val != null && !val.IsUndefined && !val.IsFunction)
+                        if (!val.IsUndefined && !val.IsFunction)
                         {
                             var valStr = ConvertToJsonStringWithReplacer(val, replacer, replacerArray, spaces,
                                 newIndent, seen);

@@ -45,8 +45,11 @@ namespace FenBrowser.Host.ProcessIsolation
         {
         }
 
+        // In-process coordinator never raises these — kept for interface parity with the brokered coordinator.
+#pragma warning disable CS0067
         public event Action<int, RendererFrameReadyPayload> FrameReceived;
         public event Action<int, string> RendererCrashed;
+#pragma warning restore CS0067
     }
 }
 

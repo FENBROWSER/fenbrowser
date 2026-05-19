@@ -12,7 +12,6 @@ public class NetworkDomain : IProtocolHandler
     public string Domain => "Network";
 
     private readonly IDevToolsHost _host;
-    private bool _enabled;
 
     public NetworkDomain(IDevToolsHost host)
     {
@@ -33,13 +32,11 @@ public class NetworkDomain : IProtocolHandler
 
     private Task<ProtocolResponse> EnableAsync(ProtocolRequest request)
     {
-        _enabled = true;
         return Task.FromResult(ProtocolResponse.Success(request.Id, new { }));
     }
 
     private Task<ProtocolResponse> DisableAsync(ProtocolRequest request)
     {
-        _enabled = false;
         return Task.FromResult(ProtocolResponse.Success(request.Id, new { }));
     }
 

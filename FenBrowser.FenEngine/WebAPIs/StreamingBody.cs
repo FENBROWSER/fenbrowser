@@ -14,7 +14,10 @@ namespace FenBrowser.FenEngine.WebAPIs
     public class JsReadableStream : FenObject
     {
         private readonly Stream _underlyingStream;
+        // Locked state remains false until ReadableStreamReader acquisition is implemented.
+#pragma warning disable CS0649
         private readonly bool _isLocked;
+#pragma warning restore CS0649
         private bool _isDisturbed;
         private bool _isCancelled;
         

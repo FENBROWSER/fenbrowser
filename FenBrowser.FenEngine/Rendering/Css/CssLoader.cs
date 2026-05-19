@@ -31,6 +31,8 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         // Keep file diagnostics enabled only in debug builds.
+        // CS0162: blocks guarded by this const become unreachable in Release; that's intentional.
+#pragma warning disable CS0162
 #if DEBUG
         private const bool DEBUG_FILE_LOGGING = true;
 #else
@@ -226,7 +228,7 @@ namespace FenBrowser.FenEngine.Rendering
                          CollectMatchedRules(rule, source);
                      }
                  }
-                 catch (Exception parseEx)
+                 catch (Exception)
                  {
                      /* [PERF-REMOVED] */
                  }
@@ -3434,7 +3436,7 @@ private static double? ExtractPx(string text, string prop)
                 // Box Model
                 css.BoxSizing = Safe(DictGet(css.Map, "box-sizing"))?.ToLowerInvariant();
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                  /* [PERF-REMOVED] */
             }
@@ -4913,10 +4915,8 @@ private static double? ExtractPx(string text, string prop)
             if (n == null || chain == null || chain.Segments.Count == 0) return false;
 
             // PROBE: Check for the failing UL in nav
-            bool debug = false;
             if (n.TagName == "ul" && HasDebugText(n))
             {
-                debug = true;
                 // reconstruct selector string for log
                 var sb = new StringBuilder();
                 foreach(var s in chain.Segments) {

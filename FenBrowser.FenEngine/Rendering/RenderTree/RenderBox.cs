@@ -340,7 +340,6 @@ namespace FenBrowser.FenEngine.Rendering
             
             double mainAxisCurrent = isRow ? startX : startY;
             double crossAxisCurrent = isRow ? startY : startX;
-            double crossAxisMax = 0; // Max size in cross axis for current line
 
             // 1. Measure all children first
             foreach (var child in Children)

@@ -75,8 +75,8 @@ public class ElementsPanel : DevToolsPanelBase
     private string _searchQuery = "";
     private List<int> _searchResults = new();
     private int _searchCurrentIndex = 0;
-    private bool _searchBoxFocused = false;
-    
+
+
     // --- 10/10: Breadcrumb trail ---
     private List<int> _breadcrumbPath = new();
     
