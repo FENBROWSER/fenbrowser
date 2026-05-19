@@ -192,6 +192,7 @@ public sealed class Test262Runner
             var relativePath = Path.GetRelativePath(rootPath, file).Replace('\\', '/');
             var sourceText = File.ReadAllText(file);
             var frontmatter = Test262Frontmatter.Parse(sourceText);
+            var expectsSyntaxError = ExpectsSyntaxErrorParseFailure(frontmatter);
             try
             {
                 var source = new SourceText(sourceText, file);
@@ -222,6 +223,37 @@ public sealed class Test262Runner
                         locale = frontmatter.Locale,
                         category = "timeout",
                         message = $"Parsing exceeded timeout of {timeoutMs} ms."
+                    });
+                    continue;
+                }
+
+                if (expectsSyntaxError)
+                {
+                    parserErrors++;
+                    failures.Add(new
+                    {
+                        path = file,
+                        relativePath,
+                        classification = "parser-error",
+                        message = "Expected parser to fail with SyntaxError due to test262 negative metadata, but parse succeeded.",
+                        expected = false
+                    });
+
+                    tests.Add(new
+                    {
+                        path = relativePath,
+                        status = "Failed",
+                        durationMs = 0,
+                        features = frontmatter.Features,
+                        flags = frontmatter.Flags,
+                        includes = frontmatter.Includes,
+                        negative = frontmatter.Negative,
+                        esid = frontmatter.Esid,
+                        description = frontmatter.Description,
+                        info = frontmatter.Info,
+                        locale = frontmatter.Locale,
+                        category = "parser-bug",
+                        message = "Expected parser to fail with SyntaxError due to test262 negative metadata, but parse succeeded."
                     });
                     continue;
                 }
@@ -324,6 +356,28 @@ public sealed class Test262Runner
             }
             catch (JsParserException ex)
             {
+                if (expectsSyntaxError)
+                {
+                    passed++;
+                    tests.Add(new
+                    {
+                        path = relativePath,
+                        status = "Passed",
+                        durationMs = 0,
+                        features = frontmatter.Features,
+                        flags = frontmatter.Flags,
+                        includes = frontmatter.Includes,
+                        negative = frontmatter.Negative,
+                        esid = frontmatter.Esid,
+                        description = frontmatter.Description,
+                        info = frontmatter.Info,
+                        locale = frontmatter.Locale,
+                        category = (string?)null,
+                        message = (string?)null
+                    });
+                    continue;
+                }
+
                 parserErrors++;
                 var expected = expectations?.Entries.FirstOrDefault(e => e.Matches(relativePath, "ParserError"));
                 if (expected is not null)
@@ -422,5 +476,26 @@ public sealed class Test262Runner
             tests,
             expectationsPath);
         Console.WriteLine($"Parser subset result written: {outputPath}");
+    }
+
+    private static bool ExpectsSyntaxErrorParseFailure(Test262FrontmatterMetadata frontmatter)
+    {
+        if (frontmatter.Negative is null || string.IsNullOrWhiteSpace(frontmatter.Negative.Type))
+        {
+            return false;
+        }
+
+        if (!string.Equals(frontmatter.Negative.Type, "SyntaxError", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(frontmatter.Negative.Phase))
+        {
+            return true;
+        }
+
+        return string.Equals(frontmatter.Negative.Phase, "parse", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(frontmatter.Negative.Phase, "early", StringComparison.OrdinalIgnoreCase);
     }
 }
