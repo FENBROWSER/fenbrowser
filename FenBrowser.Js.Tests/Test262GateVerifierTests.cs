@@ -364,6 +364,75 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ReportViolationsKeepBaselineRegressionOrder()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var previousPath = Path.Combine(tempRoot, "previous.json");
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(previousPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/example.js",
+                        status = "Passed",
+                        category = (string?)null
+                    }
+                ],
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 0,
+                passed: 1));
+
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/example.js",
+                        status = "Failed",
+                        category = "runtime-error"
+                    }
+                ],
+                failures:
+                [
+                    new
+                    {
+                        relativePath = "test/example.js",
+                        classification = "crash",
+                        expected = false
+                    }
+                ],
+                crashes: 1,
+                unexpectedPasses: 0,
+                passed: 0));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousPath);
+            using var report = JsonDocument.Parse(result.ReportJson);
+            var violations = report.RootElement.GetProperty("violations")
+                .EnumerateArray()
+                .Select(v => v.GetString())
+                .Where(v => v is not null)
+                .Cast<string>()
+                .ToArray();
+
+            var passRegressionIndex = Array.FindIndex(violations, v => v.StartsWith("No regression in pass count violated", StringComparison.Ordinal));
+            var newCrashIndex = Array.FindIndex(violations, v => v.StartsWith("No new crash violated", StringComparison.Ordinal));
+            Assert.True(passRegressionIndex >= 0);
+            Assert.True(newCrashIndex >= 0);
+            Assert.True(passRegressionIndex < newCrashIndex);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_ReportNewFailuresArrayMatchesExpectedDeterministicOrder()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
