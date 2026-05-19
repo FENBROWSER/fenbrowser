@@ -9,6 +9,7 @@ public sealed class JsHeap
     private readonly Stack<int> _freeList = new();
     private readonly RootSet _roots = new();
     private readonly GcStressMode _stressMode;
+    private readonly List<(ObjectHandle Owner, ObjectHandle Child)> _writeBarrierEdges = new();
     private int _writeBarrierCount;
 
     public JsHeap(GcStressMode stressMode = GcStressMode.None)
@@ -88,6 +89,7 @@ public sealed class JsHeap
         _ = owner;
         _ = child;
         _writeBarrierCount++;
+        _writeBarrierEdges.Add((owner, child));
         // No-op in v1. Required seam for future GC evolution.
     }
 
@@ -106,6 +108,8 @@ public sealed class JsHeap
     public IReadOnlyList<HeapCell?> GetCellsSnapshotForTest() => _cells;
 
     public IReadOnlyList<ObjectHandle> GetRootsSnapshotForTest() => _roots.Snapshot();
+
+    public IReadOnlyList<(ObjectHandle Owner, ObjectHandle Child)> GetWriteBarrierEdgesSnapshotForTest() => _writeBarrierEdges;
 
     private void MaybeStressGc()
     {

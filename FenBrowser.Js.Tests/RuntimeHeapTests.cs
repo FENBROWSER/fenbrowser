@@ -109,6 +109,21 @@ public sealed class RuntimeHeapTests
     }
 
     [Fact]
+    public void HeapVerifierRejectsStaleWriteBarrierEdges()
+    {
+        var heap = new JsHeap();
+        var verifier = new HeapVerifier();
+        var owner = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        var child = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        heap.WriteBarrier(owner, child);
+
+        verifier.Verify(heap);
+        heap.FreeForTest(child);
+
+        Assert.Throws<JsEngineFatalException>(() => verifier.Verify(heap));
+    }
+
+    [Fact]
     public void IsolateAllocatesObjectsInsideHandleScope()
     {
         var isolate = new JsIsolate(new JsHeap());

@@ -32,6 +32,12 @@ public sealed class HeapVerifier
         {
             heap.Validate(root);
         }
+
+        foreach (var edge in heap.GetWriteBarrierEdgesSnapshotForTest())
+        {
+            _ = heap.Validate(edge.Owner);
+            _ = heap.Validate(edge.Child);
+        }
     }
 
     private sealed class ValidatingTracer : IHeapTracer
