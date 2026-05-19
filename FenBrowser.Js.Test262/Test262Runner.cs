@@ -362,18 +362,29 @@ public sealed class Test262Runner
                 if (!ReferenceEquals(completedTask, parseTask))
                 {
                     timedOut++;
+                    var expected = FindMatchingExpectation(expectations, relativePath, "Timeout");
+                    if (expected is not null)
+                    {
+                        expectedFailures++;
+                    }
+
                     failures.Add(new
                     {
                         path = file,
                         relativePath,
                         classification = "timeout",
-                        message = $"Parsing exceeded timeout of {timeoutMs} ms."
+                        message = $"Parsing exceeded timeout of {timeoutMs} ms.",
+                        expected = expected is not null,
+                        expectedReason = expected?.Reason,
+                        expectedOwner = expected?.Owner,
+                        expectedArea = expected?.Area,
+                        expiresAtMilestone = expected?.ExpiresAtMilestone
                     });
 
                     tests.Add(new
                     {
                         path = relativePath,
-                        status = "TimedOut",
+                        status = expected is null ? "TimedOut" : "ExpectedFailure",
                         durationMs = timeoutMs,
                         features = frontmatter.Features,
                         flags = frontmatter.Flags,
