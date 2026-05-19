@@ -4246,6 +4246,51 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_CountsUnknownCrashWhenRelativePathIsWhitespaceButClassificationIsCrash()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            var payload = new
+            {
+                summary = new
+                {
+                    total = 1,
+                    passed = 0,
+                    unsupported = 0,
+                    parserErrors = 0,
+                    crashes = 1,
+                    expectedFailures = 0,
+                    unexpectedPasses = 0
+                },
+                tests = Array.Empty<object>(),
+                failures = new object[]
+                {
+                    new
+                    {
+                        relativePath = "   ",
+                        path = "test/crash-path-field.js",
+                        classification = "crash",
+                        expected = false
+                    }
+                }
+            };
+
+            File.WriteAllText(currentPath, JsonSerializer.Serialize(payload));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            Assert.Contains(result.Violations, v => v.Contains("No unknown crashes violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_IgnoresMissingPreviousResultPath()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
