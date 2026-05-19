@@ -120,7 +120,7 @@ public sealed class JsParser
             if (IsPunctuator("="))
             {
                 Advance();
-                initializer = ParseExpression(0);
+                initializer = ParseExpression(2);
             }
 
             var declaratorSpan = initializer is null ? id.Span : MergeSpan(id.Span, initializer.Span);
@@ -629,7 +629,7 @@ public sealed class JsParser
             else
             {
                 ExpectPunctuator(":");
-                value = ParseExpression(0);
+                value = ParseExpression(2);
             }
             properties.Add(new ObjectPropertyNode(key, computedKey, isComputed, value, value.Span));
             if (IsPunctuator(","))
@@ -652,7 +652,17 @@ public sealed class JsParser
         var elements = new List<ExpressionNode>();
         while (!Is(TokenKind.EndOfFile) && !IsPunctuator("]"))
         {
-            elements.Add(ParseExpression(0));
+            if (IsPunctuator("..."))
+            {
+                var spread = Advance();
+                var argument = ParseExpression(2);
+                elements.Add(new SpreadElementExpressionNode(argument, MergeSpan(spread.Span, argument.Span)));
+            }
+            else
+            {
+                elements.Add(ParseExpression(2));
+            }
+
             if (IsPunctuator(","))
             {
                 Advance();
@@ -747,7 +757,7 @@ public sealed class JsParser
         ExpectPunctuator("(");
         while (!Is(TokenKind.EndOfFile) && !IsPunctuator(")"))
         {
-            args.Add(ParseExpression(0));
+            args.Add(ParseExpression(2));
             if (IsPunctuator(","))
             {
                 Advance();
@@ -815,6 +825,10 @@ public sealed class JsParser
 
         switch (token.Text)
         {
+            case ",":
+                leftBindingPower = 1;
+                rightBindingPower = 2;
+                return true;
             case "||":
                 leftBindingPower = 5;
                 rightBindingPower = 6;

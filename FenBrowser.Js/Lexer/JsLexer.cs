@@ -342,7 +342,7 @@ public sealed class JsLexer
         if (_index + 2 < _source.Length)
         {
             var three = _source.Substring(_index, 3);
-            if (three is "===" or "!==")
+            if (three is "===" or "!==" or "...")
             {
                 _index += 3;
                 _column += 3;

@@ -319,4 +319,24 @@ public sealed class ParserTests
         Assert.IsType<ExpressionStatementNode>(program.Body[3]);
         Assert.IsType<ExpressionStatementNode>(program.Body[4]);
     }
+
+    [Fact]
+    public void ParsesArraySpreadElements()
+    {
+        var program = JsParser.ParseScript(new SourceText("let x = [1, ...arr, 3];"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var arr = Assert.IsType<ArrayLiteralExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Equal(3, arr.Elements.Count);
+        Assert.IsType<SpreadElementExpressionNode>(arr.Elements[1]);
+    }
+
+    [Fact]
+    public void ParsesCommaExpressionInsideComputedMember()
+    {
+        var program = JsParser.ParseScript(new SourceText("obj[a, b];"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var member = Assert.IsType<MemberExpressionNode>(stmt.Expression);
+        var seq = Assert.IsType<BinaryExpressionNode>(member.PropertyExpression);
+        Assert.Equal(",", seq.Operator);
+    }
 }
