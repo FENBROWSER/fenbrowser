@@ -244,6 +244,24 @@ public sealed class Test262Runner
                             expectedArea = expected.Area,
                             expiresAtMilestone = expected.ExpiresAtMilestone
                         });
+
+                        tests.Add(new
+                        {
+                            path = relativePath,
+                            status = "UnexpectedPass",
+                            durationMs = 0,
+                            features = frontmatter.Features,
+                            flags = frontmatter.Flags,
+                            includes = frontmatter.Includes,
+                            negative = frontmatter.Negative,
+                            esid = frontmatter.Esid,
+                            description = frontmatter.Description,
+                            info = frontmatter.Info,
+                            locale = frontmatter.Locale,
+                            category = (string?)null,
+                            message = $"Unexpected pass for expectation '{expected.Status}'."
+                        });
+                        continue;
                     }
                 }
 
@@ -290,7 +308,7 @@ public sealed class Test262Runner
                 tests.Add(new
                 {
                     path = relativePath,
-                    status = "UnsupportedFeature",
+                    status = expected is null ? "UnsupportedFeature" : "ExpectedFailure",
                     durationMs = 0,
                     features = frontmatter.Features,
                     flags = frontmatter.Flags,
@@ -329,7 +347,7 @@ public sealed class Test262Runner
                 tests.Add(new
                 {
                     path = relativePath,
-                    status = "Failed",
+                    status = expected is null ? "Failed" : "ExpectedFailure",
                     durationMs = 0,
                     features = frontmatter.Features,
                     flags = frontmatter.Flags,
@@ -368,7 +386,7 @@ public sealed class Test262Runner
                 tests.Add(new
                 {
                     path = relativePath,
-                    status = "Crashed",
+                    status = expected is null ? "Crashed" : "ExpectedFailure",
                     durationMs = 0,
                     features = frontmatter.Features,
                     flags = frontmatter.Flags,
