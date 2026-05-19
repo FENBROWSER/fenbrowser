@@ -4624,6 +4624,32 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_MissingCrashSummaryFromBooleanFailures_DoesNotEmitNoCrashesViolation()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            var payload = new
+            {
+                tests = Array.Empty<object>(),
+                failures = true
+            };
+
+            File.WriteAllText(currentPath, JsonSerializer.Serialize(payload));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            Assert.DoesNotContain(result.Violations, v => v.Contains("No crashes violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_ZeroUnknownCrashesFromBooleanFailuresWithNullSummary_DoesNotEmitUnknownCrashViolation()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
