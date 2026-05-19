@@ -70,10 +70,30 @@ if (args.Length >= 2 && args[0] == "--eval")
         var result = new BytecodeInterpreter().Execute(function);
         Console.WriteLine(FormatValue(result));
     }
+    catch (UnsupportedFeatureException ex)
+    {
+        WriteError("unsupported", ex.Message, "<eval>");
+        return 21;
+    }
+    catch (JsParserException ex)
+    {
+        WriteError("parse", ex.Message, "<eval>");
+        return 22;
+    }
     catch (JsThrownException ex)
     {
-        Console.Error.WriteLine($"Uncaught throw: {FormatValue(ex.Value)}");
-        return 10;
+        WriteError("runtime-throw", $"Uncaught throw: {FormatValue(ex.Value)}", "<eval>");
+        return 23;
+    }
+    catch (InvalidOperationException ex)
+    {
+        WriteError("compile", ex.Message, "<eval>");
+        return 24;
+    }
+    catch (Exception ex)
+    {
+        WriteError("runtime-fatal", ex.Message, "<eval>");
+        return 25;
     }
 
     return 0;
@@ -113,17 +133,35 @@ if (args.Length == 2 && args[0] == "--dump-ast")
     }
 
     var source = new SourceText(File.ReadAllText(path), path);
-    var ast = JsParser.ParseScript(source);
-    var diagnostics = new FenBrowser.Js.Diagnostics.DiagnosticBag();
-    new AstValidator().Validate(ast, diagnostics);
-
-    var payload = new
+    try
     {
-        ast = DumpProgram(ast),
-        diagnostics = diagnostics.Items
-    };
-    Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
-    return 0;
+        var ast = JsParser.ParseScript(source);
+        var diagnostics = new FenBrowser.Js.Diagnostics.DiagnosticBag();
+        new AstValidator().Validate(ast, diagnostics);
+
+        var payload = new
+        {
+            ast = DumpProgram(ast),
+            diagnostics = diagnostics.Items
+        };
+        Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+        return 0;
+    }
+    catch (UnsupportedFeatureException ex)
+    {
+        WriteError("unsupported", ex.Message, path);
+        return 21;
+    }
+    catch (JsParserException ex)
+    {
+        WriteError("parse", ex.Message, path);
+        return 22;
+    }
+    catch (Exception ex)
+    {
+        WriteError("runtime-fatal", ex.Message, path);
+        return 25;
+    }
 }
 
 if (args.Length == 2 && args[0] == "--dump-bytecode")
@@ -135,18 +173,41 @@ if (args.Length == 2 && args[0] == "--dump-bytecode")
         return 4;
     }
 
-    var compiler = new BytecodeCompiler();
-    var function = compiler.CompileScript(new SourceText(File.ReadAllText(path), path));
-    new BytecodeVerifier().Verify(function);
-    var payload = new
+    try
     {
-        registers = function.RegisterCount,
-        constants = function.Constants.Select((c, i) => new { index = i, value = FormatValue(c), tag = c.Tag.ToString() }).ToArray(),
-        variables = function.VariableSlots.OrderBy(kv => kv.Value).Select(kv => new { name = kv.Key, slot = kv.Value }).ToArray(),
-        instructions = function.Instructions.Select((ins, ip) => new { ip, op = ins.OpCode.ToString(), ins.A, ins.B, ins.C, ins.D }).ToArray()
-    };
-    Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
-    return 0;
+        var compiler = new BytecodeCompiler();
+        var function = compiler.CompileScript(new SourceText(File.ReadAllText(path), path));
+        new BytecodeVerifier().Verify(function);
+        var payload = new
+        {
+            registers = function.RegisterCount,
+            constants = function.Constants.Select((c, i) => new { index = i, value = FormatValue(c), tag = c.Tag.ToString() }).ToArray(),
+            variables = function.VariableSlots.OrderBy(kv => kv.Value).Select(kv => new { name = kv.Key, slot = kv.Value }).ToArray(),
+            instructions = function.Instructions.Select((ins, ip) => new { ip, op = ins.OpCode.ToString(), ins.A, ins.B, ins.C, ins.D }).ToArray()
+        };
+        Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+        return 0;
+    }
+    catch (UnsupportedFeatureException ex)
+    {
+        WriteError("unsupported", ex.Message, path);
+        return 21;
+    }
+    catch (JsParserException ex)
+    {
+        WriteError("parse", ex.Message, path);
+        return 22;
+    }
+    catch (InvalidOperationException ex)
+    {
+        WriteError("compile", ex.Message, path);
+        return 24;
+    }
+    catch (Exception ex)
+    {
+        WriteError("runtime-fatal", ex.Message, path);
+        return 25;
+    }
 }
 
 Console.Error.WriteLine("Unsupported command.");
@@ -337,4 +398,19 @@ static string FormatValue(JsValue value)
         JsValueTag.HostObject => "[host-object]",
         _ => value.Tag.ToString()
     };
+}
+
+static void WriteError(string kind, string message, string source)
+{
+    var payload = new
+    {
+        error = new
+        {
+            kind,
+            message,
+            source
+        }
+    };
+
+    Console.Error.WriteLine(JsonSerializer.Serialize(payload));
 }
