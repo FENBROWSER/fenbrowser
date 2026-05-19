@@ -622,4 +622,23 @@ public sealed class Test262ExpectationsTests
             Directory.Delete(tempRoot, recursive: true);
         }
     }
+
+    [Fact]
+    public void Load_ThrowsWhenDirectoryContainsNoJsonFiles()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            File.WriteAllText(Path.Combine(tempRoot, "note.txt"), "not json");
+
+            var ex = Assert.Throws<InvalidOperationException>(() => Test262Expectations.Load(tempRoot));
+            Assert.Contains("No valid expectation entries found in directory", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
 }
