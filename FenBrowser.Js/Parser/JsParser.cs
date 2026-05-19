@@ -787,6 +787,8 @@ public sealed class JsParser
                 return true;
             case "==":
             case "!=":
+            case "===":
+            case "!==":
                 leftBindingPower = 10;
                 rightBindingPower = 11;
                 return true;

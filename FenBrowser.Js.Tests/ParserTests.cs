@@ -226,4 +226,16 @@ public sealed class ParserTests
         Assert.Single(obj.Properties);
         Assert.IsType<FunctionExpressionNode>(obj.Properties[0].Value);
     }
+
+    [Fact]
+    public void ParsesStrictEqualityOperators()
+    {
+        var program = JsParser.ParseScript(new SourceText("1 === 1; 1 !== 2;"));
+        var s1 = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var b1 = Assert.IsType<BinaryExpressionNode>(s1.Expression);
+        Assert.Equal("===", b1.Operator);
+        var s2 = Assert.IsType<ExpressionStatementNode>(program.Body[1]);
+        var b2 = Assert.IsType<BinaryExpressionNode>(s2.Expression);
+        Assert.Equal("!==", b2.Operator);
+    }
 }

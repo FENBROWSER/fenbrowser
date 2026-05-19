@@ -292,6 +292,18 @@ public sealed class JsLexer
 
     private bool TryReadPunctuator(out string text)
     {
+        if (_index + 2 < _source.Length)
+        {
+            var three = _source.Substring(_index, 3);
+            if (three is "===" or "!==")
+            {
+                _index += 3;
+                _column += 3;
+                text = three;
+                return true;
+            }
+        }
+
         if (_index + 1 < _source.Length)
         {
             var two = _source.Substring(_index, 2);
