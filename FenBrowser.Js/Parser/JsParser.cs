@@ -463,6 +463,11 @@ public sealed class JsParser
 
     private static bool TryParseNumberLiteral(string text, out double value)
     {
+        if (text.EndsWith('n'))
+        {
+            text = text[..^1];
+        }
+
         if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
         {
             if (text.Length > 2 && long.TryParse(text[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hex))

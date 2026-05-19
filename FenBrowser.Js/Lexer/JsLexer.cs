@@ -134,6 +134,12 @@ public sealed class JsLexer
                     }
                 }
 
+                if (_index < _source.Length && _source[_index] == 'n')
+                {
+                    _index++;
+                    _column++;
+                }
+
                 var token = new Token(TokenKind.Number, _source[start.._index], new SourceSpan(start, _index - start, line, column));
                 tokens.Add(token);
                 _lastSignificantToken = token;

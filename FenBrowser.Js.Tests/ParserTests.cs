@@ -192,6 +192,18 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesBigIntSuffixedNumericLiteralsAsNumericSubset()
+    {
+        var program = JsParser.ParseScript(new SourceText("1n; 0x2An; 0o10n; 0b11n;"));
+        Assert.Equal(4, program.Body.Count);
+        foreach (var statement in program.Body)
+        {
+            var expr = Assert.IsType<ExpressionStatementNode>(statement);
+            Assert.IsType<NumericLiteralExpressionNode>(expr.Expression);
+        }
+    }
+
+    [Fact]
     public void ParsesRegexLiteralExpression()
     {
         var program = JsParser.ParseScript(new SourceText("let r = /abc/i; r;"));
