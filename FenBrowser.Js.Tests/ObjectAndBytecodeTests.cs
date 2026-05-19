@@ -422,6 +422,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void PlusConcatenatesWhenLeftOperandIsString()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("\"x\" + 1;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal("x1", result.AsString());
+    }
+
+    [Fact]
+    public void PlusConcatenatesWhenRightOperandIsString()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("1 + \"x\";"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal("1x", result.AsString());
+    }
+
+    [Fact]
     public void InterpreterInvokesWriteBarrierForObjectStores()
     {
         var compiler = new BytecodeCompiler();

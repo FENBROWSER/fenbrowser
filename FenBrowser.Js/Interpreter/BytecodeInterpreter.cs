@@ -247,7 +247,7 @@ public sealed class BytecodeInterpreter
                     frame.Registers[ins.A] = JsValue.FromString(TypeOf(frame.Registers[ins.B]));
                     break;
                 case OpCode.Add:
-                    frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber() + frame.Registers[ins.C].AsNumber());
+                    frame.Registers[ins.A] = Add(frame.Registers[ins.B], frame.Registers[ins.C]);
                     break;
                 case OpCode.Sub:
                     frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber() - frame.Registers[ins.C].AsNumber());
@@ -445,6 +445,32 @@ public sealed class BytecodeInterpreter
             JsValueTag.Number => value.AsNumber().ToString("R", System.Globalization.CultureInfo.InvariantCulture),
             JsValueTag.Int32 => value.AsInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
             JsValueTag.Boolean => value.AsBoolean() ? "true" : "false",
+            _ => value.Tag.ToString()
+        };
+    }
+
+    private static JsValue Add(JsValue left, JsValue right)
+    {
+        if (left.Tag == JsValueTag.String || right.Tag == JsValueTag.String)
+        {
+            return JsValue.FromString(ToStringForConcat(left) + ToStringForConcat(right));
+        }
+
+        return JsValue.FromNumber(left.AsNumber() + right.AsNumber());
+    }
+
+    private static string ToStringForConcat(JsValue value)
+    {
+        return value.Tag switch
+        {
+            JsValueTag.Undefined => "undefined",
+            JsValueTag.Null => "null",
+            JsValueTag.Boolean => value.AsBoolean() ? "true" : "false",
+            JsValueTag.Int32 => value.AsInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
+            JsValueTag.Number => value.AsNumber().ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+            JsValueTag.String => value.AsString(),
+            JsValueTag.Object => "[object Object]",
+            JsValueTag.HostObject => "[object Object]",
             _ => value.Tag.ToString()
         };
     }
