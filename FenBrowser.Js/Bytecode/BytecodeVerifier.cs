@@ -79,6 +79,30 @@ public sealed class BytecodeVerifier
             case OpCode.Throw:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 break;
+            case OpCode.NewObject:
+            case OpCode.NewArray:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                break;
+            case OpCode.SetPropByName:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidatePropertyName(function, ip, ins.B);
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
+                break;
+            case OpCode.GetPropByName:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidatePropertyName(function, ip, ins.C);
+                break;
+            case OpCode.SetElem:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
+                break;
+            case OpCode.GetElem:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
+                break;
             case OpCode.Return:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 break;
@@ -98,6 +122,14 @@ public sealed class BytecodeVerifier
         if (slot < 0 || slot >= Math.Max(1, function.VariableSlots.Count))
         {
             throw new InvalidOperationException($"Invalid variable slot {slot} at ip {ip}.");
+        }
+    }
+
+    private static void ValidatePropertyName(BytecodeFunction function, int ip, int index)
+    {
+        if (index < 0 || index >= function.PropertyNames.Count)
+        {
+            throw new InvalidOperationException($"Invalid property name index {index} at ip {ip}.");
         }
     }
 }

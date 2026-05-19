@@ -251,6 +251,24 @@ public sealed class JsParser
 
         while (true)
         {
+            if (IsPunctuator("."))
+            {
+                Advance();
+                var property = ExpectIdentifier();
+                left = new MemberExpressionNode(left, property.Text, Computed: false, PropertyExpression: null, MergeSpan(left.Span, property.Span));
+                continue;
+            }
+
+            if (IsPunctuator("["))
+            {
+                var open = Advance();
+                var propExpr = ParseExpression(0);
+                ExpectPunctuator("]");
+                var close = Previous();
+                left = new MemberExpressionNode(left, string.Empty, Computed: true, PropertyExpression: propExpr, MergeSpan(left.Span, close.Span));
+                continue;
+            }
+
             if (IsPunctuator("("))
             {
                 var args = ParseCallArguments();
@@ -317,7 +335,77 @@ public sealed class JsParser
             return new ParenthesizedExpressionNode(expression, span);
         }
 
+        if (IsPunctuator("{"))
+        {
+            return ParseObjectLiteral();
+        }
+
+        if (IsPunctuator("["))
+        {
+            return ParseArrayLiteral();
+        }
+
         throw new JsParserException($"Unexpected token '{token.Text}' ({token.Kind}).");
+    }
+
+    private ObjectLiteralExpressionNode ParseObjectLiteral()
+    {
+        var open = Advance(); // {
+        var properties = new List<ObjectPropertyNode>();
+        while (!Is(TokenKind.EndOfFile) && !IsPunctuator("}"))
+        {
+            var keyToken = Current();
+            string key;
+            if (keyToken.Kind == TokenKind.Identifier)
+            {
+                key = Advance().Text;
+            }
+            else if (keyToken.Kind == TokenKind.String)
+            {
+                var raw = Advance().Text;
+                key = raw.Length >= 2 ? raw[1..^1] : string.Empty;
+            }
+            else
+            {
+                throw new JsParserException($"Expected object property key, found '{keyToken.Text}'.");
+            }
+
+            ExpectPunctuator(":");
+            var value = ParseExpression(0);
+            properties.Add(new ObjectPropertyNode(key, value, value.Span));
+            if (IsPunctuator(","))
+            {
+                Advance();
+                continue;
+            }
+
+            break;
+        }
+
+        ExpectPunctuator("}");
+        var close = Previous();
+        return new ObjectLiteralExpressionNode(properties, MergeSpan(open.Span, close.Span));
+    }
+
+    private ArrayLiteralExpressionNode ParseArrayLiteral()
+    {
+        var open = Advance(); // [
+        var elements = new List<ExpressionNode>();
+        while (!Is(TokenKind.EndOfFile) && !IsPunctuator("]"))
+        {
+            elements.Add(ParseExpression(0));
+            if (IsPunctuator(","))
+            {
+                Advance();
+                continue;
+            }
+
+            break;
+        }
+
+        ExpectPunctuator("]");
+        var close = Previous();
+        return new ArrayLiteralExpressionNode(elements, MergeSpan(open.Span, close.Span));
     }
 
     private bool TryParseArrowFunction(out ExpressionNode expression)

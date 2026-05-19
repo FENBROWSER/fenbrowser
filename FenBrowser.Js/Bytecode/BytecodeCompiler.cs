@@ -10,6 +10,8 @@ public sealed class BytecodeCompiler
     private readonly List<Instruction> _instructions = new();
     private readonly List<JsValue> _constants = new();
     private readonly Dictionary<string, int> _variables = new(StringComparer.Ordinal);
+    private readonly List<string> _propertyNames = new();
+    private readonly Dictionary<string, int> _propertyNameToIndex = new(StringComparer.Ordinal);
     private int _nextRegister = 1;
 
     public BytecodeFunction CompileScript(SourceText source)
@@ -23,6 +25,8 @@ public sealed class BytecodeCompiler
         _instructions.Clear();
         _constants.Clear();
         _variables.Clear();
+        _propertyNames.Clear();
+        _propertyNameToIndex.Clear();
         _nextRegister = 1;
 
         foreach (var stmt in program.Body)
@@ -37,6 +41,7 @@ public sealed class BytecodeCompiler
             Instructions = _instructions.ToArray(),
             Constants = _constants.ToArray(),
             VariableSlots = new Dictionary<string, int>(_variables),
+            PropertyNames = _propertyNames.ToArray(),
             RegisterCount = Math.Max(2, _nextRegister)
         };
     }
@@ -178,6 +183,68 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.StoreVar, rightReg, slot, 0));
                 return rightReg;
             }
+            case AssignmentExpressionNode assign when assign.Left is MemberExpressionNode member:
+            {
+                var objectReg = CompileExpression(member.Object);
+                var valueReg = CompileExpression(assign.Right);
+                if (member.Computed)
+                {
+                    var keyReg = CompileExpression(member.PropertyExpression!);
+                    _instructions.Add(new Instruction(OpCode.SetElem, objectReg, keyReg, valueReg));
+                }
+                else
+                {
+                    var nameIndex = GetOrCreatePropertyName(member.Property);
+                    _instructions.Add(new Instruction(OpCode.SetPropByName, objectReg, nameIndex, valueReg));
+                }
+
+                return valueReg;
+            }
+            case MemberExpressionNode member:
+            {
+                var objectReg = CompileExpression(member.Object);
+                var dest = AllocateRegister();
+                if (member.Computed)
+                {
+                    var keyReg = CompileExpression(member.PropertyExpression!);
+                    _instructions.Add(new Instruction(OpCode.GetElem, dest, objectReg, keyReg));
+                }
+                else
+                {
+                    var nameIndex = GetOrCreatePropertyName(member.Property);
+                    _instructions.Add(new Instruction(OpCode.GetPropByName, dest, objectReg, nameIndex));
+                }
+
+                return dest;
+            }
+            case ObjectLiteralExpressionNode obj:
+            {
+                var dest = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.NewObject, dest, 0, 0));
+                foreach (var prop in obj.Properties)
+                {
+                    var valueReg = CompileExpression(prop.Value);
+                    var nameIndex = GetOrCreatePropertyName(prop.Key);
+                    _instructions.Add(new Instruction(OpCode.SetPropByName, dest, nameIndex, valueReg));
+                }
+
+                return dest;
+            }
+            case ArrayLiteralExpressionNode arr:
+            {
+                var dest = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.NewArray, dest, 0, 0));
+                for (var i = 0; i < arr.Elements.Count; i++)
+                {
+                    var valueReg = CompileExpression(arr.Elements[i]);
+                    var indexReg = AllocateRegister();
+                    var ci = AddConstant(JsValue.FromNumber(i));
+                    _instructions.Add(new Instruction(OpCode.LoadConst, indexReg, ci, 0));
+                    _instructions.Add(new Instruction(OpCode.SetElem, dest, indexReg, valueReg));
+                }
+
+                return dest;
+            }
             case BinaryExpressionNode bin:
             {
                 var leftReg = CompileExpression(bin.Left);
@@ -219,6 +286,19 @@ public sealed class BytecodeCompiler
         slot = _variables.Count;
         _variables[name] = slot;
         return slot;
+    }
+
+    private int GetOrCreatePropertyName(string name)
+    {
+        if (_propertyNameToIndex.TryGetValue(name, out var idx))
+        {
+            return idx;
+        }
+
+        idx = _propertyNames.Count;
+        _propertyNames.Add(name);
+        _propertyNameToIndex[name] = idx;
+        return idx;
     }
 
     private int EmitPlaceholder(OpCode opCode, int a = 0)

@@ -19,3 +19,11 @@ public sealed record AssignmentExpressionNode(ExpressionNode Left, ExpressionNod
 public sealed record CallExpressionNode(ExpressionNode Callee, IReadOnlyList<ExpressionNode> Arguments, SourceSpan Span) : ExpressionNode(Span);
 
 public sealed record ArrowFunctionExpressionNode(IReadOnlyList<string> Parameters, BlockStatementNode? BlockBody, ExpressionNode? ExpressionBody, SourceSpan Span) : ExpressionNode(Span);
+
+public sealed record ObjectPropertyNode(string Key, ExpressionNode Value, SourceSpan Span);
+
+public sealed record ObjectLiteralExpressionNode(IReadOnlyList<ObjectPropertyNode> Properties, SourceSpan Span) : ExpressionNode(Span);
+
+public sealed record ArrayLiteralExpressionNode(IReadOnlyList<ExpressionNode> Elements, SourceSpan Span) : ExpressionNode(Span);
+
+public sealed record MemberExpressionNode(ExpressionNode Object, string Property, bool Computed, ExpressionNode? PropertyExpression, SourceSpan Span) : ExpressionNode(Span);

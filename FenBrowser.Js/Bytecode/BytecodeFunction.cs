@@ -10,5 +10,7 @@ public sealed class BytecodeFunction
 
     public required IReadOnlyDictionary<string, int> VariableSlots { get; init; }
 
+    public required IReadOnlyList<string> PropertyNames { get; init; }
+
     public int RegisterCount { get; init; }
 }

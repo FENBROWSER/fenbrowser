@@ -45,6 +45,7 @@ public sealed class ObjectAndBytecodeTests
             RegisterCount = 2,
             Constants = Array.Empty<JsValue>(),
             VariableSlots = new Dictionary<string, int>(),
+            PropertyNames = Array.Empty<string>(),
             Instructions = new[] { new Instruction(OpCode.LoadConst, 1, 0, 0) }
         };
 
@@ -60,6 +61,7 @@ public sealed class ObjectAndBytecodeTests
             RegisterCount = 2,
             Constants = new[] { JsValue.FromNumber(1) },
             VariableSlots = new Dictionary<string, int>(),
+            PropertyNames = Array.Empty<string>(),
             Instructions = new[]
             {
                 new Instruction(OpCode.LoadConst, 1, 0, 0),
@@ -136,5 +138,27 @@ public sealed class ObjectAndBytecodeTests
 
         var ex = Assert.Throws<JsThrownException>(() => new BytecodeInterpreter().Execute(fn));
         Assert.Equal(5, ex.Value.AsNumber());
+    }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleObjectAndMemberAccess()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = { a: 1 }; o.a = o.a + 2; o.a;"));
+        new BytecodeVerifier().Verify(fn);
+
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(3, result.AsNumber());
+    }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleArrayLiteralAndIndexAccess()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let arr = [1,2,3]; arr[1] = arr[1] + 5; arr[1];"));
+        new BytecodeVerifier().Verify(fn);
+
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(7, result.AsNumber());
     }
 }

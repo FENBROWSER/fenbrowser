@@ -103,4 +103,17 @@ public sealed class ParserTests
         Assert.Single(tc.TryBlock.Statements);
         Assert.IsType<ThrowStatementNode>(tc.TryBlock.Statements[0]);
     }
+
+    [Fact]
+    public void ParsesObjectArrayAndMemberExpressions()
+    {
+        var program = JsParser.ParseScript(new SourceText("let o = { a: 1 }; let arr = [1,2]; o.a = arr[1]; o.a;"));
+        Assert.Equal(4, program.Body.Count);
+        var oDecl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        Assert.IsType<ObjectLiteralExpressionNode>(oDecl.Declarators[0].Initializer);
+        var arrDecl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[1]);
+        Assert.IsType<ArrayLiteralExpressionNode>(arrDecl.Declarators[0].Initializer);
+        var assignStmt = Assert.IsType<ExpressionStatementNode>(program.Body[2]);
+        Assert.IsType<AssignmentExpressionNode>(assignStmt.Expression);
+    }
 }

@@ -282,6 +282,27 @@ static object DumpExpression(ExpressionNode expression)
             expressionBody = arrow.ExpressionBody is null ? null : DumpExpression(arrow.ExpressionBody),
             span = DumpSpan(arrow.Span)
         },
+        ObjectLiteralExpressionNode obj => new
+        {
+            type = "ObjectLiteral",
+            properties = obj.Properties.Select(p => new { key = p.Key, value = DumpExpression(p.Value), span = DumpSpan(p.Span) }).ToArray(),
+            span = DumpSpan(obj.Span)
+        },
+        ArrayLiteralExpressionNode arr => new
+        {
+            type = "ArrayLiteral",
+            elements = arr.Elements.Select(DumpExpression).ToArray(),
+            span = DumpSpan(arr.Span)
+        },
+        MemberExpressionNode mem => new
+        {
+            type = "MemberExpression",
+            @object = DumpExpression(mem.Object),
+            property = mem.Computed ? null : mem.Property,
+            computed = mem.Computed,
+            propertyExpression = mem.PropertyExpression is null ? null : DumpExpression(mem.PropertyExpression),
+            span = DumpSpan(mem.Span)
+        },
         _ => new { type = "UnknownExpression", span = DumpSpan(expression.Span) }
     };
 }
