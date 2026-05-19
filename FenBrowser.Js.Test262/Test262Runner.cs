@@ -168,6 +168,8 @@ public sealed class Test262Runner
 
     private static void RunParserSubset(string rootPath, string outputPath, IReadOnlyList<string> files, int max, string? expectationsPath, Test262Expectations? expectations)
     {
+        var startedAtUtc = DateTime.UtcNow;
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var pinPath = Path.Combine(rootPath, "..", "test262.pin");
         var commit = File.Exists(pinPath) ? File.ReadAllText(pinPath).Trim() : "un-pinned";
         var subset = files.Take(Math.Max(1, max)).ToList();
@@ -349,7 +351,23 @@ public sealed class Test262Runner
             }
         }
 
-        Test262ResultWriter.WriteParserSubset(outputPath, commit, subset.Count, passed, unsupported, parserErrors, crashes, expectedFailures, unexpectedPasses, failures, unexpectedPassesList, tests, expectationsPath);
+        stopwatch.Stop();
+        Test262ResultWriter.WriteParserSubset(
+            outputPath,
+            commit,
+            startedAtUtc,
+            stopwatch.ElapsedMilliseconds,
+            subset.Count,
+            passed,
+            unsupported,
+            parserErrors,
+            crashes,
+            expectedFailures,
+            unexpectedPasses,
+            failures,
+            unexpectedPassesList,
+            tests,
+            expectationsPath);
         Console.WriteLine($"Parser subset result written: {outputPath}");
     }
 }
