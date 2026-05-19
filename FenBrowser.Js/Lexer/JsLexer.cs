@@ -16,6 +16,7 @@ public sealed class JsLexer
     private int _index;
     private int _line = 1;
     private int _column = 1;
+    private bool _atLineStart = true;
     private Token? _lastSignificantToken;
 
     public JsLexer(SourceText source)
@@ -35,6 +36,8 @@ public sealed class JsLexer
                 tokens.Add(new Token(TokenKind.EndOfFile, string.Empty, new SourceSpan(_index, 0, _line, _column)));
                 return tokens;
             }
+
+            _atLineStart = false;
 
             var start = _index;
             var line = _line;
@@ -198,6 +201,33 @@ public sealed class JsLexer
                 _index++;
                 _line++;
                 _column = 1;
+                _atLineStart = true;
+                continue;
+            }
+
+            if (_atLineStart && _index + 2 < _source.Length && _source[_index] == '-' && _source[_index + 1] == '-' && _source[_index + 2] == '>')
+            {
+                _index += 3;
+                _column += 3;
+                while (_index < _source.Length && _source[_index] != '\n')
+                {
+                    _index++;
+                    _column++;
+                }
+
+                continue;
+            }
+
+            if (_atLineStart && _index + 3 < _source.Length && _source[_index] == '<' && _source[_index + 1] == '!' && _source[_index + 2] == '-' && _source[_index + 3] == '-')
+            {
+                _index += 4;
+                _column += 4;
+                while (_index < _source.Length && _source[_index] != '\n')
+                {
+                    _index++;
+                    _column++;
+                }
+
                 continue;
             }
 
@@ -237,6 +267,7 @@ public sealed class JsLexer
                             _index++;
                             _line++;
                             _column = 1;
+                            _atLineStart = true;
                         }
                         else
                         {

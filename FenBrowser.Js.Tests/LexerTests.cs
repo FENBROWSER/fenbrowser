@@ -62,4 +62,30 @@ public sealed class LexerTests
         Assert.Single(tokens);
         Assert.Equal(TokenKind.EndOfFile, tokens[0].Kind);
     }
+
+    [Fact]
+    public void SkipsHtmlCloseCommentAtLineStart()
+    {
+        var source = "--> hidden\nlet x = 1;";
+        var lexer = new JsLexer(new SourceText(source));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Keyword, tokens[0].Kind);
+        Assert.Equal("let", tokens[0].Text);
+        Assert.Equal(TokenKind.Identifier, tokens[1].Kind);
+        Assert.Equal("x", tokens[1].Text);
+    }
+
+    [Fact]
+    public void SkipsHtmlOpenCommentAtLineStart()
+    {
+        var source = "<!-- hidden\nlet y = 2;";
+        var lexer = new JsLexer(new SourceText(source));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Keyword, tokens[0].Kind);
+        Assert.Equal("let", tokens[0].Text);
+        Assert.Equal(TokenKind.Identifier, tokens[1].Kind);
+        Assert.Equal("y", tokens[1].Text);
+    }
 }
