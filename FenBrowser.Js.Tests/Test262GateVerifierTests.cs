@@ -3679,6 +3679,51 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ReportTreatsCurrentFailuresAsNewWhenBaselineIsOmitted()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/no-baseline-failure.js",
+                        status = "Failed",
+                        category = "runtime-error"
+                    }
+                ],
+                failures:
+                [
+                    new
+                    {
+                        relativePath = "test/no-baseline-failure.js",
+                        classification = "runtime-error",
+                        expected = false
+                    }
+                ],
+                crashes: 0,
+                unexpectedPasses: 0,
+                passed: 0));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            using var report = JsonDocument.Parse(result.ReportJson);
+            var newFailures = report.RootElement.GetProperty("newFailures");
+            Assert.Equal(JsonValueKind.Array, newFailures.ValueKind);
+            Assert.True(newFailures.GetArrayLength() > 0);
+            Assert.Equal("test/no-baseline-failure.js", newFailures[0].GetString());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_ReportCapsNewFailuresArrayAtTwoHundredEntries()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
