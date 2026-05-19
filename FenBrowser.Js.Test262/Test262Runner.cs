@@ -5,7 +5,7 @@ namespace FenBrowser.Js.Test262;
 
 public sealed class Test262Runner
 {
-    public int Run(string rootPath, bool list, bool dryRun, bool parserSubset, string outputPath, int max, string? expectationsPath)
+    public int Run(string rootPath, bool list, bool dryRun, bool parserSubset, bool dashboard, string outputPath, int max, string? expectationsPath, string? inputPath, string? previousPath)
     {
         var manifest = new Test262Manifest { RootPath = rootPath };
         var files = manifest.EnumerateTestFiles().OrderBy(p => p, StringComparer.Ordinal).ToList();
@@ -36,6 +36,18 @@ public sealed class Test262Runner
         if (parserSubset)
         {
             RunParserSubset(rootPath, outputPath, files, max, expectationsPath, expectations);
+        }
+
+        if (dashboard)
+        {
+            if (string.IsNullOrWhiteSpace(inputPath))
+            {
+                Console.Error.WriteLine("Specify --in <result.json> for --dashboard mode.");
+                return 4;
+            }
+
+            Test262DashboardWriter.WriteDashboard(inputPath, previousPath, outputPath);
+            Console.WriteLine($"Dashboard written: {outputPath}");
         }
 
         return 0;

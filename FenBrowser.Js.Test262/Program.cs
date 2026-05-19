@@ -2,7 +2,7 @@ using FenBrowser.Js.Test262;
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("Usage: fenjs-test262 --list | --dry-run | --parser-subset [--root <path>] [--out <path>] [--max <n>] [--expectations <path>]");
+    Console.Error.WriteLine("Usage: fenjs-test262 --list | --dry-run | --parser-subset | --dashboard [--root <path>] [--out <path>] [--max <n>] [--expectations <path>] [--in <result.json>] [--previous <result.json>]");
     return 1;
 }
 
@@ -11,8 +11,11 @@ var outPath = "Results/test262/dry-run.json";
 var list = false;
 var dryRun = false;
 var parserSubset = false;
+var dashboard = false;
 var max = 200;
 string? expectationsPath = null;
+string? inputPath = null;
+string? previousPath = null;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -27,6 +30,9 @@ for (var i = 0; i < args.Length; i++)
         case "--parser-subset":
             parserSubset = true;
             break;
+        case "--dashboard":
+            dashboard = true;
+            break;
         case "--root" when i + 1 < args.Length:
             root = args[++i];
             break;
@@ -40,12 +46,18 @@ for (var i = 0; i < args.Length; i++)
         case "--expectations" when i + 1 < args.Length:
             expectationsPath = args[++i];
             break;
+        case "--in" when i + 1 < args.Length:
+            inputPath = args[++i];
+            break;
+        case "--previous" when i + 1 < args.Length:
+            previousPath = args[++i];
+            break;
     }
 }
 
-if (!list && !dryRun && !parserSubset)
+if (!list && !dryRun && !parserSubset && !dashboard)
 {
-    Console.Error.WriteLine("Specify at least one of --list, --dry-run, or --parser-subset.");
+    Console.Error.WriteLine("Specify at least one of --list, --dry-run, --parser-subset, or --dashboard.");
     return 2;
 }
 
@@ -56,4 +68,4 @@ if (!Directory.Exists(root))
 }
 
 var runner = new Test262Runner();
-return runner.Run(root, list, dryRun, parserSubset, outPath, max, expectationsPath);
+return runner.Run(root, list, dryRun, parserSubset, dashboard, outPath, max, expectationsPath, inputPath, previousPath);
