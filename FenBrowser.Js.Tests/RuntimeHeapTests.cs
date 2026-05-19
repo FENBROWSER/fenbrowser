@@ -35,9 +35,8 @@ public sealed class RuntimeHeapTests
 
         var hostHandle = new HostObjectHandle(8, 5, 12, 99);
         var hostValue = JsValue.FromHostObject(hostHandle);
-        var decoded = hostValue.AsHostObjectHandle(12, 99);
-        Assert.Equal(hostHandle.Index, decoded.Index);
-        Assert.Equal(hostHandle.Generation, decoded.Generation);
+        var decoded = hostValue.AsHostObjectHandle();
+        Assert.Equal(hostHandle, decoded);
     }
 
     [Fact]
@@ -50,6 +49,13 @@ public sealed class RuntimeHeapTests
         var symbolHandle = new SymbolHandle(17, 4);
         var symbolDecoded = SymbolHandle.FromInt64(symbolHandle.ToInt64());
         Assert.Equal(symbolHandle, symbolDecoded);
+    }
+
+    [Fact]
+    public void HostObjectHandleRejectsOverflowingParts()
+    {
+        var tooLarge = new HostObjectHandle(ushort.MaxValue + 1, 1, 1, 1);
+        Assert.Throws<ArgumentOutOfRangeException>(() => tooLarge.ToInt64());
     }
 
     [Fact]

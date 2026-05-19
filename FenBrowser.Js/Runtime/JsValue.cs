@@ -50,7 +50,7 @@ public readonly struct JsValue
 
     public ObjectHandle AsObjectHandle() => ObjectHandle.FromInt64(_payload);
 
-    public HostObjectHandle AsHostObjectHandle(int realmId = 0, int documentEpoch = 0) => HostObjectHandle.FromInt64(_payload, realmId, documentEpoch);
+    public HostObjectHandle AsHostObjectHandle() => HostObjectHandle.FromInt64(_payload);
 
     public string AsString()
     {
