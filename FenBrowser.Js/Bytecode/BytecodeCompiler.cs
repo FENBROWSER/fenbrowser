@@ -580,6 +580,26 @@ public sealed class BytecodeCompiler
                     return orDest;
                 }
 
+                if (bin.Operator == "??")
+                {
+                    var nullishLeftReg = CompileExpression(bin.Left);
+                    var nullishDest = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.Move, nullishDest, nullishLeftReg, 0));
+
+                    var nullConstReg = AllocateRegister();
+                    var nullConstIndex = AddConstant(JsValue.Null);
+                    _instructions.Add(new Instruction(OpCode.LoadConst, nullConstReg, nullConstIndex, 0));
+
+                    var isNullishReg = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.Eq, isNullishReg, nullishLeftReg, nullConstReg));
+                    var nullishJumpIfNotNullish = EmitPlaceholder(OpCode.JumpIfFalse, isNullishReg);
+
+                    var nullishRightReg = CompileExpression(bin.Right);
+                    _instructions.Add(new Instruction(OpCode.Move, nullishDest, nullishRightReg, 0));
+                    PatchJump(nullishJumpIfNotNullish, _instructions.Count);
+                    return nullishDest;
+                }
+
                 var leftReg = CompileExpression(bin.Left);
                 var rightReg = CompileExpression(bin.Right);
                 var dest = AllocateRegister();
