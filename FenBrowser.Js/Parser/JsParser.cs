@@ -390,6 +390,11 @@ public sealed class JsParser
             return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
         }
 
+        if (token.Kind == TokenKind.Keyword && token.Text == "function")
+        {
+            return ParseFunctionExpression();
+        }
+
         if (token.Kind == TokenKind.Identifier)
         {
             Advance();
@@ -434,6 +439,20 @@ public sealed class JsParser
         }
 
         throw new JsParserException($"Unexpected token '{token.Text}' ({token.Kind}).");
+    }
+
+    private FunctionExpressionNode ParseFunctionExpression()
+    {
+        var start = Advance(); // function
+        string? name = null;
+        if (Current().Kind == TokenKind.Identifier)
+        {
+            name = Advance().Text;
+        }
+
+        var parameters = ParseParameterList();
+        var body = ParseBlockStatement();
+        return new FunctionExpressionNode(name, parameters, body, MergeSpan(start.Span, body.Span));
     }
 
     private ObjectLiteralExpressionNode ParseObjectLiteral()

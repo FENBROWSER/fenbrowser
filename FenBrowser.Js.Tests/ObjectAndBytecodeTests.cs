@@ -259,4 +259,14 @@ public sealed class ObjectAndBytecodeTests
         var compiler = new BytecodeCompiler();
         Assert.Throws<InvalidOperationException>(() => compiler.CompileScript(new SourceText("continue;")));
     }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleFunctionExpressionCall()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let r = (function(a){ return a + 1; })(2); r;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(3, result.AsNumber());
+    }
 }

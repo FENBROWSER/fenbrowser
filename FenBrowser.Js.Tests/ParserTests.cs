@@ -146,4 +146,15 @@ public sealed class ParserTests
         Assert.IsType<ContinueStatementNode>(body.Statements[0]);
         Assert.IsType<BreakStatementNode>(body.Statements[1]);
     }
+
+    [Fact]
+    public void ParsesFunctionExpressionAndCall()
+    {
+        var program = JsParser.ParseScript(new SourceText("let r = (function(a){ return a + 1; })(2); r;"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var call = Assert.IsType<CallExpressionNode>(decl.Declarators[0].Initializer);
+        var paren = Assert.IsType<ParenthesizedExpressionNode>(call.Callee);
+        Assert.IsType<FunctionExpressionNode>(paren.Expression);
+        Assert.Single(call.Arguments);
+    }
 }

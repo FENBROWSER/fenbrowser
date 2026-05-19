@@ -379,6 +379,14 @@ static object DumpExpression(ExpressionNode expression)
             alternate = DumpExpression(cond.Alternate),
             span = DumpSpan(cond.Span)
         },
+        FunctionExpressionNode fn => new
+        {
+            type = "FunctionExpression",
+            name = fn.Name,
+            parameters = fn.Parameters.ToArray(),
+            body = DumpStatement(fn.Body),
+            span = DumpSpan(fn.Span)
+        },
         _ => new { type = "UnknownExpression", span = DumpSpan(expression.Span) }
     };
 }

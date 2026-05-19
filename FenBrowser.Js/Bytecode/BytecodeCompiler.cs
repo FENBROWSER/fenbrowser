@@ -412,6 +412,17 @@ public sealed class BytecodeCompiler
                 PatchJump(jumpEnd, _instructions.Count);
                 return dest;
             }
+            case FunctionExpressionNode fnExpr:
+            {
+                var nestedProgram = new ProgramNode(ProgramKind.Script, fnExpr.Body.Statements, fnExpr.Body.Span);
+                var childCompiler = new BytecodeCompiler();
+                var nestedFunction = childCompiler.CompileProgramCore(nestedProgram, fnExpr.Parameters, fnExpr.Name);
+                var nestedIndex = _nestedFunctions.Count;
+                _nestedFunctions.Add(nestedFunction);
+                var dest = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.CreateFunction, dest, nestedIndex, 0));
+                return dest;
+            }
             case ObjectLiteralExpressionNode obj:
             {
                 var dest = AllocateRegister();
