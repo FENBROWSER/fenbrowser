@@ -156,12 +156,14 @@ public sealed class JsLexer
                 {
                     _index += 2;
                     _column += 2;
+                    var closed = false;
                     while (_index + 1 < _source.Length)
                     {
                         if (_source[_index] == '*' && _source[_index + 1] == '/')
                         {
                             _index += 2;
                             _column += 2;
+                            closed = true;
                             break;
                         }
 
@@ -176,6 +178,12 @@ public sealed class JsLexer
                             _index++;
                             _column++;
                         }
+                    }
+
+                    if (!closed)
+                    {
+                        // Unterminated comment is consumed to EOF for crash-safe lexing.
+                        _index = _source.Length;
                     }
 
                     continue;

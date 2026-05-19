@@ -41,4 +41,25 @@ public sealed class LexerTests
         Assert.Equal(TokenKind.Number, tokens[3].Kind);
         Assert.Equal("2", tokens[3].Text);
     }
+
+    [Fact]
+    public void UnterminatedStringDoesNotCrashAndProducesToken()
+    {
+        var lexer = new JsLexer(new SourceText("'abc"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.String, tokens[0].Kind);
+        Assert.Equal("'abc", tokens[0].Text);
+        Assert.Equal(TokenKind.EndOfFile, tokens[^1].Kind);
+    }
+
+    [Fact]
+    public void UnterminatedBlockCommentDoesNotCrash()
+    {
+        var lexer = new JsLexer(new SourceText("/* unclosed"));
+        var tokens = lexer.LexAll();
+
+        Assert.Single(tokens);
+        Assert.Equal(TokenKind.EndOfFile, tokens[0].Kind);
+    }
 }
