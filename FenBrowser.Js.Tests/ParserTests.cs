@@ -339,4 +339,20 @@ public sealed class ParserTests
         var seq = Assert.IsType<BinaryExpressionNode>(member.PropertyExpression);
         Assert.Equal(",", seq.Operator);
     }
+
+    [Fact]
+    public void ParsesForOfStatement()
+    {
+        var program = JsParser.ParseScript(new SourceText("for (let x of arr) { x; }"));
+        Assert.IsType<ForOfStatementNode>(Assert.Single(program.Body));
+    }
+
+    [Fact]
+    public void ParsesThisExpression()
+    {
+        var program = JsParser.ParseScript(new SourceText("this.x;"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var member = Assert.IsType<MemberExpressionNode>(stmt.Expression);
+        Assert.IsType<ThisExpressionNode>(member.Object);
+    }
 }

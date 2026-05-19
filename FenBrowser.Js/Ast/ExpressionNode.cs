@@ -6,6 +6,8 @@ public abstract record ExpressionNode(SourceSpan Span) : AstNode(Span);
 
 public sealed record IdentifierExpressionNode(string Name, SourceSpan Span) : ExpressionNode(Span);
 
+public sealed record ThisExpressionNode(SourceSpan Span) : ExpressionNode(Span);
+
 public sealed record NumericLiteralExpressionNode(double Value, string RawText, SourceSpan Span) : ExpressionNode(Span);
 
 public sealed record StringLiteralExpressionNode(string Value, string RawText, SourceSpan Span) : ExpressionNode(Span);

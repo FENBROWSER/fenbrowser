@@ -171,7 +171,7 @@ public sealed class JsParser
         return new WhileStatementNode(test, body, MergeSpan(start.Span, body.Span));
     }
 
-    private ForStatementNode ParseForStatement()
+    private StatementNode ParseForStatement()
     {
         var start = Advance(); // for
         ExpectPunctuator("(");
@@ -193,6 +193,20 @@ public sealed class JsParser
         else
         {
             ExpectPunctuator(";");
+        }
+
+        if (Current().Kind == TokenKind.Keyword && Current().Text == "of")
+        {
+            if (initializer is null)
+            {
+                throw new JsParserException("for-of requires an initializer target.");
+            }
+
+            Advance(); // of
+            var iterable = ParseExpression(0);
+            ExpectPunctuator(")");
+            var forOfBody = ParseStatement();
+            return new ForOfStatementNode(initializer, iterable, forOfBody, MergeSpan(start.Span, forOfBody.Span));
         }
 
         ExpressionNode? test = null;
@@ -431,6 +445,12 @@ public sealed class JsParser
         if (token.Kind == TokenKind.Keyword && token.Text == "new")
         {
             return ParseNewExpression();
+        }
+
+        if (token.Kind == TokenKind.Keyword && token.Text == "this")
+        {
+            Advance();
+            return new ThisExpressionNode(token.Span);
         }
 
         if (token.Kind == TokenKind.Identifier)

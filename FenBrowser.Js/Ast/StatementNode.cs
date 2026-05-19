@@ -35,6 +35,12 @@ public sealed record ForStatementNode(
     StatementNode Body,
     SourceSpan Span) : StatementNode(Span);
 
+public sealed record ForOfStatementNode(
+    StatementNode Initializer,
+    ExpressionNode Iterable,
+    StatementNode Body,
+    SourceSpan Span) : StatementNode(Span);
+
 public sealed record BreakStatementNode(SourceSpan Span) : StatementNode(Span);
 
 public sealed record ContinueStatementNode(SourceSpan Span) : StatementNode(Span);
