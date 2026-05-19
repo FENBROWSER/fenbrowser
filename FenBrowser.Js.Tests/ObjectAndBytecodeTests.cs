@@ -178,6 +178,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void ArrayLiteralUsesArrayPrototypeAndConstructorIdentity()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let arr = []; (arr instanceof Array) && (arr.constructor === Array);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ArrayConstructorCreatesArrayInstances()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let a = Array(1, 2); let b = new Array; (a instanceof Array) && (a.length == 2) && (b instanceof Array) && (b.length == 0);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void CompilerAndInterpreterHandleZeroArgFunctionCall()
     {
         var compiler = new BytecodeCompiler();

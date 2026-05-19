@@ -10,6 +10,8 @@ public sealed class BytecodeInterpreter
     private readonly JsHeap _heap;
     private ObjectHandle? _objectConstructorHandle;
     private ObjectHandle? _objectPrototypeHandle;
+    private ObjectHandle? _arrayConstructorHandle;
+    private ObjectHandle? _arrayPrototypeHandle;
     private ObjectHandle? _booleanConstructorHandle;
     private ObjectHandle? _booleanPrototypeHandle;
     private ObjectHandle? _numberConstructorHandle;
@@ -111,8 +113,7 @@ public sealed class BytecodeInterpreter
                 }
                 case OpCode.NewArray:
                 {
-                    var obj = CreateOrdinaryObject();
-                    obj.SetProperty("length", JsValue.FromNumber(0));
+                    var obj = CreateArrayObject(Array.Empty<JsValue>());
                     var handle = _heap.AllocateObject(obj, AllocationSite.Current());
                     frame.Registers[ins.A] = JsValue.FromObject(handle);
                     break;
@@ -405,6 +406,11 @@ public sealed class BytecodeInterpreter
             frame.Variables[objectSlot] = JsValue.FromObject(EnsureObjectConstructor());
         }
 
+        if (function.VariableSlots.TryGetValue("Array", out var arraySlot))
+        {
+            frame.Variables[arraySlot] = JsValue.FromObject(EnsureArrayConstructor());
+        }
+
         if (function.VariableSlots.TryGetValue("Boolean", out var booleanSlot))
         {
             frame.Variables[booleanSlot] = JsValue.FromObject(EnsureBooleanConstructor());
@@ -559,6 +565,60 @@ public sealed class BytecodeInterpreter
         _objectPrototypeHandle = prototypeHandle;
         _objectConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    private ObjectHandle EnsureArrayPrototype()
+    {
+        _ = EnsureArrayConstructor();
+        return _arrayPrototypeHandle!.Value;
+    }
+
+    private ObjectHandle EnsureArrayConstructor()
+    {
+        if (_arrayConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototype = CreateOrdinaryObject();
+        prototype.SetProperty("length", JsValue.FromNumber(0));
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "Array",
+            (_, args) => JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(args), AllocationSite.Current())),
+            args => JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(args), AllocationSite.Current())));
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        _arrayPrototypeHandle = prototypeHandle;
+        _arrayConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private JsObject CreateArrayObject(IReadOnlyList<JsValue> elements)
+    {
+        var obj = new ArrayObject();
+        obj.SetPrototype(EnsureArrayPrototype());
+
+        if (elements.Count == 1 && (elements[0].Tag == JsValueTag.Int32 || elements[0].Tag == JsValueTag.Number))
+        {
+            _ = obj.SetProperty("length", JsValue.FromNumber(Math.Max(0, Math.Truncate(ToNumber(elements[0])))));
+            return obj;
+        }
+
+        for (var i = 0; i < elements.Count; i++)
+        {
+            _ = obj.SetProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture), elements[i]);
+        }
+
+        _ = obj.SetProperty("length", JsValue.FromNumber(elements.Count));
+        return obj;
     }
 
     private ObjectHandle EnsureBooleanPrototype()
@@ -1069,6 +1129,10 @@ public sealed class BytecodeInterpreter
         public JsValue Call(JsValue thisValue, IReadOnlyList<JsValue> args) => _call(thisValue, args);
 
         public JsValue Construct(IReadOnlyList<JsValue> args) => _construct(args);
+    }
+
+    private sealed class ArrayObject : JsObject
+    {
     }
 
     private sealed class BooleanObject : JsObject
