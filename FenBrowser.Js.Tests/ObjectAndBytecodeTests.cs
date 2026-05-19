@@ -185,4 +185,24 @@ public sealed class ObjectAndBytecodeTests
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.Equal(10, result.AsNumber());
     }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleMultiArgFunctionCallViaCallN()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("function add(a,b){ return a + b; } add(2,3);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(5, result.AsNumber());
+    }
+
+    [Fact]
+    public void CompilerAndInterpreterCaptureOuterVariableSnapshot()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let x = 4; function f(){ return x + 1; } x = 100; f();"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(5, result.AsNumber());
+    }
 }

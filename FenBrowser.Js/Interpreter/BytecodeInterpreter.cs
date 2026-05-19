@@ -16,12 +16,26 @@ public sealed class BytecodeInterpreter
 
     public JsValue Execute(BytecodeFunction function)
     {
-        return ExecuteInternal(function, Array.Empty<JsValue>());
+        return ExecuteInternal(function, Array.Empty<JsValue>(), null);
     }
 
-    private JsValue ExecuteInternal(BytecodeFunction function, IReadOnlyList<JsValue> args)
+    private JsValue ExecuteInternal(
+        BytecodeFunction function,
+        IReadOnlyList<JsValue> args,
+        IReadOnlyDictionary<string, JsValue>? capturedVariables)
     {
         var frame = new InterpreterFrame(function);
+        if (capturedVariables is not null)
+        {
+            foreach (var kv in capturedVariables)
+            {
+                if (function.VariableSlots.TryGetValue(kv.Key, out var slot))
+                {
+                    frame.Variables[slot] = kv.Value;
+                }
+            }
+        }
+
         for (var i = 0; i < function.ParameterNames.Count && i < args.Count; i++)
         {
             var paramName = function.ParameterNames[i];
@@ -150,7 +164,8 @@ public sealed class BytecodeInterpreter
                 case OpCode.CreateFunction:
                 {
                     var nested = function.NestedFunctions[ins.B];
-                    var fnObj = new JsFunctionObject(nested);
+                    var captured = CaptureFrameVariables(function, frame);
+                    var fnObj = new JsFunctionObject(nested, captured);
                     var handle = _heap.AllocateObject(fnObj, AllocationSite.Current());
                     frame.Registers[ins.A] = JsValue.FromObject(handle);
                     break;
@@ -158,13 +173,25 @@ public sealed class BytecodeInterpreter
                 case OpCode.Call0:
                 {
                     var callee = ResolveFunction(frame.Registers[ins.B]);
-                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, Array.Empty<JsValue>());
+                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, Array.Empty<JsValue>(), callee.CapturedVariables);
                     break;
                 }
                 case OpCode.Call1:
                 {
                     var callee = ResolveFunction(frame.Registers[ins.B]);
-                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, new[] { frame.Registers[ins.C] });
+                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, new[] { frame.Registers[ins.C] }, callee.CapturedVariables);
+                    break;
+                }
+                case OpCode.CallN:
+                {
+                    var callee = ResolveFunction(frame.Registers[ins.B]);
+                    var callArgs = new JsValue[ins.D];
+                    for (var i = 0; i < ins.D; i++)
+                    {
+                        callArgs[i] = frame.Registers[ins.C + i];
+                    }
+
+                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, callArgs, callee.CapturedVariables);
                     break;
                 }
                 case OpCode.Add:
@@ -232,5 +259,16 @@ public sealed class BytecodeInterpreter
             JsValueTag.Boolean => value.AsBoolean() ? "true" : "false",
             _ => value.Tag.ToString()
         };
+    }
+
+    private static IReadOnlyDictionary<string, JsValue> CaptureFrameVariables(BytecodeFunction function, InterpreterFrame frame)
+    {
+        var snapshot = new Dictionary<string, JsValue>(StringComparer.Ordinal);
+        foreach (var kv in function.VariableSlots)
+        {
+            snapshot[kv.Key] = frame.Variables[kv.Value];
+        }
+
+        return snapshot;
     }
 }

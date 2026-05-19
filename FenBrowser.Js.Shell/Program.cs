@@ -143,7 +143,7 @@ if (args.Length == 2 && args[0] == "--dump-bytecode")
         registers = function.RegisterCount,
         constants = function.Constants.Select((c, i) => new { index = i, value = FormatValue(c), tag = c.Tag.ToString() }).ToArray(),
         variables = function.VariableSlots.OrderBy(kv => kv.Value).Select(kv => new { name = kv.Key, slot = kv.Value }).ToArray(),
-        instructions = function.Instructions.Select((ins, ip) => new { ip, op = ins.OpCode.ToString(), ins.A, ins.B, ins.C }).ToArray()
+        instructions = function.Instructions.Select((ins, ip) => new { ip, op = ins.OpCode.ToString(), ins.A, ins.B, ins.C, ins.D }).ToArray()
     };
     Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
     return 0;

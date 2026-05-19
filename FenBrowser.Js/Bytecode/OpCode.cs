@@ -20,6 +20,7 @@ public enum OpCode : byte
     CreateFunction,
     Call0,
     Call1,
+    CallN,
     Add,
     Sub,
     Mul,

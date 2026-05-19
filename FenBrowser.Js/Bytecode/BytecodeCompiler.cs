@@ -269,7 +269,21 @@ public sealed class BytecodeCompiler
                         return dest;
                     }
                     default:
-                        throw new InvalidOperationException("Only 0/1-argument call expressions are supported in this tranche.");
+                    {
+                        var argStart = AllocateRegister();
+                        for (var i = 0; i < call.Arguments.Count; i++)
+                        {
+                            var argReg = CompileExpression(call.Arguments[i]);
+                            _instructions.Add(new Instruction(OpCode.Move, argStart + i, argReg, 0));
+                            if (i + 1 < call.Arguments.Count)
+                            {
+                                _ = AllocateRegister();
+                            }
+                        }
+
+                        _instructions.Add(new Instruction(OpCode.CallN, dest, calleeReg, argStart, call.Arguments.Count));
+                        return dest;
+                    }
                 }
             }
             case ObjectLiteralExpressionNode obj:

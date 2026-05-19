@@ -120,6 +120,20 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 ValidateRegister(ins.C, function.RegisterCount, ip, "C");
                 break;
+            case OpCode.CallN:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                if (ins.D < 0)
+                {
+                    throw new InvalidOperationException($"Invalid CallN arg count {ins.D} at ip {ip}.");
+                }
+
+                if (ins.C < 0 || ins.C + Math.Max(0, ins.D - 1) >= function.RegisterCount)
+                {
+                    throw new InvalidOperationException($"Invalid CallN arg register window start={ins.C} count={ins.D} at ip {ip}.");
+                }
+
+                break;
             case OpCode.Return:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 break;
