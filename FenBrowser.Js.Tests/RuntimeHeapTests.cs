@@ -185,6 +185,28 @@ public sealed class RuntimeHeapTests
     }
 
     [Fact]
+    public void WriteBarrierRejectsStaleOwnerHandle()
+    {
+        var heap = new JsHeap();
+        var owner = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        var child = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        heap.FreeForTest(owner);
+
+        Assert.Throws<JsEngineFatalException>(() => heap.WriteBarrier(owner, child));
+    }
+
+    [Fact]
+    public void WriteBarrierRejectsStaleChildHandle()
+    {
+        var heap = new JsHeap();
+        var owner = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        var child = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        heap.FreeForTest(child);
+
+        Assert.Throws<JsEngineFatalException>(() => heap.WriteBarrier(owner, child));
+    }
+
+    [Fact]
     public void IsolateAllocatesObjectsInsideHandleScope()
     {
         var isolate = new JsIsolate(new JsHeap());

@@ -119,8 +119,8 @@ public sealed class JsHeap
 
     public void WriteBarrier(ObjectHandle owner, ObjectHandle child)
     {
-        _ = owner;
-        _ = child;
+        _ = Validate(owner);
+        _ = Validate(child);
         _writeBarrierCount++;
         _writeBarrierEdges.Add((owner, child));
         // No-op in v1. Required seam for future GC evolution.
