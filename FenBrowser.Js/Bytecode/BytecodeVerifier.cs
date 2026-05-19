@@ -17,9 +17,7 @@ public sealed class BytecodeVerifier
         for (var ip = 0; ip < function.Instructions.Count; ip++)
         {
             var ins = function.Instructions[ip];
-            ValidateRegister(ins.A, function.RegisterCount, ip, "A");
-            ValidateRegister(ins.B, function.RegisterCount, ip, "B");
-            ValidateRegister(ins.C, function.RegisterCount, ip, "C");
+            ValidateOperands(function, ip, ins);
 
             if (ins.OpCode == OpCode.LoadConst && (ins.B < 0 || ins.B >= function.Constants.Count))
             {
@@ -38,6 +36,60 @@ public sealed class BytecodeVerifier
         if (reg < 0 || reg >= regCount)
         {
             throw new InvalidOperationException($"Invalid register {field}={reg} at ip {ip}.");
+        }
+    }
+
+    private static void ValidateOperands(BytecodeFunction function, int ip, Instruction ins)
+    {
+        switch (ins.OpCode)
+        {
+            case OpCode.LoadConst:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                break;
+            case OpCode.LoadVar:
+            case OpCode.StoreVar:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateVariableSlot(function, ip, ins.B);
+                break;
+            case OpCode.Move:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                break;
+            case OpCode.Add:
+            case OpCode.Sub:
+            case OpCode.Mul:
+            case OpCode.Div:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
+                break;
+            case OpCode.Jump:
+                ValidateJumpTarget(function, ip, ins.A);
+                break;
+            case OpCode.JumpIfFalse:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateJumpTarget(function, ip, ins.B);
+                break;
+            case OpCode.Return:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                break;
+        }
+    }
+
+    private static void ValidateJumpTarget(BytecodeFunction function, int ip, int target)
+    {
+        if (target < 0 || target >= function.Instructions.Count)
+        {
+            throw new InvalidOperationException($"Invalid jump target {target} at ip {ip}.");
+        }
+    }
+
+    private static void ValidateVariableSlot(BytecodeFunction function, int ip, int slot)
+    {
+        if (slot < 0 || slot >= Math.Max(1, function.VariableSlots.Count))
+        {
+            throw new InvalidOperationException($"Invalid variable slot {slot} at ip {ip}.");
         }
     }
 }

@@ -26,6 +26,15 @@ public sealed class BytecodeInterpreter
                 case OpCode.Move:
                     frame.Registers[ins.A] = frame.Registers[ins.B];
                     break;
+                case OpCode.Jump:
+                    frame.InstructionPointer = ins.A;
+                    break;
+                case OpCode.JumpIfFalse:
+                    if (!IsTruthy(frame.Registers[ins.A]))
+                    {
+                        frame.InstructionPointer = ins.B;
+                    }
+                    break;
                 case OpCode.Add:
                     frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber() + frame.Registers[ins.C].AsNumber());
                     break;
@@ -46,5 +55,18 @@ public sealed class BytecodeInterpreter
         }
 
         return JsValue.Undefined;
+    }
+
+    private static bool IsTruthy(JsValue value)
+    {
+        return value.Tag switch
+        {
+            JsValueTag.Undefined => false,
+            JsValueTag.Null => false,
+            JsValueTag.Boolean => value.AsBoolean(),
+            JsValueTag.Int32 => value.AsInt32() != 0,
+            JsValueTag.Number => value.AsNumber() != 0 && !double.IsNaN(value.AsNumber()),
+            _ => true
+        };
     }
 }

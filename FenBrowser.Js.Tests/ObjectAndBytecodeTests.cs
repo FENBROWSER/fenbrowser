@@ -53,6 +53,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void BytecodeVerifierRejectsInvalidJumpTarget()
+    {
+        var fn = new BytecodeFunction
+        {
+            RegisterCount = 2,
+            Constants = new[] { JsValue.FromNumber(1) },
+            VariableSlots = new Dictionary<string, int>(),
+            Instructions = new[]
+            {
+                new Instruction(OpCode.LoadConst, 1, 0, 0),
+                new Instruction(OpCode.Jump, 99, 0, 0),
+                new Instruction(OpCode.Return, 0, 0, 0)
+            }
+        };
+
+        var verifier = new BytecodeVerifier();
+        Assert.Throws<InvalidOperationException>(() => verifier.Verify(fn));
+    }
+
+    [Fact]
     public void CompilerAndInterpreterRunArithmeticAndVariables()
     {
         var compiler = new BytecodeCompiler();
@@ -61,5 +81,38 @@ public sealed class ObjectAndBytecodeTests
 
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.Equal(8, result.AsNumber());
+    }
+
+    [Fact]
+    public void CompilerAndInterpreterRunIfElse()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let x = 0; if (1) { x = 7; } else { x = 9; } x;"));
+        new BytecodeVerifier().Verify(fn);
+
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(7, result.AsNumber());
+    }
+
+    [Fact]
+    public void CompilerAndInterpreterRunWhileLoop()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let x = 3; while (x) { x = x - 1; } x;"));
+        new BytecodeVerifier().Verify(fn);
+
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(0, result.AsNumber());
+    }
+
+    [Fact]
+    public void CompilerAndInterpreterHonorReturn()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let x = 1; return x + 2; x = 99;"));
+        new BytecodeVerifier().Verify(fn);
+
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(3, result.AsNumber());
     }
 }

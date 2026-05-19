@@ -45,6 +45,13 @@ public sealed class BytecodeCompiler
     {
         switch (stmt)
         {
+            case BlockStatementNode block:
+                foreach (var nested in block.Statements)
+                {
+                    CompileStatement(nested);
+                }
+
+                break;
             case VariableDeclarationStatementNode decl:
                 foreach (var d in decl.Declarators)
                 {
@@ -61,10 +68,60 @@ public sealed class BytecodeCompiler
                 var exprReg = CompileExpression(exprStmt.Expression);
                 _instructions.Add(new Instruction(OpCode.Move, 0, exprReg, 0));
                 break;
+            case IfStatementNode ifStmt:
+                CompileIfStatement(ifStmt);
+                break;
+            case WhileStatementNode whileStmt:
+                CompileWhileStatement(whileStmt);
+                break;
+            case ReturnStatementNode returnStmt:
+                CompileReturnStatement(returnStmt);
+                break;
             default:
                 // Minimal compiler slice currently targets literals/arithmetic/variables.
                 break;
         }
+    }
+
+    private void CompileIfStatement(IfStatementNode ifStmt)
+    {
+        var testReg = CompileExpression(ifStmt.Test);
+        var jumpIfFalseIndex = EmitPlaceholder(OpCode.JumpIfFalse, testReg);
+
+        CompileStatement(ifStmt.Consequent);
+
+        if (ifStmt.Alternate is not null)
+        {
+            var jumpAfterConsequent = EmitPlaceholder(OpCode.Jump);
+            PatchJump(jumpIfFalseIndex, _instructions.Count);
+            CompileStatement(ifStmt.Alternate);
+            PatchJump(jumpAfterConsequent, _instructions.Count);
+        }
+        else
+        {
+            PatchJump(jumpIfFalseIndex, _instructions.Count);
+        }
+    }
+
+    private void CompileWhileStatement(WhileStatementNode whileStmt)
+    {
+        var loopStart = _instructions.Count;
+        var testReg = CompileExpression(whileStmt.Test);
+        var jumpIfFalseIndex = EmitPlaceholder(OpCode.JumpIfFalse, testReg);
+        CompileStatement(whileStmt.Body);
+        _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
+        PatchJump(jumpIfFalseIndex, _instructions.Count);
+    }
+
+    private void CompileReturnStatement(ReturnStatementNode returnStmt)
+    {
+        if (returnStmt.Argument is not null)
+        {
+            var reg = CompileExpression(returnStmt.Argument);
+            _instructions.Add(new Instruction(OpCode.Move, 0, reg, 0));
+        }
+
+        _instructions.Add(new Instruction(OpCode.Return, 0, 0, 0));
     }
 
     private int CompileExpression(ExpressionNode expr)
@@ -133,5 +190,28 @@ public sealed class BytecodeCompiler
         slot = _variables.Count;
         _variables[name] = slot;
         return slot;
+    }
+
+    private int EmitPlaceholder(OpCode opCode, int a = 0)
+    {
+        _instructions.Add(opCode switch
+        {
+            OpCode.Jump => new Instruction(opCode, -1, 0, 0),
+            OpCode.JumpIfFalse => new Instruction(opCode, a, -1, 0),
+            _ => throw new InvalidOperationException($"Unsupported placeholder opcode {opCode}.")
+        });
+
+        return _instructions.Count - 1;
+    }
+
+    private void PatchJump(int instructionIndex, int target)
+    {
+        var ins = _instructions[instructionIndex];
+        _instructions[instructionIndex] = ins.OpCode switch
+        {
+            OpCode.Jump => ins with { A = target },
+            OpCode.JumpIfFalse => ins with { B = target },
+            _ => throw new InvalidOperationException($"Cannot patch opcode {ins.OpCode} as jump.")
+        };
     }
 }
