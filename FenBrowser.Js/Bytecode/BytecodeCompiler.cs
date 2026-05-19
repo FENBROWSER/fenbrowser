@@ -346,6 +346,12 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.LoadVar, reg, slot, 0));
                 return reg;
             }
+            case ThisExpressionNode:
+            {
+                var reg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.LoadThis, reg, 0, 0));
+                return reg;
+            }
             case AssignmentExpressionNode assign when assign.Left is IdentifierExpressionNode id:
             {
                 var rightReg = CompileExpression(assign.Right);

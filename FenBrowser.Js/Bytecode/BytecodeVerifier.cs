@@ -47,6 +47,9 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 break;
+            case OpCode.LoadThis:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                break;
             case OpCode.LoadVar:
             case OpCode.StoreVar:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");

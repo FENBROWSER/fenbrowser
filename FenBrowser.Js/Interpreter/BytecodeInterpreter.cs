@@ -17,16 +17,17 @@ public sealed class BytecodeInterpreter
     [MayExecuteJs]
     public JsValue Execute(BytecodeFunction function)
     {
-        return ExecuteInternal(function, Array.Empty<JsValue>(), null);
+        return ExecuteInternal(function, Array.Empty<JsValue>(), null, JsValue.Undefined);
     }
 
     [MayExecuteJs]
     private JsValue ExecuteInternal(
         BytecodeFunction function,
         IReadOnlyList<JsValue> args,
-        IReadOnlyDictionary<string, JsValue>? capturedVariables)
+        IReadOnlyDictionary<string, JsValue>? capturedVariables,
+        JsValue thisValue)
     {
-        var frame = new InterpreterFrame(function);
+        var frame = new InterpreterFrame(function, thisValue);
         if (capturedVariables is not null)
         {
             foreach (var kv in capturedVariables)
@@ -57,6 +58,9 @@ public sealed class BytecodeInterpreter
                     break;
                 case OpCode.LoadVar:
                     frame.Registers[ins.A] = frame.Variables[ins.B];
+                    break;
+                case OpCode.LoadThis:
+                    frame.Registers[ins.A] = frame.ThisValue;
                     break;
                 case OpCode.StoreVar:
                     frame.Variables[ins.B] = frame.Registers[ins.A];
@@ -219,13 +223,13 @@ public sealed class BytecodeInterpreter
                 case OpCode.Call0:
                 {
                     var callee = ResolveFunction(frame.Registers[ins.B]);
-                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, Array.Empty<JsValue>(), callee.CapturedVariables);
+                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, Array.Empty<JsValue>(), callee.CapturedVariables, JsValue.Undefined);
                     break;
                 }
                 case OpCode.Call1:
                 {
                     var callee = ResolveFunction(frame.Registers[ins.B]);
-                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, new[] { frame.Registers[ins.C] }, callee.CapturedVariables);
+                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, new[] { frame.Registers[ins.C] }, callee.CapturedVariables, JsValue.Undefined);
                     break;
                 }
                 case OpCode.CallN:
@@ -237,7 +241,7 @@ public sealed class BytecodeInterpreter
                         callArgs[i] = frame.Registers[ins.C + i];
                     }
 
-                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, callArgs, callee.CapturedVariables);
+                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, callArgs, callee.CapturedVariables, JsValue.Undefined);
                     break;
                 }
                 case OpCode.Construct0:
@@ -685,7 +689,7 @@ public sealed class BytecodeInterpreter
         }
 
         var defaultInstance = JsValue.FromObject(_heap.AllocateObject(instanceObject, AllocationSite.Current()));
-        var result = ExecuteInternal(callee.Function, args, callee.CapturedVariables);
+        var result = ExecuteInternal(callee.Function, args, callee.CapturedVariables, defaultInstance);
         return result.Tag == JsValueTag.Object ? result : defaultInstance;
     }
 }

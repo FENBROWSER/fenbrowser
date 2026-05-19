@@ -4,6 +4,7 @@ public enum OpCode : byte
 {
     LoadConst,
     LoadVar,
+    LoadThis,
     StoreVar,
     Move,
     Jump,

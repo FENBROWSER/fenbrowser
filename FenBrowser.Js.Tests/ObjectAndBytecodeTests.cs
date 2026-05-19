@@ -302,6 +302,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void ConstructorThisBindsToNewInstance()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("function C(){ this.x = 7; } let o = new C(); o.x;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(7, result.AsNumber());
+    }
+
+    [Fact]
+    public void PlainFunctionCallThisIsUndefinedInCurrentSubset()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("function f(){ return typeof this == \"undefined\"; } f();"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void CompilerAndInterpreterHandleTypeofUnary()
     {
         var compiler = new BytecodeCompiler();
