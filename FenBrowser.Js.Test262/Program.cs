@@ -2,7 +2,7 @@ using FenBrowser.Js.Test262;
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("Usage: fenjs-test262 --list | --dry-run | --parser-subset | --dashboard | --verify-gates [--root <path>] [--test262 <path>] [--test262-file <file>] [--features <a,b,c>] [--out|--output <path>] [--max <n>] [--timeout-ms <n>] [--engine <name>] [--expectations <path>] [--in <result.json>] [--previous <result.json>]");
+    Console.Error.WriteLine("Usage: fenjs-test262 --list | --dry-run | --parser-subset | --dashboard | --verify-gates [--root <path>] [--test262 <path>] [--test262-file <file>] [--features <a,b,c>] [--supported-features <a,b,c>] [--out|--output <path>] [--max <n>] [--timeout-ms <n>] [--engine <name>] [--expectations <path>] [--in <result.json>] [--previous <result.json>]");
     return 1;
 }
 
@@ -22,6 +22,7 @@ string? previousPath = null;
 string? test262Path = null;
 string? test262File = null;
 string? featuresCsv = null;
+string? supportedFeaturesCsv = null;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -53,6 +54,9 @@ for (var i = 0; i < args.Length; i++)
             break;
         case "--features" when i + 1 < args.Length:
             featuresCsv = args[++i];
+            break;
+        case "--supported-features" when i + 1 < args.Length:
+            supportedFeaturesCsv = args[++i];
             break;
         case "--out" when i + 1 < args.Length:
         case "--output" when i + 1 < args.Length:
@@ -94,4 +98,4 @@ if ((list || dryRun || parserSubset) && !Directory.Exists(root))
 }
 
 var runner = new Test262Runner();
-return runner.Run(root, list, dryRun, parserSubset, dashboard, verifyGates, outPath, max, timeoutMs, engine, expectationsPath, inputPath, previousPath, test262Path, test262File, featuresCsv);
+return runner.Run(root, list, dryRun, parserSubset, dashboard, verifyGates, outPath, max, timeoutMs, engine, expectationsPath, inputPath, previousPath, test262Path, test262File, featuresCsv, supportedFeaturesCsv);

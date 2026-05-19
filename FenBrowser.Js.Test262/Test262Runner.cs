@@ -21,7 +21,8 @@ public sealed class Test262Runner
         string? previousPath,
         string? test262Path,
         string? test262File,
-        string? featuresCsv)
+        string? featuresCsv,
+        string? supportedFeaturesCsv)
     {
         var manifest = new Test262Manifest { RootPath = rootPath };
         var files = manifest.EnumerateTestFiles().OrderBy(p => p, StringComparer.Ordinal).ToList();
@@ -53,7 +54,7 @@ public sealed class Test262Runner
 
         if (parserSubset)
         {
-            RunParserSubset(rootPath, outputPath, files, max, timeoutMs, engine, expectationsPath, expectations);
+            RunParserSubset(rootPath, outputPath, files, max, timeoutMs, engine, expectationsPath, expectations, supportedFeaturesCsv);
         }
 
         if (dashboard)
@@ -168,13 +169,14 @@ public sealed class Test262Runner
         return filtered;
     }
 
-    private static void RunParserSubset(string rootPath, string outputPath, IReadOnlyList<string> files, int max, int timeoutMs, string engine, string? expectationsPath, Test262Expectations? expectations)
+    private static void RunParserSubset(string rootPath, string outputPath, IReadOnlyList<string> files, int max, int timeoutMs, string engine, string? expectationsPath, Test262Expectations? expectations, string? supportedFeaturesCsv)
     {
         var startedAtUtc = DateTime.UtcNow;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var pinPath = Path.Combine(rootPath, "..", "test262.pin");
         var commit = File.Exists(pinPath) ? File.ReadAllText(pinPath).Trim() : "un-pinned";
         var subset = files.Take(Math.Max(1, max)).ToList();
+        var supportedFeatures = ParseSupportedFeatures(supportedFeaturesCsv);
 
         var passed = 0;
         var unsupported = 0;
@@ -193,6 +195,39 @@ public sealed class Test262Runner
             var sourceText = File.ReadAllText(file);
             var frontmatter = Test262Frontmatter.Parse(sourceText);
             var expectsSyntaxError = ExpectsSyntaxErrorParseFailure(frontmatter);
+
+            var unsupportedFeature = frontmatter.Features.FirstOrDefault(feature => supportedFeatures is not null && !supportedFeatures.Contains(feature));
+            if (unsupportedFeature is not null)
+            {
+                unsupported++;
+                failures.Add(new
+                {
+                    path = file,
+                    relativePath,
+                    classification = "unsupported",
+                    feature = unsupportedFeature,
+                    message = $"Feature '{unsupportedFeature}' is not in supported feature set."
+                });
+
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "UnsupportedFeature",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = "parser-missing",
+                    message = $"Feature '{unsupportedFeature}' is not in supported feature set."
+                });
+                continue;
+            }
+
             try
             {
                 var source = new SourceText(sourceText, file);
@@ -497,5 +532,20 @@ public sealed class Test262Runner
 
         return string.Equals(frontmatter.Negative.Phase, "parse", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(frontmatter.Negative.Phase, "early", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static HashSet<string>? ParseSupportedFeatures(string? supportedFeaturesCsv)
+    {
+        if (string.IsNullOrWhiteSpace(supportedFeaturesCsv))
+        {
+            return null;
+        }
+
+        var set = supportedFeaturesCsv
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(f => f.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        return set.Count == 0 ? null : set;
     }
 }
