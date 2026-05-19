@@ -26,6 +26,14 @@ public sealed class HandleScope : IDisposable
         {
             _heap.PushRoot(objectHandle);
         }
+        else if (handle is StringHandle stringHandle)
+        {
+            _heap.PushRoot(stringHandle);
+        }
+        else if (handle is SymbolHandle symbolHandle)
+        {
+            _heap.PushRoot(symbolHandle);
+        }
 
         return new Handle<T>(handle);
     }

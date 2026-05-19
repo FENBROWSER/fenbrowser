@@ -140,6 +140,21 @@ public sealed class RuntimeHeapTests
     }
 
     [Fact]
+    public void HandleScopeRootsAndUnrootsStringAndSymbolHandles()
+    {
+        var heap = new JsHeap();
+        Assert.Equal(0, heap.RootCount);
+        using (var scope = new HandleScope(heap))
+        {
+            _ = scope.Create(new StringHandle(1, 1));
+            _ = scope.Create(new SymbolHandle(2, 1));
+            Assert.Equal(2, heap.RootCount);
+        }
+
+        Assert.Equal(0, heap.RootCount);
+    }
+
+    [Fact]
     public void HeapVerifierRejectsInvalidRoots()
     {
         var heap = new JsHeap();

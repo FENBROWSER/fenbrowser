@@ -78,6 +78,8 @@ public sealed class JsHeap
     }
 
     public void PushRoot(ObjectHandle handle) => _roots.Push(handle);
+    public void PushRoot(StringHandle handle) => _roots.Push(handle);
+    public void PushRoot(SymbolHandle handle) => _roots.Push(handle);
 
     public void PopRootsTo(int mark) => _roots.PopTo(mark);
 
@@ -145,6 +147,14 @@ public sealed class JsHeap
         // Mark from explicit roots.
         var marker = new MarkingTracer(this);
         foreach (var root in _roots.Snapshot())
+        {
+            marker.Trace(root);
+        }
+        foreach (var root in _roots.StringSnapshot())
+        {
+            marker.Trace(root);
+        }
+        foreach (var root in _roots.SymbolSnapshot())
         {
             marker.Trace(root);
         }
@@ -219,6 +229,8 @@ public sealed class JsHeap
     public IReadOnlyList<HeapCell?> GetCellsSnapshotForTest() => _cells;
 
     public IReadOnlyList<ObjectHandle> GetRootsSnapshotForTest() => _roots.Snapshot();
+    public IReadOnlyList<StringHandle> GetStringRootsSnapshotForTest() => _roots.StringSnapshot();
+    public IReadOnlyList<SymbolHandle> GetSymbolRootsSnapshotForTest() => _roots.SymbolSnapshot();
 
     public IReadOnlyList<(ObjectHandle Owner, ObjectHandle Child)> GetWriteBarrierEdgesSnapshotForTest() => _writeBarrierEdges;
 

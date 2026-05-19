@@ -32,6 +32,14 @@ public sealed class HeapVerifier
         {
             heap.Validate(root);
         }
+        foreach (var root in heap.GetStringRootsSnapshotForTest())
+        {
+            heap.Validate(root);
+        }
+        foreach (var root in heap.GetSymbolRootsSnapshotForTest())
+        {
+            heap.Validate(root);
+        }
 
         foreach (var edge in heap.GetWriteBarrierEdgesSnapshotForTest())
         {
