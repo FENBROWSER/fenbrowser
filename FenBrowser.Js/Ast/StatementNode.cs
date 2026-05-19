@@ -27,3 +27,10 @@ public sealed record TryCatchStatementNode(
     string CatchIdentifier,
     BlockStatementNode CatchBlock,
     SourceSpan Span) : StatementNode(Span);
+
+public sealed record ForStatementNode(
+    StatementNode? Initializer,
+    ExpressionNode? Test,
+    ExpressionNode? Update,
+    StatementNode Body,
+    SourceSpan Span) : StatementNode(Span);

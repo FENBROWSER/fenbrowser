@@ -98,6 +98,9 @@ public sealed class BytecodeCompiler
             case WhileStatementNode whileStmt:
                 CompileWhileStatement(whileStmt);
                 break;
+            case ForStatementNode forStmt:
+                CompileForStatement(forStmt);
+                break;
             case ReturnStatementNode returnStmt:
                 CompileReturnStatement(returnStmt);
                 break;
@@ -169,6 +172,35 @@ public sealed class BytecodeCompiler
         }
 
         _instructions.Add(new Instruction(OpCode.Return, 0, 0, 0));
+    }
+
+    private void CompileForStatement(ForStatementNode forStmt)
+    {
+        if (forStmt.Initializer is not null)
+        {
+            CompileStatement(forStmt.Initializer);
+        }
+
+        var loopStart = _instructions.Count;
+        int? jumpIfFalseIndex = null;
+        if (forStmt.Test is not null)
+        {
+            var testReg = CompileExpression(forStmt.Test);
+            jumpIfFalseIndex = EmitPlaceholder(OpCode.JumpIfFalse, testReg);
+        }
+
+        CompileStatement(forStmt.Body);
+
+        if (forStmt.Update is not null)
+        {
+            _ = CompileExpression(forStmt.Update);
+        }
+
+        _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
+        if (jumpIfFalseIndex is not null)
+        {
+            PatchJump(jumpIfFalseIndex.Value, _instructions.Count);
+        }
     }
 
     private void CompileThrowStatement(ThrowStatementNode throwStmt)

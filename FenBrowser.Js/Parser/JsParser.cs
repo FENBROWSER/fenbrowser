@@ -67,6 +67,8 @@ public sealed class JsParser
                     return ParseIfStatement();
                 case "while":
                     return ParseWhileStatement();
+                case "for":
+                    return ParseForStatement();
                 case "function":
                     return ParseFunctionDeclaration();
                 case "return":
@@ -162,6 +164,49 @@ public sealed class JsParser
         ExpectPunctuator(")");
         var body = ParseStatement();
         return new WhileStatementNode(test, body, MergeSpan(start.Span, body.Span));
+    }
+
+    private ForStatementNode ParseForStatement()
+    {
+        var start = Advance(); // for
+        ExpectPunctuator("(");
+
+        StatementNode? initializer = null;
+        if (!IsPunctuator(";"))
+        {
+            if (Current().Kind == TokenKind.Keyword && (Current().Text == "let" || Current().Text == "const" || Current().Text == "var"))
+            {
+                initializer = ParseVariableDeclarationStatement();
+            }
+            else
+            {
+                var initExpr = ParseExpression(0);
+                initializer = new ExpressionStatementNode(initExpr, initExpr.Span);
+                ExpectPunctuator(";");
+            }
+        }
+        else
+        {
+            ExpectPunctuator(";");
+        }
+
+        ExpressionNode? test = null;
+        if (!IsPunctuator(";"))
+        {
+            test = ParseExpression(0);
+        }
+
+        ExpectPunctuator(";");
+
+        ExpressionNode? update = null;
+        if (!IsPunctuator(")"))
+        {
+            update = ParseExpression(0);
+        }
+
+        ExpectPunctuator(")");
+        var body = ParseStatement();
+        return new ForStatementNode(initializer, test, update, body, MergeSpan(start.Span, body.Span));
     }
 
     private ReturnStatementNode ParseReturnStatement()

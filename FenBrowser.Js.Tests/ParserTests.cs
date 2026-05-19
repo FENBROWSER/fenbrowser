@@ -126,4 +126,14 @@ public sealed class ParserTests
         Assert.IsType<UnaryExpressionNode>(cond.Test);
         Assert.IsType<UnaryExpressionNode>(cond.Consequent);
     }
+
+    [Fact]
+    public void ParsesBasicForStatement()
+    {
+        var program = JsParser.ParseScript(new SourceText("for (let i = 0; i < 3; i = i + 1) { i; }"));
+        var forStmt = Assert.IsType<ForStatementNode>(Assert.Single(program.Body));
+        Assert.NotNull(forStmt.Initializer);
+        Assert.NotNull(forStmt.Test);
+        Assert.NotNull(forStmt.Update);
+    }
 }

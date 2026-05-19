@@ -225,4 +225,14 @@ public sealed class ObjectAndBytecodeTests
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.Equal(-3, result.AsNumber());
     }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleForLoop()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let sum = 0; for (let i = 0; i < 4; i = i + 1) { sum = sum + i; } sum;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(6, result.AsNumber());
+    }
 }
