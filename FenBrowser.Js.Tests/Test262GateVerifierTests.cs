@@ -1520,6 +1520,64 @@ public sealed class Test262GateVerifierTests
         }
     }
 
+    [Fact]
+    public void Verify_FailsWhenNewFailureAppearsInEnabledSubset()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var previousPath = Path.Combine(tempRoot, "previous.json");
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(previousPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/new-failure.js",
+                        status = "Passed",
+                        category = (string?)null
+                    }
+                ],
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 0,
+                passed: 1));
+
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/new-failure.js",
+                        status = "Failed",
+                        category = "runtime-error"
+                    }
+                ],
+                failures:
+                [
+                    new
+                    {
+                        relativePath = "test/new-failure.js",
+                        classification = "runtime-error",
+                        expected = false
+                    }
+                ],
+                crashes: 0,
+                unexpectedPasses: 0,
+                passed: 1));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousPath);
+            Assert.False(result.Passed);
+            Assert.Contains(result.Violations, v => v.Contains("No new failure in enabled subset violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
     private static string BuildResultJson(object[] tests, object[] failures, int crashes = 0, int unexpectedPasses = 0, int? passed = null)
     {
         var payload = new
