@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 18
-VisualStudioVersion = 18.4.11620.152 stable
+VisualStudioVersion = 18.4.11620.152
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Core", "FenBrowser.Core\FenBrowser.Core.csproj", "{0B778E16-731E-4661-B98E-3234DD0F90B4}"
 EndProject
@@ -22,6 +22,8 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Tooling", "FenBrowser.Tooling\FenBrowser.Tooling.csproj", "{4712D2D8-D84A-4888-9700-290904B1C1C6}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Js", "FenBrowser.Js\FenBrowser.Js.csproj", "{68351E35-7CFC-4F2F-B0FD-5AF20A033F71}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Js.Shell", "FenBrowser.Js.Shell\FenBrowser.Js.Shell.csproj", "{195470E5-A1A1-4B6A-BC64-B1CAB0CFDB09}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -153,6 +155,18 @@ Global
 		{68351E35-7CFC-4F2F-B0FD-5AF20A033F71}.Release|x64.Build.0 = Release|Any CPU
 		{68351E35-7CFC-4F2F-B0FD-5AF20A033F71}.Release|x86.ActiveCfg = Release|Any CPU
 		{68351E35-7CFC-4F2F-B0FD-5AF20A033F71}.Release|x86.Build.0 = Release|Any CPU
+		{195470E5-A1A1-4B6A-BC64-B1CAB0CFDB09}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{195470E5-A1A1-4B6A-BC64-B1CAB0CFDB09}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{195470E5-A1A1-4B6A-BC64-B1CAB0CFDB09}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{195470E5-A1A1-4B6A-BC64-B1CAB0CFDB09}.Debug|x64.Build.0 = Debug|Any CPU
+		{195470E5-A1A1-4B6A-BC64-B1CAB0CFDB09}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{195470E5-A1A1-4B6A-BC64-B1CAB0CFDB09}.Debug|x86.Build.0 = Debug|Any CPU
+		{195470E5-A1A1-4B6A-BC64-B1CAB0CFDB09}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{195470E5-A1A1-4B6A-BC64-B1CAB0CFDB09}.Release|Any CPU.Build.0 = Release|Any CPU
+		{195470E5-A1A1-4B6A-BC64-B1CAB0CFDB09}.Release|x64.ActiveCfg = Release|Any CPU
+		{195470E5-A1A1-4B6A-BC64-B1CAB0CFDB09}.Release|x64.Build.0 = Release|Any CPU
+		{195470E5-A1A1-4B6A-BC64-B1CAB0CFDB09}.Release|x86.ActiveCfg = Release|Any CPU
+		{195470E5-A1A1-4B6A-BC64-B1CAB0CFDB09}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
