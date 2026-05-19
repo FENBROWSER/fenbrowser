@@ -5,6 +5,15 @@ namespace FenBrowser.Js.Test262;
 
 public sealed class Test262Expectations
 {
+    private static readonly HashSet<string> ValidStatuses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "ParserError",
+        "UnsupportedFeature",
+        "RuntimeError",
+        "Crash",
+        "Timeout"
+    };
+
     public string? MetadataOwner { get; init; }
     public string? MetadataArea { get; init; }
     public string? MetadataCommit { get; init; }
@@ -97,6 +106,7 @@ public sealed class Test262Expectations
         var entries = new List<Test262ExpectationEntry>();
         if (root.TryGetProperty("expectations", out var expectations) && expectations.ValueKind == JsonValueKind.Array)
         {
+            var index = 0;
             foreach (var item in expectations.EnumerateArray())
             {
                 var pattern = TryGetString(item, "path");
@@ -108,7 +118,13 @@ public sealed class Test262Expectations
 
                 if (string.IsNullOrWhiteSpace(pattern) || string.IsNullOrWhiteSpace(status))
                 {
+                    index++;
                     continue;
+                }
+
+                if (!ValidStatuses.Contains(status))
+                {
+                    throw new InvalidDataException($"Invalid expectation status '{status}' in {filePath} at index {index}.");
                 }
 
                 entries.Add(new Test262ExpectationEntry(
@@ -118,6 +134,7 @@ public sealed class Test262Expectations
                     expires ?? string.Empty,
                     itemOwner,
                     itemArea));
+                index++;
             }
         }
 

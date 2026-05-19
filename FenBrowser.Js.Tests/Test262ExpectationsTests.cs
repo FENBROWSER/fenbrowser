@@ -100,4 +100,33 @@ public sealed class Test262ExpectationsTests
             Directory.Delete(tempRoot, recursive: true);
         }
     }
+
+    [Fact]
+    public void Load_ThrowsWhenStatusIsInvalid()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var filePath = Path.Combine(tempRoot, "invalid-status.json");
+
+        try
+        {
+            File.WriteAllText(filePath, """
+            {
+              "expectations": [
+                {
+                  "path": "test/language/foo.js",
+                  "status": "TypoStatus"
+                }
+              ]
+            }
+            """);
+
+            var ex = Assert.Throws<InvalidDataException>(() => Test262Expectations.Load(filePath));
+            Assert.Contains("Invalid expectation status", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
 }
