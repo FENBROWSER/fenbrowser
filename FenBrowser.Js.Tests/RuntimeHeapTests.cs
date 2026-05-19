@@ -41,6 +41,18 @@ public sealed class RuntimeHeapTests
     }
 
     [Fact]
+    public void StringAndSymbolHandlesRoundTripEncodedPayload()
+    {
+        var stringHandle = new StringHandle(11, 2);
+        var stringDecoded = StringHandle.FromInt64(stringHandle.ToInt64());
+        Assert.Equal(stringHandle, stringDecoded);
+
+        var symbolHandle = new SymbolHandle(17, 4);
+        var symbolDecoded = SymbolHandle.FromInt64(symbolHandle.ToInt64());
+        Assert.Equal(symbolHandle, symbolDecoded);
+    }
+
+    [Fact]
     public void HeapAllocatesAndResolvesObjectHandles()
     {
         var heap = new JsHeap();

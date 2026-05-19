@@ -70,15 +70,35 @@ public sealed class JsHeap
 
     public HeapCell Validate(ObjectHandle handle)
     {
-        if ((uint)handle.Index >= (uint)_cells.Count)
+        return ValidateHandle(handle.Index, handle.Generation, HeapCellKind.Object);
+    }
+
+    public HeapCell Validate(StringHandle handle)
+    {
+        return ValidateHandle(handle.Index, handle.Generation, HeapCellKind.String);
+    }
+
+    public HeapCell Validate(SymbolHandle handle)
+    {
+        return ValidateHandle(handle.Index, handle.Generation, HeapCellKind.Symbol);
+    }
+
+    private HeapCell ValidateHandle(int index, int generation, HeapCellKind expectedKind)
+    {
+        if ((uint)index >= (uint)_cells.Count)
         {
             throw new JsEngineFatalException("Invalid heap handle index.");
         }
 
-        var cell = _cells[handle.Index];
-        if (cell is null || cell.Generation != handle.Generation)
+        var cell = _cells[index];
+        if (cell is null || cell.Generation != generation)
         {
             throw new JsEngineFatalException("Stale heap handle.");
+        }
+
+        if (cell.Kind != expectedKind)
+        {
+            throw new JsEngineFatalException($"Heap handle kind mismatch. Expected {expectedKind}, actual {cell.Kind}.");
         }
 
         return cell;

@@ -53,5 +53,15 @@ public sealed class HeapVerifier
         {
             _ = _heap.Validate(handle);
         }
+
+        public void Trace(StringHandle handle)
+        {
+            _ = _heap.Validate(handle);
+        }
+
+        public void Trace(SymbolHandle handle)
+        {
+            _ = _heap.Validate(handle);
+        }
     }
 }
