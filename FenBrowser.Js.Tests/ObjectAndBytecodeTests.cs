@@ -472,6 +472,36 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void EmptyStringCoercesToZeroInUnaryPlus()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("+\"\";"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(0, result.AsNumber());
+    }
+
+    [Fact]
+    public void WhitespaceStringCoercesToZeroInUnaryPlus()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("+\"   \";"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(0, result.AsNumber());
+    }
+
+    [Fact]
+    public void LooseEqualityTreatsEmptyStringAsZero()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("\"\" == 0;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void RelationalOperatorsCompareStringsLexicographically()
     {
         var compiler = new BytecodeCompiler();

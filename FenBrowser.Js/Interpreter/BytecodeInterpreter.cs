@@ -396,8 +396,14 @@ public sealed class BytecodeInterpreter
 
         if (value.Tag == JsValueTag.String)
         {
+            var text = value.AsString();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return 0;
+            }
+
             if (double.TryParse(
-                    value.AsString(),
+                    text,
                     System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowLeadingWhite | System.Globalization.NumberStyles.AllowTrailingWhite,
                     System.Globalization.CultureInfo.InvariantCulture,
                     out var parsed))
