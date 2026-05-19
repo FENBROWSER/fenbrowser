@@ -230,7 +230,10 @@ public static class Test262GateVerifier
                                owner.ValueKind != JsonValueKind.String ||
                                string.IsNullOrWhiteSpace(owner.GetString()) ||
                                string.Equals(owner.GetString(), "unknown", StringComparison.OrdinalIgnoreCase);
-            var milestoneMissing = !failure.TryGetProperty("expiresAtMilestone", out var milestone) || milestone.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(milestone.GetString());
+            var milestoneMissing = !failure.TryGetProperty("expiresAtMilestone", out var milestone) ||
+                                   milestone.ValueKind != JsonValueKind.String ||
+                                   string.IsNullOrWhiteSpace(milestone.GetString()) ||
+                                   string.Equals(milestone.GetString(), "unknown", StringComparison.OrdinalIgnoreCase);
             if (ownerMissing || milestoneMissing)
             {
                 count++;
