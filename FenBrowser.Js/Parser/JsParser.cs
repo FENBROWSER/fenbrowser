@@ -935,6 +935,18 @@ public sealed class JsParser
             return new ThisExpressionNode(token.Span);
         }
 
+        if (token.Kind == TokenKind.Keyword && (token.Text == "true" || token.Text == "false"))
+        {
+            Advance();
+            return new BooleanLiteralExpressionNode(token.Text == "true", token.Text, token.Span);
+        }
+
+        if (token.Kind == TokenKind.Keyword && token.Text == "null")
+        {
+            Advance();
+            return new NullLiteralExpressionNode(token.Text, token.Span);
+        }
+
         if (token.Kind == TokenKind.Identifier)
         {
             Advance();

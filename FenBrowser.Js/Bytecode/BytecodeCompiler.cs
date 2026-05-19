@@ -325,6 +325,20 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
                 return reg;
             }
+            case BooleanLiteralExpressionNode boolean:
+            {
+                var reg = AllocateRegister();
+                var ci = AddConstant(JsValue.FromBoolean(boolean.Value));
+                _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
+                return reg;
+            }
+            case NullLiteralExpressionNode:
+            {
+                var reg = AllocateRegister();
+                var ci = AddConstant(JsValue.Null);
+                _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
+                return reg;
+            }
             case IdentifierExpressionNode id:
             {
                 var reg = AllocateRegister();

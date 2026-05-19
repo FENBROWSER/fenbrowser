@@ -14,6 +14,10 @@ public sealed record NumericLiteralExpressionNode(double Value, string RawText, 
 
 public sealed record StringLiteralExpressionNode(string Value, string RawText, SourceSpan Span) : ExpressionNode(Span);
 
+public sealed record BooleanLiteralExpressionNode(bool Value, string RawText, SourceSpan Span) : ExpressionNode(Span);
+
+public sealed record NullLiteralExpressionNode(string RawText, SourceSpan Span) : ExpressionNode(Span);
+
 public sealed record ParenthesizedExpressionNode(ExpressionNode Expression, SourceSpan Span) : ExpressionNode(Span);
 
 public sealed record BinaryExpressionNode(string Operator, ExpressionNode Left, ExpressionNode Right, SourceSpan Span) : ExpressionNode(Span);
