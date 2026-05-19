@@ -12,6 +12,8 @@ public sealed class JsParser
     private readonly IReadOnlyList<Token> _tokens;
     private int _index;
     private int _syntheticBindingCounter;
+    private bool _strictMode;
+    private bool _inDirectivePrologue = true;
 
     private JsParser(IReadOnlyList<Token> tokens)
     {
@@ -39,12 +41,35 @@ public sealed class JsParser
 
         while (!Is(TokenKind.EndOfFile))
         {
-            statements.Add(ParseStatement());
+            var statement = ParseStatement();
+            statements.Add(statement);
+            UpdateDirectivePrologueState(statement);
         }
 
         var end = Current().Span;
         var span = new SourceSpan(start.Start, Math.Max(0, end.Start - start.Start), start.Line, start.Column);
         return new ProgramNode(kind, statements, span);
+    }
+
+    private void UpdateDirectivePrologueState(StatementNode statement)
+    {
+        if (!_inDirectivePrologue)
+        {
+            return;
+        }
+
+        if (statement is not ExpressionStatementNode expressionStatement ||
+            expressionStatement.Expression is not StringLiteralExpressionNode stringLiteral)
+        {
+            _inDirectivePrologue = false;
+            return;
+        }
+
+        if (string.Equals(stringLiteral.Value, "use strict", StringComparison.Ordinal))
+        {
+            _strictMode = true;
+            return;
+        }
     }
 
     private StatementNode ParseStatement()
@@ -324,7 +349,15 @@ public sealed class JsParser
             }
             else if (IsPunctuator(")"))
             {
-                if (initializerExpression is not null && ContainsInOperator(initializerExpression))
+                if (initializerExpression is not null &&
+                    TryGetTopLevelInBinary(initializerExpression, out var inLeft, out _) &&
+                    inLeft is AssignmentExpressionNode)
+                {
+                    throw new JsParserException("for-in assignment initializers are not allowed.");
+                }
+
+                if (initializerExpression is AssignmentExpressionNode assignmentInitializer &&
+                    TryGetTopLevelInBinary(assignmentInitializer.Right, out _, out _))
                 {
                     throw new JsParserException("for-in assignment initializers are not allowed.");
                 }
@@ -343,9 +376,16 @@ public sealed class JsParser
             Advance();
         }
 
-        if (initializerIsDeclaration && initializer is VariableDeclarationStatementNode declarationWithInitializer && IsPunctuator(")") && DeclarationContainsInInitializer(declarationWithInitializer))
+        if (initializerIsDeclaration &&
+            initializer is VariableDeclarationStatementNode declarationWithInitializer &&
+            IsPunctuator(")") &&
+            DeclarationContainsInInitializer(declarationWithInitializer))
         {
-            throw new JsParserException("for-in declaration initializers are not allowed.");
+            var hasPattern = declarationWithInitializer.Declarators.Any(d => d.Identifier.StartsWith("__pattern", StringComparison.Ordinal));
+            if (!string.Equals(declarationWithInitializer.Kind, "var", StringComparison.Ordinal) || _strictMode || hasPattern)
+            {
+                throw new JsParserException("for-in declaration initializers are not allowed.");
+            }
         }
 
         if (IsPunctuator(")"))
@@ -404,7 +444,7 @@ public sealed class JsParser
                 continue;
             }
 
-            if (ContainsInOperator(declarator.Initializer))
+            if (TryGetTopLevelInBinary(declarator.Initializer, out _, out _))
             {
                 return true;
             }
@@ -413,45 +453,26 @@ public sealed class JsParser
         return false;
     }
 
-    private static bool ContainsInOperator(ExpressionNode expression)
+    private static bool TryGetTopLevelInBinary(ExpressionNode expression, out ExpressionNode left, out ExpressionNode right)
     {
         switch (expression)
         {
             case BinaryExpressionNode binary:
-                return string.Equals(binary.Operator, "in", StringComparison.Ordinal) ||
-                       ContainsInOperator(binary.Left) ||
-                       ContainsInOperator(binary.Right);
-            case AssignmentExpressionNode assignment:
-                return ContainsInOperator(assignment.Left) || ContainsInOperator(assignment.Right);
-            case ParenthesizedExpressionNode parenthesized:
-                return ContainsInOperator(parenthesized.Expression);
-            case ConditionalExpressionNode conditional:
-                return ContainsInOperator(conditional.Test) ||
-                       ContainsInOperator(conditional.Consequent) ||
-                       ContainsInOperator(conditional.Alternate);
-            case UnaryExpressionNode unary:
-                return ContainsInOperator(unary.Operand);
-            case MemberExpressionNode member:
-                return (member.PropertyExpression is not null && ContainsInOperator(member.PropertyExpression)) ||
-                       ContainsInOperator(member.Object);
-            case CallExpressionNode call:
-                if (ContainsInOperator(call.Callee))
+                if (string.Equals(binary.Operator, "in", StringComparison.Ordinal))
                 {
+                    left = binary.Left;
+                    right = binary.Right;
                     return true;
                 }
 
-                foreach (var arg in call.Arguments)
-                {
-                    if (ContainsInOperator(arg))
-                    {
-                        return true;
-                    }
-                }
-
-                return false;
-            default:
-                return false;
+                break;
+            case ParenthesizedExpressionNode parenthesized:
+                return TryGetTopLevelInBinary(parenthesized.Expression, out left, out right);
         }
+
+        left = new IdentifierExpressionNode(string.Empty, expression.Span);
+        right = new IdentifierExpressionNode(string.Empty, expression.Span);
+        return false;
     }
 
     private ReturnStatementNode ParseReturnStatement()
