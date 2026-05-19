@@ -324,12 +324,48 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesAwaitUnaryExpression()
+    {
+        var program = JsParser.ParseScript(new SourceText("asyncTest(async function () { assert.sameValue(await stack.disposeAsync(), undefined); });"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var call = Assert.IsType<CallExpressionNode>(stmt.Expression);
+        Assert.Single(call.Arguments);
+    }
+
+    [Fact]
     public void ParsesTrailingDotNumericLiteral()
     {
         var program = JsParser.ParseScript(new SourceText("var callCnt = 0.;"));
         var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
         var numeric = Assert.IsType<NumericLiteralExpressionNode>(decl.Declarators[0].Initializer);
         Assert.Equal(0, numeric.Value);
+    }
+
+    [Fact]
+    public void ParsesNumericSeparatorsAndLargeBigIntLiteral()
+    {
+        var program = JsParser.ParseScript(new SourceText("let a = 123_456; let b = 0xabcdef0123456789abcdef0123n;"));
+        var decl1 = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        Assert.IsType<NumericLiteralExpressionNode>(decl1.Declarators[0].Initializer);
+        var decl2 = Assert.IsType<VariableDeclarationStatementNode>(program.Body[1]);
+        Assert.IsType<NumericLiteralExpressionNode>(decl2.Declarators[0].Initializer);
+    }
+
+    [Fact]
+    public void ParsesNumericLiteralDoubleDotMemberAccess()
+    {
+        var program = JsParser.ParseScript(new SourceText("77..toString();"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var call = Assert.IsType<CallExpressionNode>(stmt.Expression);
+        var member = Assert.IsType<MemberExpressionNode>(call.Callee);
+        Assert.Equal("toString", member.Property);
+    }
+
+    [Fact]
+    public void ParsesLeadingDotNumericLiteral()
+    {
+        var program = JsParser.ParseScript(new SourceText("BigInt(.1); BigInt(-.1);"));
+        Assert.Equal(2, program.Body.Count);
     }
 
     [Fact]
@@ -380,6 +416,56 @@ public sealed class ParserTests
         var arrow = Assert.IsType<ArrowFunctionExpressionNode>(decl.Declarators[0].Initializer);
         Assert.Equal(2, arrow.Parameters.Count);
         Assert.Equal("rest", arrow.Parameters[1]);
+    }
+
+    [Fact]
+    public void ParsesArrowFunctionWithObjectPatternParameter()
+    {
+        var program = JsParser.ParseScript(new SourceText("iter.next().then(({ done, value }) => done);"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var call = Assert.IsType<CallExpressionNode>(stmt.Expression);
+        Assert.Single(call.Arguments);
+        var arrow = Assert.IsType<ArrowFunctionExpressionNode>(call.Arguments[0]);
+        Assert.Single(arrow.Parameters);
+        Assert.StartsWith("__pattern", arrow.Parameters[0]);
+    }
+
+    [Fact]
+    public void ParsesFunctionDeclarationWithPatternParameter()
+    {
+        var program = JsParser.ParseScript(new SourceText("function f({x}) { return x; }"));
+        var fn = Assert.IsType<FunctionDeclarationNode>(program.Body[0]);
+        Assert.Single(fn.Parameters);
+        Assert.StartsWith("__pattern", fn.Parameters[0]);
+    }
+
+    [Fact]
+    public void ParsesObjectGeneratorAndAsyncGeneratorMethods()
+    {
+        var program = JsParser.ParseScript(new SourceText("let o = { *g(){}, async *h(){} };"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var obj = Assert.IsType<ObjectLiteralExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Equal(2, obj.Properties.Count);
+        Assert.IsType<FunctionExpressionNode>(obj.Properties[0].Value);
+        Assert.IsType<FunctionExpressionNode>(obj.Properties[1].Value);
+    }
+
+    [Fact]
+    public void ParsesUnicodeEscapedIdentifiers()
+    {
+        var program = JsParser.ParseScript(new SourceText("function \\u0061(\\u{62}, \\u0063) { \\u0062 = \\u{00063}; return b; }"));
+        var fn = Assert.IsType<FunctionDeclarationNode>(program.Body[0]);
+        Assert.Equal("a", fn.Name);
+        Assert.Equal(new[] { "b", "c" }, fn.Parameters);
+    }
+
+    [Fact]
+    public void ParsesArrowExpressionBodyWithoutConsumingPropertyComma()
+    {
+        var program = JsParser.ParseScript(new SourceText("let o = { next: () => n.next(), };"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var obj = Assert.IsType<ObjectLiteralExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Single(obj.Properties);
     }
 
     [Fact]

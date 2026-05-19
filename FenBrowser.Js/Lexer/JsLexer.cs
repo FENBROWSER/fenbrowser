@@ -1,4 +1,5 @@
 using FenBrowser.Js.Source;
+using System.Text;
 
 namespace FenBrowser.Js.Lexer;
 
@@ -55,24 +56,60 @@ public sealed class JsLexer
                 }
             }
 
-            if (char.IsLetter(ch) || ch == '_' || ch == '$')
+            if (char.IsLetter(ch) || ch == '_' || ch == '$' || (ch == '\\' && IsUnicodeEscapeStart(_index)))
             {
-                _index++;
-                _column++;
-                while (_index < _source.Length)
+                var builder = new StringBuilder();
+                var hadEscape = false;
+                if (ch == '\\')
                 {
-                    var c = _source[_index];
-                    if (!(char.IsLetterOrDigit(c) || c == '_' || c == '$'))
+                    hadEscape = true;
+                    if (!TryReadUnicodeEscape(out var escapedStart))
                     {
-                        break;
+                        _index++;
+                        _column++;
+                        var invalidEscape = new Token(TokenKind.Unknown, ch.ToString(), new SourceSpan(start, 1, line, column));
+                        tokens.Add(invalidEscape);
+                        _lastSignificantToken = invalidEscape;
+                        continue;
                     }
 
+                    builder.Append(escapedStart);
+                }
+                else
+                {
+                    builder.Append(ch);
                     _index++;
                     _column++;
                 }
 
-                var text = _source[start.._index];
-                var kind = Keywords.Contains(text) ? TokenKind.Keyword : TokenKind.Identifier;
+                while (_index < _source.Length)
+                {
+                    var c = _source[_index];
+                    if (char.IsLetterOrDigit(c) || c == '_' || c == '$')
+                    {
+                        builder.Append(c);
+                        _index++;
+                        _column++;
+                        continue;
+                    }
+
+                    if (c == '\\' && IsUnicodeEscapeStart(_index))
+                    {
+                        hadEscape = true;
+                        if (!TryReadUnicodeEscape(out var escaped))
+                        {
+                            break;
+                        }
+
+                        builder.Append(escaped);
+                        continue;
+                    }
+
+                    break;
+                }
+
+                var text = builder.ToString();
+                var kind = !hadEscape && Keywords.Contains(text) ? TokenKind.Keyword : TokenKind.Identifier;
                 var token = new Token(kind, text, new SourceSpan(start, _index - start, line, column));
                 tokens.Add(token);
                 _lastSignificantToken = token;
@@ -92,7 +129,7 @@ public sealed class JsLexer
                         isNonDecimalRadix = true;
                         _index++;
                         _column++;
-                        while (_index < _source.Length && IsHexDigit(_source[_index]))
+                        while (_index < _source.Length && (IsHexDigit(_source[_index]) || _source[_index] == '_'))
                         {
                             _index++;
                             _column++;
@@ -103,7 +140,7 @@ public sealed class JsLexer
                         isNonDecimalRadix = true;
                         _index++;
                         _column++;
-                        while (_index < _source.Length && IsOctDigit(_source[_index]))
+                        while (_index < _source.Length && (IsOctDigit(_source[_index]) || _source[_index] == '_'))
                         {
                             _index++;
                             _column++;
@@ -114,7 +151,7 @@ public sealed class JsLexer
                         isNonDecimalRadix = true;
                         _index++;
                         _column++;
-                        while (_index < _source.Length && IsBinDigit(_source[_index]))
+                        while (_index < _source.Length && (IsBinDigit(_source[_index]) || _source[_index] == '_'))
                         {
                             _index++;
                             _column++;
@@ -122,7 +159,7 @@ public sealed class JsLexer
                     }
                     else
                     {
-                        while (_index < _source.Length && char.IsDigit(_source[_index]))
+                        while (_index < _source.Length && (char.IsDigit(_source[_index]) || _source[_index] == '_'))
                         {
                             _index++;
                             _column++;
@@ -131,7 +168,7 @@ public sealed class JsLexer
                 }
                 else
                 {
-                    while (_index < _source.Length && char.IsDigit(_source[_index]))
+                    while (_index < _source.Length && (char.IsDigit(_source[_index]) || _source[_index] == '_'))
                     {
                         _index++;
                         _column++;
@@ -144,7 +181,7 @@ public sealed class JsLexer
                     {
                         _index++;
                         _column++;
-                        while (_index < _source.Length && char.IsDigit(_source[_index]))
+                        while (_index < _source.Length && (char.IsDigit(_source[_index]) || _source[_index] == '_'))
                         {
                             _index++;
                             _column++;
@@ -161,9 +198,12 @@ public sealed class JsLexer
                         }
 
                         var hasExponentDigits = false;
-                        while (expIndex < _source.Length && char.IsDigit(_source[expIndex]))
+                        while (expIndex < _source.Length && (char.IsDigit(_source[expIndex]) || _source[expIndex] == '_'))
                         {
-                            hasExponentDigits = true;
+                            if (_source[expIndex] != '_')
+                            {
+                                hasExponentDigits = true;
+                            }
                             expIndex++;
                         }
 
@@ -179,6 +219,49 @@ public sealed class JsLexer
                 {
                     _index++;
                     _column++;
+                }
+
+                var token = new Token(TokenKind.Number, _source[start.._index], new SourceSpan(start, _index - start, line, column));
+                tokens.Add(token);
+                _lastSignificantToken = token;
+                continue;
+            }
+
+            if (ch == '.' && _index + 1 < _source.Length && char.IsDigit(_source[_index + 1]))
+            {
+                _index++;
+                _column++;
+                while (_index < _source.Length && (char.IsDigit(_source[_index]) || _source[_index] == '_'))
+                {
+                    _index++;
+                    _column++;
+                }
+
+                if (_index < _source.Length && (_source[_index] == 'e' || _source[_index] == 'E'))
+                {
+                    var expStart = _index;
+                    var expIndex = _index + 1;
+                    if (expIndex < _source.Length && (_source[expIndex] == '+' || _source[expIndex] == '-'))
+                    {
+                        expIndex++;
+                    }
+
+                    var hasExponentDigits = false;
+                    while (expIndex < _source.Length && (char.IsDigit(_source[expIndex]) || _source[expIndex] == '_'))
+                    {
+                        if (_source[expIndex] != '_')
+                        {
+                            hasExponentDigits = true;
+                        }
+
+                        expIndex++;
+                    }
+
+                    if (hasExponentDigits)
+                    {
+                        _column += expIndex - expStart;
+                        _index = expIndex;
+                    }
                 }
 
                 var token = new Token(TokenKind.Number, _source[start.._index], new SourceSpan(start, _index - start, line, column));
@@ -477,6 +560,96 @@ public sealed class JsLexer
     private static bool IsOctDigit(char ch) => ch >= '0' && ch <= '7';
 
     private static bool IsBinDigit(char ch) => ch == '0' || ch == '1';
+
+    private bool IsUnicodeEscapeStart(int index)
+    {
+        if (index + 1 >= _source.Length || _source[index] != '\\' || _source[index + 1] != 'u')
+        {
+            return false;
+        }
+
+        if (index + 2 >= _source.Length)
+        {
+            return false;
+        }
+
+        if (_source[index + 2] == '{')
+        {
+            return true;
+        }
+
+        return index + 5 < _source.Length;
+    }
+
+    private bool TryReadUnicodeEscape(out char value)
+    {
+        value = '\0';
+        if (!IsUnicodeEscapeStart(_index))
+        {
+            return false;
+        }
+
+        _index += 2; // \u
+        _column += 2;
+
+        if (_index < _source.Length && _source[_index] == '{')
+        {
+            _index++;
+            _column++;
+            var hexStart = _index;
+            while (_index < _source.Length && _source[_index] != '}')
+            {
+                if (!IsHexDigit(_source[_index]))
+                {
+                    return false;
+                }
+
+                _index++;
+                _column++;
+            }
+
+            if (_index >= _source.Length || _source[_index] != '}')
+            {
+                return false;
+            }
+
+            var hex = _source[hexStart.._index];
+            _index++;
+            _column++;
+            if (hex.Length == 0 || hex.Length > 6)
+            {
+                return false;
+            }
+
+            if (!int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out var codePoint))
+            {
+                return false;
+            }
+
+            value = (char)codePoint;
+            return true;
+        }
+
+        if (_index + 3 >= _source.Length)
+        {
+            return false;
+        }
+
+        var digits = _source.Substring(_index, 4);
+        for (var i = 0; i < digits.Length; i++)
+        {
+            if (!IsHexDigit(digits[i]))
+            {
+                return false;
+            }
+        }
+
+        _index += 4;
+        _column += 4;
+        var code = int.Parse(digits, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture);
+        value = (char)code;
+        return true;
+    }
 
     private static bool IsLineTerminator(char ch) => ch == '\n' || ch == '\r' || ch == '\u2028' || ch == '\u2029';
 

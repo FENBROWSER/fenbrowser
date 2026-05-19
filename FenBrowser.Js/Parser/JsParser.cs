@@ -3,6 +3,7 @@ using FenBrowser.Js.AstValidation;
 using FenBrowser.Js.Lexer;
 using FenBrowser.Js.Source;
 using System.Globalization;
+using System.Numerics;
 
 namespace FenBrowser.Js.Parser;
 
@@ -630,8 +631,7 @@ public sealed class JsParser
                 Advance();
             }
 
-            var identifier = ExpectIdentifier().Text;
-            parameters.Add(identifier);
+            parameters.Add(ParseBindingIdentifierOrPattern().Text);
 
             if (IsPunctuator("="))
             {
@@ -675,6 +675,11 @@ public sealed class JsParser
 
             if (IsPunctuator("."))
             {
+                if (left is NumericLiteralExpressionNode && PeekIsPunctuator(1, "."))
+                {
+                    Advance();
+                }
+
                 Advance();
                 var property = ExpectPropertyNameAfterDot();
                 left = new MemberExpressionNode(left, property.Text, Computed: false, PropertyExpression: null, MergeSpan(left.Span, property.Span));
@@ -756,7 +761,7 @@ public sealed class JsParser
             return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
         }
 
-        if (token.Kind == TokenKind.Keyword && (token.Text == "typeof" || token.Text == "delete" || token.Text == "void"))
+        if (token.Kind == TokenKind.Keyword && (token.Text == "typeof" || token.Text == "delete" || token.Text == "void" || token.Text == "await"))
         {
             var op = Advance();
             var operand = ParseExpression(40);
@@ -798,7 +803,7 @@ public sealed class JsParser
             return ParseNewExpression();
         }
 
-        if (token.Kind == TokenKind.Keyword && (token.Text == "async" || token.Text == "await"))
+        if (token.Kind == TokenKind.Keyword && token.Text == "async")
         {
             Advance();
             return new IdentifierExpressionNode(token.Text, token.Span);
@@ -876,6 +881,8 @@ public sealed class JsParser
 
     private static bool TryParseNumberLiteral(string text, out double value)
     {
+        text = text.Replace("_", string.Empty, StringComparison.Ordinal);
+
         if (text.EndsWith('n'))
         {
             text = text[..^1];
@@ -883,9 +890,9 @@ public sealed class JsParser
 
         if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
         {
-            if (text.Length > 2 && long.TryParse(text[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hex))
+            if (text.Length > 2 && BigInteger.TryParse(text[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hex))
             {
-                value = hex;
+                value = (double)hex;
                 return true;
             }
 
@@ -917,14 +924,30 @@ public sealed class JsParser
             return false;
         }
 
-        return double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+        if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+        {
+            return true;
+        }
+
+        if (BigInteger.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var integer))
+        {
+            value = (double)integer;
+            return true;
+        }
+
+        return false;
     }
 
-    private static bool TryParseRadix(string text, int radix, out long value)
+    private static bool TryParseRadix(string text, int radix, out double value)
     {
-        value = 0;
+        var numeric = BigInteger.Zero;
         foreach (var ch in text)
         {
+            if (ch == '_')
+            {
+                continue;
+            }
+
             var digit = ch switch
             {
                 >= '0' and <= '9' => ch - '0',
@@ -935,15 +958,14 @@ public sealed class JsParser
 
             if (digit < 0 || digit >= radix)
             {
+                value = 0;
                 return false;
             }
 
-            checked
-            {
-                value = (value * radix) + digit;
-            }
+            numeric = (numeric * radix) + digit;
         }
 
+        value = (double)numeric;
         return true;
     }
 
@@ -1108,6 +1130,101 @@ public sealed class JsParser
                 break;
             }
 
+            if ((keyToken.Kind == TokenKind.Identifier || keyToken.Kind == TokenKind.Keyword) &&
+                keyToken.Text == "async" &&
+                IsAsyncGeneratorMethodPropertyStart())
+            {
+                var asyncStart = Advance(); // async
+                Advance(); // *
+                string? methodKey = null;
+                ExpressionNode? methodComputedKey = null;
+                var methodIsComputed = false;
+                var methodKeyToken = Current();
+                if (IsPunctuator("["))
+                {
+                    Advance(); // [
+                    methodComputedKey = ParseExpression(0);
+                    ExpectPunctuator("]");
+                    methodIsComputed = true;
+                }
+                else if (methodKeyToken.Kind == TokenKind.Identifier || methodKeyToken.Kind == TokenKind.Keyword)
+                {
+                    methodKey = Advance().Text;
+                }
+                else if (methodKeyToken.Kind == TokenKind.String)
+                {
+                    var raw = Advance().Text;
+                    methodKey = raw.Length >= 2 ? raw[1..^1] : string.Empty;
+                }
+                else if (methodKeyToken.Kind == TokenKind.Number)
+                {
+                    methodKey = Advance().Text;
+                }
+                else
+                {
+                    throw new JsParserException($"Expected object property key, found '{methodKeyToken.Text}'.");
+                }
+
+                var parameters = ParseParameterList();
+                var body = ParseBlockStatement();
+                var methodFnName = methodKey ?? "async*";
+                var asyncMethodFn = new FunctionExpressionNode(methodFnName, parameters, body, MergeSpan(asyncStart.Span, body.Span));
+                properties.Add(new ObjectPropertyNode(methodKey, methodComputedKey, methodIsComputed, asyncMethodFn, asyncMethodFn.Span));
+                if (IsPunctuator(","))
+                {
+                    Advance();
+                    continue;
+                }
+
+                break;
+            }
+
+            if (IsPunctuator("*"))
+            {
+                var methodStart = Advance();
+                string? methodKey = null;
+                ExpressionNode? methodComputedKey = null;
+                var methodIsComputed = false;
+                var methodKeyToken = Current();
+                if (IsPunctuator("["))
+                {
+                    Advance();
+                    methodComputedKey = ParseExpression(0);
+                    ExpectPunctuator("]");
+                    methodIsComputed = true;
+                }
+                else if (methodKeyToken.Kind == TokenKind.Identifier || methodKeyToken.Kind == TokenKind.Keyword)
+                {
+                    methodKey = Advance().Text;
+                }
+                else if (methodKeyToken.Kind == TokenKind.String)
+                {
+                    var raw = Advance().Text;
+                    methodKey = raw.Length >= 2 ? raw[1..^1] : string.Empty;
+                }
+                else if (methodKeyToken.Kind == TokenKind.Number)
+                {
+                    methodKey = Advance().Text;
+                }
+                else
+                {
+                    throw new JsParserException($"Expected object property key, found '{methodKeyToken.Text}'.");
+                }
+
+                var parameters = ParseParameterList();
+                var body = ParseBlockStatement();
+                var methodFnName = methodKey ?? "*";
+                var methodFn = new FunctionExpressionNode(methodFnName, parameters, body, MergeSpan(methodStart.Span, body.Span));
+                properties.Add(new ObjectPropertyNode(methodKey, methodComputedKey, methodIsComputed, methodFn, methodFn.Span));
+                if (IsPunctuator(","))
+                {
+                    Advance();
+                    continue;
+                }
+
+                break;
+            }
+
             string? key = null;
             ExpressionNode? computedKey = null;
             var isComputed = false;
@@ -1245,14 +1362,13 @@ public sealed class JsParser
                         {
                             Advance();
                         }
-
-                        if (!IsIdentifierLike(Current()))
+                        if (!(IsIdentifierLike(Current()) || IsPunctuator("[") || IsPunctuator("{")))
                         {
                             asyncValid = false;
                             break;
                         }
 
-                        asyncParameters.Add(Advance().Text);
+                        asyncParameters.Add(ParseBindingIdentifierOrPattern().Text);
                         if (IsPunctuator("="))
                         {
                             Advance();
@@ -1313,14 +1429,13 @@ public sealed class JsParser
                     {
                         Advance();
                     }
-
-                    if (!IsIdentifierLike(Current()))
+                    if (!(IsIdentifierLike(Current()) || IsPunctuator("[") || IsPunctuator("{")))
                     {
                         valid = false;
                         break;
                     }
 
-                    parameters.Add(Advance().Text);
+                    parameters.Add(ParseBindingIdentifierOrPattern().Text);
                     if (IsPunctuator("="))
                     {
                         Advance();
@@ -1367,7 +1482,7 @@ public sealed class JsParser
             return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span));
         }
 
-        var bodyExpression = ParseExpression(0);
+        var bodyExpression = ParseExpression(2);
         return new ArrowFunctionExpressionNode(parameters, null, bodyExpression, MergeSpan(start, bodyExpression.Span));
     }
 
@@ -1728,6 +1843,66 @@ public sealed class JsParser
         }
 
         var afterName = Math.Min(nextIndex + 1, _tokens.Count - 1);
+        return _tokens[afterName].Kind == TokenKind.Punctuator && _tokens[afterName].Text == "(";
+    }
+
+    private bool IsAsyncGeneratorMethodPropertyStart()
+    {
+        var current = Current();
+        if (!(current.Kind == TokenKind.Identifier || current.Kind == TokenKind.Keyword) || current.Text != "async")
+        {
+            return false;
+        }
+
+        if (!(PeekIsPunctuator(1, "*")))
+        {
+            return false;
+        }
+
+        var keyIndex = Math.Min(_index + 2, _tokens.Count - 1);
+        var next = _tokens[keyIndex];
+        if (next.Kind == TokenKind.Punctuator && next.Text == "[")
+        {
+            var depth = 1;
+            var scan = keyIndex + 1;
+            while (scan < _tokens.Count)
+            {
+                var token = _tokens[scan];
+                if (token.Kind == TokenKind.Punctuator)
+                {
+                    if (token.Text == "[")
+                    {
+                        depth++;
+                    }
+                    else if (token.Text == "]")
+                    {
+                        depth--;
+                        if (depth == 0)
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                scan++;
+            }
+
+            if (depth != 0)
+            {
+                return false;
+            }
+
+            var afterBracket = Math.Min(scan + 1, _tokens.Count - 1);
+            return _tokens[afterBracket].Kind == TokenKind.Punctuator && _tokens[afterBracket].Text == "(";
+        }
+
+        var isSimpleName = next.Kind == TokenKind.Identifier || next.Kind == TokenKind.Keyword || next.Kind == TokenKind.String || next.Kind == TokenKind.Number;
+        if (!isSimpleName)
+        {
+            return false;
+        }
+
+        var afterName = Math.Min(keyIndex + 1, _tokens.Count - 1);
         return _tokens[afterName].Kind == TokenKind.Punctuator && _tokens[afterName].Text == "(";
     }
 }
