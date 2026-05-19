@@ -112,6 +112,24 @@ public sealed class RuntimeHeapTests
     }
 
     [Fact]
+    public void CollectGarbageKeepsRootedStringAndSymbolAlive()
+    {
+        var heap = new JsHeap();
+        var stringHandle = heap.AllocateString("kept", AllocationSite.Current());
+        var symbolHandle = heap.AllocateSymbol("kept", AllocationSite.Current());
+        heap.PushRoot(stringHandle);
+        heap.PushRoot(symbolHandle);
+
+        heap.CollectGarbage();
+
+        Assert.Equal("kept", heap.GetString(stringHandle));
+        Assert.Equal("kept", heap.GetSymbolDescription(symbolHandle));
+        Assert.Equal(2, heap.LastGcMarkedCells);
+        Assert.Equal(0, heap.LastGcSweptCells);
+        Assert.Equal(2, heap.LiveCellCount);
+    }
+
+    [Fact]
     public void HeapDetectsStaleHandleAfterFree()
     {
         var heap = new JsHeap();

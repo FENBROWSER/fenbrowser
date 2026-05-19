@@ -290,6 +290,32 @@ public sealed class JsHeap
         cell.Payload.Trace(new MarkingTracer(this));
     }
 
+    private void Mark(StringHandle handle)
+    {
+        var cell = Validate(handle);
+        if (cell.Marked)
+        {
+            return;
+        }
+
+        cell.Marked = true;
+        _lastGcMarkedCells++;
+        cell.Payload.Trace(new MarkingTracer(this));
+    }
+
+    private void Mark(SymbolHandle handle)
+    {
+        var cell = Validate(handle);
+        if (cell.Marked)
+        {
+            return;
+        }
+
+        cell.Marked = true;
+        _lastGcMarkedCells++;
+        cell.Payload.Trace(new MarkingTracer(this));
+    }
+
     private (int Index, int Generation) AllocateCell(HeapCellKind kind, ITraceable payload)
     {
         int index;
@@ -370,12 +396,12 @@ public sealed class JsHeap
 
         public void Trace(StringHandle handle)
         {
-            _ = _heap.Validate(handle);
+            _heap.Mark(handle);
         }
 
         public void Trace(SymbolHandle handle)
         {
-            _ = _heap.Validate(handle);
+            _heap.Mark(handle);
         }
     }
 
