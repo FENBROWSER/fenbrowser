@@ -41,4 +41,11 @@ public sealed class ParserTests
         Assert.Equal("*", mul.Operator);
         Assert.IsType<ParenthesizedExpressionNode>(mul.Left);
     }
+
+    [Fact]
+    public void ClassDeclarationIsReportedAsParserOnlyUnsupportedFeature()
+    {
+        var ex = Assert.Throws<UnsupportedFeatureException>(() => JsParser.ParseScript(new SourceText("class A {}")));
+        Assert.Equal("class", ex.FeatureName);
+    }
 }

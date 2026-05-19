@@ -1,4 +1,5 @@
 using FenBrowser.Js.Ast;
+using FenBrowser.Js.AstValidation;
 using FenBrowser.Js.Lexer;
 using FenBrowser.Js.Source;
 
@@ -45,6 +46,17 @@ public sealed class JsParser
 
     private StatementNode ParseStatement()
     {
+        if (Current().Kind == TokenKind.Keyword)
+        {
+            switch (Current().Text)
+            {
+                case "class":
+                case "import":
+                case "export":
+                    throw new UnsupportedFeatureException(Current().Text, FeatureSupportLevel.ParserOnly, Current().Span);
+            }
+        }
+
         var expression = ParseExpression(0);
         if (IsPunctuator(";"))
         {
