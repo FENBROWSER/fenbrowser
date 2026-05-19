@@ -71,6 +71,8 @@ public sealed class JsParser
                     return ParseWhileStatement();
                 case "for":
                     return ParseForStatement();
+                case "switch":
+                    return ParseSwitchStatement();
                 case "function":
                     return ParseFunctionDeclaration();
                 case "return":
@@ -376,6 +378,52 @@ public sealed class JsParser
         }
 
         return new ClassExpressionNode(name, baseClass, MergeSpan(start.Span, close.Span));
+    }
+
+    private SwitchStatementNode ParseSwitchStatement()
+    {
+        var start = Advance(); // switch
+        ExpectPunctuator("(");
+        var discriminant = ParseExpression(0);
+        ExpectPunctuator(")");
+        ExpectPunctuator("{");
+
+        var cases = new List<SwitchCaseNode>();
+        while (!Is(TokenKind.EndOfFile) && !IsPunctuator("}"))
+        {
+            ExpressionNode? test = null;
+            var caseStart = Current().Span;
+            if (Current().Kind == TokenKind.Keyword && Current().Text == "case")
+            {
+                Advance();
+                test = ParseExpression(0);
+                ExpectPunctuator(":");
+            }
+            else if (Current().Kind == TokenKind.Keyword && Current().Text == "default")
+            {
+                Advance();
+                ExpectPunctuator(":");
+            }
+            else
+            {
+                throw new JsParserException($"Expected 'case' or 'default', found '{Current().Text}'.");
+            }
+
+            var consequent = new List<StatementNode>();
+            while (!Is(TokenKind.EndOfFile) &&
+                   !IsPunctuator("}") &&
+                   !(Current().Kind == TokenKind.Keyword && (Current().Text == "case" || Current().Text == "default")))
+            {
+                consequent.Add(ParseStatement());
+            }
+
+            var caseEnd = consequent.Count > 0 ? consequent[^1].Span : caseStart;
+            cases.Add(new SwitchCaseNode(test, consequent, MergeSpan(caseStart, caseEnd)));
+        }
+
+        ExpectPunctuator("}");
+        var close = Previous();
+        return new SwitchStatementNode(discriminant, cases, MergeSpan(start.Span, close.Span));
     }
 
     private BreakStatementNode ParseBreakStatement()

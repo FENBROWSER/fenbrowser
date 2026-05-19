@@ -61,6 +61,16 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesSwitchStatement()
+    {
+        var program = JsParser.ParseScript(new SourceText("switch (x) { case 1: y = 2; break; default: y = 3; }"));
+        var sw = Assert.IsType<SwitchStatementNode>(program.Body[0]);
+        Assert.Equal(2, sw.Cases.Count);
+        Assert.NotNull(sw.Cases[0].Test);
+        Assert.Null(sw.Cases[1].Test);
+    }
+
+    [Fact]
     public void ParsesVariableDeclarationsAndAssignments()
     {
         var program = JsParser.ParseScript(new SourceText("let x = 1; x = x + 1;"));

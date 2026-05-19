@@ -49,3 +49,13 @@ public sealed record ClassDeclarationNode(
     string Name,
     ExpressionNode? BaseClass,
     SourceSpan Span) : StatementNode(Span);
+
+public sealed record SwitchCaseNode(
+    ExpressionNode? Test,
+    IReadOnlyList<StatementNode> Consequent,
+    SourceSpan Span);
+
+public sealed record SwitchStatementNode(
+    ExpressionNode Discriminant,
+    IReadOnlyList<SwitchCaseNode> Cases,
+    SourceSpan Span) : StatementNode(Span);
