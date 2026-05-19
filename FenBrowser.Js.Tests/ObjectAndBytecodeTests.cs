@@ -312,6 +312,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void CompilerAndInterpreterHandleVoidUnary()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("typeof (void 1) == \"undefined\";"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleDeleteUnary()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("delete x;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void TypeofFunctionObjectReturnsFunction()
     {
         var compiler = new BytecodeCompiler();

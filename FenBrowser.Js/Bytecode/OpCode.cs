@@ -27,6 +27,8 @@ public enum OpCode : byte
     Not,
     Pos,
     Neg,
+    Void,
+    Delete,
     TypeOf,
     Eq,
     Neq,

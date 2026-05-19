@@ -243,6 +243,12 @@ public sealed class BytecodeInterpreter
                 case OpCode.Neg:
                     frame.Registers[ins.A] = JsValue.FromNumber(-ToNumber(frame.Registers[ins.B]));
                     break;
+                case OpCode.Void:
+                    frame.Registers[ins.A] = JsValue.Undefined;
+                    break;
+                case OpCode.Delete:
+                    frame.Registers[ins.A] = JsValue.FromBoolean(true);
+                    break;
                 case OpCode.TypeOf:
                     frame.Registers[ins.A] = JsValue.FromString(TypeOfValue(frame.Registers[ins.B]));
                     break;

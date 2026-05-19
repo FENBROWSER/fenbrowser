@@ -429,6 +429,8 @@ public sealed class BytecodeCompiler
                     "!" => OpCode.Not,
                     "+" => OpCode.Pos,
                     "-" => OpCode.Neg,
+                    "void" => OpCode.Void,
+                    "delete" => OpCode.Delete,
                     "typeof" => OpCode.TypeOf,
                     _ => throw new InvalidOperationException($"Unsupported unary operator {unary.Operator}.")
                 };
