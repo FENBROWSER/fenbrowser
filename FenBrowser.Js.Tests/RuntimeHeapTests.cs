@@ -229,6 +229,30 @@ public sealed class RuntimeHeapTests
     }
 
     [Fact]
+    public void NestedScopesPreserveOuterRootKindsWithInterleavedHandles()
+    {
+        var heap = new JsHeap();
+        var outerString = heap.AllocateString("outer", AllocationSite.Current());
+        var innerObject = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        using (var outer = new HandleScope(heap))
+        {
+            _ = outer.Create(outerString);
+            Assert.Single(heap.GetStringRootsSnapshotForTest());
+            Assert.Empty(heap.GetRootsSnapshotForTest());
+
+            using (var inner = new HandleScope(heap))
+            {
+                _ = inner.Create(innerObject);
+                Assert.Single(heap.GetStringRootsSnapshotForTest());
+                Assert.Single(heap.GetRootsSnapshotForTest());
+            }
+
+            Assert.Single(heap.GetStringRootsSnapshotForTest());
+            Assert.Empty(heap.GetRootsSnapshotForTest());
+        }
+    }
+
+    [Fact]
     public void PushRootRejectsInvalidHandles()
     {
         var heap = new JsHeap();

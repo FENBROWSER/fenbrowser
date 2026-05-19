@@ -4,15 +4,13 @@ namespace FenBrowser.Js.Heap;
 
 public sealed class RootSet
 {
-    private readonly List<ObjectHandle> _objectRoots = new();
-    private readonly List<StringHandle> _stringRoots = new();
-    private readonly List<SymbolHandle> _symbolRoots = new();
+    private readonly List<RootEntry> _entries = new();
 
-    public int Count => _objectRoots.Count + _stringRoots.Count + _symbolRoots.Count;
+    public int Count => _entries.Count;
 
-    public void Push(ObjectHandle handle) => _objectRoots.Add(handle);
-    public void Push(StringHandle handle) => _stringRoots.Add(handle);
-    public void Push(SymbolHandle handle) => _symbolRoots.Add(handle);
+    public void Push(ObjectHandle handle) => _entries.Add(new RootEntry(RootKind.Object, handle.ToInt64()));
+    public void Push(StringHandle handle) => _entries.Add(new RootEntry(RootKind.String, handle.ToInt64()));
+    public void Push(SymbolHandle handle) => _entries.Add(new RootEntry(RootKind.Symbol, handle.ToInt64()));
 
     public void PopTo(int mark)
     {
@@ -26,25 +24,57 @@ public sealed class RootSet
             return;
         }
 
-        var toRemove = Count - mark;
-        RemoveFromEnd(_symbolRoots, ref toRemove);
-        RemoveFromEnd(_stringRoots, ref toRemove);
-        RemoveFromEnd(_objectRoots, ref toRemove);
+        _entries.RemoveRange(mark, _entries.Count - mark);
     }
 
-    public IReadOnlyList<ObjectHandle> Snapshot() => _objectRoots;
-    public IReadOnlyList<StringHandle> StringSnapshot() => _stringRoots;
-    public IReadOnlyList<SymbolHandle> SymbolSnapshot() => _symbolRoots;
-
-    private static void RemoveFromEnd<T>(List<T> list, ref int toRemove)
+    public IReadOnlyList<ObjectHandle> Snapshot()
     {
-        if (toRemove <= 0 || list.Count == 0)
+        var list = new List<ObjectHandle>();
+        foreach (var entry in _entries)
         {
-            return;
+            if (entry.Kind == RootKind.Object)
+            {
+                list.Add(ObjectHandle.FromInt64(entry.Payload));
+            }
         }
 
-        var count = Math.Min(list.Count, toRemove);
-        list.RemoveRange(list.Count - count, count);
-        toRemove -= count;
+        return list;
+    }
+
+    public IReadOnlyList<StringHandle> StringSnapshot()
+    {
+        var list = new List<StringHandle>();
+        foreach (var entry in _entries)
+        {
+            if (entry.Kind == RootKind.String)
+            {
+                list.Add(StringHandle.FromInt64(entry.Payload));
+            }
+        }
+
+        return list;
+    }
+
+    public IReadOnlyList<SymbolHandle> SymbolSnapshot()
+    {
+        var list = new List<SymbolHandle>();
+        foreach (var entry in _entries)
+        {
+            if (entry.Kind == RootKind.Symbol)
+            {
+                list.Add(SymbolHandle.FromInt64(entry.Payload));
+            }
+        }
+
+        return list;
+    }
+
+    private readonly record struct RootEntry(RootKind Kind, long Payload);
+
+    private enum RootKind : byte
+    {
+        Object,
+        String,
+        Symbol
     }
 }
