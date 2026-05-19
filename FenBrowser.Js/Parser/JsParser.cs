@@ -1142,6 +1142,13 @@ public sealed class JsParser
         leftBindingPower = 0;
         rightBindingPower = 0;
 
+        if (token.Kind == TokenKind.Keyword && (token.Text == "in" || token.Text == "instanceof"))
+        {
+            leftBindingPower = 15;
+            rightBindingPower = 16;
+            return true;
+        }
+
         if (token.Kind != TokenKind.Punctuator)
         {
             return false;

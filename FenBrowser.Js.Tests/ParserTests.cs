@@ -311,6 +311,18 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesInAndInstanceofBinaryOperators()
+    {
+        var program = JsParser.ParseScript(new SourceText("x in y; a instanceof B;"));
+        var s1 = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var b1 = Assert.IsType<BinaryExpressionNode>(s1.Expression);
+        Assert.Equal("in", b1.Operator);
+        var s2 = Assert.IsType<ExpressionStatementNode>(program.Body[1]);
+        var b2 = Assert.IsType<BinaryExpressionNode>(s2.Expression);
+        Assert.Equal("instanceof", b2.Operator);
+    }
+
+    [Fact]
     public void ParsesRegexLiteralExpression()
     {
         var program = JsParser.ParseScript(new SourceText("let r = /abc/i; r;"));
