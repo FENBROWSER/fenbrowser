@@ -2,17 +2,24 @@ using System.Reflection;
 using System.Text.Json;
 using FenBrowser.Js.Ast;
 using FenBrowser.Js.AstValidation;
+using FenBrowser.Js.Heap;
 using FenBrowser.Js.Lexer;
 using FenBrowser.Js.Parser;
+using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
 
 var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("Usage: fenjs --version | --eval <code> | --dump-tokens <file> | --dump-ast <file>");
+    Console.Error.WriteLine("Usage: fenjs --version | --eval <code> | --dump-tokens <file> | --dump-ast <file> [--gc-before-every-alloc|--gc-after-every-alloc|--gc-random|--verify-heap-before-gc|--verify-heap-after-gc|--trace-gc]");
     return 1;
 }
+
+var gcStressMode = ParseGcStressMode(args);
+var verifyBeforeGc = args.Contains("--verify-heap-before-gc", StringComparer.Ordinal);
+var verifyAfterGc = args.Contains("--verify-heap-after-gc", StringComparer.Ordinal);
+var traceGc = args.Contains("--trace-gc", StringComparer.Ordinal);
 
 if (args.Length == 1 && args[0] == "--version")
 {
@@ -29,7 +36,31 @@ if (args.Length >= 2 && args[0] == "--eval")
         return 2;
     }
 
-    // Placeholder until parser/runtime wiring lands in later milestones.
+    var heap = new JsHeap(gcStressMode);
+    var isolate = new JsIsolate(heap);
+    using var scope = isolate.EnterHandleScope();
+    _ = isolate.AllocateObjectInScope(scope, new FenBrowser.Js.Objects.JsObject(), AllocationSite.Current());
+    if (verifyBeforeGc || verifyAfterGc)
+    {
+        var verifier = new HeapVerifier();
+        if (verifyBeforeGc)
+        {
+            verifier.Verify(heap);
+        }
+
+        heap.CollectGarbage();
+        if (verifyAfterGc)
+        {
+            verifier.Verify(heap);
+        }
+    }
+
+    if (traceGc)
+    {
+        Console.Error.WriteLine($"[trace-gc] mode={gcStressMode}");
+    }
+
+    // Placeholder expression execution until interpreter tranche lands.
     Console.WriteLine("undefined");
     return 0;
 }
@@ -83,6 +114,26 @@ if (args.Length == 2 && args[0] == "--dump-ast")
 
 Console.Error.WriteLine("Unsupported command.");
 return 1;
+
+static GcStressMode ParseGcStressMode(string[] rawArgs)
+{
+    if (rawArgs.Contains("--gc-before-every-alloc", StringComparer.Ordinal))
+    {
+        return GcStressMode.BeforeEveryAlloc;
+    }
+
+    if (rawArgs.Contains("--gc-after-every-alloc", StringComparer.Ordinal))
+    {
+        return GcStressMode.AfterEveryAlloc;
+    }
+
+    if (rawArgs.Contains("--gc-random", StringComparer.Ordinal))
+    {
+        return GcStressMode.Random;
+    }
+
+    return GcStressMode.None;
+}
 
 static object DumpProgram(ProgramNode program)
 {

@@ -90,4 +90,20 @@ public sealed class RuntimeHeapTests
         heap.FreeForTest(handle);
         Assert.Throws<JsEngineFatalException>(() => verifier.Verify(heap));
     }
+
+    [Fact]
+    public void IsolateAllocatesObjectsInsideHandleScope()
+    {
+        var isolate = new JsIsolate(new JsHeap());
+        Assert.Equal(0, isolate.Heap.RootCount);
+
+        using (var scope = isolate.EnterHandleScope())
+        {
+            var rooted = isolate.AllocateObjectInScope(scope, new JsObject(), AllocationSite.Current());
+            Assert.Equal(1, isolate.Heap.RootCount);
+            Assert.Equal(0, rooted.Value.Index);
+        }
+
+        Assert.Equal(0, isolate.Heap.RootCount);
+    }
 }
