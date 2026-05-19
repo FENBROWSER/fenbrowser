@@ -4,5 +4,7 @@
     <RestoreUseStaticGraphEvaluation>false</RestoreUseStaticGraphEvaluation>
     <RestoreUseSkipNonexistentTargets>false</RestoreUseSkipNonexistentTargets>
     <MSBuildEnableWorkloadResolver>false</MSBuildEnableWorkloadResolver>
+    <!-- Required for actions/setup-dotnet cache: true. Generates packages.lock.json per project. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 </Project>
