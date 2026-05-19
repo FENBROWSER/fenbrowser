@@ -369,6 +369,12 @@ public sealed class BytecodeInterpreter
 
     private static bool AreStrictlyEqual(JsValue left, JsValue right)
     {
+        if ((left.Tag == JsValueTag.Int32 || left.Tag == JsValueTag.Number) &&
+            (right.Tag == JsValueTag.Int32 || right.Tag == JsValueTag.Number))
+        {
+            return left.AsNumber() == right.AsNumber();
+        }
+
         if (left.Tag != right.Tag)
         {
             return false;

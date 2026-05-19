@@ -412,6 +412,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void StrictEqualityTreatsInt32AndNumberAsSameNumericType()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("1 === (1 + 0.5 - 0.5);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void StrictInequalityTreatsInt32AndNumberAsEqualWhenNumericValuesMatch()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("1 !== (1 + 0.5 - 0.5);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.False(result.AsBoolean());
+    }
+
+    [Fact]
     public void EmptyStringIsFalsyInConditional()
     {
         var compiler = new BytecodeCompiler();
