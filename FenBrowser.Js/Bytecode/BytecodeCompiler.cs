@@ -554,6 +554,32 @@ public sealed class BytecodeCompiler
             }
             case BinaryExpressionNode bin:
             {
+                if (bin.Operator == "&&")
+                {
+                    var andLeftReg = CompileExpression(bin.Left);
+                    var andDest = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.Move, andDest, andLeftReg, 0));
+                    var andJumpIfFalse = EmitPlaceholder(OpCode.JumpIfFalse, andLeftReg);
+                    var andRightReg = CompileExpression(bin.Right);
+                    _instructions.Add(new Instruction(OpCode.Move, andDest, andRightReg, 0));
+                    PatchJump(andJumpIfFalse, _instructions.Count);
+                    return andDest;
+                }
+
+                if (bin.Operator == "||")
+                {
+                    var orLeftReg = CompileExpression(bin.Left);
+                    var orDest = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.Move, orDest, orLeftReg, 0));
+                    var orJumpIfFalse = EmitPlaceholder(OpCode.JumpIfFalse, orLeftReg);
+                    var orJumpEnd = EmitPlaceholder(OpCode.Jump);
+                    PatchJump(orJumpIfFalse, _instructions.Count);
+                    var orRightReg = CompileExpression(bin.Right);
+                    _instructions.Add(new Instruction(OpCode.Move, orDest, orRightReg, 0));
+                    PatchJump(orJumpEnd, _instructions.Count);
+                    return orDest;
+                }
+
                 var leftReg = CompileExpression(bin.Left);
                 var rightReg = CompileExpression(bin.Right);
                 var dest = AllocateRegister();
@@ -572,8 +598,6 @@ public sealed class BytecodeCompiler
                     ">" => OpCode.Gt,
                     "<=" => OpCode.Le,
                     ">=" => OpCode.Ge,
-                    "&&" => OpCode.And,
-                    "||" => OpCode.Or,
                     _ => throw new InvalidOperationException($"Unsupported binary operator {bin.Operator}.")
                 };
                 _instructions.Add(new Instruction(op, dest, leftReg, rightReg));

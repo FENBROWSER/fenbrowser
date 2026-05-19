@@ -512,6 +512,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void LogicalAndShortCircuitsRightHandSide()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let x = 0; function side(){ x = x + 1; return 1; } 0 && side(); x;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(0, result.AsNumber());
+    }
+
+    [Fact]
+    public void LogicalOrShortCircuitsRightHandSide()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let x = 0; function side(){ x = x + 1; return 1; } 1 || side(); x;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(0, result.AsNumber());
+    }
+
+    [Fact]
     public void InterpreterInvokesWriteBarrierForObjectStores()
     {
         var compiler = new BytecodeCompiler();
