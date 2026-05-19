@@ -126,6 +126,14 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesTryCatchWithPatternParameter()
+    {
+        var program = JsParser.ParseScript(new SourceText("try { throw {}; } catch ({ f }) { f; }"));
+        var tc = Assert.IsType<TryCatchStatementNode>(Assert.Single(program.Body));
+        Assert.Equal("<pattern>", tc.CatchIdentifier);
+    }
+
+    [Fact]
     public void ParsesObjectArrayAndMemberExpressions()
     {
         var program = JsParser.ParseScript(new SourceText("let o = { a: 1 }; let arr = [1,2]; o.a = arr[1]; o.a;"));
@@ -445,6 +453,16 @@ public sealed class ParserTests
     {
         var program = JsParser.ParseScript(new SourceText("for (let k in obj) { k; }"));
         Assert.IsType<ForInStatementNode>(Assert.Single(program.Body));
+    }
+
+    [Fact]
+    public void ParsesForWithDeclarationAndEmptyTestAndUpdate()
+    {
+        var program = JsParser.ParseScript(new SourceText("for (let f; ; ) { break; }"));
+        var forStmt = Assert.IsType<ForStatementNode>(Assert.Single(program.Body));
+        Assert.NotNull(forStmt.Initializer);
+        Assert.Null(forStmt.Test);
+        Assert.Null(forStmt.Update);
     }
 
     [Fact]

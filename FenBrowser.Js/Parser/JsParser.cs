@@ -181,11 +181,13 @@ public sealed class JsParser
 
         StatementNode? initializer = null;
         var requireInitializerSemicolon = false;
+        var initializerIsDeclaration = false;
         if (!IsPunctuator(";"))
         {
             if (Current().Kind == TokenKind.Keyword && (Current().Text == "let" || Current().Text == "const" || Current().Text == "var"))
             {
                 initializer = ParseVariableDeclarationStatement();
+                initializerIsDeclaration = true;
             }
             else
             {
@@ -231,7 +233,7 @@ public sealed class JsParser
         {
             ExpectPunctuator(";");
         }
-        else if (initializer is not null && IsPunctuator(";"))
+        else if (initializer is not null && !initializerIsDeclaration && IsPunctuator(";"))
         {
             Advance();
         }
@@ -310,10 +312,20 @@ public sealed class JsParser
 
         Advance(); // catch
         ExpectPunctuator("(");
-        var catchId = ExpectIdentifier();
+        string catchIdentifier;
+        if (Current().Kind == TokenKind.Identifier)
+        {
+            catchIdentifier = Advance().Text;
+        }
+        else
+        {
+            _ = ParseExpression(0);
+            catchIdentifier = "<pattern>";
+        }
+
         ExpectPunctuator(")");
         var catchBlock = ParseBlockStatement();
-        return new TryCatchStatementNode(tryBlock, catchId.Text, catchBlock, MergeSpan(start.Span, catchBlock.Span));
+        return new TryCatchStatementNode(tryBlock, catchIdentifier, catchBlock, MergeSpan(start.Span, catchBlock.Span));
     }
 
     private ClassDeclarationNode ParseClassDeclaration()
