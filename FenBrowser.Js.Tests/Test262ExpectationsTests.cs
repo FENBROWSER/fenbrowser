@@ -203,7 +203,8 @@ public sealed class Test262ExpectationsTests
               "expectations": [
                 {
                   "path": "test/language/foo.js",
-                  "status": "RuntimeError"
+                  "status": "RuntimeError",
+                  "reason": "known runtime limitation"
                 }
               ]
             }
@@ -235,7 +236,8 @@ public sealed class Test262ExpectationsTests
               "expectations": [
                 {
                   "path": "test/language/foo.js",
-                  "status": "RuntimeError"
+                  "status": "RuntimeError",
+                  "reason": "known runtime limitation"
                 }
               ]
             }
@@ -243,6 +245,73 @@ public sealed class Test262ExpectationsTests
 
             var ex = Assert.Throws<InvalidDataException>(() => Test262Expectations.Load(filePath));
             Assert.Contains("missing required 'area'", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Load_ThrowsWhenReasonIsMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var filePath = Path.Combine(tempRoot, "missing-reason.json");
+
+        try
+        {
+            File.WriteAllText(filePath, """
+            {
+              "metadata": {
+                "owner": "js",
+                "area": "runtime"
+              },
+              "expectations": [
+                {
+                  "path": "test/language/foo.js",
+                  "status": "RuntimeError"
+                }
+              ]
+            }
+            """);
+
+            var ex = Assert.Throws<InvalidDataException>(() => Test262Expectations.Load(filePath));
+            Assert.Contains("missing required 'reason'", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Load_ThrowsWhenReasonIsPlaceholder()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var filePath = Path.Combine(tempRoot, "placeholder-reason.json");
+
+        try
+        {
+            File.WriteAllText(filePath, """
+            {
+              "metadata": {
+                "owner": "js",
+                "area": "runtime"
+              },
+              "expectations": [
+                {
+                  "path": "test/language/foo.js",
+                  "status": "RuntimeError",
+                  "reason": "tbd"
+                }
+              ]
+            }
+            """);
+
+            var ex = Assert.Throws<InvalidDataException>(() => Test262Expectations.Load(filePath));
+            Assert.Contains("missing required 'reason'", ex.Message, StringComparison.Ordinal);
         }
         finally
         {
