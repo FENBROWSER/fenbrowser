@@ -6,7 +6,7 @@ public sealed class JsLexer
 {
     private static readonly HashSet<string> Keywords = new(StringComparer.Ordinal)
     {
-        "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete",
+        "await", "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete",
         "do", "else", "export", "extends", "finally", "for", "function", "if", "import", "in", "of",
         "instanceof", "let", "new", "return", "super", "switch", "this", "throw", "try", "typeof",
         "var", "void", "while", "with", "yield"

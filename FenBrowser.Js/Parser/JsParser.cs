@@ -239,6 +239,11 @@ public sealed class JsParser
     private StatementNode ParseForStatement()
     {
         var start = Advance(); // for
+        if (Current().Kind == TokenKind.Keyword && Current().Text == "await")
+        {
+            Advance();
+        }
+
         ExpectPunctuator("(");
 
         StatementNode? initializer = null;

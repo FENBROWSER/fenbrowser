@@ -523,6 +523,13 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesForAwaitOfStatementSubset()
+    {
+        var program = JsParser.ParseScript(new SourceText("for await (var x of iter) { x; }"));
+        Assert.IsType<ForOfStatementNode>(Assert.Single(program.Body));
+    }
+
+    [Fact]
     public void ParsesForWithDeclarationAndEmptyTestAndUpdate()
     {
         var program = JsParser.ParseScript(new SourceText("for (let f; ; ) { break; }"));
