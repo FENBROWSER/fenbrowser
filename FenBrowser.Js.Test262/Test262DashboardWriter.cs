@@ -29,7 +29,7 @@ public static class Test262DashboardWriter
         var supportedEnabled = Math.Max(0, enabled - unsupported);
         var passRateExcludingUnsupported = supportedEnabled == 0 ? 0d : (double)passed / supportedEnabled;
 
-        var failurePaths = tests.Where(t => !string.Equals(t.Status, "Passed", StringComparison.OrdinalIgnoreCase)).Select(t => t.Path).ToList();
+        var failurePaths = tests.Where(t => IsFailingStatus(t.Status)).Select(t => t.Path).ToList();
         if (failurePaths.Count == 0)
         {
             failurePaths = ReadFailurePaths(current);
@@ -182,7 +182,7 @@ public static class Test262DashboardWriter
         if (tests.Count > 0)
         {
             return tests
-                .Where(t => !string.Equals(t.Status, "Passed", StringComparison.OrdinalIgnoreCase))
+                .Where(t => IsFailingStatus(t.Status))
                 .Select(t => NormalizePath(t.Path))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
         }
@@ -209,6 +209,12 @@ public static class Test262DashboardWriter
         }
 
         return string.Join('/', parts.Take(parts.Length - 1));
+    }
+
+    private static bool IsFailingStatus(string status)
+    {
+        return !string.Equals(status, "Passed", StringComparison.OrdinalIgnoreCase) &&
+               !string.Equals(status, "UnexpectedPass", StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed record TestRecord(string Path, string Status);
