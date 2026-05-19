@@ -2715,6 +2715,66 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_PrefersTestsFailureSetOverFailuresFallbackWhenTestsSectionExists()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var previousPath = Path.Combine(tempRoot, "previous.json");
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(previousPath, BuildResultJson(
+                tests: Array.Empty<object>(),
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 0,
+                passed: 0));
+
+            var currentPayload = new
+            {
+                summary = new
+                {
+                    total = 1,
+                    passed = 1,
+                    unsupported = 0,
+                    parserErrors = 0,
+                    crashes = 0,
+                    expectedFailures = 0,
+                    unexpectedPasses = 0
+                },
+                tests = new object[]
+                {
+                    new
+                    {
+                        path = "test/passed.js",
+                        status = "Passed",
+                        category = (string?)null
+                    }
+                },
+                failures = new object[]
+                {
+                    new
+                    {
+                        relativePath = "test/should-be-ignored.js",
+                        classification = "runtime-error",
+                        expected = false
+                    }
+                }
+            };
+
+            File.WriteAllText(currentPath, JsonSerializer.Serialize(currentPayload));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousPath);
+            Assert.DoesNotContain(result.Violations, v => v.Contains("No new failure in enabled subset violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_IgnoresNonStringTestPathInFailureSetRegressionDetection()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
