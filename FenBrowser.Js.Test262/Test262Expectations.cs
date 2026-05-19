@@ -6,6 +6,8 @@ namespace FenBrowser.Js.Test262;
 
 public sealed class Test262Expectations
 {
+    private static readonly Regex MilestonePattern = new("^M\\d+(?:\\.\\d+)?$", RegexOptions.CultureInvariant);
+
     private static readonly HashSet<string> ValidStatuses = new(StringComparer.OrdinalIgnoreCase)
     {
         "ParserError",
@@ -139,6 +141,13 @@ public sealed class Test262Expectations
                     throw new InvalidDataException($"Expectation entry in {filePath} at index {index} is missing required 'reason'.");
                 }
 
+                if (string.IsNullOrWhiteSpace(expires) ||
+                    string.Equals(expires, "unknown", StringComparison.OrdinalIgnoreCase) ||
+                    !MilestonePattern.IsMatch(expires))
+                {
+                    throw new InvalidDataException($"Expectation entry in {filePath} at index {index} has invalid 'expiresAtMilestone'.");
+                }
+
                 if (string.IsNullOrWhiteSpace(itemOwner) || string.Equals(itemOwner, "unknown", StringComparison.OrdinalIgnoreCase))
                 {
                     throw new InvalidDataException($"Expectation entry in {filePath} at index {index} is missing required 'owner'.");
@@ -153,7 +162,7 @@ public sealed class Test262Expectations
                     pattern,
                     status,
                     reason,
-                    expires ?? string.Empty,
+                    expires,
                     itemOwner,
                     itemArea));
                 index++;

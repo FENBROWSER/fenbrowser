@@ -204,7 +204,8 @@ public sealed class Test262ExpectationsTests
                 {
                   "path": "test/language/foo.js",
                   "status": "RuntimeError",
-                  "reason": "known runtime limitation"
+                  "reason": "known runtime limitation",
+                  "expiresAtMilestone": "M2"
                 }
               ]
             }
@@ -237,7 +238,8 @@ public sealed class Test262ExpectationsTests
                 {
                   "path": "test/language/foo.js",
                   "status": "RuntimeError",
-                  "reason": "known runtime limitation"
+                  "reason": "known runtime limitation",
+                  "expiresAtMilestone": "M2"
                 }
               ]
             }
@@ -270,7 +272,8 @@ public sealed class Test262ExpectationsTests
               "expectations": [
                 {
                   "path": "test/language/foo.js",
-                  "status": "RuntimeError"
+                  "status": "RuntimeError",
+                  "expiresAtMilestone": "M2"
                 }
               ]
             }
@@ -304,7 +307,8 @@ public sealed class Test262ExpectationsTests
                 {
                   "path": "test/language/foo.js",
                   "status": "RuntimeError",
-                  "reason": "tbd"
+                  "reason": "tbd",
+                  "expiresAtMilestone": "M2"
                 }
               ]
             }
@@ -333,5 +337,74 @@ public sealed class Test262ExpectationsTests
         Assert.True(entry.Matches("test/language/expressions/Foo.js", "runtimeerror"));
         Assert.False(entry.Matches("test/language/expressions/bar.js", "runtimeerror"));
         Assert.False(entry.Matches("test/language/expressions/Foo.js", "ParserError"));
+    }
+
+    [Fact]
+    public void Load_ThrowsWhenMilestoneIsMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var filePath = Path.Combine(tempRoot, "missing-milestone.json");
+
+        try
+        {
+            File.WriteAllText(filePath, """
+            {
+              "metadata": {
+                "owner": "js",
+                "area": "runtime"
+              },
+              "expectations": [
+                {
+                  "path": "test/language/foo.js",
+                  "status": "RuntimeError",
+                  "reason": "known runtime limitation"
+                }
+              ]
+            }
+            """);
+
+            var ex = Assert.Throws<InvalidDataException>(() => Test262Expectations.Load(filePath));
+            Assert.Contains("invalid 'expiresAtMilestone'", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Load_ThrowsWhenMilestoneFormatIsInvalid()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var filePath = Path.Combine(tempRoot, "invalid-milestone.json");
+
+        try
+        {
+            File.WriteAllText(filePath, """
+            {
+              "metadata": {
+                "owner": "js",
+                "area": "runtime"
+              },
+              "expectations": [
+                {
+                  "path": "test/language/foo.js",
+                  "status": "RuntimeError",
+                  "reason": "known runtime limitation",
+                  "expiresAtMilestone": "next"
+                }
+              ]
+            }
+            """);
+
+            var ex = Assert.Throws<InvalidDataException>(() => Test262Expectations.Load(filePath));
+            Assert.Contains("invalid 'expiresAtMilestone'", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
     }
 }
