@@ -5,10 +5,26 @@ namespace FenBrowser.Js.Test262;
 
 public sealed class Test262Runner
 {
-    public int Run(string rootPath, bool list, bool dryRun, bool parserSubset, bool dashboard, bool verifyGates, string outputPath, int max, string? expectationsPath, string? inputPath, string? previousPath)
+    public int Run(
+        string rootPath,
+        bool list,
+        bool dryRun,
+        bool parserSubset,
+        bool dashboard,
+        bool verifyGates,
+        string outputPath,
+        int max,
+        string? expectationsPath,
+        string? inputPath,
+        string? previousPath,
+        string? test262Path,
+        string? test262File,
+        string? featuresCsv)
     {
         var manifest = new Test262Manifest { RootPath = rootPath };
         var files = manifest.EnumerateTestFiles().OrderBy(p => p, StringComparer.Ordinal).ToList();
+        files = ApplyScopeFilter(rootPath, files, test262Path, test262File);
+        files = ApplyFeatureFilter(files, featuresCsv);
         Test262Expectations? expectations = null;
         if (!string.IsNullOrWhiteSpace(expectationsPath))
         {
@@ -75,6 +91,79 @@ public sealed class Test262Runner
         }
 
         return 0;
+    }
+
+    private static List<string> ApplyScopeFilter(string rootPath, List<string> files, string? test262Path, string? test262File)
+    {
+        if (!string.IsNullOrWhiteSpace(test262File))
+        {
+            var full = Path.GetFullPath(test262File);
+            return files.Where(f => string.Equals(Path.GetFullPath(f), full, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        if (string.IsNullOrWhiteSpace(test262Path))
+        {
+            return files;
+        }
+
+        var candidate = Path.GetFullPath(test262Path);
+        if (File.Exists(candidate))
+        {
+            return files.Where(f => string.Equals(Path.GetFullPath(f), candidate, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        if (Directory.Exists(candidate))
+        {
+            var prefix = candidate.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return files.Where(f => Path.GetFullPath(f).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        // Treat as relative path under root/test if not found directly.
+        var testRoot = Path.Combine(rootPath, "test");
+        var relativeCandidate = Path.GetFullPath(Path.Combine(testRoot, test262Path));
+        if (Directory.Exists(relativeCandidate))
+        {
+            var prefix = relativeCandidate.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return files.Where(f => Path.GetFullPath(f).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        if (File.Exists(relativeCandidate))
+        {
+            return files.Where(f => string.Equals(Path.GetFullPath(f), relativeCandidate, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        return files;
+    }
+
+    private static List<string> ApplyFeatureFilter(List<string> files, string? featuresCsv)
+    {
+        if (string.IsNullOrWhiteSpace(featuresCsv))
+        {
+            return files;
+        }
+
+        var requested = featuresCsv
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(f => f.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (requested.Count == 0)
+        {
+            return files;
+        }
+
+        var filtered = new List<string>(files.Count);
+        foreach (var file in files)
+        {
+            var source = File.ReadAllText(file);
+            var frontmatter = Test262Frontmatter.Parse(source);
+            if (frontmatter.Features.Any(feature => requested.Contains(feature)))
+            {
+                filtered.Add(file);
+            }
+        }
+
+        return filtered;
     }
 
     private static void RunParserSubset(string rootPath, string outputPath, IReadOnlyList<string> files, int max, string? expectationsPath, Test262Expectations? expectations)

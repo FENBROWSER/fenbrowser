@@ -2,7 +2,7 @@ using FenBrowser.Js.Test262;
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("Usage: fenjs-test262 --list | --dry-run | --parser-subset | --dashboard | --verify-gates [--root <path>] [--out <path>] [--max <n>] [--expectations <path>] [--in <result.json>] [--previous <result.json>]");
+    Console.Error.WriteLine("Usage: fenjs-test262 --list | --dry-run | --parser-subset | --dashboard | --verify-gates [--root <path>] [--test262 <path>] [--test262-file <file>] [--features <a,b,c>] [--out <path>] [--max <n>] [--expectations <path>] [--in <result.json>] [--previous <result.json>]");
     return 1;
 }
 
@@ -17,6 +17,9 @@ var max = 200;
 string? expectationsPath = null;
 string? inputPath = null;
 string? previousPath = null;
+string? test262Path = null;
+string? test262File = null;
+string? featuresCsv = null;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -39,6 +42,15 @@ for (var i = 0; i < args.Length; i++)
             break;
         case "--root" when i + 1 < args.Length:
             root = args[++i];
+            break;
+        case "--test262" when i + 1 < args.Length:
+            test262Path = args[++i];
+            break;
+        case "--test262-file" when i + 1 < args.Length:
+            test262File = args[++i];
+            break;
+        case "--features" when i + 1 < args.Length:
+            featuresCsv = args[++i];
             break;
         case "--out" when i + 1 < args.Length:
             outPath = args[++i];
@@ -65,11 +77,11 @@ if (!list && !dryRun && !parserSubset && !dashboard && !verifyGates)
     return 2;
 }
 
-if (!Directory.Exists(root))
+if ((list || dryRun || parserSubset) && !Directory.Exists(root))
 {
     Console.Error.WriteLine($"test262 root not found: {root}");
     return 3;
 }
 
 var runner = new Test262Runner();
-return runner.Run(root, list, dryRun, parserSubset, dashboard, verifyGates, outPath, max, expectationsPath, inputPath, previousPath);
+return runner.Run(root, list, dryRun, parserSubset, dashboard, verifyGates, outPath, max, expectationsPath, inputPath, previousPath, test262Path, test262File, featuresCsv);
