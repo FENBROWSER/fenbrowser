@@ -1504,6 +1504,10 @@ public sealed class JsParser
                 leftBindingPower = 30;
                 rightBindingPower = 31;
                 return true;
+            case "**":
+                leftBindingPower = 32;
+                rightBindingPower = 32;
+                return true;
             case "+":
             case "-":
                 leftBindingPower = 20;

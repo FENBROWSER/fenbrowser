@@ -345,6 +345,15 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesExponentiationOperator()
+    {
+        var program = JsParser.ParseScript(new SourceText("2 ** 3;"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var bin = Assert.IsType<BinaryExpressionNode>(stmt.Expression);
+        Assert.Equal("**", bin.Operator);
+    }
+
+    [Fact]
     public void ParsesCallArgumentsWithSpread()
     {
         var program = JsParser.ParseScript(new SourceText("fn(ta, ...rest);"));
