@@ -64,7 +64,7 @@ public static class Test262GateVerifier
         var missingExpectationOwnerOrMilestone = CountExpectationMetadataViolations(current);
         if (missingExpectationOwnerOrMilestone > 0)
         {
-            violations.Add($"No expected failure without owner/area/milestone violated: entries={missingExpectationOwnerOrMilestone}.");
+            violations.Add($"No expected failure without owner/area/reason/milestone violated: entries={missingExpectationOwnerOrMilestone}.");
         }
 
         var payload = new
