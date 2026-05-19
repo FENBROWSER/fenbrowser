@@ -359,6 +359,18 @@ public sealed class JsParser
                 continue;
             }
 
+            if ((IsPunctuator("++") || IsPunctuator("--")) && minBindingPower <= 34)
+            {
+                if (!IsUpdateTarget(left))
+                {
+                    throw new JsParserException("Invalid update expression target.");
+                }
+
+                var updateToken = Advance();
+                left = BuildUpdateAssignment(left, updateToken.Text, updateToken.Span, isPostfix: true);
+                continue;
+            }
+
             if (IsAssignmentOperator(Current()) && minBindingPower <= 9)
             {
                 var op = Advance().Text;
@@ -385,6 +397,18 @@ public sealed class JsParser
     private ExpressionNode ParsePrefix()
     {
         var token = Current();
+        if (token.Kind == TokenKind.Punctuator && (token.Text == "++" || token.Text == "--"))
+        {
+            var op = Advance();
+            var target = ParseExpression(40);
+            if (!IsUpdateTarget(target))
+            {
+                throw new JsParserException("Invalid update expression target.");
+            }
+
+            return BuildUpdateAssignment(target, op.Text, op.Span, isPostfix: false);
+        }
+
         if (token.Kind == TokenKind.Punctuator && (token.Text == "!" || token.Text == "-" || token.Text == "+"))
         {
             var op = Advance();
@@ -892,5 +916,17 @@ public sealed class JsParser
             "/=" => new BinaryExpressionNode("/", left, right, MergeSpan(left.Span, right.Span)),
             _ => throw new JsParserException($"Unsupported assignment operator '{op}'.")
         };
+    }
+
+    private static bool IsUpdateTarget(ExpressionNode node) =>
+        node is IdentifierExpressionNode or MemberExpressionNode;
+
+    private static AssignmentExpressionNode BuildUpdateAssignment(ExpressionNode target, string updateOp, SourceSpan opSpan, bool isPostfix)
+    {
+        var numeric = new NumericLiteralExpressionNode(1, "1", opSpan);
+        var binaryOp = updateOp == "++" ? "+" : "-";
+        var right = new BinaryExpressionNode(binaryOp, target, numeric, MergeSpan(target.Span, numeric.Span));
+        var span = isPostfix ? MergeSpan(target.Span, opSpan) : MergeSpan(opSpan, target.Span);
+        return new AssignmentExpressionNode(target, right, span);
     }
 }

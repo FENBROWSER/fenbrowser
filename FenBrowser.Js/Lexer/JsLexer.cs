@@ -313,7 +313,7 @@ public sealed class JsLexer
         if (_index + 1 < _source.Length)
         {
             var two = _source.Substring(_index, 2);
-            if (two is "==" or "!=" or "<=" or ">=" or "&&" or "||" or "+=" or "-=" or "*=" or "/=" or "%=")
+            if (two is "==" or "!=" or "<=" or ">=" or "&&" or "||" or "+=" or "-=" or "*=" or "/=" or "%=" or "++" or "--")
             {
                 _index += 2;
                 _column += 2;

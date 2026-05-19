@@ -289,4 +289,15 @@ public sealed class ParserTests
         var program = JsParser.ParseScript(new SourceText(source));
         Assert.Equal(3, program.Body.Count);
     }
+
+    [Fact]
+    public void ParsesPrefixAndPostfixUpdateExpressions()
+    {
+        var program = JsParser.ParseScript(new SourceText("let x = 0; x++; ++x; x--; --x;"));
+        Assert.Equal(5, program.Body.Count);
+        Assert.IsType<ExpressionStatementNode>(program.Body[1]);
+        Assert.IsType<ExpressionStatementNode>(program.Body[2]);
+        Assert.IsType<ExpressionStatementNode>(program.Body[3]);
+        Assert.IsType<ExpressionStatementNode>(program.Body[4]);
+    }
 }
