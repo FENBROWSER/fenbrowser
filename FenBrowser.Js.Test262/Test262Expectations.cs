@@ -63,19 +63,40 @@ public sealed class Test262Expectations
         foreach (var file in files)
         {
             var single = LoadFile(file);
-            if (owner is null && !string.IsNullOrWhiteSpace(single.MetadataOwner))
+            if (!string.IsNullOrWhiteSpace(single.MetadataOwner))
             {
-                owner = single.MetadataOwner;
+                if (owner is null)
+                {
+                    owner = single.MetadataOwner;
+                }
+                else if (!string.Equals(owner, single.MetadataOwner, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidDataException($"Conflicting expectation metadata 'owner' in directory '{directoryPath}': '{owner}' vs '{single.MetadataOwner}' ({file}).");
+                }
             }
 
-            if (area is null && !string.IsNullOrWhiteSpace(single.MetadataArea))
+            if (!string.IsNullOrWhiteSpace(single.MetadataArea))
             {
-                area = single.MetadataArea;
+                if (area is null)
+                {
+                    area = single.MetadataArea;
+                }
+                else if (!string.Equals(area, single.MetadataArea, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidDataException($"Conflicting expectation metadata 'area' in directory '{directoryPath}': '{area}' vs '{single.MetadataArea}' ({file}).");
+                }
             }
 
-            if (commit is null && !string.IsNullOrWhiteSpace(single.MetadataCommit))
+            if (!string.IsNullOrWhiteSpace(single.MetadataCommit))
             {
-                commit = single.MetadataCommit;
+                if (commit is null)
+                {
+                    commit = single.MetadataCommit;
+                }
+                else if (!string.Equals(commit, single.MetadataCommit, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidDataException($"Conflicting expectation metadata 'test262Commit' in directory '{directoryPath}': '{commit}' vs '{single.MetadataCommit}' ({file}).");
+                }
             }
 
             mergedEntries.AddRange(single.Entries);

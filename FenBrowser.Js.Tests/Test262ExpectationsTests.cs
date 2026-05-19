@@ -407,4 +407,163 @@ public sealed class Test262ExpectationsTests
             Directory.Delete(tempRoot, recursive: true);
         }
     }
+
+    [Fact]
+    public void Load_Directory_ThrowsWhenOwnerMetadataConflicts()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            File.WriteAllText(Path.Combine(tempRoot, "a.json"), """
+            {
+              "metadata": {
+                "owner": "team-a",
+                "area": "runtime",
+                "test262Commit": "abc"
+              },
+              "expectations": [
+                {
+                  "path": "test/language/a.js",
+                  "status": "RuntimeError",
+                  "reason": "known",
+                  "expiresAtMilestone": "M2"
+                }
+              ]
+            }
+            """);
+
+            File.WriteAllText(Path.Combine(tempRoot, "b.json"), """
+            {
+              "metadata": {
+                "owner": "team-b",
+                "area": "runtime",
+                "test262Commit": "abc"
+              },
+              "expectations": [
+                {
+                  "path": "test/language/b.js",
+                  "status": "RuntimeError",
+                  "reason": "known",
+                  "expiresAtMilestone": "M2"
+                }
+              ]
+            }
+            """);
+
+            var ex = Assert.Throws<InvalidDataException>(() => Test262Expectations.Load(tempRoot));
+            Assert.Contains("Conflicting expectation metadata 'owner'", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Load_Directory_ThrowsWhenAreaMetadataConflicts()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            File.WriteAllText(Path.Combine(tempRoot, "a.json"), """
+            {
+              "metadata": {
+                "owner": "team-a",
+                "area": "runtime",
+                "test262Commit": "abc"
+              },
+              "expectations": [
+                {
+                  "path": "test/language/a.js",
+                  "status": "RuntimeError",
+                  "reason": "known",
+                  "expiresAtMilestone": "M2"
+                }
+              ]
+            }
+            """);
+
+            File.WriteAllText(Path.Combine(tempRoot, "b.json"), """
+            {
+              "metadata": {
+                "owner": "team-a",
+                "area": "parser",
+                "test262Commit": "abc"
+              },
+              "expectations": [
+                {
+                  "path": "test/language/b.js",
+                  "status": "RuntimeError",
+                  "reason": "known",
+                  "expiresAtMilestone": "M2"
+                }
+              ]
+            }
+            """);
+
+            var ex = Assert.Throws<InvalidDataException>(() => Test262Expectations.Load(tempRoot));
+            Assert.Contains("Conflicting expectation metadata 'area'", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Load_Directory_ThrowsWhenCommitMetadataConflicts()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            File.WriteAllText(Path.Combine(tempRoot, "a.json"), """
+            {
+              "metadata": {
+                "owner": "team-a",
+                "area": "runtime",
+                "test262Commit": "abc"
+              },
+              "expectations": [
+                {
+                  "path": "test/language/a.js",
+                  "status": "RuntimeError",
+                  "reason": "known",
+                  "expiresAtMilestone": "M2"
+                }
+              ]
+            }
+            """);
+
+            File.WriteAllText(Path.Combine(tempRoot, "b.json"), """
+            {
+              "metadata": {
+                "owner": "team-a",
+                "area": "runtime",
+                "test262Commit": "def"
+              },
+              "expectations": [
+                {
+                  "path": "test/language/b.js",
+                  "status": "RuntimeError",
+                  "reason": "known",
+                  "expiresAtMilestone": "M2"
+                }
+              ]
+            }
+            """);
+
+            var ex = Assert.Throws<InvalidDataException>(() => Test262Expectations.Load(tempRoot));
+            Assert.Contains("Conflicting expectation metadata 'test262Commit'", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
 }
