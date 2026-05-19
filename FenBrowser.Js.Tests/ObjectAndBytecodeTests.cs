@@ -442,6 +442,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void ArithmeticCoercesStringAndBooleanOperandsToNumbers()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("(\"2\" - 1) + (true * 2);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(3, result.AsNumber());
+    }
+
+    [Fact]
+    public void UnaryPlusCoercesStringToNumber()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("+\"5\";"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(5, result.AsNumber());
+    }
+
+    [Fact]
     public void InterpreterInvokesWriteBarrierForObjectStores()
     {
         var compiler = new BytecodeCompiler();

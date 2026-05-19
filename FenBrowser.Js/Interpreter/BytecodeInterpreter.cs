@@ -238,10 +238,10 @@ public sealed class BytecodeInterpreter
                     frame.Registers[ins.A] = JsValue.FromBoolean(!IsTruthy(frame.Registers[ins.B]));
                     break;
                 case OpCode.Pos:
-                    frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber());
+                    frame.Registers[ins.A] = JsValue.FromNumber(ToNumber(frame.Registers[ins.B]));
                     break;
                 case OpCode.Neg:
-                    frame.Registers[ins.A] = JsValue.FromNumber(-frame.Registers[ins.B].AsNumber());
+                    frame.Registers[ins.A] = JsValue.FromNumber(-ToNumber(frame.Registers[ins.B]));
                     break;
                 case OpCode.TypeOf:
                     frame.Registers[ins.A] = JsValue.FromString(TypeOf(frame.Registers[ins.B]));
@@ -250,16 +250,16 @@ public sealed class BytecodeInterpreter
                     frame.Registers[ins.A] = Add(frame.Registers[ins.B], frame.Registers[ins.C]);
                     break;
                 case OpCode.Sub:
-                    frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber() - frame.Registers[ins.C].AsNumber());
+                    frame.Registers[ins.A] = JsValue.FromNumber(ToNumber(frame.Registers[ins.B]) - ToNumber(frame.Registers[ins.C]));
                     break;
                 case OpCode.Mul:
-                    frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber() * frame.Registers[ins.C].AsNumber());
+                    frame.Registers[ins.A] = JsValue.FromNumber(ToNumber(frame.Registers[ins.B]) * ToNumber(frame.Registers[ins.C]));
                     break;
                 case OpCode.Mod:
-                    frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber() % frame.Registers[ins.C].AsNumber());
+                    frame.Registers[ins.A] = JsValue.FromNumber(ToNumber(frame.Registers[ins.B]) % ToNumber(frame.Registers[ins.C]));
                     break;
                 case OpCode.Div:
-                    frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber() / frame.Registers[ins.C].AsNumber());
+                    frame.Registers[ins.A] = JsValue.FromNumber(ToNumber(frame.Registers[ins.B]) / ToNumber(frame.Registers[ins.C]));
                     break;
                 case OpCode.Eq:
                     frame.Registers[ins.A] = JsValue.FromBoolean(AreEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
@@ -274,16 +274,16 @@ public sealed class BytecodeInterpreter
                     frame.Registers[ins.A] = JsValue.FromBoolean(!AreStrictlyEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
                     break;
                 case OpCode.Lt:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(frame.Registers[ins.B].AsNumber() < frame.Registers[ins.C].AsNumber());
+                    frame.Registers[ins.A] = JsValue.FromBoolean(ToNumber(frame.Registers[ins.B]) < ToNumber(frame.Registers[ins.C]));
                     break;
                 case OpCode.Gt:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(frame.Registers[ins.B].AsNumber() > frame.Registers[ins.C].AsNumber());
+                    frame.Registers[ins.A] = JsValue.FromBoolean(ToNumber(frame.Registers[ins.B]) > ToNumber(frame.Registers[ins.C]));
                     break;
                 case OpCode.Le:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(frame.Registers[ins.B].AsNumber() <= frame.Registers[ins.C].AsNumber());
+                    frame.Registers[ins.A] = JsValue.FromBoolean(ToNumber(frame.Registers[ins.B]) <= ToNumber(frame.Registers[ins.C]));
                     break;
                 case OpCode.Ge:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(frame.Registers[ins.B].AsNumber() >= frame.Registers[ins.C].AsNumber());
+                    frame.Registers[ins.A] = JsValue.FromBoolean(ToNumber(frame.Registers[ins.B]) >= ToNumber(frame.Registers[ins.C]));
                     break;
                 case OpCode.And:
                     frame.Registers[ins.A] = JsValue.FromBoolean(IsTruthy(frame.Registers[ins.B]) && IsTruthy(frame.Registers[ins.C]));
@@ -456,7 +456,7 @@ public sealed class BytecodeInterpreter
             return JsValue.FromString(ToStringForConcat(left) + ToStringForConcat(right));
         }
 
-        return JsValue.FromNumber(left.AsNumber() + right.AsNumber());
+        return JsValue.FromNumber(ToNumber(left) + ToNumber(right));
     }
 
     private static string ToStringForConcat(JsValue value)
@@ -472,6 +472,20 @@ public sealed class BytecodeInterpreter
             JsValueTag.Object => "[object Object]",
             JsValueTag.HostObject => "[object Object]",
             _ => value.Tag.ToString()
+        };
+    }
+
+    private static double ToNumber(JsValue value)
+    {
+        return value.Tag switch
+        {
+            JsValueTag.Int32 => value.AsInt32(),
+            JsValueTag.Number => value.AsNumber(),
+            JsValueTag.Boolean => value.AsBoolean() ? 1d : 0d,
+            JsValueTag.Null => 0d,
+            JsValueTag.Undefined => double.NaN,
+            JsValueTag.String => ToNumberForEquality(value),
+            _ => double.NaN
         };
     }
 
