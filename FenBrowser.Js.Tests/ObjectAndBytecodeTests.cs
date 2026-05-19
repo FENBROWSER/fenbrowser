@@ -352,6 +352,36 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void DeleteReturnsFalseForNonConfigurableProperty()
+    {
+        var obj = new JsObject();
+        obj.DefineOwnProperty("x", new JsPropertyDescriptor(JsValue.FromNumber(1), Writable: true, Enumerable: true, Configurable: false));
+
+        Assert.False(obj.DeleteProperty("x"));
+        Assert.True(obj.TryGetOwnProperty("x", out _));
+    }
+
+    [Fact]
+    public void DeleteOnNonObjectPropertyBaseReturnsTrue()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("delete (1).x;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void DeleteOnNonObjectComputedBaseReturnsTrue()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("delete true[\"x\"];"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void TypeofFunctionObjectReturnsFunction()
     {
         var compiler = new BytecodeCompiler();

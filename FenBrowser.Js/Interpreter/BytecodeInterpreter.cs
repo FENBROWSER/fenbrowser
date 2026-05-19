@@ -141,7 +141,14 @@ public sealed class BytecodeInterpreter
                 }
                 case OpCode.DeletePropByName:
                 {
-                    var obj = ResolveObject(frame.Registers[ins.B]);
+                    var receiver = frame.Registers[ins.B];
+                    if (receiver.Tag != JsValueTag.Object)
+                    {
+                        frame.Registers[ins.A] = JsValue.FromBoolean(true);
+                        break;
+                    }
+
+                    var obj = ResolveObject(receiver);
                     var prop = function.PropertyNames[ins.C];
                     frame.Registers[ins.A] = JsValue.FromBoolean(obj.DeleteProperty(prop));
                     break;
@@ -171,7 +178,14 @@ public sealed class BytecodeInterpreter
                 }
                 case OpCode.DeleteElem:
                 {
-                    var obj = ResolveObject(frame.Registers[ins.B]);
+                    var receiver = frame.Registers[ins.B];
+                    if (receiver.Tag != JsValueTag.Object)
+                    {
+                        frame.Registers[ins.A] = JsValue.FromBoolean(true);
+                        break;
+                    }
+
+                    var obj = ResolveObject(receiver);
                     var key = ToPropertyKey(frame.Registers[ins.C]);
                     frame.Registers[ins.A] = JsValue.FromBoolean(obj.DeleteProperty(key));
                     break;
