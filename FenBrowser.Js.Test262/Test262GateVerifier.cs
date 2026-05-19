@@ -217,17 +217,23 @@ public static class Test262GateVerifier
     {
         var count = 0;
         var expectedFailureTests = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var allTestPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (root.TryGetProperty("tests", out var tests) && tests.ValueKind == JsonValueKind.Array)
         {
             foreach (var test in tests.EnumerateArray())
             {
+                var path = test.TryGetProperty("path", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    allTestPaths.Add(path!.Replace('\\', '/'));
+                }
+
                 var status = test.TryGetProperty("status", out var st) && st.ValueKind == JsonValueKind.String ? st.GetString() : null;
                 if (!string.Equals(status, "ExpectedFailure", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
 
-                var path = test.TryGetProperty("path", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
                 if (!string.IsNullOrWhiteSpace(path))
                 {
                     expectedFailureTests.Add(path!.Replace('\\', '/'));
@@ -286,6 +292,20 @@ public static class Test262GateVerifier
         foreach (var expectedPath in expectedFailureTests)
         {
             if (!expectedFailureRecords.Contains(expectedPath))
+            {
+                count++;
+            }
+        }
+
+        foreach (var expectedRecordPath in expectedFailureRecords)
+        {
+            if (!allTestPaths.Contains(expectedRecordPath))
+            {
+                count++;
+                continue;
+            }
+
+            if (!expectedFailureTests.Contains(expectedRecordPath))
             {
                 count++;
             }
