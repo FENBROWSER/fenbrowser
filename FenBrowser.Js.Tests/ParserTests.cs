@@ -253,6 +253,22 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesCoalesceAndLogicalAssignmentOperators()
+    {
+        var program = JsParser.ParseScript(new SourceText("a ?? b; x &&= y; x ||= z; x ??= q;"));
+        var s1 = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var b1 = Assert.IsType<BinaryExpressionNode>(s1.Expression);
+        Assert.Equal("??", b1.Operator);
+
+        var s2 = Assert.IsType<ExpressionStatementNode>(program.Body[1]);
+        Assert.IsType<AssignmentExpressionNode>(s2.Expression);
+        var s3 = Assert.IsType<ExpressionStatementNode>(program.Body[2]);
+        Assert.IsType<AssignmentExpressionNode>(s3.Expression);
+        var s4 = Assert.IsType<ExpressionStatementNode>(program.Body[3]);
+        Assert.IsType<AssignmentExpressionNode>(s4.Expression);
+    }
+
+    [Fact]
     public void ParsesRegexLiteralExpression()
     {
         var program = JsParser.ParseScript(new SourceText("let r = /abc/i; r;"));

@@ -1062,6 +1062,10 @@ public sealed class JsParser
                 leftBindingPower = 5;
                 rightBindingPower = 6;
                 return true;
+            case "??":
+                leftBindingPower = 6;
+                rightBindingPower = 7;
+                return true;
             case "&&":
                 leftBindingPower = 7;
                 rightBindingPower = 8;
@@ -1146,7 +1150,7 @@ public sealed class JsParser
 
     private static bool IsAssignmentOperator(Token token)
     {
-        return token.Kind == TokenKind.Punctuator && token.Text is "=" or "+=" or "-=" or "*=" or "/=";
+        return token.Kind == TokenKind.Punctuator && token.Text is "=" or "+=" or "-=" or "*=" or "/=" or "&&=" or "||=" or "??=";
     }
 
     private static ExpressionNode BuildAssignmentRight(ExpressionNode left, string op, ExpressionNode right)
@@ -1158,6 +1162,9 @@ public sealed class JsParser
             "-=" => new BinaryExpressionNode("-", left, right, MergeSpan(left.Span, right.Span)),
             "*=" => new BinaryExpressionNode("*", left, right, MergeSpan(left.Span, right.Span)),
             "/=" => new BinaryExpressionNode("/", left, right, MergeSpan(left.Span, right.Span)),
+            "&&=" => new BinaryExpressionNode("&&", left, right, MergeSpan(left.Span, right.Span)),
+            "||=" => new BinaryExpressionNode("||", left, right, MergeSpan(left.Span, right.Span)),
+            "??=" => new BinaryExpressionNode("??", left, right, MergeSpan(left.Span, right.Span)),
             _ => throw new JsParserException($"Unsupported assignment operator '{op}'.")
         };
     }
