@@ -2879,6 +2879,50 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_DoesNotTreatNonStringCategoryAsUncategorizedWhenStatusIsUnexpectedPass()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            var payload = new
+            {
+                summary = new
+                {
+                    total = 1,
+                    passed = 0,
+                    unsupported = 0,
+                    parserErrors = 0,
+                    crashes = 0,
+                    expectedFailures = 0,
+                    unexpectedPasses = 1
+                },
+                tests = new object[]
+                {
+                    new
+                    {
+                        path = "test/unexpectedpass-non-string-category.js",
+                        status = "UnexpectedPass",
+                        category = 1
+                    }
+                },
+                failures = Array.Empty<object>()
+            };
+
+            File.WriteAllText(currentPath, JsonSerializer.Serialize(payload));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            Assert.DoesNotContain(result.Violations, v => v.Contains("All enabled parser tests must be categorized violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_DoesNotTreatPassedTestWithoutCategoryAsUncategorizedFailure()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
