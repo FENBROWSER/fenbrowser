@@ -16,6 +16,7 @@ public sealed class JsLexer
     private int _index;
     private int _line = 1;
     private int _column = 1;
+    private Token? _lastSignificantToken;
 
     public JsLexer(SourceText source)
     {
@@ -40,6 +41,17 @@ public sealed class JsLexer
             var column = _column;
             var ch = _source[_index];
 
+            if (ch == '/' && CanStartRegexLiteral())
+            {
+                if (TryReadRegexLiteral(out var regexText))
+                {
+                    var token = new Token(TokenKind.RegularExpression, regexText, new SourceSpan(start, regexText.Length, line, column));
+                    tokens.Add(token);
+                    _lastSignificantToken = token;
+                    continue;
+                }
+            }
+
             if (char.IsLetter(ch) || ch == '_' || ch == '$')
             {
                 _index++;
@@ -58,7 +70,9 @@ public sealed class JsLexer
 
                 var text = _source[start.._index];
                 var kind = Keywords.Contains(text) ? TokenKind.Keyword : TokenKind.Identifier;
-                tokens.Add(new Token(kind, text, new SourceSpan(start, _index - start, line, column)));
+                var token = new Token(kind, text, new SourceSpan(start, _index - start, line, column));
+                tokens.Add(token);
+                _lastSignificantToken = token;
                 continue;
             }
 
@@ -72,7 +86,9 @@ public sealed class JsLexer
                     _column++;
                 }
 
-                tokens.Add(new Token(TokenKind.Number, _source[start.._index], new SourceSpan(start, _index - start, line, column)));
+                var token = new Token(TokenKind.Number, _source[start.._index], new SourceSpan(start, _index - start, line, column));
+                tokens.Add(token);
+                _lastSignificantToken = token;
                 continue;
             }
 
@@ -98,19 +114,25 @@ public sealed class JsLexer
                     }
                 }
 
-                tokens.Add(new Token(TokenKind.String, _source[start.._index], new SourceSpan(start, _index - start, line, column)));
+                var token = new Token(TokenKind.String, _source[start.._index], new SourceSpan(start, _index - start, line, column));
+                tokens.Add(token);
+                _lastSignificantToken = token;
                 continue;
             }
 
             if (TryReadPunctuator(out var punctuatorText))
             {
-                tokens.Add(new Token(TokenKind.Punctuator, punctuatorText, new SourceSpan(start, punctuatorText.Length, line, column)));
+                var token = new Token(TokenKind.Punctuator, punctuatorText, new SourceSpan(start, punctuatorText.Length, line, column));
+                tokens.Add(token);
+                _lastSignificantToken = token;
                 continue;
             }
 
             _index++;
             _column++;
-            tokens.Add(new Token(TokenKind.Unknown, ch.ToString(), new SourceSpan(start, 1, line, column)));
+            var unknown = new Token(TokenKind.Unknown, ch.ToString(), new SourceSpan(start, 1, line, column));
+            tokens.Add(unknown);
+            _lastSignificantToken = unknown;
         }
     }
 
@@ -216,6 +238,90 @@ public sealed class JsLexer
         }
 
         text = string.Empty;
+        return false;
+    }
+
+    private bool CanStartRegexLiteral()
+    {
+        if (_lastSignificantToken is null)
+        {
+            return true;
+        }
+
+        var token = _lastSignificantToken.Value;
+        if (token.Kind == TokenKind.Keyword)
+        {
+            return token.Text is "return" or "throw" or "case" or "typeof" or "new" or "delete" or "void" or "in" or "instanceof";
+        }
+
+        if (token.Kind != TokenKind.Punctuator)
+        {
+            return false;
+        }
+
+        return token.Text is "(" or "{" or "[" or "," or ";" or ":" or "?" or "=" or "==" or "!=" or "<" or ">" or "<=" or ">=" or "&&" or "||" or "!" or "+" or "-" or "*" or "%" or "/";
+    }
+
+    private bool TryReadRegexLiteral(out string rawText)
+    {
+        var start = _index;
+        var i = _index + 1;
+        var escaped = false;
+        var inCharClass = false;
+        while (i < _source.Length)
+        {
+            var ch = _source[i];
+            if (!escaped)
+            {
+                if (ch == '\\')
+                {
+                    escaped = true;
+                    i++;
+                    continue;
+                }
+
+                if (ch == '[')
+                {
+                    inCharClass = true;
+                    i++;
+                    continue;
+                }
+
+                if (ch == ']' && inCharClass)
+                {
+                    inCharClass = false;
+                    i++;
+                    continue;
+                }
+
+                if (ch == '/' && !inCharClass)
+                {
+                    i++;
+                    while (i < _source.Length && char.IsLetter(_source[i]))
+                    {
+                        i++;
+                    }
+
+                    rawText = _source[start..i];
+                    _column += i - _index;
+                    _index = i;
+                    return true;
+                }
+
+                if (ch == '\n' || ch == '\r')
+                {
+                    break;
+                }
+            }
+            else
+            {
+                escaped = false;
+            }
+
+            i++;
+        }
+
+        rawText = string.Empty;
         return false;
     }
 }

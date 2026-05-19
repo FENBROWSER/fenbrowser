@@ -464,6 +464,17 @@ public sealed class BytecodeCompiler
                     }
                 }
             }
+            case RegexLiteralExpressionNode regex:
+            {
+                var dest = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.NewObject, dest, 0, 0));
+                var rawReg = AllocateRegister();
+                var ci = AddConstant(JsValue.FromString(regex.RawText));
+                _instructions.Add(new Instruction(OpCode.LoadConst, rawReg, ci, 0));
+                var sourceIdx = GetOrCreatePropertyName("source");
+                _instructions.Add(new Instruction(OpCode.SetPropByName, dest, sourceIdx, rawReg));
+                return dest;
+            }
             case ObjectLiteralExpressionNode obj:
             {
                 var dest = AllocateRegister();

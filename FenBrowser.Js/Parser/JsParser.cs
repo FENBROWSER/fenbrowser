@@ -431,6 +431,12 @@ public sealed class JsParser
             return new StringLiteralExpressionNode(value, token.Text, token.Span);
         }
 
+        if (token.Kind == TokenKind.RegularExpression)
+        {
+            Advance();
+            return new RegexLiteralExpressionNode(token.Text, token.Span);
+        }
+
         if (IsPunctuator("("))
         {
             var open = Advance();

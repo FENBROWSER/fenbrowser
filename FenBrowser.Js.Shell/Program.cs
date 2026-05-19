@@ -394,6 +394,12 @@ static object DumpExpression(ExpressionNode expression)
             arguments = ne.Arguments.Select(DumpExpression).ToArray(),
             span = DumpSpan(ne.Span)
         },
+        RegexLiteralExpressionNode re => new
+        {
+            type = "RegexLiteral",
+            raw = re.RawText,
+            span = DumpSpan(re.Span)
+        },
         _ => new { type = "UnknownExpression", span = DumpSpan(expression.Span) }
     };
 }

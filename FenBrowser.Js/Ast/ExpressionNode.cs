@@ -35,3 +35,5 @@ public sealed record ConditionalExpressionNode(ExpressionNode Test, ExpressionNo
 public sealed record FunctionExpressionNode(string? Name, IReadOnlyList<string> Parameters, BlockStatementNode Body, SourceSpan Span) : ExpressionNode(Span);
 
 public sealed record NewExpressionNode(ExpressionNode Callee, IReadOnlyList<ExpressionNode> Arguments, SourceSpan Span) : ExpressionNode(Span);
+
+public sealed record RegexLiteralExpressionNode(string RawText, SourceSpan Span) : ExpressionNode(Span);

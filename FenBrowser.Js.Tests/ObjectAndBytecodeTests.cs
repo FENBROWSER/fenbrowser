@@ -289,4 +289,24 @@ public sealed class ObjectAndBytecodeTests
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleRegexLiteralAsObjectPlaceholder()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let r = /abc/i; r;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(JsValueTag.Object, result.Tag);
+    }
+
+    [Fact]
+    public void DivisionExpressionStillParsesAndExecutes()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("6 / 2;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(3, result.AsNumber());
+    }
 }

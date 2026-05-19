@@ -175,4 +175,12 @@ public sealed class ParserTests
         var unary = Assert.IsType<UnaryExpressionNode>(decl.Declarators[0].Initializer);
         Assert.Equal("typeof", unary.Operator);
     }
+
+    [Fact]
+    public void ParsesRegexLiteralExpression()
+    {
+        var program = JsParser.ParseScript(new SourceText("let r = /abc/i; r;"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        Assert.IsType<RegexLiteralExpressionNode>(decl.Declarators[0].Initializer);
+    }
 }
