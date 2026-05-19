@@ -20,12 +20,13 @@ public static class Test262GateVerifier
 
         if (currentSummary.Crashes > 0)
         {
-            violations.Add($"No parser crashes violated: crashes={currentSummary.Crashes}.");
+            violations.Add($"No crashes violated: crashes={currentSummary.Crashes}.");
         }
 
-        if (currentSummary.Crashes > 0)
+        var unknownCrashes = CountUnknownCrashes(current);
+        if (unknownCrashes > 0)
         {
-            violations.Add("No unknown crashes violated.");
+            violations.Add($"No unknown crashes violated: crashes={unknownCrashes}.");
         }
 
         if (previousSummary is not null)
@@ -75,6 +76,7 @@ public static class Test262GateVerifier
                 previous = previousSummary
             },
             newFailures = newFailures.Take(200).ToArray(),
+            unknownCrashes,
             uncategorizedFailures = uncategorized,
             expectationMetadataViolations = missingExpectationOwnerOrMilestone,
             passed = violations.Count == 0,
@@ -169,6 +171,35 @@ public static class Test262GateVerifier
 
             var category = t.TryGetProperty("category", out var cat) && cat.ValueKind == JsonValueKind.String ? cat.GetString() : null;
             if (string.IsNullOrWhiteSpace(category))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private static int CountUnknownCrashes(JsonElement root)
+    {
+        if (!root.TryGetProperty("failures", out var failures) || failures.ValueKind != JsonValueKind.Array)
+        {
+            var summary = root.TryGetProperty("summary", out var s) ? s : default;
+            return ReadInt(summary, "crashes");
+        }
+
+        var count = 0;
+        foreach (var failure in failures.EnumerateArray())
+        {
+            var classification = failure.TryGetProperty("classification", out var c) && c.ValueKind == JsonValueKind.String
+                ? c.GetString()
+                : null;
+            if (!string.Equals(classification, "crash", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var expected = failure.TryGetProperty("expected", out var ex) && ex.ValueKind == JsonValueKind.True;
+            if (!expected)
             {
                 count++;
             }
