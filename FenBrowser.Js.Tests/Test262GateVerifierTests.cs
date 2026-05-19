@@ -592,6 +592,85 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ReportIncludesPreviousSummaryExpectedFailures()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var previousPath = Path.Combine(tempRoot, "previous.json");
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            var previousPayload = new
+            {
+                summary = new
+                {
+                    total = 2,
+                    passed = 0,
+                    unsupported = 0,
+                    parserErrors = 0,
+                    crashes = 0,
+                    expectedFailures = 2,
+                    unexpectedPasses = 0
+                },
+                tests = new object[]
+                {
+                    new { path = "test/a.js", status = "ExpectedFailure", category = "runtime-missing" },
+                    new { path = "test/b.js", status = "ExpectedFailure", category = "runtime-missing" }
+                },
+                failures = new object[]
+                {
+                    new
+                    {
+                        relativePath = "test/a.js",
+                        classification = "runtime-error",
+                        expected = true,
+                        expectedOwner = "js",
+                        expectedArea = "runtime",
+                        expectedReason = "known limitation",
+                        expiresAtMilestone = "M2"
+                    },
+                    new
+                    {
+                        relativePath = "test/b.js",
+                        classification = "runtime-error",
+                        expected = true,
+                        expectedOwner = "js",
+                        expectedArea = "runtime",
+                        expectedReason = "known limitation",
+                        expiresAtMilestone = "M2"
+                    }
+                }
+            };
+
+            File.WriteAllText(previousPath, JsonSerializer.Serialize(previousPayload));
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/current.js",
+                        status = "Passed",
+                        category = (string?)null
+                    }
+                ],
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 0,
+                passed: 1));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousPath);
+            using var report = JsonDocument.Parse(result.ReportJson);
+            var previousSummary = report.RootElement.GetProperty("summary").GetProperty("previous");
+            Assert.Equal(2, previousSummary.GetProperty("ExpectedFailures").GetInt32());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_ReportIncludesNullPreviousSourceWhenBaselineIsOmitted()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
