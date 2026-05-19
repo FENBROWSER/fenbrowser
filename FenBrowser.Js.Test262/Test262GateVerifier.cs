@@ -1,9 +1,12 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace FenBrowser.Js.Test262;
 
 public static class Test262GateVerifier
 {
+    private static readonly Regex MilestonePattern = new("^M\\d+(?:\\.\\d+)?$", RegexOptions.CultureInvariant);
+
     public static GateVerificationResult Verify(string currentResultPath, string? previousResultPath)
     {
         using var currentDoc = JsonDocument.Parse(File.ReadAllText(currentResultPath));
@@ -230,10 +233,12 @@ public static class Test262GateVerifier
                                owner.ValueKind != JsonValueKind.String ||
                                string.IsNullOrWhiteSpace(owner.GetString()) ||
                                string.Equals(owner.GetString(), "unknown", StringComparison.OrdinalIgnoreCase);
-            var milestoneMissing = !failure.TryGetProperty("expiresAtMilestone", out var milestone) ||
-                                   milestone.ValueKind != JsonValueKind.String ||
-                                   string.IsNullOrWhiteSpace(milestone.GetString()) ||
-                                   string.Equals(milestone.GetString(), "unknown", StringComparison.OrdinalIgnoreCase);
+            var milestoneText = failure.TryGetProperty("expiresAtMilestone", out var milestone) && milestone.ValueKind == JsonValueKind.String
+                ? milestone.GetString()
+                : null;
+            var milestoneMissing = string.IsNullOrWhiteSpace(milestoneText) ||
+                                   string.Equals(milestoneText, "unknown", StringComparison.OrdinalIgnoreCase) ||
+                                   !MilestonePattern.IsMatch(milestoneText);
             if (ownerMissing || milestoneMissing)
             {
                 count++;
