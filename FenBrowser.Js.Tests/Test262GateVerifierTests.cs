@@ -1696,6 +1696,81 @@ public sealed class Test262GateVerifierTests
         }
     }
 
+    [Fact]
+    public void Verify_UsesFailuresFallbackForNewFailureDetectionWhenTestsMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var previousPath = Path.Combine(tempRoot, "previous.json");
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            var previousPayload = new
+            {
+                summary = new
+                {
+                    total = 1,
+                    passed = 0,
+                    unsupported = 0,
+                    parserErrors = 1,
+                    crashes = 0,
+                    expectedFailures = 0,
+                    unexpectedPasses = 0
+                },
+                failures = new object[]
+                {
+                    new
+                    {
+                        relativePath = "test/existing.js",
+                        classification = "parser-error",
+                        expected = false
+                    }
+                }
+            };
+
+            var currentPayload = new
+            {
+                summary = new
+                {
+                    total = 2,
+                    passed = 0,
+                    unsupported = 0,
+                    parserErrors = 2,
+                    crashes = 0,
+                    expectedFailures = 0,
+                    unexpectedPasses = 0
+                },
+                failures = new object[]
+                {
+                    new
+                    {
+                        relativePath = "test/existing.js",
+                        classification = "parser-error",
+                        expected = false
+                    },
+                    new
+                    {
+                        path = "test/new.js",
+                        classification = "parser-error",
+                        expected = false
+                    }
+                }
+            };
+
+            File.WriteAllText(previousPath, JsonSerializer.Serialize(previousPayload));
+            File.WriteAllText(currentPath, JsonSerializer.Serialize(currentPayload));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousPath);
+            Assert.False(result.Passed);
+            Assert.Contains(result.Violations, v => v.Contains("No new failure in enabled subset violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
     private static string BuildResultJson(object[] tests, object[] failures, int crashes = 0, int unexpectedPasses = 0, int? passed = null)
     {
         var payload = new
