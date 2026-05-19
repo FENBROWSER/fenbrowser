@@ -80,10 +80,55 @@ public sealed class JsLexer
             {
                 _index++;
                 _column++;
-                while (_index < _source.Length && char.IsDigit(_source[_index]))
+                if (ch == '0' && _index < _source.Length)
                 {
-                    _index++;
-                    _column++;
+                    var radix = _source[_index];
+                    if (radix is 'x' or 'X')
+                    {
+                        _index++;
+                        _column++;
+                        while (_index < _source.Length && IsHexDigit(_source[_index]))
+                        {
+                            _index++;
+                            _column++;
+                        }
+                    }
+                    else if (radix is 'o' or 'O')
+                    {
+                        _index++;
+                        _column++;
+                        while (_index < _source.Length && IsOctDigit(_source[_index]))
+                        {
+                            _index++;
+                            _column++;
+                        }
+                    }
+                    else if (radix is 'b' or 'B')
+                    {
+                        _index++;
+                        _column++;
+                        while (_index < _source.Length && IsBinDigit(_source[_index]))
+                        {
+                            _index++;
+                            _column++;
+                        }
+                    }
+                    else
+                    {
+                        while (_index < _source.Length && char.IsDigit(_source[_index]))
+                        {
+                            _index++;
+                            _column++;
+                        }
+                    }
+                }
+                else
+                {
+                    while (_index < _source.Length && char.IsDigit(_source[_index]))
+                    {
+                        _index++;
+                        _column++;
+                    }
                 }
 
                 var token = new Token(TokenKind.Number, _source[start.._index], new SourceSpan(start, _index - start, line, column));
@@ -324,4 +369,13 @@ public sealed class JsLexer
         rawText = string.Empty;
         return false;
     }
+
+    private static bool IsHexDigit(char ch) =>
+        (ch >= '0' && ch <= '9') ||
+        (ch >= 'a' && ch <= 'f') ||
+        (ch >= 'A' && ch <= 'F');
+
+    private static bool IsOctDigit(char ch) => ch >= '0' && ch <= '7';
+
+    private static bool IsBinDigit(char ch) => ch == '0' || ch == '1';
 }

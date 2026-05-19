@@ -2,6 +2,7 @@ using FenBrowser.Js.Ast;
 using FenBrowser.Js.AstValidation;
 using FenBrowser.Js.Lexer;
 using FenBrowser.Js.Source;
+using System.Globalization;
 
 namespace FenBrowser.Js.Parser;
 
@@ -416,7 +417,7 @@ public sealed class JsParser
         if (token.Kind == TokenKind.Number)
         {
             Advance();
-            if (!double.TryParse(token.Text, out var value))
+            if (!TryParseNumberLiteral(token.Text, out var value))
             {
                 throw new JsParserException($"Invalid numeric literal '{token.Text}'.");
             }
@@ -457,6 +458,74 @@ public sealed class JsParser
         }
 
         throw new JsParserException($"Unexpected token '{token.Text}' ({token.Kind}).");
+    }
+
+    private static bool TryParseNumberLiteral(string text, out double value)
+    {
+        if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            if (text.Length > 2 && long.TryParse(text[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hex))
+            {
+                value = hex;
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+        if (text.StartsWith("0o", StringComparison.OrdinalIgnoreCase))
+        {
+            if (text.Length > 2 && TryParseRadix(text[2..], 8, out var oct))
+            {
+                value = oct;
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+        if (text.StartsWith("0b", StringComparison.OrdinalIgnoreCase))
+        {
+            if (text.Length > 2 && TryParseRadix(text[2..], 2, out var bin))
+            {
+                value = bin;
+                return true;
+            }
+
+            value = 0;
+            return false;
+        }
+
+        return double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
+    }
+
+    private static bool TryParseRadix(string text, int radix, out long value)
+    {
+        value = 0;
+        foreach (var ch in text)
+        {
+            var digit = ch switch
+            {
+                >= '0' and <= '9' => ch - '0',
+                >= 'a' and <= 'f' => 10 + (ch - 'a'),
+                >= 'A' and <= 'F' => 10 + (ch - 'A'),
+                _ => -1
+            };
+
+            if (digit < 0 || digit >= radix)
+            {
+                return false;
+            }
+
+            checked
+            {
+                value = (value * radix) + digit;
+            }
+        }
+
+        return true;
     }
 
     private FunctionExpressionNode ParseFunctionExpression()
