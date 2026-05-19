@@ -2222,6 +2222,58 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ToleratesNonNumericPreviousSummaryFieldsByDefaultingToZero()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var previousPath = Path.Combine(tempRoot, "previous.json");
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            var previousPayload = new
+            {
+                summary = new
+                {
+                    total = "one",
+                    passed = "one",
+                    unsupported = "zero",
+                    parserErrors = "zero",
+                    crashes = "zero",
+                    expectedFailures = "zero",
+                    unexpectedPasses = "zero"
+                },
+                tests = Array.Empty<object>(),
+                failures = Array.Empty<object>()
+            };
+
+            File.WriteAllText(previousPath, JsonSerializer.Serialize(previousPayload));
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/example.js",
+                        status = "Passed",
+                        category = (string?)null
+                    }
+                ],
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 0,
+                passed: 1));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousPath);
+            Assert.DoesNotContain(result.Violations, v => v.Contains("No regression in pass count violated", StringComparison.Ordinal));
+            Assert.DoesNotContain(result.Violations, v => v.Contains("No new crash violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_ToleratesMissingSummaryByDefaultingCountsToZero()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
