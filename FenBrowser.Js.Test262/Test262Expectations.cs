@@ -14,7 +14,13 @@ public sealed class Test262Expectations
     {
         if (Directory.Exists(path))
         {
-            return LoadDirectory(path);
+            var fromDirectory = LoadDirectory(path);
+            if (fromDirectory.Entries.Count == 0)
+            {
+                throw new InvalidOperationException($"No valid expectation entries found in directory: {path}");
+            }
+
+            return fromDirectory;
         }
 
         if (!File.Exists(path))
@@ -22,7 +28,13 @@ public sealed class Test262Expectations
             throw new FileNotFoundException($"Expectations file not found: {path}", path);
         }
 
-        return LoadFile(path);
+        var fromFile = LoadFile(path);
+        if (fromFile.Entries.Count == 0)
+        {
+            throw new InvalidOperationException($"No valid expectation entries found in file: {path}");
+        }
+
+        return fromFile;
     }
 
     private static Test262Expectations LoadDirectory(string directoryPath)
