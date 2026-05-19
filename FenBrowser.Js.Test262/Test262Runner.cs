@@ -195,6 +195,8 @@ public sealed class Test262Runner
             var sourceText = File.ReadAllText(file);
             var frontmatter = Test262Frontmatter.Parse(sourceText);
             var expectsSyntaxError = ExpectsSyntaxErrorParseFailure(frontmatter);
+            var parserInput = PrepareParserInput(sourceText, frontmatter);
+            var parseAsModule = frontmatter.Flags.Any(f => string.Equals(f, "module", StringComparison.OrdinalIgnoreCase));
 
             var unsupportedFeature = frontmatter.Features.FirstOrDefault(feature => supportedFeatures is not null && !supportedFeatures.Contains(feature));
             if (unsupportedFeature is not null)
@@ -230,9 +232,21 @@ public sealed class Test262Runner
 
             try
             {
-                var source = new SourceText(sourceText, file);
-                var parseTask = Task.Run(() => JsParser.ParseScript(source));
-                if (!parseTask.Wait(Math.Max(1, timeoutMs)))
+                var source = new SourceText(parserInput, file);
+                var parseTask = Task.Run(() =>
+                {
+                    if (parseAsModule)
+                    {
+                        JsParser.ParseModule(source);
+                    }
+                    else
+                    {
+                        JsParser.ParseScript(source);
+                    }
+                });
+                var timeoutTask = Task.Delay(Math.Max(1, timeoutMs));
+                var completedTask = Task.WhenAny(parseTask, timeoutTask).GetAwaiter().GetResult();
+                if (!ReferenceEquals(completedTask, parseTask))
                 {
                     timedOut++;
                     failures.Add(new
@@ -261,6 +275,9 @@ public sealed class Test262Runner
                     });
                     continue;
                 }
+
+                // Propagate parser exceptions with original types (not AggregateException).
+                parseTask.GetAwaiter().GetResult();
 
                 if (expectsSyntaxError)
                 {
@@ -547,5 +564,22 @@ public sealed class Test262Runner
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         return set.Count == 0 ? null : set;
+    }
+
+    private static string PrepareParserInput(string sourceText, Test262FrontmatterMetadata frontmatter)
+    {
+        var onlyStrict = frontmatter.Flags.Any(f => string.Equals(f, "onlyStrict", StringComparison.OrdinalIgnoreCase));
+        if (!onlyStrict)
+        {
+            return sourceText;
+        }
+
+        var trimmed = sourceText.TrimStart();
+        if (trimmed.StartsWith("\"use strict\"", StringComparison.Ordinal) || trimmed.StartsWith("'use strict'", StringComparison.Ordinal))
+        {
+            return sourceText;
+        }
+
+        return "\"use strict\";\n" + sourceText;
     }
 }
