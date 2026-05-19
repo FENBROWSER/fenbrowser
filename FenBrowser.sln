@@ -27,6 +27,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Js.Shell", "FenB
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Js.Test262", "FenBrowser.Js.Test262\FenBrowser.Js.Test262.csproj", "{447052BF-E10A-41AD-B0AF-B2315AB07D8E}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FenBrowser.Js.Tests", "FenBrowser.Js.Tests\FenBrowser.Js.Tests.csproj", "{00F02392-47FF-484C-A613-5C0B1008B6BC}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -181,6 +183,18 @@ Global
 		{447052BF-E10A-41AD-B0AF-B2315AB07D8E}.Release|x64.Build.0 = Release|Any CPU
 		{447052BF-E10A-41AD-B0AF-B2315AB07D8E}.Release|x86.ActiveCfg = Release|Any CPU
 		{447052BF-E10A-41AD-B0AF-B2315AB07D8E}.Release|x86.Build.0 = Release|Any CPU
+		{00F02392-47FF-484C-A613-5C0B1008B6BC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{00F02392-47FF-484C-A613-5C0B1008B6BC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{00F02392-47FF-484C-A613-5C0B1008B6BC}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{00F02392-47FF-484C-A613-5C0B1008B6BC}.Debug|x64.Build.0 = Debug|Any CPU
+		{00F02392-47FF-484C-A613-5C0B1008B6BC}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{00F02392-47FF-484C-A613-5C0B1008B6BC}.Debug|x86.Build.0 = Debug|Any CPU
+		{00F02392-47FF-484C-A613-5C0B1008B6BC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{00F02392-47FF-484C-A613-5C0B1008B6BC}.Release|Any CPU.Build.0 = Release|Any CPU
+		{00F02392-47FF-484C-A613-5C0B1008B6BC}.Release|x64.ActiveCfg = Release|Any CPU
+		{00F02392-47FF-484C-A613-5C0B1008B6BC}.Release|x64.Build.0 = Release|Any CPU
+		{00F02392-47FF-484C-A613-5C0B1008B6BC}.Release|x86.ActiveCfg = Release|Any CPU
+		{00F02392-47FF-484C-A613-5C0B1008B6BC}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
