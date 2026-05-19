@@ -342,6 +342,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void MethodCallBindsThisForMultiArgCall()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = { x: 1, sum: function(a,b){ return this.x + a + b; } }; o.sum(2,3);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(6, result.AsNumber());
+    }
+
+    [Fact]
     public void CompilerAndInterpreterHandleTypeofUnary()
     {
         var compiler = new BytecodeCompiler();

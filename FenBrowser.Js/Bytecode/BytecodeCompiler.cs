@@ -449,7 +449,9 @@ public sealed class BytecodeCompiler
                             }
                         }
 
-                        _instructions.Add(new Instruction(OpCode.CallN, dest, calleeReg, argStart, call.Arguments.Count));
+                        _instructions.Add(isMethodCall
+                            ? new Instruction(OpCode.CallMethodN, dest, calleeReg, thisReg, argStart, call.Arguments.Count)
+                            : new Instruction(OpCode.CallN, dest, calleeReg, argStart, call.Arguments.Count));
                         return dest;
                     }
                 }

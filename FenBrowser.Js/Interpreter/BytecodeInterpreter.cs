@@ -244,6 +244,18 @@ public sealed class BytecodeInterpreter
                     frame.Registers[ins.A] = ExecuteInternal(callee.Function, new[] { frame.Registers[ins.D] }, callee.CapturedVariables, frame.Registers[ins.C]);
                     break;
                 }
+                case OpCode.CallMethodN:
+                {
+                    var callee = ResolveFunction(frame.Registers[ins.B]);
+                    var callArgs = new JsValue[ins.E];
+                    for (var i = 0; i < ins.E; i++)
+                    {
+                        callArgs[i] = frame.Registers[ins.D + i];
+                    }
+
+                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, callArgs, callee.CapturedVariables, frame.Registers[ins.C]);
+                    break;
+                }
                 case OpCode.CallN:
                 {
                     var callee = ResolveFunction(frame.Registers[ins.B]);
