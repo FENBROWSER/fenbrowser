@@ -6553,6 +6553,74 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ReportIncludesNewFailureWhenTestsSectionIsMalformedAndFailureUsesPathField()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var previousPath = Path.Combine(tempRoot, "previous.json");
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            var previousPayload = new
+            {
+                summary = new
+                {
+                    total = 0,
+                    passed = 0,
+                    unsupported = 0,
+                    parserErrors = 0,
+                    crashes = 0,
+                    expectedFailures = 0,
+                    unexpectedPasses = 0
+                },
+                failures = Array.Empty<object>()
+            };
+
+            var currentPayload = new
+            {
+                summary = new
+                {
+                    total = 1,
+                    passed = 0,
+                    unsupported = 0,
+                    parserErrors = 1,
+                    crashes = 0,
+                    expectedFailures = 0,
+                    unexpectedPasses = 0
+                },
+                tests = new
+                {
+                    malformed = true
+                },
+                failures = new object[]
+                {
+                    new
+                    {
+                        path = "test/fallback-path-field.js",
+                        classification = "parser-error",
+                        expected = false
+                    }
+                }
+            };
+
+            File.WriteAllText(previousPath, JsonSerializer.Serialize(previousPayload));
+            File.WriteAllText(currentPath, JsonSerializer.Serialize(currentPayload));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousPath);
+            using var report = JsonDocument.Parse(result.ReportJson);
+            var newFailures = report.RootElement.GetProperty("newFailures");
+            Assert.Equal(JsonValueKind.Array, newFailures.ValueKind);
+            Assert.Equal(1, newFailures.GetArrayLength());
+            Assert.Equal("test/fallback-path-field.js", newFailures[0].GetString());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_DoesNotFlagNewFailureWhenTestsAndFailuresSectionsAreMalformed()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
