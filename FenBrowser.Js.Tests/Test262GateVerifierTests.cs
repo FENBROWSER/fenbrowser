@@ -671,6 +671,69 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ReportIncludesPreviousSummaryUnsupportedAndParserErrors()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var previousPath = Path.Combine(tempRoot, "previous.json");
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            var previousPayload = new
+            {
+                summary = new
+                {
+                    total = 3,
+                    passed = 1,
+                    unsupported = 1,
+                    parserErrors = 1,
+                    crashes = 0,
+                    expectedFailures = 0,
+                    unexpectedPasses = 0
+                },
+                tests = new object[]
+                {
+                    new { path = "test/pass.js", status = "Passed", category = (string?)null },
+                    new { path = "test/unsupported.js", status = "Failed", category = "unsupported" },
+                    new { path = "test/parser.js", status = "Failed", category = "parser-error" }
+                },
+                failures = new object[]
+                {
+                    new { relativePath = "test/unsupported.js", classification = "unsupported-feature", expected = false },
+                    new { relativePath = "test/parser.js", classification = "parser-error", expected = false }
+                }
+            };
+
+            File.WriteAllText(previousPath, JsonSerializer.Serialize(previousPayload));
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/current.js",
+                        status = "Passed",
+                        category = (string?)null
+                    }
+                ],
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 0,
+                passed: 1));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousPath);
+            using var report = JsonDocument.Parse(result.ReportJson);
+            var previousSummary = report.RootElement.GetProperty("summary").GetProperty("previous");
+            Assert.Equal(1, previousSummary.GetProperty("Unsupported").GetInt32());
+            Assert.Equal(1, previousSummary.GetProperty("ParserErrors").GetInt32());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_ReportIncludesNullPreviousSourceWhenBaselineIsOmitted()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
