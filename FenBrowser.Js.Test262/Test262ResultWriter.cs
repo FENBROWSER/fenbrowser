@@ -34,6 +34,7 @@ public static class Test262ResultWriter
         int crashes,
         int timedOut,
         int harnessUnsupported,
+        int invalidTestConfiguration,
         int expectedFailures,
         int unexpectedPasses,
         IReadOnlyList<object> failures,
@@ -61,6 +62,7 @@ public static class Test262ResultWriter
             expectedFailures,
             unexpectedPasses,
             harnessUnsupported,
+            invalidTestConfiguration,
             categories = new
             {
                 parserMissing = unsupported,
@@ -76,7 +78,7 @@ public static class Test262ResultWriter
                 intlMissing = 0,
                 proxyMissing = 0,
                 typedArrayMissing = 0,
-                hostNotApplicable = 0,
+                hostNotApplicable = harnessUnsupported + invalidTestConfiguration,
                 crash = crashes,
                 timeout = timedOut
             },
@@ -89,6 +91,7 @@ public static class Test262ResultWriter
                 crashes,
                 timedOut,
                 harnessUnsupported,
+                invalidTestConfiguration,
                 expectedFailures,
                 unexpectedPasses
             },

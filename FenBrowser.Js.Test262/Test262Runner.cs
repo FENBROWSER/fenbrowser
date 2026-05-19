@@ -184,6 +184,7 @@ public sealed class Test262Runner
         var crashes = 0;
         var timedOut = 0;
         var harnessUnsupported = 0;
+        var invalidTestConfiguration = 0;
         var expectedFailures = 0;
         var unexpectedPasses = 0;
         var failures = new List<object>();
@@ -204,6 +205,36 @@ public sealed class Test262Runner
             var expectsSyntaxError = ExpectsSyntaxErrorParseFailure(frontmatter);
             var parserInput = PrepareParserInput(sourceText, frontmatter);
             var parseAsModule = frontmatter.Flags.Any(f => string.Equals(f, "module", StringComparison.OrdinalIgnoreCase));
+
+            if (IsInvalidParserSubsetConfiguration(frontmatter, out var invalidReason))
+            {
+                invalidTestConfiguration++;
+                failures.Add(new
+                {
+                    path = file,
+                    relativePath,
+                    classification = "invalid-test-configuration",
+                    message = invalidReason
+                });
+
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "InvalidTestConfiguration",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = "host-not-applicable",
+                    message = invalidReason
+                });
+                continue;
+            }
 
             var unsupportedHarnessInclude = frontmatter.Includes.FirstOrDefault(include => !supportedHarnessIncludes.Contains(include));
             if (unsupportedHarnessInclude is not null)
@@ -561,6 +592,7 @@ public sealed class Test262Runner
             crashes,
             timedOut,
             harnessUnsupported,
+            invalidTestConfiguration,
             expectedFailures,
             unexpectedPasses,
             failures,
@@ -568,6 +600,44 @@ public sealed class Test262Runner
             tests,
             expectationsPath);
         Console.WriteLine($"Parser subset result written: {outputPath}");
+    }
+
+    private static bool IsInvalidParserSubsetConfiguration(Test262FrontmatterMetadata frontmatter, out string reason)
+    {
+        reason = string.Empty;
+        if (frontmatter.Negative is null)
+        {
+            return false;
+        }
+
+        var phase = frontmatter.Negative.Phase?.Trim();
+        var type = frontmatter.Negative.Type?.Trim();
+        if (string.IsNullOrWhiteSpace(type))
+        {
+            return false;
+        }
+
+        var isParseOrEarly = string.IsNullOrWhiteSpace(phase) ||
+                             string.Equals(phase, "parse", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(phase, "early", StringComparison.OrdinalIgnoreCase);
+        if (isParseOrEarly)
+        {
+            if (string.Equals(type, "SyntaxError", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            reason = $"Negative parse/early expectation '{type}' is invalid for parser-subset mode.";
+            return true;
+        }
+
+        if (string.Equals(phase, "runtime", StringComparison.OrdinalIgnoreCase))
+        {
+            reason = $"Negative runtime expectation '{type}' is not executable in parser-subset mode.";
+            return true;
+        }
+
+        return false;
     }
 
     private static bool ExpectsSyntaxErrorParseFailure(Test262FrontmatterMetadata frontmatter)
