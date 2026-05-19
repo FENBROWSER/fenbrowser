@@ -426,6 +426,54 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ReportIncludesCurrentSummaryUnsupportedAndParserErrors()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            var payload = new
+            {
+                summary = new
+                {
+                    total = 3,
+                    passed = 1,
+                    unsupported = 1,
+                    parserErrors = 1,
+                    crashes = 0,
+                    expectedFailures = 0,
+                    unexpectedPasses = 0
+                },
+                tests = new object[]
+                {
+                    new { path = "test/pass.js", status = "Passed", category = (string?)null },
+                    new { path = "test/unsupported.js", status = "Failed", category = "unsupported" },
+                    new { path = "test/parser.js", status = "Failed", category = "parser-error" }
+                },
+                failures = new object[]
+                {
+                    new { relativePath = "test/unsupported.js", classification = "unsupported-feature", expected = false },
+                    new { relativePath = "test/parser.js", classification = "parser-error", expected = false }
+                }
+            };
+
+            File.WriteAllText(currentPath, JsonSerializer.Serialize(payload));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            using var report = JsonDocument.Parse(result.ReportJson);
+            var currentSummary = report.RootElement.GetProperty("summary").GetProperty("current");
+            Assert.Equal(1, currentSummary.GetProperty("Unsupported").GetInt32());
+            Assert.Equal(1, currentSummary.GetProperty("ParserErrors").GetInt32());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_ReportIncludesPreviousSummaryValues()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
