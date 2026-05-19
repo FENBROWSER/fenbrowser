@@ -311,6 +311,19 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesDeleteAndVoidUnaryExpressions()
+    {
+        var program = JsParser.ParseScript(new SourceText("let a = delete obj.x; let b = void 0; a; b;"));
+        var decl1 = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var deleteUnary = Assert.IsType<UnaryExpressionNode>(decl1.Declarators[0].Initializer);
+        Assert.Equal("delete", deleteUnary.Operator);
+
+        var decl2 = Assert.IsType<VariableDeclarationStatementNode>(program.Body[1]);
+        var voidUnary = Assert.IsType<UnaryExpressionNode>(decl2.Declarators[0].Initializer);
+        Assert.Equal("void", voidUnary.Operator);
+    }
+
+    [Fact]
     public void ParsesHexOctalBinaryNumericLiterals()
     {
         var program = JsParser.ParseScript(new SourceText("0x2A; 0o10; 0b11;"));
