@@ -215,12 +215,32 @@ public static class Test262GateVerifier
 
     private static int CountExpectationMetadataViolations(JsonElement root)
     {
-        if (!root.TryGetProperty("failures", out var failures) || failures.ValueKind != JsonValueKind.Array)
+        var count = 0;
+        var expectedFailureTests = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (root.TryGetProperty("tests", out var tests) && tests.ValueKind == JsonValueKind.Array)
         {
-            return 0;
+            foreach (var test in tests.EnumerateArray())
+            {
+                var status = test.TryGetProperty("status", out var st) && st.ValueKind == JsonValueKind.String ? st.GetString() : null;
+                if (!string.Equals(status, "ExpectedFailure", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var path = test.TryGetProperty("path", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null;
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    expectedFailureTests.Add(path!.Replace('\\', '/'));
+                }
+            }
         }
 
-        var count = 0;
+        if (!root.TryGetProperty("failures", out var failures) || failures.ValueKind != JsonValueKind.Array)
+        {
+            return count + expectedFailureTests.Count;
+        }
+
+        var expectedFailureRecords = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var failure in failures.EnumerateArray())
         {
             var expected = failure.TryGetProperty("expected", out var ex) && ex.ValueKind == JsonValueKind.True;
@@ -248,7 +268,24 @@ public static class Test262GateVerifier
                                 string.IsNullOrWhiteSpace(reason.GetString()) ||
                                 string.Equals(reason.GetString(), "unknown", StringComparison.OrdinalIgnoreCase) ||
                                 string.Equals(reason.GetString(), "tbd", StringComparison.OrdinalIgnoreCase);
+
+            var path = failure.TryGetProperty("relativePath", out var rel) && rel.ValueKind == JsonValueKind.String
+                ? rel.GetString()
+                : (failure.TryGetProperty("path", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString() : null);
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                expectedFailureRecords.Add(path!.Replace('\\', '/'));
+            }
+
             if (ownerMissing || milestoneMissing || areaMissing || reasonMissing)
+            {
+                count++;
+            }
+        }
+
+        foreach (var expectedPath in expectedFailureTests)
+        {
+            if (!expectedFailureRecords.Contains(expectedPath))
             {
                 count++;
             }
