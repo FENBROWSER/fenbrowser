@@ -47,6 +47,12 @@ public sealed class JsParser
 
     private StatementNode ParseStatement()
     {
+        if (IsPunctuator(";"))
+        {
+            var semi = Advance();
+            return new EmptyStatementNode(semi.Span);
+        }
+
         if (IsPunctuator("{"))
         {
             return ParseBlockStatement();

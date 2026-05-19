@@ -95,6 +95,22 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesEmptyStatement()
+    {
+        var program = JsParser.ParseScript(new SourceText(";"));
+        Assert.IsType<EmptyStatementNode>(Assert.Single(program.Body));
+    }
+
+    [Fact]
+    public void ParsesIfWithFunctionDeclarationElseEmptyStatement()
+    {
+        var program = JsParser.ParseScript(new SourceText("if (true) function f() {} else ;"));
+        var ifStmt = Assert.IsType<IfStatementNode>(Assert.Single(program.Body));
+        Assert.IsType<FunctionDeclarationNode>(ifStmt.Consequent);
+        Assert.IsType<EmptyStatementNode>(ifStmt.Alternate);
+    }
+
+    [Fact]
     public void ParsesFunctionDeclarationWithReturn()
     {
         var program = JsParser.ParseScript(new SourceText("function add(a,b){ return a + b; }"));

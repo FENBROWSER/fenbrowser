@@ -6,6 +6,8 @@ public abstract record StatementNode(SourceSpan Span) : AstNode(Span);
 
 public sealed record ExpressionStatementNode(ExpressionNode Expression, SourceSpan Span) : StatementNode(Span);
 
+public sealed record EmptyStatementNode(SourceSpan Span) : StatementNode(Span);
+
 public sealed record BlockStatementNode(IReadOnlyList<StatementNode> Statements, SourceSpan Span) : StatementNode(Span);
 
 public sealed record VariableDeclaratorNode(string Identifier, ExpressionNode? Initializer, SourceSpan Span);
