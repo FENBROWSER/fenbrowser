@@ -226,7 +226,10 @@ public static class Test262GateVerifier
                 continue;
             }
 
-            var ownerMissing = !failure.TryGetProperty("expectedOwner", out var owner) || owner.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(owner.GetString());
+            var ownerMissing = !failure.TryGetProperty("expectedOwner", out var owner) ||
+                               owner.ValueKind != JsonValueKind.String ||
+                               string.IsNullOrWhiteSpace(owner.GetString()) ||
+                               string.Equals(owner.GetString(), "unknown", StringComparison.OrdinalIgnoreCase);
             var milestoneMissing = !failure.TryGetProperty("expiresAtMilestone", out var milestone) || milestone.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(milestone.GetString());
             if (ownerMissing || milestoneMissing)
             {

@@ -147,6 +147,47 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_FailsWhenExpectedFailureOwnerIsUnknown()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/runtime.js",
+                        status = "ExpectedFailure",
+                        category = "runtime-missing"
+                    }
+                ],
+                failures:
+                [
+                    new
+                    {
+                        relativePath = "test/runtime.js",
+                        classification = "runtime-error",
+                        expected = true,
+                        expectedOwner = "unknown",
+                        expiresAtMilestone = "M2"
+                    }
+                ]));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            Assert.False(result.Passed);
+            Assert.Contains(result.Violations, v => v.Contains("No expected failure without owner/milestone violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_DoesNotFlagPassRegressionWhenPassBecomesUnexpectedPass()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
