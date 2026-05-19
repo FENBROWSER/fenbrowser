@@ -2,7 +2,7 @@ using FenBrowser.Js.Test262;
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("Usage: fenjs-test262 --list | --dry-run | --parser-subset | --dashboard | --verify-gates [--root <path>] [--test262 <path>] [--test262-file <file>] [--features <a,b,c>] [--out <path>] [--max <n>] [--expectations <path>] [--in <result.json>] [--previous <result.json>]");
+    Console.Error.WriteLine("Usage: fenjs-test262 --list | --dry-run | --parser-subset | --dashboard | --verify-gates [--root <path>] [--test262 <path>] [--test262-file <file>] [--features <a,b,c>] [--out|--output <path>] [--max <n>] [--timeout-ms <n>] [--engine <name>] [--expectations <path>] [--in <result.json>] [--previous <result.json>]");
     return 1;
 }
 
@@ -14,6 +14,8 @@ var parserSubset = false;
 var dashboard = false;
 var verifyGates = false;
 var max = 200;
+var timeoutMs = 5000;
+var engine = "FenJS";
 string? expectationsPath = null;
 string? inputPath = null;
 string? previousPath = null;
@@ -53,11 +55,19 @@ for (var i = 0; i < args.Length; i++)
             featuresCsv = args[++i];
             break;
         case "--out" when i + 1 < args.Length:
+        case "--output" when i + 1 < args.Length:
             outPath = args[++i];
             break;
         case "--max" when i + 1 < args.Length && int.TryParse(args[i + 1], out var parsed):
             max = parsed;
             i++;
+            break;
+        case "--timeout-ms" when i + 1 < args.Length && int.TryParse(args[i + 1], out var parsedTimeout):
+            timeoutMs = parsedTimeout;
+            i++;
+            break;
+        case "--engine" when i + 1 < args.Length:
+            engine = args[++i];
             break;
         case "--expectations" when i + 1 < args.Length:
             expectationsPath = args[++i];
@@ -84,4 +94,4 @@ if ((list || dryRun || parserSubset) && !Directory.Exists(root))
 }
 
 var runner = new Test262Runner();
-return runner.Run(root, list, dryRun, parserSubset, dashboard, verifyGates, outPath, max, expectationsPath, inputPath, previousPath, test262Path, test262File, featuresCsv);
+return runner.Run(root, list, dryRun, parserSubset, dashboard, verifyGates, outPath, max, timeoutMs, engine, expectationsPath, inputPath, previousPath, test262Path, test262File, featuresCsv);

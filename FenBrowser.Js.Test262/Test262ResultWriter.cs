@@ -4,11 +4,11 @@ namespace FenBrowser.Js.Test262;
 
 public static class Test262ResultWriter
 {
-    public static void WriteDryRun(string outputPath, string test262Commit, IReadOnlyList<string> files)
+    public static void WriteDryRun(string outputPath, string engine, string test262Commit, IReadOnlyList<string> files)
     {
         var payload = new
         {
-            engine = "FenJS",
+            engine,
             mode = "dry-run",
             timestampUtc = DateTime.UtcNow,
             test262Commit,
@@ -24,6 +24,7 @@ public static class Test262ResultWriter
     public static void WriteParserSubset(
         string outputPath,
         string test262Commit,
+        string engine,
         DateTime startedAtUtc,
         long durationMs,
         int total,
@@ -31,6 +32,7 @@ public static class Test262ResultWriter
         int unsupported,
         int parserErrors,
         int crashes,
+        int timedOut,
         int expectedFailures,
         int unexpectedPasses,
         IReadOnlyList<object> failures,
@@ -40,7 +42,7 @@ public static class Test262ResultWriter
     {
         var payload = new
         {
-            engine = "FenJS",
+            engine,
             mode = "parser-subset",
             startedAtUtc,
             durationMs,
@@ -52,7 +54,7 @@ public static class Test262ResultWriter
             passed,
             failed = parserErrors,
             crashed = crashes,
-            timedOut = 0,
+            timedOut,
             skipped = 0,
             unsupported,
             expectedFailures,
@@ -75,7 +77,7 @@ public static class Test262ResultWriter
                 typedArrayMissing = 0,
                 hostNotApplicable = 0,
                 crash = crashes,
-                timeout = 0
+                timeout = timedOut
             },
             summary = new
             {
@@ -84,6 +86,7 @@ public static class Test262ResultWriter
                 unsupported,
                 parserErrors,
                 crashes,
+                timedOut,
                 expectedFailures,
                 unexpectedPasses
             },

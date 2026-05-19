@@ -14,6 +14,8 @@ public sealed class Test262Runner
         bool verifyGates,
         string outputPath,
         int max,
+        int timeoutMs,
+        string engine,
         string? expectationsPath,
         string? inputPath,
         string? previousPath,
@@ -45,13 +47,13 @@ public sealed class Test262Runner
         {
             var pinPath = Path.Combine(rootPath, "..", "test262.pin");
             var commit = File.Exists(pinPath) ? File.ReadAllText(pinPath).Trim() : "un-pinned";
-            Test262ResultWriter.WriteDryRun(outputPath, commit, files);
+            Test262ResultWriter.WriteDryRun(outputPath, engine, commit, files);
             Console.WriteLine($"Dry-run result written: {outputPath}");
         }
 
         if (parserSubset)
         {
-            RunParserSubset(rootPath, outputPath, files, max, expectationsPath, expectations);
+            RunParserSubset(rootPath, outputPath, files, max, timeoutMs, engine, expectationsPath, expectations);
         }
 
         if (dashboard)
@@ -166,7 +168,7 @@ public sealed class Test262Runner
         return filtered;
     }
 
-    private static void RunParserSubset(string rootPath, string outputPath, IReadOnlyList<string> files, int max, string? expectationsPath, Test262Expectations? expectations)
+    private static void RunParserSubset(string rootPath, string outputPath, IReadOnlyList<string> files, int max, int timeoutMs, string engine, string? expectationsPath, Test262Expectations? expectations)
     {
         var startedAtUtc = DateTime.UtcNow;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -178,6 +180,7 @@ public sealed class Test262Runner
         var unsupported = 0;
         var parserErrors = 0;
         var crashes = 0;
+        var timedOut = 0;
         var expectedFailures = 0;
         var unexpectedPasses = 0;
         var failures = new List<object>();
@@ -192,7 +195,37 @@ public sealed class Test262Runner
             try
             {
                 var source = new SourceText(sourceText, file);
-                JsParser.ParseScript(source);
+                var parseTask = Task.Run(() => JsParser.ParseScript(source));
+                if (!parseTask.Wait(Math.Max(1, timeoutMs)))
+                {
+                    timedOut++;
+                    failures.Add(new
+                    {
+                        path = file,
+                        relativePath,
+                        classification = "timeout",
+                        message = $"Parsing exceeded timeout of {timeoutMs} ms."
+                    });
+
+                    tests.Add(new
+                    {
+                        path = relativePath,
+                        status = "TimedOut",
+                        durationMs = timeoutMs,
+                        features = frontmatter.Features,
+                        flags = frontmatter.Flags,
+                        includes = frontmatter.Includes,
+                        negative = frontmatter.Negative,
+                        esid = frontmatter.Esid,
+                        description = frontmatter.Description,
+                        info = frontmatter.Info,
+                        locale = frontmatter.Locale,
+                        category = "timeout",
+                        message = $"Parsing exceeded timeout of {timeoutMs} ms."
+                    });
+                    continue;
+                }
+
                 passed++;
 
                 if (expectations is not null)
@@ -355,6 +388,7 @@ public sealed class Test262Runner
         Test262ResultWriter.WriteParserSubset(
             outputPath,
             commit,
+            engine,
             startedAtUtc,
             stopwatch.ElapsedMilliseconds,
             subset.Count,
@@ -362,6 +396,7 @@ public sealed class Test262Runner
             unsupported,
             parserErrors,
             crashes,
+            timedOut,
             expectedFailures,
             unexpectedPasses,
             failures,
