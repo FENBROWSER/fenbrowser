@@ -24,6 +24,17 @@ public sealed class HeapVerifier
             {
                 throw new JsEngineFatalException($"Cell kind/payload mismatch at {i}.");
             }
+            if (cell.Kind == HeapCellKind.String)
+            {
+                var handle = new StringHandle(i, cell.Generation);
+                _ = heap.GetString(handle);
+            }
+
+            if (cell.Kind == HeapCellKind.Symbol)
+            {
+                var handle = new SymbolHandle(i, cell.Generation);
+                _ = heap.GetSymbolDescription(handle);
+            }
 
             cell.Payload.Trace(new ValidatingTracer(heap));
         }

@@ -203,6 +203,22 @@ public sealed class RuntimeHeapTests
     }
 
     [Fact]
+    public void HeapVerifierRejectsInvalidStringAndSymbolRoots()
+    {
+        var heap = new JsHeap();
+        var verifier = new HeapVerifier();
+        var stringHandle = heap.AllocateString("rooted", AllocationSite.Current());
+        var symbolHandle = heap.AllocateSymbol("rooted", AllocationSite.Current());
+
+        heap.PushRoot(stringHandle);
+        heap.PushRoot(symbolHandle);
+        verifier.Verify(heap);
+
+        heap.FreeForTest(stringHandle);
+        Assert.Throws<JsEngineFatalException>(() => verifier.Verify(heap));
+    }
+
+    [Fact]
     public void HeapVerifierRejectsStaleTracedPropertyHandle()
     {
         var heap = new JsHeap();
