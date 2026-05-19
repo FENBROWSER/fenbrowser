@@ -305,6 +305,8 @@ static object DumpExpression(ExpressionNode expression)
         IdentifierExpressionNode id => new { type = "Identifier", name = id.Name, span = DumpSpan(id.Span) },
         NumericLiteralExpressionNode number => new { type = "NumericLiteral", value = number.Value, raw = number.RawText, span = DumpSpan(number.Span) },
         StringLiteralExpressionNode str => new { type = "StringLiteral", value = str.Value, raw = str.RawText, span = DumpSpan(str.Span) },
+        BooleanLiteralExpressionNode boolean => new { type = "BooleanLiteral", value = boolean.Value, raw = boolean.RawText, span = DumpSpan(boolean.Span) },
+        NullLiteralExpressionNode n => new { type = "NullLiteral", raw = n.RawText, span = DumpSpan(n.Span) },
         ParenthesizedExpressionNode paren => new { type = "ParenthesizedExpression", expression = DumpExpression(paren.Expression), span = DumpSpan(paren.Span) },
         BinaryExpressionNode bin => new
         {

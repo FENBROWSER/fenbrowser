@@ -146,6 +146,20 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesBooleanAndNullLiterals()
+    {
+        var program = JsParser.ParseScript(new SourceText("true; null;"));
+        Assert.Equal(2, program.Body.Count);
+
+        var first = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var boolean = Assert.IsType<BooleanLiteralExpressionNode>(first.Expression);
+        Assert.True(boolean.Value);
+
+        var second = Assert.IsType<ExpressionStatementNode>(program.Body[1]);
+        Assert.IsType<NullLiteralExpressionNode>(second.Expression);
+    }
+
+    [Fact]
     public void ParsesFunctionDeclarationWithReturn()
     {
         var program = JsParser.ParseScript(new SourceText("function add(a,b){ return a + b; }"));
