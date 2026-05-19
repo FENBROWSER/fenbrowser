@@ -346,7 +346,14 @@ static object DumpExpression(ExpressionNode expression)
         ObjectLiteralExpressionNode obj => new
         {
             type = "ObjectLiteral",
-            properties = obj.Properties.Select(p => new { key = p.Key, value = DumpExpression(p.Value), span = DumpSpan(p.Span) }).ToArray(),
+            properties = obj.Properties.Select(p => new
+            {
+                key = p.Key,
+                computed = p.IsComputed,
+                computedKey = p.ComputedKey is null ? null : DumpExpression(p.ComputedKey),
+                value = DumpExpression(p.Value),
+                span = DumpSpan(p.Span)
+            }).ToArray(),
             span = DumpSpan(obj.Span)
         },
         ArrayLiteralExpressionNode arr => new

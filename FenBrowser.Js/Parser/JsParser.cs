@@ -566,8 +566,17 @@ public sealed class JsParser
         while (!Is(TokenKind.EndOfFile) && !IsPunctuator("}"))
         {
             var keyToken = Current();
-            string key;
-            if (keyToken.Kind == TokenKind.Identifier)
+            string? key = null;
+            ExpressionNode? computedKey = null;
+            var isComputed = false;
+            if (IsPunctuator("["))
+            {
+                Advance(); // [
+                computedKey = ParseExpression(0);
+                ExpectPunctuator("]");
+                isComputed = true;
+            }
+            else if (keyToken.Kind == TokenKind.Identifier)
             {
                 key = Advance().Text;
             }
@@ -593,7 +602,7 @@ public sealed class JsParser
                 ExpectPunctuator(":");
                 value = ParseExpression(0);
             }
-            properties.Add(new ObjectPropertyNode(key, value, value.Span));
+            properties.Add(new ObjectPropertyNode(key, computedKey, isComputed, value, value.Span));
             if (IsPunctuator(","))
             {
                 Advance();

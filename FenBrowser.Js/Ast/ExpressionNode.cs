@@ -20,7 +20,7 @@ public sealed record CallExpressionNode(ExpressionNode Callee, IReadOnlyList<Exp
 
 public sealed record ArrowFunctionExpressionNode(IReadOnlyList<string> Parameters, BlockStatementNode? BlockBody, ExpressionNode? ExpressionBody, SourceSpan Span) : ExpressionNode(Span);
 
-public sealed record ObjectPropertyNode(string Key, ExpressionNode Value, SourceSpan Span);
+public sealed record ObjectPropertyNode(string? Key, ExpressionNode? ComputedKey, bool IsComputed, ExpressionNode Value, SourceSpan Span);
 
 public sealed record ObjectLiteralExpressionNode(IReadOnlyList<ObjectPropertyNode> Properties, SourceSpan Span) : ExpressionNode(Span);
 

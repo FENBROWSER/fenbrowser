@@ -228,6 +228,30 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesObjectLiteralComputedPropertyKey()
+    {
+        var program = JsParser.ParseScript(new SourceText("let o = { [\"a\" + \"b\"]: 1 };"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var obj = Assert.IsType<ObjectLiteralExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Single(obj.Properties);
+        Assert.True(obj.Properties[0].IsComputed);
+        Assert.NotNull(obj.Properties[0].ComputedKey);
+        Assert.Null(obj.Properties[0].Key);
+    }
+
+    [Fact]
+    public void ParsesObjectLiteralComputedMethodShorthand()
+    {
+        var program = JsParser.ParseScript(new SourceText("let o = { [\"add\"](a,b) { return a + b; } };"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var obj = Assert.IsType<ObjectLiteralExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Single(obj.Properties);
+        Assert.True(obj.Properties[0].IsComputed);
+        Assert.NotNull(obj.Properties[0].ComputedKey);
+        Assert.IsType<FunctionExpressionNode>(obj.Properties[0].Value);
+    }
+
+    [Fact]
     public void ParsesStrictEqualityOperators()
     {
         var program = JsParser.ParseScript(new SourceText("1 === 1; 1 !== 2;"));

@@ -156,6 +156,17 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void CompilerAndInterpreterHandleComputedObjectPropertyKey()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = { [1 + 1]: 7 }; o[2];"));
+        new BytecodeVerifier().Verify(fn);
+
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(7, result.AsNumber());
+    }
+
+    [Fact]
     public void CompilerAndInterpreterHandleArrayLiteralAndIndexAccess()
     {
         var compiler = new BytecodeCompiler();

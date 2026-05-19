@@ -483,8 +483,26 @@ public sealed class BytecodeCompiler
                 foreach (var prop in obj.Properties)
                 {
                     var valueReg = CompileExpression(prop.Value);
-                    var nameIndex = GetOrCreatePropertyName(prop.Key);
-                    _instructions.Add(new Instruction(OpCode.SetPropByName, dest, nameIndex, valueReg));
+                    if (prop.IsComputed)
+                    {
+                        if (prop.ComputedKey is null)
+                        {
+                            throw new InvalidOperationException("Computed object property key expression is required.");
+                        }
+
+                        var keyReg = CompileExpression(prop.ComputedKey);
+                        _instructions.Add(new Instruction(OpCode.SetElem, dest, keyReg, valueReg));
+                    }
+                    else
+                    {
+                        if (string.IsNullOrEmpty(prop.Key))
+                        {
+                            throw new InvalidOperationException("Object property key is required.");
+                        }
+
+                        var nameIndex = GetOrCreatePropertyName(prop.Key);
+                        _instructions.Add(new Instruction(OpCode.SetPropByName, dest, nameIndex, valueReg));
+                    }
                 }
 
                 return dest;
