@@ -33,6 +33,7 @@ public static class Test262ResultWriter
         int unexpectedPasses,
         IReadOnlyList<object> failures,
         IReadOnlyList<object> unexpectedPassesList,
+        IReadOnlyList<object> tests,
         string? expectationsPath)
     {
         var payload = new
@@ -53,7 +54,8 @@ public static class Test262ResultWriter
                 unexpectedPasses
             },
             failures,
-            unexpectedPassesList
+            unexpectedPassesList,
+            tests
         };
 
         var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });

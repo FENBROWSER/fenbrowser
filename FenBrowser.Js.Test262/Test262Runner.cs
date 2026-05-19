@@ -55,13 +55,16 @@ public sealed class Test262Runner
         var unexpectedPasses = 0;
         var failures = new List<object>();
         var unexpectedPassesList = new List<object>();
+        var tests = new List<object>(subset.Count);
 
         foreach (var file in subset)
         {
             var relativePath = Path.GetRelativePath(rootPath, file).Replace('\\', '/');
+            var sourceText = File.ReadAllText(file);
+            var frontmatter = Test262Frontmatter.Parse(sourceText);
             try
             {
-                var source = new SourceText(File.ReadAllText(file), file);
+                var source = new SourceText(sourceText, file);
                 JsParser.ParseScript(source);
                 passed++;
 
@@ -83,6 +86,23 @@ public sealed class Test262Runner
                         });
                     }
                 }
+
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "Passed",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = (string?)null,
+                    message = (string?)null
+                });
             }
             catch (UnsupportedFeatureException ex)
             {
@@ -106,6 +126,23 @@ public sealed class Test262Runner
                     expectedArea = expected?.Area,
                     expiresAtMilestone = expected?.ExpiresAtMilestone
                 });
+
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "UnsupportedFeature",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = "parser-missing",
+                    message = ex.Message
+                });
             }
             catch (JsParserException ex)
             {
@@ -127,6 +164,23 @@ public sealed class Test262Runner
                     expectedOwner = expected?.Owner,
                     expectedArea = expected?.Area,
                     expiresAtMilestone = expected?.ExpiresAtMilestone
+                });
+
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "Failed",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = "parser-bug",
+                    message = ex.Message
                 });
             }
             catch (Exception ex)
@@ -150,10 +204,27 @@ public sealed class Test262Runner
                     expectedArea = expected?.Area,
                     expiresAtMilestone = expected?.ExpiresAtMilestone
                 });
+
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "Crashed",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = "crash",
+                    message = ex.Message
+                });
             }
         }
 
-        Test262ResultWriter.WriteParserSubset(outputPath, commit, subset.Count, passed, unsupported, parserErrors, crashes, expectedFailures, unexpectedPasses, failures, unexpectedPassesList, expectationsPath);
+        Test262ResultWriter.WriteParserSubset(outputPath, commit, subset.Count, passed, unsupported, parserErrors, crashes, expectedFailures, unexpectedPasses, failures, unexpectedPassesList, tests, expectationsPath);
         Console.WriteLine($"Parser subset result written: {outputPath}");
     }
 }
