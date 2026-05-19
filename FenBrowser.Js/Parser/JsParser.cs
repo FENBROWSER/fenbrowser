@@ -1030,6 +1030,54 @@ public sealed class JsParser
                 break;
             }
 
+            if ((keyToken.Kind == TokenKind.Identifier || keyToken.Kind == TokenKind.Keyword) &&
+                keyToken.Text == "async" &&
+                IsAsyncMethodPropertyStart())
+            {
+                var asyncStart = Advance(); // async
+                string? methodKey = null;
+                ExpressionNode? methodComputedKey = null;
+                var methodIsComputed = false;
+                var methodKeyToken = Current();
+                if (IsPunctuator("["))
+                {
+                    Advance(); // [
+                    methodComputedKey = ParseExpression(0);
+                    ExpectPunctuator("]");
+                    methodIsComputed = true;
+                }
+                else if (methodKeyToken.Kind == TokenKind.Identifier || methodKeyToken.Kind == TokenKind.Keyword)
+                {
+                    methodKey = Advance().Text;
+                }
+                else if (methodKeyToken.Kind == TokenKind.String)
+                {
+                    var raw = Advance().Text;
+                    methodKey = raw.Length >= 2 ? raw[1..^1] : string.Empty;
+                }
+                else if (methodKeyToken.Kind == TokenKind.Number)
+                {
+                    methodKey = Advance().Text;
+                }
+                else
+                {
+                    throw new JsParserException($"Expected object property key, found '{methodKeyToken.Text}'.");
+                }
+
+                var parameters = ParseParameterList();
+                var body = ParseBlockStatement();
+                var methodFnName = methodKey ?? "async";
+                var asyncMethodFn = new FunctionExpressionNode(methodFnName, parameters, body, MergeSpan(asyncStart.Span, body.Span));
+                properties.Add(new ObjectPropertyNode(methodKey, methodComputedKey, methodIsComputed, asyncMethodFn, asyncMethodFn.Span));
+                if (IsPunctuator(","))
+                {
+                    Advance();
+                    continue;
+                }
+
+                break;
+            }
+
             string? key = null;
             ExpressionNode? computedKey = null;
             var isComputed = false;
@@ -1048,6 +1096,10 @@ public sealed class JsParser
             {
                 var raw = Advance().Text;
                 key = raw.Length >= 2 ? raw[1..^1] : string.Empty;
+            }
+            else if (keyToken.Kind == TokenKind.Number)
+            {
+                key = Advance().Text;
             }
             else
             {
@@ -1481,6 +1533,61 @@ public sealed class JsParser
         }
 
         var isSimpleName = next.Kind == TokenKind.Identifier || next.Kind == TokenKind.Keyword || next.Kind == TokenKind.String;
+        if (!isSimpleName)
+        {
+            return false;
+        }
+
+        var afterName = Math.Min(nextIndex + 1, _tokens.Count - 1);
+        return _tokens[afterName].Kind == TokenKind.Punctuator && _tokens[afterName].Text == "(";
+    }
+
+    private bool IsAsyncMethodPropertyStart()
+    {
+        var current = Current();
+        if (!(current.Kind == TokenKind.Identifier || current.Kind == TokenKind.Keyword) || current.Text != "async")
+        {
+            return false;
+        }
+
+        var nextIndex = Math.Min(_index + 1, _tokens.Count - 1);
+        var next = _tokens[nextIndex];
+        if (next.Kind == TokenKind.Punctuator && next.Text == "[")
+        {
+            var depth = 1;
+            var scan = nextIndex + 1;
+            while (scan < _tokens.Count)
+            {
+                var token = _tokens[scan];
+                if (token.Kind == TokenKind.Punctuator)
+                {
+                    if (token.Text == "[")
+                    {
+                        depth++;
+                    }
+                    else if (token.Text == "]")
+                    {
+                        depth--;
+                        if (depth == 0)
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                scan++;
+            }
+
+            if (depth != 0)
+            {
+                return false;
+            }
+
+            var afterBracket = Math.Min(scan + 1, _tokens.Count - 1);
+            return _tokens[afterBracket].Kind == TokenKind.Punctuator && _tokens[afterBracket].Text == "(";
+        }
+
+        var isSimpleName = next.Kind == TokenKind.Identifier || next.Kind == TokenKind.Keyword || next.Kind == TokenKind.String || next.Kind == TokenKind.Number;
         if (!isSimpleName)
         {
             return false;

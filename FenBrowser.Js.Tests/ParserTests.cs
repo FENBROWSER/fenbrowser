@@ -467,6 +467,27 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesObjectLiteralNumericPropertyKey()
+    {
+        var program = JsParser.ParseScript(new SourceText("let o = { 0: 1, 1: 2 };"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var obj = Assert.IsType<ObjectLiteralExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Equal("0", obj.Properties[0].Key);
+        Assert.Equal("1", obj.Properties[1].Key);
+    }
+
+    [Fact]
+    public void ParsesObjectLiteralAsyncMethodShorthand()
+    {
+        var program = JsParser.ParseScript(new SourceText("let o = { async next() { return 1; } };"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var obj = Assert.IsType<ObjectLiteralExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Single(obj.Properties);
+        Assert.Equal("next", obj.Properties[0].Key);
+        Assert.IsType<FunctionExpressionNode>(obj.Properties[0].Value);
+    }
+
+    [Fact]
     public void ParsesDotMemberWithKeywordPropertyName()
     {
         var program = JsParser.ParseScript(new SourceText("obj.return(1);"));
