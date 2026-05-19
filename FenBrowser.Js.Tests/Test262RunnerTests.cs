@@ -1132,4 +1132,262 @@ public sealed class Test262RunnerTests
             Directory.Delete(tempRoot, recursive: true);
         }
     }
+
+    [Fact]
+    public void Run_ParserSubset_PrecheckUnsupportedFeatureCanBeClassifiedAsExpectedFailure()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "precheck-unsupported.js");
+        var expectationsPath = Path.Combine(tempRoot, "expectations.json");
+        var outputPath = Path.Combine(tempRoot, "parser-precheck-unsupported-expected.json");
+
+        try
+        {
+            File.WriteAllText(testFile, """
+            /*---
+            features: [feature-x]
+            ---*/
+            1+1;
+            """);
+            File.WriteAllText(expectationsPath, """
+            {
+              "metadata": {
+                "owner": "js",
+                "area": "parser"
+              },
+              "expectations": [
+                {
+                  "path": "test/precheck-unsupported.js",
+                  "status": "UnsupportedFeature",
+                  "reason": "known unsupported feature",
+                  "owner": "js",
+                  "area": "parser",
+                  "expiresAtMilestone": "M2"
+                }
+              ]
+            }
+            """);
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: true,
+                runtimeSubset: false,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1000,
+                engine: "FenJS",
+                expectationsPath: expectationsPath,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: "feature-y");
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(1, summary.GetProperty("expectedFailures").GetInt32());
+
+            var tests = doc.RootElement.GetProperty("tests");
+            var first = tests.EnumerateArray().First();
+            Assert.Equal("ExpectedFailure", first.GetProperty("status").GetString());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Run_ParserSubset_PrecheckUnsupportedFeatureWithoutExpectationRemainsUnsupportedFeature()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "precheck-unsupported.js");
+        var outputPath = Path.Combine(tempRoot, "parser-precheck-unsupported-no-expectation.json");
+
+        try
+        {
+            File.WriteAllText(testFile, """
+            /*---
+            features: [feature-x]
+            ---*/
+            1+1;
+            """);
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: true,
+                runtimeSubset: false,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1000,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: "feature-y");
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
+
+            var tests = doc.RootElement.GetProperty("tests");
+            var first = tests.EnumerateArray().First();
+            Assert.Equal("UnsupportedFeature", first.GetProperty("status").GetString());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Run_RuntimeSubset_PrecheckUnsupportedFeatureCanBeClassifiedAsExpectedFailure()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "precheck-unsupported.js");
+        var expectationsPath = Path.Combine(tempRoot, "expectations.json");
+        var outputPath = Path.Combine(tempRoot, "runtime-precheck-unsupported-expected.json");
+
+        try
+        {
+            File.WriteAllText(testFile, """
+            /*---
+            features: [feature-x]
+            ---*/
+            1+1;
+            """);
+            File.WriteAllText(expectationsPath, """
+            {
+              "metadata": {
+                "owner": "js",
+                "area": "runtime"
+              },
+              "expectations": [
+                {
+                  "path": "test/precheck-unsupported.js",
+                  "status": "UnsupportedFeature",
+                  "reason": "known unsupported feature",
+                  "owner": "js",
+                  "area": "runtime",
+                  "expiresAtMilestone": "M2"
+                }
+              ]
+            }
+            """);
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: false,
+                runtimeSubset: true,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1000,
+                engine: "FenJS",
+                expectationsPath: expectationsPath,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: "feature-y");
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(1, summary.GetProperty("expectedFailures").GetInt32());
+
+            var tests = doc.RootElement.GetProperty("tests");
+            var first = tests.EnumerateArray().First();
+            Assert.Equal("ExpectedFailure", first.GetProperty("status").GetString());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Run_RuntimeSubset_PrecheckUnsupportedFeatureWithoutExpectationRemainsUnsupportedFeature()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "precheck-unsupported.js");
+        var outputPath = Path.Combine(tempRoot, "runtime-precheck-unsupported-no-expectation.json");
+
+        try
+        {
+            File.WriteAllText(testFile, """
+            /*---
+            features: [feature-x]
+            ---*/
+            1+1;
+            """);
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: false,
+                runtimeSubset: true,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1000,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: "feature-y");
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
+
+            var tests = doc.RootElement.GetProperty("tests");
+            var first = tests.EnumerateArray().First();
+            Assert.Equal("UnsupportedFeature", first.GetProperty("status").GetString());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
 }
