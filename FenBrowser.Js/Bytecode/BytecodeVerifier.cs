@@ -71,6 +71,14 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateJumpTarget(function, ip, ins.B);
                 break;
+            case OpCode.PushHandler:
+                ValidateJumpTarget(function, ip, ins.A);
+                break;
+            case OpCode.PopHandler:
+                break;
+            case OpCode.Throw:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                break;
             case OpCode.Return:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 break;

@@ -63,10 +63,19 @@ if (args.Length >= 2 && args[0] == "--eval")
     }
 
     var compiler = new BytecodeCompiler();
-    var function = compiler.CompileScript(new SourceText(code, "<eval>"));
-    new BytecodeVerifier().Verify(function);
-    var result = new BytecodeInterpreter().Execute(function);
-    Console.WriteLine(FormatValue(result));
+    try
+    {
+        var function = compiler.CompileScript(new SourceText(code, "<eval>"));
+        new BytecodeVerifier().Verify(function);
+        var result = new BytecodeInterpreter().Execute(function);
+        Console.WriteLine(FormatValue(result));
+    }
+    catch (JsThrownException ex)
+    {
+        Console.Error.WriteLine($"Uncaught throw: {FormatValue(ex.Value)}");
+        return 10;
+    }
+
     return 0;
 }
 

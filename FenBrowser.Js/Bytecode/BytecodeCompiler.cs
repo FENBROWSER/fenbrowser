@@ -77,6 +77,12 @@ public sealed class BytecodeCompiler
             case ReturnStatementNode returnStmt:
                 CompileReturnStatement(returnStmt);
                 break;
+            case ThrowStatementNode throwStmt:
+                CompileThrowStatement(throwStmt);
+                break;
+            case TryCatchStatementNode tryCatchStmt:
+                CompileTryCatchStatement(tryCatchStmt);
+                break;
             default:
                 // Minimal compiler slice currently targets literals/arithmetic/variables.
                 break;
@@ -122,6 +128,29 @@ public sealed class BytecodeCompiler
         }
 
         _instructions.Add(new Instruction(OpCode.Return, 0, 0, 0));
+    }
+
+    private void CompileThrowStatement(ThrowStatementNode throwStmt)
+    {
+        var reg = CompileExpression(throwStmt.Argument);
+        _instructions.Add(new Instruction(OpCode.Throw, reg, 0, 0));
+    }
+
+    private void CompileTryCatchStatement(TryCatchStatementNode tryCatchStmt)
+    {
+        var pushHandlerIndex = EmitPlaceholder(OpCode.PushHandler);
+        CompileStatement(tryCatchStmt.TryBlock);
+        _instructions.Add(new Instruction(OpCode.PopHandler, 0, 0, 0));
+        var jumpAfterCatch = EmitPlaceholder(OpCode.Jump);
+
+        var catchEntry = _instructions.Count;
+        PatchJump(pushHandlerIndex, catchEntry);
+
+        var catchSlot = GetOrCreateVariableSlot(tryCatchStmt.CatchIdentifier);
+        _instructions.Add(new Instruction(OpCode.StoreVar, 0, catchSlot, 0));
+        CompileStatement(tryCatchStmt.CatchBlock);
+
+        PatchJump(jumpAfterCatch, _instructions.Count);
     }
 
     private int CompileExpression(ExpressionNode expr)
@@ -198,6 +227,7 @@ public sealed class BytecodeCompiler
         {
             OpCode.Jump => new Instruction(opCode, -1, 0, 0),
             OpCode.JumpIfFalse => new Instruction(opCode, a, -1, 0),
+            OpCode.PushHandler => new Instruction(opCode, -1, 0, 0),
             _ => throw new InvalidOperationException($"Unsupported placeholder opcode {opCode}.")
         });
 
@@ -211,6 +241,7 @@ public sealed class BytecodeCompiler
         {
             OpCode.Jump => ins with { A = target },
             OpCode.JumpIfFalse => ins with { B = target },
+            OpCode.PushHandler => ins with { A = target },
             _ => throw new InvalidOperationException($"Cannot patch opcode {ins.OpCode} as jump.")
         };
     }

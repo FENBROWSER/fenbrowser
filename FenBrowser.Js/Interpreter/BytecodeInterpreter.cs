@@ -35,6 +35,29 @@ public sealed class BytecodeInterpreter
                         frame.InstructionPointer = ins.B;
                     }
                     break;
+                case OpCode.PushHandler:
+                    frame.ExceptionHandlers.Push(ins.A);
+                    break;
+                case OpCode.PopHandler:
+                    if (frame.ExceptionHandlers.Count > 0)
+                    {
+                        _ = frame.ExceptionHandlers.Pop();
+                    }
+
+                    break;
+                case OpCode.Throw:
+                    if (frame.ExceptionHandlers.Count > 0)
+                    {
+                        var handlerIp = frame.ExceptionHandlers.Pop();
+                        frame.Registers[0] = frame.Registers[ins.A];
+                        frame.InstructionPointer = handlerIp;
+                    }
+                    else
+                    {
+                        throw new JsThrownException(frame.Registers[ins.A]);
+                    }
+
+                    break;
                 case OpCode.Add:
                     frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber() + frame.Registers[ins.C].AsNumber());
                     break;

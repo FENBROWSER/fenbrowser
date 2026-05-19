@@ -93,4 +93,14 @@ public sealed class ParserTests
         Assert.Single(arrow.Parameters);
         Assert.NotNull(arrow.ExpressionBody);
     }
+
+    [Fact]
+    public void ParsesTryCatchAndThrow()
+    {
+        var program = JsParser.ParseScript(new SourceText("try { throw 1; } catch (e) { e; }"));
+        var tc = Assert.IsType<TryCatchStatementNode>(Assert.Single(program.Body));
+        Assert.Equal("e", tc.CatchIdentifier);
+        Assert.Single(tc.TryBlock.Statements);
+        Assert.IsType<ThrowStatementNode>(tc.TryBlock.Statements[0]);
+    }
 }

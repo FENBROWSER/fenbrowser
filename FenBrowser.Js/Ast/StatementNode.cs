@@ -19,3 +19,11 @@ public sealed record WhileStatementNode(ExpressionNode Test, StatementNode Body,
 public sealed record ReturnStatementNode(ExpressionNode? Argument, SourceSpan Span) : StatementNode(Span);
 
 public sealed record FunctionDeclarationNode(string Name, IReadOnlyList<string> Parameters, BlockStatementNode Body, SourceSpan Span) : StatementNode(Span);
+
+public sealed record ThrowStatementNode(ExpressionNode Argument, SourceSpan Span) : StatementNode(Span);
+
+public sealed record TryCatchStatementNode(
+    BlockStatementNode TryBlock,
+    string CatchIdentifier,
+    BlockStatementNode CatchBlock,
+    SourceSpan Span) : StatementNode(Span);

@@ -115,4 +115,26 @@ public sealed class ObjectAndBytecodeTests
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.Equal(3, result.AsNumber());
     }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleTryCatchThrow()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let x = 1; try { throw 9; } catch (e) { x = e; } x;"));
+        new BytecodeVerifier().Verify(fn);
+
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(9, result.AsNumber());
+    }
+
+    [Fact]
+    public void InterpreterThrowsForUncaughtThrow()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("throw 5;"));
+        new BytecodeVerifier().Verify(fn);
+
+        var ex = Assert.Throws<JsThrownException>(() => new BytecodeInterpreter().Execute(fn));
+        Assert.Equal(5, ex.Value.AsNumber());
+    }
 }

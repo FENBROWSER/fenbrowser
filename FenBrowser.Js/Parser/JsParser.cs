@@ -71,6 +71,10 @@ public sealed class JsParser
                     return ParseFunctionDeclaration();
                 case "return":
                     return ParseReturnStatement();
+                case "throw":
+                    return ParseThrowStatement();
+                case "try":
+                    return ParseTryCatchStatement();
             }
         }
 
@@ -185,6 +189,35 @@ public sealed class JsParser
         var parameters = ParseParameterList();
         var body = ParseBlockStatement();
         return new FunctionDeclarationNode(name.Text, parameters, body, MergeSpan(start.Span, body.Span));
+    }
+
+    private ThrowStatementNode ParseThrowStatement()
+    {
+        var start = Advance(); // throw
+        var argument = ParseExpression(0);
+        if (IsPunctuator(";"))
+        {
+            Advance();
+        }
+
+        return new ThrowStatementNode(argument, MergeSpan(start.Span, argument.Span));
+    }
+
+    private TryCatchStatementNode ParseTryCatchStatement()
+    {
+        var start = Advance(); // try
+        var tryBlock = ParseBlockStatement();
+        if (!(Current().Kind == TokenKind.Keyword && Current().Text == "catch"))
+        {
+            throw new JsParserException("Expected 'catch' after try block.");
+        }
+
+        Advance(); // catch
+        ExpectPunctuator("(");
+        var catchId = ExpectIdentifier();
+        ExpectPunctuator(")");
+        var catchBlock = ParseBlockStatement();
+        return new TryCatchStatementNode(tryBlock, catchId.Text, catchBlock, MergeSpan(start.Span, catchBlock.Span));
     }
 
     private IReadOnlyList<string> ParseParameterList()
