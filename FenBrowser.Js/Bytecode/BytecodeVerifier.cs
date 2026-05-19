@@ -103,6 +103,23 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 ValidateRegister(ins.C, function.RegisterCount, ip, "C");
                 break;
+            case OpCode.CreateFunction:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                if (ins.B < 0 || ins.B >= function.NestedFunctions.Count)
+                {
+                    throw new InvalidOperationException($"Invalid nested function index {ins.B} at ip {ip}.");
+                }
+
+                break;
+            case OpCode.Call0:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                break;
+            case OpCode.Call1:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
+                break;
             case OpCode.Return:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 break;

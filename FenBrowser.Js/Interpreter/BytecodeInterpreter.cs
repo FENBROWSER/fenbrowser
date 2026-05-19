@@ -16,7 +16,20 @@ public sealed class BytecodeInterpreter
 
     public JsValue Execute(BytecodeFunction function)
     {
+        return ExecuteInternal(function, Array.Empty<JsValue>());
+    }
+
+    private JsValue ExecuteInternal(BytecodeFunction function, IReadOnlyList<JsValue> args)
+    {
         var frame = new InterpreterFrame(function);
+        for (var i = 0; i < function.ParameterNames.Count && i < args.Count; i++)
+        {
+            var paramName = function.ParameterNames[i];
+            if (function.VariableSlots.TryGetValue(paramName, out var slot))
+            {
+                frame.Variables[slot] = args[i];
+            }
+        }
 
         while (frame.InstructionPointer < function.Instructions.Count)
         {
@@ -134,6 +147,26 @@ public sealed class BytecodeInterpreter
 
                     break;
                 }
+                case OpCode.CreateFunction:
+                {
+                    var nested = function.NestedFunctions[ins.B];
+                    var fnObj = new JsFunctionObject(nested);
+                    var handle = _heap.AllocateObject(fnObj, AllocationSite.Current());
+                    frame.Registers[ins.A] = JsValue.FromObject(handle);
+                    break;
+                }
+                case OpCode.Call0:
+                {
+                    var callee = ResolveFunction(frame.Registers[ins.B]);
+                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, Array.Empty<JsValue>());
+                    break;
+                }
+                case OpCode.Call1:
+                {
+                    var callee = ResolveFunction(frame.Registers[ins.B]);
+                    frame.Registers[ins.A] = ExecuteInternal(callee.Function, new[] { frame.Registers[ins.C] });
+                    break;
+                }
                 case OpCode.Add:
                     frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber() + frame.Registers[ins.C].AsNumber());
                     break;
@@ -177,6 +210,17 @@ public sealed class BytecodeInterpreter
         }
 
         return _heap.GetObject(value.AsObjectHandle());
+    }
+
+    private JsFunctionObject ResolveFunction(JsValue value)
+    {
+        var obj = ResolveObject(value);
+        if (obj is not JsFunctionObject fn)
+        {
+            throw new InvalidOperationException("Value is not callable.");
+        }
+
+        return fn;
     }
 
     private static string ToPropertyKey(JsValue value)

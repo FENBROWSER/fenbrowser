@@ -12,6 +12,9 @@ public sealed class BytecodeCompiler
     private readonly Dictionary<string, int> _variables = new(StringComparer.Ordinal);
     private readonly List<string> _propertyNames = new();
     private readonly Dictionary<string, int> _propertyNameToIndex = new(StringComparer.Ordinal);
+    private readonly List<BytecodeFunction> _nestedFunctions = new();
+    private readonly List<string> _parameterNames = new();
+    private string? _name;
     private int _nextRegister = 1;
 
     public BytecodeFunction CompileScript(SourceText source)
@@ -22,12 +25,25 @@ public sealed class BytecodeCompiler
 
     public BytecodeFunction CompileProgram(ProgramNode program)
     {
+        return CompileProgramCore(program, parameters: Array.Empty<string>(), name: null);
+    }
+
+    private BytecodeFunction CompileProgramCore(ProgramNode program, IReadOnlyList<string> parameters, string? name)
+    {
         _instructions.Clear();
         _constants.Clear();
         _variables.Clear();
         _propertyNames.Clear();
         _propertyNameToIndex.Clear();
+        _nestedFunctions.Clear();
+        _parameterNames.Clear();
+        _name = name;
         _nextRegister = 1;
+        foreach (var p in parameters)
+        {
+            _parameterNames.Add(p);
+            _ = GetOrCreateVariableSlot(p);
+        }
 
         foreach (var stmt in program.Body)
         {
@@ -38,10 +54,13 @@ public sealed class BytecodeCompiler
 
         return new BytecodeFunction
         {
+            Name = _name,
             Instructions = _instructions.ToArray(),
             Constants = _constants.ToArray(),
             VariableSlots = new Dictionary<string, int>(_variables),
             PropertyNames = _propertyNames.ToArray(),
+            ParameterNames = _parameterNames.ToArray(),
+            NestedFunctions = _nestedFunctions.ToArray(),
             RegisterCount = Math.Max(2, _nextRegister)
         };
     }
@@ -88,10 +107,27 @@ public sealed class BytecodeCompiler
             case TryCatchStatementNode tryCatchStmt:
                 CompileTryCatchStatement(tryCatchStmt);
                 break;
+            case FunctionDeclarationNode functionDecl:
+                CompileFunctionDeclaration(functionDecl);
+                break;
             default:
                 // Minimal compiler slice currently targets literals/arithmetic/variables.
                 break;
         }
+    }
+
+    private void CompileFunctionDeclaration(FunctionDeclarationNode functionDecl)
+    {
+        var nestedProgram = new ProgramNode(ProgramKind.Script, functionDecl.Body.Statements, functionDecl.Body.Span);
+        var childCompiler = new BytecodeCompiler();
+        var nestedFunction = childCompiler.CompileProgramCore(nestedProgram, functionDecl.Parameters, functionDecl.Name);
+        var nestedIndex = _nestedFunctions.Count;
+        _nestedFunctions.Add(nestedFunction);
+
+        var dest = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.CreateFunction, dest, nestedIndex, 0));
+        var slot = GetOrCreateVariableSlot(functionDecl.Name);
+        _instructions.Add(new Instruction(OpCode.StoreVar, dest, slot, 0));
     }
 
     private void CompileIfStatement(IfStatementNode ifStmt)
@@ -216,6 +252,25 @@ public sealed class BytecodeCompiler
                 }
 
                 return dest;
+            }
+            case CallExpressionNode call:
+            {
+                var calleeReg = CompileExpression(call.Callee);
+                var dest = AllocateRegister();
+                switch (call.Arguments.Count)
+                {
+                    case 0:
+                        _instructions.Add(new Instruction(OpCode.Call0, dest, calleeReg, 0));
+                        return dest;
+                    case 1:
+                    {
+                        var arg0 = CompileExpression(call.Arguments[0]);
+                        _instructions.Add(new Instruction(OpCode.Call1, dest, calleeReg, arg0));
+                        return dest;
+                    }
+                    default:
+                        throw new InvalidOperationException("Only 0/1-argument call expressions are supported in this tranche.");
+                }
             }
             case ObjectLiteralExpressionNode obj:
             {

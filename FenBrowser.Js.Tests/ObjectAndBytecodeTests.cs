@@ -46,6 +46,8 @@ public sealed class ObjectAndBytecodeTests
             Constants = Array.Empty<JsValue>(),
             VariableSlots = new Dictionary<string, int>(),
             PropertyNames = Array.Empty<string>(),
+            ParameterNames = Array.Empty<string>(),
+            NestedFunctions = Array.Empty<BytecodeFunction>(),
             Instructions = new[] { new Instruction(OpCode.LoadConst, 1, 0, 0) }
         };
 
@@ -62,6 +64,8 @@ public sealed class ObjectAndBytecodeTests
             Constants = new[] { JsValue.FromNumber(1) },
             VariableSlots = new Dictionary<string, int>(),
             PropertyNames = Array.Empty<string>(),
+            ParameterNames = Array.Empty<string>(),
+            NestedFunctions = Array.Empty<BytecodeFunction>(),
             Instructions = new[]
             {
                 new Instruction(OpCode.LoadConst, 1, 0, 0),
@@ -160,5 +164,25 @@ public sealed class ObjectAndBytecodeTests
 
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.Equal(7, result.AsNumber());
+    }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleZeroArgFunctionCall()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("function value(){ return 41; } value();"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(41, result.AsNumber());
+    }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleSingleArgFunctionCall()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("function inc(x){ return x + 1; } inc(9);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(10, result.AsNumber());
     }
 }

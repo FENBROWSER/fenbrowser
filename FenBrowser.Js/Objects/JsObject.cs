@@ -3,7 +3,7 @@ using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Objects;
 
-public sealed class JsObject : ITraceable
+public class JsObject : ITraceable
 {
     private readonly Dictionary<string, JsPropertyDescriptor> _properties = new(StringComparer.Ordinal);
 
