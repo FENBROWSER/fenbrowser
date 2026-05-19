@@ -1466,13 +1466,16 @@ pre {{
                 }
 
                 TryInvokeNavigated(uri);
-                await MarkNavigationCompleteWhenSettledAsync(navigationId, "document-complete").ConfigureAwait(false);
-                
-                // Fetch favicon immediately, then re-check once after a short delay for
-                // pages that install/update <link rel="icon"> after initial load.
+
+                // Kick favicon fetch off the moment the DOM is parsed enough to
+                // find <link rel="icon">. Do this BEFORE awaiting subresource
+                // settle so the tab icon updates while the page is still loading
+                // subresources, JS, fonts, etc. Both calls are fire-and-forget.
                 _ = FetchFaviconAsync(uri, navigationId);
                 _ = FetchFaviconDelayedAsync(uri, navigationId, delayMs: 1200);
-                
+
+                await MarkNavigationCompleteWhenSettledAsync(navigationId, "document-complete").ConfigureAwait(false);
+
                 return true;
             }
             catch (Exception ex)

@@ -625,7 +625,6 @@ namespace FenBrowser.FenEngine.Rendering
                             baseUrl);
                         _lastPaintTree = paintTree;
                         rebuiltPaintTree = true;
-                        Console.WriteLine($"[DBG-RENDER] PaintTree nodes: {paintTree?.NodeCount ?? 0}");
 
                         var layerization = _paintTreeLayerizer.Layerize(_lastPaintTree, styles);
                         _lastCompositedLayers = layerization.Layers;
