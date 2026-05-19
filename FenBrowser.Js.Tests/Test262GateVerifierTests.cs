@@ -514,6 +514,63 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_FailsWhenExpectedFailureMilestoneIsNonString()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            var payload = new
+            {
+                summary = new
+                {
+                    total = 1,
+                    passed = 0,
+                    unsupported = 0,
+                    parserErrors = 0,
+                    crashes = 0,
+                    expectedFailures = 1,
+                    unexpectedPasses = 0
+                },
+                tests = new object[]
+                {
+                    new
+                    {
+                        path = "test/runtime.js",
+                        status = "ExpectedFailure",
+                        category = "runtime-missing"
+                    }
+                },
+                failures = new object[]
+                {
+                    new
+                    {
+                        relativePath = "test/runtime.js",
+                        classification = "runtime-error",
+                        expected = true,
+                        expectedOwner = "js",
+                        expectedArea = "runtime",
+                        expectedReason = "known limitation",
+                        expiresAtMilestone = 2
+                    }
+                }
+            };
+
+            File.WriteAllText(currentPath, JsonSerializer.Serialize(payload));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            Assert.False(result.Passed);
+            Assert.Contains(result.Violations, v => v.Contains("No expected failure without owner/area/reason/milestone violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_FailsWhenExpectedFailureMilestoneIsUppercaseUnknown()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
