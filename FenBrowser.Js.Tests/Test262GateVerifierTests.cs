@@ -3662,6 +3662,59 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ReportIncludesMetadataDefectCountWhenTestsSectionIsNotArrayAndExpectedFailureRecordsExist()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            var payload = new
+            {
+                summary = new
+                {
+                    total = 1,
+                    passed = 0,
+                    unsupported = 0,
+                    parserErrors = 1,
+                    crashes = 0,
+                    expectedFailures = 1,
+                    unexpectedPasses = 0
+                },
+                tests = new
+                {
+                    malformed = true
+                },
+                failures = new object[]
+                {
+                    new
+                    {
+                        relativePath = "test/runtime-a.js",
+                        classification = "runtime-error",
+                        expected = true,
+                        expectedOwner = "",
+                        expectedArea = "runtime",
+                        expectedReason = "known limitation",
+                        expiresAtMilestone = "M2"
+                    }
+                }
+            };
+
+            File.WriteAllText(currentPath, JsonSerializer.Serialize(payload));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            using var report = JsonDocument.Parse(result.ReportJson);
+            var count = report.RootElement.GetProperty("expectationMetadataViolations").GetInt32();
+            Assert.Equal(2, count);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_DoesNotFailMetadataRuleWhenTestsSectionMissingAndNoExpectedFailures()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
