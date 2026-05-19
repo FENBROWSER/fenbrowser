@@ -1566,6 +1566,60 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ReportIncludesExpectationMetadataViolationsForMismatchedExpectedFailureRecordPaths()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/runtime-a.js",
+                        status = "ExpectedFailure",
+                        category = "runtime-missing"
+                    }
+                ],
+                failures:
+                [
+                    new
+                    {
+                        relativePath = "test/runtime-a.js",
+                        classification = "runtime-error",
+                        expected = true,
+                        expectedOwner = "engine-team",
+                        expectedArea = "runtime",
+                        expectedReason = "known limitation",
+                        expiresAtMilestone = "M2"
+                    },
+                    new
+                    {
+                        relativePath = "test/runtime-b.js",
+                        classification = "runtime-error",
+                        expected = true,
+                        expectedOwner = "engine-team",
+                        expectedArea = "runtime",
+                        expectedReason = "known limitation",
+                        expiresAtMilestone = "M2"
+                    }
+                ]));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            using var report = JsonDocument.Parse(result.ReportJson);
+            var count = report.RootElement.GetProperty("expectationMetadataViolations").GetInt32();
+            Assert.Equal(1, count);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_ReportIncludesZeroExpectationMetadataViolationsWhenPassing()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
