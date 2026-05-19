@@ -310,6 +310,7 @@ public sealed class BytecodeInterpreter
             JsValueTag.Boolean => value.AsBoolean(),
             JsValueTag.Int32 => value.AsInt32() != 0,
             JsValueTag.Number => value.AsNumber() != 0 && !double.IsNaN(value.AsNumber()),
+            JsValueTag.String => value.AsString().Length != 0,
             _ => true
         };
     }

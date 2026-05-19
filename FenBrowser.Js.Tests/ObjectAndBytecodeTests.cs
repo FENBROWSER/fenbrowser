@@ -402,6 +402,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void EmptyStringIsFalsyInConditional()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let x = 0; if (\"\") { x = 1; } x;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(0, result.AsNumber());
+    }
+
+    [Fact]
+    public void NonEmptyStringIsTruthyInConditional()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let x = 0; if (\"a\") { x = 1; } x;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(1, result.AsNumber());
+    }
+
+    [Fact]
     public void InterpreterInvokesWriteBarrierForObjectStores()
     {
         var compiler = new BytecodeCompiler();
