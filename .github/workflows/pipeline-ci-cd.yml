@@ -65,6 +65,7 @@ jobs:
         with:
           global-json-file: global.json
           cache: true
+          cache-dependency-path: "**/packages.lock.json"
 
       - name: Restore solution
         run: dotnet restore FenBrowser.sln
@@ -95,6 +96,7 @@ jobs:
         with:
           global-json-file: global.json
           cache: true
+          cache-dependency-path: "**/packages.lock.json"
 
       - name: Build test surface
         run: dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Release
