@@ -5986,6 +5986,51 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ReportIncludesNewFailureForWhitespacePaddedUnexpectedPassStatus()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var previousPath = Path.Combine(tempRoot, "previous.json");
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(previousPath, BuildResultJson(
+                tests: Array.Empty<object>(),
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 0,
+                passed: 0));
+
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "test/padded-unexpectedpass.js",
+                        status = " unexpectedpass ",
+                        category = "parser-error"
+                    }
+                ],
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 0,
+                passed: 0));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousPath);
+            using var report = JsonDocument.Parse(result.ReportJson);
+            var newFailures = report.RootElement.GetProperty("newFailures");
+            Assert.Equal(JsonValueKind.Array, newFailures.ValueKind);
+            Assert.Equal(1, newFailures.GetArrayLength());
+            Assert.Equal("test/padded-unexpectedpass.js", newFailures[0].GetString());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_IgnoresBlankTestPathInFailureSetRegressionDetection()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
