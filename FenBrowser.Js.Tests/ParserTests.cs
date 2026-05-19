@@ -177,6 +177,15 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesAsyncArrowFunctionExpressionBody()
+    {
+        var program = JsParser.ParseScript(new SourceText("const f = async () => 1;"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var arrow = Assert.IsType<ArrowFunctionExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Empty(arrow.Parameters);
+    }
+
+    [Fact]
     public void ParsesTryCatchAndThrow()
     {
         var program = JsParser.ParseScript(new SourceText("try { throw 1; } catch (e) { e; }"));

@@ -1182,6 +1182,73 @@ public sealed class JsParser
         expression = null!;
         var saved = _index;
 
+        if (Current().Kind == TokenKind.Keyword && Current().Text == "async")
+        {
+            Advance(); // async
+
+            if (Current().Kind == TokenKind.Identifier && PeekIsPunctuator(1, "=") && PeekIsPunctuator(2, ">"))
+            {
+                var parameter = Advance().Text;
+                Advance(); // =
+                Advance(); // >
+                expression = ParseArrowFunctionBody(new[] { parameter }, _tokens[saved].Span);
+                return true;
+            }
+
+            if (IsPunctuator("("))
+            {
+                Advance();
+                var asyncParameters = new List<string>();
+                var asyncValid = true;
+                if (!IsPunctuator(")"))
+                {
+                    while (true)
+                    {
+                        if (!IsIdentifierLike(Current()))
+                        {
+                            asyncValid = false;
+                            break;
+                        }
+
+                        asyncParameters.Add(Advance().Text);
+                        if (IsPunctuator("="))
+                        {
+                            Advance();
+                            _ = ParseExpression(2);
+                        }
+
+                        if (IsPunctuator(","))
+                        {
+                            Advance();
+                            continue;
+                        }
+
+                        break;
+                    }
+                }
+
+                if (!asyncValid || !IsPunctuator(")"))
+                {
+                    _index = saved;
+                    return false;
+                }
+
+                Advance(); // )
+                if (!(IsPunctuator("=") && PeekIsPunctuator(1, ">")))
+                {
+                    _index = saved;
+                    return false;
+                }
+
+                Advance(); // =
+                Advance(); // >
+                expression = ParseArrowFunctionBody(asyncParameters, _tokens[saved].Span);
+                return true;
+            }
+
+            _index = saved;
+        }
+
         if (Current().Kind == TokenKind.Identifier && PeekIsPunctuator(1, "=") && PeekIsPunctuator(2, ">"))
         {
             var parameter = Advance().Text;
