@@ -44,3 +44,8 @@ public sealed record ForOfStatementNode(
 public sealed record BreakStatementNode(SourceSpan Span) : StatementNode(Span);
 
 public sealed record ContinueStatementNode(SourceSpan Span) : StatementNode(Span);
+
+public sealed record ClassDeclarationNode(
+    string Name,
+    ExpressionNode? BaseClass,
+    SourceSpan Span) : StatementNode(Span);

@@ -239,6 +239,9 @@ public sealed class BytecodeInterpreter
                 case OpCode.Mul:
                     frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber() * frame.Registers[ins.C].AsNumber());
                     break;
+                case OpCode.Mod:
+                    frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber() % frame.Registers[ins.C].AsNumber());
+                    break;
                 case OpCode.Div:
                     frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber() / frame.Registers[ins.C].AsNumber());
                     break;

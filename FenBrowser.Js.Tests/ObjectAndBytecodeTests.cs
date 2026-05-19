@@ -228,6 +228,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void CompilerAndInterpreterHandleModuloOperator()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("10 % 3;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(1, result.AsNumber());
+    }
+
+    [Fact]
     public void CompilerAndInterpreterHandleUnaryAndConditionalExpressions()
     {
         var compiler = new BytecodeCompiler();

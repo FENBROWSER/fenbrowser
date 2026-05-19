@@ -56,10 +56,11 @@ public sealed class JsParser
         {
             switch (Current().Text)
             {
-                case "class":
                 case "import":
                 case "export":
                     throw new UnsupportedFeatureException(Current().Text, FeatureSupportLevel.ParserOnly, Current().Span);
+                case "class":
+                    return ParseClassDeclaration();
                 case "let":
                 case "const":
                 case "var":
@@ -249,6 +250,11 @@ public sealed class JsParser
     private FunctionDeclarationNode ParseFunctionDeclaration()
     {
         var start = Advance(); // function
+        if (IsPunctuator("*"))
+        {
+            Advance();
+        }
+
         var name = ExpectIdentifier();
         var parameters = ParseParameterList();
         var body = ParseBlockStatement();
@@ -282,6 +288,94 @@ public sealed class JsParser
         ExpectPunctuator(")");
         var catchBlock = ParseBlockStatement();
         return new TryCatchStatementNode(tryBlock, catchId.Text, catchBlock, MergeSpan(start.Span, catchBlock.Span));
+    }
+
+    private ClassDeclarationNode ParseClassDeclaration()
+    {
+        var start = Advance(); // class
+        var name = ExpectIdentifier();
+
+        ExpressionNode? baseClass = null;
+        if (Current().Kind == TokenKind.Keyword && Current().Text == "extends")
+        {
+            Advance();
+            baseClass = ParseExpression(0);
+        }
+
+        ExpectPunctuator("{");
+        var depth = 1;
+        Token close = Previous();
+        while (!Is(TokenKind.EndOfFile) && depth > 0)
+        {
+            var token = Advance();
+            if (token.Kind != TokenKind.Punctuator)
+            {
+                continue;
+            }
+
+            if (token.Text == "{")
+            {
+                depth++;
+            }
+            else if (token.Text == "}")
+            {
+                depth--;
+                close = token;
+            }
+        }
+
+        if (depth != 0)
+        {
+            throw new JsParserException("Unterminated class body.");
+        }
+
+        return new ClassDeclarationNode(name.Text, baseClass, MergeSpan(start.Span, close.Span));
+    }
+
+    private ClassExpressionNode ParseClassExpression()
+    {
+        var start = Advance(); // class
+        string? name = null;
+        if (Current().Kind == TokenKind.Identifier)
+        {
+            name = Advance().Text;
+        }
+
+        ExpressionNode? baseClass = null;
+        if (Current().Kind == TokenKind.Keyword && Current().Text == "extends")
+        {
+            Advance();
+            baseClass = ParseExpression(0);
+        }
+
+        ExpectPunctuator("{");
+        var depth = 1;
+        Token close = Previous();
+        while (!Is(TokenKind.EndOfFile) && depth > 0)
+        {
+            var token = Advance();
+            if (token.Kind != TokenKind.Punctuator)
+            {
+                continue;
+            }
+
+            if (token.Text == "{")
+            {
+                depth++;
+            }
+            else if (token.Text == "}")
+            {
+                depth--;
+                close = token;
+            }
+        }
+
+        if (depth != 0)
+        {
+            throw new JsParserException("Unterminated class body.");
+        }
+
+        return new ClassExpressionNode(name, baseClass, MergeSpan(start.Span, close.Span));
     }
 
     private BreakStatementNode ParseBreakStatement()
@@ -437,6 +531,18 @@ public sealed class JsParser
             return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
         }
 
+        if (token.Kind == TokenKind.Keyword && token.Text == "yield")
+        {
+            var op = Advance();
+            if (IsPunctuator(";") || IsPunctuator("}") || Is(TokenKind.EndOfFile))
+            {
+                return new UnaryExpressionNode(op.Text, new IdentifierExpressionNode("undefined", op.Span), op.Span);
+            }
+
+            var operand = ParseExpression(40);
+            return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
+        }
+
         if (token.Kind == TokenKind.Keyword && token.Text == "function")
         {
             return ParseFunctionExpression();
@@ -445,6 +551,11 @@ public sealed class JsParser
         if (token.Kind == TokenKind.Keyword && token.Text == "new")
         {
             return ParseNewExpression();
+        }
+
+        if (token.Kind == TokenKind.Keyword && token.Text == "class")
+        {
+            return ParseClassExpression();
         }
 
         if (token.Kind == TokenKind.Keyword && token.Text == "this")
@@ -588,6 +699,11 @@ public sealed class JsParser
     private FunctionExpressionNode ParseFunctionExpression()
     {
         var start = Advance(); // function
+        if (IsPunctuator("*"))
+        {
+            Advance();
+        }
+
         string? name = null;
         if (Current().Kind == TokenKind.Identifier)
         {
@@ -879,6 +995,7 @@ public sealed class JsParser
                 rightBindingPower = 16;
                 return true;
             case "*":
+            case "%":
             case "/":
                 leftBindingPower = 30;
                 rightBindingPower = 31;

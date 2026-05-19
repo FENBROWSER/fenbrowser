@@ -532,6 +532,7 @@ public sealed class BytecodeCompiler
                     "+" => OpCode.Add,
                     "-" => OpCode.Sub,
                     "*" => OpCode.Mul,
+                    "%" => OpCode.Mod,
                     "/" => OpCode.Div,
                     "==" => OpCode.Eq,
                     "!=" => OpCode.Neq,

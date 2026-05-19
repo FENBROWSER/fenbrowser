@@ -39,6 +39,7 @@ public enum OpCode : byte
     Add,
     Sub,
     Mul,
+    Mod,
     Div,
     Return
 }

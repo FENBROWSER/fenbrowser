@@ -43,10 +43,21 @@ public sealed class ParserTests
     }
 
     [Fact]
-    public void ClassDeclarationIsReportedAsParserOnlyUnsupportedFeature()
+    public void ParsesClassDeclarationWithExtends()
     {
-        var ex = Assert.Throws<UnsupportedFeatureException>(() => JsParser.ParseScript(new SourceText("class A {}")));
-        Assert.Equal("class", ex.FeatureName);
+        var program = JsParser.ParseScript(new SourceText("class A extends B { constructor() {} }"));
+        var cls = Assert.IsType<ClassDeclarationNode>(program.Body[0]);
+        Assert.Equal("A", cls.Name);
+        Assert.NotNull(cls.BaseClass);
+    }
+
+    [Fact]
+    public void ParsesClassExpressionInNewExpression()
+    {
+        var program = JsParser.ParseScript(new SourceText("new class extends B {}();"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var ne = Assert.IsType<NewExpressionNode>(stmt.Expression);
+        Assert.IsType<ClassExpressionNode>(ne.Callee);
     }
 
     [Fact]
@@ -223,6 +234,15 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesModuloBinaryExpression()
+    {
+        var program = JsParser.ParseScript(new SourceText("10 % 3;"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var bin = Assert.IsType<BinaryExpressionNode>(stmt.Expression);
+        Assert.Equal("%", bin.Operator);
+    }
+
+    [Fact]
     public void ParsesRegexLiteralExpression()
     {
         var program = JsParser.ParseScript(new SourceText("let r = /abc/i; r;"));
@@ -363,5 +383,13 @@ public sealed class ParserTests
         var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
         var str = Assert.IsType<StringLiteralExpressionNode>(stmt.Expression);
         Assert.Equal("hello ${name}", str.Value);
+    }
+
+    [Fact]
+    public void ParsesGeneratorFunctionDeclarationSubset()
+    {
+        var program = JsParser.ParseScript(new SourceText("function* g(){ yield 1; }"));
+        var fn = Assert.IsType<FunctionDeclarationNode>(program.Body[0]);
+        Assert.Equal("g", fn.Name);
     }
 }
