@@ -355,6 +355,16 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesDotMemberWithKeywordPropertyName()
+    {
+        var program = JsParser.ParseScript(new SourceText("obj.return(1);"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var call = Assert.IsType<CallExpressionNode>(stmt.Expression);
+        var member = Assert.IsType<MemberExpressionNode>(call.Callee);
+        Assert.Equal("return", member.Property);
+    }
+
+    [Fact]
     public void ParsesStrictEqualityOperators()
     {
         var program = JsParser.ParseScript(new SourceText("1 === 1; 1 !== 2;"));
@@ -461,6 +471,16 @@ public sealed class ParserTests
         var program = JsParser.ParseScript(new SourceText("function* g(){ yield 1; }"));
         var fn = Assert.IsType<FunctionDeclarationNode>(program.Body[0]);
         Assert.Equal("g", fn.Name);
+    }
+
+    [Fact]
+    public void ParsesYieldStarExpressionInGeneratorSubset()
+    {
+        var program = JsParser.ParseScript(new SourceText("function* g(){ yield* iter; }"));
+        var fn = Assert.IsType<FunctionDeclarationNode>(program.Body[0]);
+        var exprStmt = Assert.IsType<ExpressionStatementNode>(fn.Body.Statements[0]);
+        var unary = Assert.IsType<UnaryExpressionNode>(exprStmt.Expression);
+        Assert.Equal("yield*", unary.Operator);
     }
 
     [Fact]

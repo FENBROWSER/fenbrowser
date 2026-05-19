@@ -530,7 +530,7 @@ public sealed class JsParser
             if (IsPunctuator("."))
             {
                 Advance();
-                var property = ExpectIdentifier();
+                var property = ExpectPropertyNameAfterDot();
                 left = new MemberExpressionNode(left, property.Text, Computed: false, PropertyExpression: null, MergeSpan(left.Span, property.Span));
                 continue;
             }
@@ -620,13 +620,21 @@ public sealed class JsParser
         if (token.Kind == TokenKind.Keyword && token.Text == "yield")
         {
             var op = Advance();
+            var delegated = false;
+            if (IsPunctuator("*"))
+            {
+                delegated = true;
+                Advance();
+            }
+
             if (IsPunctuator(";") || IsPunctuator("}") || Is(TokenKind.EndOfFile))
             {
                 return new UnaryExpressionNode(op.Text, new IdentifierExpressionNode("undefined", op.Span), op.Span);
             }
 
             var operand = ParseExpression(40);
-            return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
+            var opText = delegated ? "yield*" : op.Text;
+            return new UnaryExpressionNode(opText, operand, MergeSpan(op.Span, operand.Span));
         }
 
         if (token.Kind == TokenKind.Keyword && token.Text == "function")
@@ -1020,7 +1028,7 @@ public sealed class JsParser
             if (IsPunctuator("."))
             {
                 Advance();
-                var property = ExpectIdentifier();
+                var property = ExpectPropertyNameAfterDot();
                 left = new MemberExpressionNode(left, property.Text, Computed: false, PropertyExpression: null, MergeSpan(left.Span, property.Span));
                 continue;
             }
@@ -1138,6 +1146,16 @@ public sealed class JsParser
     private Token ExpectIdentifier()
     {
         if (Current().Kind != TokenKind.Identifier)
+        {
+            throw new JsParserException($"Expected identifier, found '{Current().Text}'.");
+        }
+
+        return Advance();
+    }
+
+    private Token ExpectPropertyNameAfterDot()
+    {
+        if (Current().Kind != TokenKind.Identifier && Current().Kind != TokenKind.Keyword)
         {
             throw new JsParserException($"Expected identifier, found '{Current().Text}'.");
         }
