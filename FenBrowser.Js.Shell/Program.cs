@@ -38,23 +38,16 @@ if (args.Length >= 2 && args[0] == "--eval")
         return 2;
     }
 
-    var heap = new JsHeap(gcStressMode);
+    var heap = new JsHeap(
+        gcStressMode,
+        verifyHeapBeforeGc: verifyBeforeGc,
+        verifyHeapAfterGc: verifyAfterGc);
     var isolate = new JsIsolate(heap);
     using var scope = isolate.EnterHandleScope();
     _ = isolate.AllocateObjectInScope(scope, new FenBrowser.Js.Objects.JsObject(), AllocationSite.Current());
     if (verifyBeforeGc || verifyAfterGc)
     {
-        var verifier = new HeapVerifier();
-        if (verifyBeforeGc)
-        {
-            verifier.Verify(heap);
-        }
-
         heap.CollectGarbage();
-        if (verifyAfterGc)
-        {
-            verifier.Verify(heap);
-        }
     }
 
     if (traceGc)

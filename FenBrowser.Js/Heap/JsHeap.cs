@@ -16,10 +16,18 @@ public sealed class JsHeap
     private int _gcCollectionCount;
     private int _lastGcMarkedCells;
     private int _lastGcSweptCells;
+    private readonly bool _verifyHeapBeforeGc;
+    private readonly bool _verifyHeapAfterGc;
+    private readonly HeapVerifier _verifier = new();
 
-    public JsHeap(GcStressMode stressMode = GcStressMode.None)
+    public JsHeap(
+        GcStressMode stressMode = GcStressMode.None,
+        bool verifyHeapBeforeGc = false,
+        bool verifyHeapAfterGc = false)
     {
         _stressMode = stressMode;
+        _verifyHeapBeforeGc = verifyHeapBeforeGc;
+        _verifyHeapAfterGc = verifyHeapAfterGc;
     }
 
     public int RootCount => _roots.Count;
@@ -145,6 +153,11 @@ public sealed class JsHeap
 
     public void CollectGarbage()
     {
+        if (_verifyHeapBeforeGc)
+        {
+            _verifier.Verify(this);
+        }
+
         _gcCollectionCount++;
         _lastGcMarkedCells = 0;
         _lastGcSweptCells = 0;
@@ -193,6 +206,11 @@ public sealed class JsHeap
         }
 
         PruneWriteBarrierEdges();
+
+        if (_verifyHeapAfterGc)
+        {
+            _verifier.Verify(this);
+        }
     }
 
     public void FreeForTest(ObjectHandle handle)

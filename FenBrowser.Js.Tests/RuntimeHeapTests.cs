@@ -203,6 +203,28 @@ public sealed class RuntimeHeapTests
     }
 
     [Fact]
+    public void CollectGarbageVerifiesHeapBeforeGcWhenEnabled()
+    {
+        var heap = new JsHeap(verifyHeapBeforeGc: true);
+        var handle = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        heap.PushRoot(handle);
+        heap.FreeForTest(handle);
+
+        Assert.Throws<JsEngineFatalException>(() => heap.CollectGarbage());
+    }
+
+    [Fact]
+    public void CollectGarbageVerifiesHeapAfterGcWhenEnabled()
+    {
+        var heap = new JsHeap(verifyHeapAfterGc: true);
+        var handle = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        heap.PushRoot(handle);
+        heap.CollectGarbage();
+
+        Assert.NotNull(heap.GetObject(handle));
+    }
+
+    [Fact]
     public void HeapVerifierRejectsInvalidStringAndSymbolRoots()
     {
         var heap = new JsHeap();
