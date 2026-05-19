@@ -12,6 +12,8 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _objectPrototypeHandle;
     private ObjectHandle? _numberConstructorHandle;
     private ObjectHandle? _numberPrototypeHandle;
+    private ObjectHandle? _errorConstructorHandle;
+    private ObjectHandle? _errorPrototypeHandle;
     private ObjectHandle? _typeErrorConstructorHandle;
     private ObjectHandle? _typeErrorPrototypeHandle;
 
@@ -404,6 +406,11 @@ public sealed class BytecodeInterpreter
             frame.Variables[numberSlot] = JsValue.FromObject(EnsureNumberConstructor());
         }
 
+        if (function.VariableSlots.TryGetValue("Error", out var errorSlot))
+        {
+            frame.Variables[errorSlot] = JsValue.FromObject(EnsureErrorConstructor());
+        }
+
         if (function.VariableSlots.TryGetValue("TypeError", out var typeErrorSlot))
         {
             frame.Variables[typeErrorSlot] = JsValue.FromObject(EnsureTypeErrorConstructor());
@@ -437,11 +444,21 @@ public sealed class BytecodeInterpreter
 
     private JsValue CreateTypeError(string message)
     {
+        return CreateErrorObject("TypeError", EnsureTypeErrorPrototype(), message);
+    }
+
+    private JsValue CreateErrorObject(string name, ObjectHandle prototypeHandle, string message)
+    {
         var error = new JsObject();
-        error.SetPrototype(EnsureTypeErrorPrototype());
-        _ = error.SetProperty("name", JsValue.FromString("TypeError"));
+        error.SetPrototype(prototypeHandle);
+        _ = error.SetProperty("name", JsValue.FromString(name));
         _ = error.SetProperty("message", JsValue.FromString(message));
         return JsValue.FromObject(_heap.AllocateObject(error, AllocationSite.Current()));
+    }
+
+    private static string GetOptionalMessage(IReadOnlyList<JsValue> args)
+    {
+        return args.Count > 0 ? ToStringForConcat(args[0]) : string.Empty;
     }
 
     private ObjectHandle EnsureTypeErrorPrototype()
@@ -457,16 +474,50 @@ public sealed class BytecodeInterpreter
             return existing;
         }
 
-        var prototypeHandle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
+        var prototype = CreateOrdinaryObject();
+        prototype.SetPrototype(EnsureErrorPrototype());
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
         _heap.PushRoot(prototypeHandle);
 
-        var constructor = new JsFunctionObject(CreateBuiltinFunction("TypeError"));
+        var constructor = new NativeFunctionObject(
+            "TypeError",
+            (_, args) => CreateErrorObject("TypeError", EnsureTypeErrorPrototype(), GetOptionalMessage(args)),
+            args => CreateErrorObject("TypeError", EnsureTypeErrorPrototype(), GetOptionalMessage(args)));
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
         _typeErrorPrototypeHandle = prototypeHandle;
         _typeErrorConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private ObjectHandle EnsureErrorPrototype()
+    {
+        _ = EnsureErrorConstructor();
+        return _errorPrototypeHandle!.Value;
+    }
+
+    private ObjectHandle EnsureErrorConstructor()
+    {
+        if (_errorConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototypeHandle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "Error",
+            (_, args) => CreateErrorObject("Error", EnsureErrorPrototype(), GetOptionalMessage(args)),
+            args => CreateErrorObject("Error", EnsureErrorPrototype(), GetOptionalMessage(args)));
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        _errorPrototypeHandle = prototypeHandle;
+        _errorConstructorHandle = constructorHandle;
         return constructorHandle;
     }
 

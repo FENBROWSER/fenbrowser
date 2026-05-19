@@ -537,6 +537,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void TypeErrorConstructAndCallCreateErrorSubclassInstances()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let a = new TypeError; let b = TypeError(\"failed\"); (a instanceof Error) && (a instanceof TypeError) && (b instanceof Error) && (b instanceof TypeError);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void InstanceOfReturnsTrueForConstructedInstance()
     {
         var compiler = new BytecodeCompiler();
