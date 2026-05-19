@@ -490,6 +490,16 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesObjectLiteralGetterWithNumericName()
+    {
+        var program = JsParser.ParseScript(new SourceText("let o = { get 0 () { return 1; } };"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var obj = Assert.IsType<ObjectLiteralExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Single(obj.Properties);
+        Assert.Equal("0", obj.Properties[0].Key);
+    }
+
+    [Fact]
     public void ParsesObjectLiteralNumericPropertyKey()
     {
         var program = JsParser.ParseScript(new SourceText("let o = { 0: 1, 1: 2 };"));

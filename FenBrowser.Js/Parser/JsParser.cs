@@ -1028,6 +1028,10 @@ public sealed class JsParser
                     var raw = Advance().Text;
                     accessorKey = raw.Length >= 2 ? raw[1..^1] : string.Empty;
                 }
+                else if (accessorKeyToken.Kind == TokenKind.Number)
+                {
+                    accessorKey = Advance().Text;
+                }
                 else
                 {
                     throw new JsParserException($"Expected object property key, found '{accessorKeyToken.Text}'.");
@@ -1616,7 +1620,7 @@ public sealed class JsParser
             return _tokens[afterBracket].Kind == TokenKind.Punctuator && _tokens[afterBracket].Text == "(";
         }
 
-        var isSimpleName = next.Kind == TokenKind.Identifier || next.Kind == TokenKind.Keyword || next.Kind == TokenKind.String;
+        var isSimpleName = next.Kind == TokenKind.Identifier || next.Kind == TokenKind.Keyword || next.Kind == TokenKind.String || next.Kind == TokenKind.Number;
         if (!isSimpleName)
         {
             return false;
