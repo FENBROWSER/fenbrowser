@@ -1,4 +1,5 @@
 using FenBrowser.Js.Heap;
+using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
 using Xunit;
@@ -105,5 +106,21 @@ public sealed class RuntimeHeapTests
         }
 
         Assert.Equal(0, isolate.Heap.RootCount);
+    }
+
+    [Fact]
+    public void InterpreterExecutionEntrypointsAreMarkedMayExecuteJs()
+    {
+        var publicExecute = typeof(BytecodeInterpreter).GetMethod(nameof(BytecodeInterpreter.Execute));
+        Assert.NotNull(publicExecute);
+        Assert.NotNull(publicExecute!.GetCustomAttributes(typeof(MayExecuteJsAttribute), inherit: false).SingleOrDefault());
+
+        var executeInternal = typeof(BytecodeInterpreter).GetMethod("ExecuteInternal", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(executeInternal);
+        Assert.NotNull(executeInternal!.GetCustomAttributes(typeof(MayExecuteJsAttribute), inherit: false).SingleOrDefault());
+
+        var executeConstruct = typeof(BytecodeInterpreter).GetMethod("ExecuteConstruct", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(executeConstruct);
+        Assert.NotNull(executeConstruct!.GetCustomAttributes(typeof(MayExecuteJsAttribute), inherit: false).SingleOrDefault());
     }
 }

@@ -14,11 +14,13 @@ public sealed class BytecodeInterpreter
         _heap = heap ?? new JsHeap();
     }
 
+    [MayExecuteJs]
     public JsValue Execute(BytecodeFunction function)
     {
         return ExecuteInternal(function, Array.Empty<JsValue>(), null);
     }
 
+    [MayExecuteJs]
     private JsValue ExecuteInternal(
         BytecodeFunction function,
         IReadOnlyList<JsValue> args,
@@ -381,6 +383,7 @@ public sealed class BytecodeInterpreter
         return snapshot;
     }
 
+    [MayExecuteJs]
     private JsValue ExecuteConstruct(JsFunctionObject callee, IReadOnlyList<JsValue> args)
     {
         var defaultInstance = JsValue.FromObject(_heap.AllocateObject(new JsObject(), AllocationSite.Current()));
