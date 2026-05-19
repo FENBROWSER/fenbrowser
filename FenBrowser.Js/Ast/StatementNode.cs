@@ -8,6 +8,8 @@ public sealed record ExpressionStatementNode(ExpressionNode Expression, SourceSp
 
 public sealed record EmptyStatementNode(SourceSpan Span) : StatementNode(Span);
 
+public sealed record LabeledStatementNode(string Label, StatementNode Body, SourceSpan Span) : StatementNode(Span);
+
 public sealed record BlockStatementNode(IReadOnlyList<StatementNode> Statements, SourceSpan Span) : StatementNode(Span);
 
 public sealed record VariableDeclaratorNode(string Identifier, ExpressionNode? Initializer, SourceSpan Span);
@@ -28,6 +30,18 @@ public sealed record TryCatchStatementNode(
     BlockStatementNode TryBlock,
     string CatchIdentifier,
     BlockStatementNode CatchBlock,
+    SourceSpan Span) : StatementNode(Span);
+
+public sealed record TryFinallyStatementNode(
+    BlockStatementNode TryBlock,
+    BlockStatementNode FinallyBlock,
+    SourceSpan Span) : StatementNode(Span);
+
+public sealed record TryCatchFinallyStatementNode(
+    BlockStatementNode TryBlock,
+    string CatchIdentifier,
+    BlockStatementNode CatchBlock,
+    BlockStatementNode FinallyBlock,
     SourceSpan Span) : StatementNode(Span);
 
 public sealed record ForStatementNode(

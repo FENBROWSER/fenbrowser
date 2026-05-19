@@ -125,6 +125,22 @@ public sealed class BytecodeCompiler
             case TryCatchStatementNode tryCatchStmt:
                 CompileTryCatchStatement(tryCatchStmt);
                 break;
+            case TryFinallyStatementNode tryFinallyStmt:
+                // Parser-subset support: keep execution of try and finally blocks ordered.
+                CompileStatement(tryFinallyStmt.TryBlock);
+                CompileStatement(tryFinallyStmt.FinallyBlock);
+                break;
+            case TryCatchFinallyStatementNode tryCatchFinallyStmt:
+            {
+                var tryCatchOnly = new TryCatchStatementNode(
+                    tryCatchFinallyStmt.TryBlock,
+                    tryCatchFinallyStmt.CatchIdentifier,
+                    tryCatchFinallyStmt.CatchBlock,
+                    tryCatchFinallyStmt.Span);
+                CompileTryCatchStatement(tryCatchOnly);
+                CompileStatement(tryCatchFinallyStmt.FinallyBlock);
+                break;
+            }
             case FunctionDeclarationNode functionDecl:
                 CompileFunctionDeclaration(functionDecl);
                 break;

@@ -418,31 +418,48 @@ public sealed class JsParser
         return new ThrowStatementNode(argument, MergeSpan(start.Span, argument.Span));
     }
 
-    private TryCatchStatementNode ParseTryCatchStatement()
+    private StatementNode ParseTryCatchStatement()
     {
         var start = Advance(); // try
         var tryBlock = ParseBlockStatement();
-        if (!(Current().Kind == TokenKind.Keyword && Current().Text == "catch"))
+        var hasCatch = Current().Kind == TokenKind.Keyword && Current().Text == "catch";
+        var hasFinally = Current().Kind == TokenKind.Keyword && Current().Text == "finally";
+
+        if (!hasCatch && !hasFinally)
         {
-            throw new JsParserException("Expected 'catch' after try block.");
+            throw new JsParserException("Expected 'catch' or 'finally' after try block.");
         }
 
-        Advance(); // catch
-        ExpectPunctuator("(");
-        string catchIdentifier;
-        if (Current().Kind == TokenKind.Identifier)
+        if (hasCatch)
         {
-            catchIdentifier = Advance().Text;
-        }
-        else
-        {
-            _ = ParseExpression(0);
-            catchIdentifier = "<pattern>";
+            Advance(); // catch
+            ExpectPunctuator("(");
+            string catchIdentifier;
+            if (Current().Kind == TokenKind.Identifier)
+            {
+                catchIdentifier = Advance().Text;
+            }
+            else
+            {
+                _ = ParseExpression(0);
+                catchIdentifier = "<pattern>";
+            }
+
+            ExpectPunctuator(")");
+            var catchBlock = ParseBlockStatement();
+            if (Current().Kind == TokenKind.Keyword && Current().Text == "finally")
+            {
+                Advance(); // finally
+                var finallyBlock = ParseBlockStatement();
+                return new TryCatchFinallyStatementNode(tryBlock, catchIdentifier, catchBlock, finallyBlock, MergeSpan(start.Span, finallyBlock.Span));
+            }
+
+            return new TryCatchStatementNode(tryBlock, catchIdentifier, catchBlock, MergeSpan(start.Span, catchBlock.Span));
         }
 
-        ExpectPunctuator(")");
-        var catchBlock = ParseBlockStatement();
-        return new TryCatchStatementNode(tryBlock, catchIdentifier, catchBlock, MergeSpan(start.Span, catchBlock.Span));
+        Advance(); // finally
+        var finallyOnlyBlock = ParseBlockStatement();
+        return new TryFinallyStatementNode(tryBlock, finallyOnlyBlock, MergeSpan(start.Span, finallyOnlyBlock.Span));
     }
 
     private ClassDeclarationNode ParseClassDeclaration()

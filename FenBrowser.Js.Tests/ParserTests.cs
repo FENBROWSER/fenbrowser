@@ -204,6 +204,20 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesTryFinallyStatement()
+    {
+        var program = JsParser.ParseScript(new SourceText("try { x; } finally { y; }"));
+        Assert.IsType<TryFinallyStatementNode>(Assert.Single(program.Body));
+    }
+
+    [Fact]
+    public void ParsesTryCatchFinallyStatement()
+    {
+        var program = JsParser.ParseScript(new SourceText("try { x; } catch (e) { e; } finally { y; }"));
+        Assert.IsType<TryCatchFinallyStatementNode>(Assert.Single(program.Body));
+    }
+
+    [Fact]
     public void ParsesObjectArrayAndMemberExpressions()
     {
         var program = JsParser.ParseScript(new SourceText("let o = { a: 1 }; let arr = [1,2]; o.a = arr[1]; o.a;"));
