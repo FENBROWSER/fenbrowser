@@ -7,6 +7,13 @@ namespace FenBrowser.Js.Bytecode;
 
 public sealed class BytecodeCompiler
 {
+    private sealed class LoopContext
+    {
+        public int ContinueTarget { get; set; }
+        public required List<int> BreakJumpIndices { get; init; }
+        public required List<int> ContinueJumpIndices { get; init; }
+    }
+
     private readonly List<Instruction> _instructions = new();
     private readonly List<JsValue> _constants = new();
     private readonly Dictionary<string, int> _variables = new(StringComparer.Ordinal);
@@ -14,6 +21,7 @@ public sealed class BytecodeCompiler
     private readonly Dictionary<string, int> _propertyNameToIndex = new(StringComparer.Ordinal);
     private readonly List<BytecodeFunction> _nestedFunctions = new();
     private readonly List<string> _parameterNames = new();
+    private readonly Stack<LoopContext> _loopStack = new();
     private string? _name;
     private int _nextRegister = 1;
 
@@ -37,6 +45,7 @@ public sealed class BytecodeCompiler
         _propertyNameToIndex.Clear();
         _nestedFunctions.Clear();
         _parameterNames.Clear();
+        _loopStack.Clear();
         _name = name;
         _nextRegister = 1;
         foreach (var p in parameters)
@@ -104,6 +113,12 @@ public sealed class BytecodeCompiler
             case ReturnStatementNode returnStmt:
                 CompileReturnStatement(returnStmt);
                 break;
+            case BreakStatementNode:
+                CompileBreakStatement();
+                break;
+            case ContinueStatementNode:
+                CompileContinueStatement();
+                break;
             case ThrowStatementNode throwStmt:
                 CompileThrowStatement(throwStmt);
                 break;
@@ -158,9 +173,33 @@ public sealed class BytecodeCompiler
         var loopStart = _instructions.Count;
         var testReg = CompileExpression(whileStmt.Test);
         var jumpIfFalseIndex = EmitPlaceholder(OpCode.JumpIfFalse, testReg);
-        CompileStatement(whileStmt.Body);
-        _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
-        PatchJump(jumpIfFalseIndex, _instructions.Count);
+        var ctx = new LoopContext
+        {
+            ContinueTarget = loopStart,
+            BreakJumpIndices = new List<int>(),
+            ContinueJumpIndices = new List<int>()
+        };
+        _loopStack.Push(ctx);
+        try
+        {
+            CompileStatement(whileStmt.Body);
+            _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
+            var loopEnd = _instructions.Count;
+            PatchJump(jumpIfFalseIndex, loopEnd);
+            foreach (var breakJump in ctx.BreakJumpIndices)
+            {
+                PatchJump(breakJump, loopEnd);
+            }
+
+            foreach (var continueJump in ctx.ContinueJumpIndices)
+            {
+                PatchJump(continueJump, loopStart);
+            }
+        }
+        finally
+        {
+            _ = _loopStack.Pop();
+        }
     }
 
     private void CompileReturnStatement(ReturnStatementNode returnStmt)
@@ -189,17 +228,43 @@ public sealed class BytecodeCompiler
             jumpIfFalseIndex = EmitPlaceholder(OpCode.JumpIfFalse, testReg);
         }
 
-        CompileStatement(forStmt.Body);
-
-        if (forStmt.Update is not null)
+        var ctx = new LoopContext
         {
-            _ = CompileExpression(forStmt.Update);
+            ContinueTarget = -1,
+            BreakJumpIndices = new List<int>(),
+            ContinueJumpIndices = new List<int>()
+        };
+        _loopStack.Push(ctx);
+        try
+        {
+            CompileStatement(forStmt.Body);
+            var continueTarget = _instructions.Count;
+            ctx.ContinueTarget = continueTarget;
+            if (forStmt.Update is not null)
+            {
+                _ = CompileExpression(forStmt.Update);
+            }
+
+            _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
+            var loopEnd = _instructions.Count;
+            if (jumpIfFalseIndex is not null)
+            {
+                PatchJump(jumpIfFalseIndex.Value, loopEnd);
+            }
+
+            foreach (var breakJump in ctx.BreakJumpIndices)
+            {
+                PatchJump(breakJump, loopEnd);
+            }
+
+            foreach (var continueJump in ctx.ContinueJumpIndices)
+            {
+                PatchJump(continueJump, continueTarget);
+            }
         }
-
-        _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
-        if (jumpIfFalseIndex is not null)
+        finally
         {
-            PatchJump(jumpIfFalseIndex.Value, _instructions.Count);
+            _ = _loopStack.Pop();
         }
     }
 
@@ -450,6 +515,35 @@ public sealed class BytecodeCompiler
         });
 
         return _instructions.Count - 1;
+    }
+
+    private void CompileBreakStatement()
+    {
+        if (_loopStack.Count == 0)
+        {
+            throw new InvalidOperationException("'break' is only valid inside loops.");
+        }
+
+        var jump = EmitPlaceholder(OpCode.Jump);
+        _loopStack.Peek().BreakJumpIndices.Add(jump);
+    }
+
+    private void CompileContinueStatement()
+    {
+        if (_loopStack.Count == 0)
+        {
+            throw new InvalidOperationException("'continue' is only valid inside loops.");
+        }
+
+        var target = _loopStack.Peek().ContinueTarget;
+        if (target >= 0)
+        {
+            _instructions.Add(new Instruction(OpCode.Jump, target, 0, 0));
+            return;
+        }
+
+        var jump = EmitPlaceholder(OpCode.Jump);
+        _loopStack.Peek().ContinueJumpIndices.Add(jump);
     }
 
     private void PatchJump(int instructionIndex, int target)

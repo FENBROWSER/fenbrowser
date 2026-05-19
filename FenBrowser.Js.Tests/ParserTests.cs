@@ -136,4 +136,14 @@ public sealed class ParserTests
         Assert.NotNull(forStmt.Test);
         Assert.NotNull(forStmt.Update);
     }
+
+    [Fact]
+    public void ParsesBreakAndContinueStatements()
+    {
+        var program = JsParser.ParseScript(new SourceText("for(;;){ continue; break; }"));
+        var forStmt = Assert.IsType<ForStatementNode>(Assert.Single(program.Body));
+        var body = Assert.IsType<BlockStatementNode>(forStmt.Body);
+        Assert.IsType<ContinueStatementNode>(body.Statements[0]);
+        Assert.IsType<BreakStatementNode>(body.Statements[1]);
+    }
 }

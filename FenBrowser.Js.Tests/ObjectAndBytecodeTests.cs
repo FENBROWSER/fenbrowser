@@ -235,4 +235,28 @@ public sealed class ObjectAndBytecodeTests
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.Equal(6, result.AsNumber());
     }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleBreakAndContinueInForLoop()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let s = 0; for (let i = 0; i < 6; i = i + 1) { if (i == 2) continue; if (i == 5) break; s = s + i; } s;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(8, result.AsNumber());
+    }
+
+    [Fact]
+    public void CompilerRejectsBreakOutsideLoop()
+    {
+        var compiler = new BytecodeCompiler();
+        Assert.Throws<InvalidOperationException>(() => compiler.CompileScript(new SourceText("break;")));
+    }
+
+    [Fact]
+    public void CompilerRejectsContinueOutsideLoop()
+    {
+        var compiler = new BytecodeCompiler();
+        Assert.Throws<InvalidOperationException>(() => compiler.CompileScript(new SourceText("continue;")));
+    }
 }

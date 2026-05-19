@@ -34,3 +34,7 @@ public sealed record ForStatementNode(
     ExpressionNode? Update,
     StatementNode Body,
     SourceSpan Span) : StatementNode(Span);
+
+public sealed record BreakStatementNode(SourceSpan Span) : StatementNode(Span);
+
+public sealed record ContinueStatementNode(SourceSpan Span) : StatementNode(Span);

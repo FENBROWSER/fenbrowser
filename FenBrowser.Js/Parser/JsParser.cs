@@ -77,6 +77,10 @@ public sealed class JsParser
                     return ParseThrowStatement();
                 case "try":
                     return ParseTryCatchStatement();
+                case "break":
+                    return ParseBreakStatement();
+                case "continue":
+                    return ParseContinueStatement();
             }
         }
 
@@ -263,6 +267,28 @@ public sealed class JsParser
         ExpectPunctuator(")");
         var catchBlock = ParseBlockStatement();
         return new TryCatchStatementNode(tryBlock, catchId.Text, catchBlock, MergeSpan(start.Span, catchBlock.Span));
+    }
+
+    private BreakStatementNode ParseBreakStatement()
+    {
+        var token = Advance(); // break
+        if (IsPunctuator(";"))
+        {
+            Advance();
+        }
+
+        return new BreakStatementNode(token.Span);
+    }
+
+    private ContinueStatementNode ParseContinueStatement()
+    {
+        var token = Advance(); // continue
+        if (IsPunctuator(";"))
+        {
+            Advance();
+        }
+
+        return new ContinueStatementNode(token.Span);
     }
 
     private IReadOnlyList<string> ParseParameterList()
