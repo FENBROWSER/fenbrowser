@@ -33,7 +33,7 @@ public sealed class Test262Runner
         files = ApplyScopeFilter(rootPath, files, test262Path, test262File);
         files = ApplyFeatureFilter(files, featuresCsv);
         Test262Expectations? expectations = null;
-        if (!string.IsNullOrWhiteSpace(expectationsPath))
+        if (!string.IsNullOrWhiteSpace(expectationsPath) && (parserSubset || runtimeSubset))
         {
             expectations = Test262Expectations.Load(expectationsPath);
         }
