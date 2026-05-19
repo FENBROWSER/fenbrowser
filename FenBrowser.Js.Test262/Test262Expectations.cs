@@ -12,12 +12,63 @@ public sealed class Test262Expectations
 
     public static Test262Expectations Load(string path)
     {
+        if (Directory.Exists(path))
+        {
+            return LoadDirectory(path);
+        }
+
         if (!File.Exists(path))
         {
             throw new FileNotFoundException($"Expectations file not found: {path}", path);
         }
 
-        using var stream = File.OpenRead(path);
+        return LoadFile(path);
+    }
+
+    private static Test262Expectations LoadDirectory(string directoryPath)
+    {
+        var files = Directory.EnumerateFiles(directoryPath, "*.json", SearchOption.TopDirectoryOnly)
+            .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var mergedEntries = new List<Test262ExpectationEntry>();
+        string? owner = null;
+        string? area = null;
+        string? commit = null;
+
+        foreach (var file in files)
+        {
+            var single = LoadFile(file);
+            if (owner is null && !string.IsNullOrWhiteSpace(single.MetadataOwner))
+            {
+                owner = single.MetadataOwner;
+            }
+
+            if (area is null && !string.IsNullOrWhiteSpace(single.MetadataArea))
+            {
+                area = single.MetadataArea;
+            }
+
+            if (commit is null && !string.IsNullOrWhiteSpace(single.MetadataCommit))
+            {
+                commit = single.MetadataCommit;
+            }
+
+            mergedEntries.AddRange(single.Entries);
+        }
+
+        return new Test262Expectations
+        {
+            MetadataOwner = owner,
+            MetadataArea = area,
+            MetadataCommit = commit,
+            Entries = mergedEntries
+        };
+    }
+
+    private static Test262Expectations LoadFile(string filePath)
+    {
+        using var stream = File.OpenRead(filePath);
         using var doc = JsonDocument.Parse(stream);
         var root = doc.RootElement;
 
