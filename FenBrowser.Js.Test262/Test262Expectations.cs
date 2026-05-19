@@ -117,10 +117,14 @@ public sealed class Test262Expectations
                 var itemOwner = TryGetString(item, "owner") ?? owner ?? "unknown";
                 var itemArea = TryGetString(item, "area") ?? area ?? "unknown";
 
-                if (string.IsNullOrWhiteSpace(pattern) || string.IsNullOrWhiteSpace(status))
+                if (string.IsNullOrWhiteSpace(pattern))
                 {
-                    index++;
-                    continue;
+                    throw new InvalidDataException($"Expectation entry in {filePath} at index {index} is missing required 'path'.");
+                }
+
+                if (string.IsNullOrWhiteSpace(status))
+                {
+                    throw new InvalidDataException($"Expectation entry in {filePath} at index {index} is missing required 'status'.");
                 }
 
                 if (!ValidStatuses.Contains(status))

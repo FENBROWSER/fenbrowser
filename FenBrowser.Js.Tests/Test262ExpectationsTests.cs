@@ -55,8 +55,8 @@ public sealed class Test262ExpectationsTests
             }
             """);
 
-            var ex = Assert.Throws<InvalidOperationException>(() => Test262Expectations.Load(tempRoot));
-            Assert.Contains("No valid expectation entries found in directory", ex.Message, StringComparison.Ordinal);
+            var ex = Assert.Throws<InvalidDataException>(() => Test262Expectations.Load(tempRoot));
+            Assert.Contains("missing required 'path'", ex.Message, StringComparison.Ordinal);
         }
         finally
         {
@@ -123,6 +123,62 @@ public sealed class Test262ExpectationsTests
 
             var ex = Assert.Throws<InvalidDataException>(() => Test262Expectations.Load(filePath));
             Assert.Contains("Invalid expectation status", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Load_ThrowsWhenPathIsMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var filePath = Path.Combine(tempRoot, "missing-path.json");
+
+        try
+        {
+            File.WriteAllText(filePath, """
+            {
+              "expectations": [
+                {
+                  "status": "RuntimeError"
+                }
+              ]
+            }
+            """);
+
+            var ex = Assert.Throws<InvalidDataException>(() => Test262Expectations.Load(filePath));
+            Assert.Contains("missing required 'path'", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Load_ThrowsWhenStatusIsMissing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var filePath = Path.Combine(tempRoot, "missing-status.json");
+
+        try
+        {
+            File.WriteAllText(filePath, """
+            {
+              "expectations": [
+                {
+                  "path": "test/language/foo.js"
+                }
+              ]
+            }
+            """);
+
+            var ex = Assert.Throws<InvalidDataException>(() => Test262Expectations.Load(filePath));
+            Assert.Contains("missing required 'status'", ex.Message, StringComparison.Ordinal);
         }
         finally
         {
