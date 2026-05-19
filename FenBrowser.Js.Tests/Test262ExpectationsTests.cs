@@ -516,6 +516,41 @@ public sealed class Test262ExpectationsTests
     }
 
     [Fact]
+    public void Load_RejectsMultiDotMilestoneFormat()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var filePath = Path.Combine(tempRoot, "multidot-milestone.json");
+
+        try
+        {
+            File.WriteAllText(filePath, """
+            {
+              "metadata": {
+                "owner": "js",
+                "area": "runtime"
+              },
+              "expectations": [
+                {
+                  "path": "test/language/foo.js",
+                  "status": "RuntimeError",
+                  "reason": "known runtime limitation",
+                  "expiresAtMilestone": "M2.1.3"
+                }
+              ]
+            }
+            """);
+
+            var ex = Assert.Throws<InvalidDataException>(() => Test262Expectations.Load(filePath));
+            Assert.Contains("invalid 'expiresAtMilestone'", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Load_Directory_ThrowsWhenOwnerMetadataConflicts()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
