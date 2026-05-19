@@ -197,15 +197,27 @@ public sealed class RuntimeHeapTests
     public void HandleScopeRootsAndUnrootsStringAndSymbolHandles()
     {
         var heap = new JsHeap();
+        var stringHandle = heap.AllocateString("root-me", AllocationSite.Current());
+        var symbolHandle = heap.AllocateSymbol("root-me", AllocationSite.Current());
         Assert.Equal(0, heap.RootCount);
         using (var scope = new HandleScope(heap))
         {
-            _ = scope.Create(new StringHandle(1, 1));
-            _ = scope.Create(new SymbolHandle(2, 1));
+            _ = scope.Create(stringHandle);
+            _ = scope.Create(symbolHandle);
             Assert.Equal(2, heap.RootCount);
         }
 
         Assert.Equal(0, heap.RootCount);
+    }
+
+    [Fact]
+    public void PushRootRejectsInvalidHandles()
+    {
+        var heap = new JsHeap();
+
+        Assert.Throws<JsEngineFatalException>(() => heap.PushRoot(new ObjectHandle(999, 1)));
+        Assert.Throws<JsEngineFatalException>(() => heap.PushRoot(new StringHandle(999, 1)));
+        Assert.Throws<JsEngineFatalException>(() => heap.PushRoot(new SymbolHandle(999, 1)));
     }
 
     [Fact]

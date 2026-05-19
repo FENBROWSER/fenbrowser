@@ -100,9 +100,23 @@ public sealed class JsHeap
         return ((SymbolPayload)cell.Payload).Description;
     }
 
-    public void PushRoot(ObjectHandle handle) => _roots.Push(handle);
-    public void PushRoot(StringHandle handle) => _roots.Push(handle);
-    public void PushRoot(SymbolHandle handle) => _roots.Push(handle);
+    public void PushRoot(ObjectHandle handle)
+    {
+        _ = Validate(handle);
+        _roots.Push(handle);
+    }
+
+    public void PushRoot(StringHandle handle)
+    {
+        _ = Validate(handle);
+        _roots.Push(handle);
+    }
+
+    public void PushRoot(SymbolHandle handle)
+    {
+        _ = Validate(handle);
+        _roots.Push(handle);
+    }
 
     public void PopRootsTo(int mark) => _roots.PopTo(mark);
 
