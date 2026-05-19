@@ -547,6 +547,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void BooleanCallReturnsPrimitiveAndConstructorCreatesInstance()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let callIsInstance = Boolean(false) instanceof Boolean; let constructIsInstance = new Boolean instanceof Boolean; (!callIsInstance) && constructIsInstance;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void InstanceOfReturnsTrueForConstructedInstance()
     {
         var compiler = new BytecodeCompiler();

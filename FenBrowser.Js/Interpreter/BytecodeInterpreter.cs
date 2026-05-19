@@ -10,6 +10,8 @@ public sealed class BytecodeInterpreter
     private readonly JsHeap _heap;
     private ObjectHandle? _objectConstructorHandle;
     private ObjectHandle? _objectPrototypeHandle;
+    private ObjectHandle? _booleanConstructorHandle;
+    private ObjectHandle? _booleanPrototypeHandle;
     private ObjectHandle? _numberConstructorHandle;
     private ObjectHandle? _numberPrototypeHandle;
     private ObjectHandle? _errorConstructorHandle;
@@ -401,6 +403,11 @@ public sealed class BytecodeInterpreter
             frame.Variables[objectSlot] = JsValue.FromObject(EnsureObjectConstructor());
         }
 
+        if (function.VariableSlots.TryGetValue("Boolean", out var booleanSlot))
+        {
+            frame.Variables[booleanSlot] = JsValue.FromObject(EnsureBooleanConstructor());
+        }
+
         if (function.VariableSlots.TryGetValue("Number", out var numberSlot))
         {
             frame.Variables[numberSlot] = JsValue.FromObject(EnsureNumberConstructor());
@@ -545,6 +552,42 @@ public sealed class BytecodeInterpreter
         _objectPrototypeHandle = prototypeHandle;
         _objectConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    private ObjectHandle EnsureBooleanPrototype()
+    {
+        _ = EnsureBooleanConstructor();
+        return _booleanPrototypeHandle!.Value;
+    }
+
+    private ObjectHandle EnsureBooleanConstructor()
+    {
+        if (_booleanConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototypeHandle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "Boolean",
+            (_, args) => JsValue.FromBoolean(args.Count > 0 && IsTruthy(args[0])),
+            args => CreateBooleanObject(args.Count > 0 && IsTruthy(args[0])));
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        _booleanPrototypeHandle = prototypeHandle;
+        _booleanConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private JsValue CreateBooleanObject(bool value)
+    {
+        var obj = new BooleanObject(value);
+        obj.SetPrototype(EnsureBooleanPrototype());
+        return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
     private ObjectHandle EnsureNumberPrototype()
@@ -983,6 +1026,16 @@ public sealed class BytecodeInterpreter
         public JsValue Call(JsValue thisValue, IReadOnlyList<JsValue> args) => _call(thisValue, args);
 
         public JsValue Construct(IReadOnlyList<JsValue> args) => _construct(args);
+    }
+
+    private sealed class BooleanObject : JsObject
+    {
+        public BooleanObject(bool value)
+        {
+            Value = value;
+        }
+
+        public bool Value { get; }
     }
 
     private sealed class NumberObject : JsObject
