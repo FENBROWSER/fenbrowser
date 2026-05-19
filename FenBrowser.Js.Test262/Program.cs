@@ -2,7 +2,7 @@ using FenBrowser.Js.Test262;
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("Usage: fenjs-test262 --list | --dry-run | --parser-subset [--root <path>] [--out <path>] [--max <n>]");
+    Console.Error.WriteLine("Usage: fenjs-test262 --list | --dry-run | --parser-subset [--root <path>] [--out <path>] [--max <n>] [--expectations <path>]");
     return 1;
 }
 
@@ -12,6 +12,7 @@ var list = false;
 var dryRun = false;
 var parserSubset = false;
 var max = 200;
+string? expectationsPath = null;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -36,6 +37,9 @@ for (var i = 0; i < args.Length; i++)
             max = parsed;
             i++;
             break;
+        case "--expectations" when i + 1 < args.Length:
+            expectationsPath = args[++i];
+            break;
     }
 }
 
@@ -52,4 +56,4 @@ if (!Directory.Exists(root))
 }
 
 var runner = new Test262Runner();
-return runner.Run(root, list, dryRun, parserSubset, outPath, max);
+return runner.Run(root, list, dryRun, parserSubset, outPath, max, expectationsPath);

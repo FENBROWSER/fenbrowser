@@ -5,10 +5,15 @@ namespace FenBrowser.Js.Test262;
 
 public sealed class Test262Runner
 {
-    public int Run(string rootPath, bool list, bool dryRun, bool parserSubset, string outputPath, int max)
+    public int Run(string rootPath, bool list, bool dryRun, bool parserSubset, string outputPath, int max, string? expectationsPath)
     {
         var manifest = new Test262Manifest { RootPath = rootPath };
         var files = manifest.EnumerateTestFiles().OrderBy(p => p, StringComparer.Ordinal).ToList();
+        Test262Expectations? expectations = null;
+        if (!string.IsNullOrWhiteSpace(expectationsPath))
+        {
+            expectations = Test262Expectations.Load(expectationsPath);
+        }
 
         if (list)
         {
@@ -30,13 +35,13 @@ public sealed class Test262Runner
 
         if (parserSubset)
         {
-            RunParserSubset(rootPath, outputPath, files, max);
+            RunParserSubset(rootPath, outputPath, files, max, expectationsPath, expectations);
         }
 
         return 0;
     }
 
-    private static void RunParserSubset(string rootPath, string outputPath, IReadOnlyList<string> files, int max)
+    private static void RunParserSubset(string rootPath, string outputPath, IReadOnlyList<string> files, int max, string? expectationsPath, Test262Expectations? expectations)
     {
         var pinPath = Path.Combine(rootPath, "..", "test262.pin");
         var commit = File.Exists(pinPath) ? File.ReadAllText(pinPath).Trim() : "un-pinned";
@@ -46,50 +51,109 @@ public sealed class Test262Runner
         var unsupported = 0;
         var parserErrors = 0;
         var crashes = 0;
+        var expectedFailures = 0;
+        var unexpectedPasses = 0;
         var failures = new List<object>();
+        var unexpectedPassesList = new List<object>();
 
         foreach (var file in subset)
         {
+            var relativePath = Path.GetRelativePath(rootPath, file).Replace('\\', '/');
             try
             {
                 var source = new SourceText(File.ReadAllText(file), file);
                 JsParser.ParseScript(source);
                 passed++;
+
+                if (expectations is not null)
+                {
+                    var expected = expectations.Entries.FirstOrDefault(e => e.Matches(relativePath, "ParserError") || e.Matches(relativePath, "UnsupportedFeature") || e.Matches(relativePath, "Crash"));
+                    if (expected is not null)
+                    {
+                        unexpectedPasses++;
+                        unexpectedPassesList.Add(new
+                        {
+                            path = file,
+                            relativePath,
+                            expectedStatus = expected.Status,
+                            expectedReason = expected.Reason,
+                            expectedOwner = expected.Owner,
+                            expectedArea = expected.Area,
+                            expiresAtMilestone = expected.ExpiresAtMilestone
+                        });
+                    }
+                }
             }
             catch (UnsupportedFeatureException ex)
             {
                 unsupported++;
+                var expected = expectations?.Entries.FirstOrDefault(e => e.Matches(relativePath, "UnsupportedFeature"));
+                if (expected is not null)
+                {
+                    expectedFailures++;
+                }
+
                 failures.Add(new
                 {
                     path = file,
+                    relativePath,
                     classification = "unsupported",
                     feature = ex.FeatureName,
-                    location = $"{ex.Span.Line}:{ex.Span.Column}"
+                    location = $"{ex.Span.Line}:{ex.Span.Column}",
+                    expected = expected is not null,
+                    expectedReason = expected?.Reason,
+                    expectedOwner = expected?.Owner,
+                    expectedArea = expected?.Area,
+                    expiresAtMilestone = expected?.ExpiresAtMilestone
                 });
             }
             catch (JsParserException ex)
             {
                 parserErrors++;
+                var expected = expectations?.Entries.FirstOrDefault(e => e.Matches(relativePath, "ParserError"));
+                if (expected is not null)
+                {
+                    expectedFailures++;
+                }
+
                 failures.Add(new
                 {
                     path = file,
+                    relativePath,
                     classification = "parser-error",
-                    message = ex.Message
+                    message = ex.Message,
+                    expected = expected is not null,
+                    expectedReason = expected?.Reason,
+                    expectedOwner = expected?.Owner,
+                    expectedArea = expected?.Area,
+                    expiresAtMilestone = expected?.ExpiresAtMilestone
                 });
             }
             catch (Exception ex)
             {
                 crashes++;
+                var expected = expectations?.Entries.FirstOrDefault(e => e.Matches(relativePath, "Crash"));
+                if (expected is not null)
+                {
+                    expectedFailures++;
+                }
+
                 failures.Add(new
                 {
                     path = file,
+                    relativePath,
                     classification = "crash",
-                    message = ex.Message
+                    message = ex.Message,
+                    expected = expected is not null,
+                    expectedReason = expected?.Reason,
+                    expectedOwner = expected?.Owner,
+                    expectedArea = expected?.Area,
+                    expiresAtMilestone = expected?.ExpiresAtMilestone
                 });
             }
         }
 
-        Test262ResultWriter.WriteParserSubset(outputPath, commit, subset.Count, passed, unsupported, parserErrors, crashes, failures);
+        Test262ResultWriter.WriteParserSubset(outputPath, commit, subset.Count, passed, unsupported, parserErrors, crashes, expectedFailures, unexpectedPasses, failures, unexpectedPassesList, expectationsPath);
         Console.WriteLine($"Parser subset result written: {outputPath}");
     }
 }

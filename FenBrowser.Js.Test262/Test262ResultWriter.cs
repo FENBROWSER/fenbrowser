@@ -29,7 +29,11 @@ public static class Test262ResultWriter
         int unsupported,
         int parserErrors,
         int crashes,
-        IReadOnlyList<object> failures)
+        int expectedFailures,
+        int unexpectedPasses,
+        IReadOnlyList<object> failures,
+        IReadOnlyList<object> unexpectedPassesList,
+        string? expectationsPath)
     {
         var payload = new
         {
@@ -37,15 +41,19 @@ public static class Test262ResultWriter
             mode = "parser-subset",
             timestampUtc = DateTime.UtcNow,
             test262Commit,
+            expectations = expectationsPath,
             summary = new
             {
                 total,
                 passed,
                 unsupported,
                 parserErrors,
-                crashes
+                crashes,
+                expectedFailures,
+                unexpectedPasses
             },
-            failures
+            failures,
+            unexpectedPassesList
         };
 
         var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
