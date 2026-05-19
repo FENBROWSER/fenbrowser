@@ -2674,6 +2674,47 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_IgnoresWhitespaceOnlyTestPathInFailureSetRegressionDetection()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var previousPath = Path.Combine(tempRoot, "previous.json");
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(previousPath, BuildResultJson(
+                tests: Array.Empty<object>(),
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 0,
+                passed: 0));
+
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests:
+                [
+                    new
+                    {
+                        path = "   ",
+                        status = "Failed",
+                        category = "parser-error"
+                    }
+                ],
+                failures: Array.Empty<object>(),
+                crashes: 0,
+                unexpectedPasses: 0,
+                passed: 0));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousPath);
+            Assert.DoesNotContain(result.Violations, v => v.Contains("No new failure in enabled subset violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_CountsUnknownCrashWhenFailureUsesPathField()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
