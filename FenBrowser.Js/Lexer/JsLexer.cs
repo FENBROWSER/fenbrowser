@@ -195,14 +195,14 @@ public sealed class JsLexer
         while (_index < _source.Length)
         {
             var ch = _source[_index];
-            if (ch == ' ' || ch == '\t' || ch == '\r')
+            if (ch == ' ' || ch == '\t')
             {
                 _index++;
                 _column++;
                 continue;
             }
 
-            if (ch == '\n')
+            if (IsLineTerminator(ch))
             {
                 _index++;
                 _line++;
@@ -224,11 +224,11 @@ public sealed class JsLexer
                 continue;
             }
 
-            if (_atLineStart && _index + 3 < _source.Length && _source[_index] == '<' && _source[_index + 1] == '!' && _source[_index + 2] == '-' && _source[_index + 3] == '-')
+            if (_index + 3 < _source.Length && _source[_index] == '<' && _source[_index + 1] == '!' && _source[_index + 2] == '-' && _source[_index + 3] == '-')
             {
                 _index += 4;
                 _column += 4;
-                while (_index < _source.Length && _source[_index] != '\n')
+                while (_index < _source.Length && !IsLineTerminator(_source[_index]))
                 {
                     _index++;
                     _column++;
@@ -244,7 +244,7 @@ public sealed class JsLexer
                 {
                     _index += 2;
                     _column += 2;
-                    while (_index < _source.Length && _source[_index] != '\n')
+                    while (_index < _source.Length && !IsLineTerminator(_source[_index]))
                     {
                         _index++;
                         _column++;
@@ -268,7 +268,7 @@ public sealed class JsLexer
                             break;
                         }
 
-                        if (_source[_index] == '\n')
+                        if (IsLineTerminator(_source[_index]))
                         {
                             _index++;
                             _line++;
@@ -402,7 +402,7 @@ public sealed class JsLexer
                     return true;
                 }
 
-                if (ch == '\n' || ch == '\r')
+                if (IsLineTerminator(ch))
                 {
                     break;
                 }
@@ -427,4 +427,6 @@ public sealed class JsLexer
     private static bool IsOctDigit(char ch) => ch >= '0' && ch <= '7';
 
     private static bool IsBinDigit(char ch) => ch == '0' || ch == '1';
+
+    private static bool IsLineTerminator(char ch) => ch == '\n' || ch == '\r' || ch == '\u2028' || ch == '\u2029';
 }

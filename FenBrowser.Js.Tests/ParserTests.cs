@@ -274,4 +274,19 @@ public sealed class ParserTests
         var b2 = Assert.IsType<BinaryExpressionNode>(s2.Expression);
         Assert.Equal("!==", b2.Operator);
     }
+
+    [Fact]
+    public void ParsesAnnexBHtmlOpenCommentForms()
+    {
+        var program = JsParser.ParseScript(new SourceText("let x = 1; <!--comment\nx = x + 1; x;"));
+        Assert.Equal(3, program.Body.Count);
+    }
+
+    [Fact]
+    public void ParsesUnicodeLineSeparatorWithHtmlCloseComment()
+    {
+        var source = "let x = 0;\u2028-->comment\nx = 1; x;";
+        var program = JsParser.ParseScript(new SourceText(source));
+        Assert.Equal(3, program.Body.Count);
+    }
 }
