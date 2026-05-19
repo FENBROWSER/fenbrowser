@@ -179,6 +179,54 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_ReportIncludesViolationMessagesWhenFailing()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests: Array.Empty<object>(),
+                failures:
+                [
+                    new
+                    {
+                        relativePath = "test/crash.js",
+                        classification = "crash",
+                        expected = false
+                    }
+                ],
+                crashes: 1));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            using var report = JsonDocument.Parse(result.ReportJson);
+            var violations = report.RootElement.GetProperty("violations");
+            Assert.Equal(JsonValueKind.Array, violations.ValueKind);
+            Assert.True(violations.GetArrayLength() > 0);
+
+            var containsUnknownCrashViolation = false;
+            foreach (var violation in violations.EnumerateArray())
+            {
+                if (violation.ValueKind == JsonValueKind.String &&
+                    violation.GetString() is string text &&
+                    text.Contains("No unknown crashes violated", StringComparison.Ordinal))
+                {
+                    containsUnknownCrashViolation = true;
+                    break;
+                }
+            }
+
+            Assert.True(containsUnknownCrashViolation);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_ReportIncludesSourcePaths()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
