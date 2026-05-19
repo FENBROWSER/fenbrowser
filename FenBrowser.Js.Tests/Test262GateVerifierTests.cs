@@ -1898,6 +1898,38 @@ public sealed class Test262GateVerifierTests
     }
 
     [Fact]
+    public void Verify_TreatsUppercaseCrashClassificationAsCrash()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var currentPath = Path.Combine(tempRoot, "current.json");
+
+        try
+        {
+            File.WriteAllText(currentPath, BuildResultJson(
+                tests: Array.Empty<object>(),
+                failures:
+                [
+                    new
+                    {
+                        relativePath = "test/crash-uppercase.js",
+                        classification = "CRASH",
+                        expected = false
+                    }
+                ],
+                crashes: 1));
+
+            var result = Test262GateVerifier.Verify(currentPath, previousResultPath: null);
+            Assert.False(result.Passed);
+            Assert.Contains(result.Violations, v => v.Contains("No unknown crashes violated", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Verify_IgnoresMissingPreviousResultPath()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-gate-" + Guid.NewGuid().ToString("N"));
