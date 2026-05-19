@@ -269,4 +269,108 @@ public sealed class Test262RunnerTests
             Directory.Delete(tempRoot, recursive: true);
         }
     }
+
+    [Fact]
+    public void Run_ParserSubset_TimeoutWithoutExpectationRemainsTimedOut()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "timeout.js");
+        var outputPath = Path.Combine(tempRoot, "parser-timeout-no-expectation.json");
+
+        try
+        {
+            File.WriteAllText(testFile, "for(;;){}");
+            Test262Runner.ParseInvokerForTests = (_source, _isModule) => Task.Delay(100);
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: true,
+                runtimeSubset: false,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
+
+            var tests = doc.RootElement.GetProperty("tests");
+            var first = tests.EnumerateArray().First();
+            Assert.Equal("TimedOut", first.GetProperty("status").GetString());
+        }
+        finally
+        {
+            Test262Runner.ParseInvokerForTests = null;
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Run_RuntimeSubset_TimeoutWithoutExpectationRemainsTimedOut()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "timeout.js");
+        var outputPath = Path.Combine(tempRoot, "runtime-timeout-no-expectation.json");
+
+        try
+        {
+            File.WriteAllText(testFile, "1+1;");
+            Test262Runner.RuntimeInvokerForTests = (_input, _file, _isModule) => Task.Delay(100);
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: false,
+                runtimeSubset: true,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
+
+            var tests = doc.RootElement.GetProperty("tests");
+            var first = tests.EnumerateArray().First();
+            Assert.Equal("TimedOut", first.GetProperty("status").GetString());
+        }
+        finally
+        {
+            Test262Runner.RuntimeInvokerForTests = null;
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
 }
