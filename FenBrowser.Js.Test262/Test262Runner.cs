@@ -9,6 +9,7 @@ namespace FenBrowser.Js.Test262;
 public sealed class Test262Runner
 {
     public static Func<SourceText, bool, Task>? ParseInvokerForTests { get; set; }
+    public static Func<string, string, bool, Task>? RuntimeInvokerForTests { get; set; }
 
     public int Run(
         string rootPath,
@@ -846,12 +847,20 @@ public sealed class Test262Runner
 
                 var executeTask = Task.Run(() =>
                 {
-                    var source = new SourceText(runtimeInput, file);
-                    var program = parseAsModule ? JsParser.ParseModule(source) : JsParser.ParseScript(source);
-                    var compiler = new BytecodeCompiler();
-                    var function = compiler.CompileProgram(program);
-                    var interpreter = new BytecodeInterpreter(new JsHeap());
-                    _ = interpreter.Execute(function);
+                    var overrideInvoker = RuntimeInvokerForTests;
+                    if (overrideInvoker is not null)
+                    {
+                        overrideInvoker(runtimeInput, file, parseAsModule).GetAwaiter().GetResult();
+                    }
+                    else
+                    {
+                        var source = new SourceText(runtimeInput, file);
+                        var program = parseAsModule ? JsParser.ParseModule(source) : JsParser.ParseScript(source);
+                        var compiler = new BytecodeCompiler();
+                        var function = compiler.CompileProgram(program);
+                        var interpreter = new BytecodeInterpreter(new JsHeap());
+                        _ = interpreter.Execute(function);
+                    }
                 });
                 var timeoutTask = Task.Delay(Math.Max(1, timeoutMs));
                 var completedTask = Task.WhenAny(executeTask, timeoutTask).GetAwaiter().GetResult();
