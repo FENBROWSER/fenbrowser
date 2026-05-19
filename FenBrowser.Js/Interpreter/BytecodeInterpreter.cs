@@ -267,6 +267,12 @@ public sealed class BytecodeInterpreter
                 case OpCode.Neq:
                     frame.Registers[ins.A] = JsValue.FromBoolean(!AreEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
                     break;
+                case OpCode.StrictEq:
+                    frame.Registers[ins.A] = JsValue.FromBoolean(AreStrictlyEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
+                    break;
+                case OpCode.StrictNeq:
+                    frame.Registers[ins.A] = JsValue.FromBoolean(!AreStrictlyEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
+                    break;
                 case OpCode.Lt:
                     frame.Registers[ins.A] = JsValue.FromBoolean(frame.Registers[ins.B].AsNumber() < frame.Registers[ins.C].AsNumber());
                     break;
@@ -358,6 +364,26 @@ public sealed class BytecodeInterpreter
         }
 
         return false;
+    }
+
+    private static bool AreStrictlyEqual(JsValue left, JsValue right)
+    {
+        if (left.Tag != right.Tag)
+        {
+            return false;
+        }
+
+        return left.Tag switch
+        {
+            JsValueTag.Undefined => true,
+            JsValueTag.Null => true,
+            JsValueTag.Boolean => left.AsBoolean() == right.AsBoolean(),
+            JsValueTag.Int32 => left.AsInt32() == right.AsInt32(),
+            JsValueTag.Number => left.AsNumber() == right.AsNumber(),
+            JsValueTag.String => left.AsString() == right.AsString(),
+            JsValueTag.Object => left.AsObjectHandle().Equals(right.AsObjectHandle()),
+            _ => false
+        };
     }
 
     private static double ToNumberForEquality(JsValue value)

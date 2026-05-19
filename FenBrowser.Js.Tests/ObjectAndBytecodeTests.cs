@@ -392,6 +392,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void StrictEqualityDiffersFromLooseEqualityForMixedTypes()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("(0 == false) != (0 === false);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void InterpreterInvokesWriteBarrierForObjectStores()
     {
         var compiler = new BytecodeCompiler();

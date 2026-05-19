@@ -30,6 +30,8 @@ public enum OpCode : byte
     TypeOf,
     Eq,
     Neq,
+    StrictEq,
+    StrictNeq,
     Lt,
     Gt,
     Le,
