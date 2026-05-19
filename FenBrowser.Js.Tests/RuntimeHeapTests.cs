@@ -71,6 +71,28 @@ public sealed class RuntimeHeapTests
     }
 
     [Fact]
+    public void CollectGarbageSweepsUnrootedObjects()
+    {
+        var heap = new JsHeap();
+        var handle = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        heap.CollectGarbage();
+
+        Assert.Throws<JsEngineFatalException>(() => heap.GetObject(handle));
+    }
+
+    [Fact]
+    public void CollectGarbageKeepsRootedObjectsAlive()
+    {
+        var heap = new JsHeap();
+        var handle = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        heap.PushRoot(handle);
+        heap.CollectGarbage();
+
+        var obj = heap.GetObject(handle);
+        Assert.NotNull(obj);
+    }
+
+    [Fact]
     public void HeapDetectsStaleHandleAfterFree()
     {
         var heap = new JsHeap();
@@ -78,6 +100,19 @@ public sealed class RuntimeHeapTests
         heap.FreeForTest(handle);
 
         Assert.Throws<JsEngineFatalException>(() => heap.GetObject(handle));
+    }
+
+    [Fact]
+    public void ReallocatedFreedSlotGetsNewGeneration()
+    {
+        var heap = new JsHeap();
+        var oldHandle = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        heap.FreeForTest(oldHandle);
+        var newHandle = heap.AllocateObject(new JsObject(), AllocationSite.Current());
+
+        Assert.Equal(oldHandle.Index, newHandle.Index);
+        Assert.True(newHandle.Generation > oldHandle.Generation);
+        Assert.Throws<JsEngineFatalException>(() => heap.GetObject(oldHandle));
     }
 
     [Fact]

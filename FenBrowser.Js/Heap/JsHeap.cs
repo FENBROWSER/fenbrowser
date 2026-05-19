@@ -6,6 +6,8 @@ namespace FenBrowser.Js.Heap;
 public sealed class JsHeap
 {
     private readonly List<HeapCell?> _cells = new();
+    private readonly List<int> _generations = new();
+    private readonly List<bool> _isFree = new();
     private readonly Stack<int> _freeList = new();
     private readonly RootSet _roots = new();
     private readonly GcStressMode _stressMode;
@@ -30,7 +32,9 @@ public sealed class JsHeap
         if (_freeList.Count > 0)
         {
             index = _freeList.Pop();
-            generation = (_cells[index]?.Generation ?? 0) + 1;
+            _isFree[index] = false;
+            generation = _generations[index] + 1;
+            _generations[index] = generation;
             _cells[index] = new HeapCell
             {
                 Generation = generation,
@@ -42,6 +46,8 @@ public sealed class JsHeap
         {
             index = _cells.Count;
             generation = 1;
+            _generations.Add(generation);
+            _isFree.Add(false);
             _cells.Add(new HeapCell
             {
                 Generation = generation,
@@ -115,14 +121,86 @@ public sealed class JsHeap
 
     public void CollectGarbage()
     {
-        // Mark-sweep implementation lands in subsequent tranche.
+        // Clear old mark bits.
+        for (var i = 0; i < _cells.Count; i++)
+        {
+            var cell = _cells[i];
+            if (cell is not null)
+            {
+                cell.Marked = false;
+            }
+        }
+
+        // Mark from explicit roots.
+        var marker = new MarkingTracer(this);
+        foreach (var root in _roots.Snapshot())
+        {
+            marker.Trace(root);
+        }
+
+        // Sweep unreachable cells.
+        for (var i = 0; i < _cells.Count; i++)
+        {
+            var cell = _cells[i];
+            if (cell is null || cell.Marked)
+            {
+                continue;
+            }
+
+            _cells[i] = null;
+            if (!_isFree[i])
+            {
+                _isFree[i] = true;
+                _freeList.Push(i);
+            }
+        }
+
+        PruneWriteBarrierEdges();
     }
 
     public void FreeForTest(ObjectHandle handle)
     {
         Validate(handle);
         _cells[handle.Index] = null;
-        _freeList.Push(handle.Index);
+        if (!_isFree[handle.Index])
+        {
+            _isFree[handle.Index] = true;
+            _freeList.Push(handle.Index);
+        }
+    }
+
+    private void PruneWriteBarrierEdges()
+    {
+        for (var i = _writeBarrierEdges.Count - 1; i >= 0; i--)
+        {
+            if (!IsLiveObject(_writeBarrierEdges[i].Owner) || !IsLiveObject(_writeBarrierEdges[i].Child))
+            {
+                _writeBarrierEdges.RemoveAt(i);
+            }
+        }
+    }
+
+    private bool IsLiveObject(ObjectHandle handle)
+    {
+        if ((uint)handle.Index >= (uint)_cells.Count)
+        {
+            return false;
+        }
+
+        var cell = _cells[handle.Index];
+        return cell is not null && cell.Generation == handle.Generation && cell.Kind == HeapCellKind.Object;
+    }
+
+    private void Mark(ObjectHandle handle)
+    {
+        var cell = Validate(handle);
+        if (cell.Marked)
+        {
+            return;
+        }
+
+        cell.Marked = true;
+        cell.Payload.Trace(new MarkingTracer(this));
     }
 
     public IReadOnlyList<HeapCell?> GetCellsSnapshotForTest() => _cells;
@@ -145,6 +223,31 @@ public sealed class JsHeap
                 }
 
                 break;
+        }
+    }
+
+    private sealed class MarkingTracer : IHeapTracer
+    {
+        private readonly JsHeap _heap;
+
+        public MarkingTracer(JsHeap heap)
+        {
+            _heap = heap;
+        }
+
+        public void Trace(ObjectHandle handle)
+        {
+            _heap.Mark(handle);
+        }
+
+        public void Trace(StringHandle handle)
+        {
+            _ = _heap.Validate(handle);
+        }
+
+        public void Trace(SymbolHandle handle)
+        {
+            _ = _heap.Validate(handle);
         }
     }
 }
