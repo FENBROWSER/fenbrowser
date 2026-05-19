@@ -427,7 +427,7 @@ public sealed class Test262Runner
 
                 if (expectations is not null)
                 {
-                    var expected = expectations.Entries.FirstOrDefault(e => e.Matches(relativePath, "ParserError") || e.Matches(relativePath, "UnsupportedFeature") || e.Matches(relativePath, "Crash"));
+                    var expected = FindAnyMatchingExpectation(expectations, relativePath);
                     if (expected is not null)
                     {
                         unexpectedPasses++;
