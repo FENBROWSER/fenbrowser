@@ -566,4 +566,60 @@ public sealed class Test262ExpectationsTests
             Directory.Delete(tempRoot, recursive: true);
         }
     }
+
+    [Fact]
+    public void Load_Directory_MergesWhenMetadataIsConsistent()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-expectations-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+
+        try
+        {
+            File.WriteAllText(Path.Combine(tempRoot, "a.json"), """
+            {
+              "metadata": {
+                "owner": "team-a",
+                "area": "runtime",
+                "test262Commit": "abc"
+              },
+              "expectations": [
+                {
+                  "path": "test/language/a.js",
+                  "status": "RuntimeError",
+                  "reason": "known",
+                  "expiresAtMilestone": "M2"
+                }
+              ]
+            }
+            """);
+
+            File.WriteAllText(Path.Combine(tempRoot, "b.json"), """
+            {
+              "metadata": {
+                "owner": "team-a",
+                "area": "runtime",
+                "test262Commit": "abc"
+              },
+              "expectations": [
+                {
+                  "path": "test/language/b.js",
+                  "status": "ParserError",
+                  "reason": "known",
+                  "expiresAtMilestone": "M2.1"
+                }
+              ]
+            }
+            """);
+
+            var loaded = Test262Expectations.Load(tempRoot);
+            Assert.Equal("team-a", loaded.MetadataOwner);
+            Assert.Equal("runtime", loaded.MetadataArea);
+            Assert.Equal("abc", loaded.MetadataCommit);
+            Assert.Equal(2, loaded.Entries.Count);
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
 }
