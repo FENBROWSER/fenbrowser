@@ -515,6 +515,26 @@ public sealed class JsParser
 
         switch (token.Text)
         {
+            case "||":
+                leftBindingPower = 5;
+                rightBindingPower = 6;
+                return true;
+            case "&&":
+                leftBindingPower = 7;
+                rightBindingPower = 8;
+                return true;
+            case "==":
+            case "!=":
+                leftBindingPower = 10;
+                rightBindingPower = 11;
+                return true;
+            case "<":
+            case ">":
+            case "<=":
+            case ">=":
+                leftBindingPower = 15;
+                rightBindingPower = 16;
+                return true;
             case "*":
             case "/":
                 leftBindingPower = 30;

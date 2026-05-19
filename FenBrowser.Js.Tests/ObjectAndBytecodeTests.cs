@@ -205,4 +205,14 @@ public sealed class ObjectAndBytecodeTests
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.Equal(5, result.AsNumber());
     }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleComparisonAndEqualityOperators()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let a = 2 < 3; let b = 5 >= 5; let c = 4 == 4; let d = 1 != 2; (a && b) || (c && d);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
 }

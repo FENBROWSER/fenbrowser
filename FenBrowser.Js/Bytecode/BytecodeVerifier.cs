@@ -60,6 +60,14 @@ public sealed class BytecodeVerifier
             case OpCode.Sub:
             case OpCode.Mul:
             case OpCode.Div:
+            case OpCode.Eq:
+            case OpCode.Neq:
+            case OpCode.Lt:
+            case OpCode.Gt:
+            case OpCode.Le:
+            case OpCode.Ge:
+            case OpCode.And:
+            case OpCode.Or:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 ValidateRegister(ins.C, function.RegisterCount, ip, "C");

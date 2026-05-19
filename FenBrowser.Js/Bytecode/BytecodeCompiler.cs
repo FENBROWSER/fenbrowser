@@ -325,6 +325,14 @@ public sealed class BytecodeCompiler
                     "-" => OpCode.Sub,
                     "*" => OpCode.Mul,
                     "/" => OpCode.Div,
+                    "==" => OpCode.Eq,
+                    "!=" => OpCode.Neq,
+                    "<" => OpCode.Lt,
+                    ">" => OpCode.Gt,
+                    "<=" => OpCode.Le,
+                    ">=" => OpCode.Ge,
+                    "&&" => OpCode.And,
+                    "||" => OpCode.Or,
                     _ => throw new InvalidOperationException($"Unsupported binary operator {bin.Operator}.")
                 };
                 _instructions.Add(new Instruction(op, dest, leftReg, rightReg));

@@ -102,11 +102,9 @@ public sealed class JsLexer
                 continue;
             }
 
-            if (IsPunctuator(ch))
+            if (TryReadPunctuator(out var punctuatorText))
             {
-                _index++;
-                _column++;
-                tokens.Add(new Token(TokenKind.Punctuator, ch.ToString(), new SourceSpan(start, 1, line, column)));
+                tokens.Add(new Token(TokenKind.Punctuator, punctuatorText, new SourceSpan(start, punctuatorText.Length, line, column)));
                 continue;
             }
 
@@ -194,8 +192,30 @@ public sealed class JsLexer
         }
     }
 
-    private static bool IsPunctuator(char ch)
+    private bool TryReadPunctuator(out string text)
     {
-        return ch is '{' or '}' or '(' or ')' or '[' or ']' or ';' or ',' or '.' or ':' or '?' or '+' or '-' or '*' or '/' or '%' or '=' or '!' or '<' or '>' or '&' or '|';
+        if (_index + 1 < _source.Length)
+        {
+            var two = _source.Substring(_index, 2);
+            if (two is "==" or "!=" or "<=" or ">=" or "&&" or "||")
+            {
+                _index += 2;
+                _column += 2;
+                text = two;
+                return true;
+            }
+        }
+
+        var ch = _source[_index];
+        if (ch is '{' or '}' or '(' or ')' or '[' or ']' or ';' or ',' or '.' or ':' or '?' or '+' or '-' or '*' or '/' or '%' or '=' or '!' or '<' or '>' or '&' or '|')
+        {
+            _index++;
+            _column++;
+            text = ch.ToString();
+            return true;
+        }
+
+        text = string.Empty;
+        return false;
     }
 }

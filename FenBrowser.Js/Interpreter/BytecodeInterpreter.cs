@@ -206,6 +206,30 @@ public sealed class BytecodeInterpreter
                 case OpCode.Div:
                     frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber() / frame.Registers[ins.C].AsNumber());
                     break;
+                case OpCode.Eq:
+                    frame.Registers[ins.A] = JsValue.FromBoolean(AreEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
+                    break;
+                case OpCode.Neq:
+                    frame.Registers[ins.A] = JsValue.FromBoolean(!AreEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
+                    break;
+                case OpCode.Lt:
+                    frame.Registers[ins.A] = JsValue.FromBoolean(frame.Registers[ins.B].AsNumber() < frame.Registers[ins.C].AsNumber());
+                    break;
+                case OpCode.Gt:
+                    frame.Registers[ins.A] = JsValue.FromBoolean(frame.Registers[ins.B].AsNumber() > frame.Registers[ins.C].AsNumber());
+                    break;
+                case OpCode.Le:
+                    frame.Registers[ins.A] = JsValue.FromBoolean(frame.Registers[ins.B].AsNumber() <= frame.Registers[ins.C].AsNumber());
+                    break;
+                case OpCode.Ge:
+                    frame.Registers[ins.A] = JsValue.FromBoolean(frame.Registers[ins.B].AsNumber() >= frame.Registers[ins.C].AsNumber());
+                    break;
+                case OpCode.And:
+                    frame.Registers[ins.A] = JsValue.FromBoolean(IsTruthy(frame.Registers[ins.B]) && IsTruthy(frame.Registers[ins.C]));
+                    break;
+                case OpCode.Or:
+                    frame.Registers[ins.A] = JsValue.FromBoolean(IsTruthy(frame.Registers[ins.B]) || IsTruthy(frame.Registers[ins.C]));
+                    break;
                 case OpCode.Return:
                     return frame.Registers[ins.A];
                 default:
@@ -227,6 +251,32 @@ public sealed class BytecodeInterpreter
             JsValueTag.Number => value.AsNumber() != 0 && !double.IsNaN(value.AsNumber()),
             _ => true
         };
+    }
+
+    private static bool AreEqual(JsValue left, JsValue right)
+    {
+        if (left.Tag == right.Tag)
+        {
+            return left.Tag switch
+            {
+                JsValueTag.Undefined => true,
+                JsValueTag.Null => true,
+                JsValueTag.Boolean => left.AsBoolean() == right.AsBoolean(),
+                JsValueTag.Int32 => left.AsInt32() == right.AsInt32(),
+                JsValueTag.Number => left.AsNumber() == right.AsNumber(),
+                JsValueTag.Object => left.AsObjectHandle().Equals(right.AsObjectHandle()),
+                _ => false
+            };
+        }
+
+        // Minimal loose-equality subset for current numeric runtime surface.
+        if ((left.Tag == JsValueTag.Int32 || left.Tag == JsValueTag.Number) &&
+            (right.Tag == JsValueTag.Int32 || right.Tag == JsValueTag.Number))
+        {
+            return left.AsNumber() == right.AsNumber();
+        }
+
+        return false;
     }
 
     private JsObject ResolveObject(JsValue value)
