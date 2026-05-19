@@ -303,6 +303,21 @@ static object DumpExpression(ExpressionNode expression)
             propertyExpression = mem.PropertyExpression is null ? null : DumpExpression(mem.PropertyExpression),
             span = DumpSpan(mem.Span)
         },
+        UnaryExpressionNode unary => new
+        {
+            type = "UnaryExpression",
+            @operator = unary.Operator,
+            operand = DumpExpression(unary.Operand),
+            span = DumpSpan(unary.Span)
+        },
+        ConditionalExpressionNode cond => new
+        {
+            type = "ConditionalExpression",
+            test = DumpExpression(cond.Test),
+            consequent = DumpExpression(cond.Consequent),
+            alternate = DumpExpression(cond.Alternate),
+            span = DumpSpan(cond.Span)
+        },
         _ => new { type = "UnknownExpression", span = DumpSpan(expression.Span) }
     };
 }

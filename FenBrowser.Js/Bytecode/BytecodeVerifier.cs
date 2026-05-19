@@ -142,6 +142,11 @@ public sealed class BytecodeVerifier
                 }
 
                 break;
+            case OpCode.Not:
+            case OpCode.Neg:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                break;
             case OpCode.Return:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 break;

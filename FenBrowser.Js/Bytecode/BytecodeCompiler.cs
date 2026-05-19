@@ -286,6 +286,35 @@ public sealed class BytecodeCompiler
                     }
                 }
             }
+            case UnaryExpressionNode unary:
+            {
+                var operandReg = CompileExpression(unary.Operand);
+                var dest = AllocateRegister();
+                var op = unary.Operator switch
+                {
+                    "!" => OpCode.Not,
+                    "-" => OpCode.Neg,
+                    _ => throw new InvalidOperationException($"Unsupported unary operator {unary.Operator}.")
+                };
+                _instructions.Add(new Instruction(op, dest, operandReg, 0));
+                return dest;
+            }
+            case ConditionalExpressionNode cond:
+            {
+                var testReg = CompileExpression(cond.Test);
+                var dest = AllocateRegister();
+                var jumpIfFalse = EmitPlaceholder(OpCode.JumpIfFalse, testReg);
+
+                var consequentReg = CompileExpression(cond.Consequent);
+                _instructions.Add(new Instruction(OpCode.Move, dest, consequentReg, 0));
+                var jumpEnd = EmitPlaceholder(OpCode.Jump);
+
+                PatchJump(jumpIfFalse, _instructions.Count);
+                var alternateReg = CompileExpression(cond.Alternate);
+                _instructions.Add(new Instruction(OpCode.Move, dest, alternateReg, 0));
+                PatchJump(jumpEnd, _instructions.Count);
+                return dest;
+            }
             case ObjectLiteralExpressionNode obj:
             {
                 var dest = AllocateRegister();

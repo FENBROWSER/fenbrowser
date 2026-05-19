@@ -116,4 +116,14 @@ public sealed class ParserTests
         var assignStmt = Assert.IsType<ExpressionStatementNode>(program.Body[2]);
         Assert.IsType<AssignmentExpressionNode>(assignStmt.Expression);
     }
+
+    [Fact]
+    public void ParsesUnaryAndConditionalExpressions()
+    {
+        var program = JsParser.ParseScript(new SourceText("let x = !0 ? -3 : 5; x;"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var cond = Assert.IsType<ConditionalExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.IsType<UnaryExpressionNode>(cond.Test);
+        Assert.IsType<UnaryExpressionNode>(cond.Consequent);
+    }
 }

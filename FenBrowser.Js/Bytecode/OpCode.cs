@@ -21,6 +21,8 @@ public enum OpCode : byte
     Call0,
     Call1,
     CallN,
+    Not,
+    Neg,
     Eq,
     Neq,
     Lt,

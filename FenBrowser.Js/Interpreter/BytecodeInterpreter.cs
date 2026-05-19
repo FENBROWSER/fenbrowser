@@ -194,6 +194,12 @@ public sealed class BytecodeInterpreter
                     frame.Registers[ins.A] = ExecuteInternal(callee.Function, callArgs, callee.CapturedVariables);
                     break;
                 }
+                case OpCode.Not:
+                    frame.Registers[ins.A] = JsValue.FromBoolean(!IsTruthy(frame.Registers[ins.B]));
+                    break;
+                case OpCode.Neg:
+                    frame.Registers[ins.A] = JsValue.FromNumber(-frame.Registers[ins.B].AsNumber());
+                    break;
                 case OpCode.Add:
                     frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber() + frame.Registers[ins.C].AsNumber());
                     break;

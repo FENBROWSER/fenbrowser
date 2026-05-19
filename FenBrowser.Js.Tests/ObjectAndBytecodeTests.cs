@@ -215,4 +215,14 @@ public sealed class ObjectAndBytecodeTests
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleUnaryAndConditionalExpressions()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let x = !0 ? -3 : 5; x;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(-3, result.AsNumber());
+    }
 }

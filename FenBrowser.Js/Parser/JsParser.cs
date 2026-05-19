@@ -251,6 +251,16 @@ public sealed class JsParser
 
         while (true)
         {
+            if (IsPunctuator("?") && minBindingPower <= 4)
+            {
+                Advance();
+                var consequent = ParseExpression(0);
+                ExpectPunctuator(":");
+                var alternate = ParseExpression(4);
+                left = new ConditionalExpressionNode(left, consequent, alternate, MergeSpan(left.Span, alternate.Span));
+                continue;
+            }
+
             if (IsPunctuator("."))
             {
                 Advance();
@@ -302,6 +312,13 @@ public sealed class JsParser
     private ExpressionNode ParsePrefix()
     {
         var token = Current();
+        if (token.Kind == TokenKind.Punctuator && (token.Text == "!" || token.Text == "-"))
+        {
+            var op = Advance();
+            var operand = ParseExpression(40);
+            return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
+        }
+
         if (token.Kind == TokenKind.Identifier)
         {
             Advance();
