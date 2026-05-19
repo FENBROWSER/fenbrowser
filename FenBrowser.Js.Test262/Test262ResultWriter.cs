@@ -104,4 +104,90 @@ public static class Test262ResultWriter
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath) ?? ".");
         File.WriteAllText(outputPath, json);
     }
+
+    public static void WriteRuntimeSubset(
+        string outputPath,
+        string test262Commit,
+        string engine,
+        DateTime startedAtUtc,
+        long durationMs,
+        int total,
+        int passed,
+        int unsupported,
+        int parserErrors,
+        int runtimeErrors,
+        int crashes,
+        int timedOut,
+        int harnessUnsupported,
+        int invalidTestConfiguration,
+        int expectedFailures,
+        int unexpectedPasses,
+        IReadOnlyList<object> failures,
+        IReadOnlyList<object> unexpectedPassesList,
+        IReadOnlyList<object> tests,
+        string? expectationsPath)
+    {
+        var payload = new
+        {
+            engine,
+            mode = "runtime-subset",
+            startedAtUtc,
+            durationMs,
+            test262Commit,
+            fenbrowserCommit = "unknown",
+            specTarget = "ECMA-262 pinned snapshot",
+            expectations = expectationsPath,
+            total,
+            passed,
+            failed = parserErrors + runtimeErrors,
+            crashed = crashes,
+            timedOut,
+            skipped = 0,
+            unsupported,
+            expectedFailures,
+            unexpectedPasses,
+            harnessUnsupported,
+            invalidTestConfiguration,
+            categories = new
+            {
+                parserMissing = unsupported,
+                parserBug = parserErrors,
+                earlyErrorBug = 0,
+                runtimeMissing = runtimeErrors,
+                runtimeSemanticBug = runtimeErrors,
+                builtinMissing = 0,
+                builtinSemanticBug = 0,
+                moduleMissing = 0,
+                promiseMissing = 0,
+                regexpMissing = 0,
+                intlMissing = 0,
+                proxyMissing = 0,
+                typedArrayMissing = 0,
+                hostNotApplicable = harnessUnsupported + invalidTestConfiguration,
+                crash = crashes,
+                timeout = timedOut
+            },
+            summary = new
+            {
+                total,
+                passed,
+                unsupported,
+                parserErrors,
+                runtimeErrors,
+                crashes,
+                timedOut,
+                harnessUnsupported,
+                invalidTestConfiguration,
+                expectedFailures,
+                unexpectedPasses
+            },
+            failures,
+            unexpectedPassesList,
+            tests
+        };
+
+        var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath) ?? ".");
+        File.WriteAllText(outputPath, json);
+    }
 }

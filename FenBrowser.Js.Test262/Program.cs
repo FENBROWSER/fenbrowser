@@ -2,7 +2,7 @@ using FenBrowser.Js.Test262;
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("Usage: fenjs-test262 --list | --dry-run | --parser-subset | --dashboard | --verify-gates [--root <path>] [--test262 <path>] [--test262-file <file>] [--features <a,b,c>] [--supported-features <a,b,c>] [--out|--output <path>] [--max <n>] [--timeout-ms <n>] [--engine <name>] [--expectations <path>] [--in <result.json>] [--previous <result.json>]");
+    Console.Error.WriteLine("Usage: fenjs-test262 --list | --dry-run | --parser-subset | --runtime-subset | --dashboard | --verify-gates [--root <path>] [--test262 <path>] [--test262-file <file>] [--features <a,b,c>] [--supported-features <a,b,c>] [--out|--output <path>] [--max <n>] [--timeout-ms <n>] [--engine <name>] [--expectations <path>] [--in <result.json>] [--previous <result.json>]");
     return 1;
 }
 
@@ -11,6 +11,7 @@ var outPath = "Results/test262/dry-run.json";
 var list = false;
 var dryRun = false;
 var parserSubset = false;
+var runtimeSubset = false;
 var dashboard = false;
 var verifyGates = false;
 var max = 200;
@@ -36,6 +37,9 @@ for (var i = 0; i < args.Length; i++)
             break;
         case "--parser-subset":
             parserSubset = true;
+            break;
+        case "--runtime-subset":
+            runtimeSubset = true;
             break;
         case "--dashboard":
             dashboard = true;
@@ -85,17 +89,17 @@ for (var i = 0; i < args.Length; i++)
     }
 }
 
-if (!list && !dryRun && !parserSubset && !dashboard && !verifyGates)
+if (!list && !dryRun && !parserSubset && !runtimeSubset && !dashboard && !verifyGates)
 {
-    Console.Error.WriteLine("Specify at least one of --list, --dry-run, --parser-subset, --dashboard, or --verify-gates.");
+    Console.Error.WriteLine("Specify at least one of --list, --dry-run, --parser-subset, --runtime-subset, --dashboard, or --verify-gates.");
     return 2;
 }
 
-if ((list || dryRun || parserSubset) && !Directory.Exists(root))
+if ((list || dryRun || parserSubset || runtimeSubset) && !Directory.Exists(root))
 {
     Console.Error.WriteLine($"test262 root not found: {root}");
     return 3;
 }
 
 var runner = new Test262Runner();
-return runner.Run(root, list, dryRun, parserSubset, dashboard, verifyGates, outPath, max, timeoutMs, engine, expectationsPath, inputPath, previousPath, test262Path, test262File, featuresCsv, supportedFeaturesCsv);
+return runner.Run(root, list, dryRun, parserSubset, runtimeSubset, dashboard, verifyGates, outPath, max, timeoutMs, engine, expectationsPath, inputPath, previousPath, test262Path, test262File, featuresCsv, supportedFeaturesCsv);

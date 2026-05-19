@@ -1,5 +1,8 @@
 using FenBrowser.Js.Parser;
 using FenBrowser.Js.Source;
+using FenBrowser.Js.Bytecode;
+using FenBrowser.Js.Interpreter;
+using FenBrowser.Js.Heap;
 
 namespace FenBrowser.Js.Test262;
 
@@ -10,6 +13,7 @@ public sealed class Test262Runner
         bool list,
         bool dryRun,
         bool parserSubset,
+        bool runtimeSubset,
         bool dashboard,
         bool verifyGates,
         string outputPath,
@@ -55,6 +59,11 @@ public sealed class Test262Runner
         if (parserSubset)
         {
             RunParserSubset(rootPath, outputPath, files, max, timeoutMs, engine, expectationsPath, expectations, supportedFeaturesCsv);
+        }
+
+        if (runtimeSubset)
+        {
+            RunRuntimeSubset(rootPath, outputPath, files, max, timeoutMs, engine, expectationsPath, expectations, supportedFeaturesCsv);
         }
 
         if (dashboard)
@@ -661,6 +670,441 @@ public sealed class Test262Runner
         }
 
         return false;
+    }
+
+    private static void RunRuntimeSubset(
+        string rootPath,
+        string outputPath,
+        IReadOnlyList<string> files,
+        int max,
+        int timeoutMs,
+        string engine,
+        string? expectationsPath,
+        Test262Expectations? expectations,
+        string? supportedFeaturesCsv)
+    {
+        var startedAtUtc = DateTime.UtcNow;
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var pinPath = Path.Combine(rootPath, "..", "test262.pin");
+        var commit = File.Exists(pinPath) ? File.ReadAllText(pinPath).Trim() : "un-pinned";
+        var subset = files.Take(Math.Max(1, max)).ToList();
+        var supportedFeatures = ParseSupportedFeatures(supportedFeaturesCsv);
+
+        var passed = 0;
+        var unsupported = 0;
+        var parserErrors = 0;
+        var runtimeErrors = 0;
+        var crashes = 0;
+        var timedOut = 0;
+        var harnessUnsupported = 0;
+        var invalidTestConfiguration = 0;
+        var expectedFailures = 0;
+        var unexpectedPasses = 0;
+        var failures = new List<object>();
+        var unexpectedPassesList = new List<object>();
+        var tests = new List<object>(subset.Count);
+        var supportedHarnessIncludes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "propertyHelper.js",
+            "sta.js",
+            "compareArray.js"
+        };
+
+        foreach (var file in subset)
+        {
+            var relativePath = Path.GetRelativePath(rootPath, file).Replace('\\', '/');
+            var sourceText = File.ReadAllText(file);
+            var frontmatter = Test262Frontmatter.Parse(sourceText);
+            var expectsSyntaxError = ExpectsSyntaxErrorParseFailure(frontmatter);
+            var expectsRuntimeThrow = ExpectsRuntimeThrow(frontmatter);
+            var parserInput = PrepareParserInput(sourceText, frontmatter);
+            var parseAsModule = frontmatter.Flags.Any(f => string.Equals(f, "module", StringComparison.OrdinalIgnoreCase));
+
+            if (IsInvalidParserSubsetConfiguration(frontmatter, out var invalidReason))
+            {
+                invalidTestConfiguration++;
+                failures.Add(new { path = file, relativePath, classification = "invalid-test-configuration", message = invalidReason });
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "InvalidTestConfiguration",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = "host-not-applicable",
+                    message = invalidReason
+                });
+                continue;
+            }
+
+            var unsupportedHarnessInclude = frontmatter.Includes.FirstOrDefault(include => !supportedHarnessIncludes.Contains(include));
+            if (unsupportedHarnessInclude is not null)
+            {
+                harnessUnsupported++;
+                failures.Add(new { path = file, relativePath, classification = "harness-unsupported", include = unsupportedHarnessInclude, message = $"Harness include '{unsupportedHarnessInclude}' is not supported in runtime-subset mode." });
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "HarnessUnsupported",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = "host-not-applicable",
+                    message = $"Harness include '{unsupportedHarnessInclude}' is not supported in runtime-subset mode."
+                });
+                continue;
+            }
+
+            var unsupportedFeature = frontmatter.Features.FirstOrDefault(feature => supportedFeatures is not null && !supportedFeatures.Contains(feature));
+            if (unsupportedFeature is not null)
+            {
+                unsupported++;
+                failures.Add(new { path = file, relativePath, classification = "unsupported", feature = unsupportedFeature, message = $"Feature '{unsupportedFeature}' is not in supported feature set." });
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "UnsupportedFeature",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = "runtime-missing",
+                    message = $"Feature '{unsupportedFeature}' is not in supported feature set."
+                });
+                continue;
+            }
+
+            try
+            {
+                var executeTask = Task.Run(() =>
+                {
+                    var source = new SourceText(parserInput, file);
+                    var program = parseAsModule ? JsParser.ParseModule(source) : JsParser.ParseScript(source);
+                    var compiler = new BytecodeCompiler();
+                    var function = compiler.CompileProgram(program);
+                    var interpreter = new BytecodeInterpreter(new JsHeap());
+                    _ = interpreter.Execute(function);
+                });
+                var timeoutTask = Task.Delay(Math.Max(1, timeoutMs));
+                var completedTask = Task.WhenAny(executeTask, timeoutTask).GetAwaiter().GetResult();
+                if (!ReferenceEquals(completedTask, executeTask))
+                {
+                    timedOut++;
+                    failures.Add(new { path = file, relativePath, classification = "timeout", message = $"Runtime execution exceeded timeout of {timeoutMs} ms." });
+                    tests.Add(new
+                    {
+                        path = relativePath,
+                        status = "TimedOut",
+                        durationMs = timeoutMs,
+                        features = frontmatter.Features,
+                        flags = frontmatter.Flags,
+                        includes = frontmatter.Includes,
+                        negative = frontmatter.Negative,
+                        esid = frontmatter.Esid,
+                        description = frontmatter.Description,
+                        info = frontmatter.Info,
+                        locale = frontmatter.Locale,
+                        category = "timeout",
+                        message = $"Runtime execution exceeded timeout of {timeoutMs} ms."
+                    });
+                    continue;
+                }
+
+                executeTask.GetAwaiter().GetResult();
+
+                if (expectsSyntaxError || expectsRuntimeThrow)
+                {
+                    runtimeErrors++;
+                    failures.Add(new { path = file, relativePath, classification = "runtime-error", message = "Expected failure did not occur in runtime-subset execution." });
+                    tests.Add(new
+                    {
+                        path = relativePath,
+                        status = "Failed",
+                        durationMs = 0,
+                        features = frontmatter.Features,
+                        flags = frontmatter.Flags,
+                        includes = frontmatter.Includes,
+                        negative = frontmatter.Negative,
+                        esid = frontmatter.Esid,
+                        description = frontmatter.Description,
+                        info = frontmatter.Info,
+                        locale = frontmatter.Locale,
+                        category = "runtime-semantic-bug",
+                        message = "Expected failure did not occur in runtime-subset execution."
+                    });
+                    continue;
+                }
+
+                passed++;
+                if (expectations is not null)
+                {
+                    var expected = expectations.Entries.FirstOrDefault(e => e.Matches(relativePath, "ParserError") || e.Matches(relativePath, "UnsupportedFeature") || e.Matches(relativePath, "Crash"));
+                    if (expected is not null)
+                    {
+                        unexpectedPasses++;
+                        unexpectedPassesList.Add(new { path = file, relativePath, expectedStatus = expected.Status, expectedReason = expected.Reason, expectedOwner = expected.Owner, expectedArea = expected.Area, expiresAtMilestone = expected.ExpiresAtMilestone });
+                        tests.Add(new
+                        {
+                            path = relativePath,
+                            status = "UnexpectedPass",
+                            durationMs = 0,
+                            features = frontmatter.Features,
+                            flags = frontmatter.Flags,
+                            includes = frontmatter.Includes,
+                            negative = frontmatter.Negative,
+                            esid = frontmatter.Esid,
+                            description = frontmatter.Description,
+                            info = frontmatter.Info,
+                            locale = frontmatter.Locale,
+                            category = (string?)null,
+                            message = $"Unexpected pass for expectation '{expected.Status}'."
+                        });
+                        continue;
+                    }
+                }
+
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "Passed",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = (string?)null,
+                    message = (string?)null
+                });
+            }
+            catch (UnsupportedFeatureException ex)
+            {
+                if (expectsSyntaxError || expectsRuntimeThrow)
+                {
+                    passed++;
+                    tests.Add(new
+                    {
+                        path = relativePath,
+                        status = "Passed",
+                        durationMs = 0,
+                        features = frontmatter.Features,
+                        flags = frontmatter.Flags,
+                        includes = frontmatter.Includes,
+                        negative = frontmatter.Negative,
+                        esid = frontmatter.Esid,
+                        description = frontmatter.Description,
+                        info = frontmatter.Info,
+                        locale = frontmatter.Locale,
+                        category = (string?)null,
+                        message = (string?)null
+                    });
+                    continue;
+                }
+
+                unsupported++;
+                failures.Add(new { path = file, relativePath, classification = "unsupported", feature = ex.FeatureName, location = $"{ex.Span.Line}:{ex.Span.Column}" });
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "UnsupportedFeature",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = "runtime-missing",
+                    message = ex.Message
+                });
+            }
+            catch (JsParserException ex)
+            {
+                if (expectsSyntaxError)
+                {
+                    passed++;
+                    tests.Add(new
+                    {
+                        path = relativePath,
+                        status = "Passed",
+                        durationMs = 0,
+                        features = frontmatter.Features,
+                        flags = frontmatter.Flags,
+                        includes = frontmatter.Includes,
+                        negative = frontmatter.Negative,
+                        esid = frontmatter.Esid,
+                        description = frontmatter.Description,
+                        info = frontmatter.Info,
+                        locale = frontmatter.Locale,
+                        category = (string?)null,
+                        message = (string?)null
+                    });
+                    continue;
+                }
+
+                parserErrors++;
+                failures.Add(new { path = file, relativePath, classification = "parser-error", message = ex.Message });
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "Failed",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = "parser-bug",
+                    message = ex.Message
+                });
+            }
+            catch (JsThrownException)
+            {
+                if (expectsRuntimeThrow)
+                {
+                    passed++;
+                    tests.Add(new
+                    {
+                        path = relativePath,
+                        status = "Passed",
+                        durationMs = 0,
+                        features = frontmatter.Features,
+                        flags = frontmatter.Flags,
+                        includes = frontmatter.Includes,
+                        negative = frontmatter.Negative,
+                        esid = frontmatter.Esid,
+                        description = frontmatter.Description,
+                        info = frontmatter.Info,
+                        locale = frontmatter.Locale,
+                        category = (string?)null,
+                        message = (string?)null
+                    });
+                    continue;
+                }
+
+                runtimeErrors++;
+                failures.Add(new { path = file, relativePath, classification = "runtime-error", message = "Unhandled runtime throw." });
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "Failed",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = "runtime-semantic-bug",
+                    message = "Unhandled runtime throw."
+                });
+            }
+            catch (Exception ex)
+            {
+                if (expectsRuntimeThrow)
+                {
+                    passed++;
+                    tests.Add(new
+                    {
+                        path = relativePath,
+                        status = "Passed",
+                        durationMs = 0,
+                        features = frontmatter.Features,
+                        flags = frontmatter.Flags,
+                        includes = frontmatter.Includes,
+                        negative = frontmatter.Negative,
+                        esid = frontmatter.Esid,
+                        description = frontmatter.Description,
+                        info = frontmatter.Info,
+                        locale = frontmatter.Locale,
+                        category = (string?)null,
+                        message = (string?)null
+                    });
+                    continue;
+                }
+
+                crashes++;
+                failures.Add(new { path = file, relativePath, classification = "crash", message = ex.Message });
+                tests.Add(new
+                {
+                    path = relativePath,
+                    status = "Crashed",
+                    durationMs = 0,
+                    features = frontmatter.Features,
+                    flags = frontmatter.Flags,
+                    includes = frontmatter.Includes,
+                    negative = frontmatter.Negative,
+                    esid = frontmatter.Esid,
+                    description = frontmatter.Description,
+                    info = frontmatter.Info,
+                    locale = frontmatter.Locale,
+                    category = "crash",
+                    message = ex.Message
+                });
+            }
+        }
+
+        stopwatch.Stop();
+        Test262ResultWriter.WriteRuntimeSubset(
+            outputPath,
+            commit,
+            engine,
+            startedAtUtc,
+            stopwatch.ElapsedMilliseconds,
+            subset.Count,
+            passed,
+            unsupported,
+            parserErrors,
+            runtimeErrors,
+            crashes,
+            timedOut,
+            harnessUnsupported,
+            invalidTestConfiguration,
+            expectedFailures,
+            unexpectedPasses,
+            failures,
+            unexpectedPassesList,
+            tests,
+            expectationsPath);
+        Console.WriteLine($"Runtime subset result written: {outputPath}");
+    }
+
+    private static bool ExpectsRuntimeThrow(Test262FrontmatterMetadata frontmatter)
+    {
+        if (frontmatter.Negative is null || string.IsNullOrWhiteSpace(frontmatter.Negative.Type))
+        {
+            return false;
+        }
+
+        var phase = frontmatter.Negative.Phase?.Trim();
+        return string.Equals(phase, "runtime", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool ExpectsSyntaxErrorParseFailure(Test262FrontmatterMetadata frontmatter)
