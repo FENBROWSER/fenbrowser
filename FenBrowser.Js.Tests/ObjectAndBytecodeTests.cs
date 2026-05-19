@@ -319,4 +319,14 @@ public sealed class ObjectAndBytecodeTests
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.Equal(3, result.AsNumber());
     }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleUnaryPlus()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let x = +5; x;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(5, result.AsNumber());
+    }
 }

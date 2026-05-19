@@ -221,6 +221,9 @@ public sealed class BytecodeInterpreter
                 case OpCode.Not:
                     frame.Registers[ins.A] = JsValue.FromBoolean(!IsTruthy(frame.Registers[ins.B]));
                     break;
+                case OpCode.Pos:
+                    frame.Registers[ins.A] = JsValue.FromNumber(frame.Registers[ins.B].AsNumber());
+                    break;
                 case OpCode.Neg:
                     frame.Registers[ins.A] = JsValue.FromNumber(-frame.Registers[ins.B].AsNumber());
                     break;

@@ -385,7 +385,7 @@ public sealed class JsParser
     private ExpressionNode ParsePrefix()
     {
         var token = Current();
-        if (token.Kind == TokenKind.Punctuator && (token.Text == "!" || token.Text == "-"))
+        if (token.Kind == TokenKind.Punctuator && (token.Text == "!" || token.Text == "-" || token.Text == "+"))
         {
             var op = Advance();
             var operand = ParseExpression(40);

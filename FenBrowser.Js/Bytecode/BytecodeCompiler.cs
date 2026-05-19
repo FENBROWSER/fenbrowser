@@ -397,6 +397,7 @@ public sealed class BytecodeCompiler
                 var op = unary.Operator switch
                 {
                     "!" => OpCode.Not,
+                    "+" => OpCode.Pos,
                     "-" => OpCode.Neg,
                     "typeof" => OpCode.TypeOf,
                     _ => throw new InvalidOperationException($"Unsupported unary operator {unary.Operator}.")
