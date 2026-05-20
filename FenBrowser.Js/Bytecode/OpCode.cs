@@ -20,6 +20,8 @@ public enum OpCode : byte
     SetElem,
     GetElem,
     DeleteElem,
+    EnumerateKeys,
+    ForInNext,
     CreateFunction,
     Call0,
     Call1,

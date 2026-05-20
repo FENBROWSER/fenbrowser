@@ -1117,6 +1117,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void ForInEnumeratesEnumerableOwnAndPrototypeProperties()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let proto = {}; Object.defineProperty(proto, \"p\", { value: 1, enumerable: true }); let C = function() {}; C.prototype = proto; let o = new C(); Object.defineProperty(o, \"x\", { value: 3, enumerable: true }); let sawX = false; let sawP = false; for (var prop in o) { if (prop === \"x\") { sawX = true; } if (prop === \"p\") { sawP = true; } } sawX && sawP;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectDefinePropertyEnumerablePropertiesParticipateInForIn()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = {}; let accessed = false; Object.defineProperty(o, \"property\", { enumerable: true }); for (var prop in o) { if (prop === \"property\") { accessed = true; } } accessed;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ObjectPrototypePropertyIsEnumerableChecksOwnEnumerableFlag()
     {
         var compiler = new BytecodeCompiler();

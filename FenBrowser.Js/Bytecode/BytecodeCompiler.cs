@@ -121,6 +121,9 @@ public sealed class BytecodeCompiler
             case ForStatementNode forStmt:
                 CompileForStatement(forStmt);
                 break;
+            case ForInStatementNode forInStmt:
+                CompileForInStatement(forInStmt);
+                break;
             case ReturnStatementNode returnStmt:
                 CompileReturnStatement(returnStmt);
                 break;
@@ -297,6 +300,61 @@ public sealed class BytecodeCompiler
         {
             _ = _loopStack.Pop();
         }
+    }
+
+    private void CompileForInStatement(ForInStatementNode forInStmt)
+    {
+        var targetSlot = GetForInTargetSlot(forInStmt.Initializer);
+        var sourceReg = CompileExpression(forInStmt.Iterable);
+        var iteratorReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.EnumerateKeys, iteratorReg, sourceReg, 0));
+
+        var loopStart = _instructions.Count;
+        var keyReg = AllocateRegister();
+        var nextIndex = _instructions.Count;
+        _instructions.Add(new Instruction(OpCode.ForInNext, keyReg, iteratorReg, -1));
+        _instructions.Add(new Instruction(OpCode.StoreVar, keyReg, targetSlot, 0));
+
+        var ctx = new LoopContext
+        {
+            ContinueTarget = loopStart,
+            BreakJumpIndices = new List<int>(),
+            ContinueJumpIndices = new List<int>()
+        };
+        _loopStack.Push(ctx);
+        try
+        {
+            CompileStatement(forInStmt.Body);
+            _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
+            var loopEnd = _instructions.Count;
+            _instructions[nextIndex] = _instructions[nextIndex] with { C = loopEnd };
+
+            foreach (var breakJump in ctx.BreakJumpIndices)
+            {
+                PatchJump(breakJump, loopEnd);
+            }
+
+            foreach (var continueJump in ctx.ContinueJumpIndices)
+            {
+                PatchJump(continueJump, loopStart);
+            }
+        }
+        finally
+        {
+            _ = _loopStack.Pop();
+        }
+    }
+
+    private int GetForInTargetSlot(StatementNode initializer)
+    {
+        return initializer switch
+        {
+            VariableDeclarationStatementNode { Declarators.Count: 1 } declaration =>
+                GetOrCreateVariableSlot(declaration.Declarators[0].Identifier),
+            ExpressionStatementNode { Expression: IdentifierExpressionNode identifier } =>
+                GetOrCreateVariableSlot(identifier.Name),
+            _ => throw new InvalidOperationException("Unsupported for-in initializer target.")
+        };
     }
 
     private void CompileThrowStatement(ThrowStatementNode throwStmt)

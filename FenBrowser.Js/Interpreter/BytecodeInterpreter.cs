@@ -226,6 +226,24 @@ public sealed class BytecodeInterpreter
                     frame.Registers[ins.A] = JsValue.FromBoolean(obj.DeleteProperty(key));
                     break;
                 }
+                case OpCode.EnumerateKeys:
+                {
+                    frame.Registers[ins.A] = CreateForInIterator(frame.Registers[ins.B]);
+                    break;
+                }
+                case OpCode.ForInNext:
+                {
+                    var iterator = ResolveObject(frame.Registers[ins.B]) as ForInIteratorObject
+                        ?? throw new InvalidOperationException("Invalid for-in iterator object.");
+                    if (!iterator.TryMoveNext(out var key))
+                    {
+                        frame.InstructionPointer = ins.C;
+                        break;
+                    }
+
+                    frame.Registers[ins.A] = JsValue.FromString(key);
+                    break;
+                }
                 case OpCode.GetElem:
                 {
                     var receiver = frame.Registers[ins.B];
@@ -536,6 +554,35 @@ public sealed class BytecodeInterpreter
         return JsValue.FromObject(handle);
     }
 
+    private JsValue CreateForInIterator(JsValue value)
+    {
+        var keys = new List<string>();
+        if (value.Tag == JsValueTag.Object)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            CollectEnumerableKeys(_heap.GetObject(value.AsObjectHandle()), keys, seen);
+        }
+
+        var iterator = new ForInIteratorObject(keys);
+        return JsValue.FromObject(_heap.AllocateObject(iterator, AllocationSite.Current()));
+    }
+
+    private void CollectEnumerableKeys(JsObject obj, List<string> keys, HashSet<string> seen)
+    {
+        foreach (var property in obj.EnumerateOwnProperties())
+        {
+            if (seen.Add(property.Key) && property.Value.Enumerable)
+            {
+                keys.Add(property.Key);
+            }
+        }
+
+        if (obj.PrototypeHandle is { } prototype)
+        {
+            CollectEnumerableKeys(_heap.GetObject(prototype), keys, seen);
+        }
+    }
+
     private ObjectHandle EnsureGlobalObject()
     {
         if (_globalObjectHandle is { } existing)
@@ -813,7 +860,13 @@ public sealed class BytecodeInterpreter
         _heap.PushRoot(constructorHandle);
 
         var prototype = _heap.GetObject(prototypeHandle);
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototype.DefineOwnProperty(
+            "constructor",
+            new JsPropertyDescriptor(
+                JsValue.FromObject(constructorHandle),
+                Writable: true,
+                Enumerable: false,
+                Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         _datePrototypeHandle = prototypeHandle;
@@ -1532,7 +1585,13 @@ public sealed class BytecodeInterpreter
         var callHandle = EnsureFunctionCallMethod();
         _ = function.SetProperty("call", JsValue.FromObject(callHandle));
         _heap.WriteBarrier(functionHandle, callHandle);
-        _ = prototype.SetProperty(name, JsValue.FromObject(functionHandle));
+        _ = prototype.DefineOwnProperty(
+            name,
+            new JsPropertyDescriptor(
+                JsValue.FromObject(functionHandle),
+                Writable: true,
+                Enumerable: false,
+                Configurable: true));
         _heap.WriteBarrier(prototypeHandle, functionHandle);
         return functionHandle;
     }
@@ -2927,5 +2986,28 @@ public sealed class BytecodeInterpreter
         public string Flags { get; }
 
         public Regex Regex { get; }
+    }
+
+    private sealed class ForInIteratorObject : JsObject
+    {
+        private readonly IReadOnlyList<string> _keys;
+        private int _index;
+
+        public ForInIteratorObject(IReadOnlyList<string> keys)
+        {
+            _keys = keys;
+        }
+
+        public bool TryMoveNext(out string key)
+        {
+            if (_index >= _keys.Count)
+            {
+                key = string.Empty;
+                return false;
+            }
+
+            key = _keys[_index++];
+            return true;
+        }
     }
 }

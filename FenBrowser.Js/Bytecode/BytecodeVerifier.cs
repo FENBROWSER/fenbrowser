@@ -128,6 +128,15 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 ValidateRegister(ins.C, function.RegisterCount, ip, "C");
                 break;
+            case OpCode.EnumerateKeys:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                break;
+            case OpCode.ForInNext:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidateJumpTarget(function, ip, ins.C);
+                break;
             case OpCode.CreateFunction:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 if (ins.B < 0 || ins.B >= function.NestedFunctions.Count)
