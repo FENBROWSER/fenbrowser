@@ -47,7 +47,7 @@ public sealed class BytecodeInterpreter
     private JsValue ExecuteInternal(
         BytecodeFunction function,
         IReadOnlyList<JsValue> args,
-        IReadOnlyDictionary<string, JsValue>? capturedVariables,
+        IReadOnlyDictionary<string, JsVariableCell>? capturedVariables,
         JsValue thisValue)
     {
         var frame = new InterpreterFrame(function, thisValue);
@@ -58,7 +58,7 @@ public sealed class BytecodeInterpreter
             {
                 if (function.VariableSlots.TryGetValue(kv.Key, out var slot))
                 {
-                    frame.Variables[slot] = kv.Value;
+                    frame.Variables.BindCell(slot, kv.Value);
                 }
             }
         }
@@ -1900,12 +1900,12 @@ public sealed class BytecodeInterpreter
         };
     }
 
-    private static IReadOnlyDictionary<string, JsValue> CaptureFrameVariables(BytecodeFunction function, InterpreterFrame frame)
+    private static IReadOnlyDictionary<string, JsVariableCell> CaptureFrameVariables(BytecodeFunction function, InterpreterFrame frame)
     {
-        var snapshot = new Dictionary<string, JsValue>(StringComparer.Ordinal);
+        var snapshot = new Dictionary<string, JsVariableCell>(StringComparer.Ordinal);
         foreach (var kv in function.VariableSlots)
         {
-            snapshot[kv.Key] = frame.Variables[kv.Value];
+            snapshot[kv.Key] = frame.Variables.GetCell(kv.Value);
         }
 
         return snapshot;

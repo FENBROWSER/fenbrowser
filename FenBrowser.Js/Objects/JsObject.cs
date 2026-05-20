@@ -66,7 +66,7 @@ public class JsObject : ITraceable
         PrototypeHandle = prototypeHandle;
     }
 
-    public void Trace(IHeapTracer tracer)
+    public virtual void Trace(IHeapTracer tracer)
     {
         if (PrototypeHandle is { } proto)
         {

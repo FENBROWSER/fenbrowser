@@ -10,7 +10,7 @@ public sealed class InterpreterFrame
         Function = function;
         ThisValue = thisValue;
         Registers = new JsValue[function.RegisterCount];
-        Variables = new JsValue[Math.Max(1, function.VariableSlots.Count)];
+        Variables = new VariableStore(function.VariableSlots.Count);
         ExceptionHandlers = new Stack<int>();
         Registers[0] = JsValue.Undefined;
     }
@@ -20,7 +20,7 @@ public sealed class InterpreterFrame
 
     public JsValue[] Registers { get; }
 
-    public JsValue[] Variables { get; }
+    public VariableStore Variables { get; }
 
     public Stack<int> ExceptionHandlers { get; }
 

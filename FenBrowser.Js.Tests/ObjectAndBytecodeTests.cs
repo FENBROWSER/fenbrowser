@@ -248,13 +248,13 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
-    public void CompilerAndInterpreterCaptureOuterVariableSnapshot()
+    public void CompilerAndInterpreterCaptureOuterVariableCell()
     {
         var compiler = new BytecodeCompiler();
         var fn = compiler.CompileScript(new SourceText("let x = 4; function f(){ return x + 1; } x = 100; f();"));
         new BytecodeVerifier().Verify(fn);
         var result = new BytecodeInterpreter().Execute(fn);
-        Assert.Equal(5, result.AsNumber());
+        Assert.Equal(101, result.AsNumber());
     }
 
     [Fact]
@@ -329,6 +329,16 @@ public sealed class ObjectAndBytecodeTests
         new BytecodeVerifier().Verify(fn);
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.Equal(3, result.AsNumber());
+    }
+
+    [Fact]
+    public void FunctionClosuresWriteThroughCapturedVariables()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let touched = false; let f = function(){ touched = true; }; f(); touched;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
     }
 
     [Fact]
@@ -861,6 +871,16 @@ public sealed class ObjectAndBytecodeTests
     {
         var compiler = new BytecodeCompiler();
         var fn = compiler.CompileScript(new SourceText("let a = {}; let b = {}; let c = {}; let d = {}; Object.defineProperty(a, [1, 2], {}); Object.defineProperty(b, new String(\"Hello\"), {}); Object.defineProperty(c, new Boolean(false), {}); Object.defineProperty(d, { toString: function(){ return \"abc\"; } }, {}); a.hasOwnProperty(\"1,2\") && b.hasOwnProperty(\"Hello\") && c.hasOwnProperty(\"false\") && d.hasOwnProperty(\"abc\");"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ToPrimitiveCallbacksWriteThroughCapturedVariables()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let touched = false; let o = {}; let key = { toString: function(){ touched = true; return \"x\"; } }; Object.defineProperty(o, key, {}); touched && o.hasOwnProperty(\"x\");"));
         new BytecodeVerifier().Verify(fn);
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.True(result.AsBoolean());
