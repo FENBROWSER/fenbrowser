@@ -1483,7 +1483,7 @@ public sealed class BytecodeInterpreter
             JsValueTag.Undefined => "undefined",
             JsValueTag.Null => "null",
             JsValueTag.String => value.AsString(),
-            JsValueTag.Number => value.AsNumber().ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+            JsValueTag.Number => FormatNumberForString(value.AsNumber()),
             JsValueTag.Int32 => value.AsInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
             JsValueTag.Boolean => value.AsBoolean() ? "true" : "false",
             _ => value.Tag.ToString()
@@ -1565,9 +1565,88 @@ public sealed class BytecodeInterpreter
             return "0";
         }
 
-        var text = value.ToString("R", System.Globalization.CultureInfo.InvariantCulture).Replace('E', 'e');
-        text = text.Replace("e-0", "e-", StringComparison.Ordinal).Replace("e+0", "e+", StringComparison.Ordinal);
-        return text;
+        var absolute = Math.Abs(value);
+        var text = value.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+
+        if (text.Contains('E', StringComparison.Ordinal) || text.Contains('e', StringComparison.Ordinal))
+        {
+            if (absolute >= 1e-6 && absolute < 1e21)
+            {
+                return ExpandExponentialNumber(text);
+            }
+
+            return NormalizeExponentialNumber(text);
+        }
+
+        return TrimDecimalZeros(text);
+    }
+
+    private static string ExpandExponentialNumber(string text)
+    {
+        var normalized = text.Replace('E', 'e');
+        var exponentMarker = normalized.IndexOf('e', StringComparison.Ordinal);
+        if (exponentMarker < 0)
+        {
+            return TrimDecimalZeros(normalized);
+        }
+
+        var coefficient = normalized[..exponentMarker];
+        var exponent = int.Parse(normalized[(exponentMarker + 1)..], System.Globalization.CultureInfo.InvariantCulture);
+        var negative = coefficient.StartsWith("-", StringComparison.Ordinal);
+        if (negative || coefficient.StartsWith("+", StringComparison.Ordinal))
+        {
+            coefficient = coefficient[1..];
+        }
+
+        var decimalIndex = coefficient.IndexOf('.', StringComparison.Ordinal);
+        if (decimalIndex < 0)
+        {
+            decimalIndex = coefficient.Length;
+        }
+
+        var digits = coefficient.Replace(".", string.Empty, StringComparison.Ordinal);
+        var newDecimalIndex = decimalIndex + exponent;
+        string expanded;
+        if (newDecimalIndex <= 0)
+        {
+            expanded = "0." + new string('0', -newDecimalIndex) + digits;
+        }
+        else if (newDecimalIndex >= digits.Length)
+        {
+            expanded = digits + new string('0', newDecimalIndex - digits.Length);
+        }
+        else
+        {
+            expanded = digits[..newDecimalIndex] + "." + digits[newDecimalIndex..];
+        }
+
+        expanded = TrimDecimalZeros(expanded);
+        return negative ? "-" + expanded : expanded;
+    }
+
+    private static string NormalizeExponentialNumber(string text)
+    {
+        var normalized = text.Replace('E', 'e');
+        var exponentMarker = normalized.IndexOf('e', StringComparison.Ordinal);
+        if (exponentMarker < 0)
+        {
+            return TrimDecimalZeros(normalized);
+        }
+
+        var coefficient = TrimDecimalZeros(normalized[..exponentMarker]);
+        var exponent = int.Parse(normalized[(exponentMarker + 1)..], System.Globalization.CultureInfo.InvariantCulture);
+        var sign = exponent >= 0 ? "+" : string.Empty;
+        return $"{coefficient}e{sign}{exponent.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+    }
+
+    private static string TrimDecimalZeros(string text)
+    {
+        if (!text.Contains(".", StringComparison.Ordinal))
+        {
+            return text;
+        }
+
+        return text.TrimEnd('0').TrimEnd('.');
     }
 
     private double ToNumber(JsValue value)

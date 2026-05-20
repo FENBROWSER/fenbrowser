@@ -837,6 +837,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void ObjectDefinePropertyUsesEcmaNumberStringificationForKeys()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let a = {}; let b = {}; Object.defineProperty(a, 100000000000000000000, {}); Object.defineProperty(b, 1e+21, {}); a.hasOwnProperty(\"100000000000000000000\") && b.hasOwnProperty(\"1e+21\");"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void StringConstructorUsesEcmaNumberStringification()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("String(100000000000000000000) == \"100000000000000000000\" && String(1e+21) == \"1e+21\";"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ObjectPrototypeHasOwnPropertyRejectsNullishReceivers()
     {
         var compiler = new BytecodeCompiler();
