@@ -907,6 +907,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void ObjectDefinePropertyRejectsMixedAccessorAndDataDescriptor()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = {}; let ok = false; try { Object.defineProperty(o, \"x\", { get: function(){ return 1; }, value: 1 }); } catch (e) { ok = e instanceof TypeError; } ok && (o.hasOwnProperty(\"x\") == false);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectDefinePropertyRejectsNonCallableAccessorFields()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = {}; let setOk = false; let getOk = false; try { Object.defineProperty(o, \"x\", { set: 42 }); } catch (e) { setOk = e instanceof TypeError; } try { Object.defineProperty(o, \"y\", { get: 42 }); } catch (e) { getOk = e instanceof TypeError; } setOk && getOk && (o.hasOwnProperty(\"x\") == false) && (o.hasOwnProperty(\"y\") == false);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ObjectPrototypeHasOwnPropertyRejectsNullishReceivers()
     {
         var compiler = new BytecodeCompiler();

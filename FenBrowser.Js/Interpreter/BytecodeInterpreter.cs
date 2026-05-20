@@ -917,9 +917,30 @@ public sealed class BytecodeInterpreter
         var target = _heap.GetObject(targetHandle);
         var key = ToPropertyKey(args[1]);
         var descriptorObject = _heap.GetObject(args[2].AsObjectHandle());
-        var value = descriptorObject.TryGetProperty("value", h => _heap.GetObject(h), out var valueDescriptor)
-            ? valueDescriptor.Value
-            : JsValue.Undefined;
+        var hasValue = descriptorObject.TryGetProperty("value", h => _heap.GetObject(h), out var valueDescriptor);
+        var hasWritable = descriptorObject.TryGetProperty("writable", h => _heap.GetObject(h), out _);
+        var hasGetter = descriptorObject.TryGetProperty("get", h => _heap.GetObject(h), out var getterDescriptor);
+        var hasSetter = descriptorObject.TryGetProperty("set", h => _heap.GetObject(h), out var setterDescriptor);
+        if ((hasGetter || hasSetter) && (hasValue || hasWritable))
+        {
+            throw new JsThrownException(CreateTypeError("Property descriptor cannot mix accessor and data fields."));
+        }
+
+        if (hasGetter &&
+            getterDescriptor.Value.Tag != JsValueTag.Undefined &&
+            !IsCallable(getterDescriptor.Value))
+        {
+            throw new JsThrownException(CreateTypeError("Property descriptor getter must be callable or undefined."));
+        }
+
+        if (hasSetter &&
+            setterDescriptor.Value.Tag != JsValueTag.Undefined &&
+            !IsCallable(setterDescriptor.Value))
+        {
+            throw new JsThrownException(CreateTypeError("Property descriptor setter must be callable or undefined."));
+        }
+
+        var value = hasValue ? valueDescriptor.Value : JsValue.Undefined;
         var writable = ReadDescriptorFlag(descriptorObject, "writable");
         var enumerable = ReadDescriptorFlag(descriptorObject, "enumerable");
         var configurable = ReadDescriptorFlag(descriptorObject, "configurable");
