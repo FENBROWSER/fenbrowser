@@ -753,6 +753,11 @@ public sealed class BytecodeInterpreter
             AllocationSite.Current());
         _ = constructor.SetProperty("defineProperty", JsValue.FromObject(definePropertyHandle));
         _heap.WriteBarrier(constructorHandle, definePropertyHandle);
+        var getOwnPropertyDescriptorHandle = _heap.AllocateObject(
+            new NativeFunctionObject("getOwnPropertyDescriptor", ObjectGetOwnPropertyDescriptor, length: 2),
+            AllocationSite.Current());
+        _ = constructor.SetProperty("getOwnPropertyDescriptor", JsValue.FromObject(getOwnPropertyDescriptorHandle));
+        _heap.WriteBarrier(constructorHandle, getOwnPropertyDescriptorHandle);
 
         var prototype = _heap.GetObject(prototypeHandle);
         _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
@@ -761,6 +766,7 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleString", (thisValue, _) => ObjectPrototypeToString(thisValue));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "hasOwnProperty", ObjectPrototypeHasOwnProperty, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "isPrototypeOf", ObjectPrototypeIsPrototypeOf, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "propertyIsEnumerable", ObjectPrototypePropertyIsEnumerable, length: 1);
 
         _objectPrototypeHandle = prototypeHandle;
         _objectConstructorHandle = constructorHandle;
@@ -869,6 +875,26 @@ public sealed class BytecodeInterpreter
         return JsValue.FromBoolean(obj.TryGetOwnProperty(key, out _));
     }
 
+    private JsValue ObjectPrototypePropertyIsEnumerable(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        if (thisValue.Tag is JsValueTag.Undefined or JsValueTag.Null)
+        {
+            throw new JsThrownException(CreateTypeError("Object.prototype.propertyIsEnumerable called on null or undefined."));
+        }
+
+        if (thisValue.Tag == JsValueTag.HostObject)
+        {
+            return JsValue.FromBoolean(false);
+        }
+
+        var key = ToPropertyKey(args.Count > 0 ? args[0] : JsValue.Undefined);
+        var objectValue = thisValue.Tag == JsValueTag.Object
+            ? thisValue
+            : CreateObjectFromValue(thisValue);
+        var obj = _heap.GetObject(objectValue.AsObjectHandle());
+        return JsValue.FromBoolean(obj.TryGetOwnProperty(key, out var descriptor) && descriptor.Enumerable);
+    }
+
     private string GetObjectToStringTag(ObjectHandle handle)
     {
         return _heap.GetObject(handle) switch
@@ -952,6 +978,35 @@ public sealed class BytecodeInterpreter
         }
 
         return args[0];
+    }
+
+    private JsValue ObjectGetOwnPropertyDescriptor(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = thisValue;
+        if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Object.getOwnPropertyDescriptor requires an object target."));
+        }
+
+        var target = _heap.GetObject(args[0].AsObjectHandle());
+        var key = ToPropertyKey(args.Count > 1 ? args[1] : JsValue.Undefined);
+        if (!target.TryGetOwnProperty(key, out var descriptor))
+        {
+            return JsValue.Undefined;
+        }
+
+        var descriptorObject = CreateOrdinaryObject();
+        _ = descriptorObject.SetProperty("value", descriptor.Value);
+        _ = descriptorObject.SetProperty("writable", JsValue.FromBoolean(descriptor.Writable));
+        _ = descriptorObject.SetProperty("enumerable", JsValue.FromBoolean(descriptor.Enumerable));
+        _ = descriptorObject.SetProperty("configurable", JsValue.FromBoolean(descriptor.Configurable));
+        var descriptorHandle = _heap.AllocateObject(descriptorObject, AllocationSite.Current());
+        if (descriptor.Value.Tag == JsValueTag.Object)
+        {
+            _heap.WriteBarrier(descriptorHandle, descriptor.Value.AsObjectHandle());
+        }
+
+        return JsValue.FromObject(descriptorHandle);
     }
 
     private bool ReadDescriptorFlag(JsObject descriptorObject, string propertyName)
