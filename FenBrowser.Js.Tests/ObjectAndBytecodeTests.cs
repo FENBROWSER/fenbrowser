@@ -208,6 +208,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void ArrayConstructorRejectsInvalidNumericLengthWithRangeError()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let ok = false; try { new Array(1.5); } catch (e) { ok = e instanceof RangeError; } ok;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void CompilerAndInterpreterHandleZeroArgFunctionCall()
     {
         var compiler = new BytecodeCompiler();
@@ -671,6 +681,26 @@ public sealed class ObjectAndBytecodeTests
     {
         var compiler = new BytecodeCompiler();
         var fn = compiler.CompileScript(new SourceText("let o = {}; (o.constructor === Object) && (o.toString() == \"[object Object]\") && (o.toLocaleString() == \"[object Object]\");"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectPrototypeIsPrototypeOfDetectsArrayPrototypeChain()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("Array.prototype.isPrototypeOf(new Array(0));"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void NativeFunctionCallInvokesObjectPrototypeToStringWithExplicitThis()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let a = new Array(0); Object.prototype.toString.call(a) == \"[object Array]\";"));
         new BytecodeVerifier().Verify(fn);
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.True(result.AsBoolean());

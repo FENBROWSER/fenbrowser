@@ -22,6 +22,9 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _errorPrototypeHandle;
     private ObjectHandle? _typeErrorConstructorHandle;
     private ObjectHandle? _typeErrorPrototypeHandle;
+    private ObjectHandle? _rangeErrorConstructorHandle;
+    private ObjectHandle? _rangeErrorPrototypeHandle;
+    private ObjectHandle? _functionCallMethodHandle;
 
     public BytecodeInterpreter(JsHeap? heap = null)
     {
@@ -268,12 +271,12 @@ public sealed class BytecodeInterpreter
                 }
                 case OpCode.Construct0:
                 {
-                    frame.Registers[ins.A] = ConstructFunction(frame.Registers[ins.B], Array.Empty<JsValue>());
+                    StoreConstructResult(frame, ins.A, frame.Registers[ins.B], Array.Empty<JsValue>());
                     break;
                 }
                 case OpCode.Construct1:
                 {
-                    frame.Registers[ins.A] = ConstructFunction(frame.Registers[ins.B], new[] { frame.Registers[ins.C] });
+                    StoreConstructResult(frame, ins.A, frame.Registers[ins.B], new[] { frame.Registers[ins.C] });
                     break;
                 }
                 case OpCode.ConstructN:
@@ -284,7 +287,7 @@ public sealed class BytecodeInterpreter
                         ctorArgs[i] = frame.Registers[ins.C + i];
                     }
 
-                    frame.Registers[ins.A] = ConstructFunction(frame.Registers[ins.B], ctorArgs);
+                    StoreConstructResult(frame, ins.A, frame.Registers[ins.B], ctorArgs);
                     break;
                 }
                 case OpCode.Not:
@@ -435,6 +438,11 @@ public sealed class BytecodeInterpreter
         {
             frame.Variables[typeErrorSlot] = JsValue.FromObject(EnsureTypeErrorConstructor());
         }
+
+        if (function.VariableSlots.TryGetValue("RangeError", out var rangeErrorSlot))
+        {
+            frame.Variables[rangeErrorSlot] = JsValue.FromObject(EnsureRangeErrorConstructor());
+        }
     }
 
     private JsObject CreateOrdinaryObject()
@@ -465,6 +473,11 @@ public sealed class BytecodeInterpreter
     private JsValue CreateTypeError(string message)
     {
         return CreateErrorObject("TypeError", EnsureTypeErrorPrototype(), message);
+    }
+
+    private JsValue CreateRangeError(string message)
+    {
+        return CreateErrorObject("RangeError", EnsureRangeErrorPrototype(), message);
     }
 
     private JsValue CreateErrorObject(string name, ObjectHandle prototypeHandle, string message)
@@ -509,6 +522,37 @@ public sealed class BytecodeInterpreter
 
         _typeErrorPrototypeHandle = prototypeHandle;
         _typeErrorConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private ObjectHandle EnsureRangeErrorPrototype()
+    {
+        _ = EnsureRangeErrorConstructor();
+        return _rangeErrorPrototypeHandle!.Value;
+    }
+
+    private ObjectHandle EnsureRangeErrorConstructor()
+    {
+        if (_rangeErrorConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototype = CreateOrdinaryObject();
+        prototype.SetPrototype(EnsureErrorPrototype());
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "RangeError",
+            (_, args) => CreateErrorObject("RangeError", EnsureRangeErrorPrototype(), GetOptionalMessage(args)),
+            args => CreateErrorObject("RangeError", EnsureRangeErrorPrototype(), GetOptionalMessage(args)));
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        _rangeErrorPrototypeHandle = prototypeHandle;
+        _rangeErrorConstructorHandle = constructorHandle;
         return constructorHandle;
     }
 
@@ -570,6 +614,7 @@ public sealed class BytecodeInterpreter
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", (thisValue, _) => ObjectPrototypeToString(thisValue));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleString", (thisValue, _) => ObjectPrototypeToString(thisValue));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "isPrototypeOf", ObjectPrototypeIsPrototypeOf);
 
         _objectPrototypeHandle = prototypeHandle;
         _objectConstructorHandle = constructorHandle;
@@ -582,10 +627,47 @@ public sealed class BytecodeInterpreter
         string name,
         Func<JsValue, IReadOnlyList<JsValue>, JsValue> call)
     {
-        var functionHandle = _heap.AllocateObject(new NativeFunctionObject(name, call), AllocationSite.Current());
+        var function = new NativeFunctionObject(name, call);
+        var functionHandle = _heap.AllocateObject(function, AllocationSite.Current());
+        var callHandle = EnsureFunctionCallMethod();
+        _ = function.SetProperty("call", JsValue.FromObject(callHandle));
+        _heap.WriteBarrier(functionHandle, callHandle);
         _ = prototype.SetProperty(name, JsValue.FromObject(functionHandle));
         _heap.WriteBarrier(prototypeHandle, functionHandle);
         return functionHandle;
+    }
+
+    private ObjectHandle EnsureFunctionCallMethod()
+    {
+        if (_functionCallMethodHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var call = new NativeFunctionObject(
+            "call",
+            (thisValue, args) => FunctionPrototypeCall(thisValue, args));
+        var callHandle = _heap.AllocateObject(call, AllocationSite.Current());
+        _heap.PushRoot(callHandle);
+        _functionCallMethodHandle = callHandle;
+        return callHandle;
+    }
+
+    private JsValue FunctionPrototypeCall(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var thisArgument = args.Count > 0 ? args[0] : JsValue.Undefined;
+        if (args.Count <= 1)
+        {
+            return CallFunction(thisValue, Array.Empty<JsValue>(), thisArgument);
+        }
+
+        var callArgs = new JsValue[args.Count - 1];
+        for (var i = 1; i < args.Count; i++)
+        {
+            callArgs[i - 1] = args[i];
+        }
+
+        return CallFunction(thisValue, callArgs, thisArgument);
     }
 
     private JsValue CreateObjectFromValue(JsValue value)
@@ -632,6 +714,28 @@ public sealed class BytecodeInterpreter
         };
     }
 
+    private JsValue ObjectPrototypeIsPrototypeOf(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        if (thisValue.Tag != JsValueTag.Object || args.Count == 0 || args[0].Tag != JsValueTag.Object)
+        {
+            return JsValue.FromBoolean(false);
+        }
+
+        var prototype = thisValue.AsObjectHandle();
+        var candidate = _heap.GetObject(args[0].AsObjectHandle());
+        while (candidate.PrototypeHandle is { } current)
+        {
+            if (current.Equals(prototype))
+            {
+                return JsValue.FromBoolean(true);
+            }
+
+            candidate = _heap.GetObject(current);
+        }
+
+        return JsValue.FromBoolean(false);
+    }
+
     private ObjectHandle EnsureArrayPrototype()
     {
         _ = EnsureArrayConstructor();
@@ -674,7 +778,13 @@ public sealed class BytecodeInterpreter
 
         if (elements.Count == 1 && (elements[0].Tag == JsValueTag.Int32 || elements[0].Tag == JsValueTag.Number))
         {
-            _ = obj.SetProperty("length", JsValue.FromNumber(Math.Max(0, Math.Truncate(ToNumber(elements[0])))));
+            var length = ToNumber(elements[0]);
+            if (!IsValidArrayLength(length))
+            {
+                throw new JsThrownException(CreateRangeError("Invalid array length."));
+            }
+
+            _ = obj.SetProperty("length", JsValue.FromNumber(length));
             return obj;
         }
 
@@ -685,6 +795,15 @@ public sealed class BytecodeInterpreter
 
         _ = obj.SetProperty("length", JsValue.FromNumber(elements.Count));
         return obj;
+    }
+
+    private static bool IsValidArrayLength(double value)
+    {
+        return !double.IsNaN(value) &&
+               !double.IsInfinity(value) &&
+               value >= 0 &&
+               value <= uint.MaxValue &&
+               Math.Truncate(value) == value;
     }
 
     private JsValue ArrayPrototypePush(JsValue thisValue, IReadOnlyList<JsValue> args)
@@ -786,6 +905,9 @@ public sealed class BytecodeInterpreter
             args => CreateNumberObject(args.Count > 0 ? ToNumber(args[0]) : 0d));
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         _ = constructor.SetProperty("MAX_VALUE", JsValue.FromNumber(double.MaxValue));
+        _ = constructor.SetProperty("MIN_VALUE", JsValue.FromNumber(double.Epsilon));
+        _ = constructor.SetProperty("POSITIVE_INFINITY", JsValue.FromNumber(double.PositiveInfinity));
+        _ = constructor.SetProperty("NEGATIVE_INFINITY", JsValue.FromNumber(double.NegativeInfinity));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
@@ -1045,6 +1167,18 @@ public sealed class BytecodeInterpreter
         }
 
         throw new InvalidOperationException("Value is not constructible.");
+    }
+
+    private void StoreConstructResult(InterpreterFrame frame, int destinationRegister, JsValue constructor, IReadOnlyList<JsValue> args)
+    {
+        try
+        {
+            frame.Registers[destinationRegister] = ConstructFunction(constructor, args);
+        }
+        catch (JsThrownException ex)
+        {
+            ThrowOrHandle(frame, ex.Value);
+        }
     }
 
     private static string ToPropertyKey(JsValue value)
