@@ -967,6 +967,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void FunctionCallsExposeArgumentsObjectWhenReferenced()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("(function(){ return arguments.length == 3 && arguments[0] == 1 && arguments[1] && arguments[2] == \"a\"; })(1, true, \"a\");"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ArgumentsObjectUsesObjectPrototypeForDescriptorLookups()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("Object.prototype.value = \"arguments\"; let attr = (function(){ return arguments; })(); let o = {}; Object.defineProperty(o, \"property\", attr); o.property == \"arguments\";"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ObjectPrototypePropertyIsEnumerableChecksOwnEnumerableFlag()
     {
         var compiler = new BytecodeCompiler();

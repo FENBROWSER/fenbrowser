@@ -16,6 +16,8 @@ public sealed class BytecodeFunction
 
     public required IReadOnlyList<string> ParameterNames { get; init; }
 
+    public bool HasOwnArgumentsObject { get; init; }
+
     public required IReadOnlyList<BytecodeFunction> NestedFunctions { get; init; }
 
     public int RegisterCount { get; init; }

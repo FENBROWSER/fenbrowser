@@ -72,6 +72,13 @@ public sealed class BytecodeInterpreter
             }
         }
 
+        if (function.HasOwnArgumentsObject &&
+            !function.ParameterNames.Contains("arguments", StringComparer.Ordinal) &&
+            function.VariableSlots.TryGetValue("arguments", out var argumentsSlot))
+        {
+            frame.Variables[argumentsSlot] = CreateArgumentsObject(args);
+        }
+
         while (frame.InstructionPointer < function.Instructions.Count)
         {
             var ins = function.Instructions[frame.InstructionPointer++];
@@ -469,6 +476,33 @@ public sealed class BytecodeInterpreter
         var obj = new JsObject();
         obj.SetPrototype(EnsureObjectPrototype());
         return obj;
+    }
+
+    private JsValue CreateArgumentsObject(IReadOnlyList<JsValue> args)
+    {
+        var obj = CreateOrdinaryObject();
+        var handle = _heap.AllocateObject(obj, AllocationSite.Current());
+
+        _ = obj.DefineOwnProperty(
+            "length",
+            new JsPropertyDescriptor(
+                JsValue.FromNumber(args.Count),
+                Writable: true,
+                Enumerable: false,
+                Configurable: true));
+
+        for (var i = 0; i < args.Count; i++)
+        {
+            var descriptor = new JsPropertyDescriptor(
+                args[i],
+                Writable: true,
+                Enumerable: true,
+                Configurable: true);
+            _ = obj.DefineOwnProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture), descriptor);
+            WriteDescriptorBarrier(handle, descriptor);
+        }
+
+        return JsValue.FromObject(handle);
     }
 
     private ObjectHandle EnsureGlobalObject()

@@ -33,10 +33,14 @@ public sealed class BytecodeCompiler
 
     public BytecodeFunction CompileProgram(ProgramNode program)
     {
-        return CompileProgramCore(program, parameters: Array.Empty<string>(), name: null);
+        return CompileProgramCore(program, parameters: Array.Empty<string>(), name: null, hasOwnArgumentsObject: false);
     }
 
-    private BytecodeFunction CompileProgramCore(ProgramNode program, IReadOnlyList<string> parameters, string? name)
+    private BytecodeFunction CompileProgramCore(
+        ProgramNode program,
+        IReadOnlyList<string> parameters,
+        string? name,
+        bool hasOwnArgumentsObject)
     {
         _instructions.Clear();
         _constants.Clear();
@@ -69,6 +73,7 @@ public sealed class BytecodeCompiler
             VariableSlots = new Dictionary<string, int>(_variables),
             PropertyNames = _propertyNames.ToArray(),
             ParameterNames = _parameterNames.ToArray(),
+            HasOwnArgumentsObject = hasOwnArgumentsObject,
             NestedFunctions = _nestedFunctions.ToArray(),
             RegisterCount = Math.Max(2, _nextRegister)
         };
@@ -154,7 +159,11 @@ public sealed class BytecodeCompiler
     {
         var nestedProgram = new ProgramNode(ProgramKind.Script, functionDecl.Body.Statements, functionDecl.Body.Span);
         var childCompiler = new BytecodeCompiler();
-        var nestedFunction = childCompiler.CompileProgramCore(nestedProgram, functionDecl.Parameters, functionDecl.Name);
+        var nestedFunction = childCompiler.CompileProgramCore(
+            nestedProgram,
+            functionDecl.Parameters,
+            functionDecl.Name,
+            hasOwnArgumentsObject: true);
         var nestedIndex = _nestedFunctions.Count;
         _nestedFunctions.Add(nestedFunction);
 
@@ -519,7 +528,11 @@ public sealed class BytecodeCompiler
             {
                 var nestedProgram = new ProgramNode(ProgramKind.Script, fnExpr.Body.Statements, fnExpr.Body.Span);
                 var childCompiler = new BytecodeCompiler();
-                var nestedFunction = childCompiler.CompileProgramCore(nestedProgram, fnExpr.Parameters, fnExpr.Name);
+                var nestedFunction = childCompiler.CompileProgramCore(
+                    nestedProgram,
+                    fnExpr.Parameters,
+                    fnExpr.Name,
+                    hasOwnArgumentsObject: true);
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();
@@ -548,7 +561,11 @@ public sealed class BytecodeCompiler
 
                 var nestedProgram = new ProgramNode(ProgramKind.Script, statements, bodySpan);
                 var childCompiler = new BytecodeCompiler();
-                var nestedFunction = childCompiler.CompileProgramCore(nestedProgram, arrow.Parameters, "<arrow>");
+                var nestedFunction = childCompiler.CompileProgramCore(
+                    nestedProgram,
+                    arrow.Parameters,
+                    "<arrow>",
+                    hasOwnArgumentsObject: false);
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();
