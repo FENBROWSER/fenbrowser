@@ -526,6 +526,35 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.CreateFunction, dest, nestedIndex, 0));
                 return dest;
             }
+            case ArrowFunctionExpressionNode arrow:
+            {
+                IReadOnlyList<StatementNode> statements;
+                SourceSpan bodySpan;
+                if (arrow.BlockBody is not null)
+                {
+                    statements = arrow.BlockBody.Statements;
+                    bodySpan = arrow.BlockBody.Span;
+                }
+                else if (arrow.ExpressionBody is not null)
+                {
+                    statements = new[] { new ReturnStatementNode(arrow.ExpressionBody, arrow.ExpressionBody.Span) };
+                    bodySpan = arrow.ExpressionBody.Span;
+                }
+                else
+                {
+                    statements = Array.Empty<StatementNode>();
+                    bodySpan = arrow.Span;
+                }
+
+                var nestedProgram = new ProgramNode(ProgramKind.Script, statements, bodySpan);
+                var childCompiler = new BytecodeCompiler();
+                var nestedFunction = childCompiler.CompileProgramCore(nestedProgram, arrow.Parameters, "<arrow>");
+                var nestedIndex = _nestedFunctions.Count;
+                _nestedFunctions.Add(nestedFunction);
+                var dest = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.CreateFunction, dest, nestedIndex, 0));
+                return dest;
+            }
             case NewExpressionNode ne:
             {
                 var calleeReg = CompileExpression(ne.Callee);

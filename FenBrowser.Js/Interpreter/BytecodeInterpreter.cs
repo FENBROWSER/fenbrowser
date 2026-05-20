@@ -29,6 +29,8 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _functionCallMethodHandle;
     private ObjectHandle? _evalFunctionHandle;
     private ObjectHandle? _globalObjectHandle;
+    private ObjectHandle? _dateConstructorHandle;
+    private ObjectHandle? _datePrototypeHandle;
 
     public BytecodeInterpreter(JsHeap? heap = null)
     {
@@ -234,22 +236,22 @@ public sealed class BytecodeInterpreter
                 }
                 case OpCode.Call0:
                 {
-                    frame.Registers[ins.A] = CallFunction(frame.Registers[ins.B], Array.Empty<JsValue>(), JsValue.Undefined);
+                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], Array.Empty<JsValue>(), JsValue.Undefined);
                     break;
                 }
                 case OpCode.Call1:
                 {
-                    frame.Registers[ins.A] = CallFunction(frame.Registers[ins.B], new[] { frame.Registers[ins.C] }, JsValue.Undefined);
+                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], new[] { frame.Registers[ins.C] }, JsValue.Undefined);
                     break;
                 }
                 case OpCode.CallMethod0:
                 {
-                    frame.Registers[ins.A] = CallFunction(frame.Registers[ins.B], Array.Empty<JsValue>(), frame.Registers[ins.C]);
+                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], Array.Empty<JsValue>(), frame.Registers[ins.C]);
                     break;
                 }
                 case OpCode.CallMethod1:
                 {
-                    frame.Registers[ins.A] = CallFunction(frame.Registers[ins.B], new[] { frame.Registers[ins.D] }, frame.Registers[ins.C]);
+                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], new[] { frame.Registers[ins.D] }, frame.Registers[ins.C]);
                     break;
                 }
                 case OpCode.CallMethodN:
@@ -260,7 +262,7 @@ public sealed class BytecodeInterpreter
                         callArgs[i] = frame.Registers[ins.D + i];
                     }
 
-                    frame.Registers[ins.A] = CallFunction(frame.Registers[ins.B], callArgs, frame.Registers[ins.C]);
+                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], callArgs, frame.Registers[ins.C]);
                     break;
                 }
                 case OpCode.CallN:
@@ -271,7 +273,7 @@ public sealed class BytecodeInterpreter
                         callArgs[i] = frame.Registers[ins.C + i];
                     }
 
-                    frame.Registers[ins.A] = CallFunction(frame.Registers[ins.B], callArgs, JsValue.Undefined);
+                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], callArgs, JsValue.Undefined);
                     break;
                 }
                 case OpCode.Construct0:
@@ -452,6 +454,11 @@ public sealed class BytecodeInterpreter
         if (function.VariableSlots.TryGetValue("RangeError", out var rangeErrorSlot))
         {
             frame.Variables[rangeErrorSlot] = JsValue.FromObject(EnsureRangeErrorConstructor());
+        }
+
+        if (function.VariableSlots.TryGetValue("Date", out var dateSlot))
+        {
+            frame.Variables[dateSlot] = JsValue.FromObject(EnsureDateConstructor());
         }
     }
 
@@ -670,6 +677,46 @@ public sealed class BytecodeInterpreter
         return constructorHandle;
     }
 
+    private ObjectHandle EnsureDatePrototype()
+    {
+        _ = EnsureDateConstructor();
+        return _datePrototypeHandle!.Value;
+    }
+
+    private ObjectHandle EnsureDateConstructor()
+    {
+        if (_dateConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototypeHandle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "Date",
+            (_, args) => CreateDateObject(args.Count > 0 ? ToNumber(args[0]) : 0d),
+            args => CreateDateObject(args.Count > 0 ? ToNumber(args[0]) : 0d));
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        var prototype = _heap.GetObject(prototypeHandle);
+        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        _datePrototypeHandle = prototypeHandle;
+        _dateConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private JsValue CreateDateObject(double timeValue)
+    {
+        var obj = new DateObject(timeValue);
+        obj.SetPrototype(EnsureDatePrototype());
+        return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
+    }
+
     private ObjectHandle EnsureObjectPrototype()
     {
         _ = EnsureObjectConstructor();
@@ -693,12 +740,18 @@ public sealed class BytecodeInterpreter
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
+        var definePropertyHandle = _heap.AllocateObject(
+            new NativeFunctionObject("defineProperty", ObjectDefineProperty),
+            AllocationSite.Current());
+        _ = constructor.SetProperty("defineProperty", JsValue.FromObject(definePropertyHandle));
+        _heap.WriteBarrier(constructorHandle, definePropertyHandle);
 
         var prototype = _heap.GetObject(prototypeHandle);
         _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", (thisValue, _) => ObjectPrototypeToString(thisValue));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleString", (thisValue, _) => ObjectPrototypeToString(thisValue));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "hasOwnProperty", ObjectPrototypeHasOwnProperty);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "isPrototypeOf", ObjectPrototypeIsPrototypeOf);
 
         _objectPrototypeHandle = prototypeHandle;
@@ -786,12 +839,33 @@ public sealed class BytecodeInterpreter
         return JsValue.FromString($"[object {tag}]");
     }
 
+    private JsValue ObjectPrototypeHasOwnProperty(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        if (thisValue.Tag is JsValueTag.Undefined or JsValueTag.Null)
+        {
+            throw new JsThrownException(CreateTypeError("Object.prototype.hasOwnProperty called on null or undefined."));
+        }
+
+        if (thisValue.Tag == JsValueTag.HostObject)
+        {
+            return JsValue.FromBoolean(false);
+        }
+
+        var key = ToPropertyKey(args.Count > 0 ? args[0] : JsValue.Undefined);
+        var objectValue = thisValue.Tag == JsValueTag.Object
+            ? thisValue
+            : CreateObjectFromValue(thisValue);
+        var obj = _heap.GetObject(objectValue.AsObjectHandle());
+        return JsValue.FromBoolean(obj.TryGetOwnProperty(key, out _));
+    }
+
     private string GetObjectToStringTag(ObjectHandle handle)
     {
         return _heap.GetObject(handle) switch
         {
             ArrayObject => "Array",
             BooleanObject => "Boolean",
+            DateObject => "Date",
             NumberObject => "Number",
             StringObject => "String",
             JsFunctionObject or NativeFunctionObject => "Function",
@@ -819,6 +893,40 @@ public sealed class BytecodeInterpreter
         }
 
         return JsValue.FromBoolean(false);
+    }
+
+    private JsValue ObjectDefineProperty(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = thisValue;
+        if (args.Count < 3 || args[0].Tag != JsValueTag.Object || args[2].Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Object.defineProperty requires an object target and descriptor."));
+        }
+
+        var targetHandle = args[0].AsObjectHandle();
+        var target = _heap.GetObject(targetHandle);
+        var key = ToPropertyKey(args[1]);
+        var descriptorObject = _heap.GetObject(args[2].AsObjectHandle());
+        var value = descriptorObject.TryGetProperty("value", h => _heap.GetObject(h), out var valueDescriptor)
+            ? valueDescriptor.Value
+            : JsValue.Undefined;
+        var writable = ReadDescriptorFlag(descriptorObject, "writable");
+        var enumerable = ReadDescriptorFlag(descriptorObject, "enumerable");
+        var configurable = ReadDescriptorFlag(descriptorObject, "configurable");
+
+        _ = target.DefineOwnProperty(key, new JsPropertyDescriptor(value, writable, enumerable, configurable));
+        if (value.Tag == JsValueTag.Object)
+        {
+            _heap.WriteBarrier(targetHandle, value.AsObjectHandle());
+        }
+
+        return args[0];
+    }
+
+    private bool ReadDescriptorFlag(JsObject descriptorObject, string propertyName)
+    {
+        return descriptorObject.TryGetProperty(propertyName, h => _heap.GetObject(h), out var descriptor) &&
+               IsTruthy(descriptor.Value);
     }
 
     private ObjectHandle EnsureArrayPrototype()
@@ -970,7 +1078,9 @@ public sealed class BytecodeInterpreter
             return existing;
         }
 
-        var prototypeHandle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
+        var prototype = new BooleanObject(false);
+        prototype.SetPrototype(EnsureObjectPrototype());
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
         _heap.PushRoot(prototypeHandle);
 
         var constructor = new NativeFunctionObject(
@@ -981,13 +1091,42 @@ public sealed class BytecodeInterpreter
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
-        var prototype = _heap.GetObject(prototypeHandle);
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        var prototypeObject = _heap.GetObject(prototypeHandle);
+        _ = prototypeObject.SetProperty("constructor", JsValue.FromObject(constructorHandle));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toString", BooleanPrototypeToString);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "valueOf", BooleanPrototypeValueOf);
 
         _booleanPrototypeHandle = prototypeHandle;
         _booleanConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    private JsValue BooleanPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        return JsValue.FromString(BooleanThisValue(thisValue) ? "true" : "false");
+    }
+
+    private JsValue BooleanPrototypeValueOf(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        return JsValue.FromBoolean(BooleanThisValue(thisValue));
+    }
+
+    private bool BooleanThisValue(JsValue thisValue)
+    {
+        if (thisValue.Tag == JsValueTag.Boolean)
+        {
+            return thisValue.AsBoolean();
+        }
+
+        if (thisValue.Tag == JsValueTag.Object && _heap.GetObject(thisValue.AsObjectHandle()) is BooleanObject booleanObject)
+        {
+            return booleanObject.Value;
+        }
+
+        throw new JsThrownException(CreateTypeError("Boolean.prototype method called on incompatible receiver."));
     }
 
     private JsValue CreateBooleanObject(bool value)
@@ -1299,6 +1438,18 @@ public sealed class BytecodeInterpreter
         }
 
         throw new InvalidOperationException("Value is not constructible.");
+    }
+
+    private void StoreCallResult(InterpreterFrame frame, int destinationRegister, JsValue callee, IReadOnlyList<JsValue> args, JsValue thisValue)
+    {
+        try
+        {
+            frame.Registers[destinationRegister] = CallFunction(callee, args, thisValue);
+        }
+        catch (JsThrownException ex)
+        {
+            ThrowOrHandle(frame, ex.Value);
+        }
     }
 
     private void StoreConstructResult(InterpreterFrame frame, int destinationRegister, JsValue constructor, IReadOnlyList<JsValue> args)
@@ -1629,5 +1780,15 @@ public sealed class BytecodeInterpreter
         }
 
         public string Value { get; }
+    }
+
+    private sealed class DateObject : JsObject
+    {
+        public DateObject(double timeValue)
+        {
+            TimeValue = timeValue;
+        }
+
+        public double TimeValue { get; }
     }
 }

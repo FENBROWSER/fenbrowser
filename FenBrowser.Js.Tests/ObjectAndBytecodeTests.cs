@@ -607,6 +607,56 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void BooleanPrototypeToStringAndValueOfUseBooleanData()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("(Boolean.prototype.toString() == \"false\") && ((new Boolean()).valueOf() == false) && ((new Boolean(true)).toString() == \"true\") && ((new Boolean(0)).valueOf() == false) && ((new Boolean(new Object())).valueOf() == true);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void NativeCallErrorsAreCatchableByTryCatch()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let ok = false; try { Boolean.prototype.valueOf.call(new String()); } catch (e) { ok = e instanceof TypeError; } ok;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void DateObjectsAreOrdinaryNonBooleanReceiversForBooleanPrototypeMethods()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let ok = false; let d = new Date(0); Object.defineProperty(d, \"toString\", { value: Boolean.prototype.toString }); try { d.toString(); } catch (e) { ok = e instanceof TypeError; } ok;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleArrowFunctionArguments()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("function call(fn){ return fn(); } call(() => { return 7; });"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(7, result.AsNumber());
+    }
+
+    [Fact]
+    public void CompilerAndInterpreterHandleExpressionBodyArrowFunction()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let inc = x => x + 1; inc(4);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(5, result.AsNumber());
+    }
+
+    [Fact]
     public void StringCallReturnsPrimitiveAndConstructorCreatesInstance()
     {
         var compiler = new BytecodeCompiler();
@@ -741,6 +791,46 @@ public sealed class ObjectAndBytecodeTests
     {
         var compiler = new BytecodeCompiler();
         var fn = compiler.CompileScript(new SourceText("Array.prototype.isPrototypeOf(new Array(0));"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectDefinePropertyDefinesDataValueOnObjects()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = {}; Object.defineProperty(o, \"x\", { value: 7 }); o.x == 7;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectPrototypeHasOwnPropertyChecksOnlyOwnProperties()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = {}; Object.defineProperty(o, \"x\", { value: 7 }); o.hasOwnProperty(\"x\") && (o.hasOwnProperty(\"toString\") == false) && Object.prototype.hasOwnProperty.call(o, \"x\");"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectPrototypeHasOwnPropertyConvertsUndefinedKey()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = {}; Object.defineProperty(o, undefined, {}); o.hasOwnProperty(\"undefined\");"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectPrototypeHasOwnPropertyRejectsNullishReceivers()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let ok = false; try { Object.prototype.hasOwnProperty.call(null, \"x\"); } catch (e) { ok = e instanceof TypeError; } ok;"));
         new BytecodeVerifier().Verify(fn);
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.True(result.AsBoolean());
