@@ -144,11 +144,12 @@ public sealed class BytecodeInterpreter
                 }
                 case OpCode.GetPropByName:
                 {
-                    var obj = ResolveObject(frame.Registers[ins.B]);
+                    var receiver = frame.Registers[ins.B];
+                    var obj = ResolveObject(receiver);
                     var prop = function.PropertyNames[ins.C];
-                    if (obj.TryGetProperty(prop, h => _heap.GetObject(h), out var descriptor))
+                    if (TryGetPropertyValue(obj, receiver, prop, out var value))
                     {
-                        frame.Registers[ins.A] = descriptor.Value;
+                        frame.Registers[ins.A] = value;
                     }
                     else
                     {
@@ -210,11 +211,12 @@ public sealed class BytecodeInterpreter
                 }
                 case OpCode.GetElem:
                 {
-                    var obj = ResolveObject(frame.Registers[ins.B]);
+                    var receiver = frame.Registers[ins.B];
+                    var obj = ResolveObject(receiver);
                     var key = ToPropertyKey(frame.Registers[ins.C]);
-                    if (obj.TryGetProperty(key, h => _heap.GetObject(h), out var descriptor))
+                    if (TryGetPropertyValue(obj, receiver, key, out var value))
                     {
-                        frame.Registers[ins.A] = descriptor.Value;
+                        frame.Registers[ins.A] = value;
                     }
                     else
                     {
@@ -943,41 +945,69 @@ public sealed class BytecodeInterpreter
         var target = _heap.GetObject(targetHandle);
         var key = ToPropertyKey(args[1]);
         var descriptorObject = _heap.GetObject(args[2].AsObjectHandle());
-        var hasValue = descriptorObject.TryGetProperty("value", h => _heap.GetObject(h), out var valueDescriptor);
+        var descriptorReceiver = args[2];
+        var hasValue = TryGetPropertyValue(descriptorObject, descriptorReceiver, "value", out var value);
         var hasWritable = descriptorObject.TryGetProperty("writable", h => _heap.GetObject(h), out _);
-        var hasGetter = descriptorObject.TryGetProperty("get", h => _heap.GetObject(h), out var getterDescriptor);
-        var hasSetter = descriptorObject.TryGetProperty("set", h => _heap.GetObject(h), out var setterDescriptor);
+        var hasGetter = TryGetPropertyValue(descriptorObject, descriptorReceiver, "get", out var getter);
+        var hasSetter = TryGetPropertyValue(descriptorObject, descriptorReceiver, "set", out var setter);
         if ((hasGetter || hasSetter) && (hasValue || hasWritable))
         {
             throw new JsThrownException(CreateTypeError("Property descriptor cannot mix accessor and data fields."));
         }
 
         if (hasGetter &&
-            getterDescriptor.Value.Tag != JsValueTag.Undefined &&
-            !IsCallable(getterDescriptor.Value))
+            getter.Tag != JsValueTag.Undefined &&
+            !IsCallable(getter))
         {
             throw new JsThrownException(CreateTypeError("Property descriptor getter must be callable or undefined."));
         }
 
         if (hasSetter &&
-            setterDescriptor.Value.Tag != JsValueTag.Undefined &&
-            !IsCallable(setterDescriptor.Value))
+            setter.Tag != JsValueTag.Undefined &&
+            !IsCallable(setter))
         {
             throw new JsThrownException(CreateTypeError("Property descriptor setter must be callable or undefined."));
         }
 
-        var value = hasValue ? valueDescriptor.Value : JsValue.Undefined;
-        var writable = ReadDescriptorFlag(descriptorObject, "writable");
-        var enumerable = ReadDescriptorFlag(descriptorObject, "enumerable");
-        var configurable = ReadDescriptorFlag(descriptorObject, "configurable");
+        var writable = ReadDescriptorFlag(descriptorObject, descriptorReceiver, "writable");
+        var enumerable = ReadDescriptorFlag(descriptorObject, descriptorReceiver, "enumerable");
+        var configurable = ReadDescriptorFlag(descriptorObject, descriptorReceiver, "configurable");
 
-        _ = target.DefineOwnProperty(key, new JsPropertyDescriptor(value, writable, enumerable, configurable));
-        if (value.Tag == JsValueTag.Object)
-        {
-            _heap.WriteBarrier(targetHandle, value.AsObjectHandle());
-        }
+        var descriptor = hasGetter || hasSetter
+            ? JsPropertyDescriptor.Accessor(
+                hasGetter ? getter : JsValue.Undefined,
+                hasSetter ? setter : JsValue.Undefined,
+                enumerable,
+                configurable)
+            : new JsPropertyDescriptor(hasValue ? value : JsValue.Undefined, writable, enumerable, configurable);
+
+        _ = target.DefineOwnProperty(key, descriptor);
+        WriteDescriptorBarrier(targetHandle, descriptor);
 
         return args[0];
+    }
+
+    private void WriteDescriptorBarrier(ObjectHandle ownerHandle, JsPropertyDescriptor descriptor)
+    {
+        if (descriptor.IsAccessor)
+        {
+            if (descriptor.Get.Tag == JsValueTag.Object)
+            {
+                _heap.WriteBarrier(ownerHandle, descriptor.Get.AsObjectHandle());
+            }
+
+            if (descriptor.Set.Tag == JsValueTag.Object)
+            {
+                _heap.WriteBarrier(ownerHandle, descriptor.Set.AsObjectHandle());
+            }
+
+            return;
+        }
+
+        if (descriptor.Value.Tag == JsValueTag.Object)
+        {
+            _heap.WriteBarrier(ownerHandle, descriptor.Value.AsObjectHandle());
+        }
     }
 
     private JsValue ObjectGetOwnPropertyDescriptor(JsValue thisValue, IReadOnlyList<JsValue> args)
@@ -996,23 +1026,63 @@ public sealed class BytecodeInterpreter
         }
 
         var descriptorObject = CreateOrdinaryObject();
-        _ = descriptorObject.SetProperty("value", descriptor.Value);
-        _ = descriptorObject.SetProperty("writable", JsValue.FromBoolean(descriptor.Writable));
+        if (descriptor.IsAccessor)
+        {
+            _ = descriptorObject.SetProperty("get", descriptor.Get);
+            _ = descriptorObject.SetProperty("set", descriptor.Set);
+        }
+        else
+        {
+            _ = descriptorObject.SetProperty("value", descriptor.Value);
+            _ = descriptorObject.SetProperty("writable", JsValue.FromBoolean(descriptor.Writable));
+        }
+
         _ = descriptorObject.SetProperty("enumerable", JsValue.FromBoolean(descriptor.Enumerable));
         _ = descriptorObject.SetProperty("configurable", JsValue.FromBoolean(descriptor.Configurable));
         var descriptorHandle = _heap.AllocateObject(descriptorObject, AllocationSite.Current());
-        if (descriptor.Value.Tag == JsValueTag.Object)
-        {
-            _heap.WriteBarrier(descriptorHandle, descriptor.Value.AsObjectHandle());
-        }
-
+        WriteDescriptorBarrier(descriptorHandle, descriptor);
         return JsValue.FromObject(descriptorHandle);
     }
 
-    private bool ReadDescriptorFlag(JsObject descriptorObject, string propertyName)
+    [MayExecuteJs]
+    private bool TryGetPropertyValue(JsObject obj, JsValue receiver, string key, out JsValue value)
     {
-        return descriptorObject.TryGetProperty(propertyName, h => _heap.GetObject(h), out var descriptor) &&
-               IsTruthy(descriptor.Value);
+        if (!obj.TryGetProperty(key, h => _heap.GetObject(h), out var descriptor))
+        {
+            value = JsValue.Undefined;
+            return false;
+        }
+
+        value = GetDescriptorValue(descriptor, receiver);
+        return true;
+    }
+
+    [MayExecuteJs]
+    private JsValue GetDescriptorValue(JsPropertyDescriptor descriptor, JsValue receiver)
+    {
+        if (!descriptor.IsAccessor)
+        {
+            return descriptor.Value;
+        }
+
+        if (descriptor.Get.Tag == JsValueTag.Undefined)
+        {
+            return JsValue.Undefined;
+        }
+
+        if (!IsCallable(descriptor.Get))
+        {
+            throw new JsThrownException(CreateTypeError("Accessor getter must be callable or undefined."));
+        }
+
+        return CallFunction(descriptor.Get, Array.Empty<JsValue>(), receiver);
+    }
+
+    [MayExecuteJs]
+    private bool ReadDescriptorFlag(JsObject descriptorObject, JsValue receiver, string propertyName)
+    {
+        return TryGetPropertyValue(descriptorObject, receiver, propertyName, out var value) &&
+               IsTruthy(value);
     }
 
     private ObjectHandle EnsureArrayPrototype()
@@ -1122,14 +1192,14 @@ public sealed class BytecodeInterpreter
         for (var i = 0; i < length; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            if (!obj.TryGetProperty(key, h => _heap.GetObject(h), out var descriptor) ||
-                descriptor.Value.Tag is JsValueTag.Undefined or JsValueTag.Null)
+            if (!TryGetPropertyValue(obj, thisValue, key, out var value) ||
+                value.Tag is JsValueTag.Undefined or JsValueTag.Null)
             {
                 values[i] = string.Empty;
             }
             else
             {
-                values[i] = ToStringValue(descriptor.Value);
+                values[i] = ToStringValue(value);
             }
         }
 
@@ -1662,10 +1732,10 @@ public sealed class BytecodeInterpreter
 
     private bool TryCallPrimitiveMethod(JsObject obj, JsValue thisValue, string name, out JsValue primitive)
     {
-        if (obj.TryGetProperty(name, h => _heap.GetObject(h), out var descriptor) &&
-            IsCallable(descriptor.Value))
+        if (TryGetPropertyValue(obj, thisValue, name, out var method) &&
+            IsCallable(method))
         {
-            var result = CallFunction(descriptor.Value, Array.Empty<JsValue>(), thisValue);
+            var result = CallFunction(method, Array.Empty<JsValue>(), thisValue);
             if (result.Tag != JsValueTag.Object)
             {
                 primitive = result;
@@ -1703,11 +1773,11 @@ public sealed class BytecodeInterpreter
             }
 
             var obj = _heap.GetObject(value.AsObjectHandle());
-            if (obj.TryGetProperty("toString", h => _heap.GetObject(h), out var toStringDescriptor) &&
-                toStringDescriptor.Value.Tag == JsValueTag.Object &&
-                _heap.GetObject(toStringDescriptor.Value.AsObjectHandle()) is JsFunctionObject or NativeFunctionObject)
+            if (TryGetPropertyValue(obj, value, "toString", out var toString) &&
+                toString.Tag == JsValueTag.Object &&
+                _heap.GetObject(toString.AsObjectHandle()) is JsFunctionObject or NativeFunctionObject)
             {
-                var result = CallFunction(toStringDescriptor.Value, Array.Empty<JsValue>(), value);
+                var result = CallFunction(toString, Array.Empty<JsValue>(), value);
                 if (result.Tag != JsValueTag.Object)
                 {
                     return ToStringValue(result);
@@ -1924,14 +1994,14 @@ public sealed class BytecodeInterpreter
             return true;
         }
 
-        if (!ctorObj.TryGetProperty("prototype", h => _heap.GetObject(h), out var prototypeDescriptor) ||
-            prototypeDescriptor.Value.Tag != JsValueTag.Object)
+        if (!TryGetPropertyValue(ctorObj, right, "prototype", out var prototypeValue) ||
+            prototypeValue.Tag != JsValueTag.Object)
         {
             ThrowTypeError(frame, "Function has non-object prototype in 'instanceof'.");
             return false;
         }
 
-        var targetPrototype = prototypeDescriptor.Value.AsObjectHandle();
+        var targetPrototype = prototypeValue.AsObjectHandle();
         var currentObj = ResolveObject(left);
         while (currentObj.PrototypeHandle is { } proto)
         {

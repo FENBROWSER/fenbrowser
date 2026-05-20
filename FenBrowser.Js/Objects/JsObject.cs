@@ -75,7 +75,19 @@ public class JsObject : ITraceable
 
         foreach (var descriptor in _properties.Values)
         {
-            if (descriptor.Value.Tag == JsValueTag.Object)
+            if (descriptor.IsAccessor)
+            {
+                if (descriptor.Get.Tag == JsValueTag.Object)
+                {
+                    tracer.Trace(descriptor.Get.AsObjectHandle());
+                }
+
+                if (descriptor.Set.Tag == JsValueTag.Object)
+                {
+                    tracer.Trace(descriptor.Set.AsObjectHandle());
+                }
+            }
+            else if (descriptor.Value.Tag == JsValueTag.Object)
             {
                 tracer.Trace(descriptor.Value.AsObjectHandle());
             }
