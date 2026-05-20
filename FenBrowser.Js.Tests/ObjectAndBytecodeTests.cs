@@ -857,6 +857,36 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void ObjectDefinePropertyConvertsObjectKeysThroughToPrimitive()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let a = {}; let b = {}; let c = {}; let d = {}; Object.defineProperty(a, [1, 2], {}); Object.defineProperty(b, new String(\"Hello\"), {}); Object.defineProperty(c, new Boolean(false), {}); Object.defineProperty(d, { toString: function(){ return \"abc\"; } }, {}); a.hasOwnProperty(\"1,2\") && b.hasOwnProperty(\"Hello\") && c.hasOwnProperty(\"false\") && d.hasOwnProperty(\"abc\");"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectDefinePropertyFallsBackToValueOfForObjectKeys()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = {}; let key = { toString: function(){ return {}; }, valueOf: function(){ return \"v\"; } }; Object.defineProperty(o, key, {}); o.hasOwnProperty(\"v\");"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectDefinePropertyRejectsObjectKeysWithoutPrimitiveConversion()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let ok = false; let key = { toString: function(){ return {}; }, valueOf: function(){ return {}; } }; try { Object.defineProperty({}, key, {}); } catch (e) { ok = e instanceof TypeError; } ok;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ObjectPrototypeHasOwnPropertyRejectsNullishReceivers()
     {
         var compiler = new BytecodeCompiler();

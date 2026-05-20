@@ -664,7 +664,9 @@ public sealed class BytecodeInterpreter
             return existing;
         }
 
-        var prototypeHandle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
+        var prototype = new NumberObject(0d);
+        prototype.SetPrototype(EnsureObjectPrototype());
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
         _heap.PushRoot(prototypeHandle);
 
         var constructor = new NativeFunctionObject(
@@ -1176,13 +1178,42 @@ public sealed class BytecodeInterpreter
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
-        var prototype = _heap.GetObject(prototypeHandle);
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        var prototypeObject = _heap.GetObject(prototypeHandle);
+        _ = prototypeObject.SetProperty("constructor", JsValue.FromObject(constructorHandle));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toString", NumberPrototypeToString);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "valueOf", NumberPrototypeValueOf);
 
         _numberPrototypeHandle = prototypeHandle;
         _numberConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    private JsValue NumberPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        return JsValue.FromString(FormatNumberForString(NumberThisValue(thisValue)));
+    }
+
+    private JsValue NumberPrototypeValueOf(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        return JsValue.FromNumber(NumberThisValue(thisValue));
+    }
+
+    private double NumberThisValue(JsValue thisValue)
+    {
+        if (thisValue.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            return ToNumber(thisValue);
+        }
+
+        if (thisValue.Tag == JsValueTag.Object && _heap.GetObject(thisValue.AsObjectHandle()) is NumberObject numberObject)
+        {
+            return numberObject.Value;
+        }
+
+        throw new JsThrownException(CreateTypeError("Number.prototype method called on incompatible receiver."));
     }
 
     private JsValue CreateNumberObject(double value)
@@ -1205,7 +1236,9 @@ public sealed class BytecodeInterpreter
             return existing;
         }
 
-        var prototypeHandle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
+        var prototype = new StringObject(string.Empty);
+        prototype.SetPrototype(EnsureObjectPrototype());
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
         _heap.PushRoot(prototypeHandle);
 
         var constructor = new NativeFunctionObject(
@@ -1217,13 +1250,42 @@ public sealed class BytecodeInterpreter
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
-        var prototype = _heap.GetObject(prototypeHandle);
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        var prototypeObject = _heap.GetObject(prototypeHandle);
+        _ = prototypeObject.SetProperty("constructor", JsValue.FromObject(constructorHandle));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toString", StringPrototypeToString);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "valueOf", StringPrototypeValueOf);
 
         _stringPrototypeHandle = prototypeHandle;
         _stringConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    private JsValue StringPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        return JsValue.FromString(StringThisValue(thisValue));
+    }
+
+    private JsValue StringPrototypeValueOf(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        return JsValue.FromString(StringThisValue(thisValue));
+    }
+
+    private string StringThisValue(JsValue thisValue)
+    {
+        if (thisValue.Tag == JsValueTag.String)
+        {
+            return thisValue.AsString();
+        }
+
+        if (thisValue.Tag == JsValueTag.Object && _heap.GetObject(thisValue.AsObjectHandle()) is StringObject stringObject)
+        {
+            return stringObject.Value;
+        }
+
+        throw new JsThrownException(CreateTypeError("String.prototype method called on incompatible receiver."));
     }
 
     private JsValue CreateStringObject(string value)
@@ -1476,18 +1538,73 @@ public sealed class BytecodeInterpreter
         }
     }
 
-    private static string ToPropertyKey(JsValue value)
+    [MayExecuteJs]
+    private string ToPropertyKey(JsValue value)
     {
-        return value.Tag switch
+        var primitive = ToPrimitive(value, PrimitiveHint.String);
+        return primitive.Tag switch
         {
             JsValueTag.Undefined => "undefined",
             JsValueTag.Null => "null",
-            JsValueTag.String => value.AsString(),
-            JsValueTag.Number => FormatNumberForString(value.AsNumber()),
-            JsValueTag.Int32 => value.AsInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
-            JsValueTag.Boolean => value.AsBoolean() ? "true" : "false",
-            _ => value.Tag.ToString()
+            JsValueTag.String => primitive.AsString(),
+            JsValueTag.Number => FormatNumberForString(primitive.AsNumber()),
+            JsValueTag.Int32 => primitive.AsInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
+            JsValueTag.Boolean => primitive.AsBoolean() ? "true" : "false",
+            _ => primitive.Tag.ToString()
         };
+    }
+
+    [MayExecuteJs]
+    private JsValue ToPrimitive(JsValue value, PrimitiveHint hint)
+    {
+        if (value.Tag != JsValueTag.Object)
+        {
+            return value;
+        }
+
+        if (TryOrdinaryToPrimitive(value, hint, out var primitive))
+        {
+            return primitive;
+        }
+
+        if (TryGetObjectPrimitiveValue(value, out primitive))
+        {
+            return primitive;
+        }
+
+        throw new JsThrownException(CreateTypeError("Cannot convert object to primitive value."));
+    }
+
+    private bool TryOrdinaryToPrimitive(JsValue value, PrimitiveHint hint, out JsValue primitive)
+    {
+        var obj = _heap.GetObject(value.AsObjectHandle());
+        var first = hint == PrimitiveHint.String ? "toString" : "valueOf";
+        var second = hint == PrimitiveHint.String ? "valueOf" : "toString";
+        return TryCallPrimitiveMethod(obj, value, first, out primitive) ||
+               TryCallPrimitiveMethod(obj, value, second, out primitive);
+    }
+
+    private bool TryCallPrimitiveMethod(JsObject obj, JsValue thisValue, string name, out JsValue primitive)
+    {
+        if (obj.TryGetProperty(name, h => _heap.GetObject(h), out var descriptor) &&
+            IsCallable(descriptor.Value))
+        {
+            var result = CallFunction(descriptor.Value, Array.Empty<JsValue>(), thisValue);
+            if (result.Tag != JsValueTag.Object)
+            {
+                primitive = result;
+                return true;
+            }
+        }
+
+        primitive = JsValue.Undefined;
+        return false;
+    }
+
+    private bool IsCallable(JsValue value)
+    {
+        return value.Tag == JsValueTag.Object &&
+               _heap.GetObject(value.AsObjectHandle()) is JsFunctionObject or NativeFunctionObject;
     }
 
     private JsValue Add(JsValue left, JsValue right)
@@ -1807,6 +1924,12 @@ public sealed class BytecodeInterpreter
         var defaultInstance = JsValue.FromObject(_heap.AllocateObject(instanceObject, AllocationSite.Current()));
         var result = ExecuteInternal(callee.Function, args, callee.CapturedVariables, defaultInstance);
         return result.Tag == JsValueTag.Object ? result : defaultInstance;
+    }
+
+    private enum PrimitiveHint
+    {
+        String,
+        Number
     }
 
     private sealed class NativeFunctionObject : JsObject
