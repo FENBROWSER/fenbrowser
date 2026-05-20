@@ -4,6 +4,7 @@ using FenBrowser.Js.Objects;
 using FenBrowser.Js.Parser;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
+using System.Text.RegularExpressions;
 
 namespace FenBrowser.Js.Interpreter;
 
@@ -36,6 +37,8 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _dateConstructorHandle;
     private ObjectHandle? _datePrototypeHandle;
     private ObjectHandle? _mathObjectHandle;
+    private ObjectHandle? _regexpConstructorHandle;
+    private ObjectHandle? _regexpPrototypeHandle;
 
     public BytecodeInterpreter(JsHeap? heap = null)
     {
@@ -481,6 +484,11 @@ public sealed class BytecodeInterpreter
             frame.Variables[dateSlot] = JsValue.FromObject(EnsureDateConstructor());
         }
 
+        if (function.VariableSlots.TryGetValue("RegExp", out var regexpSlot))
+        {
+            frame.Variables[regexpSlot] = JsValue.FromObject(EnsureRegExpConstructor());
+        }
+
         if (function.VariableSlots.TryGetValue("Math", out var mathSlot))
         {
             frame.Variables[mathSlot] = JsValue.FromObject(EnsureMathObject());
@@ -811,6 +819,150 @@ public sealed class BytecodeInterpreter
         var obj = new DateObject(timeValue);
         obj.SetPrototype(EnsureDatePrototype());
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
+    }
+
+    private ObjectHandle EnsureRegExpPrototype()
+    {
+        _ = EnsureRegExpConstructor();
+        return _regexpPrototypeHandle!.Value;
+    }
+
+    private ObjectHandle EnsureRegExpConstructor()
+    {
+        if (_regexpConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototype = CreateOrdinaryObject();
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "RegExp",
+            (_, args) => CreateRegExpObject(args),
+            args => CreateRegExpObject(args),
+            length: 2);
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "test", RegExpPrototypeTest, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", RegExpPrototypeToString);
+
+        _regexpPrototypeHandle = prototypeHandle;
+        _regexpConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private JsValue CreateRegExpObject(IReadOnlyList<JsValue> args)
+    {
+        var pattern = args.Count > 0 && args[0].Tag != JsValueTag.Undefined
+            ? ToStringValue(args[0])
+            : string.Empty;
+        var flags = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
+            ? ToStringValue(args[1])
+            : string.Empty;
+        var normalizedFlags = NormalizeRegExpFlags(flags);
+        var options = RegexOptions.ECMAScript | RegexOptions.CultureInvariant;
+        if (normalizedFlags.Contains('i', StringComparison.Ordinal))
+        {
+            options |= RegexOptions.IgnoreCase;
+        }
+
+        if (normalizedFlags.Contains('m', StringComparison.Ordinal))
+        {
+            options |= RegexOptions.Multiline;
+        }
+
+        Regex regex;
+        try
+        {
+            regex = new Regex(pattern, options, TimeSpan.FromMilliseconds(250));
+        }
+        catch (ArgumentException ex)
+        {
+            throw new JsThrownException(CreateSyntaxError(ex.Message));
+        }
+
+        var obj = new RegExpObject(pattern, normalizedFlags, regex);
+        obj.SetPrototype(EnsureRegExpPrototype());
+        _ = obj.DefineOwnProperty(
+            "source",
+            new JsPropertyDescriptor(JsValue.FromString(pattern), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty(
+            "global",
+            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('g', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty(
+            "ignoreCase",
+            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('i', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty(
+            "multiline",
+            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('m', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty(
+            "lastIndex",
+            new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
+        return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
+    }
+
+    private JsValue RegExpPrototypeTest(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var regexp = RegExpThisValue(thisValue);
+        var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+        return JsValue.FromBoolean(regexp.Regex.IsMatch(input));
+    }
+
+    private JsValue RegExpPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        var regexp = RegExpThisValue(thisValue);
+        var escapedSource = regexp.Pattern.Replace("/", "\\/", StringComparison.Ordinal);
+        return JsValue.FromString($"/{escapedSource}/{regexp.Flags}");
+    }
+
+    private RegExpObject RegExpThisValue(JsValue thisValue)
+    {
+        if (thisValue.Tag == JsValueTag.Object && _heap.GetObject(thisValue.AsObjectHandle()) is RegExpObject regexp)
+        {
+            return regexp;
+        }
+
+        throw new JsThrownException(CreateTypeError("RegExp.prototype method called on incompatible receiver."));
+    }
+
+    private string NormalizeRegExpFlags(string flags)
+    {
+        var seenGlobal = false;
+        var seenIgnoreCase = false;
+        var seenMultiline = false;
+        foreach (var flag in flags)
+        {
+            switch (flag)
+            {
+                case 'g' when !seenGlobal:
+                    seenGlobal = true;
+                    break;
+                case 'i' when !seenIgnoreCase:
+                    seenIgnoreCase = true;
+                    break;
+                case 'm' when !seenMultiline:
+                    seenMultiline = true;
+                    break;
+                case 'g':
+                case 'i':
+                case 'm':
+                    throw new JsThrownException(CreateSyntaxError("RegExp flags must not be duplicated."));
+                default:
+                    throw new JsThrownException(CreateSyntaxError($"Invalid RegExp flag '{flag}'."));
+            }
+        }
+
+        return string.Concat(
+            seenGlobal ? "g" : string.Empty,
+            seenIgnoreCase ? "i" : string.Empty,
+            seenMultiline ? "m" : string.Empty);
     }
 
     private ObjectHandle EnsureMathObject()
@@ -1289,6 +1441,7 @@ public sealed class BytecodeInterpreter
             BooleanObject => "Boolean",
             DateObject => "Date",
             NumberObject => "Number",
+            RegExpObject => "RegExp",
             StringObject => "String",
             JsFunctionObject or NativeFunctionObject => "Function",
             _ => "Object"
@@ -2549,5 +2702,21 @@ public sealed class BytecodeInterpreter
         }
 
         public double TimeValue { get; }
+    }
+
+    private sealed class RegExpObject : JsObject
+    {
+        public RegExpObject(string pattern, string flags, Regex regex)
+        {
+            Pattern = pattern;
+            Flags = flags;
+            Regex = regex;
+        }
+
+        public string Pattern { get; }
+
+        public string Flags { get; }
+
+        public Regex Regex { get; }
     }
 }

@@ -1067,6 +1067,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void RegExpConstructorCreatesRegExpObjects()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let r = new RegExp(\"ab+\", \"i\"); r instanceof RegExp && r.test(\"ABBB\") && r.source == \"ab+\" && r.ignoreCase && (r.global == false) && (r.toString() == \"/ab+/i\");"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectDefinePropertyReadsPropertiesFromRegExpDescriptor()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("RegExp.prototype.value = \"RegExp\"; let r = new RegExp(); let o = {}; Object.defineProperty(o, \"property\", r); let fromPrototype = o.property == \"RegExp\"; r.value = \"own\"; Object.defineProperty(o, \"own\", r); fromPrototype && o.own == \"own\";"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ObjectPrototypePropertyIsEnumerableChecksOwnEnumerableFlag()
     {
         var compiler = new BytecodeCompiler();
