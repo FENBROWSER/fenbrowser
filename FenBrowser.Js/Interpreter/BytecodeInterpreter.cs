@@ -1,7 +1,9 @@
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Objects;
+using FenBrowser.Js.Parser;
 using FenBrowser.Js.Runtime;
+using FenBrowser.Js.Source;
 
 namespace FenBrowser.Js.Interpreter;
 
@@ -25,6 +27,8 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _rangeErrorConstructorHandle;
     private ObjectHandle? _rangeErrorPrototypeHandle;
     private ObjectHandle? _functionCallMethodHandle;
+    private ObjectHandle? _evalFunctionHandle;
+    private ObjectHandle? _globalObjectHandle;
 
     public BytecodeInterpreter(JsHeap? heap = null)
     {
@@ -34,7 +38,7 @@ public sealed class BytecodeInterpreter
     [MayExecuteJs]
     public JsValue Execute(BytecodeFunction function)
     {
-        return ExecuteInternal(function, Array.Empty<JsValue>(), null, JsValue.Undefined);
+        return ExecuteInternal(function, Array.Empty<JsValue>(), null, JsValue.FromObject(EnsureGlobalObject()));
     }
 
     [MayExecuteJs]
@@ -82,6 +86,7 @@ public sealed class BytecodeInterpreter
                     break;
                 case OpCode.StoreVar:
                     frame.Variables[ins.B] = frame.Registers[ins.A];
+                    SyncGlobalVariable(frame, ins.B, frame.Registers[ins.A]);
                     break;
                 case OpCode.Move:
                     frame.Registers[ins.A] = frame.Registers[ins.B];
@@ -404,6 +409,11 @@ public sealed class BytecodeInterpreter
             frame.Variables[undefinedSlot] = JsValue.Undefined;
         }
 
+        if (function.VariableSlots.TryGetValue("eval", out var evalSlot))
+        {
+            frame.Variables[evalSlot] = JsValue.FromObject(EnsureEvalFunction());
+        }
+
         if (function.VariableSlots.TryGetValue("Object", out var objectSlot))
         {
             frame.Variables[objectSlot] = JsValue.FromObject(EnsureObjectConstructor());
@@ -452,6 +462,47 @@ public sealed class BytecodeInterpreter
         return obj;
     }
 
+    private ObjectHandle EnsureGlobalObject()
+    {
+        if (_globalObjectHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var global = CreateOrdinaryObject();
+        var handle = _heap.AllocateObject(global, AllocationSite.Current());
+        _heap.PushRoot(handle);
+        _globalObjectHandle = handle;
+        return handle;
+    }
+
+    private void SyncGlobalVariable(InterpreterFrame frame, int slot, JsValue value)
+    {
+        if (_globalObjectHandle is null ||
+            frame.ThisValue.Tag != JsValueTag.Object ||
+            !frame.ThisValue.AsObjectHandle().Equals(_globalObjectHandle.Value))
+        {
+            return;
+        }
+
+        foreach (var variable in frame.Function.VariableSlots)
+        {
+            if (variable.Value != slot)
+            {
+                continue;
+            }
+
+            var global = _heap.GetObject(_globalObjectHandle.Value);
+            _ = global.SetProperty(variable.Key, value);
+            if (value.Tag == JsValueTag.Object)
+            {
+                _heap.WriteBarrier(_globalObjectHandle.Value, value.AsObjectHandle());
+            }
+
+            return;
+        }
+    }
+
     private void ThrowTypeError(InterpreterFrame frame, string message)
     {
         ThrowOrHandle(frame, CreateTypeError(message));
@@ -491,7 +542,41 @@ public sealed class BytecodeInterpreter
 
     private static string GetOptionalMessage(IReadOnlyList<JsValue> args)
     {
-        return args.Count > 0 ? ToStringForConcat(args[0]) : string.Empty;
+        return args.Count > 0 ? FormatPrimitiveForString(args[0]) : string.Empty;
+    }
+
+    private ObjectHandle EnsureEvalFunction()
+    {
+        if (_evalFunctionHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var eval = new NativeFunctionObject(
+            "eval",
+            (_, args) => Eval(args));
+        var evalHandle = _heap.AllocateObject(eval, AllocationSite.Current());
+        _heap.PushRoot(evalHandle);
+        _evalFunctionHandle = evalHandle;
+        return evalHandle;
+    }
+
+    private JsValue Eval(IReadOnlyList<JsValue> args)
+    {
+        if (args.Count == 0)
+        {
+            return JsValue.Undefined;
+        }
+
+        if (args[0].Tag != JsValueTag.String)
+        {
+            return args[0];
+        }
+
+        var program = JsParser.ParseScript(new SourceText(args[0].AsString(), "<eval>"));
+        var compiled = new BytecodeCompiler().CompileProgram(program);
+        new BytecodeVerifier().Verify(compiled);
+        return ExecuteInternal(compiled, Array.Empty<JsValue>(), null, JsValue.Undefined);
     }
 
     private ObjectHandle EnsureTypeErrorPrototype()
@@ -765,6 +850,7 @@ public sealed class BytecodeInterpreter
         _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "push", ArrayPrototypePush);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", ArrayPrototypeToString);
 
         _arrayPrototypeHandle = prototypeHandle;
         _arrayConstructorHandle = constructorHandle;
@@ -825,6 +911,34 @@ public sealed class BytecodeInterpreter
         var newLength = length + args.Count;
         _ = obj.SetProperty("length", JsValue.FromNumber(newLength));
         return JsValue.FromNumber(newLength);
+    }
+
+    private JsValue ArrayPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        if (length == 0)
+        {
+            return JsValue.FromString(string.Empty);
+        }
+
+        var values = new string[length];
+        for (var i = 0; i < length; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!obj.TryGetProperty(key, h => _heap.GetObject(h), out var descriptor) ||
+                descriptor.Value.Tag is JsValueTag.Undefined or JsValueTag.Null)
+            {
+                values[i] = string.Empty;
+            }
+            else
+            {
+                values[i] = ToStringValue(descriptor.Value);
+            }
+        }
+
+        return JsValue.FromString(string.Join(",", values));
     }
 
     private static int GetArrayLength(JsObject obj)
@@ -906,6 +1020,7 @@ public sealed class BytecodeInterpreter
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         _ = constructor.SetProperty("MAX_VALUE", JsValue.FromNumber(double.MaxValue));
         _ = constructor.SetProperty("MIN_VALUE", JsValue.FromNumber(double.Epsilon));
+        _ = constructor.SetProperty("NaN", JsValue.FromNumber(double.NaN));
         _ = constructor.SetProperty("POSITIVE_INFINITY", JsValue.FromNumber(double.PositiveInfinity));
         _ = constructor.SetProperty("NEGATIVE_INFINITY", JsValue.FromNumber(double.NegativeInfinity));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
@@ -945,8 +1060,8 @@ public sealed class BytecodeInterpreter
 
         var constructor = new NativeFunctionObject(
             "String",
-            (_, args) => JsValue.FromString(args.Count > 0 ? ToStringForConcat(args[0]) : string.Empty),
-            args => CreateStringObject(args.Count > 0 ? ToStringForConcat(args[0]) : string.Empty));
+            (_, args) => JsValue.FromString(args.Count > 0 ? ToStringValue(args[0]) : string.Empty),
+            args => CreateStringObject(args.Count > 0 ? ToStringValue(args[0]) : string.Empty));
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
@@ -1195,17 +1310,44 @@ public sealed class BytecodeInterpreter
         };
     }
 
-    private static JsValue Add(JsValue left, JsValue right)
+    private JsValue Add(JsValue left, JsValue right)
     {
-        if (left.Tag == JsValueTag.String || right.Tag == JsValueTag.String)
+        if (left.Tag is JsValueTag.String or JsValueTag.Object || right.Tag is JsValueTag.String or JsValueTag.Object)
         {
-            return JsValue.FromString(ToStringForConcat(left) + ToStringForConcat(right));
+            return JsValue.FromString(ToStringValue(left) + ToStringValue(right));
         }
 
         return JsValue.FromNumber(ToNumber(left) + ToNumber(right));
     }
 
-    private static string ToStringForConcat(JsValue value)
+    private string ToStringValue(JsValue value)
+    {
+        if (value.Tag == JsValueTag.Object)
+        {
+            if (TryGetObjectPrimitiveValue(value, out var primitive))
+            {
+                return ToStringValue(primitive);
+            }
+
+            var obj = _heap.GetObject(value.AsObjectHandle());
+            if (obj.TryGetProperty("toString", h => _heap.GetObject(h), out var toStringDescriptor) &&
+                toStringDescriptor.Value.Tag == JsValueTag.Object &&
+                _heap.GetObject(toStringDescriptor.Value.AsObjectHandle()) is JsFunctionObject or NativeFunctionObject)
+            {
+                var result = CallFunction(toStringDescriptor.Value, Array.Empty<JsValue>(), value);
+                if (result.Tag != JsValueTag.Object)
+                {
+                    return ToStringValue(result);
+                }
+            }
+
+            return "[object Object]";
+        }
+
+        return FormatPrimitiveForString(value);
+    }
+
+    private static string FormatPrimitiveForString(JsValue value)
     {
         return value.Tag switch
         {
@@ -1213,12 +1355,39 @@ public sealed class BytecodeInterpreter
             JsValueTag.Null => "null",
             JsValueTag.Boolean => value.AsBoolean() ? "true" : "false",
             JsValueTag.Int32 => value.AsInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
-            JsValueTag.Number => value.AsNumber().ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+            JsValueTag.Number => FormatNumberForString(value.AsNumber()),
             JsValueTag.String => value.AsString(),
             JsValueTag.Object => "[object Object]",
             JsValueTag.HostObject => "[object Object]",
             _ => value.Tag.ToString()
         };
+    }
+
+    private static string FormatNumberForString(double value)
+    {
+        if (double.IsNaN(value))
+        {
+            return "NaN";
+        }
+
+        if (double.IsPositiveInfinity(value))
+        {
+            return "Infinity";
+        }
+
+        if (double.IsNegativeInfinity(value))
+        {
+            return "-Infinity";
+        }
+
+        if (value == 0)
+        {
+            return "0";
+        }
+
+        var text = value.ToString("R", System.Globalization.CultureInfo.InvariantCulture).Replace('E', 'e');
+        text = text.Replace("e-0", "e-", StringComparison.Ordinal).Replace("e+0", "e+", StringComparison.Ordinal);
+        return text;
     }
 
     private static double ToNumber(JsValue value)
