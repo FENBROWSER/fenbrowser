@@ -2347,4 +2347,58 @@ public sealed class Test262RunnerTests
             Directory.Delete(tempRoot, recursive: true);
         }
     }
+
+    [Fact]
+    public void Run_RuntimeSubset_PropertyHelperVerifyPropertyUsesRuntimePrelude()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "property-helper.js");
+        var outputPath = Path.Combine(tempRoot, "property-helper-result.json");
+
+        try
+        {
+            File.WriteAllText(testFile, """
+            /*---
+            includes: [propertyHelper.js]
+            ---*/
+            var obj = {};
+            Object.defineProperty(obj, "property", { configurable: null });
+            verifyProperty(obj, "property", { configurable: false });
+            """);
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: false,
+                runtimeSubset: true,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1000,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(1, summary.GetProperty("passed").GetInt32());
+            Assert.Equal(0, summary.GetProperty("runtimeErrors").GetInt32());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
 }

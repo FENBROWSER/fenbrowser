@@ -841,7 +841,7 @@ public sealed class Test262Runner
 
             try
             {
-                var runtimeInput = RequiresRuntimeHarnessSupport(sourceText)
+                var runtimeInput = frontmatter.Includes.Count > 0 || RequiresRuntimeHarnessSupport(sourceText)
                     ? BuildRuntimeHarnessPrelude() + "\n" + parserInput
                     : parserInput;
 
@@ -1362,6 +1362,15 @@ public sealed class Test262Runner
                    if (actual[i] !== expected[i]) { throw (message || "assert.compareArray element"); }
                  }
                };
+               function verifyProperty(obj, name, desc) {
+                 var originalDesc = Object.getOwnPropertyDescriptor(obj, name);
+                 assert(originalDesc !== undefined, "descriptor should exist");
+                 if (desc.value !== undefined) { assert.sameValue(originalDesc.value, desc.value, "descriptor value"); }
+                 if (desc.writable !== undefined) { assert.sameValue(originalDesc.writable, desc.writable, "descriptor writable"); }
+                 if (desc.enumerable !== undefined) { assert.sameValue(originalDesc.enumerable, desc.enumerable, "descriptor enumerable"); }
+                 if (desc.configurable !== undefined) { assert.sameValue(originalDesc.configurable, desc.configurable, "descriptor configurable"); }
+                 return true;
+               }
                function $DONE(error) { if (error !== undefined) { throw error; } }
                var $262 = {};
                """;
