@@ -987,6 +987,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void NestedFunctionsPropagateCapturedVariableCells()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let data = \"data\"; let attributes = {}; Object.defineProperty(attributes, \"set\", { get: function(){ return function(value){ data = value; }; } }); let o = {}; Object.defineProperty(o, \"x\", attributes); o.x = \"updated\"; data == \"updated\";"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ObjectGetOwnPropertyDescriptorReportsAccessorDescriptor()
     {
         var compiler = new BytecodeCompiler();

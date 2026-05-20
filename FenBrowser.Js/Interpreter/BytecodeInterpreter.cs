@@ -60,7 +60,7 @@ public sealed class BytecodeInterpreter
         IReadOnlyDictionary<string, JsVariableCell>? capturedVariables,
         JsValue thisValue)
     {
-        var frame = new InterpreterFrame(function, thisValue);
+        var frame = new InterpreterFrame(function, thisValue, capturedVariables);
         InitializeBuiltinGlobals(function, frame);
         if (capturedVariables is not null)
         {
@@ -270,7 +270,7 @@ public sealed class BytecodeInterpreter
                 case OpCode.CreateFunction:
                 {
                     var nested = function.NestedFunctions[ins.B];
-                    var captured = CaptureFrameVariables(function, frame);
+                    var captured = CaptureFrameVariables(frame);
                     frame.Registers[ins.A] = CreateFunctionObject(nested, captured);
                     break;
                 }
@@ -2945,10 +2945,12 @@ public sealed class BytecodeInterpreter
         };
     }
 
-    private static IReadOnlyDictionary<string, JsVariableCell> CaptureFrameVariables(BytecodeFunction function, InterpreterFrame frame)
+    private static IReadOnlyDictionary<string, JsVariableCell> CaptureFrameVariables(InterpreterFrame frame)
     {
-        var snapshot = new Dictionary<string, JsVariableCell>(StringComparer.Ordinal);
-        foreach (var kv in function.VariableSlots)
+        var snapshot = frame.CapturedVariables is null
+            ? new Dictionary<string, JsVariableCell>(StringComparer.Ordinal)
+            : new Dictionary<string, JsVariableCell>(frame.CapturedVariables, StringComparer.Ordinal);
+        foreach (var kv in frame.Function.VariableSlots)
         {
             snapshot[kv.Key] = frame.Variables.GetCell(kv.Value);
         }
