@@ -577,6 +577,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void NumberCallConvertsBoxedStringAndNumberObjects()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("(Number(new String(\"10\")) == 10) && (Number(new Object(10)) == 10) && (Number(\"abc\") != Number(\"abc\")) && (Number(\"INFINITY\") != Number(\"INFINITY\")) && (Number(\"infinity\") != Number(\"infinity\"));"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void TypeErrorConstructAndCallCreateErrorSubclassInstances()
     {
         var compiler = new BytecodeCompiler();

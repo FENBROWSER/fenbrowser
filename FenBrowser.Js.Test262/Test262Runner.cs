@@ -1346,7 +1346,7 @@ public sealed class Test262Runner
                  if (!condition) { throw (message || "assert failed"); }
                };
                assert.sameValue = function (actual, expected, message) {
-                 if (actual !== expected) { throw (message || "assert.sameValue failed"); }
+                 if (actual !== expected && !(actual !== actual && expected !== expected)) { throw (message || "assert.sameValue failed"); }
                };
                assert.notSameValue = function (actual, expected, message) {
                  if (actual === expected) { throw (message || "assert.notSameValue failed"); }

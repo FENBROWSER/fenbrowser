@@ -941,7 +941,7 @@ public sealed class BytecodeInterpreter
         return JsValue.FromString(string.Join(",", values));
     }
 
-    private static int GetArrayLength(JsObject obj)
+    private int GetArrayLength(JsObject obj)
     {
         if (!obj.TryGetOwnProperty("length", out var descriptor))
         {
@@ -1222,6 +1222,23 @@ public sealed class BytecodeInterpreter
                 return 0;
             }
 
+            var trimmed = text.Trim();
+            if (string.Equals(trimmed, "Infinity", StringComparison.Ordinal) ||
+                string.Equals(trimmed, "+Infinity", StringComparison.Ordinal))
+            {
+                return double.PositiveInfinity;
+            }
+
+            if (string.Equals(trimmed, "-Infinity", StringComparison.Ordinal))
+            {
+                return double.NegativeInfinity;
+            }
+
+            if (trimmed.Contains("Infinity", StringComparison.OrdinalIgnoreCase))
+            {
+                return double.NaN;
+            }
+
             if (double.TryParse(
                     text,
                     System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowLeadingWhite | System.Globalization.NumberStyles.AllowTrailingWhite,
@@ -1390,8 +1407,13 @@ public sealed class BytecodeInterpreter
         return text;
     }
 
-    private static double ToNumber(JsValue value)
+    private double ToNumber(JsValue value)
     {
+        if (value.Tag == JsValueTag.Object && TryGetObjectPrimitiveValue(value, out var primitive))
+        {
+            return ToNumber(primitive);
+        }
+
         return value.Tag switch
         {
             JsValueTag.Int32 => value.AsInt32(),
@@ -1404,7 +1426,7 @@ public sealed class BytecodeInterpreter
         };
     }
 
-    private static bool IsLessThan(JsValue left, JsValue right)
+    private bool IsLessThan(JsValue left, JsValue right)
     {
         if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.String)
         {
@@ -1414,7 +1436,7 @@ public sealed class BytecodeInterpreter
         return ToNumber(left) < ToNumber(right);
     }
 
-    private static bool IsGreaterThan(JsValue left, JsValue right)
+    private bool IsGreaterThan(JsValue left, JsValue right)
     {
         if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.String)
         {
@@ -1424,7 +1446,7 @@ public sealed class BytecodeInterpreter
         return ToNumber(left) > ToNumber(right);
     }
 
-    private static bool IsLessThanOrEqual(JsValue left, JsValue right)
+    private bool IsLessThanOrEqual(JsValue left, JsValue right)
     {
         if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.String)
         {
@@ -1434,7 +1456,7 @@ public sealed class BytecodeInterpreter
         return ToNumber(left) <= ToNumber(right);
     }
 
-    private static bool IsGreaterThanOrEqual(JsValue left, JsValue right)
+    private bool IsGreaterThanOrEqual(JsValue left, JsValue right)
     {
         if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.String)
         {
