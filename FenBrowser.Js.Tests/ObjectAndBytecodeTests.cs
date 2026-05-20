@@ -1027,6 +1027,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void SyntaxErrorConstructorCreatesErrorObjects()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let e = new SyntaxError(\"bad\"); e instanceof SyntaxError && e instanceof Error && e.name == \"SyntaxError\" && e.message == \"bad\" && SyntaxError.length == 1 && SyntaxError.name == \"SyntaxError\";"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectDefinePropertyTreatsSyntaxErrorObjectAsTruthyDescriptorValue()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = {}; Object.defineProperty(o, \"property\", { configurable: new SyntaxError() }); let before = o.hasOwnProperty(\"property\"); delete o.property; before && (o.hasOwnProperty(\"property\") == false);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ObjectPrototypePropertyIsEnumerableChecksOwnEnumerableFlag()
     {
         var compiler = new BytecodeCompiler();

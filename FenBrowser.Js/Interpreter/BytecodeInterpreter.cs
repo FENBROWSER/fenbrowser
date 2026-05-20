@@ -26,6 +26,8 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _typeErrorPrototypeHandle;
     private ObjectHandle? _rangeErrorConstructorHandle;
     private ObjectHandle? _rangeErrorPrototypeHandle;
+    private ObjectHandle? _syntaxErrorConstructorHandle;
+    private ObjectHandle? _syntaxErrorPrototypeHandle;
     private ObjectHandle? _functionCallMethodHandle;
     private ObjectHandle? _evalFunctionHandle;
     private ObjectHandle? _globalObjectHandle;
@@ -466,6 +468,11 @@ public sealed class BytecodeInterpreter
             frame.Variables[rangeErrorSlot] = JsValue.FromObject(EnsureRangeErrorConstructor());
         }
 
+        if (function.VariableSlots.TryGetValue("SyntaxError", out var syntaxErrorSlot))
+        {
+            frame.Variables[syntaxErrorSlot] = JsValue.FromObject(EnsureSyntaxErrorConstructor());
+        }
+
         if (function.VariableSlots.TryGetValue("Date", out var dateSlot))
         {
             frame.Variables[dateSlot] = JsValue.FromObject(EnsureDateConstructor());
@@ -690,6 +697,38 @@ public sealed class BytecodeInterpreter
 
         _rangeErrorPrototypeHandle = prototypeHandle;
         _rangeErrorConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private ObjectHandle EnsureSyntaxErrorPrototype()
+    {
+        _ = EnsureSyntaxErrorConstructor();
+        return _syntaxErrorPrototypeHandle!.Value;
+    }
+
+    private ObjectHandle EnsureSyntaxErrorConstructor()
+    {
+        if (_syntaxErrorConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototype = CreateOrdinaryObject();
+        prototype.SetPrototype(EnsureErrorPrototype());
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "SyntaxError",
+            (_, args) => CreateErrorObject("SyntaxError", EnsureSyntaxErrorPrototype(), GetOptionalMessage(args)),
+            args => CreateErrorObject("SyntaxError", EnsureSyntaxErrorPrototype(), GetOptionalMessage(args)),
+            length: 1);
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        _syntaxErrorPrototypeHandle = prototypeHandle;
+        _syntaxErrorConstructorHandle = constructorHandle;
         return constructorHandle;
     }
 
