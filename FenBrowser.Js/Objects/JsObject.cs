@@ -17,6 +17,8 @@ public class JsObject : ITraceable
 
     public bool TryGetOwnProperty(string key, out JsPropertyDescriptor descriptor) => _properties.TryGetValue(key, out descriptor);
 
+    public IEnumerable<KeyValuePair<string, JsPropertyDescriptor>> EnumerateOwnProperties() => _properties;
+
     public bool TryGetProperty(string key, Func<ObjectHandle, JsObject> prototypeResolver, out JsPropertyDescriptor descriptor)
     {
         if (_properties.TryGetValue(key, out descriptor))

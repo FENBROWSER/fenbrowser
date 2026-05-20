@@ -4,6 +4,7 @@ using FenBrowser.Js.Objects;
 using FenBrowser.Js.Parser;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace FenBrowser.Js.Interpreter;
@@ -39,6 +40,7 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _mathObjectHandle;
     private ObjectHandle? _regexpConstructorHandle;
     private ObjectHandle? _regexpPrototypeHandle;
+    private ObjectHandle? _jsonObjectHandle;
 
     public BytecodeInterpreter(JsHeap? heap = null)
     {
@@ -492,6 +494,11 @@ public sealed class BytecodeInterpreter
         if (function.VariableSlots.TryGetValue("Math", out var mathSlot))
         {
             frame.Variables[mathSlot] = JsValue.FromObject(EnsureMathObject());
+        }
+
+        if (function.VariableSlots.TryGetValue("JSON", out var jsonSlot))
+        {
+            frame.Variables[jsonSlot] = JsValue.FromObject(EnsureJsonObject());
         }
     }
 
@@ -1126,6 +1133,208 @@ public sealed class BytecodeInterpreter
     private static bool IsNegativeZero(double value)
     {
         return value == 0d && BitConverter.DoubleToInt64Bits(value) < 0;
+    }
+
+    private ObjectHandle EnsureJsonObject()
+    {
+        if (_jsonObjectHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var json = CreateOrdinaryObject();
+        var handle = _heap.AllocateObject(json, AllocationSite.Current());
+        _heap.PushRoot(handle);
+
+        DefineIntrinsicFunction(handle, json, "parse", JsonParse, length: 2);
+        DefineIntrinsicFunction(handle, json, "stringify", JsonStringify, length: 3);
+
+        _jsonObjectHandle = handle;
+        return handle;
+    }
+
+    private void DefineIntrinsicFunction(
+        ObjectHandle ownerHandle,
+        JsObject owner,
+        string name,
+        Func<JsValue, IReadOnlyList<JsValue>, JsValue> call,
+        int length)
+    {
+        var function = new NativeFunctionObject(name, call, length: length);
+        var functionHandle = _heap.AllocateObject(function, AllocationSite.Current());
+        _ = owner.DefineOwnProperty(
+            name,
+            new JsPropertyDescriptor(
+                JsValue.FromObject(functionHandle),
+                Writable: true,
+                Enumerable: false,
+                Configurable: true));
+        _heap.WriteBarrier(ownerHandle, functionHandle);
+    }
+
+    private JsValue JsonParse(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = thisValue;
+        var text = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+        try
+        {
+            using var document = JsonDocument.Parse(text);
+            return ConvertJsonElement(document.RootElement);
+        }
+        catch (JsonException ex)
+        {
+            throw new JsThrownException(CreateSyntaxError(ex.Message));
+        }
+    }
+
+    private JsValue ConvertJsonElement(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.Null => JsValue.Null,
+            JsonValueKind.True => JsValue.FromBoolean(true),
+            JsonValueKind.False => JsValue.FromBoolean(false),
+            JsonValueKind.Number => element.TryGetDouble(out var number) ? JsValue.FromNumber(number) : JsValue.FromNumber(double.NaN),
+            JsonValueKind.String => JsValue.FromString(element.GetString() ?? string.Empty),
+            JsonValueKind.Array => ConvertJsonArray(element),
+            JsonValueKind.Object => ConvertJsonObject(element),
+            _ => JsValue.Undefined
+        };
+    }
+
+    private JsValue ConvertJsonArray(JsonElement element)
+    {
+        var obj = new ArrayObject();
+        obj.SetPrototype(EnsureArrayPrototype());
+        var handle = _heap.AllocateObject(obj, AllocationSite.Current());
+        var index = 0;
+        foreach (var item in element.EnumerateArray())
+        {
+            var value = ConvertJsonElement(item);
+            var descriptor = new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true);
+            _ = obj.DefineOwnProperty(index.ToString(System.Globalization.CultureInfo.InvariantCulture), descriptor);
+            WriteDescriptorBarrier(handle, descriptor);
+            index++;
+        }
+
+        _ = obj.DefineOwnProperty(
+            "length",
+            new JsPropertyDescriptor(JsValue.FromNumber(index), Writable: true, Enumerable: false, Configurable: false));
+        return JsValue.FromObject(handle);
+    }
+
+    private JsValue ConvertJsonObject(JsonElement element)
+    {
+        var obj = CreateOrdinaryObject();
+        var handle = _heap.AllocateObject(obj, AllocationSite.Current());
+        foreach (var property in element.EnumerateObject())
+        {
+            var value = ConvertJsonElement(property.Value);
+            var descriptor = new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true);
+            _ = obj.DefineOwnProperty(property.Name, descriptor);
+            WriteDescriptorBarrier(handle, descriptor);
+        }
+
+        return JsValue.FromObject(handle);
+    }
+
+    private JsValue JsonStringify(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = thisValue;
+        if (args.Count == 0)
+        {
+            return JsValue.Undefined;
+        }
+
+        var json = StringifyJsonValue(args[0], new HashSet<ObjectHandle>(), depth: 0, inArray: false);
+        return json is null ? JsValue.Undefined : JsValue.FromString(json);
+    }
+
+    private string? StringifyJsonValue(JsValue value, HashSet<ObjectHandle> stack, int depth, bool inArray)
+    {
+        if (depth > 200)
+        {
+            throw new JsThrownException(CreateTypeError("JSON.stringify exceeded the maximum serialization depth."));
+        }
+
+        return value.Tag switch
+        {
+            JsValueTag.Undefined => inArray ? "null" : null,
+            JsValueTag.Null => "null",
+            JsValueTag.Boolean => value.AsBoolean() ? "true" : "false",
+            JsValueTag.Int32 => value.AsInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
+            JsValueTag.Number => StringifyJsonNumber(value.AsNumber()),
+            JsValueTag.String => JsonSerializer.Serialize(value.AsString()),
+            JsValueTag.Object => StringifyJsonObject(value, stack, depth, inArray),
+            _ => inArray ? "null" : null
+        };
+    }
+
+    private string StringifyJsonNumber(double number)
+    {
+        return double.IsFinite(number)
+            ? FormatNumberForString(number)
+            : "null";
+    }
+
+    private string? StringifyJsonObject(JsValue value, HashSet<ObjectHandle> stack, int depth, bool inArray)
+    {
+        var handle = value.AsObjectHandle();
+        var obj = _heap.GetObject(handle);
+        if (obj is JsFunctionObject or NativeFunctionObject)
+        {
+            return inArray ? "null" : null;
+        }
+
+        if (!stack.Add(handle))
+        {
+            throw new JsThrownException(CreateTypeError("Cannot stringify circular structure."));
+        }
+
+        try
+        {
+            if (obj is ArrayObject)
+            {
+                return StringifyJsonArray(obj, value, stack, depth);
+            }
+
+            var parts = new List<string>();
+            foreach (var property in obj.EnumerateOwnProperties())
+            {
+                if (!property.Value.Enumerable ||
+                    !TryGetPropertyValue(obj, value, property.Key, out var propertyValue))
+                {
+                    continue;
+                }
+
+                var serialized = StringifyJsonValue(propertyValue, stack, depth + 1, inArray: false);
+                if (serialized is not null)
+                {
+                    parts.Add(JsonSerializer.Serialize(property.Key) + ":" + serialized);
+                }
+            }
+
+            return "{" + string.Join(",", parts) + "}";
+        }
+        finally
+        {
+            _ = stack.Remove(handle);
+        }
+    }
+
+    private string StringifyJsonArray(JsObject obj, JsValue receiver, HashSet<ObjectHandle> stack, int depth)
+    {
+        var length = GetArrayLength(obj);
+        var parts = new string[length];
+        for (var i = 0; i < length; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            parts[i] = TryGetPropertyValue(obj, receiver, key, out var value)
+                ? StringifyJsonValue(value, stack, depth + 1, inArray: true) ?? "null"
+                : "null";
+        }
+
+        return "[" + string.Join(",", parts) + "]";
     }
 
     private ObjectHandle EnsureObjectPrototype()

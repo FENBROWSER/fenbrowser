@@ -1087,6 +1087,36 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void JsonParseAndStringifyObjectsAndArrays()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let value = JSON.parse('{\"a\":1,\"b\":[true,null,\"x\"]}'); value.a == 1 && value.b.length == 3 && value.b[0] && value.b[1] === null && JSON.stringify(value) == '{\"a\":1,\"b\":[true,null,\"x\"]}';"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void JsonParseThrowsSyntaxErrorForInvalidInput()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let ok = false; try { JSON.parse('{'); } catch (e) { ok = e instanceof SyntaxError; } ok;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectDefinePropertyReadsPropertiesFromJsonDescriptor()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = {}; JSON.value = \"JSON\"; Object.defineProperty(o, \"property\", JSON); let own = o.property == \"JSON\"; delete JSON.value; Object.prototype.value = \"JSON\"; Object.defineProperty(o, \"inherited\", JSON); own && o.inherited == \"JSON\";"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ObjectPrototypePropertyIsEnumerableChecksOwnEnumerableFlag()
     {
         var compiler = new BytecodeCompiler();
