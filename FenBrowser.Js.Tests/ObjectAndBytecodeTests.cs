@@ -807,6 +807,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void NativeBuiltinsExposeLengthMetadata()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("Object.defineProperty.length == 3 && Object.length == 1 && Object.prototype.hasOwnProperty.length == 1 && Object.prototype.hasOwnProperty.call.length == 1 && Array.prototype.push.length == 1;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ObjectPrototypeHasOwnPropertyChecksOnlyOwnProperties()
     {
         var compiler = new BytecodeCompiler();

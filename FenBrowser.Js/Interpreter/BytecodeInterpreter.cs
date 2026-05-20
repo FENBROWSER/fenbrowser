@@ -561,7 +561,8 @@ public sealed class BytecodeInterpreter
 
         var eval = new NativeFunctionObject(
             "eval",
-            (_, args) => Eval(args));
+            (_, args) => Eval(args),
+            length: 1);
         var evalHandle = _heap.AllocateObject(eval, AllocationSite.Current());
         _heap.PushRoot(evalHandle);
         _evalFunctionHandle = evalHandle;
@@ -607,7 +608,8 @@ public sealed class BytecodeInterpreter
         var constructor = new NativeFunctionObject(
             "TypeError",
             (_, args) => CreateErrorObject("TypeError", EnsureTypeErrorPrototype(), GetOptionalMessage(args)),
-            args => CreateErrorObject("TypeError", EnsureTypeErrorPrototype(), GetOptionalMessage(args)));
+            args => CreateErrorObject("TypeError", EnsureTypeErrorPrototype(), GetOptionalMessage(args)),
+            length: 1);
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
@@ -638,7 +640,8 @@ public sealed class BytecodeInterpreter
         var constructor = new NativeFunctionObject(
             "RangeError",
             (_, args) => CreateErrorObject("RangeError", EnsureRangeErrorPrototype(), GetOptionalMessage(args)),
-            args => CreateErrorObject("RangeError", EnsureRangeErrorPrototype(), GetOptionalMessage(args)));
+            args => CreateErrorObject("RangeError", EnsureRangeErrorPrototype(), GetOptionalMessage(args)),
+            length: 1);
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
@@ -667,7 +670,8 @@ public sealed class BytecodeInterpreter
         var constructor = new NativeFunctionObject(
             "Error",
             (_, args) => CreateErrorObject("Error", EnsureErrorPrototype(), GetOptionalMessage(args)),
-            args => CreateErrorObject("Error", EnsureErrorPrototype(), GetOptionalMessage(args)));
+            args => CreateErrorObject("Error", EnsureErrorPrototype(), GetOptionalMessage(args)),
+            length: 1);
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
@@ -696,7 +700,8 @@ public sealed class BytecodeInterpreter
         var constructor = new NativeFunctionObject(
             "Date",
             (_, args) => CreateDateObject(args.Count > 0 ? ToNumber(args[0]) : 0d),
-            args => CreateDateObject(args.Count > 0 ? ToNumber(args[0]) : 0d));
+            args => CreateDateObject(args.Count > 0 ? ToNumber(args[0]) : 0d),
+            length: 7);
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
@@ -736,12 +741,13 @@ public sealed class BytecodeInterpreter
         var constructor = new NativeFunctionObject(
             "Object",
             (_, args) => CreateObjectFromValue(args.Count > 0 ? args[0] : JsValue.Undefined),
-            args => CreateObjectFromValue(args.Count > 0 ? args[0] : JsValue.Undefined));
+            args => CreateObjectFromValue(args.Count > 0 ? args[0] : JsValue.Undefined),
+            length: 1);
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         var definePropertyHandle = _heap.AllocateObject(
-            new NativeFunctionObject("defineProperty", ObjectDefineProperty),
+            new NativeFunctionObject("defineProperty", ObjectDefineProperty, length: 3),
             AllocationSite.Current());
         _ = constructor.SetProperty("defineProperty", JsValue.FromObject(definePropertyHandle));
         _heap.WriteBarrier(constructorHandle, definePropertyHandle);
@@ -751,8 +757,8 @@ public sealed class BytecodeInterpreter
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", (thisValue, _) => ObjectPrototypeToString(thisValue));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleString", (thisValue, _) => ObjectPrototypeToString(thisValue));
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "hasOwnProperty", ObjectPrototypeHasOwnProperty);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "isPrototypeOf", ObjectPrototypeIsPrototypeOf);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "hasOwnProperty", ObjectPrototypeHasOwnProperty, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "isPrototypeOf", ObjectPrototypeIsPrototypeOf, length: 1);
 
         _objectPrototypeHandle = prototypeHandle;
         _objectConstructorHandle = constructorHandle;
@@ -763,9 +769,10 @@ public sealed class BytecodeInterpreter
         ObjectHandle prototypeHandle,
         JsObject prototype,
         string name,
-        Func<JsValue, IReadOnlyList<JsValue>, JsValue> call)
+        Func<JsValue, IReadOnlyList<JsValue>, JsValue> call,
+        int length = 0)
     {
-        var function = new NativeFunctionObject(name, call);
+        var function = new NativeFunctionObject(name, call, length: length);
         var functionHandle = _heap.AllocateObject(function, AllocationSite.Current());
         var callHandle = EnsureFunctionCallMethod();
         _ = function.SetProperty("call", JsValue.FromObject(callHandle));
@@ -784,7 +791,8 @@ public sealed class BytecodeInterpreter
 
         var call = new NativeFunctionObject(
             "call",
-            (thisValue, args) => FunctionPrototypeCall(thisValue, args));
+            (thisValue, args) => FunctionPrototypeCall(thisValue, args),
+            length: 1);
         var callHandle = _heap.AllocateObject(call, AllocationSite.Current());
         _heap.PushRoot(callHandle);
         _functionCallMethodHandle = callHandle;
@@ -950,14 +958,15 @@ public sealed class BytecodeInterpreter
         var constructor = new NativeFunctionObject(
             "Array",
             (_, args) => JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(args), AllocationSite.Current())),
-            args => JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(args), AllocationSite.Current())));
+            args => JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(args), AllocationSite.Current())),
+            length: 1);
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
         _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "push", ArrayPrototypePush);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "push", ArrayPrototypePush, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", ArrayPrototypeToString);
 
         _arrayPrototypeHandle = prototypeHandle;
@@ -1086,7 +1095,8 @@ public sealed class BytecodeInterpreter
         var constructor = new NativeFunctionObject(
             "Boolean",
             (_, args) => JsValue.FromBoolean(args.Count > 0 && IsTruthy(args[0])),
-            args => CreateBooleanObject(args.Count > 0 && IsTruthy(args[0])));
+            args => CreateBooleanObject(args.Count > 0 && IsTruthy(args[0])),
+            length: 1);
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
@@ -1155,7 +1165,8 @@ public sealed class BytecodeInterpreter
         var constructor = new NativeFunctionObject(
             "Number",
             (_, args) => JsValue.FromNumber(args.Count > 0 ? ToNumber(args[0]) : 0d),
-            args => CreateNumberObject(args.Count > 0 ? ToNumber(args[0]) : 0d));
+            args => CreateNumberObject(args.Count > 0 ? ToNumber(args[0]) : 0d),
+            length: 1);
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         _ = constructor.SetProperty("MAX_VALUE", JsValue.FromNumber(double.MaxValue));
         _ = constructor.SetProperty("MIN_VALUE", JsValue.FromNumber(double.Epsilon));
@@ -1200,7 +1211,8 @@ public sealed class BytecodeInterpreter
         var constructor = new NativeFunctionObject(
             "String",
             (_, args) => JsValue.FromString(args.Count > 0 ? ToStringValue(args[0]) : string.Empty),
-            args => CreateStringObject(args.Count > 0 ? ToStringValue(args[0]) : string.Empty));
+            args => CreateStringObject(args.Count > 0 ? ToStringValue(args[0]) : string.Empty),
+            length: 1);
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
@@ -1726,11 +1738,19 @@ public sealed class BytecodeInterpreter
         public NativeFunctionObject(
             string name,
             Func<JsValue, IReadOnlyList<JsValue>, JsValue> call,
-            Func<IReadOnlyList<JsValue>, JsValue>? construct = null)
+            Func<IReadOnlyList<JsValue>, JsValue>? construct = null,
+            int length = 0)
         {
             Name = name;
             _call = call;
             _construct = construct;
+            _ = DefineOwnProperty(
+                "length",
+                new JsPropertyDescriptor(
+                    JsValue.FromNumber(length),
+                    Writable: false,
+                    Enumerable: false,
+                    Configurable: true));
         }
 
         public string Name { get; }
