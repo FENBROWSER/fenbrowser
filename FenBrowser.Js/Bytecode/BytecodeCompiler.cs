@@ -618,6 +618,12 @@ public sealed class BytecodeCompiler
             }
             case BinaryExpressionNode bin:
             {
+                if (bin.Operator == ",")
+                {
+                    _ = CompileExpression(bin.Left);
+                    return CompileExpression(bin.Right);
+                }
+
                 if (bin.Operator == "&&")
                 {
                     var andLeftReg = CompileExpression(bin.Left);

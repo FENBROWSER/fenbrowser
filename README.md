@@ -11,6 +11,7 @@ The goal of FenBrowser is to implement a standards-compliant engine using modern
 
 ### What's inside?
 
+- **FenJS Runtime**: A standalone C# ECMAScript engine foundation with lexer, parser, AST validation, bytecode, interpreter, logical heap, native intrinsics, and a Test262-first runner.
 - **Custom Layout Engine**: Supporting Block, Inline, Flex, and Grid formatting contexts.
 - **Standards-Based Parsing**: An HTML5 tree builder and CSS tokenizer following WHATWG/W3C specs as closely as possible.
 - **Native Rendering**: Using SkiaSharp for primitive drawing, with a custom-built paint tree and z-index resolver.
@@ -19,6 +20,9 @@ The goal of FenBrowser is to implement a standards-compliant engine using modern
 ## Project Structure
 
 - **`FenBrowser.FenEngine`**: The core layout and rendering logic. This is where the "heavy lifting" happens (Measure/Arrange passes).
+- **`FenBrowser.Js`**: The standalone ECMAScript engine layer used for spec-driven JS work before browser embedding.
+- **`FenBrowser.Js.Shell`**: A small CLI for engine smoke checks such as `--eval`, `--dump-tokens`, `--dump-ast`, and `--dump-bytecode`.
+- **`FenBrowser.Js.Test262`**: Test262 enumeration, dry-run, parser-subset, runtime-subset, dashboard, and gate verification tooling.
 - **`FenBrowser.Core`**: Shared primitives, the DOM tree implementation, and the HTTP stack.
 - **`FenBrowser.Host`**: The desktop shell. Currently Windows-focused for debugging and rapid prototyping.
 - **`FenBrowser.WebDriver` & `DevTools`**: Specialized projects for controlling and inspecting the engine via standard protocols.
@@ -33,6 +37,9 @@ If you want to poke around the code:
    - `dom_dump.txt`: The state of the DOM and Layout boxes.
    - `debug_screenshot.png`: A raw frame capture of the current render.
    - `fenbrowser_*.log`: Module-specific traces (CSS, Layout, Performance).
+4. For standalone JS engine work, use the focused projects first:
+   - `dotnet run --project FenBrowser.Js.Shell/FenBrowser.Js.Shell.csproj -- --eval "Object(null) instanceof Object"`
+   - `dotnet run --project FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -- --runtime-subset --root external/test262 --test262 built-ins/Object --max 10`
 
 ## License
 

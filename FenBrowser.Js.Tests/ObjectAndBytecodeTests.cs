@@ -198,6 +198,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void ArrayPrototypePushAppendsElementsAndReturnsLength()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let a = [1, 2]; let len = a.push(3, 4); (len == 4) && (a.length == 4) && (a[3] == 4);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void CompilerAndInterpreterHandleZeroArgFunctionCall()
     {
         var compiler = new BytecodeCompiler();
@@ -617,6 +627,56 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void ObjectConstructorCreatesOrdinaryObjectsForNullishValues()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let a = Object(null); let b = new Object(undefined); (a instanceof Object) && (b instanceof Object) && (a.constructor === Object) && (b.constructor === Object);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectConstructorReturnsExistingObjectArgument()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = { a: 1 }; (Object(o) === o) && (new Object(o) === o);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectConstructorBoxesPrimitiveArguments()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("(Object(true) instanceof Boolean) && (Object(1) instanceof Number) && (Object(\"x\") instanceof String) && (Object(true).constructor === Boolean) && (Object(1).constructor === Number) && (Object(\"x\").constructor === String);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectConstructorBoxedPrimitivesParticipateInLooseEquality()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("(Object(true) == true) && (Object(1.1) == 1.1) && (Object(Infinity) == Infinity) && (Object(\"x\") == \"x\") && (Object(\"\") == \"\");"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectPrototypeProvidesConstructorAndStringMethods()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = {}; (o.constructor === Object) && (o.toString() == \"[object Object]\") && (o.toLocaleString() == \"[object Object]\");"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ConstructedObjectsWithPrimitivePrototypeFallBackToObjectPrototype()
     {
         var compiler = new BytecodeCompiler();
@@ -967,6 +1027,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void CommaExpressionReturnsRightmostValueAfterEvaluatingLeftSide()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let x = 0; let y = (x = 1, 2, 3); (x == 1) && (y == 3);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void InterpreterInvokesWriteBarrierForObjectStores()
     {
         var compiler = new BytecodeCompiler();
@@ -975,8 +1045,13 @@ public sealed class ObjectAndBytecodeTests
 
         var heap = new JsHeap();
         var interpreter = new BytecodeInterpreter(heap);
+        var warmup = compiler.CompileScript(new SourceText("Object;"));
+        new BytecodeVerifier().Verify(warmup);
+        _ = interpreter.Execute(warmup);
+        var before = heap.WriteBarrierCount;
+
         _ = interpreter.Execute(fn);
 
-        Assert.Equal(2, heap.WriteBarrierCount);
+        Assert.Equal(2, heap.WriteBarrierCount - before);
     }
 }
