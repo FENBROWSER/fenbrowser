@@ -967,6 +967,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void PropertyAssignmentsInvokeAccessorSetters()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let data = \"data\"; let o = {}; Object.defineProperty(o, \"x\", { set: function(value){ data = value; } }); o.x = \"set\"; data == \"set\" && o.hasOwnProperty(\"x\");"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void PropertyAssignmentsInvokeInheritedAccessorSetters()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let data = 0; let proto = {}; Object.defineProperty(proto, \"x\", { set: function(value){ data = value; } }); let C = function() {}; C.prototype = proto; let o = new C(); o.x = 9; data == 9 && (o.hasOwnProperty(\"x\") == false);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ObjectGetOwnPropertyDescriptorReportsAccessorDescriptor()
     {
         var compiler = new BytecodeCompiler();

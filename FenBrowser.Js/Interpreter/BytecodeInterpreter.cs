@@ -151,10 +151,13 @@ public sealed class BytecodeInterpreter
                     var obj = _heap.GetObject(ownerHandle);
                     var prop = function.PropertyNames[ins.B];
                     var value = frame.Registers[ins.C];
-                    _ = obj.SetProperty(prop, value);
-                    if (value.Tag == JsValueTag.Object)
+                    try
                     {
-                        _heap.WriteBarrier(ownerHandle, value.AsObjectHandle());
+                        _ = SetPropertyValue(ownerHandle, obj, prop, value, frame.Registers[ins.A]);
+                    }
+                    catch (JsThrownException ex)
+                    {
+                        ThrowOrHandle(frame, ex.Value);
                     }
 
                     break;
@@ -195,10 +198,14 @@ public sealed class BytecodeInterpreter
                     var obj = _heap.GetObject(ownerHandle);
                     var key = ToPropertyKey(frame.Registers[ins.B]);
                     var value = frame.Registers[ins.C];
-                    _ = obj.SetProperty(key, value);
-                    if (value.Tag == JsValueTag.Object)
+                    try
                     {
-                        _heap.WriteBarrier(ownerHandle, value.AsObjectHandle());
+                        _ = SetPropertyValue(ownerHandle, obj, key, value, frame.Registers[ins.A]);
+                    }
+                    catch (JsThrownException ex)
+                    {
+                        ThrowOrHandle(frame, ex.Value);
+                        break;
                     }
 
                     if (double.TryParse(key, out var numericIndex))
@@ -1881,6 +1888,93 @@ public sealed class BytecodeInterpreter
         }
 
         return CallFunction(descriptor.Get, Array.Empty<JsValue>(), receiver);
+    }
+
+    [MayExecuteJs]
+    private bool SetPropertyValue(ObjectHandle ownerHandle, JsObject obj, string key, JsValue value, JsValue receiver)
+    {
+        if (obj.TryGetOwnProperty(key, out var ownDescriptor))
+        {
+            return SetPropertyFromDescriptor(ownerHandle, obj, key, ownDescriptor, value, receiver);
+        }
+
+        if (TryGetPrototypePropertyDescriptor(obj, key, out var inheritedDescriptor))
+        {
+            if (inheritedDescriptor.IsAccessor)
+            {
+                return CallSetter(inheritedDescriptor, value, receiver);
+            }
+
+            if (!inheritedDescriptor.Writable)
+            {
+                return false;
+            }
+        }
+
+        var descriptor = new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true);
+        _ = obj.DefineOwnProperty(key, descriptor);
+        WriteDescriptorBarrier(ownerHandle, descriptor);
+        return true;
+    }
+
+    [MayExecuteJs]
+    private bool SetPropertyFromDescriptor(
+        ObjectHandle ownerHandle,
+        JsObject obj,
+        string key,
+        JsPropertyDescriptor descriptor,
+        JsValue value,
+        JsValue receiver)
+    {
+        if (descriptor.IsAccessor)
+        {
+            return CallSetter(descriptor, value, receiver);
+        }
+
+        if (!descriptor.Writable)
+        {
+            return false;
+        }
+
+        var updated = descriptor with { Value = value };
+        _ = obj.DefineOwnProperty(key, updated);
+        WriteDescriptorBarrier(ownerHandle, updated);
+        return true;
+    }
+
+    private bool TryGetPrototypePropertyDescriptor(JsObject obj, string key, out JsPropertyDescriptor descriptor)
+    {
+        var prototype = obj.PrototypeHandle;
+        while (prototype is { } handle)
+        {
+            var prototypeObject = _heap.GetObject(handle);
+            if (prototypeObject.TryGetOwnProperty(key, out descriptor))
+            {
+                return true;
+            }
+
+            prototype = prototypeObject.PrototypeHandle;
+        }
+
+        descriptor = default;
+        return false;
+    }
+
+    [MayExecuteJs]
+    private bool CallSetter(JsPropertyDescriptor descriptor, JsValue value, JsValue receiver)
+    {
+        if (descriptor.Set.Tag == JsValueTag.Undefined)
+        {
+            return false;
+        }
+
+        if (!IsCallable(descriptor.Set))
+        {
+            throw new JsThrownException(CreateTypeError("Accessor setter must be callable or undefined."));
+        }
+
+        _ = CallFunction(descriptor.Set, new[] { value }, receiver);
+        return true;
     }
 
     [MayExecuteJs]
