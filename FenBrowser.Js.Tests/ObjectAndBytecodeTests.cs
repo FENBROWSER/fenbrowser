@@ -827,6 +827,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void NativeBuiltinsExposeNameMetadata()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("Object.defineProperty.name == \"defineProperty\" && Object.prototype.hasOwnProperty.name == \"hasOwnProperty\" && Math.abs.name == \"abs\";"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ObjectPrototypeHasOwnPropertyChecksOnlyOwnProperties()
     {
         var compiler = new BytecodeCompiler();
@@ -981,6 +991,36 @@ public sealed class ObjectAndBytecodeTests
     {
         var compiler = new BytecodeCompiler();
         var fn = compiler.CompileScript(new SourceText("Object.prototype.value = \"arguments\"; let attr = (function(){ return arguments; })(); let o = {}; Object.defineProperty(o, \"property\", attr); o.property == \"arguments\";"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void MathIntrinsicProvidesConstantsAndNumericFunctions()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("Math.PI > 3 && Math.abs(-3) == 3 && Math.max(1, 5, 3) == 5 && Math.min(1, -2, 3) == -2 && Math.pow(2, 3) == 8;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectDefinePropertyTreatsMathAsTruthyDescriptorValue()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = {}; Object.defineProperty(o, \"property\", { configurable: Math }); let before = o.hasOwnProperty(\"property\"); delete o.property; before && (o.hasOwnProperty(\"property\") == false);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ObjectDefinePropertyReadsPropertiesFromMathDescriptor()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = {}; Math.value = \"Math\"; Object.defineProperty(o, \"property\", Math); o.property == \"Math\";"));
         new BytecodeVerifier().Verify(fn);
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.True(result.AsBoolean());

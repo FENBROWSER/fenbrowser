@@ -31,6 +31,7 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _globalObjectHandle;
     private ObjectHandle? _dateConstructorHandle;
     private ObjectHandle? _datePrototypeHandle;
+    private ObjectHandle? _mathObjectHandle;
 
     public BytecodeInterpreter(JsHeap? heap = null)
     {
@@ -469,6 +470,11 @@ public sealed class BytecodeInterpreter
         {
             frame.Variables[dateSlot] = JsValue.FromObject(EnsureDateConstructor());
         }
+
+        if (function.VariableSlots.TryGetValue("Math", out var mathSlot))
+        {
+            frame.Variables[mathSlot] = JsValue.FromObject(EnsureMathObject());
+        }
     }
 
     private JsObject CreateOrdinaryObject()
@@ -758,6 +764,169 @@ public sealed class BytecodeInterpreter
         var obj = new DateObject(timeValue);
         obj.SetPrototype(EnsureDatePrototype());
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
+    }
+
+    private ObjectHandle EnsureMathObject()
+    {
+        if (_mathObjectHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var math = CreateOrdinaryObject();
+        var handle = _heap.AllocateObject(math, AllocationSite.Current());
+        _heap.PushRoot(handle);
+
+        DefineMathConstant(math, "E", Math.E);
+        DefineMathConstant(math, "LN10", Math.Log(10d));
+        DefineMathConstant(math, "LN2", Math.Log(2d));
+        DefineMathConstant(math, "LOG10E", 1d / Math.Log(10d));
+        DefineMathConstant(math, "LOG2E", 1d / Math.Log(2d));
+        DefineMathConstant(math, "PI", Math.PI);
+        DefineMathConstant(math, "SQRT1_2", Math.Sqrt(0.5d));
+        DefineMathConstant(math, "SQRT2", Math.Sqrt(2d));
+
+        DefineMathFunction(handle, math, "abs", args => MathUnary(args, Math.Abs), length: 1);
+        DefineMathFunction(handle, math, "acos", args => MathUnary(args, Math.Acos), length: 1);
+        DefineMathFunction(handle, math, "asin", args => MathUnary(args, Math.Asin), length: 1);
+        DefineMathFunction(handle, math, "atan", args => MathUnary(args, Math.Atan), length: 1);
+        DefineMathFunction(handle, math, "atan2", MathAtan2, length: 2);
+        DefineMathFunction(handle, math, "ceil", args => MathUnary(args, Math.Ceiling), length: 1);
+        DefineMathFunction(handle, math, "cos", args => MathUnary(args, Math.Cos), length: 1);
+        DefineMathFunction(handle, math, "exp", args => MathUnary(args, Math.Exp), length: 1);
+        DefineMathFunction(handle, math, "floor", args => MathUnary(args, Math.Floor), length: 1);
+        DefineMathFunction(handle, math, "log", args => MathUnary(args, Math.Log), length: 1);
+        DefineMathFunction(handle, math, "max", MathMax, length: 2);
+        DefineMathFunction(handle, math, "min", MathMin, length: 2);
+        DefineMathFunction(handle, math, "pow", MathPow, length: 2);
+        DefineMathFunction(handle, math, "round", MathRound, length: 1);
+        DefineMathFunction(handle, math, "sin", args => MathUnary(args, Math.Sin), length: 1);
+        DefineMathFunction(handle, math, "sqrt", args => MathUnary(args, Math.Sqrt), length: 1);
+        DefineMathFunction(handle, math, "tan", args => MathUnary(args, Math.Tan), length: 1);
+
+        _mathObjectHandle = handle;
+        return handle;
+    }
+
+    private static void DefineMathConstant(JsObject math, string name, double value)
+    {
+        _ = math.DefineOwnProperty(
+            name,
+            new JsPropertyDescriptor(
+                JsValue.FromNumber(value),
+                Writable: false,
+                Enumerable: false,
+                Configurable: false));
+    }
+
+    private void DefineMathFunction(
+        ObjectHandle mathHandle,
+        JsObject math,
+        string name,
+        Func<IReadOnlyList<JsValue>, JsValue> call,
+        int length)
+    {
+        var function = new NativeFunctionObject(name, (_, args) => call(args), length: length);
+        var functionHandle = _heap.AllocateObject(function, AllocationSite.Current());
+        _ = math.DefineOwnProperty(
+            name,
+            new JsPropertyDescriptor(
+                JsValue.FromObject(functionHandle),
+                Writable: true,
+                Enumerable: false,
+                Configurable: true));
+        _heap.WriteBarrier(mathHandle, functionHandle);
+    }
+
+    private JsValue MathUnary(IReadOnlyList<JsValue> args, Func<double, double> operation)
+    {
+        var value = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
+        return JsValue.FromNumber(operation(value));
+    }
+
+    private JsValue MathAtan2(IReadOnlyList<JsValue> args)
+    {
+        var y = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
+        var x = args.Count > 1 ? ToNumber(args[1]) : double.NaN;
+        return JsValue.FromNumber(Math.Atan2(y, x));
+    }
+
+    private JsValue MathPow(IReadOnlyList<JsValue> args)
+    {
+        var x = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
+        var y = args.Count > 1 ? ToNumber(args[1]) : double.NaN;
+        return JsValue.FromNumber(Math.Pow(x, y));
+    }
+
+    private JsValue MathRound(IReadOnlyList<JsValue> args)
+    {
+        var value = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
+        if (double.IsNaN(value) || double.IsInfinity(value) || value == 0d)
+        {
+            return JsValue.FromNumber(value);
+        }
+
+        if (value is > -0.5d and < 0d)
+        {
+            return JsValue.FromNumber(-0d);
+        }
+
+        return JsValue.FromNumber(Math.Floor(value + 0.5d));
+    }
+
+    private JsValue MathMax(IReadOnlyList<JsValue> args)
+    {
+        if (args.Count == 0)
+        {
+            return JsValue.FromNumber(double.NegativeInfinity);
+        }
+
+        var result = double.NegativeInfinity;
+        foreach (var arg in args)
+        {
+            var value = ToNumber(arg);
+            if (double.IsNaN(value))
+            {
+                return JsValue.FromNumber(double.NaN);
+            }
+
+            if (value > result || (value == 0d && result == 0d && !IsNegativeZero(value)))
+            {
+                result = value;
+            }
+        }
+
+        return JsValue.FromNumber(result);
+    }
+
+    private JsValue MathMin(IReadOnlyList<JsValue> args)
+    {
+        if (args.Count == 0)
+        {
+            return JsValue.FromNumber(double.PositiveInfinity);
+        }
+
+        var result = double.PositiveInfinity;
+        foreach (var arg in args)
+        {
+            var value = ToNumber(arg);
+            if (double.IsNaN(value))
+            {
+                return JsValue.FromNumber(double.NaN);
+            }
+
+            if (value < result || (value == 0d && result == 0d && IsNegativeZero(value)))
+            {
+                result = value;
+            }
+        }
+
+        return JsValue.FromNumber(result);
+    }
+
+    private static bool IsNegativeZero(double value)
+    {
+        return value == 0d && BitConverter.DoubleToInt64Bits(value) < 0;
     }
 
     private ObjectHandle EnsureObjectPrototype()
@@ -2126,6 +2295,13 @@ public sealed class BytecodeInterpreter
             Name = name;
             _call = call;
             _construct = construct;
+            _ = DefineOwnProperty(
+                "name",
+                new JsPropertyDescriptor(
+                    JsValue.FromString(name),
+                    Writable: false,
+                    Enumerable: false,
+                    Configurable: true));
             _ = DefineOwnProperty(
                 "length",
                 new JsPropertyDescriptor(
