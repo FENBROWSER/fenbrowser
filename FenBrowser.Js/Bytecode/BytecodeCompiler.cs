@@ -36,6 +36,12 @@ public sealed class BytecodeCompiler
         return CompileProgramCore(program, parameters: Array.Empty<string>(), name: null, hasOwnArgumentsObject: false);
     }
 
+    public BytecodeFunction CompileFunctionBody(SourceText body, IReadOnlyList<string> parameters, string? name)
+    {
+        var program = JsParser.ParseScript(body);
+        return CompileProgramCore(program, parameters, name, hasOwnArgumentsObject: true);
+    }
+
     private BytecodeFunction CompileProgramCore(
         ProgramNode program,
         IReadOnlyList<string> parameters,

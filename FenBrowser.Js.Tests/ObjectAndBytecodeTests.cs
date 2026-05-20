@@ -1047,6 +1047,26 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void FunctionObjectsInheritFromFunctionPrototype()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("Function.prototype.value = \"Function\"; let f = function(a, b) { return a + b; }; let o = {}; Object.defineProperty(o, \"property\", f); o.property == \"Function\" && f.call(null, 2, 3) == 5 && (f instanceof Function);"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void FunctionConstructorCompilesBodyWithArgumentsObject()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let f = new Function(\"a\", \"b\", \"return a + b + arguments.length;\"); f(2, 3) == 7 && f.name == \"anonymous\" && Function.length == 1;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ObjectPrototypePropertyIsEnumerableChecksOwnEnumerableFlag()
     {
         var compiler = new BytecodeCompiler();

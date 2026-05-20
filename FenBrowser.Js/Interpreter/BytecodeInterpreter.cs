@@ -28,6 +28,8 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _rangeErrorPrototypeHandle;
     private ObjectHandle? _syntaxErrorConstructorHandle;
     private ObjectHandle? _syntaxErrorPrototypeHandle;
+    private ObjectHandle? _functionConstructorHandle;
+    private ObjectHandle? _functionPrototypeHandle;
     private ObjectHandle? _functionCallMethodHandle;
     private ObjectHandle? _evalFunctionHandle;
     private ObjectHandle? _globalObjectHandle;
@@ -239,11 +241,7 @@ public sealed class BytecodeInterpreter
                 {
                     var nested = function.NestedFunctions[ins.B];
                     var captured = CaptureFrameVariables(function, frame);
-                    var fnObj = new JsFunctionObject(nested, captured);
-                    var prototypeHandle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
-                    _ = fnObj.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
-                    var handle = _heap.AllocateObject(fnObj, AllocationSite.Current());
-                    frame.Registers[ins.A] = JsValue.FromObject(handle);
+                    frame.Registers[ins.A] = CreateFunctionObject(nested, captured);
                     break;
                 }
                 case OpCode.Call0:
@@ -453,6 +451,11 @@ public sealed class BytecodeInterpreter
             frame.Variables[stringSlot] = JsValue.FromObject(EnsureStringConstructor());
         }
 
+        if (function.VariableSlots.TryGetValue("Function", out var functionSlot))
+        {
+            frame.Variables[functionSlot] = JsValue.FromObject(EnsureFunctionConstructor());
+        }
+
         if (function.VariableSlots.TryGetValue("Error", out var errorSlot))
         {
             frame.Variables[errorSlot] = JsValue.FromObject(EnsureErrorConstructor());
@@ -585,6 +588,11 @@ public sealed class BytecodeInterpreter
     private JsValue CreateRangeError(string message)
     {
         return CreateErrorObject("RangeError", EnsureRangeErrorPrototype(), message);
+    }
+
+    private JsValue CreateSyntaxError(string message)
+    {
+        return CreateErrorObject("SyntaxError", EnsureSyntaxErrorPrototype(), message);
     }
 
     private JsValue CreateErrorObject(string name, ObjectHandle prototypeHandle, string message)
@@ -1015,6 +1023,140 @@ public sealed class BytecodeInterpreter
         _objectPrototypeHandle = prototypeHandle;
         _objectConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    private ObjectHandle EnsureFunctionPrototype()
+    {
+        _ = EnsureFunctionConstructor();
+        return _functionPrototypeHandle!.Value;
+    }
+
+    private ObjectHandle EnsureFunctionConstructor()
+    {
+        if (_functionConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototype = new NativeFunctionObject(string.Empty, (_, _) => JsValue.Undefined);
+        prototype.SetPrototype(EnsureObjectPrototype());
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "Function",
+            (_, args) => CreateDynamicFunction(args),
+            args => CreateDynamicFunction(args),
+            length: 1);
+        constructor.SetPrototype(prototypeHandle);
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        var callHandle = EnsureFunctionCallMethod();
+        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototype.SetProperty("call", JsValue.FromObject(callHandle));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
+        _heap.WriteBarrier(prototypeHandle, callHandle);
+
+        _functionPrototypeHandle = prototypeHandle;
+        _functionConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private JsValue CreateFunctionObject(
+        BytecodeFunction function,
+        IReadOnlyDictionary<string, JsVariableCell>? capturedVariables = null)
+    {
+        var fnObj = new JsFunctionObject(function, capturedVariables);
+        fnObj.SetPrototype(EnsureFunctionPrototype());
+        _ = fnObj.DefineOwnProperty(
+            "name",
+            new JsPropertyDescriptor(
+                JsValue.FromString(function.Name ?? string.Empty),
+                Writable: false,
+                Enumerable: false,
+                Configurable: true));
+        _ = fnObj.DefineOwnProperty(
+            "length",
+            new JsPropertyDescriptor(
+                JsValue.FromNumber(function.ParameterNames.Count),
+                Writable: false,
+                Enumerable: false,
+                Configurable: true));
+        var prototypeHandle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
+        _ = fnObj.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var handle = _heap.AllocateObject(fnObj, AllocationSite.Current());
+        _heap.WriteBarrier(handle, prototypeHandle);
+        return JsValue.FromObject(handle);
+    }
+
+    private JsValue CreateDynamicFunction(IReadOnlyList<JsValue> args)
+    {
+        var parameters = new List<string>();
+        for (var i = 0; i + 1 < args.Count; i++)
+        {
+            AddFunctionConstructorParameters(parameters, ToStringValue(args[i]));
+        }
+
+        var body = args.Count > 0 ? ToStringValue(args[^1]) : string.Empty;
+        try
+        {
+            var compiled = new BytecodeCompiler().CompileFunctionBody(
+                new SourceText(body, "<Function>"),
+                parameters,
+                "anonymous");
+            new BytecodeVerifier().Verify(compiled);
+            return CreateFunctionObject(compiled);
+        }
+        catch (Exception ex) when (ex is JsParserException or UnsupportedFeatureException)
+        {
+            throw new JsThrownException(CreateSyntaxError(ex.Message));
+        }
+    }
+
+    private static void AddFunctionConstructorParameters(List<string> parameters, string parameterText)
+    {
+        foreach (var rawPart in parameterText.Split(','))
+        {
+            var parameter = rawPart.Trim();
+            if (parameter.Length == 0)
+            {
+                continue;
+            }
+
+            if (!IsIdentifierName(parameter))
+            {
+                throw new JsParserException($"Invalid function parameter '{parameter}'.");
+            }
+
+            parameters.Add(parameter);
+        }
+    }
+
+    private static bool IsIdentifierName(string value)
+    {
+        if (value.Length == 0)
+        {
+            return false;
+        }
+
+        var first = value[0];
+        if (first != '_' && first != '$' && !char.IsLetter(first))
+        {
+            return false;
+        }
+
+        for (var i = 1; i < value.Length; i++)
+        {
+            var ch = value[i];
+            if (ch != '_' && ch != '$' && !char.IsLetterOrDigit(ch))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private ObjectHandle DefineNativePrototypeMethod(
