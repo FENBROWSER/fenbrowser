@@ -1371,6 +1371,21 @@ public sealed class Test262Runner
                  if (desc.configurable !== undefined) { assert.sameValue(originalDesc.configurable, desc.configurable, "descriptor configurable"); }
                  return true;
                }
+               function verifyWritable(obj, name, verifyProp, value) {
+                 var oldValue = obj[name];
+                 var newValue = value !== undefined ? value : "__verifyWritable_value__";
+                 try { obj[name] = newValue; } catch (_e) {}
+                 assert.sameValue(obj[name], newValue, "property should be writable");
+                 if (value === undefined) { try { obj[name] = oldValue; } catch (_e) {} }
+                 return true;
+               }
+               function verifyNotWritable(obj, name, verifyProp, value) {
+                 var oldValue = obj[name];
+                 var newValue = value !== undefined ? value : "__verifyNotWritable_value__";
+                 try { obj[name] = newValue; } catch (_e) {}
+                 assert.sameValue(obj[name], oldValue, "property should not be writable");
+                 return true;
+               }
                function $DONE(error) { if (error !== undefined) { throw error; } }
                var $262 = {};
                """;

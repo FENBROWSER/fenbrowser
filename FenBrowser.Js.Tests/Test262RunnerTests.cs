@@ -2401,4 +2401,65 @@ public sealed class Test262RunnerTests
             Directory.Delete(tempRoot, recursive: true);
         }
     }
+
+    [Fact]
+    public void Run_RuntimeSubset_PropertyHelperVerifyNotWritableUsesRuntimePrelude()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "property-helper-not-writable.js");
+        var outputPath = Path.Combine(tempRoot, "property-helper-not-writable-result.json");
+
+        try
+        {
+            File.WriteAllText(testFile, """
+            /*---
+            includes: [propertyHelper.js]
+            ---*/
+            var obj = {};
+            Object.defineProperty(obj, "property", { get: function() { return 11; } });
+            verifyNotWritable(obj, "property");
+            """);
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: false,
+                runtimeSubset: true,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1000,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(1, summary.GetProperty("passed").GetInt32());
+            Assert.Equal(0, summary.GetProperty("runtimeErrors").GetInt32());
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+            catch
+            {
+                // Best-effort cleanup for temporary runner fixtures.
+            }
+        }
+    }
 }
