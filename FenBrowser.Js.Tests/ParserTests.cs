@@ -222,6 +222,12 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void RejectsStringLiteralWithUnescapedLineTerminator()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("\"str\ning\";")));
+    }
+
+    [Fact]
     public void ParsesTryCatchWithPatternParameter()
     {
         var program = JsParser.ParseScript(new SourceText("try { throw {}; } catch ({ f }) { f; }"));

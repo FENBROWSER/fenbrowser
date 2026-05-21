@@ -275,14 +275,31 @@ public sealed class JsLexer
                 var quote = ch;
                 _index++;
                 _column++;
+                var malformed = false;
                 while (_index < _source.Length)
                 {
-                    var c = _source[_index++];
+                    var c = _source[_index];
+                    if (IsLineTerminator(c))
+                    {
+                        malformed = true;
+                        AdvanceLineTerminator();
+                        break;
+                    }
+
+                    _index++;
                     _column++;
                     if (c == '\\' && _index < _source.Length)
                     {
-                        _index++;
-                        _column++;
+                        if (IsLineTerminator(_source[_index]))
+                        {
+                            AdvanceLineTerminator();
+                        }
+                        else
+                        {
+                            _index++;
+                            _column++;
+                        }
+
                         continue;
                     }
 
@@ -292,7 +309,7 @@ public sealed class JsLexer
                     }
                 }
 
-                var token = new Token(TokenKind.String, _source[start.._index], new SourceSpan(start, _index - start, line, column));
+                var token = new Token(malformed ? TokenKind.Unknown : TokenKind.String, _source[start.._index], new SourceSpan(start, _index - start, line, column));
                 tokens.Add(token);
                 _lastSignificantToken = token;
                 continue;
@@ -337,10 +354,7 @@ public sealed class JsLexer
 
             if (IsLineTerminator(ch))
             {
-                _index++;
-                _line++;
-                _column = 1;
-                _atLineStart = true;
+                AdvanceLineTerminator();
                 continue;
             }
 
@@ -348,7 +362,7 @@ public sealed class JsLexer
             {
                 _index += 3;
                 _column += 3;
-                while (_index < _source.Length && _source[_index] != '\n')
+                while (_index < _source.Length && !IsLineTerminator(_source[_index]))
                 {
                     _index++;
                     _column++;
@@ -403,10 +417,7 @@ public sealed class JsLexer
 
                         if (IsLineTerminator(_source[_index]))
                         {
-                            _index++;
-                            _line++;
-                            _column = 1;
-                            _atLineStart = true;
+                            AdvanceLineTerminator();
                         }
                         else
                         {
@@ -653,6 +664,22 @@ public sealed class JsLexer
 
     private static bool IsLineTerminator(char ch) => ch == '\n' || ch == '\r' || ch == '\u2028' || ch == '\u2029';
 
+    private void AdvanceLineTerminator()
+    {
+        if (_source[_index] == '\r' && _index + 1 < _source.Length && _source[_index + 1] == '\n')
+        {
+            _index += 2;
+        }
+        else
+        {
+            _index++;
+        }
+
+        _line++;
+        _column = 1;
+        _atLineStart = true;
+    }
+
     private string ReadTemplateLiteralToken()
     {
         var start = _index;
@@ -662,14 +689,14 @@ public sealed class JsLexer
         var escaped = false;
         while (_index < _source.Length)
         {
-            var c = _source[_index++];
+            var c = _source[_index];
             if (IsLineTerminator(c))
             {
-                _line++;
-                _column = 1;
+                AdvanceLineTerminator();
             }
             else
             {
+                _index++;
                 _column++;
             }
 

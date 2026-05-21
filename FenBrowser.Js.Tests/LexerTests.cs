@@ -54,6 +54,18 @@ public sealed class LexerTests
     }
 
     [Fact]
+    public void StringWithUnescapedLineTerminatorProducesUnknownToken()
+    {
+        var lexer = new JsLexer(new SourceText("\"a\r\nb\";"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Unknown, tokens[0].Kind);
+        Assert.Equal("\"a\r\n", tokens[0].Text);
+        Assert.Equal(2, tokens[1].Span.Line);
+        Assert.Equal(1, tokens[1].Span.Column);
+    }
+
+    [Fact]
     public void UnterminatedBlockCommentDoesNotCrash()
     {
         var lexer = new JsLexer(new SourceText("/* unclosed"));
@@ -87,6 +99,29 @@ public sealed class LexerTests
         Assert.Equal("let", tokens[0].Text);
         Assert.Equal(TokenKind.Identifier, tokens[1].Kind);
         Assert.Equal("y", tokens[1].Text);
+    }
+
+    [Fact]
+    public void TreatsCrLfAsSingleLineTerminatorForTokenSpans()
+    {
+        var lexer = new JsLexer(new SourceText("let a = 1;\r\nlet b = 2;"));
+        var tokens = lexer.LexAll();
+
+        var secondLet = tokens.First(t => t.Text == "let" && t.Span.Start > 0);
+        Assert.Equal(2, secondLet.Span.Line);
+        Assert.Equal(1, secondLet.Span.Column);
+    }
+
+    [Fact]
+    public void HtmlCloseCommentStopsAtCarriageReturnLineTerminator()
+    {
+        var lexer = new JsLexer(new SourceText("--> hidden\rlet x = 1;"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Keyword, tokens[0].Kind);
+        Assert.Equal("let", tokens[0].Text);
+        Assert.Equal(2, tokens[0].Span.Line);
+        Assert.Equal(1, tokens[0].Span.Column);
     }
 
     [Fact]
