@@ -644,6 +644,22 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesAstralUnicodeIdentifierPart()
+    {
+        var program = JsParser.ParseScript(new SourceText("var _\U00011A01 = 1; var _\\u{11A01} = 2;"));
+
+        Assert.Equal(2, program.Body.Count);
+    }
+
+    [Fact]
+    public void ParsesPinnedUnicodeIdentifierTableAdditions()
+    {
+        var program = JsParser.ParseScript(new SourceText("var \u088F\u0C5C_\uFF65\u1ACF\u1AD0 = 1;"));
+
+        Assert.Single(program.Body);
+    }
+
+    [Fact]
     public void ParsesArrowExpressionBodyWithoutConsumingPropertyComma()
     {
         var program = JsParser.ParseScript(new SourceText("let o = { next: () => n.next(), };"));

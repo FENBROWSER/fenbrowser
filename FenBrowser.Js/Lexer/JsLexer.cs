@@ -74,7 +74,8 @@ public sealed class JsLexer
                 }
             }
 
-            if (IsIdentifierStart(ch) || (ch == '\\' && IsUnicodeEscapeStart(_index)))
+            var canStartIdentifier = TryPeekRune(_index, out var startRune, out var startRuneLength) && IsIdentifierStart(startRune);
+            if (canStartIdentifier || (ch == '\\' && IsUnicodeEscapeStart(_index)))
             {
                 var builder = new StringBuilder();
                 var hadEscape = false;
@@ -97,23 +98,23 @@ public sealed class JsLexer
                         malformedIdentifier = true;
                     }
 
-                    builder.Append(escapedStart);
+                    builder.Append(escapedStart.ToString());
                 }
                 else
                 {
-                    builder.Append(ch);
-                    _index++;
-                    _column++;
+                    builder.Append(_source.AsSpan(_index, startRuneLength));
+                    _index += startRuneLength;
+                    _column += startRuneLength;
                 }
 
                 while (_index < _source.Length)
                 {
                     var c = _source[_index];
-                    if (IsIdentifierPart(c))
+                    if (TryPeekRune(_index, out var partRune, out var partRuneLength) && IsIdentifierPart(partRune))
                     {
-                        builder.Append(c);
-                        _index++;
-                        _column++;
+                        builder.Append(_source.AsSpan(_index, partRuneLength));
+                        _index += partRuneLength;
+                        _column += partRuneLength;
                         continue;
                     }
 
@@ -129,7 +130,7 @@ public sealed class JsLexer
                             break;
                         }
 
-                        builder.Append(escaped);
+                        builder.Append(escaped.ToString());
                         continue;
                     }
 
@@ -650,9 +651,9 @@ public sealed class JsLexer
         return index + 5 < _source.Length;
     }
 
-    private bool TryReadUnicodeEscape(out char value)
+    private bool TryReadUnicodeEscape(out Rune value)
     {
-        value = '\0';
+        value = default;
         if (!IsUnicodeEscapeStart(_index))
         {
             return false;
@@ -695,8 +696,7 @@ public sealed class JsLexer
                 return false;
             }
 
-            value = (char)codePoint;
-            return true;
+            return Rune.TryCreate(codePoint, out value);
         }
 
         if (_index + 3 >= _source.Length)
@@ -716,24 +716,29 @@ public sealed class JsLexer
         _index += 4;
         _column += 4;
         var code = int.Parse(digits, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture);
-        value = (char)code;
-        return true;
+        return Rune.TryCreate(code, out value);
     }
 
     private static bool IsLineTerminator(char ch) => ch == '\n' || ch == '\r' || ch == '\u2028' || ch == '\u2029';
+
+    private static bool IsLineTerminator(Rune rune) =>
+        rune.Value <= char.MaxValue && IsLineTerminator((char)rune.Value);
 
     private static bool IsWhiteSpace(char ch) =>
         ch is '\t' or '\v' or '\f' or ' ' or '\u00A0' or '\uFEFF' ||
         (!IsLineTerminator(ch) && CharUnicodeInfo.GetUnicodeCategory(ch) == UnicodeCategory.SpaceSeparator);
 
-    private static bool IsIdentifierStart(char ch)
+    private static bool IsWhiteSpace(Rune rune) =>
+        rune.Value <= char.MaxValue && IsWhiteSpace((char)rune.Value);
+
+    private static bool IsIdentifierStart(Rune rune)
     {
-        if (ch is '_' or '$' || IsOtherIdentifierStart(ch))
+        if (rune.Value is 0x5F or 0x24 || IsOtherIdentifierStart(rune))
         {
             return true;
         }
 
-        return CharUnicodeInfo.GetUnicodeCategory(ch) switch
+        return Rune.GetUnicodeCategory(rune) switch
         {
             UnicodeCategory.UppercaseLetter => true,
             UnicodeCategory.LowercaseLetter => true,
@@ -745,14 +750,14 @@ public sealed class JsLexer
         };
     }
 
-    private static bool IsIdentifierPart(char ch)
+    private static bool IsIdentifierPart(Rune rune)
     {
-        if (IsIdentifierStart(ch) || IsOtherIdentifierContinue(ch) || ch is '\u200C' or '\u200D')
+        if (IsIdentifierStart(rune) || IsOtherIdentifierContinue(rune) || rune.Value is 0x200C or 0x200D)
         {
             return true;
         }
 
-        return CharUnicodeInfo.GetUnicodeCategory(ch) switch
+        return Rune.GetUnicodeCategory(rune) switch
         {
             UnicodeCategory.NonSpacingMark => true,
             UnicodeCategory.SpacingCombiningMark => true,
@@ -762,11 +767,48 @@ public sealed class JsLexer
         };
     }
 
-    private static bool IsOtherIdentifierStart(char ch) =>
-        ch is '\u1885' or '\u1886' or '\u2118' or '\u212E' or '\u309B' or '\u309C';
+    private static bool IsOtherIdentifierStart(Rune rune) =>
+        rune.Value is 0x088F or 0x0C5C or 0x1885 or 0x1886 or 0x2118 or 0x212E or 0x309B or 0x309C;
 
-    private static bool IsOtherIdentifierContinue(char ch) =>
-        ch is '\u00B7' or '\u0387' or '\u19DA' || ch is >= '\u1369' and <= '\u1371';
+    private static bool IsOtherIdentifierContinue(Rune rune) =>
+        rune.Value is 0x00B7 or 0x0387 or 0x19DA or 0x1ACF or 0x1AD0 or 0x30FB or 0xFF65 ||
+        rune.Value is >= 0x1369 and <= 0x1371;
+
+    private bool TryPeekRune(int index, out Rune rune, out int utf16Length)
+    {
+        rune = default;
+        utf16Length = 0;
+        if (index >= _source.Length)
+        {
+            return false;
+        }
+
+        var ch = _source[index];
+        if (char.IsHighSurrogate(ch))
+        {
+            if (index + 1 >= _source.Length || !char.IsLowSurrogate(_source[index + 1]))
+            {
+                return false;
+            }
+
+            var codePoint = char.ConvertToUtf32(ch, _source[index + 1]);
+            if (!Rune.TryCreate(codePoint, out rune))
+            {
+                return false;
+            }
+
+            utf16Length = 2;
+            return true;
+        }
+
+        if (char.IsLowSurrogate(ch) || !Rune.TryCreate((int)ch, out rune))
+        {
+            return false;
+        }
+
+        utf16Length = 1;
+        return true;
+    }
 
     private static bool HasValidNumericLiteralSeparators(string text)
     {
@@ -987,7 +1029,9 @@ public sealed class JsLexer
         }
 
         var ch = _source[_index];
-        return char.IsDigit(ch) || IsIdentifierStart(ch) || (ch == '\\' && IsUnicodeEscapeStart(_index));
+        return char.IsDigit(ch) ||
+               (TryPeekRune(_index, out var rune, out _) && IsIdentifierStart(rune)) ||
+               (ch == '\\' && IsUnicodeEscapeStart(_index));
     }
 
     private void AdvanceLineTerminator()

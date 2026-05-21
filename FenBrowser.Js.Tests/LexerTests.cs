@@ -139,6 +139,36 @@ public sealed class LexerTests
     }
 
     [Fact]
+    public void LexesAstralUnicodeIdentifierPart()
+    {
+        var lexer = new JsLexer(new SourceText("_\U00011A01 = 1;"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Identifier, tokens[0].Kind);
+        Assert.Equal("_\U00011A01", tokens[0].Text);
+    }
+
+    [Fact]
+    public void LexesPinnedUnicodeIdentifierTableAdditions()
+    {
+        var lexer = new JsLexer(new SourceText("\u088F\u0C5C_\uFF65\u1ACF\u1AD0 = 1;"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Identifier, tokens[0].Kind);
+        Assert.Equal("\u088F\u0C5C_\uFF65\u1ACF\u1AD0", tokens[0].Text);
+    }
+
+    [Fact]
+    public void LexesEscapedAstralUnicodeIdentifierPart()
+    {
+        var lexer = new JsLexer(new SourceText("_\\u{11A01} = 1;"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Identifier, tokens[0].Kind);
+        Assert.Equal("_\U00011A01", tokens[0].Text);
+    }
+
+    [Fact]
     public void NumericLiteralFollowedByIdentifierStartIsMalformed()
     {
         var lexer = new JsLexer(new SourceText("3in []"));
