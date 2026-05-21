@@ -234,6 +234,20 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void RejectsAdjacentExpressionStatementsOnSameLineWithoutSemicolon()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("this text;")));
+    }
+
+    [Fact]
+    public void AllowsExpressionStatementsSeparatedByLineTerminator()
+    {
+        var program = JsParser.ParseScript(new SourceText("a\nb;"));
+
+        Assert.Equal(2, program.Body.Count);
+    }
+
+    [Fact]
     public void ParsesTryCatchWithPatternParameter()
     {
         var program = JsParser.ParseScript(new SourceText("try { throw {}; } catch ({ f }) { f; }"));

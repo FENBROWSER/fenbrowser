@@ -141,6 +141,10 @@ public sealed class JsParser
         {
             Advance();
         }
+        else if (!Is(TokenKind.EndOfFile) && !IsPunctuator("}") && Current().Span.Line == Previous().Span.Line)
+        {
+            throw new JsParserException($"Expected semicolon or line terminator after expression, found '{Current().Text}'.");
+        }
 
         return new ExpressionStatementNode(expression, expression.Span);
     }
