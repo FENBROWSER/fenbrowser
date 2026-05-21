@@ -8,7 +8,7 @@ namespace FenBrowser.Js.Environments;
 // containing variable, constant, let, class, module, import, and/or function
 // declarations. A declarative Environment Record binds the set of identifiers defined
 // by the declarations contained within its scope.
-public sealed class DeclarativeEnvironmentRecord : EnvironmentRecord
+public class DeclarativeEnvironmentRecord : EnvironmentRecord
 {
     private readonly Dictionary<string, Binding> _bindings = new(StringComparer.Ordinal);
 
