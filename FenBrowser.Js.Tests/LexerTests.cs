@@ -66,6 +66,16 @@ public sealed class LexerTests
     }
 
     [Fact]
+    public void IdentifierUnicodeEscapeCannotEncodeLineTerminator()
+    {
+        var lexer = new JsLexer(new SourceText("var\\u000Ax;"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Unknown, tokens[0].Kind);
+        Assert.Equal("var\\u000A", tokens[0].Text);
+    }
+
+    [Fact]
     public void UnterminatedBlockCommentDoesNotCrash()
     {
         var lexer = new JsLexer(new SourceText("/* unclosed"));

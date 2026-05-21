@@ -60,6 +60,7 @@ public sealed class JsLexer
             {
                 var builder = new StringBuilder();
                 var hadEscape = false;
+                var malformedIdentifier = false;
                 if (ch == '\\')
                 {
                     hadEscape = true;
@@ -71,6 +72,11 @@ public sealed class JsLexer
                         tokens.Add(invalidEscape);
                         _lastSignificantToken = invalidEscape;
                         continue;
+                    }
+
+                    if (IsLineTerminator(escapedStart))
+                    {
+                        malformedIdentifier = true;
                     }
 
                     builder.Append(escapedStart);
@@ -96,8 +102,9 @@ public sealed class JsLexer
                     if (c == '\\' && IsUnicodeEscapeStart(_index))
                     {
                         hadEscape = true;
-                        if (!TryReadUnicodeEscape(out var escaped))
+                        if (!TryReadUnicodeEscape(out var escaped) || IsLineTerminator(escaped))
                         {
+                            malformedIdentifier = true;
                             break;
                         }
 
@@ -108,8 +115,12 @@ public sealed class JsLexer
                     break;
                 }
 
-                var text = builder.ToString();
-                var kind = !hadEscape && Keywords.Contains(text) ? TokenKind.Keyword : TokenKind.Identifier;
+                var text = malformedIdentifier ? _source[start.._index] : builder.ToString();
+                var kind = malformedIdentifier
+                    ? TokenKind.Unknown
+                    : !hadEscape && Keywords.Contains(text)
+                        ? TokenKind.Keyword
+                        : TokenKind.Identifier;
                 var token = new Token(kind, text, new SourceSpan(start, _index - start, line, column));
                 tokens.Add(token);
                 _lastSignificantToken = token;

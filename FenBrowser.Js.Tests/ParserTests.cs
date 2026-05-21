@@ -228,6 +228,12 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void RejectsIdentifierEscapeThatDecodesToLineTerminator()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("var\\u2028x;")));
+    }
+
+    [Fact]
     public void ParsesTryCatchWithPatternParameter()
     {
         var program = JsParser.ParseScript(new SourceText("try { throw {}; } catch ({ f }) { f; }"));
