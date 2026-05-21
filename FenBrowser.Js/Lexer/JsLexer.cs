@@ -319,7 +319,7 @@ public sealed class JsLexer
                 while (_index < _source.Length)
                 {
                     var c = _source[_index];
-                    if (IsLineTerminator(c))
+                    if (c is '\r' or '\n')
                     {
                         malformed = true;
                         AdvanceLineTerminator();

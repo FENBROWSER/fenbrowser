@@ -250,6 +250,14 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesStringLiteralWithLineAndParagraphSeparators()
+    {
+        var program = JsParser.ParseScript(new SourceText("\"\u2028\"; \"\u2029\";"));
+
+        Assert.Equal(2, program.Body.Count);
+    }
+
+    [Fact]
     public void RejectsUnterminatedBlockComment()
     {
         Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("/* unclosed")));

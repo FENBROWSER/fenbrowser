@@ -66,6 +66,16 @@ public sealed class LexerTests
     }
 
     [Fact]
+    public void StringCanContainLineAndParagraphSeparators()
+    {
+        var lexer = new JsLexer(new SourceText("\"\u2028\"; \"\u2029\";"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.String, tokens[0].Kind);
+        Assert.Equal(TokenKind.String, tokens[2].Kind);
+    }
+
+    [Fact]
     public void IdentifierUnicodeEscapeCannotEncodeLineTerminator()
     {
         var lexer = new JsLexer(new SourceText("var\\u000Ax;"));
