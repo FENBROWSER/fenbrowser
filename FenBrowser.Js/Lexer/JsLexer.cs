@@ -726,9 +726,47 @@ public sealed class JsLexer
         ch is '\t' or '\v' or '\f' or ' ' or '\u00A0' or '\uFEFF' ||
         (!IsLineTerminator(ch) && CharUnicodeInfo.GetUnicodeCategory(ch) == UnicodeCategory.SpaceSeparator);
 
-    private static bool IsIdentifierStart(char ch) => char.IsLetter(ch) || ch == '_' || ch == '$';
+    private static bool IsIdentifierStart(char ch)
+    {
+        if (ch is '_' or '$' || IsOtherIdentifierStart(ch))
+        {
+            return true;
+        }
 
-    private static bool IsIdentifierPart(char ch) => char.IsLetterOrDigit(ch) || ch == '_' || ch == '$';
+        return CharUnicodeInfo.GetUnicodeCategory(ch) switch
+        {
+            UnicodeCategory.UppercaseLetter => true,
+            UnicodeCategory.LowercaseLetter => true,
+            UnicodeCategory.TitlecaseLetter => true,
+            UnicodeCategory.ModifierLetter => true,
+            UnicodeCategory.OtherLetter => true,
+            UnicodeCategory.LetterNumber => true,
+            _ => false
+        };
+    }
+
+    private static bool IsIdentifierPart(char ch)
+    {
+        if (IsIdentifierStart(ch) || IsOtherIdentifierContinue(ch) || ch is '\u200C' or '\u200D')
+        {
+            return true;
+        }
+
+        return CharUnicodeInfo.GetUnicodeCategory(ch) switch
+        {
+            UnicodeCategory.NonSpacingMark => true,
+            UnicodeCategory.SpacingCombiningMark => true,
+            UnicodeCategory.DecimalDigitNumber => true,
+            UnicodeCategory.ConnectorPunctuation => true,
+            _ => false
+        };
+    }
+
+    private static bool IsOtherIdentifierStart(char ch) =>
+        ch is '\u1885' or '\u1886' or '\u2118' or '\u212E' or '\u309B' or '\u309C';
+
+    private static bool IsOtherIdentifierContinue(char ch) =>
+        ch is '\u00B7' or '\u0387' or '\u19DA' || ch is >= '\u1369' and <= '\u1371';
 
     private static bool HasValidNumericLiteralSeparators(string text)
     {

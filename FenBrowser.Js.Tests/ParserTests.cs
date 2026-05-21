@@ -636,6 +636,14 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesEcmaUnicodeIdentifiers()
+    {
+        var program = JsParser.ParseScript(new SourceText("var \u2118a\u0300 = 1; var \\u2118 = 2;"));
+
+        Assert.Equal(2, program.Body.Count);
+    }
+
+    [Fact]
     public void ParsesArrowExpressionBodyWithoutConsumingPropertyComma()
     {
         var program = JsParser.ParseScript(new SourceText("let o = { next: () => n.next(), };"));

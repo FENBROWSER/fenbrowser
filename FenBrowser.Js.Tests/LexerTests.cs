@@ -119,6 +119,26 @@ public sealed class LexerTests
     }
 
     [Fact]
+    public void LexesEcmaUnicodeIdentifierStartAndContinue()
+    {
+        var lexer = new JsLexer(new SourceText("\u2118a\u0300 = 1;"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Identifier, tokens[0].Kind);
+        Assert.Equal("\u2118a\u0300", tokens[0].Text);
+    }
+
+    [Fact]
+    public void LexesEscapedEcmaUnicodeIdentifierStart()
+    {
+        var lexer = new JsLexer(new SourceText("\\u2118 = 1;"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Identifier, tokens[0].Kind);
+        Assert.Equal("\u2118", tokens[0].Text);
+    }
+
+    [Fact]
     public void NumericLiteralFollowedByIdentifierStartIsMalformed()
     {
         var lexer = new JsLexer(new SourceText("3in []"));
