@@ -978,6 +978,11 @@ public sealed class JsParser
         if (token.Kind == TokenKind.Number)
         {
             Advance();
+            if (_strictMode && IsStrictModeForbiddenNumericLiteral(token.Text))
+            {
+                throw new JsParserException($"Numeric literal '{token.Text}' is not allowed in strict mode.");
+            }
+
             if (!TryParseNumberLiteral(token.Text, out var value))
             {
                 throw new JsParserException($"Invalid numeric literal '{token.Text}'.");
@@ -1085,6 +1090,31 @@ public sealed class JsParser
         }
 
         return false;
+    }
+
+    private static bool IsStrictModeForbiddenNumericLiteral(string text)
+    {
+        var literal = text.EndsWith('n') ? text[..^1] : text;
+        var normalized = literal.Replace("_", string.Empty, StringComparison.Ordinal);
+        if (normalized.Length <= 1 || normalized[0] != '0')
+        {
+            return false;
+        }
+
+        if (normalized.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("0o", StringComparison.OrdinalIgnoreCase) ||
+            normalized.StartsWith("0b", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (normalized.Contains(".", StringComparison.Ordinal) ||
+            normalized.Contains("e", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return normalized[1] is >= '0' and <= '9';
     }
 
     private static bool TryParseRadix(string text, int radix, out double value)

@@ -468,6 +468,32 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void RejectsLegacyOctalNumericLiteralInStrictMode()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("\"use strict\"; 010;")));
+    }
+
+    [Fact]
+    public void RejectsNonOctalDecimalIntegerLiteralInStrictMode()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("\"use strict\"; 08;")));
+    }
+
+    [Fact]
+    public void RejectsLegacyOctalNumericLiteralInModule()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseModule(new SourceText("010;")));
+    }
+
+    [Fact]
+    public void AllowsLeadingZeroFractionInStrictMode()
+    {
+        var program = JsParser.ParseScript(new SourceText("\"use strict\"; 0.1;"));
+
+        Assert.Equal(2, program.Body.Count);
+    }
+
+    [Fact]
     public void ParsesLeadingDotNumericLiteral()
     {
         var program = JsParser.ParseScript(new SourceText("BigInt(.1); BigInt(-.1);"));
