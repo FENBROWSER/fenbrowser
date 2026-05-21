@@ -115,7 +115,8 @@
       "fenbrowser.js.shell": {
         "type": "Project",
         "dependencies": {
-          "FenBrowser.Js": "[1.0.0, )"
+          "FenBrowser.Js": "[1.0.0, )",
+          "FenBrowser.Js.Test262": "[1.0.0, )"
         }
       },
       "fenbrowser.js.test262": {

@@ -11,5 +11,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\FenBrowser.Js\FenBrowser.Js.csproj" />
+    <ProjectReference Include="..\FenBrowser.Js.Test262\FenBrowser.Js.Test262.csproj" />
   </ItemGroup>
 </Project>

@@ -31,4 +31,5 @@ Boundary rules:
 Standalone shell:
 - `FenBrowser.Js.Shell` runs engine smoke checks without browser host integration
 - `--eval [code]` and `--file <path>` execute through the bytecode verifier and interpreter
+- `--test262 <path>` and `--test262-file <file>` delegate to `FenBrowser.Js.Test262`; the core engine assembly does not depend on test262
 - empty `--eval` input is valid and returns `undefined`

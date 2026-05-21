@@ -9,12 +9,13 @@ using FenBrowser.Js.Lexer;
 using FenBrowser.Js.Parser;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
+using FenBrowser.Js.Test262;
 
 var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("Usage: fenjs --version | --eval [code] | --file <file> | --dump-tokens <file> | --dump-ast <file> | --dump-bytecode <file> [--gc-before-every-alloc|--gc-after-every-alloc|--gc-random|--verify-heap-before-gc|--verify-heap-after-gc|--trace-gc]");
+    Console.Error.WriteLine("Usage: fenjs --version | --eval [code] | --file <file> | --test262 <path> | --test262-file <file> | --dump-tokens <file> | --dump-ast <file> | --dump-bytecode <file> [--gc-before-every-alloc|--gc-after-every-alloc|--gc-random|--verify-heap-before-gc|--verify-heap-after-gc|--trace-gc]");
     return 1;
 }
 
@@ -45,6 +46,16 @@ if (args.Length == 2 && args[0] == "--file")
     }
 
     return ExecuteSource(File.ReadAllText(path), path, gcStressMode, verifyBeforeGc, verifyAfterGc, traceGc);
+}
+
+if (args.Length >= 1 && args[0] == "--test262")
+{
+    return RunTest262FromShell(args, singleFile: false);
+}
+
+if (args.Length >= 1 && args[0] == "--test262-file")
+{
+    return RunTest262FromShell(args, singleFile: true);
 }
 
 if (args.Length == 2 && args[0] == "--dump-tokens")
@@ -241,6 +252,136 @@ static int ExecuteSource(
     }
 
     return 0;
+}
+
+static int RunTest262FromShell(string[] rawArgs, bool singleFile)
+{
+    if (rawArgs.Length < 2 || string.IsNullOrWhiteSpace(rawArgs[1]))
+    {
+        Console.Error.WriteLine(singleFile ? "--test262-file requires a file path." : "--test262 requires a test262 root, directory, or file path.");
+        return 2;
+    }
+
+    var target = rawArgs[1];
+    string? explicitRoot = null;
+    var outputPath = Path.Combine("Results", "test262", singleFile ? "fenjs-test262-file.json" : "fenjs-test262.json");
+    var max = 200;
+    var timeoutMs = 5000;
+    var engine = "FenJS";
+    string? expectationsPath = null;
+    string? featuresCsv = null;
+    string? supportedFeaturesCsv = null;
+    var list = false;
+    var dryRun = false;
+    var parserSubset = false;
+    var runtimeSubset = false;
+
+    for (var i = 2; i < rawArgs.Length; i++)
+    {
+        switch (rawArgs[i])
+        {
+            case "--root" when i + 1 < rawArgs.Length:
+            case "--test262-root" when i + 1 < rawArgs.Length:
+                explicitRoot = rawArgs[++i];
+                break;
+            case "--out" when i + 1 < rawArgs.Length:
+            case "--output" when i + 1 < rawArgs.Length:
+                outputPath = rawArgs[++i];
+                break;
+            case "--max" when i + 1 < rawArgs.Length && int.TryParse(rawArgs[i + 1], out var parsedMax):
+                max = parsedMax;
+                i++;
+                break;
+            case "--timeout-ms" when i + 1 < rawArgs.Length && int.TryParse(rawArgs[i + 1], out var parsedTimeout):
+                timeoutMs = parsedTimeout;
+                i++;
+                break;
+            case "--engine" when i + 1 < rawArgs.Length:
+                engine = rawArgs[++i];
+                break;
+            case "--expectations" when i + 1 < rawArgs.Length:
+                expectationsPath = rawArgs[++i];
+                break;
+            case "--features" when i + 1 < rawArgs.Length:
+                featuresCsv = rawArgs[++i];
+                break;
+            case "--supported-features" when i + 1 < rawArgs.Length:
+                supportedFeaturesCsv = rawArgs[++i];
+                break;
+            case "--list":
+                list = true;
+                break;
+            case "--dry-run":
+                dryRun = true;
+                break;
+            case "--parser-subset":
+                parserSubset = true;
+                break;
+            case "--runtime-subset":
+                runtimeSubset = true;
+                break;
+        }
+    }
+
+    if (!list && !dryRun && !parserSubset && !runtimeSubset)
+    {
+        runtimeSubset = true;
+    }
+
+    var root = ResolveTest262Root(explicitRoot, target);
+    if (!Directory.Exists(root))
+    {
+        Console.Error.WriteLine($"test262 root not found: {root}");
+        return 3;
+    }
+
+    var runner = new Test262Runner();
+    return runner.Run(
+        root,
+        list,
+        dryRun,
+        parserSubset,
+        runtimeSubset,
+        dashboard: false,
+        verifyGates: false,
+        outputPath,
+        max,
+        timeoutMs,
+        engine,
+        expectationsPath,
+        inputPath: null,
+        previousPath: null,
+        test262Path: singleFile ? null : target,
+        test262File: singleFile ? target : null,
+        featuresCsv,
+        supportedFeaturesCsv);
+}
+
+static string ResolveTest262Root(string? explicitRoot, string targetPath)
+{
+    if (!string.IsNullOrWhiteSpace(explicitRoot))
+    {
+        return explicitRoot;
+    }
+
+    var candidate = Path.GetFullPath(targetPath);
+    if (Directory.Exists(Path.Combine(candidate, "test")) && Directory.Exists(Path.Combine(candidate, "harness")))
+    {
+        return candidate;
+    }
+
+    var directory = File.Exists(candidate) ? Path.GetDirectoryName(candidate) : candidate;
+    while (!string.IsNullOrWhiteSpace(directory))
+    {
+        if (Directory.Exists(Path.Combine(directory, "test")) && Directory.Exists(Path.Combine(directory, "harness")))
+        {
+            return directory;
+        }
+
+        directory = Directory.GetParent(directory)?.FullName;
+    }
+
+    return Path.Combine("external", "test262");
 }
 
 static object DumpProgram(ProgramNode program)
