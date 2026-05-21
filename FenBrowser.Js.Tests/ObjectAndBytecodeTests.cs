@@ -1,7 +1,9 @@
+using FenBrowser.Js.AstValidation;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Objects;
+using FenBrowser.Js.Parser;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
 using Xunit;
@@ -76,6 +78,16 @@ public sealed class ObjectAndBytecodeTests
 
         var verifier = new BytecodeVerifier();
         Assert.Throws<InvalidOperationException>(() => verifier.Verify(fn));
+    }
+
+    [Fact]
+    public void CompilerRejectsParserOnlyWithStatement()
+    {
+        var compiler = new BytecodeCompiler();
+
+        var ex = Assert.Throws<UnsupportedFeatureException>(() => compiler.CompileScript(new SourceText("with (obj) { value; }")));
+        Assert.Equal("with", ex.FeatureName);
+        Assert.Equal(FeatureSupportLevel.ParserOnly, ex.Level);
     }
 
     [Fact]

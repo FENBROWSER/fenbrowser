@@ -1,4 +1,5 @@
 using FenBrowser.Js.Ast;
+using FenBrowser.Js.AstValidation;
 using FenBrowser.Js.Parser;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
@@ -118,6 +119,8 @@ public sealed class BytecodeCompiler
             case WhileStatementNode whileStmt:
                 CompileWhileStatement(whileStmt);
                 break;
+            case WithStatementNode withStmt:
+                throw new UnsupportedFeatureException("with", FeatureSupportLevel.ParserOnly, withStmt.Span);
             case ForStatementNode forStmt:
                 CompileForStatement(forStmt);
                 break;

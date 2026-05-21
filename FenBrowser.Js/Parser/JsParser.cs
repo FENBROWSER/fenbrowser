@@ -36,6 +36,7 @@ public sealed class JsParser
 
     private ProgramNode ParseProgram(ProgramKind kind)
     {
+        _strictMode = kind == ProgramKind.Module;
         var statements = new List<StatementNode>();
         var start = Current().Span;
 
@@ -110,6 +111,8 @@ public sealed class JsParser
                     return ParseIfStatement();
                 case "while":
                     return ParseWhileStatement();
+                case "with":
+                    return ParseWithStatement();
                 case "for":
                     return ParseForStatement();
                 case "switch":
@@ -279,6 +282,21 @@ public sealed class JsParser
         ExpectPunctuator(")");
         var body = ParseStatement();
         return new WhileStatementNode(test, body, MergeSpan(start.Span, body.Span));
+    }
+
+    private WithStatementNode ParseWithStatement()
+    {
+        var start = Advance(); // with
+        if (_strictMode)
+        {
+            throw new JsParserException("with statements are not allowed in strict mode.");
+        }
+
+        ExpectPunctuator("(");
+        var obj = ParseExpression(0);
+        ExpectPunctuator(")");
+        var body = ParseStatement();
+        return new WithStatementNode(obj, body, MergeSpan(start.Span, body.Span));
     }
 
     private StatementNode ParseForStatement()

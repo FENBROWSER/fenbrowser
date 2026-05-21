@@ -88,6 +88,28 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesWithStatementInNonStrictScript()
+    {
+        var program = JsParser.ParseScript(new SourceText("with (obj) { value; }"));
+
+        var stmt = Assert.IsType<WithStatementNode>(Assert.Single(program.Body));
+        Assert.IsType<IdentifierExpressionNode>(stmt.Object);
+        Assert.IsType<BlockStatementNode>(stmt.Body);
+    }
+
+    [Fact]
+    public void RejectsWithStatementInStrictScript()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("\"use strict\"; with (obj) { value; }")));
+    }
+
+    [Fact]
+    public void RejectsWithStatementInModule()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseModule(new SourceText("with (obj) { value; }")));
+    }
+
+    [Fact]
     public void ParsesVariableDeclarationsAndAssignments()
     {
         var program = JsParser.ParseScript(new SourceText("let x = 1; x = x + 1;"));
