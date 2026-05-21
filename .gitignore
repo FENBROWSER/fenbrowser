@@ -87,3 +87,4 @@ FenBrowser.FenEngine/Core/graphify-out/
 .css_cache/
 real_site_render*
 multi_page_profile*.log
+.fenjs-progress.md
