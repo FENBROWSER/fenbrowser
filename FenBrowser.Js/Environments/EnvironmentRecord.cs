@@ -62,4 +62,13 @@ public abstract class EnvironmentRecord
     // 9.1.1.1.10 WithBaseObject ( ) - the object an ObjectEnvironmentRecord wraps when
     // it was produced by a `with` statement; null otherwise.
     public virtual ObjectHandle? WithBaseObject => null;
+
+    // GetThisBinding ( ) - shared shape across function/global/module records. The
+    // declarative + object env records do not expose a `this` binding and default to
+    // NotInitializable so callers know to walk the outer chain.
+    public virtual BindingOpResult GetThisBinding(out JsValue value)
+    {
+        value = JsValue.Undefined;
+        return BindingOpResult.NotInitializable;
+    }
 }

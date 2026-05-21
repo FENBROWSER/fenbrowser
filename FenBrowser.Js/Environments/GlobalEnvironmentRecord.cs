@@ -47,6 +47,14 @@ public sealed class GlobalEnvironmentRecord : EnvironmentRecord
 
     public override bool HasSuperBinding => false;
 
+    // 9.1.1.4.11 GetThisBinding: surface the configured [[GlobalThisValue]] without
+    // any TDZ semantics - the global `this` is always present.
+    public override BindingOpResult GetThisBinding(out JsValue value)
+    {
+        value = GlobalThisValue;
+        return BindingOpResult.Ok;
+    }
+
     // 9.1.1.4.1 HasBinding ( N ).
     public override bool HasBinding(string name)
     {

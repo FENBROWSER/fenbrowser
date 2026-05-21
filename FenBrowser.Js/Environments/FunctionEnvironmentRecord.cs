@@ -72,7 +72,7 @@ public sealed class FunctionEnvironmentRecord : DeclarativeEnvironmentRecord
     // (spec: ReferenceError). Returns NotInitializable when the environment is lexical
     // and therefore has no `this` to fetch - calling sites should consult
     // HasThisBinding first.
-    public BindingOpResult GetThisBinding(out JsValue value)
+    public override BindingOpResult GetThisBinding(out JsValue value)
     {
         switch (ThisBindingStatus)
         {
