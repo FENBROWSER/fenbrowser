@@ -151,11 +151,11 @@ public sealed class LexerTests
     [Fact]
     public void LexesPinnedUnicodeIdentifierTableAdditions()
     {
-        var lexer = new JsLexer(new SourceText("\u088F\u0C5C_\uFF65\u1ACF\u1AD0 = 1;"));
+        var lexer = new JsLexer(new SourceText("\u088F\u0C5C\u0CDC\uA7CE\U00010940_\uFF65\u1ACF\u1AD0\u1AD1\U00010EFA\U0001E6F5 = 1;"));
         var tokens = lexer.LexAll();
 
         Assert.Equal(TokenKind.Identifier, tokens[0].Kind);
-        Assert.Equal("\u088F\u0C5C_\uFF65\u1ACF\u1AD0", tokens[0].Text);
+        Assert.Equal("\u088F\u0C5C\u0CDC\uA7CE\U00010940_\uFF65\u1ACF\u1AD0\u1AD1\U00010EFA\U0001E6F5", tokens[0].Text);
     }
 
     [Fact]
@@ -166,6 +166,26 @@ public sealed class LexerTests
 
         Assert.Equal(TokenKind.Identifier, tokens[0].Kind);
         Assert.Equal("_\U00011A01", tokens[0].Text);
+    }
+
+    [Fact]
+    public void EscapedIdentifierPreservesStringValueAndEscapeMetadata()
+    {
+        var lexer = new JsLexer(new SourceText("\\u0062\\u0072\\u0065\\u0061\\u006b"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Identifier, tokens[0].Kind);
+        Assert.Equal("break", tokens[0].Text);
+        Assert.True(tokens[0].ContainsEscape);
+    }
+
+    [Fact]
+    public void EnumIsReserved()
+    {
+        var lexer = new JsLexer(new SourceText("enum"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Keyword, tokens[0].Kind);
     }
 
     [Fact]

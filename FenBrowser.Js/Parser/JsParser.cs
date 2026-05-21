@@ -9,10 +9,24 @@ namespace FenBrowser.Js.Parser;
 
 public sealed class JsParser
 {
+    private static readonly HashSet<string> AlwaysReservedIdentifierNames = new(StringComparer.Ordinal)
+    {
+        "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete",
+        "do", "else", "export", "extends", "finally", "for", "function", "if", "import", "in",
+        "instanceof", "new", "return", "super", "switch", "this", "throw", "try", "typeof",
+        "var", "void", "while", "with", "enum", "true", "false", "null"
+    };
+
+    private static readonly HashSet<string> StrictModeReservedIdentifierNames = new(StringComparer.Ordinal)
+    {
+        "implements", "interface", "let", "package", "private", "protected", "public", "static", "yield"
+    };
+
     private readonly IReadOnlyList<Token> _tokens;
     private int _index;
     private int _syntheticBindingCounter;
     private bool _strictMode;
+    private bool _moduleMode;
     private bool _inDirectivePrologue = true;
 
     private JsParser(IReadOnlyList<Token> tokens)
@@ -36,6 +50,7 @@ public sealed class JsParser
 
     private ProgramNode ParseProgram(ProgramKind kind)
     {
+        _moduleMode = kind == ProgramKind.Module;
         _strictMode = kind == ProgramKind.Module;
         var statements = new List<StatementNode>();
         var start = Current().Span;
@@ -138,7 +153,7 @@ public sealed class JsParser
 
     private StatementNode ParseStatement()
     {
-        if (Current().Kind == TokenKind.Identifier && PeekIsPunctuator(1, ":"))
+        if (IsIdentifierLike(Current()) && PeekIsPunctuator(1, ":"))
         {
             var labelToken = Advance();
             ExpectPunctuator(":");
@@ -637,7 +652,7 @@ public sealed class JsParser
             Advance(); // catch
             ExpectPunctuator("(");
             string catchIdentifier;
-            if (Current().Kind == TokenKind.Identifier)
+            if (IsIdentifierLike(Current()))
             {
                 catchIdentifier = Advance().Text;
             }
@@ -710,7 +725,7 @@ public sealed class JsParser
     {
         var start = Advance(); // class
         string? name = null;
-        if (Current().Kind == TokenKind.Identifier)
+        if (IsIdentifierLike(Current()))
         {
             name = Advance().Text;
         }
@@ -1035,6 +1050,11 @@ public sealed class JsParser
 
         if (token.Kind == TokenKind.Identifier)
         {
+            if (!IsIdentifierLike(token))
+            {
+                throw new JsParserException($"Reserved word '{token.Text}' cannot be used as an identifier.");
+            }
+
             Advance();
             return new IdentifierExpressionNode(token.Text, token.Span);
         }
@@ -1241,7 +1261,7 @@ public sealed class JsParser
         }
 
         string? name = null;
-        if (Current().Kind == TokenKind.Identifier)
+        if (IsIdentifierLike(Current()))
         {
             name = Advance().Text;
         }
@@ -1589,7 +1609,7 @@ public sealed class JsParser
         {
             Advance(); // async
 
-            if (Current().Kind == TokenKind.Identifier && PeekIsPunctuator(1, "=") && PeekIsPunctuator(2, ">"))
+            if (IsIdentifierLike(Current()) && PeekIsPunctuator(1, "=") && PeekIsPunctuator(2, ">"))
             {
                 var parameter = Advance().Text;
                 Advance(); // =
@@ -1656,7 +1676,7 @@ public sealed class JsParser
             _index = saved;
         }
 
-        if (Current().Kind == TokenKind.Identifier && PeekIsPunctuator(1, "=") && PeekIsPunctuator(2, ">"))
+        if (IsIdentifierLike(Current()) && PeekIsPunctuator(1, "=") && PeekIsPunctuator(2, ">"))
         {
             var parameter = Advance().Text;
             Advance(); // =
@@ -1932,9 +1952,30 @@ public sealed class JsParser
         return Advance();
     }
 
-    private static bool IsIdentifierLike(Token token) =>
-        token.Kind == TokenKind.Identifier ||
-        (token.Kind == TokenKind.Keyword && (token.Text == "async" || token.Text == "await"));
+    private bool IsIdentifierLike(Token token)
+    {
+        if (token.Kind == TokenKind.Keyword)
+        {
+            return token.Text == "async" || (token.Text == "await" && !_moduleMode);
+        }
+
+        if (token.Kind != TokenKind.Identifier)
+        {
+            return false;
+        }
+
+        if (AlwaysReservedIdentifierNames.Contains(token.Text))
+        {
+            return false;
+        }
+
+        if (_moduleMode && string.Equals(token.Text, "await", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return !_strictMode || !StrictModeReservedIdentifierNames.Contains(token.Text);
+    }
 
     private void ExpectPunctuator(string text)
     {

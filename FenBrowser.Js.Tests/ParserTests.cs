@@ -652,11 +652,59 @@ public sealed class ParserTests
     }
 
     [Fact]
-    public void ParsesPinnedUnicodeIdentifierTableAdditions()
+    public void RejectsEscapedReservedWordIdentifier()
     {
-        var program = JsParser.ParseScript(new SourceText("var \u088F\u0C5C_\uFF65\u1ACF\u1AD0 = 1;"));
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("var \\u0062\\u0072\\u0065\\u0061\\u006b = 1;")));
+    }
+
+    [Fact]
+    public void AllowsEscapedLetIdentifierReferenceOutsideStrictMode()
+    {
+        var program = JsParser.ParseScript(new SourceText("l\\u0065t;"));
 
         Assert.Single(program.Body);
+    }
+
+    [Fact]
+    public void RejectsStrictModeFutureReservedWordBindings()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("\"use strict\"; var \\u0069mplements = 1;")));
+    }
+
+    [Fact]
+    public void RejectsAwaitBindingInModules()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseModule(new SourceText("var \\u0061wait;")));
+    }
+
+    [Fact]
+    public void AllowsAwaitBindingInScripts()
+    {
+        var program = JsParser.ParseScript(new SourceText("var await;"));
+
+        Assert.Single(program.Body);
+    }
+
+    [Fact]
+    public void AllowsEscapedReservedWordPropertyName()
+    {
+        var program = JsParser.ParseScript(new SourceText("let o = { tr\\u0075e: 1 }; o.tr\\u0075e;"));
+
+        Assert.Equal(2, program.Body.Count);
+    }
+
+    [Fact]
+    public void ParsesPinnedUnicodeIdentifierTableAdditions()
+    {
+        var program = JsParser.ParseScript(new SourceText("var \u088F\u0C5C\u0CDC\uA7CE\U00010940_\uFF65\u1ACF\u1AD0\u1AD1\U00010EFA\U0001E6F5 = 1;"));
+
+        Assert.Single(program.Body);
+    }
+
+    [Fact]
+    public void RejectsEnumIdentifier()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("var enum = 1;")));
     }
 
     [Fact]

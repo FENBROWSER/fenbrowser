@@ -18,7 +18,7 @@ public sealed class JsLexer
     {
         "async", "await", "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete",
         "do", "else", "export", "extends", "finally", "for", "function", "if", "import", "in", "of",
-        "instanceof", "let", "new", "return", "super", "switch", "this", "throw", "try", "typeof",
+        "instanceof", "let", "new", "return", "super", "switch", "this", "throw", "try", "typeof", "enum",
         "var", "void", "while", "with", "yield", "true", "false", "null"
     };
 
@@ -137,13 +137,14 @@ public sealed class JsLexer
                     break;
                 }
 
-                var text = malformedIdentifier ? _source[start.._index] : builder.ToString();
+                var decodedText = builder.ToString();
+                var text = malformedIdentifier ? _source[start.._index] : decodedText;
                 var kind = malformedIdentifier
                     ? TokenKind.Unknown
                     : !hadEscape && Keywords.Contains(text)
                         ? TokenKind.Keyword
                         : TokenKind.Identifier;
-                var token = new Token(kind, text, new SourceSpan(start, _index - start, line, column));
+                var token = new Token(kind, text, new SourceSpan(start, _index - start, line, column), hadEscape);
                 tokens.Add(token);
                 _lastSignificantToken = token;
                 continue;
@@ -768,10 +769,37 @@ public sealed class JsLexer
     }
 
     private static bool IsOtherIdentifierStart(Rune rune) =>
-        rune.Value is 0x088F or 0x0C5C or 0x1885 or 0x1886 or 0x2118 or 0x212E or 0x309B or 0x309C;
+        rune.Value is 0x088F or 0x0C5C or 0x0CDC or 0x1885 or 0x1886 or 0x2118 or 0x212E or 0x309B or 0x309C ||
+        rune.Value is >= 0xA7CE and <= 0xA7CF ||
+        rune.Value is 0xA7D2 or 0xA7D4 or 0xA7F1 ||
+        rune.Value is >= 0x10940 and <= 0x10959 ||
+        rune.Value is >= 0x10EC5 and <= 0x10EC7 ||
+        rune.Value is >= 0x11DB0 and <= 0x11DDB ||
+        rune.Value is >= 0x16EA0 and <= 0x16EB8 ||
+        rune.Value is >= 0x16EBB and <= 0x16ED3 ||
+        rune.Value is >= 0x16FF2 and <= 0x16FF6 ||
+        rune.Value is >= 0x187F8 and <= 0x187FF ||
+        rune.Value is >= 0x18D09 and <= 0x18D1E ||
+        rune.Value is >= 0x18D80 and <= 0x18DF2 ||
+        rune.Value is >= 0x1E6C0 and <= 0x1E6DE ||
+        rune.Value is >= 0x1E6E0 and <= 0x1E6E2 ||
+        rune.Value is >= 0x1E6E4 and <= 0x1E6E5 ||
+        rune.Value is >= 0x1E6E7 and <= 0x1E6ED ||
+        rune.Value is >= 0x1E6F0 and <= 0x1E6F4 ||
+        rune.Value is >= 0x1E6FE and <= 0x1E6FF ||
+        rune.Value is >= 0x2B73A and <= 0x2B73F ||
+        rune.Value is >= 0x2CEA2 and <= 0x2CEAD ||
+        rune.Value is >= 0x323B0 and <= 0x33479;
 
     private static bool IsOtherIdentifierContinue(Rune rune) =>
-        rune.Value is 0x00B7 or 0x0387 or 0x19DA or 0x1ACF or 0x1AD0 or 0x30FB or 0xFF65 ||
+        rune.Value is 0x00B7 or 0x0387 or 0x19DA or 0x30FB or 0xFF65 ||
+        rune.Value is >= 0x1ACF and <= 0x1ADD ||
+        rune.Value is >= 0x1AE0 and <= 0x1AEB ||
+        rune.Value is >= 0x10EFA and <= 0x10EFB ||
+        rune.Value is >= 0x11B60 and <= 0x11B67 ||
+        rune.Value is >= 0x11DE0 and <= 0x11DE9 ||
+        rune.Value is 0x1E6E3 or 0x1E6E6 or 0x1E6F5 ||
+        rune.Value is >= 0x1E6EE and <= 0x1E6EF ||
         rune.Value is >= 0x1369 and <= 0x1371;
 
     private bool TryPeekRune(int index, out Rune rune, out int utf16Length)
