@@ -245,7 +245,10 @@ public sealed class JsLexer
                     _column++;
                 }
 
-                var token = new Token(TokenKind.Number, _source[start.._index], new SourceSpan(start, _index - start, line, column));
+                var token = new Token(
+                    HasInvalidNumericLiteralBoundary() ? TokenKind.Unknown : TokenKind.Number,
+                    _source[start.._index],
+                    new SourceSpan(start, _index - start, line, column));
                 tokens.Add(token);
                 _lastSignificantToken = token;
                 continue;
@@ -288,7 +291,10 @@ public sealed class JsLexer
                     }
                 }
 
-                var token = new Token(TokenKind.Number, _source[start.._index], new SourceSpan(start, _index - start, line, column));
+                var token = new Token(
+                    HasInvalidNumericLiteralBoundary() ? TokenKind.Unknown : TokenKind.Number,
+                    _source[start.._index],
+                    new SourceSpan(start, _index - start, line, column));
                 tokens.Add(token);
                 _lastSignificantToken = token;
                 continue;
@@ -714,6 +720,17 @@ public sealed class JsLexer
     private static bool IsIdentifierStart(char ch) => char.IsLetter(ch) || ch == '_' || ch == '$';
 
     private static bool IsIdentifierPart(char ch) => char.IsLetterOrDigit(ch) || ch == '_' || ch == '$';
+
+    private bool HasInvalidNumericLiteralBoundary()
+    {
+        if (_index >= _source.Length)
+        {
+            return false;
+        }
+
+        var ch = _source[_index];
+        return char.IsDigit(ch) || IsIdentifierStart(ch) || (ch == '\\' && IsUnicodeEscapeStart(_index));
+    }
 
     private void AdvanceLineTerminator()
     {

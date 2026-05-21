@@ -462,6 +462,12 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void RejectsNumericLiteralFollowedByIdentifierStart()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("3in []")));
+    }
+
+    [Fact]
     public void ParsesLeadingDotNumericLiteral()
     {
         var program = JsParser.ParseScript(new SourceText("BigInt(.1); BigInt(-.1);"));

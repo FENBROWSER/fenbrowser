@@ -96,6 +96,16 @@ public sealed class LexerTests
     }
 
     [Fact]
+    public void NumericLiteralFollowedByIdentifierStartIsMalformed()
+    {
+        var lexer = new JsLexer(new SourceText("3in []"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Unknown, tokens[0].Kind);
+        Assert.Equal("3", tokens[0].Text);
+    }
+
+    [Fact]
     public void UnterminatedBlockCommentDoesNotCrash()
     {
         var lexer = new JsLexer(new SourceText("/* unclosed"));
