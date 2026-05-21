@@ -47,3 +47,7 @@ public sealed record FunctionExpressionNode(string? Name, IReadOnlyList<string> 
 public sealed record NewExpressionNode(ExpressionNode Callee, IReadOnlyList<ExpressionNode> Arguments, SourceSpan Span) : ExpressionNode(Span);
 
 public sealed record RegexLiteralExpressionNode(string RawText, SourceSpan Span) : ExpressionNode(Span);
+
+public sealed record TemplateLiteralExpressionNode(IReadOnlyList<string> Quasis, IReadOnlyList<ExpressionNode> Expressions, SourceSpan Span) : ExpressionNode(Span);
+
+public sealed record TaggedTemplateExpressionNode(ExpressionNode Tag, TemplateLiteralExpressionNode Template, SourceSpan Span) : ExpressionNode(Span);

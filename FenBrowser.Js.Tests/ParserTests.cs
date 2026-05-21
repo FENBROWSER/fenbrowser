@@ -1069,12 +1069,27 @@ public sealed class ParserTests
     }
 
     [Fact]
-    public void ParsesTemplateLiteralAsStringSubset()
+    public void ParsesTemplateLiteralWithSubstitutions()
     {
-        var program = JsParser.ParseScript(new SourceText("`hello ${name}`;"));
+        var program = JsParser.ParseScript(new SourceText("`hello ${name} ${`nested ${1}`}`;"));
         var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
-        var str = Assert.IsType<StringLiteralExpressionNode>(stmt.Expression);
-        Assert.Equal("hello ${name}", str.Value);
+        var template = Assert.IsType<TemplateLiteralExpressionNode>(stmt.Expression);
+
+        Assert.Equal(new[] { "hello ", " ", "" }, template.Quasis);
+        Assert.Equal(2, template.Expressions.Count);
+        Assert.IsType<IdentifierExpressionNode>(template.Expressions[0]);
+        Assert.IsType<TemplateLiteralExpressionNode>(template.Expressions[1]);
+    }
+
+    [Fact]
+    public void ParsesTaggedTemplateAsParserOnlyExpression()
+    {
+        var program = JsParser.ParseScript(new SourceText("tag`hello ${name}`;"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var tagged = Assert.IsType<TaggedTemplateExpressionNode>(stmt.Expression);
+
+        Assert.IsType<IdentifierExpressionNode>(tagged.Tag);
+        Assert.Single(tagged.Template.Expressions);
     }
 
     [Theory]

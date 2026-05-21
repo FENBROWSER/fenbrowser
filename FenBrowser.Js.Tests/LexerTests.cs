@@ -334,6 +334,18 @@ public sealed class LexerTests
         Assert.Equal("`a ${b}`", tokens[0].Text);
     }
 
+    [Fact]
+    public void LexesNestedTemplateLiteralAsSingleToken()
+    {
+        var lexer = new JsLexer(new SourceText("`foo ${`bar ${5} baz`} qux`;"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Template, tokens[0].Kind);
+        Assert.Equal("`foo ${`bar ${5} baz`} qux`", tokens[0].Text);
+        Assert.Equal(TokenKind.Punctuator, tokens[1].Kind);
+        Assert.Equal(";", tokens[1].Text);
+    }
+
     [Theory]
     [InlineData("`\\x0`")]
     [InlineData("`\\u0`")]

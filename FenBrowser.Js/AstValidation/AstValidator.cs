@@ -32,6 +32,17 @@ public sealed class AstValidator
             case ParenthesizedExpressionNode paren:
                 ValidateExpression(paren.Expression, diagnostics);
                 break;
+            case TemplateLiteralExpressionNode template:
+                foreach (var substitution in template.Expressions)
+                {
+                    ValidateExpression(substitution, diagnostics);
+                }
+
+                break;
+            case TaggedTemplateExpressionNode tagged:
+                ValidateExpression(tagged.Tag, diagnostics);
+                ValidateExpression(tagged.Template, diagnostics);
+                break;
             default:
                 break;
         }

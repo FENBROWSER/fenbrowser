@@ -920,6 +920,13 @@ public sealed class JsParser
                 continue;
             }
 
+            if (Current().Kind == TokenKind.Template)
+            {
+                var template = ParseTemplateLiteral(Advance(), allowInvalidEscape: true);
+                left = new TaggedTemplateExpressionNode(left, template, MergeSpan(left.Span, template.Span));
+                continue;
+            }
+
             if ((IsPunctuator("++") || IsPunctuator("--")) && minBindingPower <= 34)
             {
                 if (!IsUpdateTarget(left))
@@ -1095,14 +1102,7 @@ public sealed class JsParser
 
         if (token.Kind == TokenKind.Template)
         {
-            Advance();
-            if (token.ContainsInvalidEscape)
-            {
-                throw new JsParserException("Invalid escape sequence in untagged template literal.");
-            }
-
-            var value = token.Text.Length >= 2 ? token.Text[1..^1] : string.Empty;
-            return new StringLiteralExpressionNode(value, token.Text, token.Span);
+            return ParseTemplateLiteral(Advance());
         }
 
         if (IsPunctuator("("))
@@ -1821,6 +1821,13 @@ public sealed class JsParser
                 continue;
             }
 
+            if (Current().Kind == TokenKind.Template)
+            {
+                var template = ParseTemplateLiteral(Advance(), allowInvalidEscape: true);
+                left = new TaggedTemplateExpressionNode(left, template, MergeSpan(left.Span, template.Span));
+                continue;
+            }
+
             if (!TryGetInfixBindingPower(Current(), out _, out var leftBp, out _) || leftBp < minBindingPower)
             {
                 break;
@@ -1830,6 +1837,185 @@ public sealed class JsParser
         }
 
         return left;
+    }
+
+    private TemplateLiteralExpressionNode ParseTemplateLiteral(Token token, bool allowInvalidEscape = false)
+    {
+        if (token.ContainsInvalidEscape && !allowInvalidEscape)
+        {
+            throw new JsParserException("Invalid escape sequence in untagged template literal.");
+        }
+
+        var raw = token.Text;
+        if (raw.Length < 2 || raw[0] != '`' || raw[^1] != '`')
+        {
+            throw new JsParserException("Unterminated template literal.");
+        }
+
+        var quasis = new List<string>();
+        var expressions = new List<ExpressionNode>();
+        var segmentStart = 1;
+        var index = 1;
+        while (index < raw.Length - 1)
+        {
+            var ch = raw[index];
+            if (ch == '\\')
+            {
+                index = Math.Min(raw.Length - 1, index + 2);
+                continue;
+            }
+
+            if (ch == '$' && index + 1 < raw.Length - 1 && raw[index + 1] == '{')
+            {
+                quasis.Add(raw[segmentStart..index]);
+                var expressionStart = index + 2;
+                var expressionEnd = FindTemplateExpressionEnd(raw, expressionStart);
+                if (expressionEnd < 0)
+                {
+                    throw new JsParserException("Unterminated template substitution expression.");
+                }
+
+                var expressionText = raw[expressionStart..expressionEnd];
+                expressions.Add(ParseTemplateSubstitutionExpression(expressionText, token.Span));
+                index = expressionEnd + 1;
+                segmentStart = index;
+                continue;
+            }
+
+            index++;
+        }
+
+        quasis.Add(raw[segmentStart..^1]);
+        return new TemplateLiteralExpressionNode(quasis, expressions, token.Span);
+    }
+
+    private ExpressionNode ParseTemplateSubstitutionExpression(string expressionText, SourceSpan templateSpan)
+    {
+        if (string.IsNullOrWhiteSpace(expressionText))
+        {
+            throw new JsParserException("Template substitution expression cannot be empty.");
+        }
+
+        var tokens = new JsLexer(new SourceText(expressionText, "<template>")).LexAll();
+        var parser = new JsParser(tokens)
+        {
+            _strictMode = _strictMode,
+            _moduleMode = _moduleMode,
+            _inDirectivePrologue = false
+        };
+        var expression = parser.ParseExpression(0);
+        if (!parser.Is(TokenKind.EndOfFile))
+        {
+            throw new JsParserException($"Unexpected token in template substitution at {templateSpan.Line}:{templateSpan.Column}.");
+        }
+
+        return expression;
+    }
+
+    private static int FindTemplateExpressionEnd(string raw, int start)
+    {
+        var depth = 1;
+        for (var i = start; i < raw.Length; i++)
+        {
+            var ch = raw[i];
+            if (ch == '\'' || ch == '"')
+            {
+                i = SkipQuotedRaw(raw, i, ch);
+                if (i < 0)
+                {
+                    return -1;
+                }
+
+                i--;
+                continue;
+            }
+
+            if (ch == '`')
+            {
+                i = SkipRawTemplateLiteral(raw, i);
+                if (i < 0)
+                {
+                    return -1;
+                }
+
+                i--;
+                continue;
+            }
+
+            if (ch == '\\')
+            {
+                i++;
+                continue;
+            }
+
+            if (ch == '{')
+            {
+                depth++;
+                continue;
+            }
+
+            if (ch == '}')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    return i;
+                }
+            }
+        }
+
+        return -1;
+    }
+
+    private static int SkipRawTemplateLiteral(string raw, int start)
+    {
+        for (var i = start + 1; i < raw.Length; i++)
+        {
+            var ch = raw[i];
+            if (ch == '\\')
+            {
+                i++;
+                continue;
+            }
+
+            if (ch == '`')
+            {
+                return i + 1;
+            }
+
+            if (ch == '$' && i + 1 < raw.Length && raw[i + 1] == '{')
+            {
+                var end = FindTemplateExpressionEnd(raw, i + 2);
+                if (end < 0)
+                {
+                    return -1;
+                }
+
+                i = end;
+            }
+        }
+
+        return -1;
+    }
+
+    private static int SkipQuotedRaw(string raw, int start, char quote)
+    {
+        for (var i = start + 1; i < raw.Length; i++)
+        {
+            var ch = raw[i];
+            if (ch == '\\')
+            {
+                i++;
+                continue;
+            }
+
+            if (ch == quote)
+            {
+                return i + 1;
+            }
+        }
+
+        return -1;
     }
 
     private bool TryGetInfixBindingPower(Token token, out string op, out int leftBindingPower, out int rightBindingPower)

@@ -401,6 +401,10 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
                 return reg;
             }
+            case TemplateLiteralExpressionNode template:
+                return CompileTemplateLiteral(template);
+            case TaggedTemplateExpressionNode tagged:
+                throw new UnsupportedFeatureException("tagged-template", FeatureSupportLevel.ParserOnly, tagged.Span);
             case BooleanLiteralExpressionNode boolean:
             {
                 var reg = AllocateRegister();
@@ -816,6 +820,41 @@ public sealed class BytecodeCompiler
     }
 
     private int AllocateRegister() => _nextRegister++;
+
+    private int CompileTemplateLiteral(TemplateLiteralExpressionNode template)
+    {
+        if (template.Quasis.Count != template.Expressions.Count + 1)
+        {
+            throw new InvalidOperationException("Template literal quasi/expression count mismatch.");
+        }
+
+        var currentReg = LoadStringConstant(template.Quasis[0]);
+        for (var i = 0; i < template.Expressions.Count; i++)
+        {
+            var expressionReg = CompileExpression(template.Expressions[i]);
+            var combinedReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.Add, combinedReg, currentReg, expressionReg));
+            currentReg = combinedReg;
+
+            if (template.Quasis[i + 1].Length > 0)
+            {
+                var quasiReg = LoadStringConstant(template.Quasis[i + 1]);
+                var nextReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.Add, nextReg, currentReg, quasiReg));
+                currentReg = nextReg;
+            }
+        }
+
+        return currentReg;
+    }
+
+    private int LoadStringConstant(string value)
+    {
+        var reg = AllocateRegister();
+        var ci = AddConstant(JsValue.FromString(value));
+        _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
+        return reg;
+    }
 
     private int AddConstant(JsValue value)
     {

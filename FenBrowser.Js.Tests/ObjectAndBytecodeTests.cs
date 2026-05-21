@@ -102,6 +102,27 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void CompilerAndInterpreterEvaluateTemplateLiteralSubstitutions()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let x = 1; `a${x = x + 1}b${x = x + 1}c`;"));
+        new BytecodeVerifier().Verify(fn);
+
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal("a2b3c", result.AsString());
+    }
+
+    [Fact]
+    public void CompilerRejectsTaggedTemplateAsParserOnly()
+    {
+        var compiler = new BytecodeCompiler();
+
+        var ex = Assert.Throws<UnsupportedFeatureException>(() => compiler.CompileScript(new SourceText("tag`value`;")));
+        Assert.Equal("tagged-template", ex.FeatureName);
+        Assert.Equal(FeatureSupportLevel.ParserOnly, ex.Level);
+    }
+
+    [Fact]
     public void CompilerAndInterpreterRunIfElse()
     {
         var compiler = new BytecodeCompiler();

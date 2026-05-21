@@ -1091,7 +1091,12 @@ public sealed class JsLexer
 
         containsEscape = false;
         containsInvalidEscape = false;
-        terminated = false;
+        terminated = ScanTemplateLiteralBody(ref containsEscape, ref containsInvalidEscape);
+        return _source[start.._index];
+    }
+
+    private bool ScanTemplateLiteralBody(ref bool containsEscape, ref bool containsInvalidEscape)
+    {
         while (_index < _source.Length)
         {
             var c = _source[_index];
@@ -1125,8 +1130,19 @@ public sealed class JsLexer
             {
                 _index++;
                 _column++;
-                terminated = true;
-                break;
+                return true;
+            }
+
+            if (c == '$' && _index + 1 < _source.Length && _source[_index + 1] == '{')
+            {
+                _index += 2;
+                _column += 2;
+                if (!ScanTemplateSubstitution(ref containsEscape, ref containsInvalidEscape))
+                {
+                    return false;
+                }
+
+                continue;
             }
 
             if (IsLineTerminator(c))
@@ -1140,7 +1156,127 @@ public sealed class JsLexer
             }
         }
 
-        return _source[start.._index];
+        return false;
+    }
+
+    private bool ScanTemplateSubstitution(ref bool containsEscape, ref bool containsInvalidEscape)
+    {
+        var braceDepth = 1;
+        while (_index < _source.Length)
+        {
+            var c = _source[_index];
+            if (c == '\'' || c == '"')
+            {
+                if (!SkipStringLiteralInTemplateSubstitution(c))
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (c == '`')
+            {
+                _index++;
+                _column++;
+                if (!ScanTemplateLiteralBody(ref containsEscape, ref containsInvalidEscape))
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (c == '\\')
+            {
+                _index++;
+                _column++;
+                if (_index < _source.Length && IsLineTerminator(_source[_index]))
+                {
+                    AdvanceLineTerminator();
+                    continue;
+                }
+
+                if (_index < _source.Length)
+                {
+                    _index++;
+                    _column++;
+                }
+
+                continue;
+            }
+
+            if (c == '{')
+            {
+                _index++;
+                _column++;
+                braceDepth++;
+                continue;
+            }
+
+            if (c == '}')
+            {
+                _index++;
+                _column++;
+                braceDepth--;
+                if (braceDepth == 0)
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (IsLineTerminator(c))
+            {
+                AdvanceLineTerminator();
+            }
+            else
+            {
+                _index++;
+                _column++;
+            }
+        }
+
+        return false;
+    }
+
+    private bool SkipStringLiteralInTemplateSubstitution(char quote)
+    {
+        _index++;
+        _column++;
+        while (_index < _source.Length)
+        {
+            var c = _source[_index];
+            if (IsLineTerminator(c))
+            {
+                return false;
+            }
+
+            _index++;
+            _column++;
+            if (c == '\\')
+            {
+                if (_index < _source.Length && IsLineTerminator(_source[_index]))
+                {
+                    AdvanceLineTerminator();
+                }
+                else if (_index < _source.Length)
+                {
+                    _index++;
+                    _column++;
+                }
+
+                continue;
+            }
+
+            if (c == quote)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private bool ConsumeTemplateEscapeSequence()
