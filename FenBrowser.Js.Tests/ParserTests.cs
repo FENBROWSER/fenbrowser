@@ -268,6 +268,26 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void RejectsLegacyStringEscapeInStrictMode()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("\"use strict\"; \"\\8\";")));
+    }
+
+    [Fact]
+    public void RejectsLegacyStringEscapeBeforeUseStrictDirective()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("function f() { \"\\1\"; \"use strict\"; }")));
+    }
+
+    [Fact]
+    public void AllowsLegacyStringEscapeOutsideStrictMode()
+    {
+        var program = JsParser.ParseScript(new SourceText("\"\\8\";"));
+
+        Assert.Single(program.Body);
+    }
+
+    [Fact]
     public void RejectsUnterminatedBlockComment()
     {
         Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("/* unclosed")));

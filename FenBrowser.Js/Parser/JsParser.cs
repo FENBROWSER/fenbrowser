@@ -49,6 +49,7 @@ public sealed class JsParser
 
         var end = Current().Span;
         var span = new SourceSpan(start.Start, Math.Max(0, end.Start - start.Start), start.Line, start.Column);
+        ValidateDirectivePrologueStrictStringEscapes(statements);
         return new ProgramNode(kind, statements, span);
     }
 
@@ -71,6 +72,68 @@ public sealed class JsParser
             _strictMode = true;
             return;
         }
+    }
+
+    private static void ValidateDirectivePrologueStrictStringEscapes(IReadOnlyList<StatementNode> statements)
+    {
+        var directiveStrings = new List<StringLiteralExpressionNode>();
+        var hasUseStrict = false;
+        foreach (var statement in statements)
+        {
+            if (statement is not ExpressionStatementNode expressionStatement ||
+                expressionStatement.Expression is not StringLiteralExpressionNode stringLiteral)
+            {
+                break;
+            }
+
+            directiveStrings.Add(stringLiteral);
+            if (string.Equals(stringLiteral.Value, "use strict", StringComparison.Ordinal))
+            {
+                hasUseStrict = true;
+            }
+        }
+
+        if (!hasUseStrict)
+        {
+            return;
+        }
+
+        foreach (var stringLiteral in directiveStrings)
+        {
+            if (ContainsStrictModeForbiddenStringEscape(stringLiteral.RawText))
+            {
+                throw new JsParserException("Legacy string escape sequence is not allowed in strict directive prologue.");
+            }
+        }
+    }
+
+    private static bool ContainsStrictModeForbiddenStringEscape(string rawText)
+    {
+        for (var i = 1; i + 1 < rawText.Length; i++)
+        {
+            if (rawText[i] != '\\')
+            {
+                continue;
+            }
+
+            var escapeIndex = i + 1;
+            var escaped = rawText[escapeIndex];
+            if (escaped is >= '1' and <= '9')
+            {
+                return true;
+            }
+
+            if (escaped == '0' &&
+                escapeIndex + 1 < rawText.Length - 1 &&
+                rawText[escapeIndex + 1] is >= '0' and <= '9')
+            {
+                return true;
+            }
+
+            i = escapeIndex;
+        }
+
+        return false;
     }
 
     private StatementNode ParseStatement()
@@ -541,6 +604,7 @@ public sealed class JsParser
         var name = ExpectIdentifier();
         var parameters = ParseParameterList();
         var body = ParseBlockStatement();
+        ValidateDirectivePrologueStrictStringEscapes(body.Statements);
         return new FunctionDeclarationNode(name.Text, parameters, body, MergeSpan(start.Span, body.Span));
     }
 
@@ -994,6 +1058,11 @@ public sealed class JsParser
         if (token.Kind == TokenKind.String)
         {
             Advance();
+            if (_strictMode && ContainsStrictModeForbiddenStringEscape(token.Text))
+            {
+                throw new JsParserException("Legacy string escape sequence is not allowed in strict mode.");
+            }
+
             var value = token.Text.Length >= 2 ? token.Text[1..^1] : string.Empty;
             return new StringLiteralExpressionNode(value, token.Text, token.Span);
         }
@@ -1179,6 +1248,7 @@ public sealed class JsParser
 
         var parameters = ParseParameterList();
         var body = ParseBlockStatement();
+        ValidateDirectivePrologueStrictStringEscapes(body.Statements);
         return new FunctionExpressionNode(name, parameters, body, MergeSpan(start.Span, body.Span));
     }
 
@@ -1658,6 +1728,7 @@ public sealed class JsParser
         if (IsPunctuator("{"))
         {
             var block = ParseBlockStatement();
+            ValidateDirectivePrologueStrictStringEscapes(block.Statements);
             return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span));
         }
 
