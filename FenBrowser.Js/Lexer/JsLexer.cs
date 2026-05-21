@@ -334,10 +334,9 @@ public sealed class JsLexer
                         {
                             AdvanceLineTerminator();
                         }
-                        else
+                        else if (!ConsumeStringEscapeSequence())
                         {
-                            _index++;
-                            _column++;
+                            malformed = true;
                         }
 
                         continue;
@@ -856,6 +855,91 @@ public sealed class JsLexer
             NumericDigitKind.Hex => IsHexDigit(ch),
             _ => false
         };
+
+    private bool ConsumeStringEscapeSequence()
+    {
+        var escape = _source[_index];
+        if (escape == 'u')
+        {
+            return ConsumeStringUnicodeEscape();
+        }
+
+        if (escape == 'x')
+        {
+            return ConsumeFixedHexEscape(escapeDigitCount: 2);
+        }
+
+        _index++;
+        _column++;
+        return true;
+    }
+
+    private bool ConsumeStringUnicodeEscape()
+    {
+        _index++;
+        _column++;
+        if (_index < _source.Length && _source[_index] == '{')
+        {
+            _index++;
+            _column++;
+            var hexStart = _index;
+            while (_index < _source.Length && _source[_index] != '}')
+            {
+                if (!IsHexDigit(_source[_index]))
+                {
+                    return false;
+                }
+
+                _index++;
+                _column++;
+            }
+
+            if (_index >= _source.Length || _source[_index] != '}' || _index == hexStart)
+            {
+                return false;
+            }
+
+            var hex = _source[hexStart.._index];
+            if (!int.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var codePoint) ||
+                codePoint > 0x10FFFF)
+            {
+                return false;
+            }
+
+            _index++;
+            _column++;
+            return true;
+        }
+
+        return ConsumeFixedHexDigits(escapeDigitCount: 4);
+    }
+
+    private bool ConsumeFixedHexEscape(int escapeDigitCount)
+    {
+        _index++;
+        _column++;
+        return ConsumeFixedHexDigits(escapeDigitCount);
+    }
+
+    private bool ConsumeFixedHexDigits(int escapeDigitCount)
+    {
+        if (_index + escapeDigitCount > _source.Length)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < escapeDigitCount; i++)
+        {
+            if (!IsHexDigit(_source[_index + i]))
+            {
+                return false;
+            }
+        }
+
+        _index += escapeDigitCount;
+        _column += escapeDigitCount;
+        return true;
+    }
 
     private bool HasInvalidNumericLiteralBoundary()
     {

@@ -257,6 +257,16 @@ public sealed class ParserTests
         Assert.Equal(2, program.Body.Count);
     }
 
+    [Theory]
+    [InlineData("\"\\u000G\"")]
+    [InlineData("\"\\u\"")]
+    [InlineData("\"\\u{1F_639}\"")]
+    [InlineData("\"\\x0G\"")]
+    public void RejectsMalformedStringEscapes(string source)
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText(source)));
+    }
+
     [Fact]
     public void RejectsUnterminatedBlockComment()
     {

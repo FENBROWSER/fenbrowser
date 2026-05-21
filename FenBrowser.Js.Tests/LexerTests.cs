@@ -75,6 +75,19 @@ public sealed class LexerTests
         Assert.Equal(TokenKind.String, tokens[2].Kind);
     }
 
+    [Theory]
+    [InlineData("\"\\u000G\"")]
+    [InlineData("\"\\u\"")]
+    [InlineData("\"\\u{1F_639}\"")]
+    [InlineData("\"\\x0G\"")]
+    public void StringWithMalformedEscapeProducesUnknownToken(string source)
+    {
+        var lexer = new JsLexer(new SourceText(source));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Unknown, tokens[0].Kind);
+    }
+
     [Fact]
     public void IdentifierUnicodeEscapeCannotEncodeLineTerminator()
     {
