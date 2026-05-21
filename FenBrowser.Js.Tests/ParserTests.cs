@@ -452,6 +452,12 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void RejectsInvalidNumericSeparatorPlacement()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("0x_1;")));
+    }
+
+    [Fact]
     public void ParsesNumericLiteralDoubleDotMemberAccess()
     {
         var program = JsParser.ParseScript(new SourceText("77..toString();"));

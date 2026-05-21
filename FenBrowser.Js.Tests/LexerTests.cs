@@ -105,6 +105,37 @@ public sealed class LexerTests
         Assert.Equal("3", tokens[0].Text);
     }
 
+    [Theory]
+    [InlineData("1_")]
+    [InlineData("1__0")]
+    [InlineData("1._0")]
+    [InlineData("1e_1")]
+    [InlineData("0x_1")]
+    [InlineData("0b1__0")]
+    [InlineData("0_1")]
+    public void NumericSeparatorsMustBeBetweenDigits(string source)
+    {
+        var lexer = new JsLexer(new SourceText(source));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Unknown, tokens[0].Kind);
+    }
+
+    [Theory]
+    [InlineData("1_0")]
+    [InlineData("1.2_3e4_5")]
+    [InlineData(".1_0")]
+    [InlineData("0xA_Bn")]
+    [InlineData("0b1_0")]
+    [InlineData("0o7_0")]
+    public void NumericSeparatorsBetweenDigitsRemainNumeric(string source)
+    {
+        var lexer = new JsLexer(new SourceText(source));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Number, tokens[0].Kind);
+    }
+
     [Fact]
     public void UnterminatedBlockCommentDoesNotCrash()
     {

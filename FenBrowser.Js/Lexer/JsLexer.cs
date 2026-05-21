@@ -6,6 +6,14 @@ namespace FenBrowser.Js.Lexer;
 
 public sealed class JsLexer
 {
+    private enum NumericDigitKind
+    {
+        Decimal,
+        Binary,
+        Octal,
+        Hex
+    }
+
     private static readonly HashSet<string> Keywords = new(StringComparer.Ordinal)
     {
         "async", "await", "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete",
@@ -245,10 +253,11 @@ public sealed class JsLexer
                     _column++;
                 }
 
-                var token = new Token(
-                    HasInvalidNumericLiteralBoundary() ? TokenKind.Unknown : TokenKind.Number,
-                    _source[start.._index],
-                    new SourceSpan(start, _index - start, line, column));
+                var numberText = _source[start.._index];
+                var numberKind = HasInvalidNumericLiteralBoundary() || !HasValidNumericLiteralSeparators(numberText)
+                    ? TokenKind.Unknown
+                    : TokenKind.Number;
+                var token = new Token(numberKind, numberText, new SourceSpan(start, _index - start, line, column));
                 tokens.Add(token);
                 _lastSignificantToken = token;
                 continue;
@@ -291,10 +300,11 @@ public sealed class JsLexer
                     }
                 }
 
-                var token = new Token(
-                    HasInvalidNumericLiteralBoundary() ? TokenKind.Unknown : TokenKind.Number,
-                    _source[start.._index],
-                    new SourceSpan(start, _index - start, line, column));
+                var numberText = _source[start.._index];
+                var numberKind = HasInvalidNumericLiteralBoundary() || !HasValidNumericLiteralSeparators(numberText)
+                    ? TokenKind.Unknown
+                    : TokenKind.Number;
+                var token = new Token(numberKind, numberText, new SourceSpan(start, _index - start, line, column));
                 tokens.Add(token);
                 _lastSignificantToken = token;
                 continue;
@@ -720,6 +730,132 @@ public sealed class JsLexer
     private static bool IsIdentifierStart(char ch) => char.IsLetter(ch) || ch == '_' || ch == '$';
 
     private static bool IsIdentifierPart(char ch) => char.IsLetterOrDigit(ch) || ch == '_' || ch == '$';
+
+    private static bool HasValidNumericLiteralSeparators(string text)
+    {
+        if (!text.Contains('_'))
+        {
+            return true;
+        }
+
+        var literal = text.EndsWith('n') ? text[..^1] : text;
+        if (literal.Length == 0)
+        {
+            return false;
+        }
+
+        if (literal.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            return HasValidSeparatedDigits(literal.AsSpan(2), NumericDigitKind.Hex);
+        }
+
+        if (literal.StartsWith("0o", StringComparison.OrdinalIgnoreCase))
+        {
+            return HasValidSeparatedDigits(literal.AsSpan(2), NumericDigitKind.Octal);
+        }
+
+        if (literal.StartsWith("0b", StringComparison.OrdinalIgnoreCase))
+        {
+            return HasValidSeparatedDigits(literal.AsSpan(2), NumericDigitKind.Binary);
+        }
+
+        return HasValidDecimalLiteralSeparators(literal);
+    }
+
+    private static bool HasValidDecimalLiteralSeparators(string literal)
+    {
+        var lowerExponentIndex = literal.IndexOf('e');
+        var upperExponentIndex = literal.IndexOf('E');
+        var exponentIndex = lowerExponentIndex >= 0 && upperExponentIndex >= 0
+            ? Math.Min(lowerExponentIndex, upperExponentIndex)
+            : Math.Max(lowerExponentIndex, upperExponentIndex);
+        var significand = exponentIndex >= 0 ? literal.AsSpan(0, exponentIndex) : literal.AsSpan();
+        if (exponentIndex >= 0)
+        {
+            var exponent = literal.AsSpan(exponentIndex + 1);
+            if (exponent.Length > 0 && (exponent[0] == '+' || exponent[0] == '-'))
+            {
+                exponent = exponent[1..];
+            }
+
+            if (!HasValidSeparatedDigits(exponent, NumericDigitKind.Decimal))
+            {
+                return false;
+            }
+        }
+
+        var dotIndex = significand.IndexOf('.');
+        if (dotIndex >= 0)
+        {
+            var integerPart = significand[..dotIndex];
+            var fractionPart = significand[(dotIndex + 1)..];
+            if (integerPart.Length == 0)
+            {
+                return HasValidSeparatedDigits(fractionPart, NumericDigitKind.Decimal);
+            }
+
+            if (!HasValidDecimalIntegerPart(integerPart))
+            {
+                return false;
+            }
+
+            return fractionPart.Length == 0 || HasValidSeparatedDigits(fractionPart, NumericDigitKind.Decimal);
+        }
+
+        return HasValidDecimalIntegerPart(significand);
+    }
+
+    private static bool HasValidDecimalIntegerPart(ReadOnlySpan<char> digits)
+    {
+        if (!HasValidSeparatedDigits(digits, NumericDigitKind.Decimal))
+        {
+            return false;
+        }
+
+        return !digits.Contains('_') || digits[0] != '0';
+    }
+
+    private static bool HasValidSeparatedDigits(ReadOnlySpan<char> digits, NumericDigitKind kind)
+    {
+        if (digits.Length == 0)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < digits.Length; i++)
+        {
+            var ch = digits[i];
+            if (ch == '_')
+            {
+                if (i == 0 ||
+                    i == digits.Length - 1 ||
+                    !IsDigitForNumericKind(digits[i - 1], kind) ||
+                    !IsDigitForNumericKind(digits[i + 1], kind))
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (!IsDigitForNumericKind(ch, kind))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsDigitForNumericKind(char ch, NumericDigitKind kind) =>
+        kind switch
+        {
+            NumericDigitKind.Decimal => ch >= '0' && ch <= '9',
+            NumericDigitKind.Binary => IsBinDigit(ch),
+            NumericDigitKind.Octal => IsOctDigit(ch),
+            NumericDigitKind.Hex => IsHexDigit(ch),
+            _ => false
+        };
 
     private bool HasInvalidNumericLiteralBoundary()
     {
