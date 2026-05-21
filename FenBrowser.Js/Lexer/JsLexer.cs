@@ -20,6 +20,7 @@ public sealed class JsLexer
     private int _column = 1;
     private bool _atLineStart = true;
     private Token? _lastSignificantToken;
+    private Token? _pendingMalformedTrivia;
 
     public JsLexer(SourceText source)
     {
@@ -33,6 +34,14 @@ public sealed class JsLexer
         while (true)
         {
             SkipTrivia();
+            if (_pendingMalformedTrivia is { } malformedTrivia)
+            {
+                _pendingMalformedTrivia = null;
+                tokens.Add(malformedTrivia);
+                _lastSignificantToken = malformedTrivia;
+                continue;
+            }
+
             if (_index >= _source.Length)
             {
                 tokens.Add(new Token(TokenKind.EndOfFile, string.Empty, new SourceSpan(_index, 0, _line, _column)));
@@ -57,7 +66,7 @@ public sealed class JsLexer
                 }
             }
 
-            if (char.IsLetter(ch) || ch == '_' || ch == '$' || (ch == '\\' && IsUnicodeEscapeStart(_index)))
+            if (IsIdentifierStart(ch) || (ch == '\\' && IsUnicodeEscapeStart(_index)))
             {
                 var builder = new StringBuilder();
                 var hadEscape = false;
@@ -75,7 +84,7 @@ public sealed class JsLexer
                         continue;
                     }
 
-                    if (IsLineTerminator(escapedStart) || IsWhiteSpace(escapedStart))
+                    if (IsLineTerminator(escapedStart) || IsWhiteSpace(escapedStart) || !IsIdentifierStart(escapedStart))
                     {
                         malformedIdentifier = true;
                     }
@@ -92,7 +101,7 @@ public sealed class JsLexer
                 while (_index < _source.Length)
                 {
                     var c = _source[_index];
-                    if (char.IsLetterOrDigit(c) || c == '_' || c == '$')
+                    if (IsIdentifierPart(c))
                     {
                         builder.Append(c);
                         _index++;
@@ -103,7 +112,10 @@ public sealed class JsLexer
                     if (c == '\\' && IsUnicodeEscapeStart(_index))
                     {
                         hadEscape = true;
-                        if (!TryReadUnicodeEscape(out var escaped) || IsLineTerminator(escaped) || IsWhiteSpace(escaped))
+                        if (!TryReadUnicodeEscape(out var escaped) ||
+                            IsLineTerminator(escaped) ||
+                            IsWhiteSpace(escaped) ||
+                            !IsIdentifierPart(escaped))
                         {
                             malformedIdentifier = true;
                             break;
@@ -370,6 +382,19 @@ public sealed class JsLexer
                 continue;
             }
 
+            if (_index == 0 && _source.Length >= 2 && _source[0] == '#' && _source[1] == '!')
+            {
+                _index += 2;
+                _column += 2;
+                while (_index < _source.Length && !IsLineTerminator(_source[_index]))
+                {
+                    _index++;
+                    _column++;
+                }
+
+                continue;
+            }
+
             if (_atLineStart && _index + 2 < _source.Length && _source[_index] == '-' && _source[_index + 1] == '-' && _source[_index + 2] == '>')
             {
                 _index += 3;
@@ -414,6 +439,9 @@ public sealed class JsLexer
 
                 if (next == '*')
                 {
+                    var commentStart = _index;
+                    var commentLine = _line;
+                    var commentColumn = _column;
                     _index += 2;
                     _column += 2;
                     var closed = false;
@@ -440,7 +468,10 @@ public sealed class JsLexer
 
                     if (!closed)
                     {
-                        // Unterminated comment is consumed to EOF for crash-safe lexing.
+                        _pendingMalformedTrivia = new Token(
+                            TokenKind.Unknown,
+                            _source[commentStart..],
+                            new SourceSpan(commentStart, _source.Length - commentStart, commentLine, commentColumn));
                         _index = _source.Length;
                     }
 
@@ -679,6 +710,10 @@ public sealed class JsLexer
     private static bool IsWhiteSpace(char ch) =>
         ch is '\t' or '\v' or '\f' or ' ' or '\u00A0' or '\uFEFF' ||
         (!IsLineTerminator(ch) && CharUnicodeInfo.GetUnicodeCategory(ch) == UnicodeCategory.SpaceSeparator);
+
+    private static bool IsIdentifierStart(char ch) => char.IsLetter(ch) || ch == '_' || ch == '$';
+
+    private static bool IsIdentifierPart(char ch) => char.IsLetterOrDigit(ch) || ch == '_' || ch == '$';
 
     private void AdvanceLineTerminator()
     {

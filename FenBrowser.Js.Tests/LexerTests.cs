@@ -86,13 +86,24 @@ public sealed class LexerTests
     }
 
     [Fact]
+    public void IdentifierUnicodeEscapeCannotEncodePunctuator()
+    {
+        var lexer = new JsLexer(new SourceText("\\u0023\\u0021"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Unknown, tokens[0].Kind);
+        Assert.Equal("\\u0023\\u0021", tokens[0].Text);
+    }
+
+    [Fact]
     public void UnterminatedBlockCommentDoesNotCrash()
     {
         var lexer = new JsLexer(new SourceText("/* unclosed"));
         var tokens = lexer.LexAll();
 
-        Assert.Single(tokens);
-        Assert.Equal(TokenKind.EndOfFile, tokens[0].Kind);
+        Assert.Equal(TokenKind.Unknown, tokens[0].Kind);
+        Assert.Equal("/* unclosed", tokens[0].Text);
+        Assert.Equal(TokenKind.EndOfFile, tokens[^1].Kind);
     }
 
     [Fact]
@@ -151,6 +162,30 @@ public sealed class LexerTests
 
         Assert.Equal(TokenKind.Keyword, tokens[0].Kind);
         Assert.Equal("let", tokens[0].Text);
+        Assert.Equal(2, tokens[0].Span.Line);
+        Assert.Equal(1, tokens[0].Span.Column);
+    }
+
+    [Fact]
+    public void SkipsHashbangCommentAtSourceStart()
+    {
+        var lexer = new JsLexer(new SourceText("#! /usr/bin/env fenjs\nlet x = 1;"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Keyword, tokens[0].Kind);
+        Assert.Equal("let", tokens[0].Text);
+        Assert.Equal(2, tokens[0].Span.Line);
+        Assert.Equal(1, tokens[0].Span.Column);
+    }
+
+    [Fact]
+    public void HashbangCommentStopsAtCarriageReturn()
+    {
+        var lexer = new JsLexer(new SourceText("#! comment\r{}"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Punctuator, tokens[0].Kind);
+        Assert.Equal("{", tokens[0].Text);
         Assert.Equal(2, tokens[0].Span.Line);
         Assert.Equal(1, tokens[0].Span.Column);
     }

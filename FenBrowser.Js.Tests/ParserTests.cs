@@ -228,6 +228,20 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void RejectsUnterminatedBlockComment()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("/* unclosed")));
+    }
+
+    [Fact]
+    public void AllowsHashbangCommentAtSourceStart()
+    {
+        var program = JsParser.ParseScript(new SourceText("#! /usr/bin/env fenjs\nlet x = 1;"));
+
+        Assert.Single(program.Body);
+    }
+
+    [Fact]
     public void RejectsIdentifierEscapeThatDecodesToLineTerminator()
     {
         Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("var\\u2028x;")));
@@ -237,6 +251,12 @@ public sealed class ParserTests
     public void RejectsIdentifierEscapeThatDecodesToWhiteSpace()
     {
         Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("var\\u0009x;")));
+    }
+
+    [Fact]
+    public void RejectsIdentifierEscapeThatDecodesToPunctuator()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("\\u0023\\u0021")));
     }
 
     [Fact]
