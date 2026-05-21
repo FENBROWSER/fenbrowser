@@ -234,6 +234,12 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void RejectsIdentifierEscapeThatDecodesToWhiteSpace()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("var\\u0009x;")));
+    }
+
+    [Fact]
     public void RejectsAdjacentExpressionStatementsOnSameLineWithoutSemicolon()
     {
         Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("this text;")));

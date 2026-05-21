@@ -1,4 +1,5 @@
 using FenBrowser.Js.Source;
+using System.Globalization;
 using System.Text;
 
 namespace FenBrowser.Js.Lexer;
@@ -74,7 +75,7 @@ public sealed class JsLexer
                         continue;
                     }
 
-                    if (IsLineTerminator(escapedStart))
+                    if (IsLineTerminator(escapedStart) || IsWhiteSpace(escapedStart))
                     {
                         malformedIdentifier = true;
                     }
@@ -102,7 +103,7 @@ public sealed class JsLexer
                     if (c == '\\' && IsUnicodeEscapeStart(_index))
                     {
                         hadEscape = true;
-                        if (!TryReadUnicodeEscape(out var escaped) || IsLineTerminator(escaped))
+                        if (!TryReadUnicodeEscape(out var escaped) || IsLineTerminator(escaped) || IsWhiteSpace(escaped))
                         {
                             malformedIdentifier = true;
                             break;
@@ -356,7 +357,7 @@ public sealed class JsLexer
         while (_index < _source.Length)
         {
             var ch = _source[_index];
-            if (ch == ' ' || ch == '\t')
+            if (IsWhiteSpace(ch))
             {
                 _index++;
                 _column++;
@@ -674,6 +675,10 @@ public sealed class JsLexer
     }
 
     private static bool IsLineTerminator(char ch) => ch == '\n' || ch == '\r' || ch == '\u2028' || ch == '\u2029';
+
+    private static bool IsWhiteSpace(char ch) =>
+        ch is '\t' or '\v' or '\f' or ' ' or '\u00A0' or '\uFEFF' ||
+        (!IsLineTerminator(ch) && CharUnicodeInfo.GetUnicodeCategory(ch) == UnicodeCategory.SpaceSeparator);
 
     private void AdvanceLineTerminator()
     {

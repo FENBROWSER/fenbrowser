@@ -76,6 +76,16 @@ public sealed class LexerTests
     }
 
     [Fact]
+    public void IdentifierUnicodeEscapeCannotEncodeWhiteSpace()
+    {
+        var lexer = new JsLexer(new SourceText("var\\u0009x;"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Unknown, tokens[0].Kind);
+        Assert.Equal("var\\u0009", tokens[0].Text);
+    }
+
+    [Fact]
     public void UnterminatedBlockCommentDoesNotCrash()
     {
         var lexer = new JsLexer(new SourceText("/* unclosed"));
@@ -120,6 +130,17 @@ public sealed class LexerTests
         var secondLet = tokens.First(t => t.Text == "let" && t.Span.Start > 0);
         Assert.Equal(2, secondLet.Span.Line);
         Assert.Equal(1, secondLet.Span.Column);
+    }
+
+    [Fact]
+    public void SkipsEcmaScriptWhiteSpaceCharacters()
+    {
+        var lexer = new JsLexer(new SourceText("/x/g\u00A0\u2003\f;"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.RegularExpression, tokens[0].Kind);
+        Assert.Equal(TokenKind.Punctuator, tokens[1].Kind);
+        Assert.Equal(";", tokens[1].Text);
     }
 
     [Fact]
