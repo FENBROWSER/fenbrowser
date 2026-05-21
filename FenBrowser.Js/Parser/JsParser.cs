@@ -1096,6 +1096,11 @@ public sealed class JsParser
         if (token.Kind == TokenKind.Template)
         {
             Advance();
+            if (token.ContainsInvalidEscape)
+            {
+                throw new JsParserException("Invalid escape sequence in untagged template literal.");
+            }
+
             var value = token.Text.Length >= 2 ? token.Text[1..^1] : string.Empty;
             return new StringLiteralExpressionNode(value, token.Text, token.Span);
         }

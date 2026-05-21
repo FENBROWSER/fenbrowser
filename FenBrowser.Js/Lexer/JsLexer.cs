@@ -358,8 +358,13 @@ public sealed class JsLexer
 
             if (ch == '`')
             {
-                var text = ReadTemplateLiteralToken();
-                var token = new Token(TokenKind.Template, text, new SourceSpan(start, text.Length, line, column));
+                var text = ReadTemplateLiteralToken(out var containsEscape, out var containsInvalidEscape, out var terminated);
+                var token = new Token(
+                    terminated ? TokenKind.Template : TokenKind.Unknown,
+                    text,
+                    new SourceSpan(start, text.Length, line, column),
+                    ContainsEscape: containsEscape,
+                    ContainsInvalidEscape: containsInvalidEscape);
                 tokens.Add(token);
                 _lastSignificantToken = token;
                 continue;
@@ -1078,16 +1083,52 @@ public sealed class JsLexer
         _atLineStart = true;
     }
 
-    private string ReadTemplateLiteralToken()
+    private string ReadTemplateLiteralToken(out bool containsEscape, out bool containsInvalidEscape, out bool terminated)
     {
         var start = _index;
         _index++;
         _column++;
 
-        var escaped = false;
+        containsEscape = false;
+        containsInvalidEscape = false;
+        terminated = false;
         while (_index < _source.Length)
         {
             var c = _source[_index];
+            if (c == '\\')
+            {
+                containsEscape = true;
+                _index++;
+                _column++;
+
+                if (_index >= _source.Length)
+                {
+                    containsInvalidEscape = true;
+                    break;
+                }
+
+                if (IsLineTerminator(_source[_index]))
+                {
+                    AdvanceLineTerminator();
+                    continue;
+                }
+
+                if (!ConsumeTemplateEscapeSequence())
+                {
+                    containsInvalidEscape = true;
+                }
+
+                continue;
+            }
+
+            if (c == '`')
+            {
+                _index++;
+                _column++;
+                terminated = true;
+                break;
+            }
+
             if (IsLineTerminator(c))
             {
                 AdvanceLineTerminator();
@@ -1097,25 +1138,40 @@ public sealed class JsLexer
                 _index++;
                 _column++;
             }
-
-            if (escaped)
-            {
-                escaped = false;
-                continue;
-            }
-
-            if (c == '\\')
-            {
-                escaped = true;
-                continue;
-            }
-
-            if (c == '`')
-            {
-                break;
-            }
         }
 
         return _source[start.._index];
+    }
+
+    private bool ConsumeTemplateEscapeSequence()
+    {
+        var escape = _source[_index];
+        if (escape == 'u')
+        {
+            return ConsumeStringUnicodeEscape();
+        }
+
+        if (escape == 'x')
+        {
+            return ConsumeFixedHexEscape(escapeDigitCount: 2);
+        }
+
+        if (escape is >= '1' and <= '9')
+        {
+            _index++;
+            _column++;
+            return false;
+        }
+
+        if (escape == '0')
+        {
+            _index++;
+            _column++;
+            return _index >= _source.Length || !char.IsDigit(_source[_index]);
+        }
+
+        _index++;
+        _column++;
+        return true;
     }
 }

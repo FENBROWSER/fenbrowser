@@ -333,4 +333,30 @@ public sealed class LexerTests
         Assert.Equal(TokenKind.Template, tokens[0].Kind);
         Assert.Equal("`a ${b}`", tokens[0].Text);
     }
+
+    [Theory]
+    [InlineData("`\\x0`")]
+    [InlineData("`\\u0`")]
+    [InlineData("`\\u{110000}`")]
+    [InlineData("`\\8`")]
+    [InlineData("`\\01`")]
+    public void TemplateLiteralTracksInvalidEscapeSequences(string source)
+    {
+        var lexer = new JsLexer(new SourceText(source));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Template, tokens[0].Kind);
+        Assert.True(tokens[0].ContainsEscape);
+        Assert.True(tokens[0].ContainsInvalidEscape);
+    }
+
+    [Fact]
+    public void UnterminatedTemplateLiteralProducesUnknownToken()
+    {
+        var lexer = new JsLexer(new SourceText("`unterminated"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.Unknown, tokens[0].Kind);
+        Assert.Equal("`unterminated", tokens[0].Text);
+    }
 }

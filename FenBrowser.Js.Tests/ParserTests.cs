@@ -1077,6 +1077,17 @@ public sealed class ParserTests
         Assert.Equal("hello ${name}", str.Value);
     }
 
+    [Theory]
+    [InlineData("`\\x0`;")]
+    [InlineData("`\\u0`;")]
+    [InlineData("`\\u{110000}`;")]
+    [InlineData("`\\8`;")]
+    [InlineData("`\\01`;")]
+    public void RejectsInvalidEscapeInUntaggedTemplateLiteral(string source)
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText(source)));
+    }
+
     [Fact]
     public void ParsesGeneratorFunctionDeclarationSubset()
     {
