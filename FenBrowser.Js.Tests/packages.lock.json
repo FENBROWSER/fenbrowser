@@ -112,6 +112,12 @@
           "Microsoft.Extensions.Logging.Abstractions": "[10.0.0, )"
         }
       },
+      "fenbrowser.js.shell": {
+        "type": "Project",
+        "dependencies": {
+          "FenBrowser.Js": "[1.0.0, )"
+        }
+      },
       "fenbrowser.js.test262": {
         "type": "Project",
         "dependencies": {

@@ -14,7 +14,7 @@ var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("Usage: fenjs --version | --eval <code> | --dump-tokens <file> | --dump-ast <file> | --dump-bytecode <file> [--gc-before-every-alloc|--gc-after-every-alloc|--gc-random|--verify-heap-before-gc|--verify-heap-after-gc|--trace-gc]");
+    Console.Error.WriteLine("Usage: fenjs --version | --eval [code] | --file <file> | --dump-tokens <file> | --dump-ast <file> | --dump-bytecode <file> [--gc-before-every-alloc|--gc-after-every-alloc|--gc-random|--verify-heap-before-gc|--verify-heap-after-gc|--trace-gc]");
     return 1;
 }
 
@@ -29,67 +29,22 @@ if (args.Length == 1 && args[0] == "--version")
     return 0;
 }
 
-if (args.Length >= 2 && args[0] == "--eval")
+if (args.Length >= 1 && args[0] == "--eval")
 {
-    var code = string.Join(' ', args.Skip(1));
-    if (string.IsNullOrWhiteSpace(code))
+    var code = args.Length > 1 ? string.Join(' ', args.Skip(1)) : string.Empty;
+    return ExecuteSource(code, "<eval>", gcStressMode, verifyBeforeGc, verifyAfterGc, traceGc);
+}
+
+if (args.Length == 2 && args[0] == "--file")
+{
+    var path = args[1];
+    if (!File.Exists(path))
     {
-        Console.Error.WriteLine("--eval requires source text.");
-        return 2;
+        Console.Error.WriteLine($"File not found: {path}");
+        return 4;
     }
 
-    var heap = new JsHeap(
-        gcStressMode,
-        verifyHeapBeforeGc: verifyBeforeGc,
-        verifyHeapAfterGc: verifyAfterGc);
-    var isolate = new JsIsolate(heap);
-    using var scope = isolate.EnterHandleScope();
-    _ = isolate.AllocateObjectInScope(scope, new FenBrowser.Js.Objects.JsObject(), AllocationSite.Current());
-    if (verifyBeforeGc || verifyAfterGc)
-    {
-        heap.CollectGarbage();
-    }
-
-    if (traceGc)
-    {
-        Console.Error.WriteLine($"[trace-gc] mode={gcStressMode} collections={heap.GcCollectionCount} marked={heap.LastGcMarkedCells} swept={heap.LastGcSweptCells} live={heap.LiveCellCount}");
-    }
-
-    var compiler = new BytecodeCompiler();
-    try
-    {
-        var function = compiler.CompileScript(new SourceText(code, "<eval>"));
-        new BytecodeVerifier().Verify(function);
-        var result = new BytecodeInterpreter().Execute(function);
-        Console.WriteLine(FormatValue(result));
-    }
-    catch (UnsupportedFeatureException ex)
-    {
-        WriteError("unsupported", ex.Message, "<eval>");
-        return 21;
-    }
-    catch (JsParserException ex)
-    {
-        WriteError("parse", ex.Message, "<eval>");
-        return 22;
-    }
-    catch (JsThrownException ex)
-    {
-        WriteError("runtime-throw", $"Uncaught throw: {FormatValue(ex.Value)}", "<eval>");
-        return 23;
-    }
-    catch (InvalidOperationException ex)
-    {
-        WriteError("compile", ex.Message, "<eval>");
-        return 24;
-    }
-    catch (Exception ex)
-    {
-        WriteError("runtime-fatal", ex.Message, "<eval>");
-        return 25;
-    }
-
-    return 0;
+    return ExecuteSource(File.ReadAllText(path), path, gcStressMode, verifyBeforeGc, verifyAfterGc, traceGc);
 }
 
 if (args.Length == 2 && args[0] == "--dump-tokens")
@@ -224,6 +179,68 @@ static GcStressMode ParseGcStressMode(string[] rawArgs)
     }
 
     return GcStressMode.None;
+}
+
+static int ExecuteSource(
+    string code,
+    string sourceName,
+    GcStressMode gcStressMode,
+    bool verifyBeforeGc,
+    bool verifyAfterGc,
+    bool traceGc)
+{
+    var heap = new JsHeap(
+        gcStressMode,
+        verifyHeapBeforeGc: verifyBeforeGc,
+        verifyHeapAfterGc: verifyAfterGc);
+    var isolate = new JsIsolate(heap);
+    using var scope = isolate.EnterHandleScope();
+    _ = isolate.AllocateObjectInScope(scope, new FenBrowser.Js.Objects.JsObject(), AllocationSite.Current());
+    if (verifyBeforeGc || verifyAfterGc)
+    {
+        heap.CollectGarbage();
+    }
+
+    if (traceGc)
+    {
+        Console.Error.WriteLine($"[trace-gc] mode={gcStressMode} collections={heap.GcCollectionCount} marked={heap.LastGcMarkedCells} swept={heap.LastGcSweptCells} live={heap.LiveCellCount}");
+    }
+
+    var compiler = new BytecodeCompiler();
+    try
+    {
+        var function = compiler.CompileScript(new SourceText(code, sourceName));
+        new BytecodeVerifier().Verify(function);
+        var result = new BytecodeInterpreter().Execute(function);
+        Console.WriteLine(FormatValue(result));
+    }
+    catch (UnsupportedFeatureException ex)
+    {
+        WriteError("unsupported", ex.Message, sourceName);
+        return 21;
+    }
+    catch (JsParserException ex)
+    {
+        WriteError("parse", ex.Message, sourceName);
+        return 22;
+    }
+    catch (JsThrownException ex)
+    {
+        WriteError("runtime-throw", $"Uncaught throw: {FormatValue(ex.Value)}", sourceName);
+        return 23;
+    }
+    catch (InvalidOperationException ex)
+    {
+        WriteError("compile", ex.Message, sourceName);
+        return 24;
+    }
+    catch (Exception ex)
+    {
+        WriteError("runtime-fatal", ex.Message, sourceName);
+        return 25;
+    }
+
+    return 0;
 }
 
 static object DumpProgram(ProgramNode program)

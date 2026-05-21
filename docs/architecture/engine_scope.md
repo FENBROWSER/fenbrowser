@@ -27,3 +27,8 @@ Boundary rules:
 - no DOM/layout/native host objects inside `JsValue`
 - host interop only through explicit handles and host hooks
 - JS core remains platform-agnostic and safe-by-default
+
+Standalone shell:
+- `FenBrowser.Js.Shell` runs engine smoke checks without browser host integration
+- `--eval [code]` and `--file <path>` execute through the bytecode verifier and interpreter
+- empty `--eval` input is valid and returns `undefined`

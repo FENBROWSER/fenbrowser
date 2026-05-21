@@ -41,6 +41,13 @@ This volume details the infrastructure used to extend the browser and verify its
 - If the watchdog fires before any raw-log `test_start` event, the summary records `failurePhase: "wpt_startup"` so harness/bootstrap failures are not confused with browser test failures.
 - Use this wrapper for local and CI WPT slices so pass/fail/timeout claims are backed by machine-readable artifacts instead of terminal-only output.
 
+### 1.4 FenJS Standalone Shell Smoke Surface (2026-05-21)
+
+- `FenBrowser.Js.Shell` is the standalone FenJS operator entry point for engine-foundation smoke checks before browser embedding.
+- The shell supports `--version`, `--eval [code]`, and `--file <path>` on the same bytecode verifier/interpreter path.
+- `--eval` accepts empty source and returns `undefined`, matching the milestone 0.1 smoke contract that empty input must not crash.
+- `FenBrowser.Js.Tests/ShellSmokeTests.cs` runs process-level CLI regressions for empty eval and file execution.
+
 ## 2. WebDriver Implementation (`FenBrowser.WebDriver`)
 
 FenBrowser includes a compliant W3C WebDriver server, allowing it to be controlled by automation tools like Selenium.
