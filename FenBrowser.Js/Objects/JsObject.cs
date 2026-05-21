@@ -9,6 +9,17 @@ public class JsObject : ITraceable
 
     public ObjectHandle? PrototypeHandle { get; private set; }
 
+    // ECMA-262 [[Extensible]] - new own properties may be added while true. Flips to
+    // false on Object.preventExtensions / freeze / seal. DefineOwnProperty does not
+    // yet honor this; env records that need to respect extensibility consult it
+    // directly through IGlobalObject.IsExtensible.
+    public bool Extensible { get; private set; } = true;
+
+    public void PreventExtensions()
+    {
+        Extensible = false;
+    }
+
     public bool DefineOwnProperty(string key, JsPropertyDescriptor descriptor)
     {
         _properties[key] = descriptor;

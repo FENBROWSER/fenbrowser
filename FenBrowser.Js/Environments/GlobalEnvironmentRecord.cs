@@ -23,16 +23,18 @@ namespace FenBrowser.Js.Environments;
 // path that calls them.
 public sealed class GlobalEnvironmentRecord : EnvironmentRecord
 {
+    private readonly IGlobalObject _globalObject;
     private readonly DeclarativeEnvironmentRecord _declarativeRecord;
     private readonly ObjectEnvironmentRecord _objectRecord;
     private readonly HashSet<string> _varNames = new(StringComparer.Ordinal);
 
     public GlobalEnvironmentRecord(
-        IBindingObject globalObject,
+        IGlobalObject globalObject,
         JsValue globalThisValue)
         : base(outerEnv: null)
     {
         ArgumentNullException.ThrowIfNull(globalObject);
+        _globalObject = globalObject;
         _objectRecord = new ObjectEnvironmentRecord(globalObject, isWithEnvironment: false, outerEnv: null);
         _declarativeRecord = new DeclarativeEnvironmentRecord(outerEnv: null);
         GlobalThisValue = globalThisValue;
@@ -178,6 +180,66 @@ public sealed class GlobalEnvironmentRecord : EnvironmentRecord
     {
         ArgumentNullException.ThrowIfNull(name);
         return _varNames.Add(name);
+    }
+
+    // 9.1.1.4.14 HasRestrictedGlobalProperty ( N ). True iff the global object has an
+    // own non-configurable property of that name - declarations cannot shadow such
+    // entries (e.g. `undefined`, `NaN`, `Infinity` on the real Web platform).
+    public bool HasRestrictedGlobalProperty(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        if (!_globalObject.HasOwnProperty(name))
+        {
+            return false;
+        }
+
+        return !_globalObject.IsOwnPropertyConfigurable(name);
+    }
+
+    // 9.1.1.4.15 CanDeclareGlobalVar ( N ). A `var` declaration succeeds when the name
+    // already exists on the global object (it will be reused) or when the object is
+    // still extensible (a new property can be installed).
+    public bool CanDeclareGlobalVar(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        if (_globalObject.HasOwnProperty(name))
+        {
+            return true;
+        }
+
+        return _globalObject.IsExtensible;
+    }
+
+    // 9.1.1.4.17 CreateGlobalVarBinding ( N, D ). Adds to [[VarNames]] and, when the
+    // name is not already present on the global object, installs a configurable data
+    // property. Returns Ok on success, ConstAssignment when the declaration is
+    // forbidden (object frozen, restricted property, etc.), AlreadyDeclared when the
+    // name conflicts with a lexical binding already in the declarative half.
+    public BindingOpResult CreateGlobalVarBinding(string name, bool deletable)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+
+        if (_declarativeRecord.HasBinding(name))
+        {
+            return BindingOpResult.AlreadyDeclared;
+        }
+
+        var alreadyExists = _globalObject.HasOwnProperty(name);
+        if (!alreadyExists)
+        {
+            if (!_globalObject.IsExtensible)
+            {
+                return BindingOpResult.ConstAssignment;
+            }
+
+            if (!_globalObject.DefineMutableData(name, JsValue.Undefined, deletable))
+            {
+                return BindingOpResult.ConstAssignment;
+            }
+        }
+
+        _varNames.Add(name);
+        return BindingOpResult.Ok;
     }
 
     public DeclarativeEnvironmentRecord DeclarativeRecordForTest => _declarativeRecord;

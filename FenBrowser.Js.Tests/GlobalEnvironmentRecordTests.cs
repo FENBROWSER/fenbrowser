@@ -111,6 +111,78 @@ public sealed class GlobalEnvironmentRecordTests
     }
 
     [Fact]
+    public void HasRestrictedGlobalPropertyIdentifiesNonConfigurableOwnProperties()
+    {
+        var globalObject = new FakeGlobalObject();
+        globalObject.Define("normal", JsValue.FromInt32(1));
+        globalObject.DefineRestricted("undefined", JsValue.Undefined);
+        var env = new GlobalEnvironmentRecord(globalObject, JsValue.Undefined);
+
+        Assert.False(env.HasRestrictedGlobalProperty("normal"));
+        Assert.False(env.HasRestrictedGlobalProperty("absent"));
+        Assert.True(env.HasRestrictedGlobalProperty("undefined"));
+    }
+
+    [Fact]
+    public void CanDeclareGlobalVarRequiresExistingPropertyOrExtensibleObject()
+    {
+        var globalObject = new FakeGlobalObject();
+        globalObject.Define("existing", JsValue.FromInt32(1));
+        var env = new GlobalEnvironmentRecord(globalObject, JsValue.Undefined);
+
+        Assert.True(env.CanDeclareGlobalVar("existing"));
+        Assert.True(env.CanDeclareGlobalVar("newOne"));
+
+        globalObject.IsExtensible = false;
+        Assert.True(env.CanDeclareGlobalVar("existing"));
+        Assert.False(env.CanDeclareGlobalVar("newOne"));
+    }
+
+    [Fact]
+    public void CreateGlobalVarBindingAddsVarNameAndInstallsProperty()
+    {
+        var globalObject = new FakeGlobalObject();
+        var env = new GlobalEnvironmentRecord(globalObject, JsValue.Undefined);
+
+        Assert.Equal(BindingOpResult.Ok, env.CreateGlobalVarBinding("v", deletable: false));
+        Assert.True(env.HasVarDeclaration("v"));
+        Assert.True(globalObject.HasOwnProperty("v"));
+    }
+
+    [Fact]
+    public void CreateGlobalVarBindingReusesExistingGlobalProperty()
+    {
+        var globalObject = new FakeGlobalObject();
+        globalObject.Define("v", JsValue.FromInt32(7));
+        var env = new GlobalEnvironmentRecord(globalObject, JsValue.Undefined);
+
+        Assert.Equal(BindingOpResult.Ok, env.CreateGlobalVarBinding("v", deletable: false));
+        Assert.True(env.HasVarDeclaration("v"));
+
+        // Value stays at 7 - we don't blow away an existing binding when var-hoisting.
+        Assert.True(globalObject.TryGet("v", out var value));
+        Assert.Equal(7, value.AsInt32());
+    }
+
+    [Fact]
+    public void CreateGlobalVarBindingRejectsLexicalCollision()
+    {
+        var env = new GlobalEnvironmentRecord(new FakeGlobalObject(), JsValue.Undefined);
+        env.CreateMutableBinding("x", deletable: false);
+
+        Assert.Equal(BindingOpResult.AlreadyDeclared, env.CreateGlobalVarBinding("x", deletable: false));
+    }
+
+    [Fact]
+    public void CreateGlobalVarBindingRejectsWhenObjectFrozen()
+    {
+        var globalObject = new FakeGlobalObject { IsExtensible = false };
+        var env = new GlobalEnvironmentRecord(globalObject, JsValue.Undefined);
+
+        Assert.Equal(BindingOpResult.ConstAssignment, env.CreateGlobalVarBinding("v", deletable: false));
+    }
+
+    [Fact]
     public void SetMutableBindingRoutesToTheCorrectHalf()
     {
         var globalObject = new FakeGlobalObject();
@@ -128,31 +200,68 @@ public sealed class GlobalEnvironmentRecordTests
         Assert.Equal(99, globalValue.AsInt32());
     }
 
-    private sealed class FakeGlobalObject : IBindingObject
+    private sealed class FakeGlobalObject : IGlobalObject
     {
-        private readonly Dictionary<string, JsValue> _store = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, Entry> _store = new(StringComparer.Ordinal);
 
         public ObjectHandle? AsObjectHandle => null;
 
-        public void Define(string name, JsValue value) => _store[name] = value;
+        public bool IsExtensible { get; set; } = true;
+
+        public void Define(string name, JsValue value) => _store[name] = new Entry(value, Configurable: true);
+
+        public void DefineRestricted(string name, JsValue value)
+            => _store[name] = new Entry(value, Configurable: false);
 
         public bool HasProperty(string name) => _store.ContainsKey(name);
 
-        public bool TryGet(string name, out JsValue value) => _store.TryGetValue(name, out value!);
+        public bool HasOwnProperty(string name) => _store.ContainsKey(name);
+
+        public bool IsOwnPropertyConfigurable(string name)
+            => !_store.TryGetValue(name, out var entry) || entry.Configurable;
+
+        public bool TryGet(string name, out JsValue value)
+        {
+            if (_store.TryGetValue(name, out var entry))
+            {
+                value = entry.Value;
+                return true;
+            }
+
+            value = JsValue.Undefined;
+            return false;
+        }
 
         public bool TrySet(string name, JsValue value)
         {
-            _store[name] = value;
+            if (_store.TryGetValue(name, out var entry))
+            {
+                _store[name] = entry with { Value = value };
+            }
+            else
+            {
+                _store[name] = new Entry(value, Configurable: true);
+            }
+
             return true;
         }
 
         public bool DefineMutableData(string name, JsValue value, bool deletable)
         {
-            _ = deletable;
-            _store[name] = value;
+            _store[name] = new Entry(value, Configurable: deletable);
             return true;
         }
 
-        public bool DeleteProperty(string name) => _store.Remove(name);
+        public bool DeleteProperty(string name)
+        {
+            if (_store.TryGetValue(name, out var entry) && !entry.Configurable)
+            {
+                return false;
+            }
+
+            return _store.Remove(name);
+        }
+
+        private readonly record struct Entry(JsValue Value, bool Configurable);
     }
 }

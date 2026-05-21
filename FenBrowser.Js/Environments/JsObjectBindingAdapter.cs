@@ -20,7 +20,7 @@ namespace FenBrowser.Js.Environments;
 //     does walk, but for top-level globals the receiver is the global object itself
 //     and the data path covers it. Setter routing lands when accessor calls are
 //     wired through the interpreter.
-public sealed class JsObjectBindingAdapter : IBindingObject
+public sealed class JsObjectBindingAdapter : IGlobalObject
 {
     private readonly JsHeap _heap;
     private readonly ObjectHandle _handle;
@@ -88,6 +88,28 @@ public sealed class JsObjectBindingAdapter : IBindingObject
         ArgumentNullException.ThrowIfNull(name);
         var obj = _heap.GetObject(_handle);
         return obj.DeleteProperty(name);
+    }
+
+    public bool IsExtensible => _heap.GetObject(_handle).Extensible;
+
+    public bool HasOwnProperty(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        return _heap.GetObject(_handle).TryGetOwnProperty(name, out _);
+    }
+
+    public bool IsOwnPropertyConfigurable(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        var obj = _heap.GetObject(_handle);
+        if (!obj.TryGetOwnProperty(name, out var descriptor))
+        {
+            // No own property -> vacuously not restricted (a fresh declaration can
+            // proceed). 9.1.1.4.14 returns false in this case.
+            return true;
+        }
+
+        return descriptor.Configurable;
     }
 
     private JsObject ResolvePrototype(ObjectHandle prototypeHandle)
