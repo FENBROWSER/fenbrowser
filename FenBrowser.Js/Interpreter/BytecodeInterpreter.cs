@@ -2929,6 +2929,10 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "sort", ArrayPrototypeSort, length: 1);
         // ECMA-262 23.1.3.31 splice.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "splice", ArrayPrototypeSplice, length: 2);
+        // ECMA-262 23.1.3.1 at, 23.1.3.12 findLast, 23.1.3.13 findLastIndex.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "at", ArrayPrototypeAt, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "findLast", ArrayPrototypeFindLast, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "findLastIndex", ArrayPrototypeFindLastIndex, length: 1);
 
         // ECMA-262 23.1.2.3 Array.of(...items). Returns a fresh Array populated with
         // exactly the supplied items - distinct from new Array(n), which uses a
@@ -3260,6 +3264,65 @@ public sealed class BytecodeInterpreter
             : (int)args[argIndex].AsNumber();
         var idx = raw < 0 ? length + raw : raw;
         return Math.Clamp(idx, 0, length);
+    }
+
+    // ECMA-262 23.1.3.1 Array.prototype.at(index). Negative indices wrap from
+    // length; out-of-range returns undefined.
+    private JsValue ArrayPrototypeAt(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        var raw = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
+        var idx = raw < 0 ? length + raw : raw;
+        if (idx < 0 || idx >= length)
+        {
+            return JsValue.Undefined;
+        }
+
+        var key = idx.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        TryGetPropertyValue(obj, thisValue, key, out var v);
+        return v;
+    }
+
+    // ECMA-262 23.1.3.12 findLast. Mirrors find but walks backwards; visits holes
+    // as undefined-valued slots per spec.
+    private JsValue ArrayPrototypeFindLast(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        for (var i = length - 1; i >= 0; i--)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            TryGetPropertyValue(obj, thisValue, key, out var v);
+            if (IsTruthy(InvokeArrayCallback(callback, v, i, thisValue, thisArg)))
+            {
+                return v;
+            }
+        }
+
+        return JsValue.Undefined;
+    }
+
+    // ECMA-262 23.1.3.13 findLastIndex.
+    private JsValue ArrayPrototypeFindLastIndex(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        for (var i = length - 1; i >= 0; i--)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            TryGetPropertyValue(obj, thisValue, key, out var v);
+            if (IsTruthy(InvokeArrayCallback(callback, v, i, thisValue, thisArg)))
+            {
+                return JsValue.FromNumber(i);
+            }
+        }
+
+        return JsValue.FromNumber(-1);
     }
 
     // ECMA-262 23.1.3.31 Array.prototype.splice(start, deleteCount, ...items).
