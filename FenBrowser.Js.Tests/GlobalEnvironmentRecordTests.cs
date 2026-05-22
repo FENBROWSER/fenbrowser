@@ -200,6 +200,111 @@ public sealed class GlobalEnvironmentRecordTests
         Assert.Equal(99, globalValue.AsInt32());
     }
 
+    [Fact]
+    public void CanDeclareGlobalFunctionAllowsMissingOnExtensible()
+    {
+        var env = new GlobalEnvironmentRecord(new FakeGlobalObject(), JsValue.Undefined);
+
+        Assert.True(env.CanDeclareGlobalFunction("fn"));
+    }
+
+    [Fact]
+    public void CanDeclareGlobalFunctionRejectsMissingOnFrozen()
+    {
+        var env = new GlobalEnvironmentRecord(new FakeGlobalObject { IsExtensible = false }, JsValue.Undefined);
+
+        Assert.False(env.CanDeclareGlobalFunction("fn"));
+    }
+
+    [Fact]
+    public void CanDeclareGlobalFunctionAllowsConfigurableExistingProperty()
+    {
+        var globalObject = new FakeGlobalObject();
+        globalObject.Define("fn", JsValue.FromInt32(1));
+        var env = new GlobalEnvironmentRecord(globalObject, JsValue.Undefined);
+
+        Assert.True(env.CanDeclareGlobalFunction("fn"));
+    }
+
+    [Fact]
+    public void CanDeclareGlobalFunctionAllowsNonConfigurableWritableEnumerable()
+    {
+        // Spec 9.1.1.4.16 step 4: non-configurable but writable+enumerable data is OK
+        // because the redefinition is observationally identical apart from the value.
+        var globalObject = new FakeGlobalObject();
+        globalObject.DefineDataExplicit("fn", JsValue.FromInt32(1), configurable: false, writable: true, enumerable: true);
+        var env = new GlobalEnvironmentRecord(globalObject, JsValue.Undefined);
+
+        Assert.True(env.CanDeclareGlobalFunction("fn"));
+    }
+
+    [Fact]
+    public void CanDeclareGlobalFunctionRejectsNonConfigurableAccessorProperty()
+    {
+        // Step 3 fails (not configurable), step 4 fails (not a data descriptor), so
+        // step 5 returns false.
+        var globalObject = new FakeGlobalObject();
+        globalObject.DefineAccessor("fn", configurable: false);
+        var env = new GlobalEnvironmentRecord(globalObject, JsValue.Undefined);
+
+        Assert.False(env.CanDeclareGlobalFunction("fn"));
+    }
+
+    [Fact]
+    public void CanDeclareGlobalFunctionRejectsNonConfigurableReadOnly()
+    {
+        var globalObject = new FakeGlobalObject();
+        globalObject.DefineDataExplicit("fn", JsValue.FromInt32(1), configurable: false, writable: false, enumerable: true);
+        var env = new GlobalEnvironmentRecord(globalObject, JsValue.Undefined);
+
+        Assert.False(env.CanDeclareGlobalFunction("fn"));
+    }
+
+    [Fact]
+    public void CreateGlobalFunctionBindingInstallsConfigurableDataProperty()
+    {
+        var globalObject = new FakeGlobalObject();
+        var env = new GlobalEnvironmentRecord(globalObject, JsValue.Undefined);
+
+        Assert.Equal(BindingOpResult.Ok, env.CreateGlobalFunctionBinding("fn", JsValue.FromInt32(7), deletable: true));
+        Assert.True(globalObject.TryGet("fn", out var value));
+        Assert.Equal(7, value.AsInt32());
+        Assert.True(env.HasVarDeclaration("fn"));
+    }
+
+    [Fact]
+    public void CreateGlobalFunctionBindingPreservesNonConfigurableExisting()
+    {
+        // Spec: when existing own property is NOT configurable but is writable+enumerable
+        // (CanDeclareGlobalFunction returned true via step 4), we leave the attributes
+        // intact and only update the value through [[Set]].
+        var globalObject = new FakeGlobalObject();
+        globalObject.DefineDataExplicit("fn", JsValue.FromInt32(0), configurable: false, writable: true, enumerable: true);
+        var env = new GlobalEnvironmentRecord(globalObject, JsValue.Undefined);
+
+        Assert.Equal(BindingOpResult.Ok, env.CreateGlobalFunctionBinding("fn", JsValue.FromInt32(42), deletable: true));
+        Assert.True(globalObject.TryGet("fn", out var value));
+        Assert.Equal(42, value.AsInt32());
+        Assert.False(globalObject.IsOwnPropertyConfigurable("fn"));
+    }
+
+    [Fact]
+    public void CreateGlobalFunctionBindingRejectsConflictWithLexicalDeclaration()
+    {
+        var env = new GlobalEnvironmentRecord(new FakeGlobalObject(), JsValue.Undefined);
+        env.CreateMutableBinding("fn", deletable: false);
+
+        Assert.Equal(BindingOpResult.AlreadyDeclared, env.CreateGlobalFunctionBinding("fn", JsValue.FromInt32(1), deletable: true));
+    }
+
+    [Fact]
+    public void CreateGlobalFunctionBindingRejectsWhenFrozenAndAbsent()
+    {
+        var env = new GlobalEnvironmentRecord(new FakeGlobalObject { IsExtensible = false }, JsValue.Undefined);
+
+        Assert.Equal(BindingOpResult.ConstAssignment, env.CreateGlobalFunctionBinding("fn", JsValue.FromInt32(1), deletable: true));
+    }
+
     private sealed class FakeGlobalObject : IGlobalObject
     {
         private readonly Dictionary<string, Entry> _store = new(StringComparer.Ordinal);
@@ -208,10 +313,17 @@ public sealed class GlobalEnvironmentRecordTests
 
         public bool IsExtensible { get; set; } = true;
 
-        public void Define(string name, JsValue value) => _store[name] = new Entry(value, Configurable: true);
+        public void Define(string name, JsValue value)
+            => _store[name] = new Entry(value, Configurable: true, Writable: true, Enumerable: true, IsAccessor: false);
 
         public void DefineRestricted(string name, JsValue value)
-            => _store[name] = new Entry(value, Configurable: false);
+            => _store[name] = new Entry(value, Configurable: false, Writable: true, Enumerable: true, IsAccessor: false);
+
+        public void DefineDataExplicit(string name, JsValue value, bool configurable, bool writable, bool enumerable)
+            => _store[name] = new Entry(value, configurable, writable, enumerable, IsAccessor: false);
+
+        public void DefineAccessor(string name, bool configurable)
+            => _store[name] = new Entry(JsValue.Undefined, configurable, Writable: false, Enumerable: true, IsAccessor: true);
 
         public bool HasProperty(string name) => _store.ContainsKey(name);
 
@@ -219,6 +331,9 @@ public sealed class GlobalEnvironmentRecordTests
 
         public bool IsOwnPropertyConfigurable(string name)
             => !_store.TryGetValue(name, out var entry) || entry.Configurable;
+
+        public bool IsOwnDataPropertyWritableEnumerable(string name)
+            => _store.TryGetValue(name, out var entry) && !entry.IsAccessor && entry.Writable && entry.Enumerable;
 
         public bool TryGet(string name, out JsValue value)
         {
@@ -240,7 +355,7 @@ public sealed class GlobalEnvironmentRecordTests
             }
             else
             {
-                _store[name] = new Entry(value, Configurable: true);
+                _store[name] = new Entry(value, Configurable: true, Writable: true, Enumerable: true, IsAccessor: false);
             }
 
             return true;
@@ -248,7 +363,7 @@ public sealed class GlobalEnvironmentRecordTests
 
         public bool DefineMutableData(string name, JsValue value, bool deletable)
         {
-            _store[name] = new Entry(value, Configurable: deletable);
+            _store[name] = new Entry(value, Configurable: deletable, Writable: true, Enumerable: true, IsAccessor: false);
             return true;
         }
 
@@ -262,6 +377,11 @@ public sealed class GlobalEnvironmentRecordTests
             return _store.Remove(name);
         }
 
-        private readonly record struct Entry(JsValue Value, bool Configurable);
+        private readonly record struct Entry(
+            JsValue Value,
+            bool Configurable,
+            bool Writable,
+            bool Enumerable,
+            bool IsAccessor);
     }
 }

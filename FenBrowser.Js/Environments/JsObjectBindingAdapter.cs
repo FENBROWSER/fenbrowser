@@ -112,6 +112,23 @@ public sealed class JsObjectBindingAdapter : IGlobalObject
         return descriptor.Configurable;
     }
 
+    public bool IsOwnDataPropertyWritableEnumerable(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        var obj = _heap.GetObject(_handle);
+        if (!obj.TryGetOwnProperty(name, out var descriptor))
+        {
+            return false;
+        }
+
+        if (descriptor.IsAccessor)
+        {
+            return false;
+        }
+
+        return descriptor.Writable && descriptor.Enumerable;
+    }
+
     private JsObject ResolvePrototype(ObjectHandle prototypeHandle)
         => _heap.GetObject(prototypeHandle);
 }

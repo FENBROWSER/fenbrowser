@@ -24,4 +24,12 @@ public interface IGlobalObject : IBindingObject
     // Configurable=true. False only when an own non-configurable descriptor exists.
     // Translates 9.1.1.4.14 HasRestrictedGlobalProperty into a single call.
     bool IsOwnPropertyConfigurable(string name);
+
+    // True iff this name resolves to an own data property with both Writable and
+    // Enumerable set. Required by 9.1.1.4.16 CanDeclareGlobalFunction step 4 ("If
+    // IsDataDescriptor(existingProp) is true and existingProp has attribute values
+    // {[[Writable]]: true, [[Enumerable]]: true}, return true"). Returns false for
+    // accessor descriptors, missing names, and any data descriptor that is read-only
+    // or non-enumerable.
+    bool IsOwnDataPropertyWritableEnumerable(string name);
 }

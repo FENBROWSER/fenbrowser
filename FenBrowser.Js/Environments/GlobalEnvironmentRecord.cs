@@ -16,11 +16,13 @@ namespace FenBrowser.Js.Environments;
 // declarative side first so that a `let x = 1` shadows a same-named property of the
 // global object, matching the spec.
 //
-// This first slice covers the binding-routing operations and the global-this surface.
-// The declaration-instantiation operations (CreateGlobalVarBinding,
-// CreateGlobalFunctionBinding, CanDeclareGlobalVar, CanDeclareGlobalFunction,
-// HasRestrictedGlobalProperty) land in a follow-up commit alongside the script-init
-// path that calls them.
+// All ECMA-262 9.1.1.4 abstract operations are implemented: binding-routing
+// (HasBinding, CreateMutableBinding, SetMutableBinding, GetBindingValue,
+// DeleteBinding), global-this surface, plus the declaration-instantiation operations
+// (HasRestrictedGlobalProperty, CanDeclareGlobalVar / CanDeclareGlobalFunction,
+// CreateGlobalVarBinding / CreateGlobalFunctionBinding, HasVarDeclaration,
+// HasLexicalDeclaration). The script-init path that drives these from the
+// interpreter still lands in a later commit.
 public sealed class GlobalEnvironmentRecord : EnvironmentRecord
 {
     private readonly IGlobalObject _globalObject;
@@ -233,6 +235,75 @@ public sealed class GlobalEnvironmentRecord : EnvironmentRecord
             }
 
             if (!_globalObject.DefineMutableData(name, JsValue.Undefined, deletable))
+            {
+                return BindingOpResult.ConstAssignment;
+            }
+        }
+
+        _varNames.Add(name);
+        return BindingOpResult.Ok;
+    }
+
+    // 9.1.1.4.16 CanDeclareGlobalFunction ( N ). A `function` declaration may overwrite
+    // an existing own property when (a) no own property exists and the object is
+    // extensible, (b) the existing property is configurable, or (c) the existing
+    // property is a data descriptor that is already writable+enumerable (so the
+    // function-declaration redefinition is observationally a no-op apart from the
+    // value). Otherwise the declaration is forbidden and the caller raises TypeError.
+    public bool CanDeclareGlobalFunction(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+
+        if (!_globalObject.HasOwnProperty(name))
+        {
+            return _globalObject.IsExtensible;
+        }
+
+        if (_globalObject.IsOwnPropertyConfigurable(name))
+        {
+            return true;
+        }
+
+        return _globalObject.IsOwnDataPropertyWritableEnumerable(name);
+    }
+
+    // 9.1.1.4.18 CreateGlobalFunctionBinding ( N, V, D ). Installs a function value as
+    // a global property: a missing or configurable own property is fully redefined as
+    // a writable+enumerable+configurable=D data property; a non-configurable
+    // writable+enumerable own property keeps its attributes and only its value
+    // changes. Either way the name is recorded in [[VarNames]] for later `var`
+    // hoisting checks. The interpreter calls CanDeclareGlobalFunction first so this
+    // method's failure modes (object frozen, define rejected) collapse to
+    // ConstAssignment.
+    public BindingOpResult CreateGlobalFunctionBinding(string name, JsValue value, bool deletable)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+
+        if (_declarativeRecord.HasBinding(name))
+        {
+            return BindingOpResult.AlreadyDeclared;
+        }
+
+        var hasExisting = _globalObject.HasOwnProperty(name);
+        var existingIsConfigurable = hasExisting && _globalObject.IsOwnPropertyConfigurable(name);
+
+        if (!hasExisting || existingIsConfigurable)
+        {
+            if (!hasExisting && !_globalObject.IsExtensible)
+            {
+                return BindingOpResult.ConstAssignment;
+            }
+
+            if (!_globalObject.DefineMutableData(name, value, deletable))
+            {
+                return BindingOpResult.ConstAssignment;
+            }
+        }
+        else
+        {
+            // Existing non-configurable but writable+enumerable data property: per spec
+            // we leave the attributes alone and only update the value via [[Set]].
+            if (!_globalObject.TrySet(name, value))
             {
                 return BindingOpResult.ConstAssignment;
             }
