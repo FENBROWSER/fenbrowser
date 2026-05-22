@@ -1691,6 +1691,151 @@ public sealed class BytecodeInterpreter
             return JsValue.FromBoolean(SameValue(a, b));
         }, length: 2);
 
+        // ECMA-262 20.1.2.20 / 20.1.2.15 Object.preventExtensions / isExtensible.
+        DefineIntrinsicFunction(constructorHandle, constructor, "preventExtensions", (_, args) =>
+        {
+            var target = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (target.Tag != JsValueTag.Object)
+            {
+                return target;
+            }
+
+            _heap.GetObject(target.AsObjectHandle()).PreventExtensions();
+            return target;
+        }, length: 1);
+
+        DefineIntrinsicFunction(constructorHandle, constructor, "isExtensible", (_, args) =>
+        {
+            var target = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (target.Tag != JsValueTag.Object)
+            {
+                return JsValue.FromBoolean(false);
+            }
+
+            return JsValue.FromBoolean(_heap.GetObject(target.AsObjectHandle()).Extensible);
+        }, length: 1);
+
+        // ECMA-262 20.1.2.6 / 20.1.2.16 Object.freeze / isFrozen.
+        DefineIntrinsicFunction(constructorHandle, constructor, "freeze", (_, args) =>
+        {
+            var target = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (target.Tag != JsValueTag.Object)
+            {
+                return target;
+            }
+
+            var obj = _heap.GetObject(target.AsObjectHandle());
+            var keys = new List<string>();
+            foreach (var pair in obj.EnumerateOwnProperties())
+            {
+                keys.Add(pair.Key);
+            }
+
+            foreach (var key in keys)
+            {
+                if (!obj.TryGetOwnProperty(key, out var desc))
+                {
+                    continue;
+                }
+
+                var newDesc = desc.IsAccessor
+                    ? JsPropertyDescriptor.Accessor(desc.Get, desc.Set, desc.Enumerable, Configurable: false)
+                    : new JsPropertyDescriptor(desc.Value, Writable: false, desc.Enumerable, Configurable: false);
+                obj.DefineOwnProperty(key, newDesc);
+            }
+
+            obj.PreventExtensions();
+            return target;
+        }, length: 1);
+
+        DefineIntrinsicFunction(constructorHandle, constructor, "isFrozen", (_, args) =>
+        {
+            var target = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (target.Tag != JsValueTag.Object)
+            {
+                return JsValue.FromBoolean(true);   // primitives are vacuously frozen
+            }
+
+            var obj = _heap.GetObject(target.AsObjectHandle());
+            if (obj.Extensible)
+            {
+                return JsValue.FromBoolean(false);
+            }
+
+            foreach (var pair in obj.EnumerateOwnProperties())
+            {
+                if (pair.Value.Configurable)
+                {
+                    return JsValue.FromBoolean(false);
+                }
+
+                if (!pair.Value.IsAccessor && pair.Value.Writable)
+                {
+                    return JsValue.FromBoolean(false);
+                }
+            }
+
+            return JsValue.FromBoolean(true);
+        }, length: 1);
+
+        // ECMA-262 20.1.2.23 / 20.1.2.17 Object.seal / isSealed.
+        DefineIntrinsicFunction(constructorHandle, constructor, "seal", (_, args) =>
+        {
+            var target = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (target.Tag != JsValueTag.Object)
+            {
+                return target;
+            }
+
+            var obj = _heap.GetObject(target.AsObjectHandle());
+            var keys = new List<string>();
+            foreach (var pair in obj.EnumerateOwnProperties())
+            {
+                keys.Add(pair.Key);
+            }
+
+            foreach (var key in keys)
+            {
+                if (!obj.TryGetOwnProperty(key, out var desc))
+                {
+                    continue;
+                }
+
+                var newDesc = desc.IsAccessor
+                    ? JsPropertyDescriptor.Accessor(desc.Get, desc.Set, desc.Enumerable, Configurable: false)
+                    : new JsPropertyDescriptor(desc.Value, desc.Writable, desc.Enumerable, Configurable: false);
+                obj.DefineOwnProperty(key, newDesc);
+            }
+
+            obj.PreventExtensions();
+            return target;
+        }, length: 1);
+
+        DefineIntrinsicFunction(constructorHandle, constructor, "isSealed", (_, args) =>
+        {
+            var target = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (target.Tag != JsValueTag.Object)
+            {
+                return JsValue.FromBoolean(true);
+            }
+
+            var obj = _heap.GetObject(target.AsObjectHandle());
+            if (obj.Extensible)
+            {
+                return JsValue.FromBoolean(false);
+            }
+
+            foreach (var pair in obj.EnumerateOwnProperties())
+            {
+                if (pair.Value.Configurable)
+                {
+                    return JsValue.FromBoolean(false);
+                }
+            }
+
+            return JsValue.FromBoolean(true);
+        }, length: 1);
+
         // ECMA-262 20.1.2.1 Object.assign(target, ...sources). Copies enumerable own
         // string-keyed properties from each source to target via [[Set]]. Returns
         // the (possibly coerced) target.
