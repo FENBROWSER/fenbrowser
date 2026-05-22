@@ -2933,6 +2933,8 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "at", ArrayPrototypeAt, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "findLast", ArrayPrototypeFindLast, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "findLastIndex", ArrayPrototypeFindLastIndex, length: 1);
+        // ECMA-262 23.1.3.4 copyWithin.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "copyWithin", ArrayPrototypeCopyWithin, length: 2);
 
         // ECMA-262 23.1.2.3 Array.of(...items). Returns a fresh Array populated with
         // exactly the supplied items - distinct from new Array(n), which uses a
@@ -3264,6 +3266,57 @@ public sealed class BytecodeInterpreter
             : (int)args[argIndex].AsNumber();
         var idx = raw < 0 ? length + raw : raw;
         return Math.Clamp(idx, 0, length);
+    }
+
+    // ECMA-262 23.1.3.4 Array.prototype.copyWithin(target, start[, end]).
+    // Shallow-copies the sequence at [start, end) to position target in-place,
+    // returning the receiver. Negative indices wrap from length; ranges are clamped
+    // into [0, length]. When source and target overlap, copies use a forward or
+    // backward pass to avoid clobbering data not yet copied.
+    private JsValue ArrayPrototypeCopyWithin(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var ownerHandle = ResolveObjectHandle(thisValue);
+        var obj = _heap.GetObject(ownerHandle);
+        var length = GetArrayLength(obj);
+        var target = NormaliseSliceIndex(args, 0, 0, length);
+        var start = NormaliseSliceIndex(args, 1, 0, length);
+        var end = NormaliseSliceIndex(args, 2, length, length);
+
+        var count = Math.Min(end - start, length - target);
+        if (count <= 0)
+        {
+            return thisValue;
+        }
+
+        // Direction: when target < start, forward copy is safe; otherwise walk
+        // backwards so already-overwritten elements don't pollute the not-yet-copied
+        // tail.
+        var direction = target < start ? 1 : -1;
+        var from = direction == 1 ? start : start + count - 1;
+        var to = direction == 1 ? target : target + count - 1;
+
+        for (var i = 0; i < count; i++)
+        {
+            var fromKey = from.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var toKey = to.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (TryGetPropertyValue(obj, thisValue, fromKey, out var v))
+            {
+                _ = obj.SetProperty(toKey, v);
+                if (v.Tag == JsValueTag.Object)
+                {
+                    _heap.WriteBarrier(ownerHandle, v.AsObjectHandle());
+                }
+            }
+            else
+            {
+                obj.DeleteProperty(toKey);
+            }
+
+            from += direction;
+            to += direction;
+        }
+
+        return thisValue;
     }
 
     // ECMA-262 23.1.3.1 Array.prototype.at(index). Negative indices wrap from
