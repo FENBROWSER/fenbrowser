@@ -1483,6 +1483,15 @@ public sealed class BytecodeInterpreter
         _ = constructor.SetProperty("getOwnPropertyDescriptor", JsValue.FromObject(getOwnPropertyDescriptorHandle));
         _heap.WriteBarrier(constructorHandle, getOwnPropertyDescriptorHandle);
 
+        // ECMA-262 20.1.2.13 Object.is(value1, value2). Implements the SameValue
+        // abstract operation (7.2.10): +0 and -0 are NOT equal, NaN is equal to NaN.
+        DefineIntrinsicFunction(constructorHandle, constructor, "is", (_, args) =>
+        {
+            var a = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var b = args.Count > 1 ? args[1] : JsValue.Undefined;
+            return JsValue.FromBoolean(SameValue(a, b));
+        }, length: 2);
+
         var prototype = _heap.GetObject(prototypeHandle);
         _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
@@ -2544,6 +2553,34 @@ public sealed class BytecodeInterpreter
 
         primitive = JsValue.Undefined;
         return false;
+    }
+
+    // ECMA-262 7.2.10 SameValue. Distinguishes from AreStrictlyEqual on exactly two
+    // points for numbers: SameValue(NaN, NaN) is true (strict eq is false) and
+    // SameValue(+0, -0) is false (strict eq is true). All other tag combinations
+    // delegate to strict equality.
+    private static bool SameValue(JsValue left, JsValue right)
+    {
+        if ((left.Tag == JsValueTag.Int32 || left.Tag == JsValueTag.Number) &&
+            (right.Tag == JsValueTag.Int32 || right.Tag == JsValueTag.Number))
+        {
+            var a = left.AsNumber();
+            var b = right.AsNumber();
+            if (double.IsNaN(a) && double.IsNaN(b))
+            {
+                return true;
+            }
+
+            if (a == 0d && b == 0d)
+            {
+                // +0 vs -0 - SameValue is false when sign bits differ.
+                return BitConverter.DoubleToInt64Bits(a) == BitConverter.DoubleToInt64Bits(b);
+            }
+
+            return a == b;
+        }
+
+        return AreStrictlyEqual(left, right);
     }
 
     private static bool AreStrictlyEqual(JsValue left, JsValue right)
