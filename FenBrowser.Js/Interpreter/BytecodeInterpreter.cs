@@ -4826,10 +4826,92 @@ public sealed class BytecodeInterpreter
             System.Globalization.CultureInfo.InvariantCulture));
     }
 
+    // ECMA-262 21.1.3.6 Number.prototype.toString([radix]). Radix must be in [2, 36];
+    // 10 (or undefined) routes through the standard decimal formatter; other radices
+    // emit the integer portion in that base (and, for fractional values, an
+    // approximation that matches V8/SM for finite cases). NaN / +-Infinity always
+    // render in decimal regardless of radix.
     private JsValue NumberPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        _ = args;
-        return JsValue.FromString(FormatNumberForString(NumberThisValue(thisValue)));
+        var value = NumberThisValue(thisValue);
+        var radix = 10;
+        if (args.Count > 0 && args[0].Tag != JsValueTag.Undefined)
+        {
+            radix = (int)ToNumber(args[0]);
+        }
+
+        if (radix < 2 || radix > 36)
+        {
+            throw new JsThrownException(CreateRangeError(
+                "toString() radix must be an integer between 2 and 36."));
+        }
+
+        if (radix == 10 || double.IsNaN(value) || double.IsInfinity(value))
+        {
+            return JsValue.FromString(FormatNumberForString(value));
+        }
+
+        return JsValue.FromString(FormatNumberInRadix(value, radix));
+    }
+
+    private static string FormatNumberInRadix(double value, int radix)
+    {
+        if (value == 0d)
+        {
+            return "0";
+        }
+
+        var negative = value < 0;
+        if (negative)
+        {
+            value = -value;
+        }
+
+        var integerPart = Math.Floor(value);
+        var fraction = value - integerPart;
+
+        var intText = LongToRadixString((long)integerPart, radix);
+        if (fraction == 0d)
+        {
+            return negative ? "-" + intText : intText;
+        }
+
+        var sb = new System.Text.StringBuilder(intText);
+        sb.Append('.');
+
+        // Emit up to ~52 digits of fractional precision - enough for any double.
+        for (var i = 0; i < 52 && fraction != 0d; i++)
+        {
+            fraction *= radix;
+            var digit = (int)Math.Floor(fraction);
+            sb.Append(DigitToChar(digit));
+            fraction -= digit;
+        }
+
+        var result = sb.ToString();
+        return negative ? "-" + result : result;
+    }
+
+    private static string LongToRadixString(long n, int radix)
+    {
+        if (n == 0)
+        {
+            return "0";
+        }
+
+        var sb = new System.Text.StringBuilder();
+        while (n > 0)
+        {
+            sb.Insert(0, DigitToChar((int)(n % radix)));
+            n /= radix;
+        }
+
+        return sb.ToString();
+    }
+
+    private static char DigitToChar(int digit)
+    {
+        return digit < 10 ? (char)('0' + digit) : (char)('a' + digit - 10);
     }
 
     private JsValue NumberPrototypeValueOf(JsValue thisValue, IReadOnlyList<JsValue> args)
