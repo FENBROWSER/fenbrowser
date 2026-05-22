@@ -2763,6 +2763,11 @@ public sealed class BytecodeInterpreter
         // ECMA-262 23.1.3.24 reduce, 23.1.3.25 reduceRight.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "reduce", (t, a) => ArrayPrototypeReduce(t, a, reverse: false), length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "reduceRight", (t, a) => ArrayPrototypeReduce(t, a, reverse: true), length: 1);
+        // ECMA-262 23.1.3.6 every, 23.1.3.29 some, 23.1.3.10 find, 23.1.3.11 findIndex.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "every", ArrayPrototypeEvery, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "some", ArrayPrototypeSome, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "find", ArrayPrototypeFind, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "findIndex", ArrayPrototypeFindIndex, length: 1);
 
         // ECMA-262 23.1.2.2 Array.isArray(arg). Spec walks Proxy targets; we have no
         // Proxy yet, so the operation collapses to "is the value an ArrayObject?".
@@ -3011,6 +3016,100 @@ public sealed class BytecodeInterpreter
             : (int)args[argIndex].AsNumber();
         var idx = raw < 0 ? length + raw : raw;
         return Math.Clamp(idx, 0, length);
+    }
+
+    // ECMA-262 23.1.3.6 every: returns true iff callback returns truthy for every
+    // present element. Short-circuits on first falsy. Holes are skipped (vacuously
+    // satisfied).
+    private JsValue ArrayPrototypeEvery(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        for (var i = 0; i < length; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!TryGetPropertyValue(obj, thisValue, key, out var v))
+            {
+                continue;
+            }
+
+            if (!IsTruthy(InvokeArrayCallback(callback, v, i, thisValue, thisArg)))
+            {
+                return JsValue.FromBoolean(false);
+            }
+        }
+
+        return JsValue.FromBoolean(true);
+    }
+
+    // ECMA-262 23.1.3.29 some: returns true iff callback returns truthy for at least
+    // one present element. Short-circuits on first truthy.
+    private JsValue ArrayPrototypeSome(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        for (var i = 0; i < length; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!TryGetPropertyValue(obj, thisValue, key, out var v))
+            {
+                continue;
+            }
+
+            if (IsTruthy(InvokeArrayCallback(callback, v, i, thisValue, thisArg)))
+            {
+                return JsValue.FromBoolean(true);
+            }
+        }
+
+        return JsValue.FromBoolean(false);
+    }
+
+    // ECMA-262 23.1.3.10 find: returns the first element where callback is truthy,
+    // or undefined. UNLIKE every/some/forEach/map/filter, find DOES visit holes (the
+    // spec treats them as undefined-valued slots that the callback can match).
+    private JsValue ArrayPrototypeFind(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        for (var i = 0; i < length; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            TryGetPropertyValue(obj, thisValue, key, out var v);
+            if (IsTruthy(InvokeArrayCallback(callback, v, i, thisValue, thisArg)))
+            {
+                return v;
+            }
+        }
+
+        return JsValue.Undefined;
+    }
+
+    // ECMA-262 23.1.3.11 findIndex: as find, but returns the index (or -1). Visits
+    // holes for the same reason find does.
+    private JsValue ArrayPrototypeFindIndex(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        for (var i = 0; i < length; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            TryGetPropertyValue(obj, thisValue, key, out var v);
+            if (IsTruthy(InvokeArrayCallback(callback, v, i, thisValue, thisArg)))
+            {
+                return JsValue.FromNumber(i);
+            }
+        }
+
+        return JsValue.FromNumber(-1);
     }
 
     // ECMA-262 23.1.3.24 / 23.1.3.25 Array.prototype.reduce / reduceRight.
