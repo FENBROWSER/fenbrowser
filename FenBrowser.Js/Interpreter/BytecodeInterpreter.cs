@@ -248,8 +248,23 @@ public sealed class BytecodeInterpreter
                 {
                     var ownerHandle = ResolveObjectHandle(frame.Registers[ins.A]);
                     var obj = _heap.GetObject(ownerHandle);
-                    var key = ToPropertyKey(frame.Registers[ins.B]);
+                    var keyValue = frame.Registers[ins.B];
                     var value = frame.Registers[ins.C];
+
+                    if (keyValue.Tag == JsValueTag.Symbol)
+                    {
+                        // Symbol-keyed [[Set]] - install on the parallel symbol table.
+                        obj.DefineOwnSymbolProperty(keyValue.AsSymbolId(),
+                            new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+                        if (value.Tag == JsValueTag.Object)
+                        {
+                            _heap.WriteBarrier(ownerHandle, value.AsObjectHandle());
+                        }
+
+                        break;
+                    }
+
+                    var key = ToPropertyKey(keyValue);
                     try
                     {
                         _ = SetPropertyValue(ownerHandle, obj, key, value, frame.Registers[ins.A]);
@@ -324,10 +339,12 @@ public sealed class BytecodeInterpreter
                 case OpCode.GetElem:
                 {
                     var receiver = frame.Registers[ins.B];
-                    var key = ToPropertyKey(frame.Registers[ins.C]);
+                    var keyValue = frame.Registers[ins.C];
                     try
                     {
-                        frame.Registers[ins.A] = GetReceiverProperty(receiver, key);
+                        frame.Registers[ins.A] = keyValue.Tag == JsValueTag.Symbol
+                            ? GetReceiverSymbolProperty(receiver, keyValue.AsSymbolId())
+                            : GetReceiverProperty(receiver, ToPropertyKey(keyValue));
                     }
                     catch (JsThrownException ex)
                     {
@@ -3785,6 +3802,54 @@ public sealed class BytecodeInterpreter
             case JsValueTag.Null:
                 throw new JsThrownException(CreateTypeError(
                     "Cannot read properties of null (reading '" + key + "')."));
+            default:
+                return JsValue.Undefined;
+        }
+    }
+
+    // Symbol-keyed [[Get]] mirroring GetReceiverProperty: Object falls through to
+    // the symbol-table lookup; String/Number/Boolean primitives consult their
+    // prototype's symbol table; undefined / null raise TypeError.
+    [MayExecuteJs]
+    private JsValue GetReceiverSymbolProperty(JsValue receiver, long symbolId)
+    {
+        switch (receiver.Tag)
+        {
+            case JsValueTag.Object:
+            {
+                var obj = ResolveObject(receiver);
+                return obj.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
+                    ? GetDescriptorValue(desc, receiver)
+                    : JsValue.Undefined;
+            }
+            case JsValueTag.String:
+            {
+                var stringProto = _heap.GetObject(EnsureStringPrototype());
+                return stringProto.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
+                    ? GetDescriptorValue(desc, receiver)
+                    : JsValue.Undefined;
+            }
+            case JsValueTag.Number:
+            case JsValueTag.Int32:
+            {
+                var numberProto = _heap.GetObject(EnsureNumberPrototype());
+                return numberProto.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
+                    ? GetDescriptorValue(desc, receiver)
+                    : JsValue.Undefined;
+            }
+            case JsValueTag.Boolean:
+            {
+                var boolProto = _heap.GetObject(EnsureBooleanPrototype());
+                return boolProto.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
+                    ? GetDescriptorValue(desc, receiver)
+                    : JsValue.Undefined;
+            }
+            case JsValueTag.Undefined:
+                throw new JsThrownException(CreateTypeError(
+                    "Cannot read properties of undefined (reading symbol key)."));
+            case JsValueTag.Null:
+                throw new JsThrownException(CreateTypeError(
+                    "Cannot read properties of null (reading symbol key)."));
             default:
                 return JsValue.Undefined;
         }
