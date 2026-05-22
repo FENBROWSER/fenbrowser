@@ -56,6 +56,10 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _setPrototypeHandle;
     private ObjectHandle? _mapConstructorHandle;
     private ObjectHandle? _mapPrototypeHandle;
+    private ObjectHandle? _weakMapConstructorHandle;
+    private ObjectHandle? _weakMapPrototypeHandle;
+    private ObjectHandle? _weakSetConstructorHandle;
+    private ObjectHandle? _weakSetPrototypeHandle;
 
     // Well-known symbol ids cached at first Symbol-constructor materialisation. JS
     // code that reads Symbol.iterator twice must get === values; a single id per
@@ -656,6 +660,16 @@ public sealed class BytecodeInterpreter
         if (function.VariableSlots.TryGetValue("Map", out var mapSlot))
         {
             frame.Variables[mapSlot] = JsValue.FromObject(EnsureMapConstructor());
+        }
+
+        if (function.VariableSlots.TryGetValue("WeakMap", out var wmSlot))
+        {
+            frame.Variables[wmSlot] = JsValue.FromObject(EnsureWeakMapConstructor());
+        }
+
+        if (function.VariableSlots.TryGetValue("WeakSet", out var wsSlot))
+        {
+            frame.Variables[wsSlot] = JsValue.FromObject(EnsureWeakSetConstructor());
         }
     }
 
@@ -1544,6 +1558,251 @@ public sealed class BytecodeInterpreter
         public void Clear() => _entries.Clear();
 
         public IReadOnlyList<JsValue> Snapshot() => _entries.ToArray();
+    }
+
+    // ECMA-262 24.3 WeakMap and 24.4 WeakSet. Spec requires keys to be Objects
+    // (or non-registered Symbols in newer drafts). Internally we use an
+    // ObjectHandle-keyed dictionary so identity matches the spec's "same object".
+    // True weak references would require runtime GC-aware semantics; this is a
+    // strong-reference shim that satisfies API conformance.
+    private ObjectHandle EnsureWeakMapConstructor()
+    {
+        if (_weakMapConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototype = CreateOrdinaryObject();
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "WeakMap",
+            (_, _) => throw new JsThrownException(CreateTypeError("Constructor WeakMap requires 'new'.")),
+            args =>
+            {
+                var wm = new WeakMapObject();
+                wm.SetPrototype(EnsureWeakMapPrototype());
+                var handle = _heap.AllocateObject(wm, AllocationSite.Current());
+                if (args.Count > 0 && args[0].Tag == JsValueTag.Object)
+                {
+                    var src = _heap.GetObject(args[0].AsObjectHandle());
+                    if (src is ArrayObject)
+                    {
+                        var len = GetArrayLength(src);
+                        for (var i = 0; i < len; i++)
+                        {
+                            var k = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                            if (!TryGetPropertyValue(src, args[0], k, out var entry) ||
+                                entry.Tag != JsValueTag.Object)
+                            {
+                                throw new JsThrownException(CreateTypeError("WeakMap entry is not an object."));
+                            }
+
+                            var entryObj = _heap.GetObject(entry.AsObjectHandle());
+                            TryGetPropertyValue(entryObj, entry, "0", out var key);
+                            TryGetPropertyValue(entryObj, entry, "1", out var val);
+                            if (key.Tag != JsValueTag.Object)
+                            {
+                                throw new JsThrownException(CreateTypeError("WeakMap key must be an object."));
+                            }
+
+                            wm.Set(key.AsObjectHandle(), val);
+                            _heap.WriteBarrier(handle, key.AsObjectHandle());
+                            if (val.Tag == JsValueTag.Object) _heap.WriteBarrier(handle, val.AsObjectHandle());
+                        }
+                    }
+                }
+
+                return JsValue.FromObject(handle);
+            },
+            length: 0);
+
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "set", (thisValue, args) =>
+        {
+            var wm = RequireWeakMap(thisValue);
+            var key = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var val = args.Count > 1 ? args[1] : JsValue.Undefined;
+            if (key.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Invalid value used as weak map key."));
+            }
+
+            wm.Set(key.AsObjectHandle(), val);
+            _heap.WriteBarrier(thisValue.AsObjectHandle(), key.AsObjectHandle());
+            if (val.Tag == JsValueTag.Object) _heap.WriteBarrier(thisValue.AsObjectHandle(), val.AsObjectHandle());
+            return thisValue;
+        }, length: 2);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "get", (thisValue, args) =>
+        {
+            var wm = RequireWeakMap(thisValue);
+            var key = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (key.Tag != JsValueTag.Object) return JsValue.Undefined;
+            return wm.TryGet(key.AsObjectHandle(), out var v) ? v : JsValue.Undefined;
+        }, length: 1);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "has", (thisValue, args) =>
+        {
+            var wm = RequireWeakMap(thisValue);
+            var key = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (key.Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
+            return JsValue.FromBoolean(wm.Has(key.AsObjectHandle()));
+        }, length: 1);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "delete", (thisValue, args) =>
+        {
+            var wm = RequireWeakMap(thisValue);
+            var key = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (key.Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
+            return JsValue.FromBoolean(wm.Remove(key.AsObjectHandle()));
+        }, length: 1);
+
+        _weakMapPrototypeHandle = prototypeHandle;
+        _weakMapConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private ObjectHandle EnsureWeakMapPrototype()
+    {
+        _ = EnsureWeakMapConstructor();
+        return _weakMapPrototypeHandle!.Value;
+    }
+
+    private WeakMapObject RequireWeakMap(JsValue thisValue)
+    {
+        if (thisValue.Tag != JsValueTag.Object ||
+            _heap.GetObject(thisValue.AsObjectHandle()) is not WeakMapObject wm)
+        {
+            throw new JsThrownException(CreateTypeError("WeakMap method called on incompatible receiver."));
+        }
+
+        return wm;
+    }
+
+    private ObjectHandle EnsureWeakSetConstructor()
+    {
+        if (_weakSetConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototype = CreateOrdinaryObject();
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "WeakSet",
+            (_, _) => throw new JsThrownException(CreateTypeError("Constructor WeakSet requires 'new'.")),
+            args =>
+            {
+                var ws = new WeakSetObject();
+                ws.SetPrototype(EnsureWeakSetPrototype());
+                var handle = _heap.AllocateObject(ws, AllocationSite.Current());
+                if (args.Count > 0 && args[0].Tag == JsValueTag.Object)
+                {
+                    var src = _heap.GetObject(args[0].AsObjectHandle());
+                    if (src is ArrayObject)
+                    {
+                        var len = GetArrayLength(src);
+                        for (var i = 0; i < len; i++)
+                        {
+                            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                            TryGetPropertyValue(src, args[0], key, out var v);
+                            if (v.Tag != JsValueTag.Object)
+                            {
+                                throw new JsThrownException(CreateTypeError("WeakSet entries must be objects."));
+                            }
+
+                            ws.Add(v.AsObjectHandle());
+                            _heap.WriteBarrier(handle, v.AsObjectHandle());
+                        }
+                    }
+                }
+
+                return JsValue.FromObject(handle);
+            },
+            length: 0);
+
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "add", (thisValue, args) =>
+        {
+            var ws = RequireWeakSet(thisValue);
+            var value = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (value.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Invalid value used in weak set."));
+            }
+
+            ws.Add(value.AsObjectHandle());
+            _heap.WriteBarrier(thisValue.AsObjectHandle(), value.AsObjectHandle());
+            return thisValue;
+        }, length: 1);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "has", (thisValue, args) =>
+        {
+            var ws = RequireWeakSet(thisValue);
+            var value = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (value.Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
+            return JsValue.FromBoolean(ws.Has(value.AsObjectHandle()));
+        }, length: 1);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "delete", (thisValue, args) =>
+        {
+            var ws = RequireWeakSet(thisValue);
+            var value = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (value.Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
+            return JsValue.FromBoolean(ws.Remove(value.AsObjectHandle()));
+        }, length: 1);
+
+        _weakSetPrototypeHandle = prototypeHandle;
+        _weakSetConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private ObjectHandle EnsureWeakSetPrototype()
+    {
+        _ = EnsureWeakSetConstructor();
+        return _weakSetPrototypeHandle!.Value;
+    }
+
+    private WeakSetObject RequireWeakSet(JsValue thisValue)
+    {
+        if (thisValue.Tag != JsValueTag.Object ||
+            _heap.GetObject(thisValue.AsObjectHandle()) is not WeakSetObject ws)
+        {
+            throw new JsThrownException(CreateTypeError("WeakSet method called on incompatible receiver."));
+        }
+
+        return ws;
+    }
+
+    private sealed class WeakMapObject : JsObject
+    {
+        private readonly Dictionary<ObjectHandle, JsValue> _entries = new();
+        public void Set(ObjectHandle key, JsValue value) => _entries[key] = value;
+        public bool TryGet(ObjectHandle key, out JsValue value) => _entries.TryGetValue(key, out value);
+        public bool Has(ObjectHandle key) => _entries.ContainsKey(key);
+        public bool Remove(ObjectHandle key) => _entries.Remove(key);
+    }
+
+    private sealed class WeakSetObject : JsObject
+    {
+        private readonly HashSet<ObjectHandle> _entries = new();
+        public void Add(ObjectHandle key) => _entries.Add(key);
+        public bool Has(ObjectHandle key) => _entries.Contains(key);
+        public bool Remove(ObjectHandle key) => _entries.Remove(key);
     }
 
     private ObjectHandle EnsureGlobalObject()
