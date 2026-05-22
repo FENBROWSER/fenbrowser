@@ -39,6 +39,11 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _parseFloatHandle;
     private ObjectHandle? _isNaNHandle;
     private ObjectHandle? _isFiniteHandle;
+
+    // Shared Random for Math.random. Thread-safety: Math.random is single-threaded in
+    // ECMA-262, and the runtime is single-threaded today; if we ever introduce SAB +
+    // worker threads, swap to Random.Shared (which is per-thread internally).
+    private readonly Random _random = new();
     private ObjectHandle? _globalObjectHandle;
     private ObjectHandle? _dateConstructorHandle;
     private ObjectHandle? _datePrototypeHandle;
@@ -954,6 +959,13 @@ public sealed class BytecodeInterpreter
                 Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
+        // ECMA-262 21.4.3.1 Date.now() - milliseconds since the UNIX epoch as a
+        // Number value. Routed through DateTimeOffset so it's culture-invariant and
+        // matches the spec's TimeClip semantics for "now" (which produces an integer
+        // millisecond count by construction).
+        DefineIntrinsicFunction(constructorHandle, constructor, "now", (_, _) =>
+            JsValue.FromNumber(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()), length: 0);
+
         _datePrototypeHandle = prototypeHandle;
         _dateConstructorHandle = constructorHandle;
         return constructorHandle;
@@ -1177,6 +1189,10 @@ public sealed class BytecodeInterpreter
         DefineMathFunction(handle, math, "expm1", args => MathUnary(args, MathExpm1), length: 1);
         // ECMA-262 21.3.2.20 log1p - more accurate for small x than Math.log(1 + x).
         DefineMathFunction(handle, math, "log1p", args => MathUnary(args, MathLog1p), length: 1);
+        // ECMA-262 21.3.2.27 Math.random - pseudorandom in [0, 1). Backed by a single
+        // process-shared Random instance; not cryptographically secure (the spec
+        // explicitly forbids using Math.random for cryptography).
+        DefineMathFunction(handle, math, "random", _ => JsValue.FromNumber(_random.NextDouble()), length: 0);
 
         _mathObjectHandle = handle;
         return handle;
