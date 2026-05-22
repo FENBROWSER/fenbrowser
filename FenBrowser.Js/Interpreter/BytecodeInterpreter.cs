@@ -1691,6 +1691,95 @@ public sealed class BytecodeInterpreter
             return JsValue.FromBoolean(SameValue(a, b));
         }, length: 2);
 
+        // ECMA-262 20.1.2.12 Object.getPrototypeOf(O).
+        DefineIntrinsicFunction(constructorHandle, constructor, "getPrototypeOf", (_, args) =>
+        {
+            if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined || args[0].Tag == JsValueTag.Null)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Object.getPrototypeOf called on null or undefined."));
+            }
+
+            if (args[0].Tag != JsValueTag.Object)
+            {
+                return JsValue.Null;
+            }
+
+            var target = _heap.GetObject(args[0].AsObjectHandle());
+            return target.PrototypeHandle is { } proto ? JsValue.FromObject(proto) : JsValue.Null;
+        }, length: 1);
+
+        // ECMA-262 20.1.2.21 Object.setPrototypeOf(O, proto). Returns O. Proto must
+        // be either an Object or null.
+        DefineIntrinsicFunction(constructorHandle, constructor, "setPrototypeOf", (_, args) =>
+        {
+            if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined || args[0].Tag == JsValueTag.Null)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Object.setPrototypeOf called on null or undefined."));
+            }
+
+            var protoArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            if (protoArg.Tag != JsValueTag.Object && protoArg.Tag != JsValueTag.Null)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Object.setPrototypeOf: prototype must be Object or null."));
+            }
+
+            if (args[0].Tag != JsValueTag.Object)
+            {
+                return args[0];
+            }
+
+            var ownerHandle = args[0].AsObjectHandle();
+            var target = _heap.GetObject(ownerHandle);
+            if (protoArg.Tag == JsValueTag.Object)
+            {
+                var protoHandle = protoArg.AsObjectHandle();
+                target.SetPrototype(protoHandle);
+                _heap.WriteBarrier(ownerHandle, protoHandle);
+            }
+            else
+            {
+                target.SetPrototype(null);
+            }
+
+            return args[0];
+        }, length: 2);
+
+        // ECMA-262 20.1.2.2 Object.create(O[, Properties]). Allocates a new ordinary
+        // object whose [[Prototype]] is the first argument (must be Object or null).
+        // Properties parameter (DefineProperties-style) is deferred; passing it today
+        // is silently ignored - tests should not rely on the second argument until a
+        // follow-up commit wires DefineProperties.
+        DefineIntrinsicFunction(constructorHandle, constructor, "create", (_, args) =>
+        {
+            var protoArg = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (protoArg.Tag != JsValueTag.Object && protoArg.Tag != JsValueTag.Null)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Object.create: prototype must be Object or null."));
+            }
+
+            var obj = CreateOrdinaryObject();
+            if (protoArg.Tag == JsValueTag.Object)
+            {
+                obj.SetPrototype(protoArg.AsObjectHandle());
+            }
+            else
+            {
+                obj.SetPrototype(null);
+            }
+
+            var handle = _heap.AllocateObject(obj, AllocationSite.Current());
+            if (protoArg.Tag == JsValueTag.Object)
+            {
+                _heap.WriteBarrier(handle, protoArg.AsObjectHandle());
+            }
+
+            return JsValue.FromObject(handle);
+        }, length: 2);
+
         // ECMA-262 20.1.2.18 / 20.1.2.22 / 20.1.2.5 - Object.keys / values / entries.
         // Each calls EnumerableOwnProperties(O, kind) (7.3.24) which iterates the
         // target's own string-keyed properties in [[OwnPropertyKeys]] order and
