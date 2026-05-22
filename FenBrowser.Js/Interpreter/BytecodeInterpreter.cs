@@ -52,6 +52,8 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _regexpPrototypeHandle;
     private ObjectHandle? _jsonObjectHandle;
     private ObjectHandle? _symbolConstructorHandle;
+    private ObjectHandle? _setConstructorHandle;
+    private ObjectHandle? _setPrototypeHandle;
 
     // Well-known symbol ids cached at first Symbol-constructor materialisation. JS
     // code that reads Symbol.iterator twice must get === values; a single id per
@@ -626,6 +628,11 @@ public sealed class BytecodeInterpreter
         {
             frame.Variables[symbolSlot] = JsValue.FromObject(EnsureSymbolConstructor());
         }
+
+        if (function.VariableSlots.TryGetValue("Set", out var setSlot))
+        {
+            frame.Variables[setSlot] = JsValue.FromObject(EnsureSetConstructor());
+        }
     }
 
     private JsObject CreateOrdinaryObject()
@@ -932,6 +939,198 @@ public sealed class BytecodeInterpreter
         }
 
         return _wellKnownSymbols.TryGetValue(name, out var id) ? id : 0;
+    }
+
+    // ECMA-262 24.2 Set. Backed by a List<JsValue> per instance for SameValueZero
+    // equality (which is what Set keys use). Linear scan suffices for the test262
+    // sizes; a hash-backed variant lands when Set perf becomes load-bearing.
+    private ObjectHandle EnsureSetConstructor()
+    {
+        if (_setConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototype = CreateOrdinaryObject();
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "Set",
+            (_, _) => throw new JsThrownException(CreateTypeError(
+                "Constructor Set requires 'new'.")),
+            args =>
+            {
+                var set = new SetObject();
+                set.SetPrototype(EnsureSetPrototype());
+                var handle = _heap.AllocateObject(set, AllocationSite.Current());
+                if (args.Count > 0 && args[0].Tag == JsValueTag.Object)
+                {
+                    var src = _heap.GetObject(args[0].AsObjectHandle());
+                    if (src is ArrayObject)
+                    {
+                        var len = GetArrayLength(src);
+                        for (var i = 0; i < len; i++)
+                        {
+                            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                            TryGetPropertyValue(src, args[0], key, out var v);
+                            set.Add(v);
+                            if (v.Tag == JsValueTag.Object)
+                            {
+                                _heap.WriteBarrier(handle, v.AsObjectHandle());
+                            }
+                        }
+                    }
+                }
+
+                return JsValue.FromObject(handle);
+            },
+            length: 0);
+
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        // ECMA-262 24.2.3.1 add (returns the set for chaining).
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "add", (thisValue, args) =>
+        {
+            var set = RequireSet(thisValue);
+            var value = args.Count > 0 ? args[0] : JsValue.Undefined;
+            set.Add(value);
+            if (value.Tag == JsValueTag.Object)
+            {
+                _heap.WriteBarrier(thisValue.AsObjectHandle(), value.AsObjectHandle());
+            }
+
+            return thisValue;
+        }, length: 1);
+
+        // 24.2.3.4 has.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "has", (thisValue, args) =>
+        {
+            var set = RequireSet(thisValue);
+            var value = args.Count > 0 ? args[0] : JsValue.Undefined;
+            return JsValue.FromBoolean(set.Has(value));
+        }, length: 1);
+
+        // 24.2.3.3 delete - returns whether the entry was present.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "delete", (thisValue, args) =>
+        {
+            var set = RequireSet(thisValue);
+            var value = args.Count > 0 ? args[0] : JsValue.Undefined;
+            return JsValue.FromBoolean(set.Remove(value));
+        }, length: 1);
+
+        // 24.2.3.2 clear.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "clear", (thisValue, _) =>
+        {
+            RequireSet(thisValue).Clear();
+            return JsValue.Undefined;
+        }, length: 0);
+
+        // 24.2.3.6 forEach(callback[, thisArg]).
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "forEach", (thisValue, args) =>
+        {
+            var set = RequireSet(thisValue);
+            var cb = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            if (cb.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Set.prototype.forEach callback is not a function."));
+            }
+
+            foreach (var entry in set.Snapshot())
+            {
+                CallFunction(cb, new[] { entry, entry, thisValue }, thisArg);
+            }
+
+            return JsValue.Undefined;
+        }, length: 1);
+
+        // 24.2.3.9 size getter installed as a data property for simplicity; the
+        // spec's getter/setter machinery covers it as an accessor on
+        // Set.prototype but a writable=false data form is observationally close for
+        // most tests until accessors-on-prototype is wired.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "size_getter_internal_unused", (_, _) => JsValue.Undefined, length: 0);
+        // Instead, install a 'size' accessor that reads the live count from the set.
+        var sizeGetter = new NativeFunctionObject("get size", (thisValue, _) =>
+            JsValue.FromNumber(RequireSet(thisValue).Count), length: 0);
+        var sizeGetterHandle = _heap.AllocateObject(sizeGetter, AllocationSite.Current());
+        prototype.DefineOwnProperty("size", JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(sizeGetterHandle), JsValue.Undefined, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, sizeGetterHandle);
+
+        _setPrototypeHandle = prototypeHandle;
+        _setConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private ObjectHandle EnsureSetPrototype()
+    {
+        _ = EnsureSetConstructor();
+        return _setPrototypeHandle!.Value;
+    }
+
+    private SetObject RequireSet(JsValue thisValue)
+    {
+        if (thisValue.Tag != JsValueTag.Object ||
+            _heap.GetObject(thisValue.AsObjectHandle()) is not SetObject set)
+        {
+            throw new JsThrownException(CreateTypeError("Set method called on incompatible receiver."));
+        }
+
+        return set;
+    }
+
+    private sealed class SetObject : JsObject
+    {
+        // Spec uses SameValueZero for entry identity. A List with a manual
+        // SameValueZero comparison keeps both spec correctness and trivial GC
+        // traceability (entries are reachable via the list).
+        private readonly List<JsValue> _entries = new();
+
+        public int Count => _entries.Count;
+
+        public void Add(JsValue value)
+        {
+            if (!Has(value))
+            {
+                _entries.Add(value);
+            }
+        }
+
+        public bool Has(JsValue value)
+        {
+            foreach (var e in _entries)
+            {
+                if (SameValueZero(e, value))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public bool Remove(JsValue value)
+        {
+            for (var i = 0; i < _entries.Count; i++)
+            {
+                if (SameValueZero(_entries[i], value))
+                {
+                    _entries.RemoveAt(i);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public void Clear() => _entries.Clear();
+
+        public IReadOnlyList<JsValue> Snapshot() => _entries.ToArray();
     }
 
     private ObjectHandle EnsureGlobalObject()
