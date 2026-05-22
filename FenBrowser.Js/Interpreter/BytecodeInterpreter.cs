@@ -2266,11 +2266,20 @@ public sealed class BytecodeInterpreter
             args => CreateNumberObject(args.Count > 0 ? ToNumber(args[0]) : 0d),
             length: 1);
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        // ECMA-262 21.1.2 - Properties of the Number Constructor.
         _ = constructor.SetProperty("MAX_VALUE", JsValue.FromNumber(double.MaxValue));
         _ = constructor.SetProperty("MIN_VALUE", JsValue.FromNumber(double.Epsilon));
         _ = constructor.SetProperty("NaN", JsValue.FromNumber(double.NaN));
         _ = constructor.SetProperty("POSITIVE_INFINITY", JsValue.FromNumber(double.PositiveInfinity));
         _ = constructor.SetProperty("NEGATIVE_INFINITY", JsValue.FromNumber(double.NegativeInfinity));
+        // 21.1.2.1 EPSILON - the difference between 1 and the smallest IEEE-754 double
+        // strictly greater than 1, i.e. 2**-52.
+        _ = constructor.SetProperty("EPSILON", JsValue.FromNumber(Math.Pow(2d, -52)));
+        // 21.1.2.6 MAX_SAFE_INTEGER - 2**53 - 1, the largest integer n such that n and
+        // n + 1 are both exactly representable as a Number.
+        _ = constructor.SetProperty("MAX_SAFE_INTEGER", JsValue.FromNumber(9007199254740991d));
+        // 21.1.2.8 MIN_SAFE_INTEGER - -(2**53 - 1).
+        _ = constructor.SetProperty("MIN_SAFE_INTEGER", JsValue.FromNumber(-9007199254740991d));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
