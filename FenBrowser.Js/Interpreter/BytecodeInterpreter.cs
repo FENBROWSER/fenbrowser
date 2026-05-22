@@ -63,8 +63,42 @@ public sealed class BytecodeInterpreter
         return ExecuteInternal(function, Array.Empty<JsValue>(), null, JsValue.FromObject(EnsureGlobalObject()));
     }
 
+    // Bounds JS recursion so a runaway tail-less recursive function surfaces as a
+    // catchable JS RangeError instead of crashing the host with a native
+    // StackOverflowException. Each ExecuteInternal call consumes one C# stack frame
+    // plus the inner CallFunction/StoreCallResult chain - empirically ~6KB per JS
+    // call - so the cap is set conservatively below the default 1MB thread stack.
+    // Test262 has tests that legitimately recurse 50-80 times; the 80-frame cap
+    // accommodates them while leaving headroom for the unwinding path itself
+    // (which also consumes stack to run the per-frame `finally` blocks).
+    private const int MaxCallDepth = 80;
+    private int _callDepth;
+
     [MayExecuteJs]
     private JsValue ExecuteInternal(
+        BytecodeFunction function,
+        IReadOnlyList<JsValue> args,
+        IReadOnlyDictionary<string, JsVariableCell>? capturedVariables,
+        JsValue thisValue)
+    {
+        if (_callDepth >= MaxCallDepth)
+        {
+            throw new JsThrownException(CreateRangeError("Maximum call stack size exceeded."));
+        }
+
+        _callDepth++;
+        try
+        {
+            return ExecuteInternalCore(function, args, capturedVariables, thisValue);
+        }
+        finally
+        {
+            _callDepth--;
+        }
+    }
+
+    [MayExecuteJs]
+    private JsValue ExecuteInternalCore(
         BytecodeFunction function,
         IReadOnlyList<JsValue> args,
         IReadOnlyDictionary<string, JsVariableCell>? capturedVariables,
