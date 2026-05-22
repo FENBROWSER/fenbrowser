@@ -1016,6 +1016,58 @@ public sealed class BytecodeInterpreter
         DefineIntrinsicFunction(constructorHandle, constructor, "now", (_, _) =>
             JsValue.FromNumber(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()), length: 0);
 
+        // ECMA-262 21.4.3.4 Date.UTC(year[, month[, day[, hours[, minutes[, seconds[, ms]]]]]]).
+        // Constructs a UTC time value from explicit components, defaulting any
+        // omitted lower-order field to its spec default (0, or 1 for day). Years in
+        // [0, 99] map to 1900+year per spec step 2.
+        DefineIntrinsicFunction(constructorHandle, constructor, "UTC", (_, args) =>
+        {
+            if (args.Count == 0)
+            {
+                return JsValue.FromNumber(double.NaN);
+            }
+
+            var year = (int)ToNumber(args[0]);
+            if (year >= 0 && year <= 99)
+            {
+                year += 1900;
+            }
+
+            var month = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
+            var day = args.Count > 2 ? (int)ToNumber(args[2]) : 1;
+            var hours = args.Count > 3 ? (int)ToNumber(args[3]) : 0;
+            var minutes = args.Count > 4 ? (int)ToNumber(args[4]) : 0;
+            var seconds = args.Count > 5 ? (int)ToNumber(args[5]) : 0;
+            var ms = args.Count > 6 ? (int)ToNumber(args[6]) : 0;
+
+            try
+            {
+                var dt = new DateTimeOffset(year, month + 1, day, hours, minutes, seconds, ms, TimeSpan.Zero);
+                return JsValue.FromNumber(dt.ToUnixTimeMilliseconds());
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return JsValue.FromNumber(double.NaN);
+            }
+        }, length: 7);
+
+        // ECMA-262 21.4.3.2 Date.parse(string). Returns the time value of a parsed
+        // date string, or NaN on failure. Recognises the standard ISO-8601 forms
+        // (the spec's "Date Time String Format" 21.4.1.18) plus a few common
+        // looser variants .NET's DateTimeOffset.TryParse already understands.
+        DefineIntrinsicFunction(constructorHandle, constructor, "parse", (_, args) =>
+        {
+            var text = args.Count > 0 ? ToStringValue(args[0]) : "Invalid Date";
+            if (DateTimeOffset.TryParse(text, System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                out var parsed))
+            {
+                return JsValue.FromNumber(parsed.ToUnixTimeMilliseconds());
+            }
+
+            return JsValue.FromNumber(double.NaN);
+        }, length: 1);
+
         _datePrototypeHandle = prototypeHandle;
         _dateConstructorHandle = constructorHandle;
         return constructorHandle;
