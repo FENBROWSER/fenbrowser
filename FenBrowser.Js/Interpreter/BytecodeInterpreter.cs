@@ -1691,6 +1691,34 @@ public sealed class BytecodeInterpreter
             return JsValue.FromBoolean(SameValue(a, b));
         }, length: 2);
 
+        // ECMA-262 20.1.2.10 Object.getOwnPropertyNames(O). Unlike Object.keys this
+        // does NOT filter by Enumerable - every own string-keyed property surfaces in
+        // [[OwnPropertyKeys]] order. Primitives and null/undefined still throw via
+        // the ToObject step on the spec side; we surface that as a TypeError matching
+        // the Object.keys path.
+        DefineIntrinsicFunction(constructorHandle, constructor, "getOwnPropertyNames", (_, args) =>
+        {
+            var target = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (target.Tag == JsValueTag.Undefined || target.Tag == JsValueTag.Null)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Cannot convert undefined or null to object."));
+            }
+
+            var items = new List<JsValue>();
+            if (target.Tag == JsValueTag.Object)
+            {
+                var obj = _heap.GetObject(target.AsObjectHandle());
+                foreach (var pair in obj.EnumerateOwnProperties())
+                {
+                    items.Add(JsValue.FromString(pair.Key));
+                }
+            }
+
+            var arr = CreateArrayObject(items);
+            return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+        }, length: 1);
+
         // ECMA-262 20.1.2.20 / 20.1.2.15 Object.preventExtensions / isExtensible.
         DefineIntrinsicFunction(constructorHandle, constructor, "preventExtensions", (_, args) =>
         {
