@@ -2746,6 +2746,10 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "join", ArrayPrototypeJoin, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "indexOf", ArrayPrototypeIndexOf, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "includes", ArrayPrototypeIncludes, length: 1);
+        // ECMA-262 23.1.3.21 pop, 23.1.3.27 shift, 23.1.3.34 unshift.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "pop", ArrayPrototypePop);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "shift", ArrayPrototypeShift);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "unshift", ArrayPrototypeUnshift, length: 1);
 
         // ECMA-262 23.1.2.2 Array.isArray(arg). Spec walks Proxy targets; we have no
         // Proxy yet, so the operation collapses to "is the value an ArrayObject?".
@@ -2817,6 +2821,100 @@ public sealed class BytecodeInterpreter
         }
 
         var newLength = length + args.Count;
+        _ = obj.SetProperty("length", JsValue.FromNumber(newLength));
+        return JsValue.FromNumber(newLength);
+    }
+
+    // ECMA-262 23.1.3.21 Array.prototype.pop. Returns undefined for empty arrays;
+    // otherwise removes and returns the last element, decrementing length.
+    private JsValue ArrayPrototypePop(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        if (length == 0)
+        {
+            _ = obj.SetProperty("length", JsValue.FromNumber(0));
+            return JsValue.Undefined;
+        }
+
+        var lastKey = (length - 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        TryGetPropertyValue(obj, thisValue, lastKey, out var value);
+        obj.DeleteProperty(lastKey);
+        _ = obj.SetProperty("length", JsValue.FromNumber(length - 1));
+        return value;
+    }
+
+    // ECMA-262 23.1.3.27 Array.prototype.shift. Removes element at index 0 and
+    // shifts every subsequent element down by one; returns the removed value.
+    private JsValue ArrayPrototypeShift(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        if (length == 0)
+        {
+            _ = obj.SetProperty("length", JsValue.FromNumber(0));
+            return JsValue.Undefined;
+        }
+
+        TryGetPropertyValue(obj, thisValue, "0", out var first);
+        for (var i = 1; i < length; i++)
+        {
+            var fromKey = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var toKey = (i - 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (TryGetPropertyValue(obj, thisValue, fromKey, out var v))
+            {
+                _ = obj.SetProperty(toKey, v);
+            }
+            else
+            {
+                obj.DeleteProperty(toKey);
+            }
+        }
+
+        obj.DeleteProperty((length - 1).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        _ = obj.SetProperty("length", JsValue.FromNumber(length - 1));
+        return first;
+    }
+
+    // ECMA-262 23.1.3.34 Array.prototype.unshift. Inserts arguments at the front,
+    // shifting existing elements up by args.Count; returns the new length.
+    private JsValue ArrayPrototypeUnshift(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var ownerHandle = ResolveObjectHandle(thisValue);
+        var obj = _heap.GetObject(ownerHandle);
+        var length = GetArrayLength(obj);
+        var insert = args.Count;
+
+        if (insert > 0 && length > 0)
+        {
+            for (var i = length - 1; i >= 0; i--)
+            {
+                var fromKey = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var toKey = (i + insert).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if (TryGetPropertyValue(obj, thisValue, fromKey, out var v))
+                {
+                    _ = obj.SetProperty(toKey, v);
+                }
+                else
+                {
+                    obj.DeleteProperty(toKey);
+                }
+            }
+        }
+
+        for (var i = 0; i < insert; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            _ = obj.SetProperty(key, args[i]);
+            if (args[i].Tag == JsValueTag.Object)
+            {
+                _heap.WriteBarrier(ownerHandle, args[i].AsObjectHandle());
+            }
+        }
+
+        var newLength = length + insert;
         _ = obj.SetProperty("length", JsValue.FromNumber(newLength));
         return JsValue.FromNumber(newLength);
     }
