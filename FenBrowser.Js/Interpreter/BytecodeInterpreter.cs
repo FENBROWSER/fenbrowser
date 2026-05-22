@@ -1492,6 +1492,20 @@ public sealed class BytecodeInterpreter
             return JsValue.FromBoolean(SameValue(a, b));
         }, length: 2);
 
+        // ECMA-262 20.1.2.18 / 20.1.2.22 / 20.1.2.5 - Object.keys / values / entries.
+        // Each calls EnumerableOwnProperties(O, kind) (7.3.24) which iterates the
+        // target's own string-keyed properties in [[OwnPropertyKeys]] order and
+        // filters to those with Enumerable: true. Undefined/null arguments raise
+        // TypeError per the ToObject step (7.1.18). Other primitives currently
+        // return an empty list; full ToObject boxing for primitives lands when the
+        // String/Number/Boolean prototype enumerations land.
+        DefineIntrinsicFunction(constructorHandle, constructor, "keys", (_, args)
+            => CollectOwnEnumerable(args, OwnEnumerableKind.Keys), length: 1);
+        DefineIntrinsicFunction(constructorHandle, constructor, "values", (_, args)
+            => CollectOwnEnumerable(args, OwnEnumerableKind.Values), length: 1);
+        DefineIntrinsicFunction(constructorHandle, constructor, "entries", (_, args)
+            => CollectOwnEnumerable(args, OwnEnumerableKind.Entries), length: 1);
+
         var prototype = _heap.GetObject(prototypeHandle);
         _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
@@ -1504,6 +1518,60 @@ public sealed class BytecodeInterpreter
         _objectPrototypeHandle = prototypeHandle;
         _objectConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    private enum OwnEnumerableKind
+    {
+        Keys,
+        Values,
+        Entries,
+    }
+
+    private JsValue CollectOwnEnumerable(IReadOnlyList<JsValue> args, OwnEnumerableKind kind)
+    {
+        var target = args.Count > 0 ? args[0] : JsValue.Undefined;
+        if (target.Tag == JsValueTag.Undefined || target.Tag == JsValueTag.Null)
+        {
+            // 7.1.18 ToObject(undefined|null) throws TypeError; the user-visible
+            // call site is Object.{keys,values,entries}, so the message names it.
+            throw new JsThrownException(CreateTypeError(
+                "Cannot convert undefined or null to object."));
+        }
+
+        var items = new List<JsValue>();
+        if (target.Tag == JsValueTag.Object)
+        {
+            var obj = _heap.GetObject(target.AsObjectHandle());
+            foreach (var pair in obj.EnumerateOwnProperties())
+            {
+                if (!pair.Value.Enumerable)
+                {
+                    continue;
+                }
+
+                switch (kind)
+                {
+                    case OwnEnumerableKind.Keys:
+                        items.Add(JsValue.FromString(pair.Key));
+                        break;
+                    case OwnEnumerableKind.Values:
+                        items.Add(pair.Value.IsAccessor ? JsValue.Undefined : pair.Value.Value);
+                        break;
+                    case OwnEnumerableKind.Entries:
+                    {
+                        var value = pair.Value.IsAccessor ? JsValue.Undefined : pair.Value.Value;
+                        var entry = CreateArrayObject(new[] { JsValue.FromString(pair.Key), value });
+                        var entryHandle = _heap.AllocateObject(entry, AllocationSite.Current());
+                        items.Add(JsValue.FromObject(entryHandle));
+                        break;
+                    }
+                }
+            }
+        }
+
+        var arr = CreateArrayObject(items);
+        var arrHandle = _heap.AllocateObject(arr, AllocationSite.Current());
+        return JsValue.FromObject(arrHandle);
     }
 
     private ObjectHandle EnsureFunctionPrototype()
