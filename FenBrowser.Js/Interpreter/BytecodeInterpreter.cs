@@ -1691,6 +1691,57 @@ public sealed class BytecodeInterpreter
             return JsValue.FromBoolean(SameValue(a, b));
         }, length: 2);
 
+        // ECMA-262 20.1.2.7 Object.fromEntries(iterable). The full spec walks an
+        // arbitrary iterable via @@iterator; this implementation accepts an Array of
+        // two-element entries (the overwhelmingly common case) until the full
+        // iterator protocol is wired. Each entry's [0] becomes the property key
+        // (coerced via ToPropertyKey) and [1] becomes the value. Non-Array or non-
+        // entry inputs surface as a TypeError, matching engines like V8 / SM.
+        DefineIntrinsicFunction(constructorHandle, constructor, "fromEntries", (_, args) =>
+        {
+            var iterable = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (iterable.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Object.fromEntries: argument must be an iterable of entries."));
+            }
+
+            var source = _heap.GetObject(iterable.AsObjectHandle());
+            if (source is not ArrayObject)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Object.fromEntries: argument must be an Array (full iterator protocol pending)."));
+            }
+
+            var length = GetArrayLength(source);
+            var result = CreateOrdinaryObject();
+            for (var i = 0; i < length; i++)
+            {
+                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if (!TryGetPropertyValue(source, iterable, key, out var entryValue) ||
+                    entryValue.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        $"Object.fromEntries: entry at index {i} is not an object."));
+                }
+
+                var entry = _heap.GetObject(entryValue.AsObjectHandle());
+                if (entry is not ArrayObject)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        $"Object.fromEntries: entry at index {i} is not an Array."));
+                }
+
+                TryGetPropertyValue(entry, entryValue, "0", out var entryKey);
+                TryGetPropertyValue(entry, entryValue, "1", out var entryValueSlot);
+                var keyName = ToPropertyKey(entryKey);
+                result.SetProperty(keyName, entryValueSlot);
+            }
+
+            var resultHandle = _heap.AllocateObject(result, AllocationSite.Current());
+            return JsValue.FromObject(resultHandle);
+        }, length: 1);
+
         // ECMA-262 20.1.2.10 Object.getOwnPropertyNames(O). Unlike Object.keys this
         // does NOT filter by Enumerable - every own string-keyed property surfaces in
         // [[OwnPropertyKeys]] order. Primitives and null/undefined still throw via
