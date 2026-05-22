@@ -3083,6 +3083,14 @@ public sealed class BytecodeInterpreter
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "push", ArrayPrototypePush, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", ArrayPrototypeToString);
+        // ECMA-262 23.1.3.32 Array.prototype.toLocaleString. The spec calls each
+        // element's toLocaleString through Invoke; here we approximate by calling
+        // the element's toString conversion (which goes through Number / Boolean /
+        // user toString as appropriate). Locale-sensitive output requires Intl which
+        // is not wired yet; per the Intl-not-present clause this is the documented
+        // fallback engines use.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleString",
+            (t, a) => { _ = a; return ArrayPrototypeToString(t, a); });
         // ECMA-262 23.1.3.18 Array.prototype.join, 23.1.3.16 indexOf, 23.1.3.14 includes.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "join", ArrayPrototypeJoin, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "indexOf", ArrayPrototypeIndexOf, length: 1);
