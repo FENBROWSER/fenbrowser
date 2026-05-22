@@ -22,6 +22,11 @@ public enum OpCode : byte
     DeleteElem,
     EnumerateKeys,
     ForInNext,
+    // ECMA-262 13.7.5 ForIn/OfHeadEvaluation + 7.4 Iterator Records.
+    // EnumerateValues materialises an iteration state for the for-of head; ForOfNext
+    // advances it, writing the next value into a register or jumping to the loop end.
+    EnumerateValues,
+    ForOfNext,
     CreateFunction,
     Call0,
     Call1,

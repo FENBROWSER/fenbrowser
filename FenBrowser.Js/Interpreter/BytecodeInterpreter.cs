@@ -286,6 +286,24 @@ public sealed class BytecodeInterpreter
                     frame.Registers[ins.A] = CreateForInIterator(frame.Registers[ins.B]);
                     break;
                 }
+                case OpCode.EnumerateValues:
+                {
+                    frame.Registers[ins.A] = CreateForOfIterator(frame.Registers[ins.B]);
+                    break;
+                }
+                case OpCode.ForOfNext:
+                {
+                    var iter = ResolveObject(frame.Registers[ins.B]) as ForOfIteratorObject
+                        ?? throw new InvalidOperationException("Invalid for-of iterator object.");
+                    if (!iter.TryMoveNext(out var value))
+                    {
+                        frame.InstructionPointer = ins.C;
+                        break;
+                    }
+
+                    frame.Registers[ins.A] = value;
+                    break;
+                }
                 case OpCode.ForInNext:
                 {
                     var iterator = ResolveObject(frame.Registers[ins.B]) as ForInIteratorObject
@@ -642,6 +660,63 @@ public sealed class BytecodeInterpreter
         }
 
         return JsValue.FromObject(handle);
+    }
+
+    // Build a for-of iteration state. Strings yield each UTF-16 code unit; Arrays
+    // and array-likes (objects with .length) yield each indexed value. Other
+    // iterables (Map/Set/user @@iterator) are not yet wired - they throw TypeError
+    // to match how V8 surfaces "X is not iterable".
+    private JsValue CreateForOfIterator(JsValue source)
+    {
+        var values = new List<JsValue>();
+        if (source.Tag == JsValueTag.String)
+        {
+            var s = source.AsString();
+            for (var i = 0; i < s.Length; i++)
+            {
+                values.Add(JsValue.FromString(s[i].ToString()));
+            }
+        }
+        else if (source.Tag == JsValueTag.Object)
+        {
+            var obj = _heap.GetObject(source.AsObjectHandle());
+            if (obj is ArrayObject)
+            {
+                var length = GetArrayLength(obj);
+                for (var i = 0; i < length; i++)
+                {
+                    var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    values.Add(TryGetPropertyValue(obj, source, key, out var v) ? v : JsValue.Undefined);
+                }
+            }
+            else if (obj.TryGetOwnProperty("length", out var lenDesc) &&
+                     (lenDesc.Value.Tag == JsValueTag.Number || lenDesc.Value.Tag == JsValueTag.Int32))
+            {
+                // Array-like fallback (arguments, NodeList-shape).
+                var length = (int)lenDesc.Value.AsNumber();
+                for (var i = 0; i < length; i++)
+                {
+                    var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    values.Add(TryGetPropertyValue(obj, source, key, out var v) ? v : JsValue.Undefined);
+                }
+            }
+            else
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Value is not iterable (Map/Set/user @@iterator support pending)."));
+            }
+        }
+        else if (source.Tag == JsValueTag.Undefined || source.Tag == JsValueTag.Null)
+        {
+            throw new JsThrownException(CreateTypeError("Cannot iterate over " + (source.Tag == JsValueTag.Null ? "null" : "undefined") + "."));
+        }
+        else
+        {
+            throw new JsThrownException(CreateTypeError("Value is not iterable."));
+        }
+
+        var iter = new ForOfIteratorObject(values);
+        return JsValue.FromObject(_heap.AllocateObject(iter, AllocationSite.Current()));
     }
 
     private JsValue CreateForInIterator(JsValue value)
@@ -6688,6 +6763,29 @@ public sealed class BytecodeInterpreter
         public string Flags { get; }
 
         public Regex Regex { get; }
+    }
+
+    private sealed class ForOfIteratorObject : JsObject
+    {
+        private readonly IReadOnlyList<JsValue> _values;
+        private int _index;
+
+        public ForOfIteratorObject(IReadOnlyList<JsValue> values)
+        {
+            _values = values;
+        }
+
+        public bool TryMoveNext(out JsValue value)
+        {
+            if (_index >= _values.Count)
+            {
+                value = JsValue.Undefined;
+                return false;
+            }
+
+            value = _values[_index++];
+            return true;
+        }
     }
 
     private sealed class ForInIteratorObject : JsObject

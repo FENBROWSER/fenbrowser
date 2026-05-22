@@ -127,6 +127,9 @@ public sealed class BytecodeCompiler
             case ForInStatementNode forInStmt:
                 CompileForInStatement(forInStmt);
                 break;
+            case ForOfStatementNode forOfStmt:
+                CompileForOfStatement(forOfStmt);
+                break;
             case ReturnStatementNode returnStmt:
                 CompileReturnStatement(returnStmt);
                 break;
@@ -328,6 +331,52 @@ public sealed class BytecodeCompiler
         try
         {
             CompileStatement(forInStmt.Body);
+            _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
+            var loopEnd = _instructions.Count;
+            _instructions[nextIndex] = _instructions[nextIndex] with { C = loopEnd };
+
+            foreach (var breakJump in ctx.BreakJumpIndices)
+            {
+                PatchJump(breakJump, loopEnd);
+            }
+
+            foreach (var continueJump in ctx.ContinueJumpIndices)
+            {
+                PatchJump(continueJump, loopStart);
+            }
+        }
+        finally
+        {
+            _ = _loopStack.Pop();
+        }
+    }
+
+    // Mirror of CompileForInStatement but using EnumerateValues / ForOfNext so each
+    // iteration yields the iterable's value rather than its key. Reuses the same
+    // continue/break stack so labelled break still works.
+    private void CompileForOfStatement(ForOfStatementNode forOfStmt)
+    {
+        var targetSlot = GetForInTargetSlot(forOfStmt.Initializer);
+        var sourceReg = CompileExpression(forOfStmt.Iterable);
+        var iteratorReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.EnumerateValues, iteratorReg, sourceReg, 0));
+
+        var loopStart = _instructions.Count;
+        var valueReg = AllocateRegister();
+        var nextIndex = _instructions.Count;
+        _instructions.Add(new Instruction(OpCode.ForOfNext, valueReg, iteratorReg, -1));
+        _instructions.Add(new Instruction(OpCode.StoreVar, valueReg, targetSlot, 0));
+
+        var ctx = new LoopContext
+        {
+            ContinueTarget = loopStart,
+            BreakJumpIndices = new List<int>(),
+            ContinueJumpIndices = new List<int>()
+        };
+        _loopStack.Push(ctx);
+        try
+        {
+            CompileStatement(forOfStmt.Body);
             _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
             var loopEnd = _instructions.Count;
             _instructions[nextIndex] = _instructions[nextIndex] with { C = loopEnd };
