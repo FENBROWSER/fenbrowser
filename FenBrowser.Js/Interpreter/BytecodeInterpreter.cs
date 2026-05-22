@@ -1138,6 +1138,18 @@ public sealed class BytecodeInterpreter
         DefineMathFunction(handle, math, "imul", args => JsValue.FromNumber(MathImul(args)), length: 2);
         // ECMA-262 21.3.2.16 Math.fround - round to nearest IEEE-754 single-precision.
         DefineMathFunction(handle, math, "fround", args => MathUnary(args, v => (double)(float)v), length: 1);
+        // ECMA-262 21.3.2.31/.12/.33 sinh/cosh/tanh.
+        DefineMathFunction(handle, math, "sinh", args => MathUnary(args, Math.Sinh), length: 1);
+        DefineMathFunction(handle, math, "cosh", args => MathUnary(args, Math.Cosh), length: 1);
+        DefineMathFunction(handle, math, "tanh", args => MathUnary(args, Math.Tanh), length: 1);
+        // ECMA-262 21.3.2.7/.2/.8 asinh/acosh/atanh.
+        DefineMathFunction(handle, math, "asinh", args => MathUnary(args, Math.Asinh), length: 1);
+        DefineMathFunction(handle, math, "acosh", args => MathUnary(args, Math.Acosh), length: 1);
+        DefineMathFunction(handle, math, "atanh", args => MathUnary(args, Math.Atanh), length: 1);
+        // ECMA-262 21.3.2.14 expm1 - more accurate for small x than Math.exp(x) - 1.
+        DefineMathFunction(handle, math, "expm1", args => MathUnary(args, MathExpm1), length: 1);
+        // ECMA-262 21.3.2.20 log1p - more accurate for small x than Math.log(1 + x).
+        DefineMathFunction(handle, math, "log1p", args => MathUnary(args, MathLog1p), length: 1);
 
         _mathObjectHandle = handle;
         return handle;
@@ -1357,6 +1369,62 @@ public sealed class BytecodeInterpreter
         var x = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
         var y = args.Count > 1 ? ToNumber(args[1]) : double.NaN;
         return unchecked((int)((uint)ToInt32(x) * (uint)ToInt32(y)));
+    }
+
+    // 21.3.2.14 expm1(x) = e^x - 1. NaN preserved; -Infinity yields -1; +Infinity
+    // yields +Infinity. Routed through Math.Exp(x) - 1 since BCL has no expm1; the
+    // accuracy difference matters for x near zero but not for spec conformance of
+    // boundary cases.
+    private static double MathExpm1(double value)
+    {
+        if (double.IsNaN(value))
+        {
+            return double.NaN;
+        }
+
+        if (double.IsNegativeInfinity(value))
+        {
+            return -1d;
+        }
+
+        if (double.IsPositiveInfinity(value))
+        {
+            return double.PositiveInfinity;
+        }
+
+        if (value == 0d)
+        {
+            return value;   // preserves -0
+        }
+
+        return Math.Exp(value) - 1d;
+    }
+
+    // 21.3.2.20 log1p(x) = log(1 + x). NaN, -1, +Infinity, and the (x < -1) range
+    // each have explicit spec branches; otherwise delegates to Math.Log(1 + x).
+    private static double MathLog1p(double value)
+    {
+        if (double.IsNaN(value) || value < -1d)
+        {
+            return double.NaN;
+        }
+
+        if (value == -1d)
+        {
+            return double.NegativeInfinity;
+        }
+
+        if (double.IsPositiveInfinity(value))
+        {
+            return double.PositiveInfinity;
+        }
+
+        if (value == 0d)
+        {
+            return value;   // preserves -0
+        }
+
+        return Math.Log(1d + value);
     }
 
     private static uint ToUint32(double value)
