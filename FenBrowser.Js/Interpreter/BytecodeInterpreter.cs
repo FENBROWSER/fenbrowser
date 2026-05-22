@@ -460,6 +460,14 @@ public sealed class BytecodeInterpreter
             frame.Variables[undefinedSlot] = JsValue.Undefined;
         }
 
+        // ECMA-262 19.1.2.13 globalThis. Resolves to the global object so script code
+        // can reach the realm's global without depending on a host-specific name
+        // (window, self, etc.). Writable+non-enumerable+configurable per spec.
+        if (function.VariableSlots.TryGetValue("globalThis", out var globalThisSlot))
+        {
+            frame.Variables[globalThisSlot] = JsValue.FromObject(EnsureGlobalObject());
+        }
+
         if (function.VariableSlots.TryGetValue("eval", out var evalSlot))
         {
             frame.Variables[evalSlot] = JsValue.FromObject(EnsureEvalFunction());
