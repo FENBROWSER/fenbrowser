@@ -1718,6 +1718,37 @@ public sealed class BytecodeInterpreter
             return JsValue.FromBoolean(SameValue(a, b));
         }, length: 2);
 
+        // ECMA-262 20.1.2.11 Object.getOwnPropertyDescriptors(O). Returns an object
+        // whose own keys mirror the input's own keys and whose values are full
+        // descriptor objects (built by the same factory as getOwnPropertyDescriptor
+        // so the shape stays in sync).
+        DefineIntrinsicFunction(constructorHandle, constructor, "getOwnPropertyDescriptors", (_, args) =>
+        {
+            var target = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (target.Tag == JsValueTag.Undefined || target.Tag == JsValueTag.Null)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Cannot convert undefined or null to object."));
+            }
+
+            var result = CreateOrdinaryObject();
+            var resultHandle = _heap.AllocateObject(result, AllocationSite.Current());
+            if (target.Tag == JsValueTag.Object)
+            {
+                var obj = _heap.GetObject(target.AsObjectHandle());
+                foreach (var pair in obj.EnumerateOwnProperties())
+                {
+                    var descObj = BuildDescriptorObject(pair.Value);
+                    var descHandle = _heap.AllocateObject(descObj, AllocationSite.Current());
+                    WriteDescriptorBarrier(descHandle, pair.Value);
+                    result.SetProperty(pair.Key, JsValue.FromObject(descHandle));
+                    _heap.WriteBarrier(resultHandle, descHandle);
+                }
+            }
+
+            return JsValue.FromObject(resultHandle);
+        }, length: 1);
+
         // ECMA-262 20.1.2.7 Object.fromEntries(iterable). The full spec walks an
         // arbitrary iterable via @@iterator; this implementation accepts an Array of
         // two-element entries (the overwhelmingly common case) until the full
@@ -2564,6 +2595,18 @@ public sealed class BytecodeInterpreter
             return JsValue.Undefined;
         }
 
+        var descriptorObject = BuildDescriptorObject(descriptor);
+        var descriptorHandle = _heap.AllocateObject(descriptorObject, AllocationSite.Current());
+        WriteDescriptorBarrier(descriptorHandle, descriptor);
+        return JsValue.FromObject(descriptorHandle);
+    }
+
+    // Spec 6.2.5.4 FromPropertyDescriptor: build the user-visible descriptor object
+    // shape (get/set for accessor, value/writable for data, always enumerable +
+    // configurable). Shared by Object.getOwnPropertyDescriptor and
+    // Object.getOwnPropertyDescriptors so a single edit covers both.
+    private JsObject BuildDescriptorObject(JsPropertyDescriptor descriptor)
+    {
         var descriptorObject = CreateOrdinaryObject();
         if (descriptor.IsAccessor)
         {
@@ -2578,9 +2621,7 @@ public sealed class BytecodeInterpreter
 
         _ = descriptorObject.SetProperty("enumerable", JsValue.FromBoolean(descriptor.Enumerable));
         _ = descriptorObject.SetProperty("configurable", JsValue.FromBoolean(descriptor.Configurable));
-        var descriptorHandle = _heap.AllocateObject(descriptorObject, AllocationSite.Current());
-        WriteDescriptorBarrier(descriptorHandle, descriptor);
-        return JsValue.FromObject(descriptorHandle);
+        return descriptorObject;
     }
 
     [MayExecuteJs]
