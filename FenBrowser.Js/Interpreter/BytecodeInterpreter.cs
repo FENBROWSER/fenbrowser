@@ -919,9 +919,59 @@ public sealed class BytecodeInterpreter
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
+        // ECMA-262 20.5.3 Error.prototype: must carry the spec-default 'name'
+        // ("Error") and 'message' ("") so an Error built without arguments still
+        // stringifies as "Error" (rather than ": ").
+        _ = prototype.DefineOwnProperty("name",
+            new JsPropertyDescriptor(JsValue.FromString("Error"), Writable: true, Enumerable: false, Configurable: true));
+        _ = prototype.DefineOwnProperty("message",
+            new JsPropertyDescriptor(JsValue.FromString(string.Empty), Writable: true, Enumerable: false, Configurable: true));
+
+        // ECMA-262 20.5.3.4 Error.prototype.toString(). Reads .name (defaulting to
+        // "Error") and .message (defaulting to ""), then joins them with ": " when
+        // both are non-empty. The receiver must be an Object - primitives raise
+        // TypeError per step 2.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", ErrorPrototypeToString);
+
         _errorPrototypeHandle = prototypeHandle;
         _errorConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    private JsValue ErrorPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        if (thisValue.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Error.prototype.toString called on non-object."));
+        }
+
+        var obj = _heap.GetObject(thisValue.AsObjectHandle());
+        string name = "Error";
+        if (TryGetPropertyValue(obj, thisValue, "name", out var nameValue) &&
+            nameValue.Tag != JsValueTag.Undefined)
+        {
+            name = ToStringValue(nameValue);
+        }
+
+        string message = string.Empty;
+        if (TryGetPropertyValue(obj, thisValue, "message", out var messageValue) &&
+            messageValue.Tag != JsValueTag.Undefined)
+        {
+            message = ToStringValue(messageValue);
+        }
+
+        if (name.Length == 0)
+        {
+            return JsValue.FromString(message);
+        }
+
+        if (message.Length == 0)
+        {
+            return JsValue.FromString(name);
+        }
+
+        return JsValue.FromString(name + ": " + message);
     }
 
     private ObjectHandle EnsureDatePrototype()
