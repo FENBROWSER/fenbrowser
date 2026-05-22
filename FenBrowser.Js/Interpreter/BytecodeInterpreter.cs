@@ -4356,6 +4356,9 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toString", NumberPrototypeToString);
         // ECMA-262 21.1.3.3 Number.prototype.toFixed(fractionDigits).
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toFixed", NumberPrototypeToFixed, length: 1);
+        // ECMA-262 21.1.3.2 toExponential, 21.1.3.5 toPrecision.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toExponential", NumberPrototypeToExponential, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toPrecision", NumberPrototypeToPrecision, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "valueOf", NumberPrototypeValueOf);
 
         _numberPrototypeHandle = prototypeHandle;
@@ -4621,6 +4624,121 @@ public sealed class BytecodeInterpreter
                 Enumerable: false,
                 Configurable: true));
         _heap.WriteBarrier(ownerHandle, functionHandle);
+    }
+
+    // ECMA-262 21.1.3.2 Number.prototype.toExponential(fractionDigits). The
+    // canonical scientific form: <mantissa>e+<exp> or <mantissa>e-<exp>. NaN and
+    // +-Infinity surface as their default ToString. fractionDigits must be in
+    // [0, 100]; when omitted, fractional digits go as small as needed to render
+    // the value uniquely (we approximate via Round-Trip "R" then re-format).
+    private JsValue NumberPrototypeToExponential(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var value = NumberThisValue(thisValue);
+        if (double.IsNaN(value))
+        {
+            return JsValue.FromString("NaN");
+        }
+
+        if (double.IsInfinity(value))
+        {
+            return JsValue.FromString(value > 0 ? "Infinity" : "-Infinity");
+        }
+
+        if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
+        {
+            // Round-trip then reformat to lowercase e per spec.
+            return JsValue.FromString(NormaliseExponential(value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)));
+        }
+
+        var digits = (int)ToNumber(args[0]);
+        if (digits < 0 || digits > 100)
+        {
+            throw new JsThrownException(CreateRangeError(
+                "toExponential() digits argument must be between 0 and 100."));
+        }
+
+        var format = "0." + new string('0', digits) + "e+0";
+        var raw = value.ToString(format, System.Globalization.CultureInfo.InvariantCulture);
+        if (digits == 0)
+        {
+            // Trim trailing "." that the format string can leave behind on whole values.
+            raw = raw.Replace(".e", "e", StringComparison.Ordinal);
+        }
+
+        return JsValue.FromString(NormaliseExponential(raw));
+    }
+
+    // Convert any "1.23E+05" / "1.23E5" style produced by .NET into the canonical
+    // ECMA-262 form "1.23e+5" (lowercase e, explicit sign, no leading zeros on the
+    // exponent).
+    private static string NormaliseExponential(string text)
+    {
+        var eIdx = text.IndexOfAny(['e', 'E']);
+        if (eIdx < 0)
+        {
+            return text;
+        }
+
+        var mantissa = text[..eIdx];
+        var expPart = text[(eIdx + 1)..];
+        var sign = "+";
+        if (expPart.Length > 0 && (expPart[0] == '+' || expPart[0] == '-'))
+        {
+            sign = expPart[0] == '-' ? "-" : "+";
+            expPart = expPart[1..];
+        }
+
+        expPart = expPart.TrimStart('0');
+        if (expPart.Length == 0)
+        {
+            expPart = "0";
+        }
+
+        return mantissa + "e" + sign + expPart;
+    }
+
+    // ECMA-262 21.1.3.5 Number.prototype.toPrecision(precision). When precision is
+    // undefined, behaves like toString. Otherwise renders the value with `precision`
+    // significant digits, using fixed notation when |value| has |exp| < precision
+    // and scientific otherwise (matching spec 21.1.3.5 step 10's choice).
+    private JsValue NumberPrototypeToPrecision(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var value = NumberThisValue(thisValue);
+        if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
+        {
+            return JsValue.FromString(FormatNumberForString(value));
+        }
+
+        if (double.IsNaN(value))
+        {
+            return JsValue.FromString("NaN");
+        }
+
+        if (double.IsInfinity(value))
+        {
+            return JsValue.FromString(value > 0 ? "Infinity" : "-Infinity");
+        }
+
+        var precision = (int)ToNumber(args[0]);
+        if (precision < 1 || precision > 100)
+        {
+            throw new JsThrownException(CreateRangeError(
+                "toPrecision() precision argument must be between 1 and 100."));
+        }
+
+        if (value == 0d)
+        {
+            return JsValue.FromString(precision == 1
+                ? "0"
+                : "0." + new string('0', precision - 1));
+        }
+
+        // "Gn" rounds to n significant digits without exponent unless necessary.
+        // For spec parity with V8/SM ("0.0001" -> precision 1 -> "0.0001" stays;
+        // very small or very large slip into scientific) we route through G then
+        // normalise the exponent form when present.
+        var formatted = value.ToString("G" + precision, System.Globalization.CultureInfo.InvariantCulture);
+        return JsValue.FromString(NormaliseExponential(formatted));
     }
 
     // ECMA-262 21.1.3.3 Number.prototype.toFixed(fractionDigits). fractionDigits
