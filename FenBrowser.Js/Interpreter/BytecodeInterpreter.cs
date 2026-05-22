@@ -1130,6 +1130,14 @@ public sealed class BytecodeInterpreter
         DefineMathFunction(handle, math, "log2", args => MathUnary(args, Math.Log2), length: 1);
         // ECMA-262 21.3.2.21 Math.log10 - base-10 logarithm.
         DefineMathFunction(handle, math, "log10", args => MathUnary(args, Math.Log10), length: 1);
+        // ECMA-262 21.3.2.18 Math.hypot - sqrt of sum of squares; variadic.
+        DefineMathFunction(handle, math, "hypot", MathHypot, length: 2);
+        // ECMA-262 21.3.2.11 Math.clz32 - count leading zero bits of a Uint32.
+        DefineMathFunction(handle, math, "clz32", args => JsValue.FromNumber(MathClz32(args)), length: 1);
+        // ECMA-262 21.3.2.19 Math.imul - 32-bit signed integer multiplication.
+        DefineMathFunction(handle, math, "imul", args => JsValue.FromNumber(MathImul(args)), length: 2);
+        // ECMA-262 21.3.2.16 Math.fround - round to nearest IEEE-754 single-precision.
+        DefineMathFunction(handle, math, "fround", args => MathUnary(args, v => (double)(float)v), length: 1);
 
         _mathObjectHandle = handle;
         return handle;
@@ -1283,6 +1291,90 @@ public sealed class BytecodeInterpreter
         }
 
         return value < 0 ? Math.Ceiling(value) : Math.Floor(value);
+    }
+
+    // 21.3.2.18 Math.hypot - sqrt(x^2 + y^2 + ...). Any +-Infinity argument wins
+    // (return +Infinity); NaN sticks unless +-Infinity is also present.
+    private JsValue MathHypot(IReadOnlyList<JsValue> args)
+    {
+        var sawNaN = false;
+        var sum = 0d;
+        for (var i = 0; i < args.Count; i++)
+        {
+            var v = ToNumber(args[i]);
+            if (double.IsInfinity(v))
+            {
+                return JsValue.FromNumber(double.PositiveInfinity);
+            }
+
+            if (double.IsNaN(v))
+            {
+                sawNaN = true;
+                continue;
+            }
+
+            sum += v * v;
+        }
+
+        if (sawNaN)
+        {
+            return JsValue.FromNumber(double.NaN);
+        }
+
+        return JsValue.FromNumber(Math.Sqrt(sum));
+    }
+
+    // 21.3.2.11 Math.clz32 - returns the number of leading zero bits when the
+    // argument is converted to a Uint32. 32 when the value coerces to 0 or NaN.
+    private double MathClz32(IReadOnlyList<JsValue> args)
+    {
+        var value = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
+        if (double.IsNaN(value) || double.IsInfinity(value))
+        {
+            return 32d;
+        }
+
+        var u = ToUint32(value);
+        if (u == 0u)
+        {
+            return 32d;
+        }
+
+        var n = 0;
+        while ((u & 0x80000000u) == 0u)
+        {
+            u <<= 1;
+            n++;
+        }
+
+        return n;
+    }
+
+    // 21.3.2.19 Math.imul - convert both arguments to Int32 and return the low
+    // 32 bits of the signed product.
+    private double MathImul(IReadOnlyList<JsValue> args)
+    {
+        var x = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
+        var y = args.Count > 1 ? ToNumber(args[1]) : double.NaN;
+        return unchecked((int)((uint)ToInt32(x) * (uint)ToInt32(y)));
+    }
+
+    private static uint ToUint32(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+        {
+            return 0u;
+        }
+
+        var truncated = value >= 0 ? Math.Floor(value) : Math.Ceiling(value);
+        var modulo = truncated - Math.Floor(truncated / 4294967296d) * 4294967296d;
+        return (uint)modulo;
+    }
+
+    private static int ToInt32(double value)
+    {
+        var unsigned = ToUint32(value);
+        return unchecked((int)unsigned);
     }
 
     private ObjectHandle EnsureJsonObject()
