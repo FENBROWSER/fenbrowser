@@ -35,6 +35,10 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _functionPrototypeHandle;
     private ObjectHandle? _functionCallMethodHandle;
     private ObjectHandle? _evalFunctionHandle;
+    private ObjectHandle? _parseIntHandle;
+    private ObjectHandle? _parseFloatHandle;
+    private ObjectHandle? _isNaNHandle;
+    private ObjectHandle? _isFiniteHandle;
     private ObjectHandle? _globalObjectHandle;
     private ObjectHandle? _dateConstructorHandle;
     private ObjectHandle? _datePrototypeHandle;
@@ -454,6 +458,29 @@ public sealed class BytecodeInterpreter
         if (function.VariableSlots.TryGetValue("eval", out var evalSlot))
         {
             frame.Variables[evalSlot] = JsValue.FromObject(EnsureEvalFunction());
+        }
+
+        // ECMA-262 19.2.4 / 19.2.5 / 19.2.2 / 19.2.3 - the four numeric global
+        // functions. Number.parseInt and Number.parseFloat (21.1.2.13 / 21.1.2.14)
+        // are the SAME function objects, installed below in EnsureNumberConstructor.
+        if (function.VariableSlots.TryGetValue("parseInt", out var parseIntSlot))
+        {
+            frame.Variables[parseIntSlot] = JsValue.FromObject(EnsureParseIntFunction());
+        }
+
+        if (function.VariableSlots.TryGetValue("parseFloat", out var parseFloatSlot))
+        {
+            frame.Variables[parseFloatSlot] = JsValue.FromObject(EnsureParseFloatFunction());
+        }
+
+        if (function.VariableSlots.TryGetValue("isNaN", out var isNanSlot))
+        {
+            frame.Variables[isNanSlot] = JsValue.FromObject(EnsureIsNaNFunction());
+        }
+
+        if (function.VariableSlots.TryGetValue("isFinite", out var isFiniteSlot))
+        {
+            frame.Variables[isFiniteSlot] = JsValue.FromObject(EnsureIsFiniteFunction());
         }
 
         if (function.VariableSlots.TryGetValue("Object", out var objectSlot))
@@ -3057,6 +3084,19 @@ public sealed class BytecodeInterpreter
         DefineNumberStatic(constructorHandle, constructor, "isSafeInteger", static args
             => JsValue.FromBoolean(IsIntegerNumber(args) && Math.Abs(args[0].AsNumber()) <= 9007199254740991d));
 
+        // ECMA-262 21.1.2.13 / 21.1.2.14 - Number.parseInt and Number.parseFloat
+        // are required to be the SAME function object as the global parseInt /
+        // parseFloat. Install by reference using the cached handles.
+        var parseIntHandle = EnsureParseIntFunction();
+        constructor.DefineOwnProperty("parseInt", new JsPropertyDescriptor(
+            JsValue.FromObject(parseIntHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(constructorHandle, parseIntHandle);
+
+        var parseFloatHandle = EnsureParseFloatFunction();
+        constructor.DefineOwnProperty("parseFloat", new JsPropertyDescriptor(
+            JsValue.FromObject(parseFloatHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(constructorHandle, parseFloatHandle);
+
         var prototypeObject = _heap.GetObject(prototypeHandle);
         _ = prototypeObject.SetProperty("constructor", JsValue.FromObject(constructorHandle));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
@@ -3066,6 +3106,232 @@ public sealed class BytecodeInterpreter
         _numberPrototypeHandle = prototypeHandle;
         _numberConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    // ECMA-262 19.2.5 parseInt(string, radix). Trims leading whitespace, accepts an
+    // optional sign, an optional 0x/0X prefix when radix is 16 or 0, then consumes
+    // digits valid for the radix until the first invalid character. Returns NaN when
+    // no valid digit is read.
+    private ObjectHandle EnsureParseIntFunction()
+    {
+        if (_parseIntHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var fn = new NativeFunctionObject("parseInt", (_, args) =>
+        {
+            var text = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+            var radixArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            return JsValue.FromNumber(ParseIntegerLiteral(text, radixArg));
+        }, length: 2);
+
+        _parseIntHandle = _heap.AllocateObject(fn, AllocationSite.Current());
+        _heap.PushRoot(_parseIntHandle.Value);
+        return _parseIntHandle.Value;
+    }
+
+    // ECMA-262 19.2.4 parseFloat(string).
+    private ObjectHandle EnsureParseFloatFunction()
+    {
+        if (_parseFloatHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var fn = new NativeFunctionObject("parseFloat", (_, args) =>
+        {
+            var text = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+            return JsValue.FromNumber(ParseFloatLiteral(text));
+        }, length: 1);
+
+        _parseFloatHandle = _heap.AllocateObject(fn, AllocationSite.Current());
+        _heap.PushRoot(_parseFloatHandle.Value);
+        return _parseFloatHandle.Value;
+    }
+
+    // ECMA-262 19.2.3 isNaN(number) - coerces, unlike Number.isNaN.
+    private ObjectHandle EnsureIsNaNFunction()
+    {
+        if (_isNaNHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var fn = new NativeFunctionObject("isNaN", (_, args) =>
+        {
+            var n = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
+            return JsValue.FromBoolean(double.IsNaN(n));
+        }, length: 1);
+
+        _isNaNHandle = _heap.AllocateObject(fn, AllocationSite.Current());
+        _heap.PushRoot(_isNaNHandle.Value);
+        return _isNaNHandle.Value;
+    }
+
+    // ECMA-262 19.2.2 isFinite(number) - coerces, unlike Number.isFinite.
+    private ObjectHandle EnsureIsFiniteFunction()
+    {
+        if (_isFiniteHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var fn = new NativeFunctionObject("isFinite", (_, args) =>
+        {
+            var n = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
+            return JsValue.FromBoolean(!double.IsNaN(n) && !double.IsInfinity(n));
+        }, length: 1);
+
+        _isFiniteHandle = _heap.AllocateObject(fn, AllocationSite.Current());
+        _heap.PushRoot(_isFiniteHandle.Value);
+        return _isFiniteHandle.Value;
+    }
+
+    private static double ParseIntegerLiteral(string text, JsValue radixArg)
+    {
+        var s = text.AsSpan().TrimStart();
+        if (s.Length == 0)
+        {
+            return double.NaN;
+        }
+
+        var sign = 1;
+        if (s[0] == '+')
+        {
+            s = s[1..];
+        }
+        else if (s[0] == '-')
+        {
+            sign = -1;
+            s = s[1..];
+        }
+
+        var radix = 0;
+        var stripPrefix = true;
+        if (radixArg.Tag != JsValueTag.Undefined)
+        {
+            var r = (int)ToInt32(ParseNumberForCoerce(radixArg));
+            if (r != 0)
+            {
+                if (r < 2 || r > 36)
+                {
+                    return double.NaN;
+                }
+
+                radix = r;
+                stripPrefix = r == 16;
+            }
+        }
+
+        if (stripPrefix && s.Length >= 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
+        {
+            s = s[2..];
+            if (radix == 0)
+            {
+                radix = 16;
+            }
+        }
+
+        if (radix == 0)
+        {
+            radix = 10;
+        }
+
+        var consumed = 0;
+        double result = 0;
+        for (var i = 0; i < s.Length; i++)
+        {
+            var digit = DigitValue(s[i]);
+            if (digit < 0 || digit >= radix)
+            {
+                break;
+            }
+
+            result = result * radix + digit;
+            consumed++;
+        }
+
+        if (consumed == 0)
+        {
+            return double.NaN;
+        }
+
+        return sign * result;
+    }
+
+    private static int DigitValue(char c)
+    {
+        if (c >= '0' && c <= '9')
+        {
+            return c - '0';
+        }
+
+        if (c >= 'a' && c <= 'z')
+        {
+            return 10 + (c - 'a');
+        }
+
+        if (c >= 'A' && c <= 'Z')
+        {
+            return 10 + (c - 'A');
+        }
+
+        return -1;
+    }
+
+    private static double ParseFloatLiteral(string text)
+    {
+        var s = text.AsSpan().TrimStart().ToString();
+        if (s.Length == 0)
+        {
+            return double.NaN;
+        }
+
+        if (s.StartsWith("Infinity", StringComparison.Ordinal))
+        {
+            return double.PositiveInfinity;
+        }
+
+        if (s.StartsWith("+Infinity", StringComparison.Ordinal))
+        {
+            return double.PositiveInfinity;
+        }
+
+        if (s.StartsWith("-Infinity", StringComparison.Ordinal))
+        {
+            return double.NegativeInfinity;
+        }
+
+        // Take the longest prefix that parses as a Number per StrNumericLiteral. Walk
+        // back from the end; the spec calls for the longest matching prefix.
+        for (var len = s.Length; len > 0; len--)
+        {
+            var prefix = s[..len];
+            if (double.TryParse(prefix, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var v))
+            {
+                return v;
+            }
+        }
+
+        return double.NaN;
+    }
+
+    private static double ParseNumberForCoerce(JsValue value)
+    {
+        return value.Tag switch
+        {
+            JsValueTag.Number => value.AsNumber(),
+            JsValueTag.Int32 => value.AsInt32(),
+            JsValueTag.Boolean => value.AsBoolean() ? 1d : 0d,
+            JsValueTag.Null => 0d,
+            JsValueTag.Undefined => double.NaN,
+            JsValueTag.String => double.TryParse(value.AsString(),
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : double.NaN,
+            _ => double.NaN,
+        };
     }
 
     private static bool IsIntegerNumber(IReadOnlyList<JsValue> args)
