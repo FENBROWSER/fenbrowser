@@ -1635,19 +1635,96 @@ public sealed class BytecodeInterpreter
         _heap.WriteBarrier(ownerHandle, functionHandle);
     }
 
+    // ECMA-262 25.5.1 JSON.parse(text[, reviver]). When a reviver function is
+    // provided, the spec defines an InternalizeJSONProperty walk that visits every
+    // node bottom-up: replacing the node with reviver.call(holder, key, value);
+    // returning undefined deletes the entry. A non-callable reviver is ignored
+    // per spec step 2.
     private JsValue JsonParse(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = thisValue;
         var text = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+        JsValue unfiltered;
         try
         {
             using var document = JsonDocument.Parse(text);
-            return ConvertJsonElement(document.RootElement);
+            unfiltered = ConvertJsonElement(document.RootElement);
         }
         catch (JsonException ex)
         {
             throw new JsThrownException(CreateSyntaxError(ex.Message));
         }
+
+        if (args.Count < 2 || args[1].Tag != JsValueTag.Object)
+        {
+            return unfiltered;
+        }
+
+        var reviverObj = _heap.GetObject(args[1].AsObjectHandle());
+        if (reviverObj is not JsFunctionObject && reviverObj is not NativeFunctionObject)
+        {
+            return unfiltered;
+        }
+
+        // Spec 25.5.1.1 InternalizeJSONProperty: wrap the result in a single-property
+        // root object { "": value } so the reviver can also see the top-level value
+        // at the empty key, then walk children bottom-up.
+        var rootObj = CreateOrdinaryObject();
+        rootObj.SetProperty(string.Empty, unfiltered);
+        var rootHandle = _heap.AllocateObject(rootObj, AllocationSite.Current());
+        return InternalizeJsonProperty(rootHandle, string.Empty, args[1]);
+    }
+
+    private JsValue InternalizeJsonProperty(ObjectHandle holderHandle, string key, JsValue reviver)
+    {
+        var holder = _heap.GetObject(holderHandle);
+        TryGetPropertyValue(holder, JsValue.FromObject(holderHandle), key, out var value);
+
+        if (value.Tag == JsValueTag.Object)
+        {
+            var valueObj = _heap.GetObject(value.AsObjectHandle());
+            var valueHandle = value.AsObjectHandle();
+            if (valueObj is ArrayObject)
+            {
+                var length = GetArrayLength(valueObj);
+                for (var i = 0; i < length; i++)
+                {
+                    var k = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    var newValue = InternalizeJsonProperty(valueHandle, k, reviver);
+                    if (newValue.Tag == JsValueTag.Undefined)
+                    {
+                        valueObj.DeleteProperty(k);
+                    }
+                    else
+                    {
+                        valueObj.SetProperty(k, newValue);
+                    }
+                }
+            }
+            else
+            {
+                var keys = new List<string>();
+                foreach (var pair in valueObj.EnumerateOwnProperties())
+                {
+                    keys.Add(pair.Key);
+                }
+
+                foreach (var k in keys)
+                {
+                    var newValue = InternalizeJsonProperty(valueHandle, k, reviver);
+                    if (newValue.Tag == JsValueTag.Undefined)
+                    {
+                        valueObj.DeleteProperty(k);
+                    }
+                    else
+                    {
+                        valueObj.SetProperty(k, newValue);
+                    }
+                }
+            }
+        }
+
+        return CallFunction(reviver, new[] { JsValue.FromString(key), value }, JsValue.FromObject(holderHandle));
     }
 
     private JsValue ConvertJsonElement(JsonElement element)
