@@ -4151,6 +4151,42 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toString", StringPrototypeToString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "valueOf", StringPrototypeValueOf);
 
+        // ECMA-262 22.1.2.1 String.fromCharCode(...codeUnits). Each argument is
+        // truncated to a UTF-16 code unit (ToUint16) and concatenated. Surrogate
+        // halves are kept as-is - String.fromCodePoint handles full code points.
+        DefineIntrinsicFunction(constructorHandle, constructor, "fromCharCode", (_, args) =>
+        {
+            var sb = new System.Text.StringBuilder(args.Count);
+            for (var i = 0; i < args.Count; i++)
+            {
+                var codeUnit = (char)(ushort)ToInt32(ToNumber(args[i]));
+                sb.Append(codeUnit);
+            }
+
+            return JsValue.FromString(sb.ToString());
+        }, length: 1);
+
+        // ECMA-262 22.1.2.2 String.fromCodePoint(...codePoints). Each argument must
+        // be a non-negative integer <= 0x10FFFF; otherwise RangeError. Values
+        // above 0xFFFF are encoded as a UTF-16 surrogate pair via char.ConvertFromUtf32.
+        DefineIntrinsicFunction(constructorHandle, constructor, "fromCodePoint", (_, args) =>
+        {
+            var sb = new System.Text.StringBuilder(args.Count);
+            for (var i = 0; i < args.Count; i++)
+            {
+                var n = ToNumber(args[i]);
+                if (double.IsNaN(n) || n < 0 || n > 0x10FFFF || Math.Floor(n) != n)
+                {
+                    throw new JsThrownException(CreateRangeError(
+                        "Invalid code point in String.fromCodePoint argument list."));
+                }
+
+                sb.Append(char.ConvertFromUtf32((int)n));
+            }
+
+            return JsValue.FromString(sb.ToString());
+        }, length: 1);
+
         _stringPrototypeHandle = prototypeHandle;
         _stringConstructorHandle = constructorHandle;
         return constructorHandle;
