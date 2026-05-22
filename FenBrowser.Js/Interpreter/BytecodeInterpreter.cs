@@ -2144,6 +2144,19 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "push", ArrayPrototypePush, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", ArrayPrototypeToString);
 
+        // ECMA-262 23.1.2.2 Array.isArray(arg). Spec walks Proxy targets; we have no
+        // Proxy yet, so the operation collapses to "is the value an ArrayObject?".
+        DefineIntrinsicFunction(constructorHandle, constructor, "isArray", (_, args) =>
+        {
+            if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+            {
+                return JsValue.FromBoolean(false);
+            }
+
+            var obj = _heap.GetObject(args[0].AsObjectHandle());
+            return JsValue.FromBoolean(obj is ArrayObject);
+        }, length: 1);
+
         _arrayPrototypeHandle = prototypeHandle;
         _arrayConstructorHandle = constructorHandle;
         return constructorHandle;
