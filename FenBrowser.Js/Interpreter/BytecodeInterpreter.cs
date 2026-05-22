@@ -2768,6 +2768,10 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "some", ArrayPrototypeSome, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "find", ArrayPrototypeFind, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "findIndex", ArrayPrototypeFindIndex, length: 1);
+        // ECMA-262 23.1.3.17 lastIndexOf, 23.1.3.9 flat, 23.1.3.10a flatMap.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "lastIndexOf", ArrayPrototypeLastIndexOf, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "flat", ArrayPrototypeFlat);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "flatMap", ArrayPrototypeFlatMap, length: 1);
 
         // ECMA-262 23.1.2.2 Array.isArray(arg). Spec walks Proxy targets; we have no
         // Proxy yet, so the operation collapses to "is the value an ArrayObject?".
@@ -3016,6 +3020,111 @@ public sealed class BytecodeInterpreter
             : (int)args[argIndex].AsNumber();
         var idx = raw < 0 ? length + raw : raw;
         return Math.Clamp(idx, 0, length);
+    }
+
+    // ECMA-262 23.1.3.17 lastIndexOf. Strict equality, scans backwards from fromIndex
+    // (default length-1, negative wraps from length). Returns -1 when not found.
+    private JsValue ArrayPrototypeLastIndexOf(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        if (length == 0 || args.Count == 0)
+        {
+            return JsValue.FromNumber(-1);
+        }
+
+        var target = args[0];
+        var fromIndex = args.Count > 1 ? (int)ToNumber(args[1]) : length - 1;
+        if (fromIndex < 0)
+        {
+            fromIndex = length + fromIndex;
+        }
+        else if (fromIndex >= length)
+        {
+            fromIndex = length - 1;
+        }
+
+        for (var i = fromIndex; i >= 0; i--)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (TryGetPropertyValue(obj, thisValue, key, out var value) && AreStrictlyEqual(value, target))
+            {
+                return JsValue.FromNumber(i);
+            }
+        }
+
+        return JsValue.FromNumber(-1);
+    }
+
+    // ECMA-262 23.1.3.9 flat([depth]). Default depth is 1. Array elements are spread
+    // up to the given depth; non-Array elements are kept as-is. Holes are skipped.
+    private JsValue ArrayPrototypeFlat(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var depth = args.Count > 0 && args[0].Tag != JsValueTag.Undefined
+            ? Math.Max(0, (int)ToNumber(args[0]))
+            : 1;
+        var items = new List<JsValue>();
+        FlattenInto(obj, thisValue, depth, items);
+        var arr = CreateArrayObject(items);
+        return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+    }
+
+    private void FlattenInto(JsObject source, JsValue receiver, int depth, List<JsValue> sink)
+    {
+        var length = GetArrayLength(source);
+        for (var i = 0; i < length; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!TryGetPropertyValue(source, receiver, key, out var element))
+            {
+                continue;   // skip holes per spec step 5.b.ii
+            }
+
+            if (depth > 0 && element.Tag == JsValueTag.Object &&
+                _heap.GetObject(element.AsObjectHandle()) is ArrayObject child)
+            {
+                FlattenInto(child, element, depth - 1, sink);
+            }
+            else
+            {
+                sink.Add(element);
+            }
+        }
+    }
+
+    // ECMA-262 23.1.3.10a flatMap(callback[, thisArg]). Equivalent to map followed
+    // by flat with depth 1, but produced in a single pass to avoid the intermediate
+    // array allocation that the spec also avoids.
+    private JsValue ArrayPrototypeFlatMap(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        var items = new List<JsValue>();
+        for (var i = 0; i < length; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!TryGetPropertyValue(obj, thisValue, key, out var v))
+            {
+                continue;
+            }
+
+            var mapped = InvokeArrayCallback(callback, v, i, thisValue, thisArg);
+            if (mapped.Tag == JsValueTag.Object &&
+                _heap.GetObject(mapped.AsObjectHandle()) is ArrayObject inner)
+            {
+                FlattenInto(inner, mapped, depth: 0, items);   // append elements (1 level)
+            }
+            else
+            {
+                items.Add(mapped);
+            }
+        }
+
+        var arr = CreateArrayObject(items);
+        return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
     }
 
     // ECMA-262 23.1.3.6 every: returns true iff callback returns truthy for every
