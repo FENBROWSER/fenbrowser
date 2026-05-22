@@ -2773,6 +2773,73 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "flat", ArrayPrototypeFlat);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "flatMap", ArrayPrototypeFlatMap, length: 1);
 
+        // ECMA-262 23.1.2.3 Array.of(...items). Returns a fresh Array populated with
+        // exactly the supplied items - distinct from new Array(n), which uses a
+        // single Number argument to set length.
+        DefineIntrinsicFunction(constructorHandle, constructor, "of", (_, args) =>
+        {
+            var items = new JsValue[args.Count];
+            for (var i = 0; i < args.Count; i++)
+            {
+                items[i] = args[i];
+            }
+
+            var arr = CreateArrayFromElements(items);
+            return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+        }, length: 0);
+
+        // ECMA-262 23.1.2.1 Array.from(arrayLike[, mapFn[, thisArg]]). Full spec
+        // accepts any iterable; until the @@iterator protocol is wired we accept
+        // array-like values (objects with a length property and integer-keyed
+        // entries) which covers Array, arguments, and any plain {length, 0, 1, ...}
+        // object - the overwhelmingly common case.
+        DefineIntrinsicFunction(constructorHandle, constructor, "from", (_, args) =>
+        {
+            if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined || args[0].Tag == JsValueTag.Null)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Array.from: argument must not be undefined or null."));
+            }
+
+            var source = args[0];
+            var mapFn = args.Count > 1 && args[1].Tag != JsValueTag.Undefined ? args[1] : (JsValue?)null;
+            var thisArg = args.Count > 2 ? args[2] : JsValue.Undefined;
+
+            if (mapFn.HasValue && mapFn.Value.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Array.from: map function must be a function."));
+            }
+
+            if (source.Tag != JsValueTag.Object)
+            {
+                // Primitives: only strings yield indexable elements per spec; the
+                // String boxing path is not wired yet, so non-object inputs surface
+                // an empty Array rather than throwing. Matches the "no @@iterator"
+                // fallback the iterator wiring will eventually replace.
+                var arr0 = CreateArrayObject(Array.Empty<JsValue>());
+                return JsValue.FromObject(_heap.AllocateObject(arr0, AllocationSite.Current()));
+            }
+
+            var obj = _heap.GetObject(source.AsObjectHandle());
+            var length = GetArrayLength(obj);
+            var items = new List<JsValue>(length);
+            for (var i = 0; i < length; i++)
+            {
+                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                TryGetPropertyValue(obj, source, key, out var v);
+                if (mapFn.HasValue)
+                {
+                    v = CallFunction(mapFn.Value, new[] { v, JsValue.FromNumber(i) }, thisArg);
+                }
+
+                items.Add(v);
+            }
+
+            var arr = CreateArrayObject(items);
+            return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+        }, length: 1);
+
         // ECMA-262 23.1.2.2 Array.isArray(arg). Spec walks Proxy targets; we have no
         // Proxy yet, so the operation collapses to "is the value an ArrayObject?".
         DefineIntrinsicFunction(constructorHandle, constructor, "isArray", (_, args) =>
@@ -2808,6 +2875,22 @@ public sealed class BytecodeInterpreter
             return obj;
         }
 
+        return PopulateArrayWithElements(obj, elements);
+    }
+
+    // Element-list constructor that ALWAYS treats elements as values - never invokes
+    // the "single Number = length" shortcut. Used by Array.of, Array.from,
+    // Array.prototype.{slice/concat/map/filter/flat/flatMap/...} where the caller
+    // already has the materialised element list and just wants a fresh Array.
+    private JsObject CreateArrayFromElements(IReadOnlyList<JsValue> elements)
+    {
+        var obj = new ArrayObject();
+        obj.SetPrototype(EnsureArrayPrototype());
+        return PopulateArrayWithElements(obj, elements);
+    }
+
+    private static JsObject PopulateArrayWithElements(ArrayObject obj, IReadOnlyList<JsValue> elements)
+    {
         for (var i = 0; i < elements.Count; i++)
         {
             _ = obj.SetProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture), elements[i]);
