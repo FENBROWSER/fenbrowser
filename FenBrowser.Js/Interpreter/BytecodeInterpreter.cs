@@ -1,4 +1,5 @@
 using FenBrowser.Js.Bytecode;
+using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Parser;
@@ -98,14 +99,13 @@ public sealed class BytecodeInterpreter
                     frame.Registers[ins.A] = function.Constants[ins.B];
                     break;
                 case OpCode.LoadVar:
-                    frame.Registers[ins.A] = frame.Variables[ins.B];
+                    frame.Registers[ins.A] = LoadName(frame, ins.B);
                     break;
                 case OpCode.LoadThis:
                     frame.Registers[ins.A] = frame.ThisValue;
                     break;
                 case OpCode.StoreVar:
-                    frame.Variables[ins.B] = frame.Registers[ins.A];
-                    SyncGlobalVariable(frame, ins.B, frame.Registers[ins.A]);
+                    StoreName(frame, ins.B, frame.Registers[ins.A]);
                     break;
                 case OpCode.Move:
                     frame.Registers[ins.A] = frame.Registers[ins.B];
@@ -602,6 +602,57 @@ public sealed class BytecodeInterpreter
         _heap.PushRoot(handle);
         _globalObjectHandle = handle;
         return handle;
+    }
+
+    // B.6.3 env-record shim. LoadName/StoreName funnel every slot-based LoadVar/StoreVar
+    // opcode through a name-aware helper so the interpreter hot path goes through one
+    // entry point instead of two. The helper first consults the frame's
+    // EnvironmentRecord via the ECMA-262 9.1.1.1 abstract operations and only falls back
+    // to the legacy VariableStore when the env record does not own the binding.
+    //
+    // In this commit the compiler still emits slot-based bindings into VariableStore and
+    // closure capture still goes through shared JsVariableCells, so env records are not
+    // yet populated for ordinary `var`/`let`/closures and the fallback is the live path
+    // for nearly every read and write. The shim is intentionally non-mirroring: if we
+    // wrote each StoreVar into both stores, a closure mutating a shared cell would never
+    // refresh its outer frame's env-record copy, so the outer frame would observe stale
+    // values. B.6.4 lands closure capture on env records and removes that concern; until
+    // then the env path activates only for bindings later commits insert explicitly
+    // (e.g. function-environment `this`, declarative scope entries).
+    private JsValue LoadName(InterpreterFrame frame, int slot)
+    {
+        var name = SlotNameTable.GetName(frame.Function, slot);
+        if (name is not null)
+        {
+            var status = frame.Environment.GetBindingValue(name, strict: false, out var envValue);
+            if (status == BindingOpResult.Ok)
+            {
+                return envValue;
+            }
+        }
+
+        return frame.Variables[slot];
+    }
+
+    private void StoreName(InterpreterFrame frame, int slot, JsValue value)
+    {
+        var name = SlotNameTable.GetName(frame.Function, slot);
+        if (name is not null && frame.Environment.HasBinding(name))
+        {
+            var status = frame.Environment.SetMutableBinding(name, value, strict: false);
+            if (status == BindingOpResult.Ok)
+            {
+                // Keep VariableStore in sync for any opcode path that still reads the
+                // slot directly (e.g. global object mirroring below, or unmigrated
+                // closure capture). B.6.6 deletes both stores once nothing reads them.
+                frame.Variables[slot] = value;
+                SyncGlobalVariable(frame, slot, value);
+                return;
+            }
+        }
+
+        frame.Variables[slot] = value;
+        SyncGlobalVariable(frame, slot, value);
     }
 
     private void SyncGlobalVariable(InterpreterFrame frame, int slot, JsValue value)
