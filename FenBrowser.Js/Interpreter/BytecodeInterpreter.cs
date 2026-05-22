@@ -174,15 +174,14 @@ public sealed class BytecodeInterpreter
                 case OpCode.GetPropByName:
                 {
                     var receiver = frame.Registers[ins.B];
-                    var obj = ResolveObject(receiver);
                     var prop = function.PropertyNames[ins.C];
-                    if (TryGetPropertyValue(obj, receiver, prop, out var value))
+                    try
                     {
-                        frame.Registers[ins.A] = value;
+                        frame.Registers[ins.A] = GetReceiverProperty(receiver, prop);
                     }
-                    else
+                    catch (JsThrownException ex)
                     {
-                        frame.Registers[ins.A] = JsValue.Undefined;
+                        ThrowOrHandle(frame, ex.Value);
                     }
 
                     break;
@@ -263,15 +262,14 @@ public sealed class BytecodeInterpreter
                 case OpCode.GetElem:
                 {
                     var receiver = frame.Registers[ins.B];
-                    var obj = ResolveObject(receiver);
                     var key = ToPropertyKey(frame.Registers[ins.C]);
-                    if (TryGetPropertyValue(obj, receiver, key, out var value))
+                    try
                     {
-                        frame.Registers[ins.A] = value;
+                        frame.Registers[ins.A] = GetReceiverProperty(receiver, key);
                     }
-                    else
+                    catch (JsThrownException ex)
                     {
-                        frame.Registers[ins.A] = JsValue.Undefined;
+                        ThrowOrHandle(frame, ex.Value);
                     }
 
                     break;
@@ -3001,6 +2999,105 @@ public sealed class BytecodeInterpreter
         return descriptorObject;
     }
 
+    // Unified property read that handles every JsValueTag the spec considers a valid
+    // receiver of [[Get]]. Object falls through to the existing TryGetPropertyValue
+    // path; String / Number / Boolean primitives consult their respective prototype
+    // (with special-cased "length" / integer-index for String); undefined / null
+    // raise TypeError per ToObject (7.1.18).
+    [MayExecuteJs]
+    private JsValue GetReceiverProperty(JsValue receiver, string key)
+    {
+        switch (receiver.Tag)
+        {
+            case JsValueTag.Object:
+            {
+                var obj = ResolveObject(receiver);
+                return TryGetPropertyValue(obj, receiver, key, out var value) ? value : JsValue.Undefined;
+            }
+            case JsValueTag.String:
+            {
+                var s = receiver.AsString();
+                if (key == "length")
+                {
+                    return JsValue.FromNumber(s.Length);
+                }
+
+                // Integer index access ("abc"[1] == "b"). Out-of-range returns undefined
+                // per 22.1.4.1; the spec uses an exotic-object [[GetOwnProperty]] but the
+                // observable behaviour is exactly this.
+                if (IsCanonicalIntegerIndex(key, out var idx))
+                {
+                    return idx >= 0 && idx < s.Length
+                        ? JsValue.FromString(s[idx].ToString())
+                        : JsValue.Undefined;
+                }
+
+                // Fall through to String.prototype - lookup returns the inherited method
+                // value; the caller (CallMethodN opcode) keeps the receiver string as
+                // `thisValue` so the native method receives the primitive directly.
+                var stringProto = _heap.GetObject(EnsureStringPrototype());
+                return TryGetPropertyValue(stringProto, receiver, key, out var sv) ? sv : JsValue.Undefined;
+            }
+            case JsValueTag.Number:
+            case JsValueTag.Int32:
+            {
+                var numberProto = _heap.GetObject(EnsureNumberPrototype());
+                return TryGetPropertyValue(numberProto, receiver, key, out var nv) ? nv : JsValue.Undefined;
+            }
+            case JsValueTag.Boolean:
+            {
+                var boolProto = _heap.GetObject(EnsureBooleanPrototype());
+                return TryGetPropertyValue(boolProto, receiver, key, out var bv) ? bv : JsValue.Undefined;
+            }
+            case JsValueTag.Undefined:
+                throw new JsThrownException(CreateTypeError(
+                    "Cannot read properties of undefined (reading '" + key + "')."));
+            case JsValueTag.Null:
+                throw new JsThrownException(CreateTypeError(
+                    "Cannot read properties of null (reading '" + key + "')."));
+            default:
+                return JsValue.Undefined;
+        }
+    }
+
+    // True when `key` is a non-negative decimal integer with no leading zeros (except
+    // the literal "0"). Matches the spec's "canonical numeric string" definition for
+    // 7.1.21 CanonicalNumericIndexString restricted to non-negative integers, which is
+    // what String exotic objects accept as index keys.
+    private static bool IsCanonicalIntegerIndex(string key, out int index)
+    {
+        index = 0;
+        if (string.IsNullOrEmpty(key))
+        {
+            return false;
+        }
+
+        if (key.Length > 1 && key[0] == '0')
+        {
+            return false;
+        }
+
+        var result = 0;
+        foreach (var c in key)
+        {
+            if (c < '0' || c > '9')
+            {
+                return false;
+            }
+
+            // Guard against overflow on absurdly long keys.
+            if (result > (int.MaxValue - (c - '0')) / 10)
+            {
+                return false;
+            }
+
+            result = result * 10 + (c - '0');
+        }
+
+        index = result;
+        return true;
+    }
+
     [MayExecuteJs]
     private bool TryGetPropertyValue(JsObject obj, JsValue receiver, string key, out JsValue value)
     {
@@ -5119,6 +5216,34 @@ public sealed class BytecodeInterpreter
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toString", StringPrototypeToString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "valueOf", StringPrototypeValueOf);
+        // ECMA-262 22.1.3 String.prototype methods. Each receives the receiver as
+        // either a primitive string or a boxed StringObject via StringThisValue.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "charAt", StringPrototypeCharAt, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "charCodeAt", StringPrototypeCharCodeAt, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "codePointAt", StringPrototypeCodePointAt, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "at", StringPrototypeAt, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "indexOf", StringPrototypeIndexOf, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "lastIndexOf", StringPrototypeLastIndexOf, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "includes", StringPrototypeIncludes, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "startsWith", StringPrototypeStartsWith, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "endsWith", StringPrototypeEndsWith, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "slice", StringPrototypeSlice, length: 2);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "substring", StringPrototypeSubstring, length: 2);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "substr", StringPrototypeSubstr, length: 2);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "concat", StringPrototypeConcat, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "repeat", StringPrototypeRepeat, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "padStart", StringPrototypePadStart, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "padEnd", StringPrototypePadEnd, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "trim", StringPrototypeTrim);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "trimStart", StringPrototypeTrimStart);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "trimEnd", StringPrototypeTrimEnd);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toUpperCase", StringPrototypeToUpperCase);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toLowerCase", StringPrototypeToLowerCase);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toLocaleUpperCase", StringPrototypeToUpperCase);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toLocaleLowerCase", StringPrototypeToLowerCase);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "split", StringPrototypeSplit, length: 2);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "replace", StringPrototypeReplace, length: 2);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "replaceAll", StringPrototypeReplaceAll, length: 2);
 
         // ECMA-262 22.1.2.1 String.fromCharCode(...codeUnits). Each argument is
         // truncated to a UTF-16 code unit (ToUint16) and concatenated. Surrogate
@@ -5171,6 +5296,488 @@ public sealed class BytecodeInterpreter
     {
         _ = args;
         return JsValue.FromString(StringThisValue(thisValue));
+    }
+
+    // Normalises an index argument the way most String.prototype methods do: undefined
+    // -> defaultValue, NaN -> 0, then clamp into [0, length].
+    private static int StringIndexArg(IReadOnlyList<JsValue> args, int idx, int defaultValue, int length)
+    {
+        if (idx >= args.Count || args[idx].Tag == JsValueTag.Undefined)
+        {
+            return Math.Clamp(defaultValue, 0, length);
+        }
+
+        var raw = args[idx].Tag == JsValueTag.Int32 ? args[idx].AsInt32() : (int)args[idx].AsNumber();
+        return Math.Clamp(raw, 0, length);
+    }
+
+    // 22.1.3.1 charAt: returns the single-character string at the integer index, or
+    // "" when out of range. Negative or fractional indices floor toward 0/Length-1.
+    private JsValue StringPrototypeCharAt(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        var pos = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
+        if (pos < 0 || pos >= s.Length)
+        {
+            return JsValue.FromString(string.Empty);
+        }
+
+        return JsValue.FromString(s[pos].ToString());
+    }
+
+    // 22.1.3.2 charCodeAt: UTF-16 code unit at index, or NaN out of range.
+    private JsValue StringPrototypeCharCodeAt(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        var pos = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
+        if (pos < 0 || pos >= s.Length)
+        {
+            return JsValue.FromNumber(double.NaN);
+        }
+
+        return JsValue.FromNumber(s[pos]);
+    }
+
+    // 22.1.3.3 codePointAt: full code point (including surrogate pairs) at the index.
+    private JsValue StringPrototypeCodePointAt(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        var pos = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
+        if (pos < 0 || pos >= s.Length)
+        {
+            return JsValue.Undefined;
+        }
+
+        var high = s[pos];
+        if (char.IsHighSurrogate(high) && pos + 1 < s.Length && char.IsLowSurrogate(s[pos + 1]))
+        {
+            return JsValue.FromNumber(char.ConvertToUtf32(high, s[pos + 1]));
+        }
+
+        return JsValue.FromNumber(high);
+    }
+
+    // 22.1.3.1a at: ES2022 negative-aware indexing; out-of-range returns undefined.
+    private JsValue StringPrototypeAt(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        var raw = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
+        var idx = raw < 0 ? s.Length + raw : raw;
+        if (idx < 0 || idx >= s.Length)
+        {
+            return JsValue.Undefined;
+        }
+
+        return JsValue.FromString(s[idx].ToString());
+    }
+
+    // 22.1.3.8 indexOf - ordinal find, returns -1 when missing.
+    private JsValue StringPrototypeIndexOf(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        var search = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+        var from = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
+        from = Math.Clamp(from, 0, s.Length);
+        return JsValue.FromNumber(s.IndexOf(search, from, StringComparison.Ordinal));
+    }
+
+    // 22.1.3.10 lastIndexOf.
+    private JsValue StringPrototypeLastIndexOf(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        var search = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+        var from = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
+            ? Math.Min(s.Length, Math.Max(0, (int)ToNumber(args[1])) + search.Length)
+            : s.Length;
+        if (search.Length == 0)
+        {
+            return JsValue.FromNumber(from);
+        }
+
+        var slice = s[..from];
+        return JsValue.FromNumber(slice.LastIndexOf(search, StringComparison.Ordinal));
+    }
+
+    // 22.1.3.7 includes / 22.1.3.22 startsWith / 22.1.3.7a endsWith.
+    private JsValue StringPrototypeIncludes(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        var search = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+        var from = args.Count > 1 ? Math.Clamp((int)ToNumber(args[1]), 0, s.Length) : 0;
+        return JsValue.FromBoolean(s.IndexOf(search, from, StringComparison.Ordinal) >= 0);
+    }
+
+    private JsValue StringPrototypeStartsWith(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        var search = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+        var from = args.Count > 1 ? Math.Clamp((int)ToNumber(args[1]), 0, s.Length) : 0;
+        if (from + search.Length > s.Length)
+        {
+            return JsValue.FromBoolean(false);
+        }
+
+        return JsValue.FromBoolean(s.AsSpan(from, search.Length).SequenceEqual(search.AsSpan()));
+    }
+
+    private JsValue StringPrototypeEndsWith(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        var search = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+        var endPos = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
+            ? Math.Clamp((int)ToNumber(args[1]), 0, s.Length)
+            : s.Length;
+        var start = endPos - search.Length;
+        if (start < 0)
+        {
+            return JsValue.FromBoolean(false);
+        }
+
+        return JsValue.FromBoolean(s.AsSpan(start, search.Length).SequenceEqual(search.AsSpan()));
+    }
+
+    // 22.1.3.20 slice - negative indices wrap; out-of-range clamps to length.
+    private JsValue StringPrototypeSlice(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        var len = s.Length;
+        var start = args.Count > 0 ? WrapNegative((int)ToNumber(args[0]), len) : 0;
+        var end = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
+            ? WrapNegative((int)ToNumber(args[1]), len)
+            : len;
+        return start >= end ? JsValue.FromString(string.Empty) : JsValue.FromString(s[start..end]);
+    }
+
+    // 22.1.3.23 substring - negative or NaN clamps to 0; swaps start/end so end<start
+    // is treated as start<end.
+    private JsValue StringPrototypeSubstring(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        var len = s.Length;
+        var start = args.Count > 0 ? Math.Clamp((int)ToNumber(args[0]), 0, len) : 0;
+        var end = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
+            ? Math.Clamp((int)ToNumber(args[1]), 0, len)
+            : len;
+        if (start > end)
+        {
+            (start, end) = (end, start);
+        }
+
+        return JsValue.FromString(s[start..end]);
+    }
+
+    // Annex B.2.2.1 substr(start, length) - legacy, but widely used.
+    private JsValue StringPrototypeSubstr(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        var len = s.Length;
+        var start = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
+        if (start < 0)
+        {
+            start = Math.Max(0, len + start);
+        }
+
+        start = Math.Min(start, len);
+        var count = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
+            ? Math.Max(0, Math.Min(len - start, (int)ToNumber(args[1])))
+            : len - start;
+        return JsValue.FromString(s.Substring(start, count));
+    }
+
+    // 22.1.3.4 concat - variadic string append.
+    private JsValue StringPrototypeConcat(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var sb = new System.Text.StringBuilder(StringThisValue(thisValue));
+        for (var i = 0; i < args.Count; i++)
+        {
+            sb.Append(ToStringValue(args[i]));
+        }
+
+        return JsValue.FromString(sb.ToString());
+    }
+
+    // 22.1.3.16 repeat - count must be non-negative integer-typed value < Infinity.
+    private JsValue StringPrototypeRepeat(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        var n = args.Count > 0 ? ToNumber(args[0]) : 0;
+        if (double.IsNaN(n) || n < 0 || double.IsInfinity(n))
+        {
+            throw new JsThrownException(CreateRangeError("Invalid repeat count."));
+        }
+
+        var count = (int)n;
+        if (count == 0 || s.Length == 0)
+        {
+            return JsValue.FromString(string.Empty);
+        }
+
+        var sb = new System.Text.StringBuilder(s.Length * count);
+        for (var i = 0; i < count; i++)
+        {
+            sb.Append(s);
+        }
+
+        return JsValue.FromString(sb.ToString());
+    }
+
+    // 22.1.3.15 / 22.1.3.14 padStart / padEnd.
+    private JsValue StringPrototypePadStart(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        var targetLen = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
+        if (targetLen <= s.Length)
+        {
+            return JsValue.FromString(s);
+        }
+
+        var pad = args.Count > 1 && args[1].Tag != JsValueTag.Undefined ? ToStringValue(args[1]) : " ";
+        if (pad.Length == 0)
+        {
+            return JsValue.FromString(s);
+        }
+
+        return JsValue.FromString(BuildPadding(pad, targetLen - s.Length) + s);
+    }
+
+    private JsValue StringPrototypePadEnd(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        var targetLen = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
+        if (targetLen <= s.Length)
+        {
+            return JsValue.FromString(s);
+        }
+
+        var pad = args.Count > 1 && args[1].Tag != JsValueTag.Undefined ? ToStringValue(args[1]) : " ";
+        if (pad.Length == 0)
+        {
+            return JsValue.FromString(s);
+        }
+
+        return JsValue.FromString(s + BuildPadding(pad, targetLen - s.Length));
+    }
+
+    private static string BuildPadding(string fill, int needed)
+    {
+        var sb = new System.Text.StringBuilder(needed);
+        while (sb.Length < needed)
+        {
+            var remaining = needed - sb.Length;
+            sb.Append(remaining >= fill.Length ? fill : fill[..remaining]);
+        }
+
+        return sb.ToString();
+    }
+
+    // 22.1.3.31 / .32 / .33 trim / trimStart / trimEnd. The spec defines the
+    // WhiteSpace and LineTerminator productions; the BCL's char.IsWhiteSpace is a
+    // close-enough superset for almost every spec character.
+    private JsValue StringPrototypeTrim(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        return JsValue.FromString(StringThisValue(thisValue).Trim());
+    }
+
+    private JsValue StringPrototypeTrimStart(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        return JsValue.FromString(StringThisValue(thisValue).TrimStart());
+    }
+
+    private JsValue StringPrototypeTrimEnd(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        return JsValue.FromString(StringThisValue(thisValue).TrimEnd());
+    }
+
+    // 22.1.3.26 / .27 toUpperCase / toLowerCase use the invariant culture so output
+    // is deterministic across host locales (the spec is locale-insensitive).
+    private JsValue StringPrototypeToUpperCase(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        return JsValue.FromString(StringThisValue(thisValue).ToUpperInvariant());
+    }
+
+    private JsValue StringPrototypeToLowerCase(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        return JsValue.FromString(StringThisValue(thisValue).ToLowerInvariant());
+    }
+
+    // 22.1.3.21 split. RegExp separator is deferred; string separator is the common
+    // case. Empty separator splits into individual characters per spec.
+    private JsValue StringPrototypeSplit(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        var limit = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
+            ? Math.Max(0, (int)ToNumber(args[1]))
+            : int.MaxValue;
+
+        var items = new List<JsValue>();
+        if (limit == 0)
+        {
+            return JsValue.FromObject(_heap.AllocateObject(CreateArrayFromElements(items), AllocationSite.Current()));
+        }
+
+        if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
+        {
+            items.Add(JsValue.FromString(s));
+            return JsValue.FromObject(_heap.AllocateObject(CreateArrayFromElements(items), AllocationSite.Current()));
+        }
+
+        var sep = ToStringValue(args[0]);
+        if (sep.Length == 0)
+        {
+            for (var i = 0; i < s.Length && items.Count < limit; i++)
+            {
+                items.Add(JsValue.FromString(s[i].ToString()));
+            }
+
+            return JsValue.FromObject(_heap.AllocateObject(CreateArrayFromElements(items), AllocationSite.Current()));
+        }
+
+        var start = 0;
+        while (start <= s.Length && items.Count < limit)
+        {
+            var idx = s.IndexOf(sep, start, StringComparison.Ordinal);
+            if (idx < 0)
+            {
+                items.Add(JsValue.FromString(s[start..]));
+                break;
+            }
+
+            items.Add(JsValue.FromString(s[start..idx]));
+            start = idx + sep.Length;
+            if (start > s.Length)
+            {
+                break;
+            }
+        }
+
+        return JsValue.FromObject(_heap.AllocateObject(CreateArrayFromElements(items), AllocationSite.Current()));
+    }
+
+    // 22.1.3.18 replace (string-search form). The single-replacement-only behaviour
+    // matches the spec when the search value is a string. RegExp search is deferred.
+    private JsValue StringPrototypeReplace(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        if (args.Count < 2)
+        {
+            return JsValue.FromString(s);
+        }
+
+        var search = ToStringValue(args[0]);
+        var idx = s.IndexOf(search, StringComparison.Ordinal);
+        if (idx < 0)
+        {
+            return JsValue.FromString(s);
+        }
+
+        var replacement = ResolveStringReplacement(args[1], s, idx, search);
+        return JsValue.FromString(string.Concat(s[..idx], replacement, s[(idx + search.Length)..]));
+    }
+
+    // 22.1.3.19 replaceAll (string-search form). Empty-string search throws TypeError
+    // when the search value is a string per spec step 4.
+    private JsValue StringPrototypeReplaceAll(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = StringThisValue(thisValue);
+        if (args.Count < 2)
+        {
+            return JsValue.FromString(s);
+        }
+
+        var search = ToStringValue(args[0]);
+        if (search.Length == 0)
+        {
+            // Spec 22.1.3.19 step 4 raises TypeError only for the empty-RegExp-without-
+            // global-flag case; an empty string search inserts the replacement between
+            // every code unit per "string search" semantics.
+            var sb = new System.Text.StringBuilder();
+            for (var i = 0; i < s.Length; i++)
+            {
+                sb.Append(ResolveStringReplacement(args[1], s, i, search));
+                sb.Append(s[i]);
+            }
+
+            sb.Append(ResolveStringReplacement(args[1], s, s.Length, search));
+            return JsValue.FromString(sb.ToString());
+        }
+
+        var result = new System.Text.StringBuilder();
+        var start = 0;
+        while (true)
+        {
+            var idx = s.IndexOf(search, start, StringComparison.Ordinal);
+            if (idx < 0)
+            {
+                result.Append(s, start, s.Length - start);
+                break;
+            }
+
+            result.Append(s, start, idx - start);
+            result.Append(ResolveStringReplacement(args[1], s, idx, search));
+            start = idx + search.Length;
+        }
+
+        return JsValue.FromString(result.ToString());
+    }
+
+    private string ResolveStringReplacement(JsValue replacementValue, string source, int matchStart, string matched)
+    {
+        if (replacementValue.Tag == JsValueTag.Object)
+        {
+            var obj = _heap.GetObject(replacementValue.AsObjectHandle());
+            if (obj is JsFunctionObject || obj is NativeFunctionObject)
+            {
+                var result = CallFunction(replacementValue,
+                    new[] { JsValue.FromString(matched), JsValue.FromNumber(matchStart), JsValue.FromString(source) },
+                    JsValue.Undefined);
+                return ToStringValue(result);
+            }
+        }
+
+        // Spec 22.1.3.18.1 - $$, $&, $`, $' substitutions; numbered captures only apply
+        // to RegExp matches, which this string-search path never produces.
+        var template = ToStringValue(replacementValue);
+        if (template.IndexOf('$') < 0)
+        {
+            return template;
+        }
+
+        var sb = new System.Text.StringBuilder(template.Length);
+        for (var i = 0; i < template.Length; i++)
+        {
+            if (template[i] != '$' || i + 1 >= template.Length)
+            {
+                sb.Append(template[i]);
+                continue;
+            }
+
+            var next = template[i + 1];
+            switch (next)
+            {
+                case '$': sb.Append('$'); i++; break;
+                case '&': sb.Append(matched); i++; break;
+                case '`': sb.Append(source, 0, matchStart); i++; break;
+                case '\'': sb.Append(source, matchStart + matched.Length, source.Length - matchStart - matched.Length); i++; break;
+                default: sb.Append(template[i]); break;
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private static int WrapNegative(int raw, int length)
+    {
+        if (raw < 0)
+        {
+            return Math.Max(0, length + raw);
+        }
+
+        return Math.Min(raw, length);
     }
 
     private string StringThisValue(JsValue thisValue)
