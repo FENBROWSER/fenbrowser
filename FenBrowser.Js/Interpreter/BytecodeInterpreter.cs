@@ -2925,6 +2925,8 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "lastIndexOf", ArrayPrototypeLastIndexOf, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "flat", ArrayPrototypeFlat);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "flatMap", ArrayPrototypeFlatMap, length: 1);
+        // ECMA-262 23.1.3.30 sort.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "sort", ArrayPrototypeSort, length: 1);
 
         // ECMA-262 23.1.2.3 Array.of(...items). Returns a fresh Array populated with
         // exactly the supplied items - distinct from new Array(n), which uses a
@@ -3256,6 +3258,96 @@ public sealed class BytecodeInterpreter
             : (int)args[argIndex].AsNumber();
         var idx = raw < 0 ? length + raw : raw;
         return Math.Clamp(idx, 0, length);
+    }
+
+    // ECMA-262 23.1.3.30 Array.prototype.sort([compareFn]). Default comparator
+    // converts each element to a String and compares lexicographically; a user
+    // comparator returning < 0 / 0 / > 0 controls the order. Undefined elements
+    // always sort after non-undefined ones; missing slots after both. Uses
+    // List<T>.Sort with a stable adapter so the spec-mandated stable sort holds
+    // for v10+ (the spec made stability mandatory in ES2019 - .NET 5+ Sort is
+    // already stable). Sorts in place and returns the receiver.
+    private JsValue ArrayPrototypeSort(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var ownerHandle = ResolveObjectHandle(thisValue);
+        var obj = _heap.GetObject(ownerHandle);
+        var length = GetArrayLength(obj);
+        var comparator = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? args[0] : (JsValue?)null;
+
+        if (comparator.HasValue && comparator.Value.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Array.prototype.sort: comparator must be a function or undefined."));
+        }
+
+        // Partition into present-values / undefined-values / holes per spec 23.1.3.30
+        // step 3.b: SortIndexedProperties keeps undefined elements after sorted
+        // non-undefined ones, and trailing holes after that.
+        var present = new List<JsValue>(length);
+        var undefinedCount = 0;
+        var holeCount = 0;
+        for (var i = 0; i < length; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!TryGetPropertyValue(obj, thisValue, key, out var v))
+            {
+                holeCount++;
+                continue;
+            }
+
+            if (v.Tag == JsValueTag.Undefined)
+            {
+                undefinedCount++;
+                continue;
+            }
+
+            present.Add(v);
+        }
+
+        if (comparator.HasValue)
+        {
+            var fn = comparator.Value;
+            present.Sort((a, b) =>
+            {
+                var r = CallFunction(fn, new[] { a, b }, JsValue.Undefined);
+                var n = ToNumber(r);
+                if (double.IsNaN(n))
+                {
+                    return 0;
+                }
+
+                return n < 0 ? -1 : n > 0 ? 1 : 0;
+            });
+        }
+        else
+        {
+            present.Sort((a, b) => string.CompareOrdinal(ToStringValue(a), ToStringValue(b)));
+        }
+
+        // Write back: present values first, then 'undefined' slots, then holes.
+        for (var i = 0; i < present.Count; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            _ = obj.SetProperty(key, present[i]);
+            if (present[i].Tag == JsValueTag.Object)
+            {
+                _heap.WriteBarrier(ownerHandle, present[i].AsObjectHandle());
+            }
+        }
+
+        for (var i = 0; i < undefinedCount; i++)
+        {
+            var key = (present.Count + i).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            _ = obj.SetProperty(key, JsValue.Undefined);
+        }
+
+        for (var i = 0; i < holeCount; i++)
+        {
+            var key = (present.Count + undefinedCount + i).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            obj.DeleteProperty(key);
+        }
+
+        return thisValue;
     }
 
     // ECMA-262 23.1.3.17 lastIndexOf. Strict equality, scans backwards from fromIndex
