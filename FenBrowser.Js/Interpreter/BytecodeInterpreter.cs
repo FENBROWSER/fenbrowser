@@ -2750,6 +2750,9 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "pop", ArrayPrototypePop);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "shift", ArrayPrototypeShift);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "unshift", ArrayPrototypeUnshift, length: 1);
+        // ECMA-262 23.1.3.26 reverse, 23.1.3.7 fill.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "reverse", ArrayPrototypeReverse);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "fill", ArrayPrototypeFill, length: 1);
 
         // ECMA-262 23.1.2.2 Array.isArray(arg). Spec walks Proxy targets; we have no
         // Proxy yet, so the operation collapses to "is the value an ArrayObject?".
@@ -2917,6 +2920,87 @@ public sealed class BytecodeInterpreter
         var newLength = length + insert;
         _ = obj.SetProperty("length", JsValue.FromNumber(newLength));
         return JsValue.FromNumber(newLength);
+    }
+
+    // ECMA-262 23.1.3.26 Array.prototype.reverse. Swaps slot i with slot len-1-i
+    // for i < len/2; preserves holes (a missing source slot deletes the target).
+    private JsValue ArrayPrototypeReverse(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        var ownerHandle = ResolveObjectHandle(thisValue);
+        var obj = _heap.GetObject(ownerHandle);
+        var length = GetArrayLength(obj);
+        var middle = length / 2;
+
+        for (var lower = 0; lower < middle; lower++)
+        {
+            var upper = length - 1 - lower;
+            var lowerKey = lower.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var upperKey = upper.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var hasLower = TryGetPropertyValue(obj, thisValue, lowerKey, out var lowerValue);
+            var hasUpper = TryGetPropertyValue(obj, thisValue, upperKey, out var upperValue);
+
+            if (hasUpper)
+            {
+                _ = obj.SetProperty(lowerKey, upperValue);
+            }
+            else
+            {
+                obj.DeleteProperty(lowerKey);
+            }
+
+            if (hasLower)
+            {
+                _ = obj.SetProperty(upperKey, lowerValue);
+            }
+            else
+            {
+                obj.DeleteProperty(upperKey);
+            }
+        }
+
+        return thisValue;
+    }
+
+    // ECMA-262 23.1.3.7 Array.prototype.fill(value[, start[, end]]). Negative
+    // start/end wrap from length; out-of-range values clamp into [0, length].
+    private JsValue ArrayPrototypeFill(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var ownerHandle = ResolveObjectHandle(thisValue);
+        var obj = _heap.GetObject(ownerHandle);
+        var length = GetArrayLength(obj);
+        var value = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var start = NormaliseSliceIndex(args, 1, 0, length);
+        var end = NormaliseSliceIndex(args, 2, length, length);
+
+        for (var i = start; i < end; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            _ = obj.SetProperty(key, value);
+            if (value.Tag == JsValueTag.Object)
+            {
+                _heap.WriteBarrier(ownerHandle, value.AsObjectHandle());
+            }
+        }
+
+        return thisValue;
+    }
+
+    // Shared helper for fill / slice. Reads args[argIndex] as a number (default
+    // when missing or undefined), then converts to an integer clamped into
+    // [0, length] using the spec's "negative-from-length" rule.
+    private static int NormaliseSliceIndex(IReadOnlyList<JsValue> args, int argIndex, int defaultValue, int length)
+    {
+        if (argIndex >= args.Count || args[argIndex].Tag == JsValueTag.Undefined)
+        {
+            return Math.Clamp(defaultValue, 0, length);
+        }
+
+        var raw = args[argIndex].Tag == JsValueTag.Int32
+            ? args[argIndex].AsInt32()
+            : (int)args[argIndex].AsNumber();
+        var idx = raw < 0 ? length + raw : raw;
+        return Math.Clamp(idx, 0, length);
     }
 
     private JsValue ArrayPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
