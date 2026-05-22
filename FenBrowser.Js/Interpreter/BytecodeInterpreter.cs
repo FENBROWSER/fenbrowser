@@ -1691,6 +1691,66 @@ public sealed class BytecodeInterpreter
             return JsValue.FromBoolean(SameValue(a, b));
         }, length: 2);
 
+        // ECMA-262 20.1.2.1 Object.assign(target, ...sources). Copies enumerable own
+        // string-keyed properties from each source to target via [[Set]]. Returns
+        // the (possibly coerced) target.
+        DefineIntrinsicFunction(constructorHandle, constructor, "assign", (_, args) =>
+        {
+            if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined || args[0].Tag == JsValueTag.Null)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Object.assign target must not be undefined or null."));
+            }
+
+            var targetValue = args[0];
+            if (targetValue.Tag != JsValueTag.Object)
+            {
+                return targetValue;
+            }
+
+            var targetHandle = targetValue.AsObjectHandle();
+            var target = _heap.GetObject(targetHandle);
+
+            for (var i = 1; i < args.Count; i++)
+            {
+                var source = args[i];
+                if (source.Tag == JsValueTag.Undefined || source.Tag == JsValueTag.Null)
+                {
+                    continue;
+                }
+
+                if (source.Tag != JsValueTag.Object)
+                {
+                    continue;
+                }
+
+                var sourceObj = _heap.GetObject(source.AsObjectHandle());
+                foreach (var pair in sourceObj.EnumerateOwnProperties())
+                {
+                    if (!pair.Value.Enumerable)
+                    {
+                        continue;
+                    }
+
+                    var value = pair.Value.IsAccessor ? JsValue.Undefined : pair.Value.Value;
+                    if (!target.SetProperty(pair.Key, value))
+                    {
+                        // Property was non-writable; per spec [[Set]] returning false
+                        // in strict mode is a TypeError. We surface that consistently.
+                        throw new JsThrownException(CreateTypeError(
+                            $"Cannot assign to read-only property '{pair.Key}'."));
+                    }
+
+                    if (value.Tag == JsValueTag.Object)
+                    {
+                        _heap.WriteBarrier(targetHandle, value.AsObjectHandle());
+                    }
+                }
+            }
+
+            return targetValue;
+        }, length: 2);
+
         // ECMA-262 20.1.2.12 Object.getPrototypeOf(O).
         DefineIntrinsicFunction(constructorHandle, constructor, "getPrototypeOf", (_, args) =>
         {
