@@ -1120,6 +1120,16 @@ public sealed class BytecodeInterpreter
         DefineMathFunction(handle, math, "sin", args => MathUnary(args, Math.Sin), length: 1);
         DefineMathFunction(handle, math, "sqrt", args => MathUnary(args, Math.Sqrt), length: 1);
         DefineMathFunction(handle, math, "tan", args => MathUnary(args, Math.Tan), length: 1);
+        // ECMA-262 21.3.2.28 Math.sign - returns -1/0/+1/-0/NaN matching argument sign.
+        DefineMathFunction(handle, math, "sign", args => MathUnary(args, MathSign), length: 1);
+        // ECMA-262 21.3.2.35 Math.trunc - round toward zero.
+        DefineMathFunction(handle, math, "trunc", args => MathUnary(args, MathTrunc), length: 1);
+        // ECMA-262 21.3.2.9 Math.cbrt - cube root.
+        DefineMathFunction(handle, math, "cbrt", args => MathUnary(args, Math.Cbrt), length: 1);
+        // ECMA-262 21.3.2.22 Math.log2 - base-2 logarithm.
+        DefineMathFunction(handle, math, "log2", args => MathUnary(args, Math.Log2), length: 1);
+        // ECMA-262 21.3.2.21 Math.log10 - base-10 logarithm.
+        DefineMathFunction(handle, math, "log10", args => MathUnary(args, Math.Log10), length: 1);
 
         _mathObjectHandle = handle;
         return handle;
@@ -1244,6 +1254,35 @@ public sealed class BytecodeInterpreter
     private static bool IsNegativeZero(double value)
     {
         return value == 0d && BitConverter.DoubleToInt64Bits(value) < 0;
+    }
+
+    // 21.3.2.28 step 4-5: -0 stays -0, +0 stays +0, NaN stays NaN. Negative finite or
+    // -Infinity returns -1; positive finite or +Infinity returns +1.
+    private static double MathSign(double value)
+    {
+        if (double.IsNaN(value))
+        {
+            return double.NaN;
+        }
+
+        if (value == 0d)
+        {
+            return value;
+        }
+
+        return value < 0 ? -1d : 1d;
+    }
+
+    // 21.3.2.35: truncate fractional part. Returns +-0 and +-Infinity unchanged,
+    // NaN unchanged; otherwise integer with the same sign as the argument.
+    private static double MathTrunc(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value) || value == 0d)
+        {
+            return value;
+        }
+
+        return value < 0 ? Math.Ceiling(value) : Math.Floor(value);
     }
 
     private ObjectHandle EnsureJsonObject()
