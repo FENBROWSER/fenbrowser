@@ -2760,6 +2760,9 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "forEach", ArrayPrototypeForEach, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "map", ArrayPrototypeMap, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "filter", ArrayPrototypeFilter, length: 1);
+        // ECMA-262 23.1.3.24 reduce, 23.1.3.25 reduceRight.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "reduce", (t, a) => ArrayPrototypeReduce(t, a, reverse: false), length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "reduceRight", (t, a) => ArrayPrototypeReduce(t, a, reverse: true), length: 1);
 
         // ECMA-262 23.1.2.2 Array.isArray(arg). Spec walks Proxy targets; we have no
         // Proxy yet, so the operation collapses to "is the value an ArrayObject?".
@@ -3008,6 +3011,85 @@ public sealed class BytecodeInterpreter
             : (int)args[argIndex].AsNumber();
         var idx = raw < 0 ? length + raw : raw;
         return Math.Clamp(idx, 0, length);
+    }
+
+    // ECMA-262 23.1.3.24 / 23.1.3.25 Array.prototype.reduce / reduceRight.
+    // Initial accumulator comes from args[1] when provided; otherwise the spec scans
+    // for the first non-hole element and starts from there - throwing TypeError on
+    // an empty array with no initial value. Forward scan for reduce, reverse for
+    // reduceRight. Callback receives (accumulator, value, index, receiver).
+    private JsValue ArrayPrototypeReduce(JsValue thisValue, IReadOnlyList<JsValue> args, bool reverse)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+        if (callback.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Array reduce callback is not a function."));
+        }
+
+        var hasInitial = args.Count > 1;
+        var accumulator = hasInitial ? args[1] : JsValue.Undefined;
+        int start, step, end;
+        if (!reverse)
+        {
+            start = 0;
+            end = length;
+            step = 1;
+        }
+        else
+        {
+            start = length - 1;
+            end = -1;
+            step = -1;
+        }
+
+        var i = start;
+        if (!hasInitial)
+        {
+            var found = false;
+            while (i != end)
+            {
+                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if (TryGetPropertyValue(obj, thisValue, key, out var v))
+                {
+                    accumulator = v;
+                    i += step;
+                    found = true;
+                    break;
+                }
+
+                i += step;
+            }
+
+            if (!found)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    reverse
+                        ? "Reduce of empty array with no initial value (reduceRight)."
+                        : "Reduce of empty array with no initial value."));
+            }
+        }
+
+        while (i != end)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (TryGetPropertyValue(obj, thisValue, key, out var v))
+            {
+                var callArgs = new[]
+                {
+                    accumulator,
+                    v,
+                    JsValue.FromNumber(i),
+                    thisValue,
+                };
+                accumulator = CallFunction(callback, callArgs, JsValue.Undefined);
+            }
+
+            i += step;
+        }
+
+        return accumulator;
     }
 
     // Shared callback-invoker for forEach/map/filter/find/etc. Calls
