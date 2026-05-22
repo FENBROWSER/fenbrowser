@@ -61,6 +61,8 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _weakSetConstructorHandle;
     private ObjectHandle? _weakSetPrototypeHandle;
     private ObjectHandle? _reflectObjectHandle;
+    private ObjectHandle? _iteratorConstructorHandle;
+    private ObjectHandle? _iteratorPrototypeHandle;
 
     // Well-known symbol ids cached at first Symbol-constructor materialisation. JS
     // code that reads Symbol.iterator twice must get === values; a single id per
@@ -677,6 +679,11 @@ public sealed class BytecodeInterpreter
         {
             frame.Variables[reflectSlot] = JsValue.FromObject(EnsureReflectObject());
         }
+
+        if (function.VariableSlots.TryGetValue("Iterator", out var iteratorSlot))
+        {
+            frame.Variables[iteratorSlot] = JsValue.FromObject(EnsureIteratorConstructor());
+        }
     }
 
     private JsObject CreateOrdinaryObject()
@@ -749,6 +756,9 @@ public sealed class BytecodeInterpreter
         }
 
         var proto = CreateOrdinaryObject();
+        // ECMA-262 23.1.5.2: %ArrayIteratorPrototype% inherits from
+        // %Iterator.prototype% so map/filter/take/drop chain after .values() etc.
+        proto.SetPrototype(EnsureIteratorPrototype());
         var protoHandle = _heap.AllocateObject(proto, AllocationSite.Current());
         _heap.PushRoot(protoHandle);
 
@@ -2008,6 +2018,377 @@ public sealed class BytecodeInterpreter
         {
             throw new JsThrownException(CreateTypeError(name + " called on non-object."));
         }
+    }
+
+    // ECMA-262 27.1.4 The Iterator Object (ES2023 Iterator Helpers proposal,
+    // landed in 2024 spec). Adds Iterator.from(value) - lift any iterable into a
+    // wrapper with Iterator.prototype helper methods - plus
+    // %Iterator.prototype%.{map, filter, take, drop, forEach, toArray, every,
+    // some, find, reduce, flatMap}.
+    private ObjectHandle EnsureIteratorConstructor()
+    {
+        if (_iteratorConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototype = CreateOrdinaryObject();
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "Iterator",
+            (_, _) => throw new JsThrownException(CreateTypeError("Iterator is abstract; cannot be invoked directly.")),
+            _ => throw new JsThrownException(CreateTypeError("Iterator is abstract; cannot be constructed directly.")),
+            length: 0);
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        // 27.1.4.1 Iterator.from(O). If O already inherits from %Iterator.prototype%
+        // and exposes a callable .next, return it unchanged. Otherwise build a
+        // wrapper iterator whose .next delegates to the underlying iterable's
+        // Symbol.iterator + next.
+        DefineIntrinsicFunction(constructorHandle, constructor, "from", (_, args) =>
+        {
+            var source = args.Count > 0 ? args[0] : JsValue.Undefined;
+            return JsValue.FromObject(BuildIteratorWrapper(source));
+        }, length: 1);
+
+        // %Iterator.prototype%[Symbol.iterator] returns this per 27.1.4.2.1.
+        var selfIter = new NativeFunctionObject("[Symbol.iterator]", (thisValue, _) => thisValue, length: 0);
+        var selfIterHandle = _heap.AllocateObject(selfIter, AllocationSite.Current());
+        prototype.DefineOwnSymbolProperty(GetWellKnownSymbolId("iterator"),
+            new JsPropertyDescriptor(JsValue.FromObject(selfIterHandle),
+                Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, selfIterHandle);
+
+        // The Iterator Helpers. Each one drains the receiver's .next into a list,
+        // applies the per-method transform, and returns a fresh wrapped iterator
+        // (or terminal value for forEach/toArray/every/some/find/reduce).
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "map", (thisValue, args) =>
+        {
+            var fn = RequireCallable(args, 0, "Iterator.prototype.map");
+            var values = DrainSelfAsList(thisValue);
+            var mapped = new List<JsValue>(values.Count);
+            for (var i = 0; i < values.Count; i++)
+            {
+                mapped.Add(CallFunction(fn, new[] { values[i], JsValue.FromNumber(i) }, JsValue.Undefined));
+            }
+
+            return WrapListAsIterator(mapped);
+        }, length: 1);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "filter", (thisValue, args) =>
+        {
+            var fn = RequireCallable(args, 0, "Iterator.prototype.filter");
+            var values = DrainSelfAsList(thisValue);
+            var kept = new List<JsValue>();
+            for (var i = 0; i < values.Count; i++)
+            {
+                if (IsTruthy(CallFunction(fn, new[] { values[i], JsValue.FromNumber(i) }, JsValue.Undefined)))
+                {
+                    kept.Add(values[i]);
+                }
+            }
+
+            return WrapListAsIterator(kept);
+        }, length: 1);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "take", (thisValue, args) =>
+        {
+            var n = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
+            if (n < 0 || double.IsNaN(ToNumber(args.Count > 0 ? args[0] : JsValue.Undefined)))
+            {
+                throw new JsThrownException(CreateRangeError("Iterator.prototype.take limit must be a non-negative integer."));
+            }
+
+            var values = DrainSelfAsList(thisValue);
+            return WrapListAsIterator(values.GetRange(0, Math.Min(n, values.Count)));
+        }, length: 1);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "drop", (thisValue, args) =>
+        {
+            var n = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
+            if (n < 0)
+            {
+                throw new JsThrownException(CreateRangeError("Iterator.prototype.drop limit must be a non-negative integer."));
+            }
+
+            var values = DrainSelfAsList(thisValue);
+            return n >= values.Count
+                ? WrapListAsIterator(new List<JsValue>())
+                : WrapListAsIterator(values.GetRange(n, values.Count - n));
+        }, length: 1);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "forEach", (thisValue, args) =>
+        {
+            var fn = RequireCallable(args, 0, "Iterator.prototype.forEach");
+            var values = DrainSelfAsList(thisValue);
+            for (var i = 0; i < values.Count; i++)
+            {
+                CallFunction(fn, new[] { values[i], JsValue.FromNumber(i) }, JsValue.Undefined);
+            }
+
+            return JsValue.Undefined;
+        }, length: 1);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "toArray", (thisValue, _) =>
+        {
+            var values = DrainSelfAsList(thisValue);
+            var arr = CreateArrayFromElements(values);
+            return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+        }, length: 0);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "every", (thisValue, args) =>
+        {
+            var fn = RequireCallable(args, 0, "Iterator.prototype.every");
+            var values = DrainSelfAsList(thisValue);
+            for (var i = 0; i < values.Count; i++)
+            {
+                if (!IsTruthy(CallFunction(fn, new[] { values[i], JsValue.FromNumber(i) }, JsValue.Undefined)))
+                {
+                    return JsValue.FromBoolean(false);
+                }
+            }
+
+            return JsValue.FromBoolean(true);
+        }, length: 1);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "some", (thisValue, args) =>
+        {
+            var fn = RequireCallable(args, 0, "Iterator.prototype.some");
+            var values = DrainSelfAsList(thisValue);
+            for (var i = 0; i < values.Count; i++)
+            {
+                if (IsTruthy(CallFunction(fn, new[] { values[i], JsValue.FromNumber(i) }, JsValue.Undefined)))
+                {
+                    return JsValue.FromBoolean(true);
+                }
+            }
+
+            return JsValue.FromBoolean(false);
+        }, length: 1);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "find", (thisValue, args) =>
+        {
+            var fn = RequireCallable(args, 0, "Iterator.prototype.find");
+            var values = DrainSelfAsList(thisValue);
+            for (var i = 0; i < values.Count; i++)
+            {
+                if (IsTruthy(CallFunction(fn, new[] { values[i], JsValue.FromNumber(i) }, JsValue.Undefined)))
+                {
+                    return values[i];
+                }
+            }
+
+            return JsValue.Undefined;
+        }, length: 1);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "reduce", (thisValue, args) =>
+        {
+            var fn = RequireCallable(args, 0, "Iterator.prototype.reduce");
+            var values = DrainSelfAsList(thisValue);
+            var hasInitial = args.Count > 1;
+            if (values.Count == 0 && !hasInitial)
+            {
+                throw new JsThrownException(CreateTypeError("Reduce of empty iterator with no initial value."));
+            }
+
+            var acc = hasInitial ? args[1] : values[0];
+            var start = hasInitial ? 0 : 1;
+            for (var i = start; i < values.Count; i++)
+            {
+                acc = CallFunction(fn, new[] { acc, values[i], JsValue.FromNumber(i) }, JsValue.Undefined);
+            }
+
+            return acc;
+        }, length: 1);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "flatMap", (thisValue, args) =>
+        {
+            var fn = RequireCallable(args, 0, "Iterator.prototype.flatMap");
+            var values = DrainSelfAsList(thisValue);
+            var flat = new List<JsValue>();
+            for (var i = 0; i < values.Count; i++)
+            {
+                var produced = CallFunction(fn, new[] { values[i], JsValue.FromNumber(i) }, JsValue.Undefined);
+                // The spec wants GetIteratorFlattenable; for now, accept either an
+                // Array or an iterable / iterator and drain it via the same path.
+                if (produced.Tag == JsValueTag.Object)
+                {
+                    var producedObj = _heap.GetObject(produced.AsObjectHandle());
+                    if (producedObj is ArrayObject)
+                    {
+                        var len = GetArrayLength(producedObj);
+                        for (var k = 0; k < len; k++)
+                        {
+                            var key = k.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                            flat.Add(TryGetPropertyValue(producedObj, produced, key, out var v) ? v : JsValue.Undefined);
+                        }
+
+                        continue;
+                    }
+
+                    // Try @@iterator dispatch.
+                    var iterId = GetWellKnownSymbolId("iterator");
+                    if (producedObj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) &&
+                        iterDesc.Value.Tag == JsValueTag.Object)
+                    {
+                        var iter = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), produced);
+                        DrainIteratorIntoList(iter, flat);
+                        continue;
+                    }
+                }
+
+                flat.Add(produced);
+            }
+
+            return WrapListAsIterator(flat);
+        }, length: 1);
+
+        _iteratorPrototypeHandle = prototypeHandle;
+        _iteratorConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private JsValue RequireCallable(IReadOnlyList<JsValue> args, int idx, string name)
+    {
+        if (idx >= args.Count || args[idx].Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError(name + " callback is not a function."));
+        }
+
+        var obj = _heap.GetObject(args[idx].AsObjectHandle());
+        if (obj is not JsFunctionObject && obj is not NativeFunctionObject)
+        {
+            throw new JsThrownException(CreateTypeError(name + " callback is not callable."));
+        }
+
+        return args[idx];
+    }
+
+    // Drains the receiver-iterator via its .next() into a list. Same logic as
+    // DrainIteratorIntoList but the iterator object is already the receiver
+    // (no @@iterator dispatch needed).
+    private List<JsValue> DrainSelfAsList(JsValue iter)
+    {
+        var values = new List<JsValue>();
+        if (iter.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Iterator.prototype method called on non-object receiver."));
+        }
+
+        var iterObj = _heap.GetObject(iter.AsObjectHandle());
+        while (true)
+        {
+            if (!TryGetPropertyValue(iterObj, iter, "next", out var nextFn) || nextFn.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Iterator missing callable 'next'."));
+            }
+
+            var result = CallFunction(nextFn, Array.Empty<JsValue>(), iter);
+            if (result.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Iterator result is not an object."));
+            }
+
+            var resultObj = _heap.GetObject(result.AsObjectHandle());
+            TryGetPropertyValue(resultObj, result, "done", out var doneVal);
+            if (IsTruthy(doneVal))
+            {
+                return values;
+            }
+
+            TryGetPropertyValue(resultObj, result, "value", out var value);
+            values.Add(value);
+        }
+    }
+
+    // Wrap a materialised value list as an iterator whose [[Prototype]] is
+    // %ArrayIteratorPrototype% (which itself inherits from %Iterator.prototype%).
+    // The proximate prototype provides `next` (which knows how to read from
+    // SnapshotIteratorObject); the parent provides the map/filter/etc. helpers.
+    private JsValue WrapListAsIterator(List<JsValue> values)
+    {
+        var iter = new SnapshotIteratorObject(values);
+        iter.SetPrototype(EnsureArrayIteratorPrototype());
+        return JsValue.FromObject(_heap.AllocateObject(iter, AllocationSite.Current()));
+    }
+
+    private ObjectHandle EnsureIteratorPrototype()
+    {
+        _ = EnsureIteratorConstructor();
+        return _iteratorPrototypeHandle!.Value;
+    }
+
+    // Iterator.from(value): lift any iterable, iterator, or array-like into an
+    // iterator whose prototype is %Iterator.prototype% (so the helpers chain).
+    private ObjectHandle BuildIteratorWrapper(JsValue source)
+    {
+        var values = new List<JsValue>();
+        if (source.Tag == JsValueTag.Object)
+        {
+            var obj = _heap.GetObject(source.AsObjectHandle());
+            // If source already exposes .next, treat it as an iterator and drain
+            // (round-trips an Array.values() through Iterator.from cleanly).
+            if (obj.TryGetProperty("next", h => _heap.GetObject(h), out var nextDesc) &&
+                nextDesc.Value.Tag == JsValueTag.Object)
+            {
+                while (true)
+                {
+                    var r = CallFunction(nextDesc.Value, Array.Empty<JsValue>(), source);
+                    if (r.Tag != JsValueTag.Object) break;
+                    var rObj = _heap.GetObject(r.AsObjectHandle());
+                    TryGetPropertyValue(rObj, r, "done", out var doneVal);
+                    if (IsTruthy(doneVal)) break;
+                    TryGetPropertyValue(rObj, r, "value", out var v);
+                    values.Add(v);
+                }
+            }
+            else
+            {
+                // Try Symbol.iterator dispatch.
+                var iterId = GetWellKnownSymbolId("iterator");
+                if (obj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) &&
+                    iterDesc.Value.Tag == JsValueTag.Object)
+                {
+                    var iter = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), source);
+                    DrainIteratorIntoList(iter, values);
+                }
+                else if (obj is ArrayObject)
+                {
+                    var len = GetArrayLength(obj);
+                    for (var i = 0; i < len; i++)
+                    {
+                        var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        values.Add(TryGetPropertyValue(obj, source, key, out var v) ? v : JsValue.Undefined);
+                    }
+                }
+                else
+                {
+                    throw new JsThrownException(CreateTypeError("Iterator.from argument is not iterable."));
+                }
+            }
+        }
+        else if (source.Tag == JsValueTag.String)
+        {
+            var s = source.AsString();
+            for (var i = 0; i < s.Length; i++)
+            {
+                values.Add(JsValue.FromString(s[i].ToString()));
+            }
+        }
+        else
+        {
+            throw new JsThrownException(CreateTypeError("Iterator.from argument is not iterable."));
+        }
+
+        var wrap = new SnapshotIteratorObject(values);
+        wrap.SetPrototype(EnsureArrayIteratorPrototype());
+        return _heap.AllocateObject(wrap, AllocationSite.Current());
     }
 
     private ObjectHandle EnsureGlobalObject()
