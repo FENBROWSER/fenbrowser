@@ -2143,6 +2143,10 @@ public sealed class BytecodeInterpreter
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "push", ArrayPrototypePush, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", ArrayPrototypeToString);
+        // ECMA-262 23.1.3.18 Array.prototype.join, 23.1.3.16 indexOf, 23.1.3.14 includes.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "join", ArrayPrototypeJoin, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "indexOf", ArrayPrototypeIndexOf, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "includes", ArrayPrototypeIncludes, length: 1);
 
         // ECMA-262 23.1.2.2 Array.isArray(arg). Spec walks Proxy targets; we have no
         // Proxy yet, so the operation collapses to "is the value an ArrayObject?".
@@ -2221,11 +2225,27 @@ public sealed class BytecodeInterpreter
     private JsValue ArrayPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
+        return JsValue.FromString(JoinArrayElements(thisValue, ","));
+    }
+
+    // ECMA-262 23.1.3.18 Array.prototype.join. Default separator is ",". Undefined
+    // and null elements stringify to the empty string; everything else goes through
+    // the shared ToString conversion.
+    private JsValue ArrayPrototypeJoin(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var separator = args.Count > 0 && args[0].Tag != JsValueTag.Undefined
+            ? ToStringValue(args[0])
+            : ",";
+        return JsValue.FromString(JoinArrayElements(thisValue, separator));
+    }
+
+    private string JoinArrayElements(JsValue thisValue, string separator)
+    {
         var obj = ResolveObject(thisValue);
         var length = GetArrayLength(obj);
         if (length == 0)
         {
-            return JsValue.FromString(string.Empty);
+            return string.Empty;
         }
 
         var values = new string[length];
@@ -2243,7 +2263,86 @@ public sealed class BytecodeInterpreter
             }
         }
 
-        return JsValue.FromString(string.Join(",", values));
+        return string.Join(separator, values);
+    }
+
+    // ECMA-262 23.1.3.16 indexOf - strict equality, starts at fromIndex (default 0,
+    // negative wraps from length). Returns -1 when not found.
+    private JsValue ArrayPrototypeIndexOf(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        if (length == 0 || args.Count == 0)
+        {
+            return JsValue.FromNumber(-1);
+        }
+
+        var target = args[0];
+        var fromIndex = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
+        if (fromIndex < 0)
+        {
+            fromIndex = Math.Max(0, length + fromIndex);
+        }
+
+        for (var i = fromIndex; i < length; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (TryGetPropertyValue(obj, thisValue, key, out var value) && AreStrictlyEqual(value, target))
+            {
+                return JsValue.FromNumber(i);
+            }
+        }
+
+        return JsValue.FromNumber(-1);
+    }
+
+    // ECMA-262 23.1.3.14 includes - SameValueZero (NaN matches NaN; +0 matches -0).
+    private JsValue ArrayPrototypeIncludes(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        if (length == 0)
+        {
+            return JsValue.FromBoolean(false);
+        }
+
+        var target = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var fromIndex = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
+        if (fromIndex < 0)
+        {
+            fromIndex = Math.Max(0, length + fromIndex);
+        }
+
+        for (var i = fromIndex; i < length; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (TryGetPropertyValue(obj, thisValue, key, out var value) && SameValueZero(value, target))
+            {
+                return JsValue.FromBoolean(true);
+            }
+        }
+
+        return JsValue.FromBoolean(false);
+    }
+
+    // ECMA-262 7.2.11 SameValueZero - identical to SameValue except +0 and -0 are
+    // considered equal. Used by Array.prototype.includes, Map/Set keys, etc.
+    private static bool SameValueZero(JsValue a, JsValue b)
+    {
+        if ((a.Tag == JsValueTag.Int32 || a.Tag == JsValueTag.Number) &&
+            (b.Tag == JsValueTag.Int32 || b.Tag == JsValueTag.Number))
+        {
+            var an = a.AsNumber();
+            var bn = b.AsNumber();
+            if (double.IsNaN(an) && double.IsNaN(bn))
+            {
+                return true;
+            }
+
+            return an == bn;
+        }
+
+        return AreStrictlyEqual(a, b);
     }
 
     private int GetArrayLength(JsObject obj)
