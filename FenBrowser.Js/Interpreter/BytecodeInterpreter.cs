@@ -54,6 +54,8 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _symbolConstructorHandle;
     private ObjectHandle? _setConstructorHandle;
     private ObjectHandle? _setPrototypeHandle;
+    private ObjectHandle? _mapConstructorHandle;
+    private ObjectHandle? _mapPrototypeHandle;
 
     // Well-known symbol ids cached at first Symbol-constructor materialisation. JS
     // code that reads Symbol.iterator twice must get === values; a single id per
@@ -633,6 +635,11 @@ public sealed class BytecodeInterpreter
         {
             frame.Variables[setSlot] = JsValue.FromObject(EnsureSetConstructor());
         }
+
+        if (function.VariableSlots.TryGetValue("Map", out var mapSlot))
+        {
+            frame.Variables[mapSlot] = JsValue.FromObject(EnsureMapConstructor());
+        }
     }
 
     private JsObject CreateOrdinaryObject()
@@ -1071,6 +1078,224 @@ public sealed class BytecodeInterpreter
     {
         _ = EnsureSetConstructor();
         return _setPrototypeHandle!.Value;
+    }
+
+    // ECMA-262 24.1 Map. Same shape as Set with an explicit key + value pair per
+    // entry; SameValueZero is the key-identity rule (NaN-key matches NaN, +0/-0
+    // collapse).
+    private ObjectHandle EnsureMapConstructor()
+    {
+        if (_mapConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototype = CreateOrdinaryObject();
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "Map",
+            (_, _) => throw new JsThrownException(CreateTypeError(
+                "Constructor Map requires 'new'.")),
+            args =>
+            {
+                var map = new MapObject();
+                map.SetPrototype(EnsureMapPrototype());
+                var handle = _heap.AllocateObject(map, AllocationSite.Current());
+                if (args.Count > 0 && args[0].Tag == JsValueTag.Object)
+                {
+                    var src = _heap.GetObject(args[0].AsObjectHandle());
+                    if (src is ArrayObject)
+                    {
+                        var len = GetArrayLength(src);
+                        for (var i = 0; i < len; i++)
+                        {
+                            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                            if (!TryGetPropertyValue(src, args[0], key, out var entry) ||
+                                entry.Tag != JsValueTag.Object)
+                            {
+                                throw new JsThrownException(CreateTypeError(
+                                    "Iterator value " + i + " is not an entry object."));
+                            }
+
+                            var entryObj = _heap.GetObject(entry.AsObjectHandle());
+                            TryGetPropertyValue(entryObj, entry, "0", out var k);
+                            TryGetPropertyValue(entryObj, entry, "1", out var v);
+                            map.Set(k, v);
+                            if (k.Tag == JsValueTag.Object) _heap.WriteBarrier(handle, k.AsObjectHandle());
+                            if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(handle, v.AsObjectHandle());
+                        }
+                    }
+                }
+
+                return JsValue.FromObject(handle);
+            },
+            length: 0);
+
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        // 24.1.3.9 set (returns the map for chaining).
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "set", (thisValue, args) =>
+        {
+            var map = RequireMap(thisValue);
+            var key = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var value = args.Count > 1 ? args[1] : JsValue.Undefined;
+            map.Set(key, value);
+            if (key.Tag == JsValueTag.Object) _heap.WriteBarrier(thisValue.AsObjectHandle(), key.AsObjectHandle());
+            if (value.Tag == JsValueTag.Object) _heap.WriteBarrier(thisValue.AsObjectHandle(), value.AsObjectHandle());
+            return thisValue;
+        }, length: 2);
+
+        // 24.1.3.6 get.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "get", (thisValue, args) =>
+        {
+            var map = RequireMap(thisValue);
+            var key = args.Count > 0 ? args[0] : JsValue.Undefined;
+            return map.TryGet(key, out var v) ? v : JsValue.Undefined;
+        }, length: 1);
+
+        // 24.1.3.7 has.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "has", (thisValue, args) =>
+        {
+            var map = RequireMap(thisValue);
+            var key = args.Count > 0 ? args[0] : JsValue.Undefined;
+            return JsValue.FromBoolean(map.Has(key));
+        }, length: 1);
+
+        // 24.1.3.3 delete.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "delete", (thisValue, args) =>
+        {
+            var map = RequireMap(thisValue);
+            var key = args.Count > 0 ? args[0] : JsValue.Undefined;
+            return JsValue.FromBoolean(map.Remove(key));
+        }, length: 1);
+
+        // 24.1.3.1 clear.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "clear", (thisValue, _) =>
+        {
+            RequireMap(thisValue).Clear();
+            return JsValue.Undefined;
+        }, length: 0);
+
+        // 24.1.3.5 forEach(callback, thisArg) - callback(value, key, map).
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "forEach", (thisValue, args) =>
+        {
+            var map = RequireMap(thisValue);
+            var cb = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            if (cb.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Map.prototype.forEach callback is not a function."));
+            }
+
+            foreach (var (k, v) in map.Snapshot())
+            {
+                CallFunction(cb, new[] { v, k, thisValue }, thisArg);
+            }
+
+            return JsValue.Undefined;
+        }, length: 1);
+
+        // 24.1.3.10 size accessor.
+        var sizeGetter = new NativeFunctionObject("get size", (thisValue, _) =>
+            JsValue.FromNumber(RequireMap(thisValue).Count), length: 0);
+        var sizeGetterHandle = _heap.AllocateObject(sizeGetter, AllocationSite.Current());
+        prototype.DefineOwnProperty("size", JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(sizeGetterHandle), JsValue.Undefined, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, sizeGetterHandle);
+
+        _mapPrototypeHandle = prototypeHandle;
+        _mapConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private ObjectHandle EnsureMapPrototype()
+    {
+        _ = EnsureMapConstructor();
+        return _mapPrototypeHandle!.Value;
+    }
+
+    private MapObject RequireMap(JsValue thisValue)
+    {
+        if (thisValue.Tag != JsValueTag.Object ||
+            _heap.GetObject(thisValue.AsObjectHandle()) is not MapObject map)
+        {
+            throw new JsThrownException(CreateTypeError("Map method called on incompatible receiver."));
+        }
+
+        return map;
+    }
+
+    private sealed class MapObject : JsObject
+    {
+        private readonly List<(JsValue Key, JsValue Value)> _entries = new();
+
+        public int Count => _entries.Count;
+
+        public void Set(JsValue key, JsValue value)
+        {
+            for (var i = 0; i < _entries.Count; i++)
+            {
+                if (SameValueZero(_entries[i].Key, key))
+                {
+                    _entries[i] = (_entries[i].Key, value);
+                    return;
+                }
+            }
+
+            _entries.Add((key, value));
+        }
+
+        public bool TryGet(JsValue key, out JsValue value)
+        {
+            foreach (var entry in _entries)
+            {
+                if (SameValueZero(entry.Key, key))
+                {
+                    value = entry.Value;
+                    return true;
+                }
+            }
+
+            value = JsValue.Undefined;
+            return false;
+        }
+
+        public bool Has(JsValue key)
+        {
+            foreach (var entry in _entries)
+            {
+                if (SameValueZero(entry.Key, key))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public bool Remove(JsValue key)
+        {
+            for (var i = 0; i < _entries.Count; i++)
+            {
+                if (SameValueZero(_entries[i].Key, key))
+                {
+                    _entries.RemoveAt(i);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public void Clear() => _entries.Clear();
+
+        public IReadOnlyList<(JsValue, JsValue)> Snapshot() => _entries.ToArray();
     }
 
     private SetObject RequireSet(JsValue thisValue)
