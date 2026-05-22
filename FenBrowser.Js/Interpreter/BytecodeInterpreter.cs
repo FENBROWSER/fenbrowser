@@ -4354,6 +4354,8 @@ public sealed class BytecodeInterpreter
         _ = prototypeObject.SetProperty("constructor", JsValue.FromObject(constructorHandle));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toString", NumberPrototypeToString);
+        // ECMA-262 21.1.3.3 Number.prototype.toFixed(fractionDigits).
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toFixed", NumberPrototypeToFixed, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "valueOf", NumberPrototypeValueOf);
 
         _numberPrototypeHandle = prototypeHandle;
@@ -4619,6 +4621,41 @@ public sealed class BytecodeInterpreter
                 Enumerable: false,
                 Configurable: true));
         _heap.WriteBarrier(ownerHandle, functionHandle);
+    }
+
+    // ECMA-262 21.1.3.3 Number.prototype.toFixed(fractionDigits). fractionDigits
+    // must be in [0, 100]; NaN/Infinity return their default ToString; otherwise the
+    // value is fixed-point formatted to exactly N digits after the decimal point.
+    private JsValue NumberPrototypeToFixed(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var value = NumberThisValue(thisValue);
+        var digits = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
+        if (digits < 0 || digits > 100)
+        {
+            throw new JsThrownException(CreateRangeError(
+                "toFixed() digits argument must be between 0 and 100."));
+        }
+
+        if (double.IsNaN(value))
+        {
+            return JsValue.FromString("NaN");
+        }
+
+        if (double.IsInfinity(value))
+        {
+            return JsValue.FromString(value > 0 ? "Infinity" : "-Infinity");
+        }
+
+        // Very large magnitudes fall back to the standard Number.toString output per
+        // spec step 9 (when |value| >= 10^21).
+        if (Math.Abs(value) >= 1e21)
+        {
+            return JsValue.FromString(FormatNumberForString(value));
+        }
+
+        return JsValue.FromString(value.ToString(
+            "F" + digits.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            System.Globalization.CultureInfo.InvariantCulture));
     }
 
     private JsValue NumberPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
