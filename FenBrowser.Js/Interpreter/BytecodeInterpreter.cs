@@ -1718,6 +1718,68 @@ public sealed class BytecodeInterpreter
             return JsValue.FromBoolean(SameValue(a, b));
         }, length: 2);
 
+        // ECMA-262 20.1.2.4 Object.defineProperties(O, Properties). Walks each own
+        // enumerable property of the Properties object and calls Object.defineProperty
+        // with the corresponding descriptor. The receiver O is returned.
+        DefineIntrinsicFunction(constructorHandle, constructor, "defineProperties", (_, args) =>
+        {
+            if (args.Count < 2 || args[0].Tag != JsValueTag.Object || args[1].Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Object.defineProperties requires an object target and a properties object."));
+            }
+
+            var propsObj = _heap.GetObject(args[1].AsObjectHandle());
+            var propsReceiver = args[1];
+            var keys = new List<string>();
+            foreach (var pair in propsObj.EnumerateOwnProperties())
+            {
+                if (pair.Value.Enumerable)
+                {
+                    keys.Add(pair.Key);
+                }
+            }
+
+            foreach (var key in keys)
+            {
+                if (!TryGetPropertyValue(propsObj, propsReceiver, key, out var descValue) ||
+                    descValue.Tag != JsValueTag.Object)
+                {
+                    continue;
+                }
+
+                ObjectDefineProperty(JsValue.Undefined, new[]
+                {
+                    args[0],
+                    JsValue.FromString(key),
+                    descValue,
+                });
+            }
+
+            return args[0];
+        }, length: 2);
+
+        // ECMA-262 20.1.2.14 Object.hasOwn(O, P) - ES2022. Equivalent to calling
+        // Object.prototype.hasOwnProperty.call(O, P) without the awkward .call form
+        // and without the prototype hazard if O is a null-prototype object.
+        DefineIntrinsicFunction(constructorHandle, constructor, "hasOwn", (_, args) =>
+        {
+            if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined || args[0].Tag == JsValueTag.Null)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Cannot convert undefined or null to object."));
+            }
+
+            if (args[0].Tag != JsValueTag.Object)
+            {
+                return JsValue.FromBoolean(false);
+            }
+
+            var key = ToPropertyKey(args.Count > 1 ? args[1] : JsValue.Undefined);
+            var obj = _heap.GetObject(args[0].AsObjectHandle());
+            return JsValue.FromBoolean(obj.TryGetOwnProperty(key, out var __));
+        }, length: 2);
+
         // ECMA-262 20.1.2.11 Object.getOwnPropertyDescriptors(O). Returns an object
         // whose own keys mirror the input's own keys and whose values are full
         // descriptor objects (built by the same factory as getOwnPropertyDescriptor
