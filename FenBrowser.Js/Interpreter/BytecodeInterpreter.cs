@@ -2238,6 +2238,25 @@ public sealed class BytecodeInterpreter
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _heap.WriteBarrier(prototypeHandle, callHandle);
 
+        // ECMA-262 20.2.3.1 Function.prototype.apply(thisArg, argsArray). The
+        // second argument is an Array (or array-like). null/undefined become an
+        // empty argument list per spec step 3-4.
+        var applyHandle = _heap.AllocateObject(
+            new NativeFunctionObject("apply", FunctionPrototypeApply, length: 2),
+            AllocationSite.Current());
+        _ = prototype.SetProperty("apply", JsValue.FromObject(applyHandle));
+        _heap.WriteBarrier(prototypeHandle, applyHandle);
+
+        // ECMA-262 20.2.3.2 Function.prototype.bind(thisArg, ...args). Returns a new
+        // function ("exotic bound function" in the spec). The returned function calls
+        // the original with thisArg pre-set and any bound args prepended to the
+        // call-site args.
+        var bindHandle = _heap.AllocateObject(
+            new NativeFunctionObject("bind", FunctionPrototypeBind, length: 1),
+            AllocationSite.Current());
+        _ = prototype.SetProperty("bind", JsValue.FromObject(bindHandle));
+        _heap.WriteBarrier(prototypeHandle, bindHandle);
+
         _functionPrototypeHandle = prototypeHandle;
         _functionConstructorHandle = constructorHandle;
         return constructorHandle;
@@ -2376,6 +2395,99 @@ public sealed class BytecodeInterpreter
         _heap.PushRoot(callHandle);
         _functionCallMethodHandle = callHandle;
         return callHandle;
+    }
+
+    // ECMA-262 20.2.3.1 Function.prototype.apply. Distinct from .call in that the
+    // arguments come packaged in an Array (or array-like) second parameter; null/
+    // undefined yields an empty argument list per step 3-4.
+    private JsValue FunctionPrototypeApply(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var thisArgument = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var argsArray = args.Count > 1 ? args[1] : JsValue.Undefined;
+
+        JsValue[] callArgs;
+        if (argsArray.Tag == JsValueTag.Undefined || argsArray.Tag == JsValueTag.Null)
+        {
+            callArgs = Array.Empty<JsValue>();
+        }
+        else if (argsArray.Tag == JsValueTag.Object)
+        {
+            var obj = _heap.GetObject(argsArray.AsObjectHandle());
+            var length = GetArrayLength(obj);
+            callArgs = new JsValue[length];
+            for (var i = 0; i < length; i++)
+            {
+                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                TryGetPropertyValue(obj, argsArray, key, out callArgs[i]);
+            }
+        }
+        else
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Function.prototype.apply: second argument must be an object or null/undefined."));
+        }
+
+        return CallFunction(thisValue, callArgs, thisArgument);
+    }
+
+    // ECMA-262 20.2.3.2 Function.prototype.bind. Returns a fresh NativeFunctionObject
+    // that, when called, delegates to the original with thisArg pinned and any bound
+    // args prepended to the call-site args. The exotic [[Construct]] / target-name
+    // / target-length spec subtleties are deferred; the common bind use case
+    // (this + partial application) is covered.
+    private JsValue FunctionPrototypeBind(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        if (thisValue.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Function.prototype.bind called on non-function."));
+        }
+
+        var targetObj = _heap.GetObject(thisValue.AsObjectHandle());
+        if (targetObj is not JsFunctionObject && targetObj is not NativeFunctionObject)
+        {
+            throw new JsThrownException(CreateTypeError("Function.prototype.bind called on non-callable."));
+        }
+
+        var boundThis = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var boundArgs = new JsValue[Math.Max(0, args.Count - 1)];
+        for (var i = 1; i < args.Count; i++)
+        {
+            boundArgs[i - 1] = args[i];
+        }
+
+        // Capture the original handle so the bound function never re-resolves to a
+        // moved object if the heap compacts under it.
+        var targetValue = thisValue;
+        var bound = new NativeFunctionObject(
+            "bound",
+            (_, callArgs) =>
+            {
+                var merged = new JsValue[boundArgs.Length + callArgs.Count];
+                Array.Copy(boundArgs, merged, boundArgs.Length);
+                for (var i = 0; i < callArgs.Count; i++)
+                {
+                    merged[boundArgs.Length + i] = callArgs[i];
+                }
+
+                return CallFunction(targetValue, merged, boundThis);
+            },
+            length: Math.Max(0, GetCallableLength(targetObj) - boundArgs.Length));
+        // Inherit Function.prototype so .bind/.call/.apply work on the bound result.
+        bound.SetPrototype(EnsureFunctionPrototype());
+
+        var boundHandle = _heap.AllocateObject(bound, AllocationSite.Current());
+        return JsValue.FromObject(boundHandle);
+    }
+
+    private static int GetCallableLength(JsObject callable)
+    {
+        if (callable.TryGetOwnProperty("length", out var desc) &&
+            (desc.Value.Tag == JsValueTag.Number || desc.Value.Tag == JsValueTag.Int32))
+        {
+            return Math.Max(0, (int)desc.Value.AsNumber());
+        }
+
+        return 0;
     }
 
     private JsValue FunctionPrototypeCall(JsValue thisValue, IReadOnlyList<JsValue> args)
