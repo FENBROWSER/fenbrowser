@@ -2927,6 +2927,8 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "flatMap", ArrayPrototypeFlatMap, length: 1);
         // ECMA-262 23.1.3.30 sort.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "sort", ArrayPrototypeSort, length: 1);
+        // ECMA-262 23.1.3.31 splice.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "splice", ArrayPrototypeSplice, length: 2);
 
         // ECMA-262 23.1.2.3 Array.of(...items). Returns a fresh Array populated with
         // exactly the supplied items - distinct from new Array(n), which uses a
@@ -3258,6 +3260,102 @@ public sealed class BytecodeInterpreter
             : (int)args[argIndex].AsNumber();
         var idx = raw < 0 ? length + raw : raw;
         return Math.Clamp(idx, 0, length);
+    }
+
+    // ECMA-262 23.1.3.31 Array.prototype.splice(start, deleteCount, ...items).
+    // Removes deleteCount elements starting at start (negative wraps from length),
+    // inserts items in their place, and returns a fresh Array of the removed
+    // elements. Subsequent elements shift up or down depending on whether items
+    // were inserted or extra elements removed.
+    private JsValue ArrayPrototypeSplice(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var ownerHandle = ResolveObjectHandle(thisValue);
+        var obj = _heap.GetObject(ownerHandle);
+        var length = GetArrayLength(obj);
+        var start = NormaliseSliceIndex(args, 0, 0, length);
+
+        int deleteCount;
+        if (args.Count < 1)
+        {
+            deleteCount = 0;
+        }
+        else if (args.Count < 2)
+        {
+            // Single-arg form: delete from start to end (spec step 5.b).
+            deleteCount = length - start;
+        }
+        else
+        {
+            deleteCount = Math.Clamp((int)ToNumber(args[1]), 0, length - start);
+        }
+
+        var insertCount = Math.Max(0, args.Count - 2);
+
+        // Collect the removed slice.
+        var removed = new List<JsValue>(deleteCount);
+        for (var i = 0; i < deleteCount; i++)
+        {
+            var key = (start + i).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            removed.Add(TryGetPropertyValue(obj, thisValue, key, out var v) ? v : JsValue.Undefined);
+        }
+
+        var newLength = length - deleteCount + insertCount;
+        if (insertCount < deleteCount)
+        {
+            // Shift down.
+            for (var i = start; i < length - deleteCount; i++)
+            {
+                var fromKey = (i + deleteCount).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var toKey = (i + insertCount).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if (TryGetPropertyValue(obj, thisValue, fromKey, out var v))
+                {
+                    _ = obj.SetProperty(toKey, v);
+                }
+                else
+                {
+                    obj.DeleteProperty(toKey);
+                }
+            }
+
+            for (var i = newLength; i < length; i++)
+            {
+                obj.DeleteProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+        }
+        else if (insertCount > deleteCount)
+        {
+            // Shift up: walk back-to-front so we never clobber a not-yet-moved slot.
+            for (var i = length - deleteCount - 1; i >= start; i--)
+            {
+                var fromKey = (i + deleteCount).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                var toKey = (i + insertCount).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if (TryGetPropertyValue(obj, thisValue, fromKey, out var v))
+                {
+                    _ = obj.SetProperty(toKey, v);
+                }
+                else
+                {
+                    obj.DeleteProperty(toKey);
+                }
+            }
+        }
+
+        // Insert new items.
+        for (var i = 0; i < insertCount; i++)
+        {
+            var key = (start + i).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var v = args[2 + i];
+            _ = obj.SetProperty(key, v);
+            if (v.Tag == JsValueTag.Object)
+            {
+                _heap.WriteBarrier(ownerHandle, v.AsObjectHandle());
+            }
+        }
+
+        _ = obj.SetProperty("length", JsValue.FromNumber(newLength));
+
+        var resultArr = CreateArrayFromElements(removed);
+        return JsValue.FromObject(_heap.AllocateObject(resultArr, AllocationSite.Current()));
     }
 
     // ECMA-262 23.1.3.30 Array.prototype.sort([compareFn]). Default comparator
