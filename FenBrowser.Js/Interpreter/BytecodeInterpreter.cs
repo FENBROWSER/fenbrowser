@@ -60,6 +60,7 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _weakMapPrototypeHandle;
     private ObjectHandle? _weakSetConstructorHandle;
     private ObjectHandle? _weakSetPrototypeHandle;
+    private ObjectHandle? _reflectObjectHandle;
 
     // Well-known symbol ids cached at first Symbol-constructor materialisation. JS
     // code that reads Symbol.iterator twice must get === values; a single id per
@@ -670,6 +671,11 @@ public sealed class BytecodeInterpreter
         if (function.VariableSlots.TryGetValue("WeakSet", out var wsSlot))
         {
             frame.Variables[wsSlot] = JsValue.FromObject(EnsureWeakSetConstructor());
+        }
+
+        if (function.VariableSlots.TryGetValue("Reflect", out var reflectSlot))
+        {
+            frame.Variables[reflectSlot] = JsValue.FromObject(EnsureReflectObject());
         }
     }
 
@@ -1803,6 +1809,205 @@ public sealed class BytecodeInterpreter
         public void Add(ObjectHandle key) => _entries.Add(key);
         public bool Has(ObjectHandle key) => _entries.Contains(key);
         public bool Remove(ObjectHandle key) => _entries.Remove(key);
+    }
+
+    // ECMA-262 28.1 The Reflect Object. Most members are thin wrappers over the
+    // same internal helpers Object.* use; the spec-mandated differences are that
+    // Reflect.set / defineProperty / deleteProperty return booleans (matching
+    // the underlying [[Set]] / [[DefineOwnProperty]] / [[Delete]] success
+    // result) instead of throwing.
+    private ObjectHandle EnsureReflectObject()
+    {
+        if (_reflectObjectHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var reflect = CreateOrdinaryObject();
+        var handle = _heap.AllocateObject(reflect, AllocationSite.Current());
+        _heap.PushRoot(handle);
+
+        // 28.1.9 has
+        DefineIntrinsicFunction(handle, reflect, "has", (_, args) =>
+        {
+            RequireObjectTarget(args, "Reflect.has");
+            var obj = _heap.GetObject(args[0].AsObjectHandle());
+            var key = ToPropertyKey(args.Count > 1 ? args[1] : JsValue.Undefined);
+            return JsValue.FromBoolean(obj.TryGetProperty(key, h => _heap.GetObject(h), out var __));
+        }, length: 2);
+
+        // 28.1.6 get
+        DefineIntrinsicFunction(handle, reflect, "get", (_, args) =>
+        {
+            RequireObjectTarget(args, "Reflect.get");
+            var target = args[0];
+            var key = ToPropertyKey(args.Count > 1 ? args[1] : JsValue.Undefined);
+            return GetReceiverProperty(target, key);
+        }, length: 2);
+
+        // 28.1.14 set
+        DefineIntrinsicFunction(handle, reflect, "set", (_, args) =>
+        {
+            RequireObjectTarget(args, "Reflect.set");
+            var targetHandle = args[0].AsObjectHandle();
+            var obj = _heap.GetObject(targetHandle);
+            var key = ToPropertyKey(args.Count > 1 ? args[1] : JsValue.Undefined);
+            var value = args.Count > 2 ? args[2] : JsValue.Undefined;
+            return JsValue.FromBoolean(obj.SetProperty(key, value));
+        }, length: 3);
+
+        // 28.1.4 deleteProperty
+        DefineIntrinsicFunction(handle, reflect, "deleteProperty", (_, args) =>
+        {
+            RequireObjectTarget(args, "Reflect.deleteProperty");
+            var obj = _heap.GetObject(args[0].AsObjectHandle());
+            var key = ToPropertyKey(args.Count > 1 ? args[1] : JsValue.Undefined);
+            return JsValue.FromBoolean(obj.DeleteProperty(key));
+        }, length: 2);
+
+        // 28.1.11 ownKeys - returns string-keyed own properties as an Array.
+        // Symbol-keyed properties land here too once their iteration order is wired.
+        DefineIntrinsicFunction(handle, reflect, "ownKeys", (_, args) =>
+        {
+            RequireObjectTarget(args, "Reflect.ownKeys");
+            var obj = _heap.GetObject(args[0].AsObjectHandle());
+            var items = new List<JsValue>();
+            foreach (var p in obj.EnumerateOwnProperties())
+            {
+                items.Add(JsValue.FromString(p.Key));
+            }
+
+            var arr = CreateArrayFromElements(items);
+            return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+        }, length: 1);
+
+        // 28.1.3 defineProperty - returns true on success, false when the underlying
+        // [[DefineOwnProperty]] rejects (rather than throwing like Object.defineProperty).
+        DefineIntrinsicFunction(handle, reflect, "defineProperty", (_, args) =>
+        {
+            RequireObjectTarget(args, "Reflect.defineProperty");
+            if (args.Count < 3 || args[2].Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Reflect.defineProperty descriptor must be an object."));
+            }
+
+            try
+            {
+                ObjectDefineProperty(JsValue.Undefined, args);
+                return JsValue.FromBoolean(true);
+            }
+            catch (JsThrownException)
+            {
+                return JsValue.FromBoolean(false);
+            }
+        }, length: 3);
+
+        // 28.1.7 getOwnPropertyDescriptor
+        DefineIntrinsicFunction(handle, reflect, "getOwnPropertyDescriptor", (_, args) =>
+        {
+            RequireObjectTarget(args, "Reflect.getOwnPropertyDescriptor");
+            return ObjectGetOwnPropertyDescriptor(JsValue.Undefined, args);
+        }, length: 2);
+
+        // 28.1.8 getPrototypeOf
+        DefineIntrinsicFunction(handle, reflect, "getPrototypeOf", (_, args) =>
+        {
+            RequireObjectTarget(args, "Reflect.getPrototypeOf");
+            var obj = _heap.GetObject(args[0].AsObjectHandle());
+            return obj.PrototypeHandle is { } proto ? JsValue.FromObject(proto) : JsValue.Null;
+        }, length: 1);
+
+        // 28.1.13 setPrototypeOf - returns boolean (no TypeError on non-Object proto;
+        // it returns false instead, per spec step 5).
+        DefineIntrinsicFunction(handle, reflect, "setPrototypeOf", (_, args) =>
+        {
+            RequireObjectTarget(args, "Reflect.setPrototypeOf");
+            var protoArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            if (protoArg.Tag != JsValueTag.Object && protoArg.Tag != JsValueTag.Null)
+            {
+                return JsValue.FromBoolean(false);
+            }
+
+            var ownerHandle = args[0].AsObjectHandle();
+            var obj = _heap.GetObject(ownerHandle);
+            if (protoArg.Tag == JsValueTag.Object)
+            {
+                obj.SetPrototype(protoArg.AsObjectHandle());
+                _heap.WriteBarrier(ownerHandle, protoArg.AsObjectHandle());
+            }
+            else
+            {
+                obj.SetPrototype(null);
+            }
+
+            return JsValue.FromBoolean(true);
+        }, length: 2);
+
+        // 28.1.10 isExtensible
+        DefineIntrinsicFunction(handle, reflect, "isExtensible", (_, args) =>
+        {
+            RequireObjectTarget(args, "Reflect.isExtensible");
+            return JsValue.FromBoolean(_heap.GetObject(args[0].AsObjectHandle()).Extensible);
+        }, length: 1);
+
+        // 28.1.12 preventExtensions
+        DefineIntrinsicFunction(handle, reflect, "preventExtensions", (_, args) =>
+        {
+            RequireObjectTarget(args, "Reflect.preventExtensions");
+            _heap.GetObject(args[0].AsObjectHandle()).PreventExtensions();
+            return JsValue.FromBoolean(true);
+        }, length: 1);
+
+        // 28.1.1 apply(target, thisArg, argsList)
+        DefineIntrinsicFunction(handle, reflect, "apply", (_, args) =>
+        {
+            if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Reflect.apply target must be a function."));
+            }
+
+            var targetObj = _heap.GetObject(args[0].AsObjectHandle());
+            if (targetObj is not JsFunctionObject && targetObj is not NativeFunctionObject)
+            {
+                throw new JsThrownException(CreateTypeError("Reflect.apply target is not callable."));
+            }
+
+            var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            var argsList = args.Count > 2 ? args[2] : JsValue.Undefined;
+            JsValue[] callArgs;
+            if (argsList.Tag == JsValueTag.Object)
+            {
+                var lobj = _heap.GetObject(argsList.AsObjectHandle());
+                var len = GetArrayLength(lobj);
+                callArgs = new JsValue[len];
+                for (var i = 0; i < len; i++)
+                {
+                    var k = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    TryGetPropertyValue(lobj, argsList, k, out callArgs[i]);
+                }
+            }
+            else if (argsList.Tag == JsValueTag.Undefined || argsList.Tag == JsValueTag.Null)
+            {
+                callArgs = Array.Empty<JsValue>();
+            }
+            else
+            {
+                throw new JsThrownException(CreateTypeError("Reflect.apply args must be an Array-like."));
+            }
+
+            return CallFunction(args[0], callArgs, thisArg);
+        }, length: 3);
+
+        _reflectObjectHandle = handle;
+        return handle;
+    }
+
+    private void RequireObjectTarget(IReadOnlyList<JsValue> args, string name)
+    {
+        if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError(name + " called on non-object."));
+        }
     }
 
     private ObjectHandle EnsureGlobalObject()
