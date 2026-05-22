@@ -733,13 +733,32 @@ public sealed class BytecodeInterpreter
         _heap.PushRoot(protoHandle);
 
         // ECMA-262 23.1.5.2.1 %ArrayIteratorPrototype%.next.
+        // Doubles as the .next for SnapshotIteratorObject (used by Set/Map iterators):
+        // both expose an index + value sequence and the only difference is how
+        // values are materialised.
         var next = new NativeFunctionObject("next", (thisValue, _) =>
         {
-            if (thisValue.Tag != JsValueTag.Object ||
-                _heap.GetObject(thisValue.AsObjectHandle()) is not ArrayIteratorObject iter)
+            if (thisValue.Tag != JsValueTag.Object)
             {
                 throw new JsThrownException(CreateTypeError(
-                    "Array Iterator.prototype.next called on incompatible receiver."));
+                    "Iterator.prototype.next called on non-object."));
+            }
+
+            var target = _heap.GetObject(thisValue.AsObjectHandle());
+            if (target is SnapshotIteratorObject snap)
+            {
+                if (snap.Index >= snap.Values.Count)
+                {
+                    return BuildIteratorResult(JsValue.Undefined, done: true);
+                }
+
+                return BuildIteratorResult(snap.Values[snap.Index++], done: false);
+            }
+
+            if (target is not ArrayIteratorObject iter)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Iterator.prototype.next called on incompatible receiver."));
             }
 
             var sourceObj = _heap.GetObject(iter.SourceHandle);
@@ -778,6 +797,15 @@ public sealed class BytecodeInterpreter
             JsValue.FromObject(nextHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(protoHandle, nextHandle);
 
+        // ECMA-262 27.1.2.1 - every iterator's @@iterator returns the iterator
+        // itself, so for-of on the iterator just keeps stepping through it.
+        var selfIter = new NativeFunctionObject("[Symbol.iterator]", (thisValue, _) => thisValue, length: 0);
+        var selfIterHandle = _heap.AllocateObject(selfIter, AllocationSite.Current());
+        proto.DefineOwnSymbolProperty(GetWellKnownSymbolId("iterator"),
+            new JsPropertyDescriptor(JsValue.FromObject(selfIterHandle),
+                Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, selfIterHandle);
+
         _arrayIteratorPrototypeHandle = protoHandle;
         return protoHandle;
     }
@@ -811,24 +839,29 @@ public sealed class BytecodeInterpreter
         public int Index { get; set; }
     }
 
-    // Build a for-of iteration state. Strings yield each UTF-16 code unit; Arrays
-    // and array-likes (objects with .length) yield each indexed value. Other
-    // iterables (Map/Set/user @@iterator) are not yet wired - they throw TypeError
-    // to match how V8 surfaces "X is not iterable".
+    // Build a for-of iteration state. Tries the spec @@iterator dispatch first:
+    // if the source object exposes a callable Symbol.iterator, call it and drive
+    // the returned iterator via .next() until done. Strings, Arrays, and array-
+    // likes fall through to fast in-place iteration over their indexed slots.
     private JsValue CreateForOfIterator(JsValue source)
     {
         var values = new List<JsValue>();
-        if (source.Tag == JsValueTag.String)
-        {
-            var s = source.AsString();
-            for (var i = 0; i < s.Length; i++)
-            {
-                values.Add(JsValue.FromString(s[i].ToString()));
-            }
-        }
-        else if (source.Tag == JsValueTag.Object)
+
+        if (source.Tag == JsValueTag.Object)
         {
             var obj = _heap.GetObject(source.AsObjectHandle());
+            // Spec @@iterator dispatch (7.4.2 GetIterator + 7.4.4 IteratorStep).
+            var iterId = GetWellKnownSymbolId("iterator");
+            if (iterId != 0 &&
+                obj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) &&
+                iterDesc.Value.Tag == JsValueTag.Object)
+            {
+                var iter = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), source);
+                DrainIteratorIntoList(iter, values);
+                var producer = new ForOfIteratorObject(values);
+                return JsValue.FromObject(_heap.AllocateObject(producer, AllocationSite.Current()));
+            }
+
             if (obj is ArrayObject)
             {
                 var length = GetArrayLength(obj);
@@ -852,7 +885,15 @@ public sealed class BytecodeInterpreter
             else
             {
                 throw new JsThrownException(CreateTypeError(
-                    "Value is not iterable (Map/Set/user @@iterator support pending)."));
+                    "Value is not iterable (no @@iterator and not array-like)."));
+            }
+        }
+        else if (source.Tag == JsValueTag.String)
+        {
+            var s = source.AsString();
+            for (var i = 0; i < s.Length; i++)
+            {
+                values.Add(JsValue.FromString(s[i].ToString()));
             }
         }
         else if (source.Tag == JsValueTag.Undefined || source.Tag == JsValueTag.Null)
@@ -864,8 +905,46 @@ public sealed class BytecodeInterpreter
             throw new JsThrownException(CreateTypeError("Value is not iterable."));
         }
 
-        var iter = new ForOfIteratorObject(values);
-        return JsValue.FromObject(_heap.AllocateObject(iter, AllocationSite.Current()));
+        var fallbackIter = new ForOfIteratorObject(values);
+        return JsValue.FromObject(_heap.AllocateObject(fallbackIter, AllocationSite.Current()));
+    }
+
+    // Drains a user iterator into a value list by calling .next() repeatedly until
+    // the returned IteratorResult.done is true. Bounded by MaxCallDepth-friendly
+    // semantics: each .next() goes through CallFunction so the recursion guard
+    // applies.
+    private void DrainIteratorIntoList(JsValue iter, List<JsValue> sink)
+    {
+        if (iter.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Iterator @@iterator did not return an object."));
+        }
+
+        var iterObj = _heap.GetObject(iter.AsObjectHandle());
+        while (true)
+        {
+            if (!TryGetPropertyValue(iterObj, iter, "next", out var nextFn) ||
+                nextFn.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Iterator result missing callable 'next'."));
+            }
+
+            var result = CallFunction(nextFn, Array.Empty<JsValue>(), iter);
+            if (result.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Iterator result is not an object."));
+            }
+
+            var resultObj = _heap.GetObject(result.AsObjectHandle());
+            TryGetPropertyValue(resultObj, result, "done", out var doneVal);
+            if (IsTruthy(doneVal))
+            {
+                return;
+            }
+
+            TryGetPropertyValue(resultObj, result, "value", out var value);
+            sink.Add(value);
+        }
     }
 
     private JsValue CreateForInIterator(JsValue value)
@@ -1054,6 +1133,20 @@ public sealed class BytecodeInterpreter
             return JsValue.Undefined;
         }, length: 0);
 
+        // ECMA-262 24.2.3.10 / .8 / .11 Set.prototype.values / keys / entries plus
+        // [Symbol.iterator]. values and keys are the SAME function; entries yields
+        // [v, v] pairs per spec.
+        var setValuesHandle = DefineNativePrototypeMethod(prototypeHandle, prototype, "values",
+            (t, _) => CreateSetIterator(t, isEntries: false));
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "keys",
+            (t, _) => CreateSetIterator(t, isEntries: false));
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "entries",
+            (t, _) => CreateSetIterator(t, isEntries: true));
+        prototype.DefineOwnSymbolProperty(GetWellKnownSymbolId("iterator"),
+            new JsPropertyDescriptor(JsValue.FromObject(setValuesHandle),
+                Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, setValuesHandle);
+
         // 24.2.3.6 forEach(callback[, thisArg]).
         DefineNativePrototypeMethod(prototypeHandle, prototype, "forEach", (thisValue, args) =>
         {
@@ -1199,6 +1292,19 @@ public sealed class BytecodeInterpreter
             return JsValue.Undefined;
         }, length: 0);
 
+        // ECMA-262 24.1.3.11 / .8 / .4 Map.prototype.values / keys / entries plus
+        // [Symbol.iterator] (the same function as entries per spec).
+        var mapEntriesHandle = DefineNativePrototypeMethod(prototypeHandle, prototype, "entries",
+            (t, _) => CreateMapIterator(t, MapIteratorKind.Entry));
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "keys",
+            (t, _) => CreateMapIterator(t, MapIteratorKind.Key));
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "values",
+            (t, _) => CreateMapIterator(t, MapIteratorKind.Value));
+        prototype.DefineOwnSymbolProperty(GetWellKnownSymbolId("iterator"),
+            new JsPropertyDescriptor(JsValue.FromObject(mapEntriesHandle),
+                Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, mapEntriesHandle);
+
         // 24.1.3.5 forEach(callback, thisArg) - callback(value, key, map).
         DefineNativePrototypeMethod(prototypeHandle, prototype, "forEach", (thisValue, args) =>
         {
@@ -1324,6 +1430,71 @@ public sealed class BytecodeInterpreter
         }
 
         return set;
+    }
+
+    // Set / Map iterator wrappers reuse %ArrayIteratorPrototype% since the only
+    // shape it exposes is .next() returning {value, done}; .next reads the source
+    // collection's snapshot at iterator-creation time. A fresh snapshot per
+    // iterator avoids "mutation during iteration" edge cases the spec actually
+    // requires to surface (a future commit can switch to a live cursor).
+    private JsValue CreateSetIterator(JsValue receiver, bool isEntries)
+    {
+        var set = RequireSet(receiver);
+        var snap = set.Snapshot();
+        var values = new List<JsValue>(snap.Count);
+        for (var i = 0; i < snap.Count; i++)
+        {
+            if (isEntries)
+            {
+                var pair = CreateArrayFromElements(new[] { snap[i], snap[i] });
+                values.Add(JsValue.FromObject(_heap.AllocateObject(pair, AllocationSite.Current())));
+            }
+            else
+            {
+                values.Add(snap[i]);
+            }
+        }
+
+        var iter = new SnapshotIteratorObject(values);
+        iter.SetPrototype(EnsureArrayIteratorPrototype());
+        return JsValue.FromObject(_heap.AllocateObject(iter, AllocationSite.Current()));
+    }
+
+    private enum MapIteratorKind { Key, Value, Entry }
+
+    private JsValue CreateMapIterator(JsValue receiver, MapIteratorKind kind)
+    {
+        var map = RequireMap(receiver);
+        var snap = map.Snapshot();
+        var values = new List<JsValue>(snap.Count);
+        for (var i = 0; i < snap.Count; i++)
+        {
+            switch (kind)
+            {
+                case MapIteratorKind.Key: values.Add(snap[i].Item1); break;
+                case MapIteratorKind.Value: values.Add(snap[i].Item2); break;
+                default:
+                {
+                    var pair = CreateArrayFromElements(new[] { snap[i].Item1, snap[i].Item2 });
+                    values.Add(JsValue.FromObject(_heap.AllocateObject(pair, AllocationSite.Current())));
+                    break;
+                }
+            }
+        }
+
+        var iter = new SnapshotIteratorObject(values);
+        iter.SetPrototype(EnsureArrayIteratorPrototype());
+        return JsValue.FromObject(_heap.AllocateObject(iter, AllocationSite.Current()));
+    }
+
+    // Shared iterator whose next() reads from a pre-materialised value list. The
+    // %ArrayIteratorPrototype% next handler is keyed on ArrayIteratorObject, so
+    // for Snapshot iterators we install a tiny shim via DefineOwnProperty('next').
+    private sealed class SnapshotIteratorObject : JsObject
+    {
+        public IReadOnlyList<JsValue> Values { get; }
+        public int Index { get; set; }
+        public SnapshotIteratorObject(IReadOnlyList<JsValue> values) => Values = values;
     }
 
     private sealed class SetObject : JsObject
@@ -4097,14 +4268,19 @@ public sealed class BytecodeInterpreter
         // ECMA-262 23.1.3.36/.16/.5 Array.prototype.values / keys / entries. Each
         // returns an Array Iterator: an object exposing .next() that yields
         // {value, done}. The iterator also routes through Symbol.iterator so
-        // for-of over the iterator itself works (Array.from(iter) too once @@iterator
-        // dispatch lands).
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "values",
+        // for-of over the iterator itself works.
+        var valuesHandle = DefineNativePrototypeMethod(prototypeHandle, prototype, "values",
             (t, a) => { _ = a; return CreateArrayIterator(t, ArrayIteratorKind.Value); });
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "keys",
             (t, a) => { _ = a; return CreateArrayIterator(t, ArrayIteratorKind.Key); });
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "entries",
             (t, a) => { _ = a; return CreateArrayIterator(t, ArrayIteratorKind.Entry); });
+        // ECMA-262 23.1.3.37 - Array.prototype[Symbol.iterator] is the same function
+        // object as Array.prototype.values per spec note 1.
+        prototype.DefineOwnSymbolProperty(GetWellKnownSymbolId("iterator"),
+            new JsPropertyDescriptor(JsValue.FromObject(valuesHandle),
+                Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, valuesHandle);
         // ECMA-262 23.1.3.1 at, 23.1.3.12 findLast, 23.1.3.13 findLastIndex.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "at", ArrayPrototypeAt, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "findLast", ArrayPrototypeFindLast, length: 1);
