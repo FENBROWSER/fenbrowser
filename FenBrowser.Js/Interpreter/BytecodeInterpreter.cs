@@ -2753,6 +2753,9 @@ public sealed class BytecodeInterpreter
         // ECMA-262 23.1.3.26 reverse, 23.1.3.7 fill.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "reverse", ArrayPrototypeReverse);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "fill", ArrayPrototypeFill, length: 1);
+        // ECMA-262 23.1.3.28 slice, 23.1.3.2 concat.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "slice", ArrayPrototypeSlice, length: 2);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "concat", ArrayPrototypeConcat, length: 1);
 
         // ECMA-262 23.1.2.2 Array.isArray(arg). Spec walks Proxy targets; we have no
         // Proxy yet, so the operation collapses to "is the value an ArrayObject?".
@@ -3001,6 +3004,66 @@ public sealed class BytecodeInterpreter
             : (int)args[argIndex].AsNumber();
         var idx = raw < 0 ? length + raw : raw;
         return Math.Clamp(idx, 0, length);
+    }
+
+    // ECMA-262 23.1.3.28 Array.prototype.slice(start, end). Returns a fresh
+    // ArrayObject containing the half-open range [start, end). Out-of-range or
+    // missing arguments degrade to "0, length"; negative arguments wrap.
+    private JsValue ArrayPrototypeSlice(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        var start = NormaliseSliceIndex(args, 0, 0, length);
+        var end = NormaliseSliceIndex(args, 1, length, length);
+
+        var items = new List<JsValue>();
+        for (var i = start; i < end; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            items.Add(TryGetPropertyValue(obj, thisValue, key, out var v) ? v : JsValue.Undefined);
+        }
+
+        var arr = CreateArrayObject(items);
+        var arrHandle = _heap.AllocateObject(arr, AllocationSite.Current());
+        return JsValue.FromObject(arrHandle);
+    }
+
+    // ECMA-262 23.1.3.2 Array.prototype.concat(...items). Returns a fresh
+    // ArrayObject; Array arguments are spread (their elements appended one by one),
+    // other values are appended as a single element.
+    private JsValue ArrayPrototypeConcat(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var items = new List<JsValue>();
+        AppendConcatSource(items, thisValue);
+        for (var i = 0; i < args.Count; i++)
+        {
+            AppendConcatSource(items, args[i]);
+        }
+
+        var arr = CreateArrayObject(items);
+        var arrHandle = _heap.AllocateObject(arr, AllocationSite.Current());
+        return JsValue.FromObject(arrHandle);
+    }
+
+    private void AppendConcatSource(List<JsValue> items, JsValue value)
+    {
+        if (value.Tag == JsValueTag.Object)
+        {
+            var obj = _heap.GetObject(value.AsObjectHandle());
+            if (obj is ArrayObject)
+            {
+                var length = GetArrayLength(obj);
+                for (var i = 0; i < length; i++)
+                {
+                    var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    items.Add(TryGetPropertyValue(obj, value, key, out var v) ? v : JsValue.Undefined);
+                }
+
+                return;
+            }
+        }
+
+        items.Add(value);
     }
 
     private JsValue ArrayPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
