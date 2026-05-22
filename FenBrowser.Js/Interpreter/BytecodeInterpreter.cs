@@ -2756,6 +2756,10 @@ public sealed class BytecodeInterpreter
         // ECMA-262 23.1.3.28 slice, 23.1.3.2 concat.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "slice", ArrayPrototypeSlice, length: 2);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "concat", ArrayPrototypeConcat, length: 1);
+        // ECMA-262 23.1.3.15 forEach, 23.1.3.19 map, 23.1.3.8 filter.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "forEach", ArrayPrototypeForEach, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "map", ArrayPrototypeMap, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "filter", ArrayPrototypeFilter, length: 1);
 
         // ECMA-262 23.1.2.2 Array.isArray(arg). Spec walks Proxy targets; we have no
         // Proxy yet, so the operation collapses to "is the value an ArrayObject?".
@@ -3004,6 +3008,100 @@ public sealed class BytecodeInterpreter
             : (int)args[argIndex].AsNumber();
         var idx = raw < 0 ? length + raw : raw;
         return Math.Clamp(idx, 0, length);
+    }
+
+    // Shared callback-invoker for forEach/map/filter/find/etc. Calls
+    // callback(value, index, receiverArray) with the given thisArg, sparing each
+    // caller from repeating the args allocation and CallFunction routing.
+    private JsValue InvokeArrayCallback(
+        JsValue callback,
+        JsValue value,
+        int index,
+        JsValue receiver,
+        JsValue thisArg)
+    {
+        if (callback.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Array callback is not a function."));
+        }
+
+        var resolved = _heap.GetObject(callback.AsObjectHandle());
+        if (resolved is not JsFunctionObject && resolved is not NativeFunctionObject)
+        {
+            throw new JsThrownException(CreateTypeError("Array callback is not a function."));
+        }
+
+        var args = new[] { value, JsValue.FromNumber(index), receiver };
+        return CallFunction(callback, args, thisArg);
+    }
+
+    private JsValue ArrayPrototypeForEach(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        for (var i = 0; i < length; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!TryGetPropertyValue(obj, thisValue, key, out var v))
+            {
+                continue;   // skip holes per spec
+            }
+
+            InvokeArrayCallback(callback, v, i, thisValue, thisArg);
+        }
+
+        return JsValue.Undefined;
+    }
+
+    private JsValue ArrayPrototypeMap(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        var items = new List<JsValue>(length);
+        for (var i = 0; i < length; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!TryGetPropertyValue(obj, thisValue, key, out var v))
+            {
+                items.Add(JsValue.Undefined);   // spec: preserves length, holes become undefined-ish
+                continue;
+            }
+
+            items.Add(InvokeArrayCallback(callback, v, i, thisValue, thisArg));
+        }
+
+        var arr = CreateArrayObject(items);
+        return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+    }
+
+    private JsValue ArrayPrototypeFilter(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        var items = new List<JsValue>();
+        for (var i = 0; i < length; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!TryGetPropertyValue(obj, thisValue, key, out var v))
+            {
+                continue;   // skip holes
+            }
+
+            var keep = InvokeArrayCallback(callback, v, i, thisValue, thisArg);
+            if (IsTruthy(keep))
+            {
+                items.Add(v);
+            }
+        }
+
+        var arr = CreateArrayObject(items);
+        return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
     }
 
     // ECMA-262 23.1.3.28 Array.prototype.slice(start, end). Returns a fresh
