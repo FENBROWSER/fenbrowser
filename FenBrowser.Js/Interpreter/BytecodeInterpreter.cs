@@ -2283,6 +2283,19 @@ public sealed class BytecodeInterpreter
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
+        // ECMA-262 21.1.2.2 / 21.1.2.3 / 21.1.2.4 / 21.1.2.5 - the spec-defined
+        // "isXxx" helpers. Unlike the global isFinite/isNaN, these do NOT coerce: a
+        // non-Number argument simply returns false. The factoring below keeps each
+        // helper a one-liner against ECMA-262.
+        DefineNumberStatic(constructorHandle, constructor, "isFinite", static args
+            => JsValue.FromBoolean(args.Count > 0 && args[0].Tag == JsValueTag.Number && !double.IsNaN(args[0].AsNumber()) && !double.IsInfinity(args[0].AsNumber())));
+        DefineNumberStatic(constructorHandle, constructor, "isNaN", static args
+            => JsValue.FromBoolean(args.Count > 0 && args[0].Tag == JsValueTag.Number && double.IsNaN(args[0].AsNumber())));
+        DefineNumberStatic(constructorHandle, constructor, "isInteger", static args
+            => JsValue.FromBoolean(IsIntegerNumber(args)));
+        DefineNumberStatic(constructorHandle, constructor, "isSafeInteger", static args
+            => JsValue.FromBoolean(IsIntegerNumber(args) && Math.Abs(args[0].AsNumber()) <= 9007199254740991d));
+
         var prototypeObject = _heap.GetObject(prototypeHandle);
         _ = prototypeObject.SetProperty("constructor", JsValue.FromObject(constructorHandle));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
@@ -2292,6 +2305,40 @@ public sealed class BytecodeInterpreter
         _numberPrototypeHandle = prototypeHandle;
         _numberConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    private static bool IsIntegerNumber(IReadOnlyList<JsValue> args)
+    {
+        if (args.Count == 0 || args[0].Tag != JsValueTag.Number)
+        {
+            return false;
+        }
+
+        var value = args[0].AsNumber();
+        if (double.IsNaN(value) || double.IsInfinity(value))
+        {
+            return false;
+        }
+
+        return Math.Floor(value) == value;
+    }
+
+    private void DefineNumberStatic(
+        ObjectHandle ownerHandle,
+        JsObject owner,
+        string name,
+        Func<IReadOnlyList<JsValue>, JsValue> call)
+    {
+        var function = new NativeFunctionObject(name, (_, args) => call(args), length: 1);
+        var functionHandle = _heap.AllocateObject(function, AllocationSite.Current());
+        _ = owner.DefineOwnProperty(
+            name,
+            new JsPropertyDescriptor(
+                JsValue.FromObject(functionHandle),
+                Writable: true,
+                Enumerable: false,
+                Configurable: true));
+        _heap.WriteBarrier(ownerHandle, functionHandle);
     }
 
     private JsValue NumberPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
