@@ -51,6 +51,12 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _regexpConstructorHandle;
     private ObjectHandle? _regexpPrototypeHandle;
     private ObjectHandle? _jsonObjectHandle;
+    private ObjectHandle? _symbolConstructorHandle;
+
+    // Well-known symbol ids cached at first Symbol-constructor materialisation. JS
+    // code that reads Symbol.iterator twice must get === values; a single id per
+    // well-known symbol guarantees that.
+    private readonly Dictionary<string, long> _wellKnownSymbols = new(StringComparer.Ordinal);
 
     public BytecodeInterpreter(JsHeap? heap = null)
     {
@@ -597,6 +603,11 @@ public sealed class BytecodeInterpreter
         {
             frame.Variables[jsonSlot] = JsValue.FromObject(EnsureJsonObject());
         }
+
+        if (function.VariableSlots.TryGetValue("Symbol", out var symbolSlot))
+        {
+            frame.Variables[symbolSlot] = JsValue.FromObject(EnsureSymbolConstructor());
+        }
     }
 
     private JsObject CreateOrdinaryObject()
@@ -660,6 +671,74 @@ public sealed class BytecodeInterpreter
         {
             CollectEnumerableKeys(_heap.GetObject(prototype), keys, seen);
         }
+    }
+
+    // ECMA-262 20.4 Symbol. Minimal surface: callable as Symbol([description])
+    // returning a fresh Symbol primitive; well-known symbols (Symbol.iterator etc.)
+    // installed as own properties. Symbol() is NOT constructable (the spec
+    // requires `new Symbol()` to throw TypeError).
+    private ObjectHandle EnsureSymbolConstructor()
+    {
+        if (_symbolConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var constructor = new NativeFunctionObject(
+            "Symbol",
+            (_, args) =>
+            {
+                var desc = args.Count > 0 && args[0].Tag != JsValueTag.Undefined
+                    ? ToStringValue(args[0])
+                    : null;
+                return JsValue.FromSymbol(desc);
+            },
+            _ => throw new JsThrownException(CreateTypeError("Symbol is not a constructor.")),
+            length: 0);
+
+        var handle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(handle);
+
+        // ECMA-262 20.4.2 - well-known symbols are own properties of %Symbol%.
+        // Each is allocated once and cached so reads return the same identity.
+        InstallWellKnownSymbol(constructor, "iterator");
+        InstallWellKnownSymbol(constructor, "asyncIterator");
+        InstallWellKnownSymbol(constructor, "hasInstance");
+        InstallWellKnownSymbol(constructor, "isConcatSpreadable");
+        InstallWellKnownSymbol(constructor, "match");
+        InstallWellKnownSymbol(constructor, "matchAll");
+        InstallWellKnownSymbol(constructor, "replace");
+        InstallWellKnownSymbol(constructor, "search");
+        InstallWellKnownSymbol(constructor, "species");
+        InstallWellKnownSymbol(constructor, "split");
+        InstallWellKnownSymbol(constructor, "toPrimitive");
+        InstallWellKnownSymbol(constructor, "toStringTag");
+        InstallWellKnownSymbol(constructor, "unscopables");
+
+        _symbolConstructorHandle = handle;
+        return handle;
+    }
+
+    private void InstallWellKnownSymbol(NativeFunctionObject constructor, string name)
+    {
+        var symbol = JsValue.FromSymbol("Symbol." + name);
+        _wellKnownSymbols[name] = symbol.AsSymbolId();
+        constructor.DefineOwnProperty(name, new JsPropertyDescriptor(
+            symbol, Writable: false, Enumerable: false, Configurable: false));
+    }
+
+    // Returns the cached id for a well-known symbol, materialising the Symbol
+    // constructor first if no script has touched it yet. Native code can use this
+    // to recognise "is this value Symbol.iterator?" without going through a
+    // user-observable property lookup.
+    public long GetWellKnownSymbolId(string name)
+    {
+        if (_wellKnownSymbols.Count == 0)
+        {
+            _ = EnsureSymbolConstructor();
+        }
+
+        return _wellKnownSymbols.TryGetValue(name, out var id) ? id : 0;
     }
 
     private ObjectHandle EnsureGlobalObject()
@@ -5862,6 +5941,7 @@ public sealed class BytecodeInterpreter
                 JsValueTag.Int32 => left.AsInt32() == right.AsInt32(),
                 JsValueTag.Number => left.AsNumber() == right.AsNumber(),
                 JsValueTag.String => left.AsString() == right.AsString(),
+                JsValueTag.Symbol => left.AsSymbolId() == right.AsSymbolId(),
                 JsValueTag.Object => left.AsObjectHandle().Equals(right.AsObjectHandle()),
                 _ => false
             };
@@ -5984,6 +6064,7 @@ public sealed class BytecodeInterpreter
             JsValueTag.Int32 => left.AsInt32() == right.AsInt32(),
             JsValueTag.Number => left.AsNumber() == right.AsNumber(),
             JsValueTag.String => left.AsString() == right.AsString(),
+            JsValueTag.Symbol => left.AsSymbolId() == right.AsSymbolId(),
             JsValueTag.Object => left.AsObjectHandle().Equals(right.AsObjectHandle()),
             _ => false
         };
@@ -6223,6 +6304,7 @@ public sealed class BytecodeInterpreter
             JsValueTag.Int32 => value.AsInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
             JsValueTag.Number => FormatNumberForString(value.AsNumber()),
             JsValueTag.String => value.AsString(),
+            JsValueTag.Symbol => "Symbol(" + (value.AsSymbolDescription() ?? string.Empty) + ")",
             JsValueTag.Object => "[object Object]",
             JsValueTag.HostObject => "[object Object]",
             _ => value.Tag.ToString()

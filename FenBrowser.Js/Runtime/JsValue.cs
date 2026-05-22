@@ -6,6 +6,15 @@ public readonly struct JsValue
     private static readonly Dictionary<long, string> StringPool = new();
     private static readonly Lock StringPoolLock = new();
 
+    // Symbol pool. A Symbol's identity is its monotonically-assigned 64-bit id; the
+    // optional description is looked up alongside. Two Symbol values are === iff
+    // their ids match - the description is a debug aid only and never affects
+    // identity (matching ECMA-262 7.4.4 'Symbol description', which is optional and
+    // does not participate in equality).
+    private static long _nextSymbolId;
+    private static readonly Dictionary<long, string?> SymbolPool = new();
+    private static readonly Lock SymbolPoolLock = new();
+
     public readonly JsValueTag Tag;
     private readonly long _payload;
     private readonly double _number;
@@ -62,6 +71,51 @@ public readonly struct JsValue
         lock (StringPoolLock)
         {
             return StringPool.TryGetValue(_payload, out var value) ? value : string.Empty;
+        }
+    }
+
+    // ECMA-262 7.4 Symbol primitive. Allocates a fresh unique id; description is
+    // optional ("Symbol()" with no argument). Repeated calls produce distinct
+    // symbols even with identical descriptions, matching the spec's intent that
+    // Symbol() is the only public way to mint identity tokens.
+    public static JsValue FromSymbol(string? description = null)
+    {
+        lock (SymbolPoolLock)
+        {
+            var id = ++_nextSymbolId;
+            SymbolPool[id] = description;
+            return new JsValue(JsValueTag.Symbol, id, 0);
+        }
+    }
+
+    // Construct a Symbol value from an existing id; used to expose well-known
+    // symbols (Symbol.iterator etc.) that the runtime mints exactly once at
+    // startup and then hands the same id out repeatedly.
+    public static JsValue SymbolFromId(long id)
+    {
+        return new JsValue(JsValueTag.Symbol, id, 0);
+    }
+
+    public long AsSymbolId()
+    {
+        if (Tag != JsValueTag.Symbol)
+        {
+            throw new InvalidOperationException($"Value is not a symbol (tag={Tag}).");
+        }
+
+        return _payload;
+    }
+
+    public string? AsSymbolDescription()
+    {
+        if (Tag != JsValueTag.Symbol)
+        {
+            throw new InvalidOperationException($"Value is not a symbol (tag={Tag}).");
+        }
+
+        lock (SymbolPoolLock)
+        {
+            return SymbolPool.TryGetValue(_payload, out var d) ? d : null;
         }
     }
 }
