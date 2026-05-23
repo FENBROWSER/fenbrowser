@@ -1092,6 +1092,18 @@ public sealed class ParserTests
         Assert.Single(tagged.Template.Expressions);
     }
 
+    [Fact]
+    public void ParsesParenthesizedArrowTaggedTemplateWithInvalidEscape()
+    {
+        var program = JsParser.ParseScript(new SourceText("(strs => { strs; })`\\01`;"));
+        var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var tagged = Assert.IsType<TaggedTemplateExpressionNode>(stmt.Expression);
+        var tag = Assert.IsType<ParenthesizedExpressionNode>(tagged.Tag);
+
+        Assert.IsType<ArrowFunctionExpressionNode>(tag.Expression);
+        Assert.True(tagged.Template.Quasis[0].Contains("\\01", StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData("`\\x0`;")]
     [InlineData("`\\u0`;")]

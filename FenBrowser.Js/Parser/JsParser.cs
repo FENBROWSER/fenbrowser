@@ -1929,7 +1929,7 @@ public sealed class JsParser
                         }
 
                         asyncParameters.Add(ParseBindingIdentifierOrPattern().Text);
-                        if (IsPunctuator("="))
+                        if (IsPunctuator("=") && !PeekIsPunctuator(1, ">"))
                         {
                             Advance();
                             _ = ParseExpression(2);
@@ -1996,7 +1996,7 @@ public sealed class JsParser
                     }
 
                     parameters.Add(ParseBindingIdentifierOrPattern().Text);
-                    if (IsPunctuator("="))
+                    if (IsPunctuator("=") && !PeekIsPunctuator(1, ">"))
                     {
                         Advance();
                         _ = ParseExpression(2);
