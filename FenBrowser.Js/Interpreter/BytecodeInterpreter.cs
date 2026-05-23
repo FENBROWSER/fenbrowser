@@ -85,6 +85,13 @@ public sealed class BytecodeInterpreter
     // well-known symbol guarantees that.
     private readonly Dictionary<string, long> _wellKnownSymbols = new(StringComparer.Ordinal);
 
+    // ECMA-262 20.4.2.2 the GlobalSymbolRegistry: a Realm-wide String-keyed map of
+    // shared Symbol values. Symbol.for(k) returns the existing one if k is keyed,
+    // otherwise mints a fresh symbol with description=k and registers it. Symbol.
+    // keyFor(s) returns the key under which s was registered, or undefined.
+    private readonly Dictionary<string, long> _symbolRegistryByKey = new(StringComparer.Ordinal);
+    private readonly Dictionary<long, string> _symbolRegistryById = new();
+
     public BytecodeInterpreter(JsHeap? heap = null)
     {
         _heap = heap ?? new JsHeap();
@@ -1141,6 +1148,35 @@ public sealed class BytecodeInterpreter
         InstallWellKnownSymbol(constructor, "toPrimitive");
         InstallWellKnownSymbol(constructor, "toStringTag");
         InstallWellKnownSymbol(constructor, "unscopables");
+
+        // ECMA-262 20.4.2.2 Symbol.for(key). Coerce key to String, then return the
+        // registered Symbol or mint+register a fresh one.
+        DefineIntrinsicFunction(handle, constructor, "for", (_, args) =>
+        {
+            var key = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+            if (_symbolRegistryByKey.TryGetValue(key, out var existingId))
+            {
+                return JsValue.SymbolFromId(existingId);
+            }
+            var fresh = JsValue.FromSymbol(key);
+            var id = fresh.AsSymbolId();
+            _symbolRegistryByKey[key] = id;
+            _symbolRegistryById[id] = key;
+            return fresh;
+        }, length: 1);
+
+        // ECMA-262 20.4.2.6 Symbol.keyFor(sym). Reverse lookup; undefined when sym
+        // was not produced by Symbol.for. Non-symbol receivers raise TypeError.
+        DefineIntrinsicFunction(handle, constructor, "keyFor", (_, args) =>
+        {
+            if (args.Count == 0 || args[0].Tag != JsValueTag.Symbol)
+            {
+                throw new JsThrownException(CreateTypeError("Symbol.keyFor requires a symbol argument."));
+            }
+            return _symbolRegistryById.TryGetValue(args[0].AsSymbolId(), out var key)
+                ? JsValue.FromString(key)
+                : JsValue.Undefined;
+        }, length: 1);
 
         _symbolConstructorHandle = handle;
         return handle;
