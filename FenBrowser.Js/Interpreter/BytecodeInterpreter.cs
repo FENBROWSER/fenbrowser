@@ -96,7 +96,8 @@ public sealed class BytecodeInterpreter
         BytecodeFunction function,
         IReadOnlyList<JsValue> args,
         IReadOnlyDictionary<string, JsVariableCell>? capturedVariables,
-        JsValue thisValue)
+        JsValue thisValue,
+        EnvironmentRecord? outerEnvironment = null)
     {
         if (_callDepth >= MaxCallDepth)
         {
@@ -106,7 +107,7 @@ public sealed class BytecodeInterpreter
         _callDepth++;
         try
         {
-            return ExecuteInternalCore(function, args, capturedVariables, thisValue);
+            return ExecuteInternalCore(function, args, capturedVariables, thisValue, outerEnvironment);
         }
         finally
         {
@@ -119,9 +120,18 @@ public sealed class BytecodeInterpreter
         BytecodeFunction function,
         IReadOnlyList<JsValue> args,
         IReadOnlyDictionary<string, JsVariableCell>? capturedVariables,
-        JsValue thisValue)
+        JsValue thisValue,
+        EnvironmentRecord? outerEnvironment = null)
     {
-        var frame = new InterpreterFrame(function, thisValue, capturedVariables);
+        // B.6.4 — when the callee carries an outer EnvironmentRecord (set at
+        // CreateFunction time on JsFunctionObject), the new frame's env is a fresh
+        // declarative record chained to it so free identifier references walk the
+        // lexical scope chain through env records. Otherwise, fall back to the
+        // detached fresh env that InterpreterFrame would have allocated on its own.
+        var frameEnv = outerEnvironment is null
+            ? null
+            : new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment);
+        var frame = new InterpreterFrame(function, thisValue, capturedVariables, frameEnv);
         InitializeBuiltinGlobals(function, frame);
         if (capturedVariables is not null)
         {
@@ -134,12 +144,22 @@ public sealed class BytecodeInterpreter
             }
         }
 
-        for (var i = 0; i < function.ParameterNames.Count && i < args.Count; i++)
+        // Pre-create env bindings for locally-bound names that the spec mandates the
+        // function-environment record holds: each formal parameter, and `arguments`
+        // when the function gets its own arguments object. We deliberately do NOT
+        // pre-bind every VariableSlots entry: the inner compiler also allocates slots
+        // for free variable references, and creating local bindings for those would
+        // shadow the outer chain that LoadName/StoreName now walks. Locally-declared
+        // `var` and `let` names still flow through VariableStore until B.6.6.
+        for (var i = 0; i < function.ParameterNames.Count; i++)
         {
             var paramName = function.ParameterNames[i];
+            var paramValue = i < args.Count ? args[i] : JsValue.Undefined;
+            _ = frame.Environment.CreateMutableBinding(paramName, deletable: false);
+            _ = frame.Environment.InitializeBinding(paramName, paramValue);
             if (function.VariableSlots.TryGetValue(paramName, out var slot))
             {
-                frame.Variables[slot] = args[i];
+                frame.Variables[slot] = paramValue;
             }
         }
 
@@ -147,7 +167,10 @@ public sealed class BytecodeInterpreter
             !function.ParameterNames.Contains("arguments", StringComparer.Ordinal) &&
             function.VariableSlots.TryGetValue("arguments", out var argumentsSlot))
         {
-            frame.Variables[argumentsSlot] = CreateArgumentsObject(args);
+            var argumentsObject = CreateArgumentsObject(args);
+            frame.Variables[argumentsSlot] = argumentsObject;
+            _ = frame.Environment.CreateMutableBinding("arguments", deletable: false);
+            _ = frame.Environment.InitializeBinding("arguments", argumentsObject);
         }
 
         while (frame.InstructionPointer < function.Instructions.Count)
@@ -364,7 +387,11 @@ public sealed class BytecodeInterpreter
                 {
                     var nested = function.NestedFunctions[ins.B];
                     var captured = CaptureFrameVariables(frame);
-                    frame.Registers[ins.A] = CreateFunctionObject(nested, captured);
+                    // B.6.4 — also capture the current lexical EnvironmentRecord so
+                    // closures resolve free identifiers through the env chain. The
+                    // legacy JsVariableCell map is still threaded through alongside
+                    // until B.6.6 retires VariableStore.
+                    frame.Registers[ins.A] = CreateFunctionObject(nested, captured, frame.Environment);
                     break;
                 }
                 case OpCode.Call0:
@@ -2425,10 +2452,22 @@ public sealed class BytecodeInterpreter
         var name = SlotNameTable.GetName(frame.Function, slot);
         if (name is not null)
         {
-            var status = frame.Environment.GetBindingValue(name, strict: false, out var envValue);
-            if (status == BindingOpResult.Ok)
+            // ECMA-262 9.1.2.1 GetIdentifierReference walks the env chain. Resolve
+            // through the lexical chain so closures over parameters of an outer
+            // function (whose params now live on FunctionEnvironmentRecord since
+            // B.6.4) read the live outer binding rather than the stale snapshot.
+            for (var env = (EnvironmentRecord?)frame.Environment; env is not null; env = env.OuterEnv)
             {
-                return envValue;
+                if (!env.HasBinding(name))
+                {
+                    continue;
+                }
+
+                var status = env.GetBindingValue(name, strict: false, out var envValue);
+                if (status == BindingOpResult.Ok)
+                {
+                    return envValue;
+                }
             }
         }
 
@@ -2438,17 +2477,28 @@ public sealed class BytecodeInterpreter
     private void StoreName(InterpreterFrame frame, int slot, JsValue value)
     {
         var name = SlotNameTable.GetName(frame.Function, slot);
-        if (name is not null && frame.Environment.HasBinding(name))
+        if (name is not null)
         {
-            var status = frame.Environment.SetMutableBinding(name, value, strict: false);
-            if (status == BindingOpResult.Ok)
+            for (var env = (EnvironmentRecord?)frame.Environment; env is not null; env = env.OuterEnv)
             {
-                // Keep VariableStore in sync for any opcode path that still reads the
-                // slot directly (e.g. global object mirroring below, or unmigrated
-                // closure capture). B.6.6 deletes both stores once nothing reads them.
-                frame.Variables[slot] = value;
-                SyncGlobalVariable(frame, slot, value);
-                return;
+                if (!env.HasBinding(name))
+                {
+                    continue;
+                }
+
+                var status = env.SetMutableBinding(name, value, strict: false);
+                if (status == BindingOpResult.Ok)
+                {
+                    // Keep VariableStore in sync for any opcode path that still reads
+                    // the slot directly (e.g. global object mirroring below, or
+                    // unmigrated closure capture). B.6.6 deletes both stores once
+                    // nothing reads them.
+                    frame.Variables[slot] = value;
+                    SyncGlobalVariable(frame, slot, value);
+                    return;
+                }
+
+                break;
             }
         }
 
@@ -4290,9 +4340,10 @@ public sealed class BytecodeInterpreter
 
     private JsValue CreateFunctionObject(
         BytecodeFunction function,
-        IReadOnlyDictionary<string, JsVariableCell>? capturedVariables = null)
+        IReadOnlyDictionary<string, JsVariableCell>? capturedVariables = null,
+        EnvironmentRecord? outerEnvironment = null)
     {
-        var fnObj = new JsFunctionObject(function, capturedVariables);
+        var fnObj = new JsFunctionObject(function, capturedVariables, outerEnvironment);
         fnObj.SetPrototype(EnsureFunctionPrototype());
         _ = fnObj.DefineOwnProperty(
             "name",
@@ -7851,7 +7902,7 @@ public sealed class BytecodeInterpreter
         var obj = ResolveObject(value);
         if (obj is JsFunctionObject fn)
         {
-            return ExecuteInternal(fn.Function, args, fn.CapturedVariables, thisValue);
+            return ExecuteInternal(fn.Function, args, fn.CapturedVariables, thisValue, fn.OuterEnvironment);
         }
 
         if (obj is NativeFunctionObject native)
@@ -8289,7 +8340,7 @@ public sealed class BytecodeInterpreter
         }
 
         var defaultInstance = JsValue.FromObject(_heap.AllocateObject(instanceObject, AllocationSite.Current()));
-        var result = ExecuteInternal(callee.Function, args, callee.CapturedVariables, defaultInstance);
+        var result = ExecuteInternal(callee.Function, args, callee.CapturedVariables, defaultInstance, callee.OuterEnvironment);
         return result.Tag == JsValueTag.Object ? result : defaultInstance;
     }
 
