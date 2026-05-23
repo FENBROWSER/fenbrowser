@@ -5406,6 +5406,12 @@ public sealed class BytecodeInterpreter
         // ECMA-262 23.1.3.4 copyWithin.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "copyWithin", ArrayPrototypeCopyWithin, length: 2);
 
+        // ECMA-262 23.1.3.32 Array.prototype.toReversed (ES2023). Non-mutating reverse:
+        // allocates a fresh Array of the receiver's length with elements in reverse
+        // order. Holes are read via [[Get]] (so they become explicit undefined entries
+        // in the result, not holes) per spec step 5.c.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toReversed", ArrayPrototypeToReversed);
+
         // ECMA-262 23.1.2.3 Array.of(...items). Returns a fresh Array populated with
         // exactly the supplied items - distinct from new Array(n), which uses a
         // single Number argument to set length.
@@ -5659,6 +5665,23 @@ public sealed class BytecodeInterpreter
 
     // ECMA-262 23.1.3.26 Array.prototype.reverse. Swaps slot i with slot len-1-i
     // for i < len/2; preserves holes (a missing source slot deletes the target).
+    private JsValue ArrayPrototypeToReversed(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        var ownerHandle = ResolveObjectHandle(thisValue);
+        var obj = _heap.GetObject(ownerHandle);
+        var length = GetArrayLength(obj);
+        var elements = new JsValue[length];
+        for (var i = 0; i < length; i++)
+        {
+            var key = (length - 1 - i).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            elements[i] = TryGetPropertyValue(obj, thisValue, key, out var v) ? v : JsValue.Undefined;
+        }
+        var resultObj = CreateArrayFromElements(elements);
+        var handle = _heap.AllocateObject(resultObj, AllocationSite.Current());
+        return JsValue.FromObject(handle);
+    }
+
     private JsValue ArrayPrototypeReverse(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
