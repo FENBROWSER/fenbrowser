@@ -309,6 +309,8 @@ public sealed class BytecodeCompiler
 
         // For each non-constructor member, compile its function and install it
         // on either the prototype (instance methods) or the constructor (static).
+        // Getter/setter members get accessor descriptors; method members get
+        // plain data descriptors.
         foreach (var member in members)
         {
             if (member.Kind == ClassMemberKind.Constructor) continue;
@@ -317,7 +319,19 @@ public sealed class BytecodeCompiler
             var methodReg = CompileFunctionExpressionToRegister(methodFn);
             var nameIndex = GetOrCreatePropertyName(member.Name);
             var targetReg = member.IsStatic ? classReg : protoReg;
-            _instructions.Add(new Instruction(OpCode.SetPropByName, targetReg, nameIndex, methodReg));
+
+            switch (member.Kind)
+            {
+                case ClassMemberKind.Getter:
+                    _instructions.Add(new Instruction(OpCode.DefineGetter, targetReg, nameIndex, methodReg));
+                    break;
+                case ClassMemberKind.Setter:
+                    _instructions.Add(new Instruction(OpCode.DefineSetter, targetReg, nameIndex, methodReg));
+                    break;
+                default:
+                    _instructions.Add(new Instruction(OpCode.SetPropByName, targetReg, nameIndex, methodReg));
+                    break;
+            }
         }
 
         // proto.constructor = classCtor; classCtor.prototype = proto.

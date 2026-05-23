@@ -300,6 +300,10 @@ public sealed partial class BytecodeInterpreter
                     frame.Registers[ins.A] = JsValue.FromObject(handle);
                     break;
                 }
+                case OpCode.DefineGetter:
+                case OpCode.DefineSetter:
+                    HandleDefineAccessor(frame, function, ins);
+                    break;
                 case OpCode.SetPrototype:
                 {
                     // ECMA-262 7.3.5 OrdinarySetPrototypeOf - the V argument must be
@@ -9911,6 +9915,49 @@ public sealed partial class BytecodeInterpreter
     private JsObject ResolveObject(JsValue value)
     {
         return _heap.GetObject(ResolveObjectHandle(value));
+    }
+
+    private void HandleDefineAccessor(InterpreterFrame frame, BytecodeFunction function, Instruction ins)
+    {
+        // H.4 - install or update an accessor descriptor on the target object
+        // under the given property name. Preserves the companion half (get/set)
+        // if an accessor descriptor already exists for the key, per ECMA-262
+        // 6.2.5.6 CompletePropertyDescriptor.
+        var targetValue = frame.Registers[ins.A];
+        if (targetValue.Tag != JsValueTag.Object)
+        {
+            ThrowOrHandle(frame, CreateTypeError("DefineGetter/Setter target must be an object."));
+            return;
+        }
+
+        var targetHandle = targetValue.AsObjectHandle();
+        var targetObj = _heap.GetObject(targetHandle);
+        var accessorName = function.PropertyNames[ins.B];
+        var accessorFnValue = frame.Registers[ins.C];
+
+        JsValue getValue = JsValue.Undefined;
+        JsValue setValue = JsValue.Undefined;
+        if (targetObj.TryGetOwnProperty(accessorName, out var existing) && existing.IsAccessor)
+        {
+            getValue = existing.Get;
+            setValue = existing.Set;
+        }
+
+        if (ins.OpCode == OpCode.DefineGetter)
+        {
+            getValue = accessorFnValue;
+        }
+        else
+        {
+            setValue = accessorFnValue;
+        }
+
+        _ = targetObj.DefineOwnProperty(accessorName,
+            Objects.JsPropertyDescriptor.Accessor(getValue, setValue, Enumerable: false, Configurable: true));
+        if (accessorFnValue.Tag == JsValueTag.Object)
+        {
+            _heap.WriteBarrier(targetHandle, accessorFnValue.AsObjectHandle());
+        }
     }
 
     private static ObjectHandle ResolveObjectHandle(JsValue value)

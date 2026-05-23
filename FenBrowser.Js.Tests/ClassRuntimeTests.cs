@@ -170,4 +170,60 @@ public sealed class ClassRuntimeTests
             (new C()).f();
         ").AsNumber());
     }
+
+    // H.4 - getter/setter accessor dispatch.
+
+    [Fact]
+    public void GetterRunsOnPropertyRead()
+    {
+        Assert.Equal(99d, Run(@"
+            class Box { get answer() { return 99; } }
+            (new Box()).answer;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void SetterRunsOnPropertyWrite()
+    {
+        Assert.Equal(7d, Run(@"
+            class Box { set x(v) { this._x = v; } get x() { return this._x; } }
+            var b = new Box();
+            b.x = 7;
+            b.x;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void PairedGetterAndSetterCoexist()
+    {
+        // Setting then getting through the accessor pair must round-trip.
+        Assert.Equal(42d, Run(@"
+            class Cell {
+                get v() { return this._v; }
+                set v(x) { this._v = x; }
+            }
+            var c = new Cell();
+            c.v = 42;
+            c.v;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void GetterOnInheritedPrototypeReachable()
+    {
+        Assert.Equal("hi", Run(@"
+            class A { get greeting() { return 'hi'; } }
+            class B extends A {}
+            (new B()).greeting;
+        ").AsString());
+    }
+
+    [Fact]
+    public void StaticGetterLivesOnConstructor()
+    {
+        Assert.Equal(3d, Run(@"
+            class N { static get three() { return 3; } }
+            N.three;
+        ").AsNumber());
+    }
 }

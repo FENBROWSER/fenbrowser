@@ -70,4 +70,14 @@ public enum OpCode : byte
     // base.prototype as the child prototype's parent, and base itself as the
     // child constructor's parent (so static methods inherit).
     SetPrototype,
+
+    // H.4 - DefineGetter/DefineSetter(A=target reg, B=name idx, C=function reg).
+    // Installs an accessor descriptor on the target object under the given
+    // property name. If the target already has an accessor descriptor for that
+    // key, the matching half is updated and the other half preserved; otherwise
+    // a fresh accessor descriptor is created with the missing half left as
+    // undefined. Used by class get/set member compilation; could also serve
+    // object-literal accessors in future.
+    DefineGetter,
+    DefineSetter,
 }
