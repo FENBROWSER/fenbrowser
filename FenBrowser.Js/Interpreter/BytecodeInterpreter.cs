@@ -49,6 +49,8 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _referenceErrorPrototypeHandle;
     private ObjectHandle? _evalErrorConstructorHandle;
     private ObjectHandle? _evalErrorPrototypeHandle;
+    private ObjectHandle? _aggregateErrorConstructorHandle;
+    private ObjectHandle? _aggregateErrorPrototypeHandle;
 
     // Shared Random for Math.random. Thread-safety: Math.random is single-threaded in
     // ECMA-262, and the runtime is single-threaded today; if we ever introduce SAB +
@@ -651,6 +653,11 @@ public sealed class BytecodeInterpreter
         if (function.VariableSlots.TryGetValue("EvalError", out var evalErrSlot))
         {
             frame.Variables[evalErrSlot] = JsValue.FromObject(EnsureEvalErrorConstructor());
+        }
+
+        if (function.VariableSlots.TryGetValue("AggregateError", out var aggErrSlot))
+        {
+            frame.Variables[aggErrSlot] = JsValue.FromObject(EnsureAggregateErrorConstructor());
         }
 
         if (function.VariableSlots.TryGetValue("Object", out var objectSlot))
@@ -7268,6 +7275,81 @@ public sealed class BytecodeInterpreter
             "EvalError",
             ref _evalErrorConstructorHandle,
             ref _evalErrorPrototypeHandle);
+    }
+
+    // ECMA-262 20.5.7 AggregateError(errors, message). Aggregates a list of errors
+    // into a single error instance. The first arg is iterable; we collect via
+    // CreateForOfIterator so anything with @@iterator (Array, Set, custom iterators)
+    // works. The result has an own 'errors' Array property and standard Error shape.
+    private ObjectHandle EnsureAggregateErrorConstructor()
+    {
+        if (_aggregateErrorConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototype = CreateOrdinaryObject();
+        prototype.SetPrototype(EnsureErrorPrototype());
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+        _ = prototype.DefineOwnProperty("name",
+            new JsPropertyDescriptor(JsValue.FromString("AggregateError"), Writable: true, Enumerable: false, Configurable: true));
+        _ = prototype.DefineOwnProperty("message",
+            new JsPropertyDescriptor(JsValue.FromString(string.Empty), Writable: true, Enumerable: false, Configurable: true));
+
+        JsValue Build(IReadOnlyList<JsValue> args)
+        {
+            if (args.Count == 0 || (args[0].Tag != JsValueTag.Object && args[0].Tag != JsValueTag.String))
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "AggregateError: first argument must be iterable."));
+            }
+            var msg = args.Count > 1 ? FormatPrimitiveForString(args[1]) : string.Empty;
+
+            // Collect the iterable into a list using the for-of pathway so
+            // Symbol.iterator dispatch is honoured.
+            var errorsList = new List<JsValue>();
+            var iter = CreateForOfIterator(args[0]);
+            if (iter.Tag == JsValueTag.Object &&
+                _heap.GetObject(iter.AsObjectHandle()) is ForOfIteratorObject forOf)
+            {
+                while (forOf.TryMoveNext(out var v))
+                {
+                    errorsList.Add(v);
+                }
+            }
+
+            var errorsArrObj = CreateArrayFromElements(errorsList.ToArray());
+            var errorsArrHandle = _heap.AllocateObject(errorsArrObj, AllocationSite.Current());
+
+            var err = new JsObject();
+            err.SetPrototype(EnsureAggregateErrorPrototype());
+            _ = err.SetProperty("name", JsValue.FromString("AggregateError"));
+            _ = err.SetProperty("message", JsValue.FromString(msg));
+            _ = err.SetProperty("errors", JsValue.FromObject(errorsArrHandle));
+            var handle = _heap.AllocateObject(err, AllocationSite.Current());
+            _heap.WriteBarrier(handle, errorsArrHandle);
+            return JsValue.FromObject(handle);
+        }
+
+        var constructor = new NativeFunctionObject(
+            "AggregateError",
+            (_, args) => Build(args),
+            args => Build(args),
+            length: 2);
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        _aggregateErrorPrototypeHandle = prototypeHandle;
+        _aggregateErrorConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private ObjectHandle EnsureAggregateErrorPrototype()
+    {
+        _ = EnsureAggregateErrorConstructor();
+        return _aggregateErrorPrototypeHandle!.Value;
     }
 
     private ObjectHandle EnsureNativeErrorConstructor(
