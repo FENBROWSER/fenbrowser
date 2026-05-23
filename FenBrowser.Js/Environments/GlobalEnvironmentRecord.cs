@@ -1,3 +1,4 @@
+using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Environments;
@@ -316,4 +317,11 @@ public sealed class GlobalEnvironmentRecord : EnvironmentRecord
     public DeclarativeEnvironmentRecord DeclarativeRecordForTest => _declarativeRecord;
     public ObjectEnvironmentRecord ObjectRecordForTest => _objectRecord;
     public IReadOnlyCollection<string> VarNamesSnapshotForTest => _varNames;
+
+    public override void Trace(IHeapTracer tracer)
+    {
+        base.Trace(tracer);
+        TraceValue(tracer, GlobalThisValue);
+        _declarativeRecord.Trace(tracer);
+    }
 }

@@ -1,3 +1,4 @@
+using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Environments;
@@ -70,5 +71,22 @@ public abstract class EnvironmentRecord
     {
         value = JsValue.Undefined;
         return BindingOpResult.NotInitializable;
+    }
+
+    // Environment records are not heap cells, but closure function objects retain
+    // them through [[Environment]]. Trace the chain so captured object values remain
+    // live after captured-cell snapshots are removed.
+    public virtual void Trace(IHeapTracer tracer)
+    {
+        ArgumentNullException.ThrowIfNull(tracer);
+        OuterEnv?.Trace(tracer);
+    }
+
+    protected static void TraceValue(IHeapTracer tracer, JsValue value)
+    {
+        if (value.Tag == JsValueTag.Object)
+        {
+            tracer.Trace(value.AsObjectHandle());
+        }
     }
 }

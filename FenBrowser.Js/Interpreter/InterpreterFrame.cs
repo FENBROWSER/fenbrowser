@@ -9,12 +9,10 @@ public sealed class InterpreterFrame
     public InterpreterFrame(
         BytecodeFunction function,
         JsValue thisValue,
-        IReadOnlyDictionary<string, JsVariableCell>? capturedVariables = null,
         EnvironmentRecord? environment = null)
     {
         Function = function;
         ThisValue = thisValue;
-        CapturedVariables = capturedVariables;
         Registers = new JsValue[function.RegisterCount];
         Variables = new VariableStore(function.VariableSlots.Count);
         ExceptionHandlers = new Stack<int>();
@@ -30,8 +28,6 @@ public sealed class InterpreterFrame
 
     public BytecodeFunction Function { get; }
     public JsValue ThisValue { get; }
-
-    public IReadOnlyDictionary<string, JsVariableCell>? CapturedVariables { get; }
 
     public JsValue[] Registers { get; }
 

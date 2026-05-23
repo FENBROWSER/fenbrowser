@@ -1,3 +1,4 @@
+using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Environments;
@@ -135,4 +136,13 @@ public sealed class ObjectEnvironmentRecord : EnvironmentRecord
         => _isWithEnvironment ? _bindingObject.AsObjectHandle : null;
 
     public IBindingObject BindingObjectForTest => _bindingObject;
+
+    public override void Trace(IHeapTracer tracer)
+    {
+        base.Trace(tracer);
+        if (_bindingObject.AsObjectHandle is { } handle)
+        {
+            tracer.Trace(handle);
+        }
+    }
 }

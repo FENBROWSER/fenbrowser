@@ -365,7 +365,7 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
-    public void FunctionClosuresWriteThroughCapturedVariables()
+    public void FunctionClosuresWriteThroughEnvironmentBindings()
     {
         var compiler = new BytecodeCompiler();
         var fn = compiler.CompileScript(new SourceText("let touched = false; let f = function(){ touched = true; }; f(); touched;"));
@@ -920,7 +920,7 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
-    public void ToPrimitiveCallbacksWriteThroughCapturedVariables()
+    public void ToPrimitiveCallbacksWriteThroughEnvironmentBindings()
     {
         var compiler = new BytecodeCompiler();
         var fn = compiler.CompileScript(new SourceText("let touched = false; let o = {}; let key = { toString: function(){ touched = true; return \"x\"; } }; Object.defineProperty(o, key, {}); touched && o.hasOwnProperty(\"x\");"));

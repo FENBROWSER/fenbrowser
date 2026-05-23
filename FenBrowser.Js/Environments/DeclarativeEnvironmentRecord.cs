@@ -1,4 +1,5 @@
 using FenBrowser.Js.Runtime;
+using FenBrowser.Js.Heap;
 
 namespace FenBrowser.Js.Environments;
 
@@ -156,6 +157,18 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
 
     public bool IsMutableForTest(string name)
         => _bindings.TryGetValue(name, out var b) && b.IsMutable;
+
+    public override void Trace(IHeapTracer tracer)
+    {
+        base.Trace(tracer);
+        foreach (var binding in _bindings.Values)
+        {
+            if (binding.IsInitialized)
+            {
+                TraceValue(tracer, binding.Value);
+            }
+        }
+    }
 
     private readonly record struct Binding(
         JsValue Value,

@@ -5,10 +5,10 @@ using Xunit;
 
 namespace FenBrowser.Js.Tests;
 
-// B.6.4 — verifies that closures resolve outer-scope identifier references through the
-// EnvironmentRecord chain (JsFunctionObject.OuterEnvironment) rather than only the
-// legacy JsVariableCell snapshot. Parameters and `arguments` are now live bindings on
-// the FunctionEnvironmentRecord, so nested functions read them through OuterEnv walks.
+// Verifies that closures resolve outer-scope identifier references through the
+// EnvironmentRecord chain (JsFunctionObject.OuterEnvironment). Parameters and
+// `arguments` are live bindings on the FunctionEnvironmentRecord, so nested
+// functions read them through OuterEnv walks.
 public sealed class ClosureEnvChainTests
 {
     private static double RunNum(string source)
@@ -97,8 +97,7 @@ public sealed class ClosureEnvChainTests
     public void InnerFunctionCanCallOuterPeerThroughEnvChain()
     {
         // A nested function referencing a sibling function-declaration that lives in
-        // its outer scope must resolve the peer through the env chain (peer was
-        // installed into outer's frame.Environment / VariableStore at declaration).
+        // its outer scope must resolve the peer through the env chain.
         const string source = @"
             function outer() {
                 function helper(v) { return v * 2; }
