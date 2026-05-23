@@ -2403,6 +2403,62 @@ public sealed class Test262RunnerTests
     }
 
     [Fact]
+    public void Run_ParserSubset_TcoHelperIncludeDoesNotBlockParseOnlyCoverage()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "tco-helper-parser.js");
+        var outputPath = Path.Combine(tempRoot, "tco-helper-parser-result.json");
+
+        try
+        {
+            File.WriteAllText(testFile, """
+            /*---
+            flags: [onlyStrict]
+            features: [tail-call-optimization]
+            includes: [tcoHelper.js]
+            ---*/
+            (function() {
+              return f`${1}`;
+            }());
+            """);
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: true,
+                runtimeSubset: false,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1000,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: "tail-call-optimization");
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(1, summary.GetProperty("passed").GetInt32());
+            Assert.Equal(0, summary.GetProperty("harnessUnsupported").GetInt32());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Run_RuntimeSubset_PropertyHelperVerifyNotWritableUsesRuntimePrelude()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));

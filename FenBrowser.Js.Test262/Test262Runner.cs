@@ -206,7 +206,11 @@ public sealed class Test262Runner
         {
             "propertyHelper.js",
             "sta.js",
-            "compareArray.js"
+            "compareArray.js",
+            // Parser-only runs never execute harness helpers. Accept tcoHelper.js
+            // here so syntax coverage for tail-call-position tests is not hidden
+            // behind a runtime harness limitation.
+            "tcoHelper.js"
         };
 
         foreach (var file in subset)
