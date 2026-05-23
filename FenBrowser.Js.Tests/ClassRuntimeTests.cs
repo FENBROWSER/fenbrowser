@@ -740,6 +740,28 @@ public sealed class ClassRuntimeTests
     }
 
     [Fact]
+    public void StringLiteralClassMemberInstallsUnderUnquotedKey()
+    {
+        Assert.Equal("hi", Run(@"
+            class C {
+                get 'greeting'() { return 'hi'; }
+            }
+            (new C()).greeting;
+        ").AsString());
+    }
+
+    [Fact]
+    public void EmptyStringLiteralClassMemberKey()
+    {
+        Assert.Equal(9d, Run(@"
+            class C {
+                ['']() { return 9; }
+            }
+            (new C())['']();
+        ").AsNumber());
+    }
+
+    [Fact]
     public void HexLiteralClassMemberInstallsUnderCanonicalKey()
     {
         Assert.Equal(7d, Run(@"

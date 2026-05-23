@@ -1128,8 +1128,11 @@ public sealed class JsParser
         if (tok.Kind == TokenKind.String)
         {
             Advance();
-            // Strip surrounding quotes from RawText form.
-            return tok.Text;
+            // ECMA-262 12.2.6.7: StringLiteral PropertyNames use the SV (string
+            // value) of the literal, i.e. with surrounding quotes stripped.
+            // Escape sequences inside the literal are not processed here yet;
+            // simple unquoted forms ('foo', "bar", "") are the common cases.
+            return tok.Text.Length >= 2 ? tok.Text[1..^1] : string.Empty;
         }
         if (tok.Kind == TokenKind.Number)
         {
