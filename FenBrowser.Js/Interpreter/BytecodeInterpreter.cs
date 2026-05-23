@@ -8410,6 +8410,46 @@ public sealed class BytecodeInterpreter
         // ECMA-262 22.1.2.1 String.fromCharCode(...codeUnits). Each argument is
         // truncated to a UTF-16 code unit (ToUint16) and concatenated. Surrogate
         // halves are kept as-is - String.fromCodePoint handles full code points.
+        // ECMA-262 22.1.2.4 String.raw(template, ...substitutions). Reads template.raw
+        // (must be coercible to Object) and walks it as an array-like: for each raw
+        // segment at index i, append ToString(segment); if i is not the last index,
+        // append ToString(substitutions[i]). Substitutions shorter than raw.length-1
+        // are treated as missing (the spec replaces them with empty String).
+        DefineIntrinsicFunction(constructorHandle, constructor, "raw", (_, args) =>
+        {
+            if (args.Count == 0 || (args[0].Tag != JsValueTag.Object && args[0].Tag != JsValueTag.String))
+            {
+                throw new JsThrownException(CreateTypeError("String.raw: template must be coercible to Object."));
+            }
+            var template = args[0];
+            var templateObj = _heap.GetObject(template.AsObjectHandle());
+            if (!TryGetPropertyValue(templateObj, template, "raw", out var rawValue) ||
+                rawValue.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("String.raw: template.raw must be an object."));
+            }
+            var rawObj = _heap.GetObject(rawValue.AsObjectHandle());
+            var rawLen = GetArrayLength(rawObj);
+            if (rawLen == 0) return JsValue.FromString(string.Empty);
+
+            var sb = new System.Text.StringBuilder();
+            for (var i = 0; i < rawLen; i++)
+            {
+                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if (TryGetPropertyValue(rawObj, rawValue, key, out var seg))
+                {
+                    sb.Append(ToStringValue(seg));
+                }
+                if (i + 1 == rawLen) break;
+                var subIndex = i + 1;
+                if (subIndex < args.Count)
+                {
+                    sb.Append(ToStringValue(args[subIndex]));
+                }
+            }
+            return JsValue.FromString(sb.ToString());
+        }, length: 1);
+
         DefineIntrinsicFunction(constructorHandle, constructor, "fromCharCode", (_, args) =>
         {
             var sb = new System.Text.StringBuilder(args.Count);
