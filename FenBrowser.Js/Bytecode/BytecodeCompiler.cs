@@ -71,6 +71,8 @@ public sealed class BytecodeCompiler
             _ = GetOrCreateVariableSlot(p);
         }
 
+        HoistFunctionDeclarations(program.Body);
+
         foreach (var stmt in program.Body)
         {
             CompileStatement(stmt);
@@ -194,11 +196,31 @@ public sealed class BytecodeCompiler
                 break;
             }
             case FunctionDeclarationNode functionDecl:
-                CompileFunctionDeclaration(functionDecl);
+                // Function declarations are instantiated before statement execution
+                // by HoistFunctionDeclarations, matching ECMA-262 declaration
+                // instantiation and letting sibling functions resolve through the
+                // environment record rather than legacy captured cells.
+                _ = functionDecl;
                 break;
             default:
                 // Minimal compiler slice currently targets literals/arithmetic/variables.
                 break;
+        }
+    }
+
+    private void HoistFunctionDeclarations(IEnumerable<StatementNode> statements)
+    {
+        foreach (var stmt in statements)
+        {
+            switch (stmt)
+            {
+                case FunctionDeclarationNode functionDecl:
+                    CompileFunctionDeclaration(functionDecl);
+                    break;
+                case BlockStatementNode block:
+                    HoistFunctionDeclarations(block.Statements);
+                    break;
+            }
         }
     }
 
@@ -217,6 +239,7 @@ public sealed class BytecodeCompiler
         var dest = AllocateRegister();
         _instructions.Add(new Instruction(OpCode.CreateFunction, dest, nestedIndex, 0));
         var slot = GetOrCreateVariableSlot(functionDecl.Name);
+        _varDeclarationNames.Add(functionDecl.Name);
         _instructions.Add(new Instruction(OpCode.StoreVar, dest, slot, 0));
     }
 
