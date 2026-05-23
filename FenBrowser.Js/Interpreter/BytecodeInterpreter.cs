@@ -39,6 +39,12 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _parseFloatHandle;
     private ObjectHandle? _isNaNHandle;
     private ObjectHandle? _isFiniteHandle;
+    private ObjectHandle? _encodeUriHandle;
+    private ObjectHandle? _encodeUriComponentHandle;
+    private ObjectHandle? _decodeUriHandle;
+    private ObjectHandle? _decodeUriComponentHandle;
+    private ObjectHandle? _uriErrorConstructorHandle;
+    private ObjectHandle? _uriErrorPrototypeHandle;
 
     // Shared Random for Math.random. Thread-safety: Math.random is single-threaded in
     // ECMA-262, and the runtime is single-threaded today; if we ever introduce SAB +
@@ -605,6 +611,32 @@ public sealed class BytecodeInterpreter
         if (function.VariableSlots.TryGetValue("isFinite", out var isFiniteSlot))
         {
             frame.Variables[isFiniteSlot] = JsValue.FromObject(EnsureIsFiniteFunction());
+        }
+
+        // ECMA-262 19.2.6 - the four URI handling globals.
+        if (function.VariableSlots.TryGetValue("encodeURI", out var encUriSlot))
+        {
+            frame.Variables[encUriSlot] = JsValue.FromObject(EnsureEncodeUriFunction());
+        }
+
+        if (function.VariableSlots.TryGetValue("encodeURIComponent", out var encUriCSlot))
+        {
+            frame.Variables[encUriCSlot] = JsValue.FromObject(EnsureEncodeUriComponentFunction());
+        }
+
+        if (function.VariableSlots.TryGetValue("decodeURI", out var decUriSlot))
+        {
+            frame.Variables[decUriSlot] = JsValue.FromObject(EnsureDecodeUriFunction());
+        }
+
+        if (function.VariableSlots.TryGetValue("decodeURIComponent", out var decUriCSlot))
+        {
+            frame.Variables[decUriCSlot] = JsValue.FromObject(EnsureDecodeUriComponentFunction());
+        }
+
+        if (function.VariableSlots.TryGetValue("URIError", out var uriErrSlot))
+        {
+            frame.Variables[uriErrSlot] = JsValue.FromObject(EnsureUriErrorConstructor());
         }
 
         if (function.VariableSlots.TryGetValue("Object", out var objectSlot))
@@ -6595,6 +6627,303 @@ public sealed class BytecodeInterpreter
         _isNaNHandle = _heap.AllocateObject(fn, AllocationSite.Current());
         _heap.PushRoot(_isNaNHandle.Value);
         return _isNaNHandle.Value;
+    }
+
+    // ECMA-262 19.2.6.4 encodeURI(uri). Unescaped set = uriReserved + uriUnescaped + "#".
+    private ObjectHandle EnsureEncodeUriFunction()
+    {
+        if (_encodeUriHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var fn = new NativeFunctionObject("encodeURI", (_, args) =>
+        {
+            var text = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+            return JsValue.FromString(EncodeUri(text, encodeReserved: false));
+        }, length: 1);
+
+        _encodeUriHandle = _heap.AllocateObject(fn, AllocationSite.Current());
+        _heap.PushRoot(_encodeUriHandle.Value);
+        return _encodeUriHandle.Value;
+    }
+
+    // ECMA-262 19.2.6.5 encodeURIComponent(uriComponent). Unescaped set = uriUnescaped only;
+    // every uriReserved character ;/?:@&=+$,# is percent-encoded.
+    private ObjectHandle EnsureEncodeUriComponentFunction()
+    {
+        if (_encodeUriComponentHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var fn = new NativeFunctionObject("encodeURIComponent", (_, args) =>
+        {
+            var text = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+            return JsValue.FromString(EncodeUri(text, encodeReserved: true));
+        }, length: 1);
+
+        _encodeUriComponentHandle = _heap.AllocateObject(fn, AllocationSite.Current());
+        _heap.PushRoot(_encodeUriComponentHandle.Value);
+        return _encodeUriComponentHandle.Value;
+    }
+
+    // ECMA-262 19.2.6.2 decodeURI(encodedURI). Reserved-set bytes stay escaped so an
+    // already-built URI doesn't lose its structural punctuation on a round trip.
+    private ObjectHandle EnsureDecodeUriFunction()
+    {
+        if (_decodeUriHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var fn = new NativeFunctionObject("decodeURI", (_, args) =>
+        {
+            var text = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+            return JsValue.FromString(DecodeUri(text, preserveReserved: true));
+        }, length: 1);
+
+        _decodeUriHandle = _heap.AllocateObject(fn, AllocationSite.Current());
+        _heap.PushRoot(_decodeUriHandle.Value);
+        return _decodeUriHandle.Value;
+    }
+
+    // ECMA-262 19.2.6.3 decodeURIComponent(encodedURIComponent).
+    private ObjectHandle EnsureDecodeUriComponentFunction()
+    {
+        if (_decodeUriComponentHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var fn = new NativeFunctionObject("decodeURIComponent", (_, args) =>
+        {
+            var text = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+            return JsValue.FromString(DecodeUri(text, preserveReserved: false));
+        }, length: 1);
+
+        _decodeUriComponentHandle = _heap.AllocateObject(fn, AllocationSite.Current());
+        _heap.PushRoot(_decodeUriComponentHandle.Value);
+        return _decodeUriComponentHandle.Value;
+    }
+
+    // ECMA-262 19.2.6.1.1 Encode(string, unescapedSet). Walks code points (surrogate
+    // pairs are decoded as one), UTF-8 encodes non-unescaped ones, and percent-emits
+    // each byte uppercased. Lone surrogates raise URIError per step 4.
+    private string EncodeUri(string text, bool encodeReserved)
+    {
+        var sb = new System.Text.StringBuilder(text.Length);
+        for (var i = 0; i < text.Length; i++)
+        {
+            var ch = text[i];
+            int codePoint;
+            if (char.IsHighSurrogate(ch))
+            {
+                if (i + 1 >= text.Length || !char.IsLowSurrogate(text[i + 1]))
+                {
+                    throw new JsThrownException(CreateUriError("URI malformed: lone high surrogate."));
+                }
+                codePoint = char.ConvertToUtf32(ch, text[i + 1]);
+                i++;
+            }
+            else if (char.IsLowSurrogate(ch))
+            {
+                throw new JsThrownException(CreateUriError("URI malformed: lone low surrogate."));
+            }
+            else
+            {
+                codePoint = ch;
+            }
+
+            if (IsUriUnescaped(codePoint, encodeReserved))
+            {
+                _ = sb.Append((char)codePoint);
+            }
+            else
+            {
+                var buffer = codePoint <= 0x7F
+                    ? new byte[] { (byte)codePoint }
+                    : System.Text.Encoding.UTF8.GetBytes(char.ConvertFromUtf32(codePoint));
+                foreach (var b in buffer)
+                {
+                    _ = sb.Append('%').Append(b.ToString("X2", System.Globalization.CultureInfo.InvariantCulture));
+                }
+            }
+        }
+        return sb.ToString();
+    }
+
+    private static bool IsUriUnescaped(int c, bool encodeReserved)
+    {
+        // ECMA-262 19.2.6.1.1 alphanumeric + uriMark + (uriReserved when not encoding).
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
+        {
+            return true;
+        }
+        switch (c)
+        {
+            case '-': case '_': case '.': case '!': case '~':
+            case '*': case '\'': case '(': case ')':
+                return true;
+        }
+        if (!encodeReserved)
+        {
+            switch (c)
+            {
+                case ';': case '/': case '?': case ':': case '@':
+                case '&': case '=': case '+': case '$': case ',':
+                case '#':
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    // ECMA-262 19.2.6.1.2 Decode(string, reservedSet). Percent-triplets decode as
+    // UTF-8 byte sequences; malformed input or invalid UTF-8 raises URIError. When
+    // preserveReserved is true (decodeURI only), bytes whose UTF-8 decoding is a
+    // reserved character are left as the literal %HH triplets.
+    private string DecodeUri(string text, bool preserveReserved)
+    {
+        var sb = new System.Text.StringBuilder(text.Length);
+        var i = 0;
+        while (i < text.Length)
+        {
+            var ch = text[i];
+            if (ch != '%')
+            {
+                _ = sb.Append(ch);
+                i++;
+                continue;
+            }
+
+            if (i + 2 >= text.Length)
+            {
+                throw new JsThrownException(CreateUriError("URI malformed: truncated escape."));
+            }
+
+            var b0 = DecodeHexByte(text, i);
+            i += 3;
+            if ((b0 & 0x80) == 0)
+            {
+                if (preserveReserved && IsUriReservedAscii((char)b0))
+                {
+                    _ = sb.Append('%').Append(text[i - 2]).Append(text[i - 1]);
+                }
+                else
+                {
+                    _ = sb.Append((char)b0);
+                }
+                continue;
+            }
+
+            int extraBytes;
+            if ((b0 & 0xE0) == 0xC0) extraBytes = 1;
+            else if ((b0 & 0xF0) == 0xE0) extraBytes = 2;
+            else if ((b0 & 0xF8) == 0xF0) extraBytes = 3;
+            else throw new JsThrownException(CreateUriError("URI malformed: bad UTF-8 leading byte."));
+
+            var bytes = new byte[1 + extraBytes];
+            bytes[0] = b0;
+            for (var k = 1; k <= extraBytes; k++)
+            {
+                if (i >= text.Length || text[i] != '%' || i + 2 >= text.Length)
+                {
+                    throw new JsThrownException(CreateUriError("URI malformed: truncated continuation."));
+                }
+                var bk = DecodeHexByte(text, i);
+                if ((bk & 0xC0) != 0x80)
+                {
+                    throw new JsThrownException(CreateUriError("URI malformed: bad UTF-8 continuation."));
+                }
+                bytes[k] = bk;
+                i += 3;
+            }
+
+            string decoded;
+            try
+            {
+                decoded = System.Text.Encoding.UTF8.GetString(bytes);
+            }
+            catch (System.Text.DecoderFallbackException)
+            {
+                throw new JsThrownException(CreateUriError("URI malformed: invalid UTF-8 sequence."));
+            }
+
+            _ = sb.Append(decoded);
+        }
+
+        return sb.ToString();
+    }
+
+    private byte DecodeHexByte(string text, int percentIndex)
+    {
+        var hi = HexDigit(text[percentIndex + 1]);
+        var lo = HexDigit(text[percentIndex + 2]);
+        return (byte)((hi << 4) | lo);
+    }
+
+    private int HexDigit(char c)
+    {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        throw new JsThrownException(CreateUriError("URI malformed: invalid hex digit."));
+    }
+
+    private static bool IsUriReservedAscii(char c)
+    {
+        switch (c)
+        {
+            case ';': case '/': case '?': case ':': case '@':
+            case '&': case '=': case '+': case '$': case ',':
+            case '#':
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private JsValue CreateUriError(string message)
+    {
+        return CreateErrorObject("URIError", EnsureUriErrorPrototype(), message);
+    }
+
+    private ObjectHandle EnsureUriErrorPrototype()
+    {
+        _ = EnsureUriErrorConstructor();
+        return _uriErrorPrototypeHandle!.Value;
+    }
+
+    // ECMA-262 20.5.5.7 URIError native error constructor.
+    private ObjectHandle EnsureUriErrorConstructor()
+    {
+        if (_uriErrorConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototype = CreateOrdinaryObject();
+        prototype.SetPrototype(EnsureErrorPrototype());
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+        _ = prototype.DefineOwnProperty("name",
+            new JsPropertyDescriptor(JsValue.FromString("URIError"), Writable: true, Enumerable: false, Configurable: true));
+        _ = prototype.DefineOwnProperty("message",
+            new JsPropertyDescriptor(JsValue.FromString(string.Empty), Writable: true, Enumerable: false, Configurable: true));
+
+        var constructor = new NativeFunctionObject(
+            "URIError",
+            (_, args) => CreateErrorObject("URIError", EnsureUriErrorPrototype(), GetOptionalMessage(args)),
+            args => CreateErrorObject("URIError", EnsureUriErrorPrototype(), GetOptionalMessage(args)),
+            length: 1);
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        _uriErrorPrototypeHandle = prototypeHandle;
+        _uriErrorConstructorHandle = constructorHandle;
+        return constructorHandle;
     }
 
     // ECMA-262 19.2.2 isFinite(number) - coerces, unlike Number.isFinite.
