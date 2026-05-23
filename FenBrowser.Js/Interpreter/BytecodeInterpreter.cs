@@ -1492,6 +1492,58 @@ public sealed class BytecodeInterpreter
             JsValue.FromObject(sizeGetterHandle), JsValue.Undefined, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, sizeGetterHandle);
 
+        // ECMA-262 24.1.2.1 Map.groupBy(items, callbackfn) (ES2024). Same grouping
+        // discipline as Object.groupBy except keys use SameValueZero identity
+        // (callback's return is used as-is, not coerced to a property key) so any
+        // value - including objects - can be a group key.
+        DefineIntrinsicFunction(constructorHandle, constructor, "groupBy", (_, args) =>
+        {
+            var iterable = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var callback = args.Count > 1 ? args[1] : JsValue.Undefined;
+            if (callback.Tag != JsValueTag.Object ||
+                _heap.GetObject(callback.AsObjectHandle()) is not (JsFunctionObject or NativeFunctionObject))
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Map.groupBy: callback must be a function."));
+            }
+            var values = new List<JsValue>();
+            var iter = CreateForOfIterator(iterable);
+            if (iter.Tag == JsValueTag.Object &&
+                _heap.GetObject(iter.AsObjectHandle()) is ForOfIteratorObject forOf)
+            {
+                while (forOf.TryMoveNext(out var v)) values.Add(v);
+            }
+
+            var map = new MapObject();
+            map.SetPrototype(EnsureMapPrototype());
+            var mapHandle = _heap.AllocateObject(map, AllocationSite.Current());
+            for (var i = 0; i < values.Count; i++)
+            {
+                var key = CallFunction(callback, new[] { values[i], JsValue.FromNumber(i) }, JsValue.Undefined);
+                if (map.TryGet(key, out var existingBucket) &&
+                    existingBucket.Tag == JsValueTag.Object &&
+                    _heap.GetObject(existingBucket.AsObjectHandle()) is ArrayObject existingArr)
+                {
+                    var len = GetArrayLength(existingArr);
+                    existingArr.SetProperty(len.ToString(System.Globalization.CultureInfo.InvariantCulture), values[i]);
+                    existingArr.SetProperty("length", JsValue.FromNumber(len + 1));
+                    if (values[i].Tag == JsValueTag.Object)
+                    {
+                        _heap.WriteBarrier(existingBucket.AsObjectHandle(), values[i].AsObjectHandle());
+                    }
+                }
+                else
+                {
+                    var arrObj = CreateArrayFromElements(new[] { values[i] });
+                    var arrHandle = _heap.AllocateObject(arrObj, AllocationSite.Current());
+                    map.Set(key, JsValue.FromObject(arrHandle));
+                    if (key.Tag == JsValueTag.Object) _heap.WriteBarrier(mapHandle, key.AsObjectHandle());
+                    _heap.WriteBarrier(mapHandle, arrHandle);
+                }
+            }
+            return JsValue.FromObject(mapHandle);
+        }, length: 2);
+
         _mapPrototypeHandle = prototypeHandle;
         _mapConstructorHandle = constructorHandle;
         return constructorHandle;
@@ -4168,6 +4220,57 @@ public sealed class BytecodeInterpreter
             var resultHandle = _heap.AllocateObject(result, AllocationSite.Current());
             return JsValue.FromObject(resultHandle);
         }, length: 1);
+
+        // ECMA-262 20.1.2.5 Object.groupBy(items, callbackfn) (ES2024). Walks the
+        // iterable, calls callbackfn(element, index) for each, coerces the return to a
+        // property key (ToPropertyKey: Symbol stays Symbol, otherwise ToString) and
+        // groups elements into Arrays keyed by that key on a fresh null-prototype
+        // object. Result key order mirrors insertion order of first-seen keys.
+        DefineIntrinsicFunction(constructorHandle, constructor, "groupBy", (_, args) =>
+        {
+            var iterable = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var callback = args.Count > 1 ? args[1] : JsValue.Undefined;
+            if (callback.Tag != JsValueTag.Object ||
+                _heap.GetObject(callback.AsObjectHandle()) is not (JsFunctionObject or NativeFunctionObject))
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Object.groupBy: callback must be a function."));
+            }
+            var values = new List<JsValue>();
+            var iter = CreateForOfIterator(iterable);
+            if (iter.Tag == JsValueTag.Object &&
+                _heap.GetObject(iter.AsObjectHandle()) is ForOfIteratorObject forOf)
+            {
+                while (forOf.TryMoveNext(out var v)) values.Add(v);
+            }
+
+            var groups = new Dictionary<string, List<JsValue>>(StringComparer.Ordinal);
+            var orderedKeys = new List<string>();
+            for (var i = 0; i < values.Count; i++)
+            {
+                var rawKey = CallFunction(callback, new[] { values[i], JsValue.FromNumber(i) }, JsValue.Undefined);
+                var key = ToPropertyKey(rawKey);
+                if (!groups.TryGetValue(key, out var bucket))
+                {
+                    bucket = new List<JsValue>();
+                    groups[key] = bucket;
+                    orderedKeys.Add(key);
+                }
+                bucket.Add(values[i]);
+            }
+
+            var result = new JsObject();
+            // null prototype per spec step 5 (! OrdinaryObjectCreate(null)).
+            var resultHandle = _heap.AllocateObject(result, AllocationSite.Current());
+            foreach (var key in orderedKeys)
+            {
+                var arrObj = CreateArrayFromElements(groups[key].ToArray());
+                var arrHandle = _heap.AllocateObject(arrObj, AllocationSite.Current());
+                result.SetProperty(key, JsValue.FromObject(arrHandle));
+                _heap.WriteBarrier(resultHandle, arrHandle);
+            }
+            return JsValue.FromObject(resultHandle);
+        }, length: 2);
 
         // ECMA-262 20.1.2.10 Object.getOwnPropertyNames(O). Unlike Object.keys this
         // does NOT filter by Enumerable - every own string-keyed property surfaces in
