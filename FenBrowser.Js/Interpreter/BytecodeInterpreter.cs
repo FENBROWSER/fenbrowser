@@ -138,6 +138,48 @@ public sealed partial class BytecodeInterpreter
         return result;
     }
 
+    // E.6.next - execute a top-level function with a caller-supplied
+    // environment record as the frame env. Used by ModuleEvaluator to give
+    // every module its own environment so module-local declarations don't
+    // leak onto globalThis. The supplied env should chain to the global env
+    // record so builtins (Object, Array, ...) remain visible.
+    [MayExecuteJs]
+    public JsValue ExecuteWithEnvironment(BytecodeFunction function, Environments.EnvironmentRecord environment)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+        var globalHandle = EnsureGlobalObject();
+        var result = ExecuteInternal(
+            function,
+            Array.Empty<JsValue>(),
+            JsValue.FromObject(globalHandle),
+            frameEnvironment: environment);
+        DrainPendingMicrotasks();
+        return result;
+    }
+
+    // E.6.next - read a binding directly from a caller-supplied env record.
+    // Used by ModuleEvaluator to harvest export values out of a per-module
+    // env (where the binding doesn't live on the global object).
+    public bool TryReadBinding(EnvironmentRecord environment, string name, out JsValue value)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        if (!environment.HasBinding(name))
+        {
+            value = JsValue.Undefined;
+            return false;
+        }
+
+        var status = environment.GetBindingValue(name, strict: false, out value);
+        if (status == BindingOpResult.Ok)
+        {
+            return true;
+        }
+
+        value = JsValue.Undefined;
+        return false;
+    }
+
     // HTML "perform a microtask checkpoint" - invoked at the end of every top-level
     // Execute. Drains both the queueMicrotask callback queue and the Promise
     // JobQueue (D.6). Per spec the checkpoint runs until both queues are empty,
