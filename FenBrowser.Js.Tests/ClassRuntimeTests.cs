@@ -540,6 +540,60 @@ public sealed class ClassRuntimeTests
         ").AsBoolean());
     }
 
+    // H.5 - computed-name public fields.
+    [Fact]
+    public void ComputedInstanceFieldKeyEvaluatedAtClassDefinition()
+    {
+        Assert.Equal(7d, Run(@"
+            var key = 'x';
+            class C { [key] = 7; }
+            (new C()).x;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void ComputedStaticFieldKey()
+    {
+        Assert.Equal(3d, Run(@"
+            class C { static ['foo'] = 3; }
+            C.foo;
+        ").AsNumber());
+    }
+
+    // H.5 - derived classes with default constructor + instance fields.
+    [Fact]
+    public void DerivedClassDefaultConstructorCallsSuper()
+    {
+        Assert.Equal(5d, Run(@"
+            class A { constructor() { this.a = 5; } }
+            class B extends A {}
+            (new B()).a;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void DerivedClassInstanceFieldInitsAfterDefaultSuper()
+    {
+        Assert.Equal(8d, Run(@"
+            class A { constructor() { this.x = 1; } }
+            class B extends A { y = this.x + 7; }
+            (new B()).y;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void DerivedClassExplicitSuperThenFieldsThenBody()
+    {
+        Assert.Equal(30d, Run(@"
+            class A { constructor() { this.v = 10; } }
+            class B extends A {
+                w = this.v * 2;
+                constructor() { super(); this.r = this.w + this.v; }
+            }
+            (new B()).r;
+        ").AsNumber());
+    }
+
     // H.5 - public static fields.
     [Fact]
     public void StaticFieldInitializerSetsOnClass()

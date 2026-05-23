@@ -296,18 +296,6 @@ foreach (var member in members)
                     throw new UnsupportedFeatureException(
                         "private-class-field", FeatureSupportLevel.ParserOnly, member.Span);
                 }
-                if (member.ComputedName is not null)
-                {
-                    throw new UnsupportedFeatureException(
-                        "computed-class-field", FeatureSupportLevel.ParserOnly, member.Span);
-                }
-                if (!member.IsStatic && baseClass is not null)
-                {
-                    // Instance fields in a derived class need to be initialised
-                    // by super()/[[InitializeInstanceElements]]; not wired yet.
-                    throw new UnsupportedFeatureException(
-                        "derived-class-instance-field", FeatureSupportLevel.ParserOnly, member.Span);
-                }
                 continue;
             }
 
@@ -325,39 +313,81 @@ foreach (var member in members)
             }
         }
 
-        // Locate constructor (or synthesise an empty one).
-        FunctionExpressionNode constructorFn = SynthesizeDefaultConstructor(className);
+        // Locate constructor (or synthesise an empty one). For derived classes
+        // without an explicit constructor, the synthesised default is
+        // `constructor() { super(); }` (the spec passes ...args; we forward
+        // zero args for now since rest-spread isn't compiled).
+        bool isDerived = baseClass is not null;
+        FunctionExpressionNode? explicitCtor = null;
         foreach (var member in members)
         {
             if (member.Kind == ClassMemberKind.Constructor && member.Function is FunctionExpressionNode fn)
             {
-                constructorFn = fn;
+                explicitCtor = fn;
                 break;
             }
         }
+        FunctionExpressionNode constructorFn = explicitCtor
+            ?? SynthesizeDefaultConstructor(className, isDerived);
 
         // H.5 - public instance fields. ECMA-262 15.7.10 [[InitializeInstanceElements]]
-        // runs on constructor entry (base) or implicitly inside super() (derived).
-        // For base classes we synthesise `this.f = <init>` statements and prepend
-        // them to the constructor body. Derived-class fields are rejected above.
+        // runs on constructor entry (base) or right after super() returns (derived).
         var instanceFieldInits = new List<StatementNode>();
         foreach (var member in members)
         {
             if (member.Kind != ClassMemberKind.Field || member.IsStatic) continue;
-            var lhs = new MemberExpressionNode(
-                new ThisExpressionNode(member.Span),
-                member.Name,
-                Computed: false,
-                PropertyExpression: null,
-                member.Span);
+            MemberExpressionNode lhs;
+            if (member.ComputedName is not null)
+            {
+                lhs = new MemberExpressionNode(
+                    new ThisExpressionNode(member.Span),
+                    Property: string.Empty,
+                    Computed: true,
+                    PropertyExpression: member.ComputedName,
+                    member.Span);
+            }
+            else
+            {
+                lhs = new MemberExpressionNode(
+                    new ThisExpressionNode(member.Span),
+                    member.Name,
+                    Computed: false,
+                    PropertyExpression: null,
+                    member.Span);
+            }
             var assign = new AssignmentExpressionNode(lhs, member.Function, member.Span);
             instanceFieldInits.Add(new ExpressionStatementNode(assign, member.Span));
         }
         if (instanceFieldInits.Count > 0)
         {
-            var combined = new List<StatementNode>(instanceFieldInits.Count + constructorFn.Body.Statements.Count);
-            combined.AddRange(instanceFieldInits);
-            combined.AddRange(constructorFn.Body.Statements);
+            IReadOnlyList<StatementNode> combined;
+            if (isDerived)
+            {
+                // Inject after the first top-level `super(...)` ExpressionStatement.
+                // If none is found, append at end (constructors that never call
+                // super are a spec error we don't enforce here).
+                var stmts = new List<StatementNode>(constructorFn.Body.Statements);
+                int insertAt = stmts.Count;
+                for (int i = 0; i < stmts.Count; i++)
+                {
+                    if (stmts[i] is ExpressionStatementNode es
+                        && es.Expression is CallExpressionNode call
+                        && call.Callee is SuperExpressionNode)
+                    {
+                        insertAt = i + 1;
+                        break;
+                    }
+                }
+                stmts.InsertRange(insertAt, instanceFieldInits);
+                combined = stmts;
+            }
+            else
+            {
+                var list = new List<StatementNode>(instanceFieldInits.Count + constructorFn.Body.Statements.Count);
+                list.AddRange(instanceFieldInits);
+                list.AddRange(constructorFn.Body.Statements);
+                combined = list;
+            }
             var newBody = new BlockStatementNode(combined, constructorFn.Body.Span);
             constructorFn = new FunctionExpressionNode(
                 constructorFn.Name,
@@ -458,8 +488,16 @@ foreach (var member in members)
         {
             if (member.Kind != ClassMemberKind.Field || !member.IsStatic) continue;
             var initReg = CompileExpression(member.Function);
-            var nameIdx = GetOrCreatePropertyName(member.Name);
-            _instructions.Add(new Instruction(OpCode.SetPropByName, classReg, nameIdx, initReg));
+            if (member.ComputedName is not null)
+            {
+                var keyReg = CompileExpression(member.ComputedName);
+                _instructions.Add(new Instruction(OpCode.SetElem, classReg, keyReg, initReg));
+            }
+            else
+            {
+                var nameIdx = GetOrCreatePropertyName(member.Name);
+                _instructions.Add(new Instruction(OpCode.SetPropByName, classReg, nameIdx, initReg));
+            }
         }
 
         // H.5 - bind the class name in the outer scope BEFORE running static
@@ -500,16 +538,30 @@ foreach (var member in members)
         return dest;
     }
 
-    private static FunctionExpressionNode SynthesizeDefaultConstructor(string? className)
+    private static FunctionExpressionNode SynthesizeDefaultConstructor(string? className, bool isDerived = false)
     {
-        // ECMA-262 15.7.10 Default Constructor: empty constructor for a class
-        // without `extends`. (The base-class variant `constructor(...args){super(...args);}`
-        // is a follow-up when extends/super lands.)
+        // ECMA-262 15.7.10 Default Constructor. For base classes: empty body.
+        // For derived classes: `constructor() { super(); }`. The spec actually
+        // synthesises `constructor(...args) { super(...args); }`; we forward
+        // zero args until call-with-spread is wired through the compiler.
         var span = default(SourceSpan);
+        IReadOnlyList<StatementNode> body;
+        if (isDerived)
+        {
+            var superCall = new CallExpressionNode(
+                new SuperExpressionNode(span),
+                Array.Empty<ExpressionNode>(),
+                span);
+            body = new StatementNode[] { new ExpressionStatementNode(superCall, span) };
+        }
+        else
+        {
+            body = Array.Empty<StatementNode>();
+        }
         return new FunctionExpressionNode(
             Name: className,
             Parameters: Array.Empty<string>(),
-            Body: new BlockStatementNode(Array.Empty<StatementNode>(), span),
+            Body: new BlockStatementNode(body, span),
             Span: span);
     }
 
