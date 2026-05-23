@@ -53,6 +53,8 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _aggregateErrorPrototypeHandle;
     private ObjectHandle? _weakRefConstructorHandle;
     private ObjectHandle? _weakRefPrototypeHandle;
+    private ObjectHandle? _finalizationRegistryConstructorHandle;
+    private ObjectHandle? _finalizationRegistryPrototypeHandle;
 
     // Shared Random for Math.random. Thread-safety: Math.random is single-threaded in
     // ECMA-262, and the runtime is single-threaded today; if we ever introduce SAB +
@@ -665,6 +667,11 @@ public sealed class BytecodeInterpreter
         if (function.VariableSlots.TryGetValue("WeakRef", out var weakRefSlot))
         {
             frame.Variables[weakRefSlot] = JsValue.FromObject(EnsureWeakRefConstructor());
+        }
+
+        if (function.VariableSlots.TryGetValue("FinalizationRegistry", out var frSlot))
+        {
+            frame.Variables[frSlot] = JsValue.FromObject(EnsureFinalizationRegistryConstructor());
         }
 
         if (function.VariableSlots.TryGetValue("Object", out var objectSlot))
@@ -7421,6 +7428,103 @@ public sealed class BytecodeInterpreter
         _weakRefPrototypeHandle = prototypeHandle;
         _weakRefConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    private sealed class FinalizationRegistryObject : JsObject
+    {
+        public sealed record Entry(ObjectHandle Target, JsValue HeldValue, JsValue UnregisterToken);
+        public ObjectHandle Callback { get; }
+        public List<Entry> Entries { get; } = new();
+        public FinalizationRegistryObject(ObjectHandle callback) { Callback = callback; }
+    }
+
+    // ECMA-262 26.2 FinalizationRegistry(cleanupCallback). The engine has no
+    // GC-driven cleanup pass yet, so register/unregister maintain the registry
+    // bookkeeping but no callbacks ever fire automatically. cleanupSome runs the
+    // callback against zero entries (nothing has been collected). This keeps the
+    // API surface stable so user code that constructs registries continues to
+    // work; a later commit can wire automatic cleanup when the GC gains
+    // post-collection phases.
+    private ObjectHandle EnsureFinalizationRegistryConstructor()
+    {
+        if (_finalizationRegistryConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototype = CreateOrdinaryObject();
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "FinalizationRegistry",
+            (_, _) => throw new JsThrownException(CreateTypeError(
+                "Constructor FinalizationRegistry requires 'new'.")),
+            args =>
+            {
+                if (args.Count == 0 || args[0].Tag != JsValueTag.Object ||
+                    _heap.GetObject(args[0].AsObjectHandle()) is not (JsFunctionObject or NativeFunctionObject))
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "FinalizationRegistry: cleanup callback must be callable."));
+                }
+                var cbHandle = args[0].AsObjectHandle();
+                var reg = new FinalizationRegistryObject(cbHandle);
+                reg.SetPrototype(prototypeHandle);
+                var handle = _heap.AllocateObject(reg, AllocationSite.Current());
+                _heap.WriteBarrier(handle, cbHandle);
+                return JsValue.FromObject(handle);
+            },
+            length: 1);
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "register", (thisValue, args) =>
+        {
+            var reg = RequireFinalizationRegistry(thisValue);
+            if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "FinalizationRegistry.prototype.register: target must be an object."));
+            }
+            var held = args.Count > 1 ? args[1] : JsValue.Undefined;
+            var token = args.Count > 2 ? args[2] : JsValue.Undefined;
+            reg.Entries.Add(new FinalizationRegistryObject.Entry(args[0].AsObjectHandle(), held, token));
+            return JsValue.Undefined;
+        }, length: 2);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "unregister", (thisValue, args) =>
+        {
+            var reg = RequireFinalizationRegistry(thisValue);
+            if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "FinalizationRegistry.prototype.unregister: token must be an object."));
+            }
+            var tokenHandle = args[0].AsObjectHandle();
+            var removed = reg.Entries.RemoveAll(e =>
+                e.UnregisterToken.Tag == JsValueTag.Object &&
+                e.UnregisterToken.AsObjectHandle() == tokenHandle);
+            return JsValue.FromBoolean(removed > 0);
+        }, length: 1);
+
+        _finalizationRegistryPrototypeHandle = prototypeHandle;
+        _finalizationRegistryConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private FinalizationRegistryObject RequireFinalizationRegistry(JsValue thisValue)
+    {
+        if (thisValue.Tag == JsValueTag.Object &&
+            _heap.GetObject(thisValue.AsObjectHandle()) is FinalizationRegistryObject reg)
+        {
+            return reg;
+        }
+        throw new JsThrownException(CreateTypeError(
+            "FinalizationRegistry method called on non-FinalizationRegistry receiver."));
     }
 
     private ObjectHandle EnsureNativeErrorConstructor(
