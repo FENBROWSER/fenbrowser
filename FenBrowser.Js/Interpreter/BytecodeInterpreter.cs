@@ -1,3 +1,4 @@
+using FenBrowser.Js.Builtins;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
@@ -3980,9 +3981,9 @@ public sealed partial class BytecodeInterpreter
         DefineMathFunction(handle, math, "sqrt", args => MathUnary(args, Math.Sqrt), length: 1);
         DefineMathFunction(handle, math, "tan", args => MathUnary(args, Math.Tan), length: 1);
         // ECMA-262 21.3.2.28 Math.sign - returns -1/0/+1/-0/NaN matching argument sign.
-        DefineMathFunction(handle, math, "sign", args => MathUnary(args, MathSign), length: 1);
+        DefineMathFunction(handle, math, "sign", args => MathUnary(args, MathHelpers.MathSign), length: 1);
         // ECMA-262 21.3.2.35 Math.trunc - round toward zero.
-        DefineMathFunction(handle, math, "trunc", args => MathUnary(args, MathTrunc), length: 1);
+        DefineMathFunction(handle, math, "trunc", args => MathUnary(args, MathHelpers.MathTrunc), length: 1);
         // ECMA-262 21.3.2.9 Math.cbrt - cube root.
         DefineMathFunction(handle, math, "cbrt", args => MathUnary(args, Math.Cbrt), length: 1);
         // ECMA-262 21.3.2.22 Math.log2 - base-2 logarithm.
@@ -4006,9 +4007,9 @@ public sealed partial class BytecodeInterpreter
         DefineMathFunction(handle, math, "acosh", args => MathUnary(args, Math.Acosh), length: 1);
         DefineMathFunction(handle, math, "atanh", args => MathUnary(args, Math.Atanh), length: 1);
         // ECMA-262 21.3.2.14 expm1 - more accurate for small x than Math.exp(x) - 1.
-        DefineMathFunction(handle, math, "expm1", args => MathUnary(args, MathExpm1), length: 1);
+        DefineMathFunction(handle, math, "expm1", args => MathUnary(args, MathHelpers.MathExpm1), length: 1);
         // ECMA-262 21.3.2.20 log1p - more accurate for small x than Math.log(1 + x).
-        DefineMathFunction(handle, math, "log1p", args => MathUnary(args, MathLog1p), length: 1);
+        DefineMathFunction(handle, math, "log1p", args => MathUnary(args, MathHelpers.MathLog1p), length: 1);
         // ECMA-262 21.3.2.27 Math.random - pseudorandom in [0, 1). Backed by a single
         // process-shared Random instance; not cryptographically secure (the spec
         // explicitly forbids using Math.random for cryptography).
@@ -4100,7 +4101,7 @@ public sealed partial class BytecodeInterpreter
                 return JsValue.FromNumber(double.NaN);
             }
 
-            if (value > result || (value == 0d && result == 0d && !IsNegativeZero(value)))
+            if (value > result || (value == 0d && result == 0d && !MathHelpers.IsNegativeZero(value)))
             {
                 result = value;
             }
@@ -4125,47 +4126,13 @@ public sealed partial class BytecodeInterpreter
                 return JsValue.FromNumber(double.NaN);
             }
 
-            if (value < result || (value == 0d && result == 0d && IsNegativeZero(value)))
+            if (value < result || (value == 0d && result == 0d && MathHelpers.IsNegativeZero(value)))
             {
                 result = value;
             }
         }
 
         return JsValue.FromNumber(result);
-    }
-
-    private static bool IsNegativeZero(double value)
-    {
-        return value == 0d && BitConverter.DoubleToInt64Bits(value) < 0;
-    }
-
-    // 21.3.2.28 step 4-5: -0 stays -0, +0 stays +0, NaN stays NaN. Negative finite or
-    // -Infinity returns -1; positive finite or +Infinity returns +1.
-    private static double MathSign(double value)
-    {
-        if (double.IsNaN(value))
-        {
-            return double.NaN;
-        }
-
-        if (value == 0d)
-        {
-            return value;
-        }
-
-        return value < 0 ? -1d : 1d;
-    }
-
-    // 21.3.2.35: truncate fractional part. Returns +-0 and +-Infinity unchanged,
-    // NaN unchanged; otherwise integer with the same sign as the argument.
-    private static double MathTrunc(double value)
-    {
-        if (double.IsNaN(value) || double.IsInfinity(value) || value == 0d)
-        {
-            return value;
-        }
-
-        return value < 0 ? Math.Ceiling(value) : Math.Floor(value);
     }
 
     // 21.3.2.18 Math.hypot - sqrt(x^2 + y^2 + ...). Any +-Infinity argument wins
@@ -4234,61 +4201,6 @@ public sealed partial class BytecodeInterpreter
         return unchecked((int)((uint)ToInt32(x) * (uint)ToInt32(y)));
     }
 
-    // 21.3.2.14 expm1(x) = e^x - 1. NaN preserved; -Infinity yields -1; +Infinity
-    // yields +Infinity. Routed through Math.Exp(x) - 1 since BCL has no expm1; the
-    // accuracy difference matters for x near zero but not for spec conformance of
-    // boundary cases.
-    private static double MathExpm1(double value)
-    {
-        if (double.IsNaN(value))
-        {
-            return double.NaN;
-        }
-
-        if (double.IsNegativeInfinity(value))
-        {
-            return -1d;
-        }
-
-        if (double.IsPositiveInfinity(value))
-        {
-            return double.PositiveInfinity;
-        }
-
-        if (value == 0d)
-        {
-            return value;   // preserves -0
-        }
-
-        return Math.Exp(value) - 1d;
-    }
-
-    // 21.3.2.20 log1p(x) = log(1 + x). NaN, -1, +Infinity, and the (x < -1) range
-    // each have explicit spec branches; otherwise delegates to Math.Log(1 + x).
-    private static double MathLog1p(double value)
-    {
-        if (double.IsNaN(value) || value < -1d)
-        {
-            return double.NaN;
-        }
-
-        if (value == -1d)
-        {
-            return double.NegativeInfinity;
-        }
-
-        if (double.IsPositiveInfinity(value))
-        {
-            return double.PositiveInfinity;
-        }
-
-        if (value == 0d)
-        {
-            return value;   // preserves -0
-        }
-
-        return Math.Log(1d + value);
-    }
 
     private static uint ToUint32(double value)
     {
