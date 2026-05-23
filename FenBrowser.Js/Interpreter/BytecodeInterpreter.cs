@@ -3209,6 +3209,17 @@ public sealed class BytecodeInterpreter
         // OrdinaryToPrimitive when no @@toPrimitive is installed.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getTime", DatePrototypeGetTime);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "valueOf", DatePrototypeGetTime);
+
+        // ECMA-262 21.4.4.27 Date.prototype.setTime(time). Coerces time to a Number,
+        // applies TimeClip, writes the result into the receiver's [[DateValue]],
+        // and returns the new time value. Non-Date receiver raises TypeError.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setTime", (thisValue, args) =>
+        {
+            var date = RequireDate(thisValue, "setTime");
+            var t = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
+            date.TimeValue = TimeClip(t);
+            return JsValue.FromNumber(date.TimeValue);
+        }, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toISOString", DatePrototypeToIsoString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toJSON", DatePrototypeToJson, length: 1);
 
@@ -3275,6 +3286,25 @@ public sealed class BytecodeInterpreter
         _datePrototypeHandle = prototypeHandle;
         _dateConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    // ECMA-262 21.4.1.31 TimeClip - returns NaN for non-finite or out-of-range
+    // |t| > 8.64e15, otherwise integer-truncates toward zero.
+    private static double TimeClip(double t)
+    {
+        if (!double.IsFinite(t) || Math.Abs(t) > 8.64e15) return double.NaN;
+        return t >= 0 ? Math.Floor(t) : -Math.Floor(-t);
+    }
+
+    private DateObject RequireDate(JsValue thisValue, string method)
+    {
+        if (thisValue.Tag == JsValueTag.Object &&
+            _heap.GetObject(thisValue.AsObjectHandle()) is DateObject date)
+        {
+            return date;
+        }
+        throw new JsThrownException(CreateTypeError(
+            $"Date.prototype.{method} called on a non-Date receiver."));
     }
 
     private double GetDateTimeValue(JsValue thisValue, string method)
@@ -9939,7 +9969,9 @@ public sealed class BytecodeInterpreter
             TimeValue = timeValue;
         }
 
-        public double TimeValue { get; }
+        // ECMA-262 21.4.1.30 [[DateValue]] is a mutable internal slot that
+        // setTime / setFullYear / setHours / ... overwrite.
+        public double TimeValue { get; set; }
     }
 
     private sealed class RegExpObject : JsObject
