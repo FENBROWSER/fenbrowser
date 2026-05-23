@@ -8401,6 +8401,11 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "split", StringPrototypeSplit, length: 2);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "replace", StringPrototypeReplace, length: 2);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "replaceAll", StringPrototypeReplaceAll, length: 2);
+        // ECMA-262 22.1.3.13 String.prototype.normalize([form]). Routes through
+        // .NET String.Normalize which exposes the same four Unicode normalisation
+        // forms (NFC default, NFD, NFKC, NFKD). Any other form value raises
+        // RangeError per step 6.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "normalize", StringPrototypeNormalize, length: 0);
 
         // ECMA-262 22.1.2.1 String.fromCharCode(...codeUnits). Each argument is
         // truncated to a UTF-16 code unit (ToUint16) and concatenated. Surrogate
@@ -8838,6 +8843,24 @@ public sealed class BytecodeInterpreter
 
     // 22.1.3.19 replaceAll (string-search form). Empty-string search throws TypeError
     // when the search value is a string per spec step 4.
+    private JsValue StringPrototypeNormalize(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = ToStringValue(thisValue);
+        var formArg = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? ToStringValue(args[0]) : "NFC";
+        System.Text.NormalizationForm form;
+        switch (formArg)
+        {
+            case "NFC":  form = System.Text.NormalizationForm.FormC; break;
+            case "NFD":  form = System.Text.NormalizationForm.FormD; break;
+            case "NFKC": form = System.Text.NormalizationForm.FormKC; break;
+            case "NFKD": form = System.Text.NormalizationForm.FormKD; break;
+            default:
+                throw new JsThrownException(CreateRangeError(
+                    "String.prototype.normalize: form must be one of NFC, NFD, NFKC, NFKD."));
+        }
+        return JsValue.FromString(s.Normalize(form));
+    }
+
     private JsValue StringPrototypeReplaceAll(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var s = StringThisValue(thisValue);
