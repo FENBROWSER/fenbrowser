@@ -6212,11 +6212,12 @@ public sealed class BytecodeInterpreter
             return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
         }, length: 0);
 
-        // ECMA-262 23.1.2.1 Array.from(arrayLike[, mapFn[, thisArg]]). Full spec
-        // accepts any iterable; until the @@iterator protocol is wired we accept
-        // array-like values (objects with a length property and integer-keyed
-        // entries) which covers Array, arguments, and any plain {length, 0, 1, ...}
-        // object - the overwhelmingly common case.
+        // ECMA-262 23.1.2.1 Array.from(items[, mapFn[, thisArg]]). Spec algorithm:
+        // (1) if items has @@iterator, drain it via the iterator protocol; (2)
+        // otherwise treat items as an array-like via its length property. Strings
+        // funnel through the iterator path so surrogate pairs surface as single
+        // code-point entries. The map function (when present) is called with
+        // (element, index) per spec step 5.g.
         DefineIntrinsicFunction(constructorHandle, constructor, "from", (_, args) =>
         {
             if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined || args[0].Tag == JsValueTag.Null)
@@ -6235,29 +6236,52 @@ public sealed class BytecodeInterpreter
                     "Array.from: map function must be a function."));
             }
 
-            if (source.Tag != JsValueTag.Object)
+            var items = new List<JsValue>();
+
+            bool useIterator = source.Tag == JsValueTag.String;
+            if (!useIterator && source.Tag == JsValueTag.Object)
             {
-                // Primitives: only strings yield indexable elements per spec; the
-                // String boxing path is not wired yet, so non-object inputs surface
-                // an empty Array rather than throwing. Matches the "no @@iterator"
-                // fallback the iterator wiring will eventually replace.
-                var arr0 = CreateArrayObject(Array.Empty<JsValue>());
-                return JsValue.FromObject(_heap.AllocateObject(arr0, AllocationSite.Current()));
+                var obj0 = _heap.GetObject(source.AsObjectHandle());
+                var iterId = GetWellKnownSymbolId("iterator");
+                useIterator = iterId != 0 &&
+                    obj0.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) &&
+                    iterDesc.Value.Tag == JsValueTag.Object;
             }
 
-            var obj = _heap.GetObject(source.AsObjectHandle());
-            var length = GetArrayLength(obj);
-            var items = new List<JsValue>(length);
-            for (var i = 0; i < length; i++)
+            if (useIterator)
             {
-                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                TryGetPropertyValue(obj, source, key, out var v);
-                if (mapFn.HasValue)
+                // CreateForOfIterator handles Symbol.iterator dispatch for objects
+                // and per-character iteration for strings.
+                var iter = CreateForOfIterator(source);
+                if (iter.Tag == JsValueTag.Object &&
+                    _heap.GetObject(iter.AsObjectHandle()) is ForOfIteratorObject forOf)
                 {
-                    v = CallFunction(mapFn.Value, new[] { v, JsValue.FromNumber(i) }, thisArg);
+                    var idx = 0;
+                    while (forOf.TryMoveNext(out var v))
+                    {
+                        if (mapFn.HasValue)
+                        {
+                            v = CallFunction(mapFn.Value, new[] { v, JsValue.FromNumber(idx) }, thisArg);
+                        }
+                        items.Add(v);
+                        idx++;
+                    }
                 }
-
-                items.Add(v);
+            }
+            else if (source.Tag == JsValueTag.Object)
+            {
+                var obj = _heap.GetObject(source.AsObjectHandle());
+                var length = GetArrayLength(obj);
+                for (var i = 0; i < length; i++)
+                {
+                    var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    TryGetPropertyValue(obj, source, key, out var v);
+                    if (mapFn.HasValue)
+                    {
+                        v = CallFunction(mapFn.Value, new[] { v, JsValue.FromNumber(i) }, thisArg);
+                    }
+                    items.Add(v);
+                }
             }
 
             var arr = CreateArrayObject(items);
