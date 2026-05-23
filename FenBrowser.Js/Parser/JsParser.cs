@@ -1077,6 +1077,25 @@ public sealed class JsParser
         return (members, close);
     }
 
+    // ECMA-262 7.1.17 ToString(Number): integers within Int32 range render
+    // without a decimal point; other finite values use the shortest round-trip
+    // form. We approximate via "R" formatting; "G17" would be too verbose.
+    private static string ToJsNumberString(double n)
+    {
+        if (double.IsNaN(n)) return "NaN";
+        if (double.IsPositiveInfinity(n)) return "Infinity";
+        if (double.IsNegativeInfinity(n)) return "-Infinity";
+        if (n == 0d) return "0";
+        if (n == Math.Truncate(n) && Math.Abs(n) < 1e21)
+        {
+            return ((long)n).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        return n.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static string ToJsNumberString(long n) =>
+        n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
     private string ConsumeClassMemberName(out ExpressionNode? computedName, out bool isPrivate)
     {
         computedName = null;
@@ -1090,7 +1109,7 @@ public sealed class JsParser
             return computedName switch
             {
                 StringLiteralExpressionNode s => s.Value,
-                NumericLiteralExpressionNode n => n.RawText,
+                NumericLiteralExpressionNode n => ToJsNumberString(n.Value),
                 IdentifierExpressionNode id => id.Name,
                 _ => "<computed>"
             };
@@ -1115,6 +1134,37 @@ public sealed class JsParser
         if (tok.Kind == TokenKind.Number)
         {
             Advance();
+            // ECMA-262 12.2.6.7: a NumericLiteral used as a PropertyName
+            // is converted via ToPropertyKey -> ToString applied to the
+            // numeric value, NOT preserved as the source spelling. So
+            // `get 0b10()` installs under the key "2".
+            if (double.TryParse(
+                    tok.Text.Replace("_", string.Empty),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var parsed))
+            {
+                return ToJsNumberString(parsed);
+            }
+            // Non-decimal literals (0x, 0o, 0b) - manually parse and stringify.
+            var raw = tok.Text.Replace("_", string.Empty);
+            try
+            {
+                if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+                {
+                    return ToJsNumberString(Convert.ToInt64(raw.Substring(2), 16));
+                }
+                if (raw.StartsWith("0o", StringComparison.OrdinalIgnoreCase))
+                {
+                    return ToJsNumberString(Convert.ToInt64(raw.Substring(2), 8));
+                }
+                if (raw.StartsWith("0b", StringComparison.OrdinalIgnoreCase))
+                {
+                    return ToJsNumberString(Convert.ToInt64(raw.Substring(2), 2));
+                }
+            }
+            catch (FormatException) { }
+            catch (OverflowException) { }
             return tok.Text;
         }
 

@@ -726,6 +726,30 @@ public sealed class ClassRuntimeTests
         ").AsString());
     }
 
+    // H.5 - ECMA-262 12.2.6.7: numeric-literal class member names install
+    // under their ToString(Number) canonical key.
+    [Fact]
+    public void NumericLiteralClassMemberInstallsUnderCanonicalKey()
+    {
+        Assert.Equal("get string", Run(@"
+            class C {
+                get 0b10() { return 'get string'; }
+            }
+            C.prototype['2'];
+        ").AsString());
+    }
+
+    [Fact]
+    public void HexLiteralClassMemberInstallsUnderCanonicalKey()
+    {
+        Assert.Equal(7d, Run(@"
+            class C {
+                static 0xff() { return 7; }
+            }
+            C['255']();
+        ").AsNumber());
+    }
+
     [Fact]
     public void EmptyStaticBlockIsValid()
     {
