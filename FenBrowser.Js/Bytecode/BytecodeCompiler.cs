@@ -268,7 +268,14 @@ public sealed class BytecodeCompiler
         ExpressionNode? baseClass,
         IReadOnlyList<ClassMemberNode> members)
     {
-        _ = baseClass; // TODO H.2 - extends/super.
+        // H.2 - evaluate the base-class expression BEFORE compiling the class body
+        // so that class B extends A {} fails fast when A is a TDZ binding (ECMA-
+        // 262 15.7.14 ClassDefinitionEvaluation step 7).
+        var baseReg = -1;
+        if (baseClass is not null)
+        {
+            baseReg = CompileExpression(baseClass);
+        }
 
         // Locate constructor (or synthesise an empty one).
         FunctionExpressionNode constructorFn = SynthesizeDefaultConstructor(className);
@@ -287,6 +294,18 @@ public sealed class BytecodeCompiler
         // Build prototype object.
         var protoReg = AllocateRegister();
         _instructions.Add(new Instruction(OpCode.NewObject, protoReg, 0, 0));
+
+        // H.2 - wire the extends prototype chain. The new class's prototype
+        // inherits from base.prototype (so instances see inherited methods); the
+        // class itself inherits from base (so static methods inherit).
+        if (baseReg != -1)
+        {
+            var protoNameIdx_extends = GetOrCreatePropertyName("prototype");
+            var basePrototypeReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.GetPropByName, basePrototypeReg, baseReg, protoNameIdx_extends));
+            _instructions.Add(new Instruction(OpCode.SetPrototype, protoReg, basePrototypeReg, 0));
+            _instructions.Add(new Instruction(OpCode.SetPrototype, classReg, baseReg, 0));
+        }
 
         // For each non-constructor member, compile its function and install it
         // on either the prototype (instance methods) or the constructor (static).

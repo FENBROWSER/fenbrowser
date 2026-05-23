@@ -300,6 +300,39 @@ public sealed partial class BytecodeInterpreter
                     frame.Registers[ins.A] = JsValue.FromObject(handle);
                     break;
                 }
+                case OpCode.SetPrototype:
+                {
+                    // ECMA-262 7.3.5 OrdinarySetPrototypeOf - the V argument must be
+                    // either an Object or Null; anything else is a TypeError. The
+                    // current spec allows the same-target case as a no-op.
+                    var childValue = frame.Registers[ins.A];
+                    var parentValue = frame.Registers[ins.B];
+                    if (childValue.Tag != JsValueTag.Object)
+                    {
+                        ThrowOrHandle(frame, CreateTypeError("SetPrototype requires an object target."));
+                        break;
+                    }
+
+                    var childHandle = childValue.AsObjectHandle();
+                    var childObj = _heap.GetObject(childHandle);
+
+                    if (parentValue.Tag == JsValueTag.Null)
+                    {
+                        childObj.SetPrototype(null);
+                    }
+                    else if (parentValue.Tag == JsValueTag.Object)
+                    {
+                        var parentHandle = parentValue.AsObjectHandle();
+                        childObj.SetPrototype(parentHandle);
+                        _heap.WriteBarrier(childHandle, parentHandle);
+                    }
+                    else
+                    {
+                        ThrowOrHandle(frame, CreateTypeError("SetPrototype value must be Object or null."));
+                    }
+
+                    break;
+                }
                 case OpCode.SetPropByName:
                 {
                     var receiverValue = frame.Registers[ins.A];

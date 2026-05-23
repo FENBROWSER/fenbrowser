@@ -99,6 +99,10 @@ public sealed class BytecodeVerifier
             case OpCode.NewArray:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 break;
+            case OpCode.SetPrototype:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                break;
             case OpCode.SetPropByName:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidatePropertyName(function, ip, ins.B);

@@ -61,5 +61,13 @@ public enum OpCode : byte
     Mul,
     Mod,
     Div,
-    Return
+    Return,
+
+    // H.2 - SetPrototype(A, B): set the [[Prototype]] of the object in register A
+    // to either the object in register B (when B holds a JsValueTag.Object) or
+    // to null (when B holds JsValueTag.Null). Any other type is a TypeError -
+    // ECMA-262 7.3.5 OrdinarySetPrototypeOf. Used by class extends to wire the
+    // base.prototype as the child prototype's parent, and base itself as the
+    // child constructor's parent (so static methods inherit).
+    SetPrototype,
 }

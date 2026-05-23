@@ -107,4 +107,67 @@ public sealed class ClassRuntimeTests
             (new C()).add(5, 6);
         ").AsNumber());
     }
+
+    // H.2 - extends prototype chain.
+
+    [Fact]
+    public void ExtendsInheritsBaseInstanceMethods()
+    {
+        Assert.Equal(1d, Run(@"
+            class A { speak() { return 1; } }
+            class B extends A {}
+            (new B()).speak();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void ExtendsInheritsBaseStaticMethods()
+    {
+        Assert.Equal(42d, Run(@"
+            class A { static answer() { return 42; } }
+            class B extends A {}
+            B.answer();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void DerivedMethodOverridesBase()
+    {
+        Assert.Equal(2d, Run(@"
+            class A { speak() { return 1; } }
+            class B extends A { speak() { return 2; } }
+            (new B()).speak();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void DerivedPrototypeInheritsFromBasePrototype()
+    {
+        Assert.True(Run(@"
+            class A {}
+            class B extends A {}
+            Object.getPrototypeOf(B.prototype) === A.prototype;
+        ").AsBoolean());
+    }
+
+    [Fact]
+    public void DerivedConstructorInheritsFromBaseConstructor()
+    {
+        Assert.True(Run(@"
+            class A {}
+            class B extends A {}
+            Object.getPrototypeOf(B) === A;
+        ").AsBoolean());
+    }
+
+    [Fact]
+    public void ThreeLevelInheritanceResolves()
+    {
+        Assert.Equal(7d, Run(@"
+            class A { f() { return 7; } }
+            class B extends A {}
+            class C extends B {}
+            (new C()).f();
+        ").AsNumber());
+    }
 }
