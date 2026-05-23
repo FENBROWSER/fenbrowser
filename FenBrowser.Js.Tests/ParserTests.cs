@@ -86,6 +86,41 @@ public sealed class ParserTests
 
         Assert.Equal(ClassMemberKind.Field, member.Kind);
         Assert.Equal("#_\u0AFA\U00010EFA", member.Name);
+        Assert.True(member.IsPrivate);
+    }
+
+    [Fact]
+    public void ParsesComputedClassMethodAsParserOnlyMember()
+    {
+        var program = JsParser.ParseScript(new SourceText("class C { [\"m\"]() {} }"));
+        var cls = Assert.IsType<ClassDeclarationNode>(program.Body[0]);
+        var member = Assert.Single(cls.Members);
+
+        Assert.Equal(ClassMemberKind.Method, member.Kind);
+        Assert.NotNull(member.ComputedName);
+        Assert.Equal("m", member.Name);
+    }
+
+    [Fact]
+    public void ParsesAsyncGeneratorComputedClassMethodAsParserOnlyMember()
+    {
+        var program = JsParser.ParseScript(new SourceText("class C { async * [\"m\"]() {} }"));
+        var cls = Assert.IsType<ClassDeclarationNode>(program.Body[0]);
+        var member = Assert.Single(cls.Members);
+
+        Assert.True(member.IsAsync);
+        Assert.True(member.IsGenerator);
+        Assert.NotNull(member.ComputedName);
+    }
+
+    [Fact]
+    public void ParsesPrivateClassMethodAndPrivateMemberAccessAsParserOnly()
+    {
+        var program = JsParser.ParseScript(new SourceText("class C { #f() {} m() { this.#f; } }"));
+        var cls = Assert.IsType<ClassDeclarationNode>(program.Body[0]);
+
+        Assert.Equal(2, cls.Members.Count);
+        Assert.True(cls.Members[0].IsPrivate);
     }
 
     [Fact]

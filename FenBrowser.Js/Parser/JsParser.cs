@@ -978,17 +978,32 @@ public sealed class JsParser
                 isStatic = true;
             }
 
+            var isAsync = false;
+            if (IsIdentifierLike(Current()) && Current().Text == "async" && !IsPunctuatorAt(1, "(") &&
+                (IsPunctuatorAt(1, "*") || IsClassMemberNameStartAt(1)))
+            {
+                Advance();
+                isAsync = true;
+            }
+
+            var isGenerator = false;
+            if (IsPunctuator("*"))
+            {
+                Advance();
+                isGenerator = true;
+            }
+
             // Detect getter/setter prefix - "get name() { ... }" / "set name(v) { ... }".
             ClassMemberKind kind = ClassMemberKind.Method;
             if (IsIdentifierLike(Current()) && (Current().Text == "get" || Current().Text == "set")
                 && !IsPunctuatorAt(1, "(")
-                && (IsIdentifierLikeAt(1) || PeekKind(1) == TokenKind.String || PeekKind(1) == TokenKind.Number))
+                && IsClassMemberNameStartAt(1))
             {
                 kind = Current().Text == "get" ? ClassMemberKind.Getter : ClassMemberKind.Setter;
                 Advance();
             }
 
-            string memberName = ConsumeClassMemberName();
+            string memberName = ConsumeClassMemberName(out var computedName, out var isPrivate);
             if (kind == ClassMemberKind.Method && memberName == "constructor" && !isStatic)
             {
                 kind = ClassMemberKind.Constructor;
@@ -1009,14 +1024,27 @@ public sealed class JsParser
                     ClassMemberKind.Field,
                     isStatic,
                     fieldInitializer,
-                    MergeSpan(memberStart, fieldInitializer.Span)));
+                    MergeSpan(memberStart, fieldInitializer.Span),
+                    isPrivate,
+                    isAsync,
+                    isGenerator,
+                    computedName));
                 continue;
             }
 
             var parameters = ParseParameterList();
             var body = ParseBlockStatement();
             var fn = new FunctionExpressionNode(memberName, parameters, body, MergeSpan(memberStart, body.Span));
-            members.Add(new ClassMemberNode(memberName, kind, isStatic, fn, MergeSpan(memberStart, body.Span)));
+            members.Add(new ClassMemberNode(
+                memberName,
+                kind,
+                isStatic,
+                fn,
+                MergeSpan(memberStart, body.Span),
+                isPrivate,
+                isAsync,
+                isGenerator,
+                computedName));
         }
 
         if (!IsPunctuator("}"))
@@ -1028,12 +1056,28 @@ public sealed class JsParser
         return (members, close);
     }
 
-    private string ConsumeClassMemberName()
+    private string ConsumeClassMemberName(out ExpressionNode? computedName, out bool isPrivate)
     {
+        computedName = null;
+        isPrivate = false;
         var tok = Current();
+        if (IsPunctuator("["))
+        {
+            Advance();
+            computedName = ParseExpression(0);
+            ExpectPunctuator("]");
+            return computedName switch
+            {
+                StringLiteralExpressionNode s => s.Value,
+                NumericLiteralExpressionNode n => n.RawText,
+                IdentifierExpressionNode id => id.Name,
+                _ => "<computed>"
+            };
+        }
         if (tok.Kind == TokenKind.PrivateIdentifier)
         {
             Advance();
+            isPrivate = true;
             return tok.Text;
         }
         if (tok.Kind == TokenKind.Identifier || tok.Kind == TokenKind.Keyword)
@@ -1054,6 +1098,17 @@ public sealed class JsParser
         }
 
         throw new JsParserException($"Expected class member name, found '{tok.Text}'.");
+    }
+
+    private bool IsClassMemberNameStartAt(int offset)
+    {
+        if (IsPunctuatorAt(offset, "["))
+        {
+            return true;
+        }
+
+        var kind = PeekKind(offset);
+        return kind is TokenKind.Identifier or TokenKind.Keyword or TokenKind.String or TokenKind.Number or TokenKind.PrivateIdentifier;
     }
 
     private bool IsPunctuatorAt(int offset, string text) => PeekIsPunctuator(offset, text);
@@ -2445,7 +2500,9 @@ public sealed class JsParser
 
     private Token ExpectPropertyNameAfterDot()
     {
-        if (Current().Kind != TokenKind.Identifier && Current().Kind != TokenKind.Keyword)
+        if (Current().Kind != TokenKind.Identifier &&
+            Current().Kind != TokenKind.Keyword &&
+            Current().Kind != TokenKind.PrivateIdentifier)
         {
             throw new JsParserException($"Expected identifier, found '{Current().Text}'.");
         }

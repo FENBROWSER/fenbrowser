@@ -277,6 +277,32 @@ public sealed class BytecodeCompiler
             baseReg = CompileExpression(baseClass);
         }
 
+        foreach (var member in members)
+        {
+            if (member.Kind == ClassMemberKind.Field)
+            {
+                throw new UnsupportedFeatureException(
+                    member.IsPrivate ? "private-class-field" : "class-field",
+                    FeatureSupportLevel.ParserOnly,
+                    member.Span);
+            }
+
+            if (member.IsPrivate)
+            {
+                throw new UnsupportedFeatureException("private-class-method", FeatureSupportLevel.ParserOnly, member.Span);
+            }
+
+            if (member.ComputedName is not null)
+            {
+                throw new UnsupportedFeatureException("computed-class-member", FeatureSupportLevel.ParserOnly, member.Span);
+            }
+
+            if (member.IsAsync || member.IsGenerator)
+            {
+                throw new UnsupportedFeatureException("async-or-generator-class-method", FeatureSupportLevel.ParserOnly, member.Span);
+            }
+        }
+
         // Locate constructor (or synthesise an empty one).
         FunctionExpressionNode constructorFn = SynthesizeDefaultConstructor(className);
         foreach (var member in members)
@@ -694,6 +720,7 @@ public sealed class BytecodeCompiler
             }
             case AssignmentExpressionNode assign when assign.Left is MemberExpressionNode member:
             {
+                ThrowIfPrivateMemberAccess(member);
                 var objectReg = CompileExpression(member.Object);
                 var valueReg = CompileExpression(assign.Right);
                 if (member.Computed)
@@ -711,6 +738,7 @@ public sealed class BytecodeCompiler
             }
             case MemberExpressionNode member:
             {
+                ThrowIfPrivateMemberAccess(member);
                 // H.3 - super.foo lowers to LoadSuperProperty; the runtime reads
                 // the executing frame's function's HomeObject prototype chain.
                 if (member.Object is SuperExpressionNode && !member.Computed)
@@ -756,6 +784,7 @@ public sealed class BytecodeCompiler
                 }
                 else if (call.Callee is MemberExpressionNode memberCallee)
                 {
+                    ThrowIfPrivateMemberAccess(memberCallee);
                     // H.3 - super.method(args): callee comes from LoadSuperProperty,
                     // thisValue stays the current frame's `this`. Without this branch
                     // memberCallee.Object would compile as the (invalid) super value.
@@ -1121,6 +1150,14 @@ public sealed class BytecodeCompiler
     }
 
     private int AllocateRegister() => _nextRegister++;
+
+    private static void ThrowIfPrivateMemberAccess(MemberExpressionNode member)
+    {
+        if (!member.Computed && member.Property.StartsWith('#'))
+        {
+            throw new UnsupportedFeatureException("private-member-access", FeatureSupportLevel.ParserOnly, member.Span);
+        }
+    }
 
     private int CompileTemplateLiteral(TemplateLiteralExpressionNode template)
     {

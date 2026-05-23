@@ -83,7 +83,11 @@ public sealed record ClassMemberNode(
     ClassMemberKind Kind,
     bool IsStatic,
     ExpressionNode Function,
-    SourceSpan Span);
+    SourceSpan Span,
+    bool IsPrivate = false,
+    bool IsAsync = false,
+    bool IsGenerator = false,
+    ExpressionNode? ComputedName = null);
 
 public enum ClassMemberKind : byte
 {
