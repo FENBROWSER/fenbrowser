@@ -485,6 +485,83 @@ public sealed class ClassRuntimeTests
         ").AsString().Substring(0, 9));
     }
 
+    // H.5 - public instance fields.
+    [Fact]
+    public void InstanceFieldInitializerSetsOnEachInstance()
+    {
+        Assert.Equal(10d, Run(@"
+            class C { x = 10; }
+            (new C()).x;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void InstanceFieldWithoutInitializerIsUndefined()
+    {
+        Assert.Equal("undefined", Run(@"
+            class C { x; }
+            typeof (new C()).x;
+        ").AsString());
+    }
+
+    [Fact]
+    public void InstanceFieldRunsBeforeConstructorBody()
+    {
+        Assert.Equal(15d, Run(@"
+            class C {
+                x = 5;
+                constructor() { this.x += 10; }
+            }
+            (new C()).x;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void MultipleInstanceFieldsInitInOrder()
+    {
+        Assert.Equal(6d, Run(@"
+            class C {
+                a = 1;
+                b = this.a + 2;
+                c = this.b + 3;
+            }
+            var c = new C();
+            c.c;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void InstanceFieldIsOwnNotPrototype()
+    {
+        Assert.True(Run(@"
+            class C { x = 1; }
+            var c = new C();
+            Object.hasOwn(c, 'x') && !Object.hasOwn(C.prototype, 'x');
+        ").AsBoolean());
+    }
+
+    // H.5 - public static fields.
+    [Fact]
+    public void StaticFieldInitializerSetsOnClass()
+    {
+        Assert.Equal(42d, Run(@"
+            class C { static x = 42; }
+            C.x;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void StaticFieldVisibleToStaticBlock()
+    {
+        Assert.Equal(8d, Run(@"
+            class C {
+                static x = 3;
+                static { C.x += 5; }
+            }
+            C.x;
+        ").AsNumber());
+    }
+
     [Fact]
     public void EmptyStaticBlockIsValid()
     {

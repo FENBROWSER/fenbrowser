@@ -291,10 +291,24 @@ foreach (var member in members)
         {
             if (member.Kind == ClassMemberKind.Field)
             {
-                throw new UnsupportedFeatureException(
-                    member.IsPrivate ? "private-class-field" : "class-field",
-                    FeatureSupportLevel.ParserOnly,
-                    member.Span);
+                if (member.IsPrivate)
+                {
+                    throw new UnsupportedFeatureException(
+                        "private-class-field", FeatureSupportLevel.ParserOnly, member.Span);
+                }
+                if (member.ComputedName is not null)
+                {
+                    throw new UnsupportedFeatureException(
+                        "computed-class-field", FeatureSupportLevel.ParserOnly, member.Span);
+                }
+                if (!member.IsStatic && baseClass is not null)
+                {
+                    // Instance fields in a derived class need to be initialised
+                    // by super()/[[InitializeInstanceElements]]; not wired yet.
+                    throw new UnsupportedFeatureException(
+                        "derived-class-instance-field", FeatureSupportLevel.ParserOnly, member.Span);
+                }
+                continue;
             }
 
             if (member.IsPrivate)
@@ -320,6 +334,36 @@ foreach (var member in members)
                 constructorFn = fn;
                 break;
             }
+        }
+
+        // H.5 - public instance fields. ECMA-262 15.7.10 [[InitializeInstanceElements]]
+        // runs on constructor entry (base) or implicitly inside super() (derived).
+        // For base classes we synthesise `this.f = <init>` statements and prepend
+        // them to the constructor body. Derived-class fields are rejected above.
+        var instanceFieldInits = new List<StatementNode>();
+        foreach (var member in members)
+        {
+            if (member.Kind != ClassMemberKind.Field || member.IsStatic) continue;
+            var lhs = new MemberExpressionNode(
+                new ThisExpressionNode(member.Span),
+                member.Name,
+                Computed: false,
+                PropertyExpression: null,
+                member.Span);
+            var assign = new AssignmentExpressionNode(lhs, member.Function, member.Span);
+            instanceFieldInits.Add(new ExpressionStatementNode(assign, member.Span));
+        }
+        if (instanceFieldInits.Count > 0)
+        {
+            var combined = new List<StatementNode>(instanceFieldInits.Count + constructorFn.Body.Statements.Count);
+            combined.AddRange(instanceFieldInits);
+            combined.AddRange(constructorFn.Body.Statements);
+            var newBody = new BlockStatementNode(combined, constructorFn.Body.Span);
+            constructorFn = new FunctionExpressionNode(
+                constructorFn.Name,
+                constructorFn.Parameters,
+                newBody,
+                constructorFn.Span);
         }
 
         // Compile constructor.
@@ -407,6 +451,16 @@ foreach (var member in members)
         _instructions.Add(new Instruction(OpCode.SetPropByName, protoReg, ctorNameIdx, classReg));
         var protoNameIdx = GetOrCreatePropertyName("prototype");
         _instructions.Add(new Instruction(OpCode.SetPropByName, classReg, protoNameIdx, protoReg));
+
+        // H.5 - public static fields. Installed on the class itself, before
+        // static blocks so the blocks can see them.
+        foreach (var member in members)
+        {
+            if (member.Kind != ClassMemberKind.Field || !member.IsStatic) continue;
+            var initReg = CompileExpression(member.Function);
+            var nameIdx = GetOrCreatePropertyName(member.Name);
+            _instructions.Add(new Instruction(OpCode.SetPropByName, classReg, nameIdx, initReg));
+        }
 
         // H.5 - bind the class name in the outer scope BEFORE running static
         // initialization blocks, so the block body can resolve the class by

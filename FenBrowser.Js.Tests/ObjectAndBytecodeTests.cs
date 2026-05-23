@@ -123,8 +123,9 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Theory]
-    [InlineData("class C { x; }", "class-field")]
     [InlineData("class C { #x; }", "private-class-field")]
+    [InlineData("class C { [Symbol.iterator] = 1; }", "computed-class-field")]
+    [InlineData("class C extends Object { x = 1; }", "derived-class-instance-field")]
     [InlineData("class C { #m() {} }", "private-class-method")]
     [InlineData("class C { async *m() {} }", "async-or-generator-class-method")]
     [InlineData("class C { m() { this.#m; } }", "private-member-access")]
