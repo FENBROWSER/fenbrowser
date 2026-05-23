@@ -96,4 +96,25 @@ internal static class MathHelpers
 
         return Math.Log(1d + value);
     }
+
+    // ECMA-262 7.1.6 ToUint32: truncate and take modulo 2^32.
+    // NaN and +-Infinity return 0.
+    internal static uint ToUint32(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+        {
+            return 0u;
+        }
+
+        var truncated = value >= 0 ? Math.Floor(value) : Math.Ceiling(value);
+        var modulo = truncated - Math.Floor(truncated / 4294967296d) * 4294967296d;
+        return (uint)modulo;
+    }
+
+    // ECMA-262 7.1.5 ToInt32: coerce via ToUint32 then reinterpret as signed.
+    internal static int ToInt32(double value)
+    {
+        var unsigned = ToUint32(value);
+        return unchecked((int)unsigned);
+    }
 }

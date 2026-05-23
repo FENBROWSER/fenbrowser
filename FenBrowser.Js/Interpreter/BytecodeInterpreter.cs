@@ -4176,7 +4176,7 @@ public sealed partial class BytecodeInterpreter
             return 32d;
         }
 
-        var u = ToUint32(value);
+        var u = MathHelpers.ToUint32(value);
         if (u == 0u)
         {
             return 32d;
@@ -4198,27 +4198,9 @@ public sealed partial class BytecodeInterpreter
     {
         var x = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
         var y = args.Count > 1 ? ToNumber(args[1]) : double.NaN;
-        return unchecked((int)((uint)ToInt32(x) * (uint)ToInt32(y)));
+        return unchecked((int)((uint)MathHelpers.ToInt32(x) * (uint)MathHelpers.ToInt32(y)));
     }
 
-
-    private static uint ToUint32(double value)
-    {
-        if (double.IsNaN(value) || double.IsInfinity(value))
-        {
-            return 0u;
-        }
-
-        var truncated = value >= 0 ? Math.Floor(value) : Math.Ceiling(value);
-        var modulo = truncated - Math.Floor(truncated / 4294967296d) * 4294967296d;
-        return (uint)modulo;
-    }
-
-    private static int ToInt32(double value)
-    {
-        var unsigned = ToUint32(value);
-        return unchecked((int)unsigned);
-    }
 
     private ObjectHandle EnsureJsonObject()
     {
@@ -8602,7 +8584,7 @@ public sealed partial class BytecodeInterpreter
         var stripPrefix = true;
         if (radixArg.Tag != JsValueTag.Undefined)
         {
-            var r = (int)ToInt32(ParseNumberForCoerce(radixArg));
+            var r = (int)MathHelpers.ToInt32(ParseNumberForCoerce(radixArg));
             if (r != 0)
             {
                 if (r < 2 || r > 36)
@@ -9139,7 +9121,7 @@ public sealed partial class BytecodeInterpreter
             var sb = new System.Text.StringBuilder(args.Count);
             for (var i = 0; i < args.Count; i++)
             {
-                var codeUnit = (char)(ushort)ToInt32(ToNumber(args[i]));
+                var codeUnit = (char)(ushort)MathHelpers.ToInt32(ToNumber(args[i]));
                 sb.Append(codeUnit);
             }
 
