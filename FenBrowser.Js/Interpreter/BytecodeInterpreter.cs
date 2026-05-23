@@ -5411,6 +5411,11 @@ public sealed class BytecodeInterpreter
         // order. Holes are read via [[Get]] (so they become explicit undefined entries
         // in the result, not holes) per spec step 5.c.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toReversed", ArrayPrototypeToReversed);
+        // ECMA-262 23.1.3.33 Array.prototype.toSorted(comparator) (ES2023). Non-mutating
+        // sort: snapshots the receiver via [[Get]] (so holes become explicit undefined),
+        // sorts using the same comparator/SortCompare rules as Array.prototype.sort,
+        // and returns a fresh Array. Original is never observed mutating.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toSorted", ArrayPrototypeToSorted, length: 1);
 
         // ECMA-262 23.1.2.3 Array.of(...items). Returns a fresh Array populated with
         // exactly the supplied items - distinct from new Array(n), which uses a
@@ -5665,6 +5670,58 @@ public sealed class BytecodeInterpreter
 
     // ECMA-262 23.1.3.26 Array.prototype.reverse. Swaps slot i with slot len-1-i
     // for i < len/2; preserves holes (a missing source slot deletes the target).
+    private JsValue ArrayPrototypeToSorted(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        var comparator = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? args[0] : (JsValue?)null;
+        if (comparator.HasValue && comparator.Value.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Array.prototype.toSorted: comparator must be a function or undefined."));
+        }
+
+        var items = new List<JsValue>(length);
+        for (var i = 0; i < length; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            items.Add(TryGetPropertyValue(obj, thisValue, key, out var v) ? v : JsValue.Undefined);
+        }
+
+        // SortIndexedProperties: undefined entries sort after non-undefined ones; the
+        // comparator only ever sees non-undefined values (24.4.5 step 4).
+        var present = new List<JsValue>(items.Count);
+        var undefinedCount = 0;
+        foreach (var v in items)
+        {
+            if (v.Tag == JsValueTag.Undefined) undefinedCount++;
+            else present.Add(v);
+        }
+
+        if (comparator.HasValue)
+        {
+            var fn = comparator.Value;
+            present.Sort((a, b) =>
+            {
+                var r = CallFunction(fn, new[] { a, b }, JsValue.Undefined);
+                var n = ToNumber(r);
+                if (double.IsNaN(n)) return 0;
+                return n < 0 ? -1 : n > 0 ? 1 : 0;
+            });
+        }
+        else
+        {
+            present.Sort((a, b) => string.CompareOrdinal(ToStringValue(a), ToStringValue(b)));
+        }
+
+        var result = new JsValue[length];
+        for (var i = 0; i < present.Count; i++) result[i] = present[i];
+        for (var i = 0; i < undefinedCount; i++) result[present.Count + i] = JsValue.Undefined;
+
+        var arr = CreateArrayFromElements(result);
+        return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+    }
+
     private JsValue ArrayPrototypeToReversed(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
