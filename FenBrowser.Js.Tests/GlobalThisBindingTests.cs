@@ -92,4 +92,10 @@ public sealed class GlobalThisBindingTests
     {
         Assert.Equal(5, RunNum("globalThis.shared = 5; function read() { return shared; } read();"));
     }
+
+    [Fact]
+    public void FunctionBodiesResolveStandardGlobalsThroughGlobalEnvironment()
+    {
+        Assert.True(RunBool("function read() { return Object === globalThis.Object && parseInt === globalThis.parseInt; } read();"));
+    }
 }
