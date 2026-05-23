@@ -3239,6 +3239,27 @@ public sealed class BytecodeInterpreter
             (t, a) => SetDateField(t, "setDate", a, hasYear: false, hasMonth: false, hasDay: true, dayArgIndex: 0), length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCDate",
             (t, a) => SetDateField(t, "setUTCDate", a, hasYear: false, hasMonth: false, hasDay: true, dayArgIndex: 0), length: 1);
+
+        // ECMA-262 21.4.4.{24,25,26,29} Date.prototype.setHours / setMinutes /
+        // setSeconds / setMilliseconds plus the UTC variants. Each takes its own
+        // portion plus any trailing lower-order portions, mirroring MakeTime.
+        // Engine LocalTZA=0 so local == UTC.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setHours",
+            (t, a) => SetTimeField(t, "setHours", a, startIndex: 0), length: 4);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCHours",
+            (t, a) => SetTimeField(t, "setUTCHours", a, startIndex: 0), length: 4);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setMinutes",
+            (t, a) => SetTimeField(t, "setMinutes", a, startIndex: 1), length: 3);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCMinutes",
+            (t, a) => SetTimeField(t, "setUTCMinutes", a, startIndex: 1), length: 3);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setSeconds",
+            (t, a) => SetTimeField(t, "setSeconds", a, startIndex: 2), length: 2);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCSeconds",
+            (t, a) => SetTimeField(t, "setUTCSeconds", a, startIndex: 2), length: 2);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setMilliseconds",
+            (t, a) => SetTimeField(t, "setMilliseconds", a, startIndex: 3), length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCMilliseconds",
+            (t, a) => SetTimeField(t, "setUTCMilliseconds", a, startIndex: 3), length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toISOString", DatePrototypeToIsoString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toJSON", DatePrototypeToJson, length: 1);
 
@@ -3363,6 +3384,45 @@ public sealed class BytecodeInterpreter
                 .AddMonths(month - 1)
                 .AddDays(day - 1);
             date.TimeValue = TimeClip(dt.ToUnixTimeMilliseconds());
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            date.TimeValue = double.NaN;
+        }
+        return JsValue.FromNumber(date.TimeValue);
+    }
+
+    // Shared engine for setHours / setMinutes / setSeconds / setMilliseconds.
+    // startIndex picks the most significant portion the call writes (0=hour,
+    // 1=minute, 2=second, 3=millisecond); the call may also provide every
+    // lower-order portion after it. Anything not provided keeps its existing value.
+    private JsValue SetTimeField(JsValue thisValue, string method, IReadOnlyList<JsValue> args, int startIndex)
+    {
+        var date = RequireDate(thisValue, method);
+        if (!double.IsFinite(date.TimeValue))
+        {
+            return JsValue.FromNumber(double.NaN);
+        }
+        var baseDate = DateTimeOffset.FromUnixTimeMilliseconds((long)date.TimeValue);
+        int hour = baseDate.Hour, minute = baseDate.Minute, second = baseDate.Second, ms = baseDate.Millisecond;
+        var components = new[] { hour, minute, second, ms };
+        for (var i = 0; i < args.Count && startIndex + i < 4; i++)
+        {
+            var n = ToNumber(args[i]);
+            if (!double.IsFinite(n)) { date.TimeValue = double.NaN; return JsValue.FromNumber(double.NaN); }
+            components[startIndex + i] = (int)n;
+        }
+        try
+        {
+            // Use a millisecond-precise sum so out-of-range portions (e.g. minute=70)
+            // ripple per MakeTime semantics.
+            var midnight = new DateTimeOffset(baseDate.Year, baseDate.Month, baseDate.Day, 0, 0, 0, TimeSpan.Zero);
+            var t = midnight
+                .AddHours(components[0])
+                .AddMinutes(components[1])
+                .AddSeconds(components[2])
+                .AddMilliseconds(components[3]);
+            date.TimeValue = TimeClip(t.ToUnixTimeMilliseconds());
         }
         catch (ArgumentOutOfRangeException)
         {
