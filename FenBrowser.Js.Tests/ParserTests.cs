@@ -626,8 +626,7 @@ public sealed class ParserTests
     {
         var program = JsParser.ParseScript(new SourceText("new.target;"));
         var stmt = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
-        var ne = Assert.IsType<NewExpressionNode>(stmt.Expression);
-        Assert.IsType<MemberExpressionNode>(ne.Callee);
+        Assert.IsType<NewTargetExpressionNode>(stmt.Expression);
     }
 
     [Fact]

@@ -680,6 +680,52 @@ public sealed class ClassRuntimeTests
         ").AsNumber());
     }
 
+    // H.5 - new.target meta-property.
+    [Fact]
+    public void NewTargetInPlainConstructorFunction()
+    {
+        // Use a captured-via-closure pattern: assigning new.target to a property
+        // of `this` exposes a separate issue with property reflection on the
+        // returned instance; that's tracked separately.
+        Assert.Equal("function", Run(@"
+            var captured;
+            function F() { captured = new.target; }
+            new F();
+            typeof captured;
+        ").AsString());
+    }
+
+    [Fact]
+    public void NewTargetCapturedFromClassConstructor()
+    {
+        Assert.Equal("function", Run(@"
+            var captured;
+            class C { constructor() { captured = new.target; } }
+            new C();
+            typeof captured;
+        ").AsString());
+    }
+
+    [Fact]
+    public void NewTargetClassIdentityFromCapture()
+    {
+        Assert.True(Run(@"
+            var captured;
+            class C { constructor() { captured = new.target; } }
+            new C();
+            captured === C;
+        ").AsBoolean());
+    }
+
+    [Fact]
+    public void NewTargetIsUndefinedInPlainFunctionCall()
+    {
+        Assert.Equal("undefined", Run(@"
+            function f() { return typeof new.target; }
+            f();
+        ").AsString());
+    }
+
     [Fact]
     public void EmptyStaticBlockIsValid()
     {

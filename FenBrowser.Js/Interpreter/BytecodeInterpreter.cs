@@ -108,6 +108,11 @@ public sealed partial class BytecodeInterpreter
     private ObjectHandle? _iteratorConstructorHandle;
     private ObjectHandle? _iteratorPrototypeHandle;
 
+    // H.5 - one-shot slot: ExecuteConstruct sets the constructor handle as
+    // NewTarget before invoking ExecuteInternal; ExecuteInternalCore picks it
+    // up at frame setup and clears it. Stays Undefined for ordinary calls.
+    private JsValue _pendingNewTarget = JsValue.Undefined;
+
     // Well-known symbol ids cached at first Symbol-constructor materialisation. JS
     // code that reads Symbol.iterator twice must get === values; a single id per
     // well-known symbol guarantees that.
@@ -261,6 +266,13 @@ public sealed partial class BytecodeInterpreter
             ? null
             : new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment));
         var frame = new InterpreterFrame(function, thisValue, frameEnv) { CalleeFunctionObject = callee };
+        // H.5 - new.target: consume the one-shot pending slot set by
+        // ExecuteConstruct. Ordinary calls leave it Undefined.
+        if (_pendingNewTarget.Tag != JsValueTag.Undefined)
+        {
+            frame.NewTarget = _pendingNewTarget;
+            _pendingNewTarget = JsValue.Undefined;
+        }
         // Pre-create env bindings for locally-bound names that the spec mandates the
         // function-environment record holds: each formal parameter, and `arguments`
         // when the function gets its own arguments object. We deliberately do NOT
@@ -360,6 +372,9 @@ public sealed partial class BytecodeInterpreter
                     break;
                 case OpCode.LoadSuperConstructor:
                     HandleLoadSuperConstructor(frame, ins);
+                    break;
+                case OpCode.LoadNewTarget:
+                    frame.Registers[ins.A] = frame.NewTarget;
                     break;
                 case OpCode.SetPrototype:
                 {
@@ -10161,7 +10176,7 @@ public sealed partial class BytecodeInterpreter
         var obj = ResolveObject(value);
         if (obj is JsFunctionObject fn)
         {
-            return ExecuteConstruct(fn, args);
+            return ExecuteConstruct(fn, args, newTarget: value);
         }
 
         if (obj is NativeFunctionObject native)
@@ -10560,7 +10575,7 @@ public sealed partial class BytecodeInterpreter
     }
 
     [MayExecuteJs]
-    private JsValue ExecuteConstruct(JsFunctionObject callee, IReadOnlyList<JsValue> args)
+    private JsValue ExecuteConstruct(JsFunctionObject callee, IReadOnlyList<JsValue> args, JsValue newTarget = default)
     {
         var instanceObject = CreateOrdinaryObject();
         if (callee.TryGetProperty("prototype", h => _heap.GetObject(h), out var prototypeDescriptor) &&
@@ -10570,6 +10585,13 @@ public sealed partial class BytecodeInterpreter
         }
 
         var defaultInstance = JsValue.FromObject(_heap.AllocateObject(instanceObject, AllocationSite.Current()));
+        // H.5 - publish new.target for the constructor frame. When no explicit
+        // target is passed, default to the callee value (the typical case for
+        // `new C(...)` reaching here from ConstructFunction with newTarget = the
+        // constructor's JsValue).
+        _pendingNewTarget = newTarget.Tag == JsValueTag.Undefined
+            ? JsValue.Undefined
+            : newTarget;
         var result = ExecuteInternal(callee.Function, args, defaultInstance, callee.OuterEnvironment, callee: callee);
         return result.Tag == JsValueTag.Object ? result : defaultInstance;
     }

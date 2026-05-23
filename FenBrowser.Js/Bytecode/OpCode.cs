@@ -126,4 +126,9 @@ public enum OpCode : byte
     // Writes a private field value on the target object. Throws a TypeError
     // if the accessor is not in the class that defined the field.
     SetPrivateField,
+
+    // H.5 - LoadNewTarget(A=dest reg). Reads the current frame's NewTarget.
+    // ECMA-262 13.3.12 The new.target Meta Property. Returns undefined outside
+    // a [[Construct]] invocation.
+    LoadNewTarget,
 }

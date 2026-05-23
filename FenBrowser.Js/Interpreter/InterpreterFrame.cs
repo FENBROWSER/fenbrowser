@@ -40,4 +40,9 @@ public sealed class InterpreterFrame
     // native-only call paths. `super.x` reads CalleeFunctionObject.HomeObject
     // to walk the prototype chain.
     public JsFunctionObject? CalleeFunctionObject { get; set; }
+
+    // H.5 - new.target. Bound to the constructor invoked by `new` when this
+    // frame is a construct call, or JsValue.Undefined for ordinary calls.
+    // ECMA-262 9.1.1.3 NewTarget.
+    public JsValue NewTarget { get; set; } = JsValue.Undefined;
 }

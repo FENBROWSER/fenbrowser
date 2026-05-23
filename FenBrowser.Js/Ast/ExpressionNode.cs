@@ -8,6 +8,10 @@ public sealed record IdentifierExpressionNode(string Name, SourceSpan Span) : Ex
 
 public sealed record ThisExpressionNode(SourceSpan Span) : ExpressionNode(Span);
 
+// H.5 - `new.target` meta-property. Lowers to a single LoadNewTarget opcode
+// reading the current frame's [[NewTarget]]. ECMA-262 13.3.12.
+public sealed record NewTargetExpressionNode(SourceSpan Span) : ExpressionNode(Span);
+
 // H.3 - the `super` keyword as an expression-position placeholder; only valid
 // as the object of a MemberExpression (super.foo / super[expr]). Direct use
 // raises SyntaxError at compile time. Naked super calls (super(...)) are not

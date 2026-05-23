@@ -1663,16 +1663,18 @@ public sealed class JsParser
         return new FunctionExpressionNode(name, parameters, body, MergeSpan(start.Span, body.Span));
     }
 
-    private NewExpressionNode ParseNewExpression()
+    private ExpressionNode ParseNewExpression()
     {
         var start = Advance(); // new
         if (IsPunctuator("."))
         {
             Advance();
             var property = ExpectIdentifier();
-            var target = new IdentifierExpressionNode("new", start.Span);
-            var member = new MemberExpressionNode(target, property.Text, Computed: false, PropertyExpression: null, MergeSpan(start.Span, property.Span));
-            return new NewExpressionNode(member, Array.Empty<ExpressionNode>(), member.Span);
+            if (property.Text != "target")
+            {
+                throw new JsParserException("Only 'new.target' is a valid meta property.");
+            }
+            return new NewTargetExpressionNode(MergeSpan(start.Span, property.Span));
         }
 
         var callee = ParsePrefix();
