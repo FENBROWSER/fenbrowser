@@ -1432,6 +1432,47 @@ public sealed class BytecodeInterpreter
             return JsValue.FromObject(resultHandle);
         }, length: 1);
 
+        // ECMA-262 24.2.3 (Set Methods, ES2025) isSubsetOf - every entry of this
+        // must be in other. Short-circuits on size (a set can never be a subset
+        // of something smaller).
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "isSubsetOf", (thisValue, args) =>
+        {
+            var self = RequireSet(thisValue);
+            var other = new SetObject();
+            foreach (var v in IterateSetLike(args)) other.Add(v);
+            if (self.Count > other.Count) return JsValue.FromBoolean(false);
+            foreach (var v in self.Snapshot())
+            {
+                if (!other.Has(v)) return JsValue.FromBoolean(false);
+            }
+            return JsValue.FromBoolean(true);
+        }, length: 1);
+
+        // ECMA-262 24.2.3 isSupersetOf - every entry of other must be in this.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "isSupersetOf", (thisValue, args) =>
+        {
+            var self = RequireSet(thisValue);
+            var other = new SetObject();
+            foreach (var v in IterateSetLike(args)) other.Add(v);
+            if (other.Count > self.Count) return JsValue.FromBoolean(false);
+            foreach (var v in other.Snapshot())
+            {
+                if (!self.Has(v)) return JsValue.FromBoolean(false);
+            }
+            return JsValue.FromBoolean(true);
+        }, length: 1);
+
+        // ECMA-262 24.2.3 isDisjointFrom - no entry shared with other.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "isDisjointFrom", (thisValue, args) =>
+        {
+            var self = RequireSet(thisValue);
+            foreach (var v in IterateSetLike(args))
+            {
+                if (self.Has(v)) return JsValue.FromBoolean(false);
+            }
+            return JsValue.FromBoolean(true);
+        }, length: 1);
+
         _setPrototypeHandle = prototypeHandle;
         _setConstructorHandle = constructorHandle;
         return constructorHandle;
