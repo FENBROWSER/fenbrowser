@@ -2928,6 +2928,27 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toISOString", DatePrototypeToIsoString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toJSON", DatePrototypeToJson, length: 1);
 
+        // ECMA-262 21.4.4.{2,3,5,6,7,8,9,11} Date.prototype local-time component getters.
+        // The engine has no host TimeZone model yet, so local time == UTC across the
+        // board (per 21.4.1.10 LocalTime when LocalTZA = 0). Each method extracts the
+        // matching component from DateTimeOffset; NaN time produces NaN.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getFullYear",
+            (t, _) => GetDateComponent(t, "getFullYear", d => d.Year));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getMonth",
+            (t, _) => GetDateComponent(t, "getMonth", d => d.Month - 1));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getDate",
+            (t, _) => GetDateComponent(t, "getDate", d => d.Day));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getDay",
+            (t, _) => GetDateComponent(t, "getDay", d => (int)d.DayOfWeek));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getHours",
+            (t, _) => GetDateComponent(t, "getHours", d => d.Hour));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getMinutes",
+            (t, _) => GetDateComponent(t, "getMinutes", d => d.Minute));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getSeconds",
+            (t, _) => GetDateComponent(t, "getSeconds", d => d.Second));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getMilliseconds",
+            (t, _) => GetDateComponent(t, "getMilliseconds", d => d.Millisecond));
+
         _datePrototypeHandle = prototypeHandle;
         _dateConstructorHandle = constructorHandle;
         return constructorHandle;
@@ -2941,6 +2962,17 @@ public sealed class BytecodeInterpreter
             return date.TimeValue;
         }
         throw new JsThrownException(CreateTypeError($"Date.prototype.{method} called on a non-Date receiver."));
+    }
+
+    private JsValue GetDateComponent(JsValue thisValue, string method, Func<DateTimeOffset, int> extract)
+    {
+        var t = GetDateTimeValue(thisValue, method);
+        if (!double.IsFinite(t))
+        {
+            return JsValue.FromNumber(double.NaN);
+        }
+        var dto = DateTimeOffset.FromUnixTimeMilliseconds((long)t);
+        return JsValue.FromNumber(extract(dto));
     }
 
     private JsValue DatePrototypeGetTime(JsValue thisValue, IReadOnlyList<JsValue> args)
