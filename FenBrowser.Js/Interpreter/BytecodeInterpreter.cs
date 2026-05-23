@@ -3615,9 +3615,58 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "test", RegExpPrototypeTest, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", RegExpPrototypeToString);
 
+        // ES2025 RegExp.escape(string). Returns a String that can be safely embedded
+        // in a regex pattern to match the literal input. The proposal mandates
+        // \xHH escaping for the FIRST character if it's an ASCII letter or digit
+        // (so the escaped form can never be parsed as a back-reference like \12 or
+        // be ambiguous in a context like /(?<\\u0041 ...)/), and the standard
+        // backslash escape for every SyntaxCharacter and several whitespace forms.
+        DefineIntrinsicFunction(constructorHandle, constructor, "escape", (_, args) =>
+        {
+            if (args.Count == 0 || args[0].Tag != JsValueTag.String)
+            {
+                throw new JsThrownException(CreateTypeError("RegExp.escape: argument must be a string."));
+            }
+            return JsValue.FromString(RegExpEscape(args[0].AsString()));
+        }, length: 1);
+
         _regexpPrototypeHandle = prototypeHandle;
         _regexpConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    private static string RegExpEscape(string s)
+    {
+        var sb = new System.Text.StringBuilder(s.Length);
+        for (var i = 0; i < s.Length; i++)
+        {
+            var c = s[i];
+            // First-character ASCII letter/digit -> \xHH per ES2025 step 6.
+            if (i == 0 && ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')))
+            {
+                _ = sb.Append('\\').Append('x')
+                    .Append(((int)c).ToString("X2", System.Globalization.CultureInfo.InvariantCulture));
+                continue;
+            }
+            switch (c)
+            {
+                case '\t': _ = sb.Append("\\t"); continue;
+                case '\n': _ = sb.Append("\\n"); continue;
+                case '\v': _ = sb.Append("\\v"); continue;
+                case '\f': _ = sb.Append("\\f"); continue;
+                case '\r': _ = sb.Append("\\r"); continue;
+            }
+            // ECMA-262 SyntaxCharacter set plus '/'.
+            if ("^$\\.*+?()[]{}|/".IndexOf(c) >= 0)
+            {
+                _ = sb.Append('\\').Append(c);
+            }
+            else
+            {
+                _ = sb.Append(c);
+            }
+        }
+        return sb.ToString();
     }
 
     private JsValue CreateRegExpObject(IReadOnlyList<JsValue> args)
