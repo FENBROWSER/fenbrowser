@@ -105,4 +105,77 @@ public sealed class ModuleEvaluatorTests
         evaluator.RegisterSource("a", "import x from 'b';");
         Assert.Throws<System.InvalidOperationException>(() => evaluator.Evaluate("a"));
     }
+
+    // E.6.next - re-exports.
+
+    [Fact]
+    public void NamedReexportRepublishesValueUnderExportName()
+    {
+        var (_, evaluator) = Setup();
+        evaluator.RegisterSource("src", "export var x = 1;");
+        evaluator.RegisterSource("mid", "export { x } from 'src';");
+        var exports = evaluator.Evaluate("mid");
+        Assert.Equal(1d, exports["x"].AsNumber());
+    }
+
+    [Fact]
+    public void RenamedReexportPublishesUnderAlias()
+    {
+        var (_, evaluator) = Setup();
+        evaluator.RegisterSource("src", "export var x = 7;");
+        evaluator.RegisterSource("mid", "export { x as y } from 'src';");
+        var exports = evaluator.Evaluate("mid");
+        Assert.False(exports.ContainsKey("x"));
+        Assert.Equal(7d, exports["y"].AsNumber());
+    }
+
+    [Fact]
+    public void StarReexportRepublishesAllNamedExportsButNotDefault()
+    {
+        var (_, evaluator) = Setup();
+        evaluator.RegisterSource("src", "export var a = 1; export var b = 2; export default 99;");
+        evaluator.RegisterSource("mid", "export * from 'src';");
+        var exports = evaluator.Evaluate("mid");
+        Assert.Equal(1d, exports["a"].AsNumber());
+        Assert.Equal(2d, exports["b"].AsNumber());
+        Assert.False(exports.ContainsKey("default"));
+    }
+
+    [Fact]
+    public void NamespaceReexportPublishesNamespaceObjectUnderName()
+    {
+        var (interpreter, evaluator) = Setup();
+        evaluator.RegisterSource("src", "export var a = 5;");
+        evaluator.RegisterSource("mid", "export * as ns from 'src';");
+        evaluator.RegisterSource("main", "import { ns } from 'mid'; var aa = ns.a;");
+        _ = evaluator.Evaluate("main");
+        Assert.True(interpreter.TryReadGlobalValue("aa", out var v));
+        Assert.Equal(5d, v.AsNumber());
+    }
+
+    [Fact]
+    public void TwoStepReexportPropagatesValue()
+    {
+        var (interpreter, evaluator) = Setup();
+        evaluator.RegisterSource("a", "export var x = 10;");
+        evaluator.RegisterSource("b", "export { x } from 'a';");
+        evaluator.RegisterSource("c", "import { x } from 'b'; var observed = x;");
+        _ = evaluator.Evaluate("c");
+        Assert.True(interpreter.TryReadGlobalValue("observed", out var v));
+        Assert.Equal(10d, v.AsNumber());
+    }
+
+    // E.6.next - exotic namespace object.
+
+    [Fact]
+    public void NamespaceObjectHasModuleToStringTag()
+    {
+        var (interpreter, evaluator) = Setup();
+        evaluator.RegisterSource("mod", "export var a = 1;");
+        evaluator.RegisterSource("main",
+            "import * as ns from 'mod'; var tag = Object.prototype.toString.call(ns);");
+        _ = evaluator.Evaluate("main");
+        Assert.True(interpreter.TryReadGlobalValue("tag", out var v));
+        Assert.Equal("[object Module]", v.AsString());
+    }
 }

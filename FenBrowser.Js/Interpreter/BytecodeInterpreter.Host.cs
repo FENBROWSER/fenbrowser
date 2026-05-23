@@ -170,11 +170,26 @@ public sealed partial class BytecodeInterpreter
     {
         ArgumentNullException.ThrowIfNull(exports);
         var obj = CreateOrdinaryObject();
+        // ECMA-262 28.3 Module Namespace Exotic Objects: [[Prototype]] is null,
+        // properties are { value, writable: true, enumerable: true,
+        // configurable: false }, and Symbol.toStringTag is "Module" with a
+        // non-writable non-enumerable non-configurable descriptor.
+        obj.SetPrototype(null);
         foreach (var kv in exports)
         {
             _ = obj.DefineOwnProperty(kv.Key,
-                new Objects.JsPropertyDescriptor(kv.Value, Writable: false, Enumerable: true, Configurable: false));
+                new Objects.JsPropertyDescriptor(kv.Value, Writable: true, Enumerable: true, Configurable: false));
         }
+
+        var toStringTagId = GetWellKnownSymbolId("toStringTag");
+        if (toStringTagId != 0)
+        {
+            _ = obj.DefineOwnSymbolProperty(toStringTagId,
+                new Objects.JsPropertyDescriptor(JsValue.FromString("Module"),
+                    Writable: false, Enumerable: false, Configurable: false));
+        }
+
+        obj.PreventExtensions();
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 }

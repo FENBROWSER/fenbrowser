@@ -102,6 +102,44 @@ public sealed class ModuleEvaluator
             }
         }
 
+        // Phase 1b - resolve re-exports. ECMA-262 16.2.3.7 ExportEntries with a
+        // non-null ModuleRequest are re-exports; we evaluate the target module
+        // (recursive call which hits the cache when already evaluated) and copy
+        // its exports into our own table per the entry's flavour.
+        foreach (var stmt in program.Body)
+        {
+            if (stmt is not ExportDeclarationNode export) continue;
+            foreach (var entry in export.Entries)
+            {
+                if (!entry.IsReexport) continue;
+                var sourceExports = Evaluate(entry.ModuleRequest!);
+
+                if (entry.IsStarReexport)
+                {
+                    // export * from 'mod' - re-publish every named export of the
+                    // source EXCEPT "default" per 16.2.3.7 step 7.b.iii.
+                    foreach (var kv in sourceExports)
+                    {
+                        if (string.Equals(kv.Key, "default", StringComparison.Ordinal)) continue;
+                        inProgress.Exports[kv.Key] = kv.Value;
+                    }
+                }
+                else if (entry.IsNamespaceReexport)
+                {
+                    // export * as ns from 'mod' - publish a namespace object
+                    // whose name is the export name, exposing all source exports.
+                    inProgress.Exports[entry.ExportName!] = BuildNamespaceObject(sourceExports);
+                }
+                else
+                {
+                    // export { a as b } from 'mod' - take source.[importName]
+                    // and publish under exportName.
+                    var value = sourceExports.TryGetValue(entry.ImportName!, out var v) ? v : JsValue.Undefined;
+                    inProgress.Exports[entry.ExportName!] = value;
+                }
+            }
+        }
+
         // Phase 2 - rewrite the module body so the executable forms compile
         // through the existing pipeline. Each ExportDeclarationNode becomes its
         // inner declaration (or `var __default = expr;` for export default).

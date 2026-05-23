@@ -5725,7 +5725,19 @@ public sealed partial class BytecodeInterpreter
 
     private string GetObjectToStringTag(ObjectHandle handle)
     {
-        return _heap.GetObject(handle) switch
+        // ECMA-262 20.1.3.6 step 14: if the object has a Symbol.toStringTag
+        // own or inherited string property, that string overrides the default
+        // builtin tag. Module namespace objects use this hook to return
+        // "[object Module]"; user code can override via Symbol.toStringTag.
+        var obj = _heap.GetObject(handle);
+        var tagId = GetWellKnownSymbolId("toStringTag");
+        if (tagId != 0 && obj.TryGetSymbolProperty(tagId, h => _heap.GetObject(h), out var tagDesc)
+            && !tagDesc.IsAccessor && tagDesc.Value.Tag == JsValueTag.String)
+        {
+            return tagDesc.Value.AsString();
+        }
+
+        return obj switch
         {
             ArrayObject => "Array",
             BooleanObject => "Boolean",
