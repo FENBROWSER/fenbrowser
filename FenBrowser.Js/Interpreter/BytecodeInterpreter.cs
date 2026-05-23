@@ -2976,6 +2976,18 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getTimezoneOffset",
             (t, _) => GetDateComponent(t, "getTimezoneOffset", _ => 0));
 
+        // ECMA-262 21.4.4.{41,35,42} Date.prototype.toString / toDateString / toTimeString.
+        // The spec's format is fixed: "Day Mon DD YYYY HH:MM:SS GMT+HHMM (Time Zone Name)".
+        // Engine LocalTZA = 0, so the zone offset is always +0000 and the name is the
+        // IANA designator for UTC. NaN time stringifies to the spec-mandated literal
+        // "Invalid Date" for every variant (21.4.4.41 step 3, 21.4.4.35 step 3,
+        // 21.4.4.42 step 3 all funnel through DateString / TimeString which collapse
+        // to the same literal).
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", DatePrototypeToString);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toDateString", DatePrototypeToDateString);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toTimeString", DatePrototypeToTimeString);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toUTCString", DatePrototypeToUtcString);
+
         _datePrototypeHandle = prototypeHandle;
         _dateConstructorHandle = constructorHandle;
         return constructorHandle;
@@ -2989,6 +3001,57 @@ public sealed class BytecodeInterpreter
             return date.TimeValue;
         }
         throw new JsThrownException(CreateTypeError($"Date.prototype.{method} called on a non-Date receiver."));
+    }
+
+    private static readonly string[] DayNames = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+    private static readonly string[] MonthNames = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+
+    private string FormatDatePart(DateTimeOffset d) =>
+        string.Format(System.Globalization.CultureInfo.InvariantCulture,
+            "{0} {1} {2:D2} {3:D4}",
+            DayNames[(int)d.DayOfWeek], MonthNames[d.Month - 1], d.Day, d.Year);
+
+    private string FormatTimePart(DateTimeOffset d) =>
+        string.Format(System.Globalization.CultureInfo.InvariantCulture,
+            "{0:D2}:{1:D2}:{2:D2} GMT+0000 (Coordinated Universal Time)",
+            d.Hour, d.Minute, d.Second);
+
+    private JsValue DatePrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        var t = GetDateTimeValue(thisValue, "toString");
+        if (!double.IsFinite(t)) return JsValue.FromString("Invalid Date");
+        var d = DateTimeOffset.FromUnixTimeMilliseconds((long)t);
+        return JsValue.FromString(FormatDatePart(d) + " " + FormatTimePart(d));
+    }
+
+    private JsValue DatePrototypeToDateString(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        var t = GetDateTimeValue(thisValue, "toDateString");
+        if (!double.IsFinite(t)) return JsValue.FromString("Invalid Date");
+        return JsValue.FromString(FormatDatePart(DateTimeOffset.FromUnixTimeMilliseconds((long)t)));
+    }
+
+    private JsValue DatePrototypeToTimeString(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        var t = GetDateTimeValue(thisValue, "toTimeString");
+        if (!double.IsFinite(t)) return JsValue.FromString("Invalid Date");
+        return JsValue.FromString(FormatTimePart(DateTimeOffset.FromUnixTimeMilliseconds((long)t)));
+    }
+
+    // ECMA-262 21.4.4.43 Date.prototype.toUTCString. Format: "Day, DD Mon YYYY HH:MM:SS GMT".
+    private JsValue DatePrototypeToUtcString(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        var t = GetDateTimeValue(thisValue, "toUTCString");
+        if (!double.IsFinite(t)) return JsValue.FromString("Invalid Date");
+        var d = DateTimeOffset.FromUnixTimeMilliseconds((long)t);
+        return JsValue.FromString(string.Format(System.Globalization.CultureInfo.InvariantCulture,
+            "{0}, {1:D2} {2} {3:D4} {4:D2}:{5:D2}:{6:D2} GMT",
+            DayNames[(int)d.DayOfWeek], d.Day, MonthNames[d.Month - 1], d.Year,
+            d.Hour, d.Minute, d.Second));
     }
 
     private JsValue GetDateComponent(JsValue thisValue, string method, Func<DateTimeOffset, int> extract)
