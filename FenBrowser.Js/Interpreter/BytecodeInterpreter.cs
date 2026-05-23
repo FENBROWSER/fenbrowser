@@ -3941,6 +3941,13 @@ public sealed class BytecodeInterpreter
     {
         public HashSet<ObjectHandle> Stack { get; } = new();
         public string Gap { get; init; } = string.Empty;
+        // ECMA-262 25.5.2 ReplacerFunction (when 2nd arg is callable) - applied to
+        // every (holder, key, value) triple before serialisation, with the chance to
+        // return a transformed value, including undefined to drop the key.
+        public JsValue ReplacerFunction { get; init; } = JsValue.Undefined;
+        // ECMA-262 25.5.2 PropertyList (when 2nd arg is an Array). When non-null, only
+        // own keys appearing here are emitted on objects (arrays ignore the list).
+        public HashSet<string>? PropertyList { get; init; }
     }
 
     private JsValue JsonStringify(JsValue thisValue, IReadOnlyList<JsValue> args)
@@ -3971,8 +3978,59 @@ public sealed class BytecodeInterpreter
             }
         }
 
-        var ctx = new JsonStringifyContext { Gap = gap };
-        var json = StringifyJsonValue(args[0], ctx, depth: 0, inArray: false);
+        // ECMA-262 25.5.2 second argument 'replacer'. Either a callable transformer
+        // (applied to each key/value pair, may return undefined to drop the entry)
+        // or an Array<String|Number> whose entries form an allowlist of own keys
+        // emitted on object values (arrays are unaffected by PropertyList).
+        var replacerFn = JsValue.Undefined;
+        HashSet<string>? propertyList = null;
+        if (args.Count > 1 && args[1].Tag == JsValueTag.Object)
+        {
+            var rObj = _heap.GetObject(args[1].AsObjectHandle());
+            if (rObj is JsFunctionObject or NativeFunctionObject)
+            {
+                replacerFn = args[1];
+            }
+            else if (rObj is ArrayObject)
+            {
+                propertyList = new HashSet<string>(StringComparer.Ordinal);
+                var len = GetArrayLength(rObj);
+                for (var i = 0; i < len; i++)
+                {
+                    var k = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    if (!TryGetPropertyValue(rObj, args[1], k, out var item)) continue;
+                    if (item.Tag == JsValueTag.String)
+                    {
+                        propertyList.Add(item.AsString());
+                    }
+                    else if (item.Tag == JsValueTag.Number || item.Tag == JsValueTag.Int32)
+                    {
+                        propertyList.Add(ToStringValue(item));
+                    }
+                }
+            }
+        }
+
+        var ctx = new JsonStringifyContext
+        {
+            Gap = gap,
+            ReplacerFunction = replacerFn,
+            PropertyList = propertyList,
+        };
+
+        // ECMA-262 25.5.2 step 8 - wrap the initial value in a synthetic { '': value }
+        // holder so the replacer (if callable) gets called once at the top level with
+        // key="" and the wrapper as the 'this' receiver.
+        var rootValue = args[0];
+        if (replacerFn.Tag != JsValueTag.Undefined)
+        {
+            var wrapper = CreateOrdinaryObject();
+            wrapper.SetProperty(string.Empty, rootValue);
+            var wrapperHandle = _heap.AllocateObject(wrapper, AllocationSite.Current());
+            rootValue = CallFunction(replacerFn, new[] { JsValue.FromString(string.Empty), rootValue }, JsValue.FromObject(wrapperHandle));
+        }
+
+        var json = StringifyJsonValue(rootValue, ctx, depth: 0, inArray: false);
         return json is null ? JsValue.Undefined : JsValue.FromString(json);
     }
 
@@ -4025,19 +4083,41 @@ public sealed class BytecodeInterpreter
             }
 
             var parts = new List<string>();
-            foreach (var property in obj.EnumerateOwnProperties())
+            // ECMA-262 25.5.2 SerializeJSONObject: PropertyList drives iteration order
+            // when present; otherwise we walk the own enumerable string keys.
+            IEnumerable<string> keys;
+            if (ctx.PropertyList is not null)
             {
-                if (!property.Value.Enumerable ||
-                    !TryGetPropertyValue(obj, value, property.Key, out var propertyValue))
+                keys = ctx.PropertyList;
+            }
+            else
+            {
+                var k = new List<string>();
+                foreach (var p in obj.EnumerateOwnProperties())
+                {
+                    if (p.Value.Enumerable) k.Add(p.Key);
+                }
+                keys = k;
+            }
+
+            foreach (var key in keys)
+            {
+                if (!TryGetPropertyValue(obj, value, key, out var propertyValue))
                 {
                     continue;
                 }
-
+                // ECMA-262 25.5.2 ReplacerFunction call - applied per entry with the
+                // holder as 'this' and (key, value) arguments.
+                if (ctx.ReplacerFunction.Tag != JsValueTag.Undefined)
+                {
+                    propertyValue = CallFunction(ctx.ReplacerFunction,
+                        new[] { JsValue.FromString(key), propertyValue }, value);
+                }
                 var serialized = StringifyJsonValue(propertyValue, ctx, depth + 1, inArray: false);
                 if (serialized is not null)
                 {
                     var colon = ctx.Gap.Length > 0 ? ": " : ":";
-                    parts.Add(JsonSerializer.Serialize(property.Key) + colon + serialized);
+                    parts.Add(JsonSerializer.Serialize(key) + colon + serialized);
                 }
             }
 
@@ -4069,7 +4149,15 @@ public sealed class BytecodeInterpreter
         for (var i = 0; i < length; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            parts[i] = TryGetPropertyValue(obj, receiver, key, out var value)
+            var hasValue = TryGetPropertyValue(obj, receiver, key, out var value);
+            // ECMA-262 25.5.2 step 4 of SerializeJSONArray - ReplacerFunction also
+            // applies to array elements (with index as the key string).
+            if (hasValue && ctx.ReplacerFunction.Tag != JsValueTag.Undefined)
+            {
+                value = CallFunction(ctx.ReplacerFunction,
+                    new[] { JsValue.FromString(key), value }, receiver);
+            }
+            parts[i] = hasValue
                 ? StringifyJsonValue(value, ctx, depth + 1, inArray: true) ?? "null"
                 : "null";
         }
