@@ -1,3 +1,4 @@
+using FenBrowser.Js.Heap;
 using FenBrowser.Js.Host;
 using FenBrowser.Js.Promises;
 using FenBrowser.Js.Runtime;
@@ -126,5 +127,54 @@ public sealed partial class BytecodeInterpreter
                 Writable: true,
                 Enumerable: false,
                 Configurable: true));
+    }
+
+    // E.6 - install a JS value as a global binding under the given name. Used
+    // by ModuleEvaluator to wire imported bindings into the importer's
+    // execution context before the module body runs.
+    public void RegisterGlobalValue(string name, JsValue value)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        var globalHandle = EnsureGlobalObject();
+        var global = _heap.GetObject(globalHandle);
+        _ = global.DefineOwnProperty(
+            name,
+            new Objects.JsPropertyDescriptor(value, Writable: true, Enumerable: false, Configurable: true));
+        if (value.Tag == JsValueTag.Object)
+        {
+            _heap.WriteBarrier(globalHandle, value.AsObjectHandle());
+        }
+    }
+
+    // E.6 - read a global by name. Used by ModuleEvaluator to harvest the
+    // values of locally-declared module exports after the body has executed.
+    public bool TryReadGlobalValue(string name, out JsValue value)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        var globalHandle = EnsureGlobalObject();
+        var global = _heap.GetObject(globalHandle);
+        if (global.TryGetOwnProperty(name, out var descriptor) && !descriptor.IsAccessor)
+        {
+            value = descriptor.Value;
+            return true;
+        }
+        value = JsValue.Undefined;
+        return false;
+    }
+
+    // E.6 - allocate a plain JS object exposing the given (name, value) pairs
+    // as enumerable own properties. Used as the lightweight namespace object
+    // for `import * as ns from "mod"`. A full ECMA-262 namespace exotic object
+    // with frozen [[Set]] / Symbol.toStringTag is deferred.
+    public JsValue AllocateNamespaceObject(IReadOnlyDictionary<string, JsValue> exports)
+    {
+        ArgumentNullException.ThrowIfNull(exports);
+        var obj = CreateOrdinaryObject();
+        foreach (var kv in exports)
+        {
+            _ = obj.DefineOwnProperty(kv.Key,
+                new Objects.JsPropertyDescriptor(kv.Value, Writable: false, Enumerable: true, Configurable: false));
+        }
+        return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 }
