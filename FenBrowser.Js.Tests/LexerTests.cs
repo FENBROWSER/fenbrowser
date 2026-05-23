@@ -159,6 +159,39 @@ public sealed class LexerTests
     }
 
     [Fact]
+    public void LexesPrivateIdentifierWithUnicodeParts()
+    {
+        var lexer = new JsLexer(new SourceText("#_\u0AFA\u1ACF\U00010EFA"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.PrivateIdentifier, tokens[0].Kind);
+        Assert.Equal("#_\u0AFA\u1ACF\U00010EFA", tokens[0].Text);
+    }
+
+    [Fact]
+    public void LexesEscapedPrivateIdentifier()
+    {
+        var lexer = new JsLexer(new SourceText("#\\u005F\\u0AFA\\u{10EFA}"));
+        var tokens = lexer.LexAll();
+
+        Assert.Equal(TokenKind.PrivateIdentifier, tokens[0].Kind);
+        Assert.Equal("#_\u0AFA\U00010EFA", tokens[0].Text);
+        Assert.True(tokens[0].ContainsEscape);
+    }
+
+    [Fact]
+    public void VerticalTildeIsNotIdentifierStartOrPart()
+    {
+        var startTokens = new JsLexer(new SourceText("\u2E2F")).LexAll();
+        var partTokens = new JsLexer(new SourceText("a\u2E2F")).LexAll();
+
+        Assert.Equal(TokenKind.Unknown, startTokens[0].Kind);
+        Assert.Equal(TokenKind.Identifier, partTokens[0].Kind);
+        Assert.Equal("a", partTokens[0].Text);
+        Assert.Equal(TokenKind.Unknown, partTokens[1].Kind);
+    }
+
+    [Fact]
     public void LexesEscapedAstralUnicodeIdentifierPart()
     {
         var lexer = new JsLexer(new SourceText("_\\u{11A01} = 1;"));

@@ -994,6 +994,25 @@ public sealed class JsParser
                 kind = ClassMemberKind.Constructor;
             }
 
+            if (!IsPunctuator("("))
+            {
+                ExpressionNode fieldInitializer = new IdentifierExpressionNode("undefined", memberStart);
+                if (IsPunctuator("="))
+                {
+                    Advance();
+                    fieldInitializer = ParseExpression(0);
+                }
+
+                ConsumeSemicolon();
+                members.Add(new ClassMemberNode(
+                    memberName,
+                    ClassMemberKind.Field,
+                    isStatic,
+                    fieldInitializer,
+                    MergeSpan(memberStart, fieldInitializer.Span)));
+                continue;
+            }
+
             var parameters = ParseParameterList();
             var body = ParseBlockStatement();
             var fn = new FunctionExpressionNode(memberName, parameters, body, MergeSpan(memberStart, body.Span));
@@ -1012,6 +1031,11 @@ public sealed class JsParser
     private string ConsumeClassMemberName()
     {
         var tok = Current();
+        if (tok.Kind == TokenKind.PrivateIdentifier)
+        {
+            Advance();
+            return tok.Text;
+        }
         if (tok.Kind == TokenKind.Identifier || tok.Kind == TokenKind.Keyword)
         {
             Advance();

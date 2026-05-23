@@ -78,6 +78,17 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesPrivateClassFieldIdentifierAsParserOnlyMember()
+    {
+        var program = JsParser.ParseScript(new SourceText("class _ { #_\\u0AFA\\u{10EFA}; }"));
+        var cls = Assert.IsType<ClassDeclarationNode>(program.Body[0]);
+        var member = Assert.Single(cls.Members);
+
+        Assert.Equal(ClassMemberKind.Field, member.Kind);
+        Assert.Equal("#_\u0AFA\U00010EFA", member.Name);
+    }
+
+    [Fact]
     public void ParsesSwitchStatement()
     {
         var program = JsParser.ParseScript(new SourceText("switch (x) { case 1: y = 2; break; default: y = 3; }"));
@@ -699,6 +710,16 @@ public sealed class ParserTests
         var program = JsParser.ParseScript(new SourceText("var \u088F\u0C5C\u0CDC\uA7CE\U00010940_\uFF65\u1ACF\u1AD0\u1AD1\U00010EFA\U0001E6F5 = 1;"));
 
         Assert.Single(program.Body);
+    }
+
+    [Theory]
+    [InlineData("var \u2E2F;")]
+    [InlineData("var a\u2E2F;")]
+    [InlineData("var \\u2E2F;")]
+    [InlineData("var a\\u2E2F;")]
+    public void RejectsVerticalTildeAsIdentifierCharacter(string source)
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText(source)));
     }
 
     [Fact]

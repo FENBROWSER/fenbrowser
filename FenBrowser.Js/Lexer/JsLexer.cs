@@ -150,6 +150,94 @@ public sealed class JsLexer
                 continue;
             }
 
+            if (ch == '#')
+            {
+                _index++;
+                _column++;
+
+                var builder = new StringBuilder("#");
+                var hadEscape = false;
+                var malformedIdentifier = false;
+                if (_index >= _source.Length)
+                {
+                    var hashToken = new Token(TokenKind.Unknown, "#", new SourceSpan(start, 1, line, column));
+                    tokens.Add(hashToken);
+                    _lastSignificantToken = hashToken;
+                    continue;
+                }
+
+                var privateStart = _source[_index];
+                if (privateStart == '\\' && IsUnicodeEscapeStart(_index))
+                {
+                    hadEscape = true;
+                    if (!TryReadUnicodeEscape(out var escapedStart) ||
+                        IsLineTerminator(escapedStart) ||
+                        IsWhiteSpace(escapedStart) ||
+                        !IsIdentifierStart(escapedStart))
+                    {
+                        malformedIdentifier = true;
+                    }
+                    else
+                    {
+                        builder.Append(escapedStart.ToString());
+                    }
+                }
+                else if (TryPeekRune(_index, out var privateStartRune, out var privateStartRuneLength) &&
+                    IsIdentifierStart(privateStartRune))
+                {
+                    builder.Append(_source.AsSpan(_index, privateStartRuneLength));
+                    _index += privateStartRuneLength;
+                    _column += privateStartRuneLength;
+                }
+                else
+                {
+                    var hashToken = new Token(TokenKind.Unknown, "#", new SourceSpan(start, 1, line, column));
+                    tokens.Add(hashToken);
+                    _lastSignificantToken = hashToken;
+                    continue;
+                }
+
+                while (!malformedIdentifier && _index < _source.Length)
+                {
+                    var c = _source[_index];
+                    if (TryPeekRune(_index, out var partRune, out var partRuneLength) && IsIdentifierPart(partRune))
+                    {
+                        builder.Append(_source.AsSpan(_index, partRuneLength));
+                        _index += partRuneLength;
+                        _column += partRuneLength;
+                        continue;
+                    }
+
+                    if (c == '\\' && IsUnicodeEscapeStart(_index))
+                    {
+                        hadEscape = true;
+                        if (!TryReadUnicodeEscape(out var escaped) ||
+                            IsLineTerminator(escaped) ||
+                            IsWhiteSpace(escaped) ||
+                            !IsIdentifierPart(escaped))
+                        {
+                            malformedIdentifier = true;
+                            break;
+                        }
+
+                        builder.Append(escaped.ToString());
+                        continue;
+                    }
+
+                    break;
+                }
+
+                var text = malformedIdentifier ? _source[start.._index] : builder.ToString();
+                var privateToken = new Token(
+                    malformedIdentifier ? TokenKind.Unknown : TokenKind.PrivateIdentifier,
+                    text,
+                    new SourceSpan(start, _index - start, line, column),
+                    hadEscape);
+                tokens.Add(privateToken);
+                _lastSignificantToken = privateToken;
+                continue;
+            }
+
             if (char.IsDigit(ch))
             {
                 _index++;
@@ -739,6 +827,11 @@ public sealed class JsLexer
 
     private static bool IsIdentifierStart(Rune rune)
     {
+        if (rune.Value == 0x2E2F)
+        {
+            return false;
+        }
+
         if (rune.Value is 0x5F or 0x24 || IsOtherIdentifierStart(rune))
         {
             return true;
