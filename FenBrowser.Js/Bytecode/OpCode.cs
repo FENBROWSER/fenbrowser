@@ -6,6 +6,7 @@ public enum OpCode : byte
     LoadVar,
     LoadThis,
     StoreVar,
+    InitVar,
     Move,
     Jump,
     JumpIfFalse,

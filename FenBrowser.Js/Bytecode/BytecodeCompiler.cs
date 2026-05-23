@@ -19,6 +19,8 @@ public sealed class BytecodeCompiler
     private readonly List<JsValue> _constants = new();
     private readonly Dictionary<string, int> _variables = new(StringComparer.Ordinal);
     private readonly HashSet<string> _varDeclarationNames = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _lexicalDeclarationNames = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _constDeclarationNames = new(StringComparer.Ordinal);
     private readonly List<string> _propertyNames = new();
     private readonly Dictionary<string, int> _propertyNameToIndex = new(StringComparer.Ordinal);
     private readonly List<BytecodeFunction> _nestedFunctions = new();
@@ -54,6 +56,8 @@ public sealed class BytecodeCompiler
         _constants.Clear();
         _variables.Clear();
         _varDeclarationNames.Clear();
+        _lexicalDeclarationNames.Clear();
+        _constDeclarationNames.Clear();
         _propertyNames.Clear();
         _propertyNameToIndex.Clear();
         _nestedFunctions.Clear();
@@ -81,6 +85,8 @@ public sealed class BytecodeCompiler
             Constants = _constants.ToArray(),
             VariableSlots = new Dictionary<string, int>(_variables),
             VarDeclarationNames = _varDeclarationNames.ToArray(),
+            LexicalDeclarationNames = _lexicalDeclarationNames.ToArray(),
+            ConstDeclarationNames = _constDeclarationNames.ToArray(),
             PropertyNames = _propertyNames.ToArray(),
             ParameterNames = _parameterNames.ToArray(),
             HasOwnArgumentsObject = hasOwnArgumentsObject,
@@ -107,12 +113,30 @@ public sealed class BytecodeCompiler
                     {
                         _varDeclarationNames.Add(d.Identifier);
                     }
+                    else if (string.Equals(decl.Kind, "const", StringComparison.Ordinal))
+                    {
+                        _constDeclarationNames.Add(d.Identifier);
+                    }
+                    else
+                    {
+                        _lexicalDeclarationNames.Add(d.Identifier);
+                    }
 
                     var slot = GetOrCreateVariableSlot(d.Identifier);
                     if (d.Initializer is not null)
                     {
                         var reg = CompileExpression(d.Initializer);
-                        _instructions.Add(new Instruction(OpCode.StoreVar, reg, slot, 0));
+                        var op = string.Equals(decl.Kind, "var", StringComparison.Ordinal)
+                            ? OpCode.StoreVar
+                            : OpCode.InitVar;
+                        _instructions.Add(new Instruction(op, reg, slot, 0));
+                    }
+                    else if (string.Equals(decl.Kind, "let", StringComparison.Ordinal))
+                    {
+                        var reg = AllocateRegister();
+                        var ci = AddConstant(JsValue.Undefined);
+                        _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
+                        _instructions.Add(new Instruction(OpCode.InitVar, reg, slot, 0));
                     }
                 }
 

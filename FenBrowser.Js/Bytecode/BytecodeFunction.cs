@@ -14,6 +14,10 @@ public sealed class BytecodeFunction
 
     public IReadOnlyList<string> VarDeclarationNames { get; init; } = Array.Empty<string>();
 
+    public IReadOnlyList<string> LexicalDeclarationNames { get; init; } = Array.Empty<string>();
+
+    public IReadOnlyList<string> ConstDeclarationNames { get; init; } = Array.Empty<string>();
+
     public required IReadOnlyList<string> PropertyNames { get; init; }
 
     public required IReadOnlyList<string> ParameterNames { get; init; }

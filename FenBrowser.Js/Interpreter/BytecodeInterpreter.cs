@@ -229,6 +229,7 @@ public sealed class BytecodeInterpreter
         }
 
         InstantiateVarDeclarations(function, frame);
+        InstantiateLexicalDeclarations(function, frame);
 
         while (frame.InstructionPointer < function.Instructions.Count)
         {
@@ -246,6 +247,9 @@ public sealed class BytecodeInterpreter
                     break;
                 case OpCode.StoreVar:
                     StoreName(frame, ins.B, frame.Registers[ins.A]);
+                    break;
+                case OpCode.InitVar:
+                    InitializeName(frame, ins.B, frame.Registers[ins.A]);
                     break;
                 case OpCode.Move:
                     frame.Registers[ins.A] = frame.Registers[ins.B];
@@ -643,6 +647,29 @@ public sealed class BytecodeInterpreter
             if (init != BindingOpResult.Ok)
             {
                 ThrowTypeError(frame, $"Cannot initialize var binding '{name}'.");
+                return;
+            }
+        }
+    }
+
+    private void InstantiateLexicalDeclarations(BytecodeFunction function, InterpreterFrame frame)
+    {
+        foreach (var name in function.LexicalDeclarationNames)
+        {
+            var create = frame.Environment.CreateMutableBinding(name, deletable: false);
+            if (create != BindingOpResult.Ok)
+            {
+                ThrowTypeError(frame, $"Cannot declare lexical binding '{name}'.");
+                return;
+            }
+        }
+
+        foreach (var name in function.ConstDeclarationNames)
+        {
+            var create = frame.Environment.CreateImmutableBinding(name, strict: true);
+            if (create != BindingOpResult.Ok)
+            {
+                ThrowTypeError(frame, $"Cannot declare const binding '{name}'.");
                 return;
             }
         }
@@ -2953,6 +2980,9 @@ public sealed class BytecodeInterpreter
                 {
                     return envValue;
                 }
+
+                ThrowBindingFailure(frame, status, name, assignment: false);
+                return JsValue.Undefined;
             }
         }
 
@@ -2983,12 +3013,64 @@ public sealed class BytecodeInterpreter
                     return;
                 }
 
-                break;
+                ThrowBindingFailure(frame, status, name, assignment: true);
+                return;
             }
         }
 
         frame.Variables[slot] = value;
         SyncGlobalVariable(frame, slot, value);
+    }
+
+    private void InitializeName(InterpreterFrame frame, int slot, JsValue value)
+    {
+        var name = SlotNameTable.GetName(frame.Function, slot);
+        if (name is not null)
+        {
+            for (var env = (EnvironmentRecord?)frame.Environment; env is not null; env = env.OuterEnv)
+            {
+                if (!env.HasBinding(name))
+                {
+                    continue;
+                }
+
+                var status = env.InitializeBinding(name, value);
+                if (status == BindingOpResult.Ok)
+                {
+                    frame.Variables[slot] = value;
+                    return;
+                }
+
+                ThrowBindingFailure(frame, status, name, assignment: true);
+                return;
+            }
+        }
+
+        frame.Variables[slot] = value;
+    }
+
+    private void ThrowBindingFailure(InterpreterFrame frame, BindingOpResult status, string name, bool assignment)
+    {
+        switch (status)
+        {
+            case BindingOpResult.TdzAccess:
+                ThrowReferenceError(frame, $"Cannot access '{name}' before initialization.");
+                return;
+            case BindingOpResult.ConstAssignment:
+                ThrowTypeError(frame, assignment
+                    ? $"Assignment to constant variable '{name}'."
+                    : $"Cannot read immutable binding '{name}'.");
+                return;
+            case BindingOpResult.NotInitializable:
+            case BindingOpResult.AlreadyDeclared:
+                ThrowTypeError(frame, $"Cannot initialize binding '{name}'.");
+                return;
+            case BindingOpResult.NotFound:
+                ThrowReferenceError(frame, $"{name} is not defined.");
+                return;
+            default:
+                return;
+        }
     }
 
     private void SyncGlobalVariable(InterpreterFrame frame, int slot, JsValue value)
@@ -3023,6 +3105,11 @@ public sealed class BytecodeInterpreter
         ThrowOrHandle(frame, CreateTypeError(message));
     }
 
+    private void ThrowReferenceError(InterpreterFrame frame, string message)
+    {
+        ThrowOrHandle(frame, CreateReferenceError(message));
+    }
+
     private void ThrowOrHandle(InterpreterFrame frame, JsValue value)
     {
         if (frame.ExceptionHandlers.Count > 0)
@@ -3039,6 +3126,11 @@ public sealed class BytecodeInterpreter
     private JsValue CreateTypeError(string message)
     {
         return CreateErrorObject("TypeError", EnsureTypeErrorPrototype(), message);
+    }
+
+    private JsValue CreateReferenceError(string message)
+    {
+        return CreateErrorObject("ReferenceError", EnsureReferenceErrorPrototype(), message);
     }
 
     private JsValue CreateRangeError(string message)
@@ -8182,6 +8274,12 @@ public sealed class BytecodeInterpreter
             "ReferenceError",
             ref _referenceErrorConstructorHandle,
             ref _referenceErrorPrototypeHandle);
+    }
+
+    private ObjectHandle EnsureReferenceErrorPrototype()
+    {
+        _ = EnsureReferenceErrorConstructor();
+        return _referenceErrorPrototypeHandle!.Value;
     }
 
     private ObjectHandle EnsureEvalErrorConstructor()
