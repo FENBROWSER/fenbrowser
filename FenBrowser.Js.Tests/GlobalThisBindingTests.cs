@@ -80,6 +80,12 @@ public sealed class GlobalThisBindingTests
     }
 
     [Fact]
+    public void FunctionBareGlobalAssignmentCreatesGlobalObjectProperty()
+    {
+        Assert.Equal(13, RunNum("function write() { implicitFromFunction = 13; } write(); globalThis.implicitFromFunction;"));
+    }
+
+    [Fact]
     public void StandardGlobalsAreGlobalThisProperties()
     {
         Assert.True(RunBool("globalThis.globalThis === globalThis;"));

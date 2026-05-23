@@ -69,6 +69,14 @@ public sealed class LexicalEnvironmentRuntimeTests
     }
 
     [Fact]
+    public void UnresolvableReadThrowsReferenceError()
+    {
+        Assert.Equal(
+            "ReferenceError",
+            RunStr("let observed; try { definitelyMissing; } catch (e) { observed = e.name; } observed;"));
+    }
+
+    [Fact]
     public void AssignmentToConstThrowsTypeError()
     {
         Assert.Equal(

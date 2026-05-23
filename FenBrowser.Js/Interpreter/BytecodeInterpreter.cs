@@ -189,26 +189,19 @@ public sealed class BytecodeInterpreter
         // when the function gets its own arguments object. We deliberately do NOT
         // pre-bind every VariableSlots entry: the inner compiler also allocates slots
         // for free variable references, and creating local bindings for those would
-        // shadow the outer chain that LoadName/StoreName now walks. Locally-declared
-        // `var` and `let` names still flow through VariableStore until B.6.6.
+        // shadow the outer chain that LoadName/StoreName walks.
         for (var i = 0; i < function.ParameterNames.Count; i++)
         {
             var paramName = function.ParameterNames[i];
             var paramValue = i < args.Count ? args[i] : JsValue.Undefined;
             _ = frame.Environment.CreateMutableBinding(paramName, deletable: false);
             _ = frame.Environment.InitializeBinding(paramName, paramValue);
-            if (function.VariableSlots.TryGetValue(paramName, out var slot))
-            {
-                frame.Variables[slot] = paramValue;
-            }
         }
 
         if (function.HasOwnArgumentsObject &&
-            !function.ParameterNames.Contains("arguments", StringComparer.Ordinal) &&
-            function.VariableSlots.TryGetValue("arguments", out var argumentsSlot))
+            !function.ParameterNames.Contains("arguments", StringComparer.Ordinal))
         {
             var argumentsObject = CreateArgumentsObject(args);
-            frame.Variables[argumentsSlot] = argumentsObject;
             _ = frame.Environment.CreateMutableBinding("arguments", deletable: false);
             _ = frame.Environment.InitializeBinding("arguments", argumentsObject);
         }
@@ -513,7 +506,7 @@ public sealed class BytecodeInterpreter
                     frame.Registers[ins.A] = JsValue.Undefined;
                     break;
                 case OpCode.Delete:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(true);
+                    frame.Registers[ins.A] = DeleteName(frame, ins.B);
                     break;
                 case OpCode.TypeOf:
                     frame.Registers[ins.A] = JsValue.FromString(TypeOfValue(frame.Registers[ins.B]));
@@ -2707,9 +2700,8 @@ public sealed class BytecodeInterpreter
     }
 
     // LoadName/StoreName funnel slot-based LoadVar/StoreVar opcodes through the
-    // active EnvironmentRecord chain first. The VariableStore fallback remains only
-    // for unmigrated compiler/runtime slots and is removed once every binding path
-    // has declaration-instantiation coverage.
+    // active EnvironmentRecord chain. Unresolvable reads become ReferenceError, and
+    // non-strict unresolvable writes create/update a property on the global object.
     private JsValue LoadName(InterpreterFrame frame, int slot)
     {
         var name = SlotNameTable.GetName(frame.Function, slot);
@@ -2737,7 +2729,8 @@ public sealed class BytecodeInterpreter
             }
         }
 
-        return frame.Variables[slot];
+        ThrowReferenceError(frame, name is null ? $"Invalid variable slot {slot}." : $"{name} is not defined.");
+        return JsValue.Undefined;
     }
 
     private void StoreName(InterpreterFrame frame, int slot, JsValue value)
@@ -2755,22 +2748,18 @@ public sealed class BytecodeInterpreter
                 var status = env.SetMutableBinding(name, value, strict: false);
                 if (status == BindingOpResult.Ok)
                 {
-                    // Keep VariableStore in sync for any opcode path that still reads
-                    // the slot directly (e.g. global object mirroring below, or
-                    // unmigrated closure capture). B.6.6 deletes both stores once
-                    // nothing reads them.
-                    frame.Variables[slot] = value;
-                    SyncGlobalVariable(frame, slot, value);
                     return;
                 }
 
                 ThrowBindingFailure(frame, status, name, assignment: true);
                 return;
             }
+
+            SetImplicitGlobalProperty(name, value);
+            return;
         }
 
-        frame.Variables[slot] = value;
-        SyncGlobalVariable(frame, slot, value);
+        ThrowReferenceError(frame, $"Invalid variable slot {slot}.");
     }
 
     private void InitializeName(InterpreterFrame frame, int slot, JsValue value)
@@ -2788,7 +2777,6 @@ public sealed class BytecodeInterpreter
                 var status = env.InitializeBinding(name, value);
                 if (status == BindingOpResult.Ok)
                 {
-                    frame.Variables[slot] = value;
                     return;
                 }
 
@@ -2797,7 +2785,29 @@ public sealed class BytecodeInterpreter
             }
         }
 
-        frame.Variables[slot] = value;
+        ThrowReferenceError(frame, name is null ? $"Invalid variable slot {slot}." : $"{name} is not defined.");
+    }
+
+    private JsValue DeleteName(InterpreterFrame frame, int slot)
+    {
+        var name = SlotNameTable.GetName(frame.Function, slot);
+        if (name is null)
+        {
+            return JsValue.FromBoolean(true);
+        }
+
+        for (var env = (EnvironmentRecord?)frame.Environment; env is not null; env = env.OuterEnv)
+        {
+            if (!env.HasBinding(name))
+            {
+                continue;
+            }
+
+            var status = env.DeleteBinding(name);
+            return JsValue.FromBoolean(status == BindingOpResult.Ok || status == BindingOpResult.NotFound);
+        }
+
+        return JsValue.FromBoolean(true);
     }
 
     private void ThrowBindingFailure(InterpreterFrame frame, BindingOpResult status, string name, bool assignment)
@@ -2824,30 +2834,14 @@ public sealed class BytecodeInterpreter
         }
     }
 
-    private void SyncGlobalVariable(InterpreterFrame frame, int slot, JsValue value)
+    private void SetImplicitGlobalProperty(string name, JsValue value)
     {
-        if (_globalObjectHandle is null ||
-            frame.ThisValue.Tag != JsValueTag.Object ||
-            !frame.ThisValue.AsObjectHandle().Equals(_globalObjectHandle.Value))
+        var globalHandle = EnsureGlobalObject();
+        var global = _heap.GetObject(globalHandle);
+        _ = global.SetProperty(name, value);
+        if (value.Tag == JsValueTag.Object)
         {
-            return;
-        }
-
-        foreach (var variable in frame.Function.VariableSlots)
-        {
-            if (variable.Value != slot)
-            {
-                continue;
-            }
-
-            var global = _heap.GetObject(_globalObjectHandle.Value);
-            _ = global.SetProperty(variable.Key, value);
-            if (value.Tag == JsValueTag.Object)
-            {
-                _heap.WriteBarrier(_globalObjectHandle.Value, value.AsObjectHandle());
-            }
-
-            return;
+            _heap.WriteBarrier(globalHandle, value.AsObjectHandle());
         }
     }
 

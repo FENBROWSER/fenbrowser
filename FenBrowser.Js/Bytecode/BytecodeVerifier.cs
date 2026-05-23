@@ -231,10 +231,13 @@ public sealed class BytecodeVerifier
             case OpCode.Pos:
             case OpCode.Neg:
             case OpCode.Void:
-            case OpCode.Delete:
             case OpCode.TypeOf:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                break;
+            case OpCode.Delete:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateVariableSlot(function, ip, ins.B);
                 break;
             case OpCode.Return:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");

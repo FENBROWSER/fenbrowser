@@ -655,6 +655,14 @@ public sealed class BytecodeCompiler
             {
                 if (unary.Operator == "delete")
                 {
+                    if (unary.Operand is IdentifierExpressionNode identifier)
+                    {
+                        var deleteDest = AllocateRegister();
+                        var slot = GetOrCreateVariableSlot(identifier.Name);
+                        _instructions.Add(new Instruction(OpCode.Delete, deleteDest, slot, 0));
+                        return deleteDest;
+                    }
+
                     if (unary.Operand is MemberExpressionNode member)
                     {
                         var objReg = CompileExpression(member.Object);

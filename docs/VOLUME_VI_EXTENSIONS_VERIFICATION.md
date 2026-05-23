@@ -54,6 +54,7 @@ This volume details the infrastructure used to extend the browser and verify its
 - Lexical declaration instantiation and TDZ behavior are covered by `FenBrowser.Js.Tests/LexicalEnvironmentRuntimeTests.cs` and exact `FenBrowser.Js.Test262` rechecks `language/eval-code/indirect/lex-env-no-init-let.js` / `lex-env-no-init-const.js`.
 - Function declaration hoisting through environment-backed bindings is covered by `FenBrowser.Js.Tests/FunctionDeclarationHoistingTests.cs` and exact `FenBrowser.Js.Test262` recheck `language/global-code/decl-func.js`.
 - Closure capture now retains `JsFunctionObject.OuterEnvironment` without a captured-cell map; `EnvironmentRecord.Trace(...)` keeps captured heap objects live through GC. This is covered by `FenBrowser.Js.Tests/ClosureEnvChainTests.cs`, `ClosureEnvironmentTraceTests.cs`, and exact `FenBrowser.Js.Test262` recheck `language/expressions/arrow-function/arrow/capturing-closure-variables-1.js`.
+- `VariableStore` has been retired from runtime frames; identifier reads/writes/deletes now route through the active environment chain, with unresolvable reads throwing `ReferenceError` and non-strict unresolvable writes creating global object properties. This is covered by `FenBrowser.Js.Tests/GlobalThisBindingTests.cs`, `LexicalEnvironmentRuntimeTests.cs`, `ObjectAndBytecodeTests.cs`, and exact `FenBrowser.Js.Test262` rechecks `language/expressions/addition/S11.6.1_A2.1_T2.js` / `language/expressions/delete/11.4.1-3-1.js`.
 
 ## 2. WebDriver Implementation (`FenBrowser.WebDriver`)
 

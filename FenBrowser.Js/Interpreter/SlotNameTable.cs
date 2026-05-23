@@ -45,9 +45,8 @@ public static class SlotNameTable
         var arr = new string?[max + 1];
         foreach (var kv in function.VariableSlots)
         {
-            // Multiple names mapped to the same slot is not expected from the compiler;
-            // if it ever happens, last-writer-wins keeps the table deterministic and the
-            // env-record shim simply falls back to the VariableStore path for that name.
+            // Multiple names mapped to the same slot is not expected from the compiler.
+            // If it ever happens, last-writer-wins keeps diagnostics deterministic.
             arr[kv.Value] = kv.Key;
         }
 

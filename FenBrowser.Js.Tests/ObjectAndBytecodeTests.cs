@@ -465,6 +465,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void DeleteDeclaredVarBindingReturnsFalse()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("var x = 1; delete x;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.False(result.AsBoolean());
+    }
+
+    [Fact]
     public void DeleteRemovesNamedObjectProperty()
     {
         var compiler = new BytecodeCompiler();
