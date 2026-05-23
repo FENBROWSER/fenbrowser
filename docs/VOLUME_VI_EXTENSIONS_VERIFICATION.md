@@ -50,6 +50,7 @@ This volume details the infrastructure used to extend the browser and verify its
 - Top-level standalone execution now uses a `GlobalEnvironmentRecord` backed by the realm global object, so `globalThis.name`, bare global identifier resolution, and standard global constructors/functions share the same object binding surface.
 - `FenBrowser.Js.Tests/ShellSmokeTests.cs` runs process-level CLI regressions for empty eval, file execution, and shell-routed test262 file/directory subsets.
 - `FenBrowser.Js.Tests/GlobalThisBindingTests.cs` plus exact `FenBrowser.Js.Test262` rechecks for `built-ins/global/global-object.js` and `built-ins/global/property-descriptor.js` guard the `globalThis` identity/property-descriptor contract.
+- Global `var` declaration-instantiation is covered by `FenBrowser.Js.Tests/GlobalThisBindingTests.cs` and exact `FenBrowser.Js.Test262` recheck `language/global-code/script-decl-var.js`; the runtime harness prelude exposes `$262.evalScript` through the engine's global `eval` path for that subset.
 
 ## 2. WebDriver Implementation (`FenBrowser.WebDriver`)
 

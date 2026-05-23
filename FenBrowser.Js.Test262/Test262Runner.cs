@@ -1387,7 +1387,9 @@ public sealed class Test262Runner
                  return true;
                }
                function $DONE(error) { if (error !== undefined) { throw error; } }
-               var $262 = {};
+               var $262 = {
+                 evalScript: function (sourceText) { return eval(sourceText); }
+               };
                """;
     }
 

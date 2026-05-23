@@ -228,6 +228,8 @@ public sealed class BytecodeInterpreter
             _ = frame.Environment.InitializeBinding("arguments", argumentsObject);
         }
 
+        InstantiateVarDeclarations(function, frame);
+
         while (frame.InstructionPointer < function.Instructions.Count)
         {
             var ins = function.Instructions[frame.InstructionPointer++];
@@ -607,6 +609,43 @@ public sealed class BytecodeInterpreter
         }
 
         return JsValue.Undefined;
+    }
+
+    private void InstantiateVarDeclarations(BytecodeFunction function, InterpreterFrame frame)
+    {
+        foreach (var name in function.VarDeclarationNames)
+        {
+            if (frame.Environment is GlobalEnvironmentRecord global)
+            {
+                var result = global.CreateGlobalVarBinding(name, deletable: false);
+                if (result != BindingOpResult.Ok)
+                {
+                    ThrowTypeError(frame, $"Cannot declare global var binding '{name}'.");
+                    return;
+                }
+
+                continue;
+            }
+
+            if (frame.Environment.HasBinding(name))
+            {
+                continue;
+            }
+
+            var create = frame.Environment.CreateMutableBinding(name, deletable: false);
+            if (create != BindingOpResult.Ok)
+            {
+                ThrowTypeError(frame, $"Cannot declare var binding '{name}'.");
+                return;
+            }
+
+            var init = frame.Environment.InitializeBinding(name, JsValue.Undefined);
+            if (init != BindingOpResult.Ok)
+            {
+                ThrowTypeError(frame, $"Cannot initialize var binding '{name}'.");
+                return;
+            }
+        }
     }
 
     private void InitializeBuiltinGlobals(BytecodeFunction function, InterpreterFrame frame)
@@ -3058,7 +3097,13 @@ public sealed class BytecodeInterpreter
         var program = JsParser.ParseScript(new SourceText(args[0].AsString(), "<eval>"));
         var compiled = new BytecodeCompiler().CompileProgram(program);
         new BytecodeVerifier().Verify(compiled);
-        return ExecuteInternal(compiled, Array.Empty<JsValue>(), null, JsValue.Undefined);
+        var globalHandle = EnsureGlobalObject();
+        return ExecuteInternal(
+            compiled,
+            Array.Empty<JsValue>(),
+            null,
+            JsValue.FromObject(globalHandle),
+            frameEnvironment: EnsureGlobalEnvironment());
     }
 
     private ObjectHandle EnsureTypeErrorPrototype()

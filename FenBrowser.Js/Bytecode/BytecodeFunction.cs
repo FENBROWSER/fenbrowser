@@ -12,6 +12,8 @@ public sealed class BytecodeFunction
 
     public required IReadOnlyDictionary<string, int> VariableSlots { get; init; }
 
+    public IReadOnlyList<string> VarDeclarationNames { get; init; } = Array.Empty<string>();
+
     public required IReadOnlyList<string> PropertyNames { get; init; }
 
     public required IReadOnlyList<string> ParameterNames { get; init; }

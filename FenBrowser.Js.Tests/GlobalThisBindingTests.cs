@@ -46,6 +46,34 @@ public sealed class GlobalThisBindingTests
     }
 
     [Fact]
+    public void GlobalVarWithoutInitializerCreatesGlobalObjectProperty()
+    {
+        Assert.True(RunBool("var brandNew; Object.hasOwn(globalThis, 'brandNew');"));
+    }
+
+    [Fact]
+    public void GlobalVarWithoutInitializerUsesSpecDescriptorShape()
+    {
+        Assert.True(RunBool("""
+            var brandNew;
+            var d = Object.getOwnPropertyDescriptor(globalThis, 'brandNew');
+            d.value === undefined && d.writable === true && d.enumerable === true && d.configurable === false;
+            """));
+    }
+
+    [Fact]
+    public void GlobalVarDeclarationDoesNotOverwriteExistingGlobalProperty()
+    {
+        Assert.True(RunBool("var Object; Object === globalThis.Object;"));
+    }
+
+    [Fact]
+    public void EvalScriptCreatesGlobalVarBindings()
+    {
+        Assert.True(RunBool("eval('var evalDeclared;'); Object.hasOwn(globalThis, 'evalDeclared');"));
+    }
+
+    [Fact]
     public void BareGlobalAssignmentIsReachableThroughGlobalThis()
     {
         Assert.Equal(11, RunNum("z = 11; globalThis.z;"));

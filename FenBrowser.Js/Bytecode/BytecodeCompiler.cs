@@ -18,6 +18,7 @@ public sealed class BytecodeCompiler
     private readonly List<Instruction> _instructions = new();
     private readonly List<JsValue> _constants = new();
     private readonly Dictionary<string, int> _variables = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _varDeclarationNames = new(StringComparer.Ordinal);
     private readonly List<string> _propertyNames = new();
     private readonly Dictionary<string, int> _propertyNameToIndex = new(StringComparer.Ordinal);
     private readonly List<BytecodeFunction> _nestedFunctions = new();
@@ -52,6 +53,7 @@ public sealed class BytecodeCompiler
         _instructions.Clear();
         _constants.Clear();
         _variables.Clear();
+        _varDeclarationNames.Clear();
         _propertyNames.Clear();
         _propertyNameToIndex.Clear();
         _nestedFunctions.Clear();
@@ -78,6 +80,7 @@ public sealed class BytecodeCompiler
             Instructions = _instructions.ToArray(),
             Constants = _constants.ToArray(),
             VariableSlots = new Dictionary<string, int>(_variables),
+            VarDeclarationNames = _varDeclarationNames.ToArray(),
             PropertyNames = _propertyNames.ToArray(),
             ParameterNames = _parameterNames.ToArray(),
             HasOwnArgumentsObject = hasOwnArgumentsObject,
@@ -100,6 +103,11 @@ public sealed class BytecodeCompiler
             case VariableDeclarationStatementNode decl:
                 foreach (var d in decl.Declarators)
                 {
+                    if (string.Equals(decl.Kind, "var", StringComparison.Ordinal))
+                    {
+                        _varDeclarationNames.Add(d.Identifier);
+                    }
+
                     var slot = GetOrCreateVariableSlot(d.Identifier);
                     if (d.Initializer is not null)
                     {
@@ -402,11 +410,22 @@ public sealed class BytecodeCompiler
         return initializer switch
         {
             VariableDeclarationStatementNode { Declarators.Count: 1 } declaration =>
-                GetOrCreateVariableSlot(declaration.Declarators[0].Identifier),
+                GetForInDeclarationTargetSlot(declaration),
             ExpressionStatementNode { Expression: IdentifierExpressionNode identifier } =>
                 GetOrCreateVariableSlot(identifier.Name),
             _ => throw new InvalidOperationException("Unsupported for-in initializer target.")
         };
+    }
+
+    private int GetForInDeclarationTargetSlot(VariableDeclarationStatementNode declaration)
+    {
+        var name = declaration.Declarators[0].Identifier;
+        if (string.Equals(declaration.Kind, "var", StringComparison.Ordinal))
+        {
+            _varDeclarationNames.Add(name);
+        }
+
+        return GetOrCreateVariableSlot(name);
     }
 
     private void CompileThrowStatement(ThrowStatementNode throwStmt)
