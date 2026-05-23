@@ -616,6 +616,70 @@ public sealed class ClassRuntimeTests
         ").AsNumber());
     }
 
+    // H.5 - private fields and methods (mangled-name implementation).
+    [Fact]
+    public void PrivateFieldRoundTripsViaAccessorMethod()
+    {
+        Assert.Equal(42d, Run(@"
+            class C {
+                #x = 42;
+                getX() { return this.#x; }
+            }
+            (new C()).getX();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void PrivateFieldWriteFromMethod()
+    {
+        Assert.Equal(99d, Run(@"
+            class C {
+                #x = 0;
+                setX(v) { this.#x = v; }
+                getX() { return this.#x; }
+            }
+            var c = new C();
+            c.setX(99);
+            c.getX();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void PrivateMethodCallableFromPublicMethod()
+    {
+        Assert.Equal(50d, Run(@"
+            class C {
+                #double(v) { return v * 2; }
+                run(v) { return this.#double(v); }
+            }
+            (new C()).run(25);
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void PrivateNameIsNotEnumerableAsPublic()
+    {
+        // Private names are mangled, so user code can't reach them via the
+        // `#x` syntax from outside the class.
+        Assert.True(Run(@"
+            class C { #x = 1; }
+            var c = new C();
+            !Object.keys(c).includes('#x');
+        ").AsBoolean());
+    }
+
+    [Fact]
+    public void PrivateNamesAreScopedPerClass()
+    {
+        // Two classes with the same private name should not collide; each gets
+        // its own mangled slot.
+        Assert.Equal(12d, Run(@"
+            class A { #v = 5; get() { return this.#v; } }
+            class B { #v = 7; get() { return this.#v; } }
+            (new A()).get() + (new B()).get();
+        ").AsNumber());
+    }
+
     [Fact]
     public void EmptyStaticBlockIsValid()
     {

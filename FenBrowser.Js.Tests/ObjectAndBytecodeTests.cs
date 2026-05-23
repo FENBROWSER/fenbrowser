@@ -123,8 +123,6 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Theory]
-    [InlineData("class C { #x; }", "private-class-field")]
-    [InlineData("class C { #m() {} }", "private-class-method")]
     [InlineData("class C { async *m() {} }", "async-or-generator-class-method")]
     [InlineData("class C { m() { this.#m; } }", "private-member-access")]
     public void CompilerRejectsParserOnlyClassElements(string source, string featureName)

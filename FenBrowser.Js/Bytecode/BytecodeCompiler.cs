@@ -15,6 +15,8 @@ public sealed class BytecodeCompiler
         public required List<int> ContinueJumpIndices { get; init; }
     }
 
+    private static int s_privateClassCounter;
+
     private readonly List<Instruction> _instructions = new();
     private readonly List<JsValue> _constants = new();
     private readonly Dictionary<string, int> _variables = new(StringComparer.Ordinal);
@@ -287,30 +289,65 @@ public sealed class BytecodeCompiler
             baseReg = CompileExpression(baseClass);
         }
 
-foreach (var member in members)
+// H.5 - build the mangle map for private members of this class. Each
+        // private name (`#x`, `#m`) maps to a unique-per-class suffixed key
+        // (`#x@C7`) which is used as an ordinary property name by Get/SetProp.
+        var privateMangle = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var member in members)
         {
-            if (member.Kind == ClassMemberKind.Field)
+            if (!member.IsPrivate) continue;
+            if (member.Kind == ClassMemberKind.Field || member.Kind == ClassMemberKind.Method
+                || member.Kind == ClassMemberKind.Getter || member.Kind == ClassMemberKind.Setter)
             {
-                if (member.IsPrivate)
+                if (!privateMangle.ContainsKey(member.Name))
                 {
-                    throw new UnsupportedFeatureException(
-                        "private-class-field", FeatureSupportLevel.ParserOnly, member.Span);
+                    var id = System.Threading.Interlocked.Increment(ref s_privateClassCounter);
+                    // Mangle to a name that does NOT start with '#' so the
+                    // `ThrowIfPrivateMemberAccess` guard on remaining raw `#x`
+                    // accesses (i.e. references to an undeclared private name)
+                    // still fires.
+                    privateMangle[member.Name] = "__priv" + id + "__" + member.Name.Substring(1);
                 }
-                continue;
             }
+        }
 
-            if (member.IsPrivate)
-            {
-                throw new UnsupportedFeatureException("private-class-method", FeatureSupportLevel.ParserOnly, member.Span);
-            }
-
-            // H.5 - computed property names are now supported for methods, getters, and setters
-            // Private fields and methods are still deferred to a later step.
-
+        foreach (var member in members)
+        {
             if (member.Kind != ClassMemberKind.StaticBlock && (member.IsAsync || member.IsGenerator))
             {
                 throw new UnsupportedFeatureException("async-or-generator-class-method", FeatureSupportLevel.ParserOnly, member.Span);
             }
+        }
+
+        // H.5 - apply the private-name mangle to each member's function body /
+        // field initializer, and to the member's installed name when the member
+        // itself is private.
+        if (privateMangle.Count > 0)
+        {
+            var rewritten = new List<ClassMemberNode>(members.Count);
+            foreach (var member in members)
+            {
+                ExpressionNode newFn = member.Function;
+                if (member.Function is FunctionExpressionNode fn)
+                {
+                    var newBody = new BlockStatementNode(
+                        PrivateNameRewriter.RewriteStatements(fn.Body.Statements, privateMangle),
+                        fn.Body.Span);
+                    newFn = new FunctionExpressionNode(fn.Name, fn.Parameters, newBody, fn.Span);
+                }
+                else
+                {
+                    newFn = PrivateNameRewriter.Rewrite(member.Function, privateMangle);
+                }
+
+                string newName = member.Name;
+                if (member.IsPrivate && privateMangle.TryGetValue(member.Name, out var mangled))
+                {
+                    newName = mangled;
+                }
+                rewritten.Add(member with { Name = newName, Function = newFn });
+            }
+            members = rewritten;
         }
 
         // Locate constructor (or synthesise an empty one). For derived classes
