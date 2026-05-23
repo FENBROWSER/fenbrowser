@@ -2949,6 +2949,33 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getMilliseconds",
             (t, _) => GetDateComponent(t, "getMilliseconds", d => d.Millisecond));
 
+        // ECMA-262 21.4.4.{12,...,19} Date.prototype UTC-time component getters. The
+        // engine has no TimeZone offset, so the UTC variants share the same extractor
+        // as the local ones - kept under distinct names so JS code that explicitly
+        // wants UTC keeps round-tripping (and so that a future host-LocalTZA wiring
+        // only touches the local-time entries).
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCFullYear",
+            (t, _) => GetDateComponent(t, "getUTCFullYear", d => d.Year));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCMonth",
+            (t, _) => GetDateComponent(t, "getUTCMonth", d => d.Month - 1));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCDate",
+            (t, _) => GetDateComponent(t, "getUTCDate", d => d.Day));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCDay",
+            (t, _) => GetDateComponent(t, "getUTCDay", d => (int)d.DayOfWeek));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCHours",
+            (t, _) => GetDateComponent(t, "getUTCHours", d => d.Hour));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCMinutes",
+            (t, _) => GetDateComponent(t, "getUTCMinutes", d => d.Minute));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCSeconds",
+            (t, _) => GetDateComponent(t, "getUTCSeconds", d => d.Second));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCMilliseconds",
+            (t, _) => GetDateComponent(t, "getUTCMilliseconds", d => d.Millisecond));
+
+        // ECMA-262 21.4.4.20 Date.prototype.getTimezoneOffset - difference in minutes
+        // between local time and UTC. Always 0 until a host TimeZone model lands.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getTimezoneOffset",
+            (t, _) => GetDateComponent(t, "getTimezoneOffset", _ => 0));
+
         _datePrototypeHandle = prototypeHandle;
         _dateConstructorHandle = constructorHandle;
         return constructorHandle;
