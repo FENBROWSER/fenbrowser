@@ -3220,6 +3220,25 @@ public sealed class BytecodeInterpreter
             date.TimeValue = TimeClip(t);
             return JsValue.FromNumber(date.TimeValue);
         }, length: 1);
+
+        // ECMA-262 21.4.4.{21,22,23} Date.prototype.setFullYear / setMonth / setDate
+        // and the matching UTC variants (.setUTCFullYear / setUTCMonth / setUTCDate).
+        // The engine has LocalTZA=0 so local and UTC variants share the same
+        // implementation. setFullYear(year[, month[, date]]) overwrites the year and
+        // optionally further fields; setMonth and setDate only touch their own
+        // portion. Each returns the new TimeClip'd millisecond value.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setFullYear",
+            (t, a) => SetDateField(t, "setFullYear", a, hasYear: true, hasMonth: a.Count > 1, hasDay: a.Count > 2), length: 3);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCFullYear",
+            (t, a) => SetDateField(t, "setUTCFullYear", a, hasYear: true, hasMonth: a.Count > 1, hasDay: a.Count > 2), length: 3);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setMonth",
+            (t, a) => SetDateField(t, "setMonth", a, hasYear: false, hasMonth: true, hasDay: a.Count > 1, monthArgIndex: 0, dayArgIndex: 1), length: 2);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCMonth",
+            (t, a) => SetDateField(t, "setUTCMonth", a, hasYear: false, hasMonth: true, hasDay: a.Count > 1, monthArgIndex: 0, dayArgIndex: 1), length: 2);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setDate",
+            (t, a) => SetDateField(t, "setDate", a, hasYear: false, hasMonth: false, hasDay: true, dayArgIndex: 0), length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCDate",
+            (t, a) => SetDateField(t, "setUTCDate", a, hasYear: false, hasMonth: false, hasDay: true, dayArgIndex: 0), length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toISOString", DatePrototypeToIsoString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toJSON", DatePrototypeToJson, length: 1);
 
@@ -3286,6 +3305,70 @@ public sealed class BytecodeInterpreter
         _datePrototypeHandle = prototypeHandle;
         _dateConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    // Shared engine for Date setFullYear / setMonth / setDate. Reads the current
+    // [[DateValue]] (substituting epoch when NaN, matching the spec's MakeDay
+    // step), overwrites the requested portions from args, and writes back through
+    // TimeClip. Any non-finite component drives the result to NaN per the
+    // spec's MakeDate failure mode.
+    private JsValue SetDateField(
+        JsValue thisValue, string method, IReadOnlyList<JsValue> args,
+        bool hasYear, bool hasMonth, bool hasDay,
+        int yearArgIndex = 0, int monthArgIndex = 1, int dayArgIndex = 2)
+    {
+        var date = RequireDate(thisValue, method);
+        DateTimeOffset baseDate;
+        if (double.IsFinite(date.TimeValue))
+        {
+            baseDate = DateTimeOffset.FromUnixTimeMilliseconds((long)date.TimeValue);
+        }
+        else if (hasYear)
+        {
+            // setFullYear is allowed to resurrect a NaN-valued Date per spec 21.4.4.21
+            // step 2: "If t is NaN, set t to +0".
+            baseDate = DateTimeOffset.FromUnixTimeMilliseconds(0);
+        }
+        else
+        {
+            date.TimeValue = double.NaN;
+            return JsValue.FromNumber(double.NaN);
+        }
+
+        int year = baseDate.Year, month = baseDate.Month, day = baseDate.Day;
+        if (hasYear)
+        {
+            var n = ToNumber(args[yearArgIndex]);
+            if (!double.IsFinite(n)) { date.TimeValue = double.NaN; return JsValue.FromNumber(double.NaN); }
+            year = (int)n;
+        }
+        if (hasMonth)
+        {
+            var n = ToNumber(args[monthArgIndex]);
+            if (!double.IsFinite(n)) { date.TimeValue = double.NaN; return JsValue.FromNumber(double.NaN); }
+            month = (int)n + 1; // JS months are 0-based, DateTimeOffset is 1-based.
+        }
+        if (hasDay)
+        {
+            var n = ToNumber(args[dayArgIndex]);
+            if (!double.IsFinite(n)) { date.TimeValue = double.NaN; return JsValue.FromNumber(double.NaN); }
+            day = (int)n;
+        }
+
+        try
+        {
+            // Build via per-component AddXxx so out-of-range month/day overflow
+            // naturally per spec MakeDay (Feb 30 -> Mar 2, etc.).
+            var dt = new DateTimeOffset(year, 1, 1, baseDate.Hour, baseDate.Minute, baseDate.Second, baseDate.Millisecond, TimeSpan.Zero)
+                .AddMonths(month - 1)
+                .AddDays(day - 1);
+            date.TimeValue = TimeClip(dt.ToUnixTimeMilliseconds());
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            date.TimeValue = double.NaN;
+        }
+        return JsValue.FromNumber(date.TimeValue);
     }
 
     // ECMA-262 21.4.1.31 TimeClip - returns NaN for non-finite or out-of-range
