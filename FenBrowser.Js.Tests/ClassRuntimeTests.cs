@@ -313,4 +313,102 @@ public sealed class ClassRuntimeTests
             c.x + c.y + c.z;
         ").AsNumber());
     }
+
+    // H.5 - computed property names.
+
+    [Fact]
+    public void ComputedStringKeyMethod()
+    {
+        Assert.Equal(42d, Run(@"
+            class C {
+                ['foo']() { return 42; }
+            }
+            (new C()).foo();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void ComputedStringKeyViaBracketNotation()
+    {
+        Assert.Equal(42d, Run(@"
+            class C {
+                ['bar']() { return 42; }
+            }
+            var c = new C();
+            c['bar']();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void ComputedNumericKeyMethod()
+    {
+        Assert.Equal(99d, Run(@"
+            class C {
+                [0]() { return 99; }
+            }
+            (new C())[0]();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void ComputedStringKeyGetter()
+    {
+        Assert.Equal("computed-get", Run(@"
+            class C {
+                get ['greeting']() { return 'computed-get'; }
+            }
+            (new C()).greeting;
+        ").AsString());
+    }
+
+    [Fact]
+    public void ComputedStringKeySetter()
+    {
+        Assert.Equal(123d, Run(@"
+            class C {
+                set ['val'](x) { this._v = x; }
+            }
+            var c = new C();
+            c.val = 123;
+            c._v;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void StaticMethodWithComputedKey()
+    {
+        Assert.Equal("static-computed", Run(@"
+            class C {
+                static ['greet']() { return 'static-computed'; }
+            }
+            C.greet();
+        ").AsString());
+    }
+
+    [Fact]
+    public void InstanceMethodWithComputedKeyOnPrototype()
+    {
+        Assert.True(Run(@"
+            class C {
+                ['dynamicMethod']() { return true; }
+            }
+            var proto = C.prototype;
+            var c = new C();
+            proto['dynamicMethod'] === c['dynamicMethod'];
+        ").AsBoolean());
+    }
+
+    [Fact]
+    public void MultipleComputedKeys()
+    {
+        Assert.Equal(9d, Run(@"
+            class C {
+                ['add'](a, b) { return a + b; }
+                ['sub'](a, b) { return a - b; }
+                ['mul'](a, b) { return a * b; }
+            }
+            var c = new C();
+            c['add'](1, 2) + c['sub'](5, 1) + c['mul'](2, 1);
+        ").AsNumber()); // 3 + 4 + 2 = 9
+    }
 }

@@ -277,7 +277,7 @@ public sealed class BytecodeCompiler
             baseReg = CompileExpression(baseClass);
         }
 
-        foreach (var member in members)
+foreach (var member in members)
         {
             if (member.Kind == ClassMemberKind.Field)
             {
@@ -292,10 +292,8 @@ public sealed class BytecodeCompiler
                 throw new UnsupportedFeatureException("private-class-method", FeatureSupportLevel.ParserOnly, member.Span);
             }
 
-            if (member.ComputedName is not null)
-            {
-                throw new UnsupportedFeatureException("computed-class-member", FeatureSupportLevel.ParserOnly, member.Span);
-            }
+            // H.5 - computed property names are now supported for methods, getters, and setters
+            // Private fields and methods are still deferred to a later step.
 
             if (member.IsAsync || member.IsGenerator)
             {
@@ -343,29 +341,52 @@ public sealed class BytecodeCompiler
         // on either the prototype (instance methods) or the constructor (static).
         // Getter/setter members get accessor descriptors; method members get
         // plain data descriptors.
+        // H.5 - computed property names are handled by compiling the ComputedName
+        // expression and using the ByReg variants for accessors, or SetElem for methods.
         foreach (var member in members)
         {
             if (member.Kind == ClassMemberKind.Constructor) continue;
             if (member.Function is not FunctionExpressionNode methodFn) continue;
 
             var methodReg = CompileFunctionExpressionToRegister(methodFn);
-            var nameIndex = GetOrCreatePropertyName(member.Name);
             var targetReg = member.IsStatic ? classReg : protoReg;
             // H.3 - record the home object so `super.x` lookups can walk the
             // prototype chain from inside the method body.
             _instructions.Add(new Instruction(OpCode.SetHomeObject, methodReg, targetReg, 0));
 
-            switch (member.Kind)
+            // H.5 - Handle computed property names using ByReg opcodes or SetElem
+            if (member.ComputedName is not null)
             {
-                case ClassMemberKind.Getter:
-                    _instructions.Add(new Instruction(OpCode.DefineGetter, targetReg, nameIndex, methodReg));
-                    break;
-                case ClassMemberKind.Setter:
-                    _instructions.Add(new Instruction(OpCode.DefineSetter, targetReg, nameIndex, methodReg));
-                    break;
-                default:
-                    _instructions.Add(new Instruction(OpCode.SetPropByName, targetReg, nameIndex, methodReg));
-                    break;
+                var keyReg = CompileExpression(member.ComputedName);
+                switch (member.Kind)
+                {
+                    case ClassMemberKind.Getter:
+                        _instructions.Add(new Instruction(OpCode.DefineGetterByReg, targetReg, keyReg, methodReg));
+                        break;
+                    case ClassMemberKind.Setter:
+                        _instructions.Add(new Instruction(OpCode.DefineSetterByReg, targetReg, keyReg, methodReg));
+                        break;
+                    default:
+                        // Methods use SetElem for computed names
+                        _instructions.Add(new Instruction(OpCode.SetElem, targetReg, keyReg, methodReg));
+                        break;
+                }
+            }
+            else
+            {
+                var nameIndex = GetOrCreatePropertyName(member.Name);
+                switch (member.Kind)
+                {
+                    case ClassMemberKind.Getter:
+                        _instructions.Add(new Instruction(OpCode.DefineGetter, targetReg, nameIndex, methodReg));
+                        break;
+                    case ClassMemberKind.Setter:
+                        _instructions.Add(new Instruction(OpCode.DefineSetter, targetReg, nameIndex, methodReg));
+                        break;
+                    default:
+                        _instructions.Add(new Instruction(OpCode.SetPropByName, targetReg, nameIndex, methodReg));
+                        break;
+                }
             }
         }
 

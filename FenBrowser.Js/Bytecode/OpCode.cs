@@ -98,4 +98,32 @@ public enum OpCode : byte
     // base class as a callable/constructible value. Throws ReferenceError
     // when called outside a class with extends.
     LoadSuperConstructor,
+
+    // H.5 - DefineGetterByReg(A=target reg, B=key reg, C=function reg).
+    // Like DefineGetter but the property key is in register B (a JsValue)
+    // instead of an index into the constant pool. Used for computed property
+    // names on class getters.
+    DefineGetterByReg,
+
+    // H.5 - DefineSetterByReg(A=target reg, B=key reg, C=function reg).
+    // Like DefineSetter but the property key is in register B (a JsValue)
+    // instead of an index into the constant pool. Used for computed property
+    // names on class setters.
+    DefineSetterByReg,
+
+    // H.5 - DefinePrivateField(A=target reg, B=field name string index, C=value reg).
+    // Defines a private field (identified by the string at constant pool index B)
+    // on the target object. The field is stored in the instance's private field
+    // storage. ECMA-262 10.2.1.
+    DefinePrivateField,
+
+    // H.5 - GetPrivateField(A=dest reg, B=object reg, C=field name string index).
+    // Reads a private field value from the target object. Throws a TypeError
+    // if the accessor is not in the class that defined the field.
+    GetPrivateField,
+
+    // H.5 - SetPrivateField(A=object reg, B=field name string index, C=value reg).
+    // Writes a private field value on the target object. Throws a TypeError
+    // if the accessor is not in the class that defined the field.
+    SetPrivateField,
 }

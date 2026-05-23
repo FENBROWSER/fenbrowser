@@ -348,6 +348,10 @@ public sealed partial class BytecodeInterpreter
                 case OpCode.DefineSetter:
                     HandleDefineAccessor(frame, function, ins);
                     break;
+                case OpCode.DefineGetterByReg:
+                case OpCode.DefineSetterByReg:
+                    HandleDefineAccessorByReg(frame, ins);
+                    break;
                 case OpCode.SetHomeObject:
                     HandleSetHomeObject(frame, ins);
                     break;
@@ -10009,6 +10013,51 @@ public sealed partial class BytecodeInterpreter
         }
 
         if (ins.OpCode == OpCode.DefineGetter)
+        {
+            getValue = accessorFnValue;
+        }
+        else
+        {
+            setValue = accessorFnValue;
+        }
+
+        _ = targetObj.DefineOwnProperty(accessorName,
+            Objects.JsPropertyDescriptor.Accessor(getValue, setValue, Enumerable: false, Configurable: true));
+        if (accessorFnValue.Tag == JsValueTag.Object)
+        {
+            _heap.WriteBarrier(targetHandle, accessorFnValue.AsObjectHandle());
+        }
+    }
+
+    // H.5 - HandleDefineAccessorByReg: Like HandleDefineAccessor but the property
+    // key is a JsValue in a register (for computed property names) instead of an
+    // index into the constant pool.
+    private void HandleDefineAccessorByReg(InterpreterFrame frame, Instruction ins)
+    {
+        var targetValue = frame.Registers[ins.A];
+        if (targetValue.Tag != JsValueTag.Object)
+        {
+            ThrowOrHandle(frame, CreateTypeError("DefineGetter/Setter target must be an object."));
+            return;
+        }
+
+        var targetHandle = targetValue.AsObjectHandle();
+        var targetObj = _heap.GetObject(targetHandle);
+        var keyValue = frame.Registers[ins.B];
+        var accessorFnValue = frame.Registers[ins.C];
+
+        // Convert the key value to a property key string
+        var accessorName = ToPropertyKey(keyValue);
+
+        JsValue getValue = JsValue.Undefined;
+        JsValue setValue = JsValue.Undefined;
+        if (targetObj.TryGetOwnProperty(accessorName, out var existing) && existing.IsAccessor)
+        {
+            getValue = existing.Get;
+            setValue = existing.Set;
+        }
+
+        if (ins.OpCode == OpCode.DefineGetterByReg)
         {
             getValue = accessorFnValue;
         }
