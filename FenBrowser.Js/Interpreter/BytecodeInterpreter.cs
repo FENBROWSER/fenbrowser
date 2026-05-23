@@ -1361,6 +1361,29 @@ public sealed class BytecodeInterpreter
             return JsValue.FromObject(resultHandle);
         }, length: 1);
 
+        // ECMA-262 24.2.3 (Set Methods, ES2025) intersection. Spec optimisation:
+        // walk the smaller side so the result is bounded by min(|this|, |other|).
+        // We don't have other.size cheaply for arbitrary iterables, so we drain
+        // the argument into a temporary set and walk whichever is smaller.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "intersection", (thisValue, args) =>
+        {
+            var self = RequireSet(thisValue);
+            var other = new SetObject();
+            foreach (var v in IterateSetLike(args)) other.Add(v);
+
+            var result = CreateFreshSet(out var resultHandle, thisValue.AsObjectHandle());
+            var (small, large) = self.Count <= other.Count ? (self, other) : (other, self);
+            foreach (var v in small.Snapshot())
+            {
+                if (large.Has(v))
+                {
+                    result.Add(v);
+                    if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
+                }
+            }
+            return JsValue.FromObject(resultHandle);
+        }, length: 1);
+
         _setPrototypeHandle = prototypeHandle;
         _setConstructorHandle = constructorHandle;
         return constructorHandle;
