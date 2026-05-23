@@ -51,6 +51,8 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _evalErrorPrototypeHandle;
     private ObjectHandle? _aggregateErrorConstructorHandle;
     private ObjectHandle? _aggregateErrorPrototypeHandle;
+    private ObjectHandle? _weakRefConstructorHandle;
+    private ObjectHandle? _weakRefPrototypeHandle;
 
     // Shared Random for Math.random. Thread-safety: Math.random is single-threaded in
     // ECMA-262, and the runtime is single-threaded today; if we ever introduce SAB +
@@ -658,6 +660,11 @@ public sealed class BytecodeInterpreter
         if (function.VariableSlots.TryGetValue("AggregateError", out var aggErrSlot))
         {
             frame.Variables[aggErrSlot] = JsValue.FromObject(EnsureAggregateErrorConstructor());
+        }
+
+        if (function.VariableSlots.TryGetValue("WeakRef", out var weakRefSlot))
+        {
+            frame.Variables[weakRefSlot] = JsValue.FromObject(EnsureWeakRefConstructor());
         }
 
         if (function.VariableSlots.TryGetValue("Object", out var objectSlot))
@@ -7350,6 +7357,70 @@ public sealed class BytecodeInterpreter
     {
         _ = EnsureAggregateErrorConstructor();
         return _aggregateErrorPrototypeHandle!.Value;
+    }
+
+    private sealed class WeakRefObject : JsObject
+    {
+        public WeakRefObject(ObjectHandle target) { Target = target; }
+        public ObjectHandle Target { get; }
+    }
+
+    // ECMA-262 26.1 WeakRef(target). The engine has no incremental GC tier that
+    // can null-out weak references yet, so the held reference stays live for the
+    // lifetime of the WeakRef. deref() therefore always returns the original
+    // target. This still matches the spec's observable contract: deref's return
+    // is allowed to be the target, and a future GC pass can flip it to undefined
+    // without any program-visible breaking change.
+    private ObjectHandle EnsureWeakRefConstructor()
+    {
+        if (_weakRefConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototype = CreateOrdinaryObject();
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "WeakRef",
+            (_, _) => throw new JsThrownException(CreateTypeError(
+                "Constructor WeakRef requires 'new'.")),
+            args =>
+            {
+                if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "WeakRef: target must be an object."));
+                }
+                var targetHandle = args[0].AsObjectHandle();
+                var wr = new WeakRefObject(targetHandle);
+                wr.SetPrototype(prototypeHandle);
+                var handle = _heap.AllocateObject(wr, AllocationSite.Current());
+                _heap.WriteBarrier(handle, targetHandle);
+                return JsValue.FromObject(handle);
+            },
+            length: 1);
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "deref", (thisValue, _) =>
+        {
+            if (thisValue.Tag != JsValueTag.Object ||
+                _heap.GetObject(thisValue.AsObjectHandle()) is not WeakRefObject wr)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "WeakRef.prototype.deref called on non-WeakRef receiver."));
+            }
+            return JsValue.FromObject(wr.Target);
+        });
+
+        _weakRefPrototypeHandle = prototypeHandle;
+        _weakRefConstructorHandle = constructorHandle;
+        return constructorHandle;
     }
 
     private ObjectHandle EnsureNativeErrorConstructor(
