@@ -691,34 +691,8 @@ public sealed class JsParser
             baseClass = ParseExpression(0);
         }
 
-        ExpectPunctuator("{");
-        var depth = 1;
-        Token close = Previous();
-        while (!Is(TokenKind.EndOfFile) && depth > 0)
-        {
-            var token = Advance();
-            if (token.Kind != TokenKind.Punctuator)
-            {
-                continue;
-            }
-
-            if (token.Text == "{")
-            {
-                depth++;
-            }
-            else if (token.Text == "}")
-            {
-                depth--;
-                close = token;
-            }
-        }
-
-        if (depth != 0)
-        {
-            throw new JsParserException("Unterminated class body.");
-        }
-
-        return new ClassDeclarationNode(name.Text, baseClass, MergeSpan(start.Span, close.Span));
+        var (members, close) = ParseClassBody();
+        return new ClassDeclarationNode(name.Text, baseClass, members, MergeSpan(start.Span, close.Span));
     }
 
     private ClassExpressionNode ParseClassExpression()
@@ -737,34 +711,109 @@ public sealed class JsParser
             baseClass = ParseExpression(0);
         }
 
+        var (members, close) = ParseClassBody();
+        return new ClassExpressionNode(name, baseClass, members, MergeSpan(start.Span, close.Span));
+    }
+
+    // ECMA-262 15.7 ClassBody. The minimum v1 grammar:
+    //   '{' (ClassMember | ';')* '}'
+    //   ClassMember := 'static'? (constructor-method | named-method | getter | setter)
+    //
+    // Computed keys, private fields, public field declarations, and static
+    // initialization blocks are deferred. A leading 'static' modifier is
+    // recognised but otherwise behaves like a tag on the synthesised member.
+    private (IReadOnlyList<ClassMemberNode> Members, Token Close) ParseClassBody()
+    {
         ExpectPunctuator("{");
-        var depth = 1;
-        Token close = Previous();
-        while (!Is(TokenKind.EndOfFile) && depth > 0)
+        var members = new List<ClassMemberNode>();
+
+        while (!Is(TokenKind.EndOfFile) && !IsPunctuator("}"))
         {
-            var token = Advance();
-            if (token.Kind != TokenKind.Punctuator)
+            // Stray semicolons between members are allowed per the spec.
+            if (IsPunctuator(";"))
             {
+                Advance();
                 continue;
             }
 
-            if (token.Text == "{")
+            var memberStart = Current().Span;
+            bool isStatic = false;
+            // The 'static' modifier is a contextual keyword (lexed as Identifier).
+            // Disambiguate against a method literally named "static" by peeking the
+            // next token: if it's '(', the current token is the method name.
+            if (IsIdentifierLike(Current()) && Current().Text == "static" && !IsPunctuatorAt(1, "("))
             {
-                depth++;
+                Advance();
+                isStatic = true;
             }
-            else if (token.Text == "}")
+
+            // Detect getter/setter prefix - "get name() { ... }" / "set name(v) { ... }".
+            ClassMemberKind kind = ClassMemberKind.Method;
+            if (IsIdentifierLike(Current()) && (Current().Text == "get" || Current().Text == "set")
+                && !IsPunctuatorAt(1, "(")
+                && (IsIdentifierLikeAt(1) || PeekKind(1) == TokenKind.String || PeekKind(1) == TokenKind.Number))
             {
-                depth--;
-                close = token;
+                kind = Current().Text == "get" ? ClassMemberKind.Getter : ClassMemberKind.Setter;
+                Advance();
             }
+
+            string memberName = ConsumeClassMemberName();
+            if (kind == ClassMemberKind.Method && memberName == "constructor" && !isStatic)
+            {
+                kind = ClassMemberKind.Constructor;
+            }
+
+            var parameters = ParseParameterList();
+            var body = ParseBlockStatement();
+            var fn = new FunctionExpressionNode(memberName, parameters, body, MergeSpan(memberStart, body.Span));
+            members.Add(new ClassMemberNode(memberName, kind, isStatic, fn, MergeSpan(memberStart, body.Span)));
         }
 
-        if (depth != 0)
+        if (!IsPunctuator("}"))
         {
             throw new JsParserException("Unterminated class body.");
         }
 
-        return new ClassExpressionNode(name, baseClass, MergeSpan(start.Span, close.Span));
+        var close = Advance();
+        return (members, close);
+    }
+
+    private string ConsumeClassMemberName()
+    {
+        var tok = Current();
+        if (tok.Kind == TokenKind.Identifier || tok.Kind == TokenKind.Keyword)
+        {
+            Advance();
+            return tok.Text;
+        }
+        if (tok.Kind == TokenKind.String)
+        {
+            Advance();
+            // Strip surrounding quotes from RawText form.
+            return tok.Text;
+        }
+        if (tok.Kind == TokenKind.Number)
+        {
+            Advance();
+            return tok.Text;
+        }
+
+        throw new JsParserException($"Expected class member name, found '{tok.Text}'.");
+    }
+
+    private bool IsPunctuatorAt(int offset, string text) => PeekIsPunctuator(offset, text);
+
+    private bool IsIdentifierLikeAt(int offset)
+    {
+        var idx = Math.Min(_index + offset, _tokens.Count - 1);
+        var tok = _tokens[idx];
+        return tok.Kind == TokenKind.Identifier || tok.Kind == TokenKind.Keyword;
+    }
+
+    private TokenKind PeekKind(int offset)
+    {
+        var idx = Math.Min(_index + offset, _tokens.Count - 1);
+        return _tokens[idx].Kind;
     }
 
     private SwitchStatementNode ParseSwitchStatement()

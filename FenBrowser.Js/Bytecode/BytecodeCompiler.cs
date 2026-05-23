@@ -202,6 +202,9 @@ public sealed class BytecodeCompiler
                 // environment record rather than legacy captured cells.
                 _ = functionDecl;
                 break;
+            case ClassDeclarationNode classDecl:
+                CompileClassDeclaration(classDecl);
+                break;
             default:
                 // Minimal compiler slice currently targets literals/arithmetic/variables.
                 break;
@@ -241,6 +244,99 @@ public sealed class BytecodeCompiler
         var slot = GetOrCreateVariableSlot(functionDecl.Name);
         _varDeclarationNames.Add(functionDecl.Name);
         _instructions.Add(new Instruction(OpCode.StoreVar, dest, slot, 0));
+    }
+
+    // Lower a class declaration into ordinary CreateFunction + NewObject +
+    // SetPropByName opcodes. The synthesised value is bound to the class name
+    // via the lexical declaration path so it follows ECMA-262 15.7's TDZ rule
+    // ("a class binding is created before any of its computations").
+    private void CompileClassDeclaration(ClassDeclarationNode classDecl)
+    {
+        var classReg = CompileClassExpressionToRegister(classDecl.Name, classDecl.BaseClass, classDecl.Members);
+        _lexicalDeclarationNames.Add(classDecl.Name);
+        var slot = GetOrCreateVariableSlot(classDecl.Name);
+        _instructions.Add(new Instruction(OpCode.InitVar, classReg, slot, 0));
+    }
+
+    // Synthesise the constructor function + prototype object, install methods
+    // on the prototype (non-static) or constructor (static), and return the
+    // register holding the constructor function. Extends/super are not handled
+    // here yet - a base-class expression is currently ignored, which is enough
+    // for the H.1 surface (constructor + methods + static methods).
+    private int CompileClassExpressionToRegister(
+        string? className,
+        ExpressionNode? baseClass,
+        IReadOnlyList<ClassMemberNode> members)
+    {
+        _ = baseClass; // TODO H.2 - extends/super.
+
+        // Locate constructor (or synthesise an empty one).
+        FunctionExpressionNode constructorFn = SynthesizeDefaultConstructor(className);
+        foreach (var member in members)
+        {
+            if (member.Kind == ClassMemberKind.Constructor && member.Function is FunctionExpressionNode fn)
+            {
+                constructorFn = fn;
+                break;
+            }
+        }
+
+        // Compile constructor.
+        var classReg = CompileFunctionExpressionToRegister(constructorFn);
+
+        // Build prototype object.
+        var protoReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.NewObject, protoReg, 0, 0));
+
+        // For each non-constructor member, compile its function and install it
+        // on either the prototype (instance methods) or the constructor (static).
+        foreach (var member in members)
+        {
+            if (member.Kind == ClassMemberKind.Constructor) continue;
+            if (member.Function is not FunctionExpressionNode methodFn) continue;
+
+            var methodReg = CompileFunctionExpressionToRegister(methodFn);
+            var nameIndex = GetOrCreatePropertyName(member.Name);
+            var targetReg = member.IsStatic ? classReg : protoReg;
+            _instructions.Add(new Instruction(OpCode.SetPropByName, targetReg, nameIndex, methodReg));
+        }
+
+        // proto.constructor = classCtor; classCtor.prototype = proto.
+        var ctorNameIdx = GetOrCreatePropertyName("constructor");
+        _instructions.Add(new Instruction(OpCode.SetPropByName, protoReg, ctorNameIdx, classReg));
+        var protoNameIdx = GetOrCreatePropertyName("prototype");
+        _instructions.Add(new Instruction(OpCode.SetPropByName, classReg, protoNameIdx, protoReg));
+
+        return classReg;
+    }
+
+    private int CompileFunctionExpressionToRegister(FunctionExpressionNode fnExpr)
+    {
+        var nestedProgram = new ProgramNode(ProgramKind.Script, fnExpr.Body.Statements, fnExpr.Body.Span);
+        var childCompiler = new BytecodeCompiler();
+        var nestedFunction = childCompiler.CompileProgramCore(
+            nestedProgram,
+            fnExpr.Parameters,
+            fnExpr.Name,
+            hasOwnArgumentsObject: true);
+        var nestedIndex = _nestedFunctions.Count;
+        _nestedFunctions.Add(nestedFunction);
+        var dest = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.CreateFunction, dest, nestedIndex, 0));
+        return dest;
+    }
+
+    private static FunctionExpressionNode SynthesizeDefaultConstructor(string? className)
+    {
+        // ECMA-262 15.7.10 Default Constructor: empty constructor for a class
+        // without `extends`. (The base-class variant `constructor(...args){super(...args);}`
+        // is a follow-up when extends/super lands.)
+        var span = default(SourceSpan);
+        return new FunctionExpressionNode(
+            Name: className,
+            Parameters: Array.Empty<string>(),
+            Body: new BlockStatementNode(Array.Empty<StatementNode>(), span),
+            Span: span);
     }
 
     private void CompileIfStatement(IfStatementNode ifStmt)
@@ -733,6 +829,8 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.CreateFunction, dest, nestedIndex, 0));
                 return dest;
             }
+            case ClassExpressionNode classExpr:
+                return CompileClassExpressionToRegister(classExpr.Name, classExpr.BaseClass, classExpr.Members);
             case ArrowFunctionExpressionNode arrow:
             {
                 IReadOnlyList<StatementNode> statements;

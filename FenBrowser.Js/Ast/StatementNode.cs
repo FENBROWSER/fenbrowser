@@ -72,7 +72,26 @@ public sealed record ContinueStatementNode(SourceSpan Span) : StatementNode(Span
 public sealed record ClassDeclarationNode(
     string Name,
     ExpressionNode? BaseClass,
+    IReadOnlyList<ClassMemberNode> Members,
     SourceSpan Span) : StatementNode(Span);
+
+// One element of a class body. Kind selects the role; method bodies are stored as
+// a FunctionExpressionNode so the same bytecode-compilation path the parser uses
+// for `function foo() {}` applies here unchanged.
+public sealed record ClassMemberNode(
+    string Name,
+    ClassMemberKind Kind,
+    bool IsStatic,
+    ExpressionNode Function,
+    SourceSpan Span);
+
+public enum ClassMemberKind : byte
+{
+    Constructor,
+    Method,
+    Getter,
+    Setter,
+}
 
 public sealed record SwitchCaseNode(
     ExpressionNode? Test,

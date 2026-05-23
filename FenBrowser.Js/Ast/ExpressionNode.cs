@@ -8,7 +8,7 @@ public sealed record IdentifierExpressionNode(string Name, SourceSpan Span) : Ex
 
 public sealed record ThisExpressionNode(SourceSpan Span) : ExpressionNode(Span);
 
-public sealed record ClassExpressionNode(string? Name, ExpressionNode? BaseClass, SourceSpan Span) : ExpressionNode(Span);
+public sealed record ClassExpressionNode(string? Name, ExpressionNode? BaseClass, IReadOnlyList<ClassMemberNode> Members, SourceSpan Span) : ExpressionNode(Span);
 
 public sealed record NumericLiteralExpressionNode(double Value, string RawText, SourceSpan Span) : ExpressionNode(Span);
 
