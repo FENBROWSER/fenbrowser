@@ -1,5 +1,6 @@
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
+using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Interpreter;
@@ -33,4 +34,10 @@ public sealed class InterpreterFrame
     public Stack<int> ExceptionHandlers { get; }
 
     public int InstructionPointer { get; set; }
+
+    // H.3 - the JsFunctionObject whose body this frame is executing. Set by
+    // the call site when known; null for the top-level Execute frame and for
+    // native-only call paths. `super.x` reads CalleeFunctionObject.HomeObject
+    // to walk the prototype chain.
+    public JsFunctionObject? CalleeFunctionObject { get; set; }
 }

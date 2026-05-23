@@ -80,4 +80,15 @@ public enum OpCode : byte
     // object-literal accessors in future.
     DefineGetter,
     DefineSetter,
+
+    // H.3 - SetHomeObject(A=function reg, B=home object reg). Records the
+    // home object on a JsFunctionObject so `super.x` lookups inside that
+    // method body can walk the prototype chain. No-op when A isn't a function.
+    SetHomeObject,
+
+    // H.3 - LoadSuperProperty(A=dest reg, B=name idx). Reads the property
+    // named B from the prototype of the current frame function's HomeObject.
+    // ECMA-262 13.3.7.3 MakeSuperPropertyReference + 9.1.2 GetSuperBase.
+    // Throws ReferenceError when called from a function with no HomeObject.
+    LoadSuperProperty,
 }

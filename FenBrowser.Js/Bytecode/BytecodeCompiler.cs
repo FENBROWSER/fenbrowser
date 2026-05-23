@@ -319,6 +319,9 @@ public sealed class BytecodeCompiler
             var methodReg = CompileFunctionExpressionToRegister(methodFn);
             var nameIndex = GetOrCreatePropertyName(member.Name);
             var targetReg = member.IsStatic ? classReg : protoReg;
+            // H.3 - record the home object so `super.x` lookups can walk the
+            // prototype chain from inside the method body.
+            _instructions.Add(new Instruction(OpCode.SetHomeObject, methodReg, targetReg, 0));
 
             switch (member.Kind)
             {
@@ -702,6 +705,16 @@ public sealed class BytecodeCompiler
             }
             case MemberExpressionNode member:
             {
+                // H.3 - super.foo lowers to LoadSuperProperty; the runtime reads
+                // the executing frame's function's HomeObject prototype chain.
+                if (member.Object is SuperExpressionNode && !member.Computed)
+                {
+                    var dest2 = AllocateRegister();
+                    var nameIdx = GetOrCreatePropertyName(member.Property);
+                    _instructions.Add(new Instruction(OpCode.LoadSuperProperty, dest2, nameIdx, 0));
+                    return dest2;
+                }
+
                 var objectReg = CompileExpression(member.Object);
                 var dest = AllocateRegister();
                 if (member.Computed)
@@ -724,20 +737,35 @@ public sealed class BytecodeCompiler
                 var isMethodCall = false;
                 if (call.Callee is MemberExpressionNode memberCallee)
                 {
-                    thisReg = CompileExpression(memberCallee.Object);
-                    calleeReg = AllocateRegister();
-                    if (memberCallee.Computed)
+                    // H.3 - super.method(args): callee comes from LoadSuperProperty,
+                    // thisValue stays the current frame's `this`. Without this branch
+                    // memberCallee.Object would compile as the (invalid) super value.
+                    if (memberCallee.Object is SuperExpressionNode && !memberCallee.Computed)
                     {
-                        var keyReg = CompileExpression(memberCallee.PropertyExpression!);
-                        _instructions.Add(new Instruction(OpCode.GetElem, calleeReg, thisReg, keyReg));
+                        thisReg = AllocateRegister();
+                        _instructions.Add(new Instruction(OpCode.LoadThis, thisReg, 0, 0));
+                        calleeReg = AllocateRegister();
+                        var superName = GetOrCreatePropertyName(memberCallee.Property);
+                        _instructions.Add(new Instruction(OpCode.LoadSuperProperty, calleeReg, superName, 0));
+                        isMethodCall = true;
                     }
                     else
                     {
-                        var nameIndex = GetOrCreatePropertyName(memberCallee.Property);
-                        _instructions.Add(new Instruction(OpCode.GetPropByName, calleeReg, thisReg, nameIndex));
-                    }
+                        thisReg = CompileExpression(memberCallee.Object);
+                        calleeReg = AllocateRegister();
+                        if (memberCallee.Computed)
+                        {
+                            var keyReg = CompileExpression(memberCallee.PropertyExpression!);
+                            _instructions.Add(new Instruction(OpCode.GetElem, calleeReg, thisReg, keyReg));
+                        }
+                        else
+                        {
+                            var nameIndex = GetOrCreatePropertyName(memberCallee.Property);
+                            _instructions.Add(new Instruction(OpCode.GetPropByName, calleeReg, thisReg, nameIndex));
+                        }
 
-                    isMethodCall = true;
+                        isMethodCall = true;
+                    }
                 }
                 else
                 {

@@ -226,4 +226,54 @@ public sealed class ClassRuntimeTests
             N.three;
         ").AsNumber());
     }
+
+    // H.3 - super.method() lookup.
+
+    [Fact]
+    public void SuperMethodReadResolvesFromBasePrototype()
+    {
+        Assert.Equal(1d, Run(@"
+            class A { f() { return 1; } }
+            class B extends A { g() { return super.f(); } }
+            (new B()).g();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void SuperMethodChainsThroughGrandparent()
+    {
+        Assert.Equal(7d, Run(@"
+            class A { hi() { return 7; } }
+            class B extends A {}
+            class C extends B { call() { return super.hi(); } }
+            (new C()).call();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void SuperPropertyAccessAsValue()
+    {
+        Assert.Equal("function", Run(@"
+            class A { f() {} }
+            class B extends A { describe() { return typeof super.f; } }
+            (new B()).describe();
+        ").AsString());
+    }
+
+    [Fact]
+    public void DerivedSuperCallPreservesThis()
+    {
+        Assert.Equal(5d, Run(@"
+            class A { setX() { this.x = 5; } }
+            class B extends A { go() { super.setX(); return this.x; } }
+            (new B()).go();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void SuperOutsideMethodThrowsReferenceError()
+    {
+        Assert.Throws<JsThrownException>(() =>
+            Run("function f() { return super.x; } f();"));
+    }
 }

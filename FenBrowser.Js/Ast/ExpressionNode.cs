@@ -8,6 +8,12 @@ public sealed record IdentifierExpressionNode(string Name, SourceSpan Span) : Ex
 
 public sealed record ThisExpressionNode(SourceSpan Span) : ExpressionNode(Span);
 
+// H.3 - the `super` keyword as an expression-position placeholder; only valid
+// as the object of a MemberExpression (super.foo / super[expr]). Direct use
+// raises SyntaxError at compile time. Naked super calls (super(...)) are not
+// yet supported.
+public sealed record SuperExpressionNode(SourceSpan Span) : ExpressionNode(Span);
+
 public sealed record ClassExpressionNode(string? Name, ExpressionNode? BaseClass, IReadOnlyList<ClassMemberNode> Members, SourceSpan Span) : ExpressionNode(Span);
 
 public sealed record NumericLiteralExpressionNode(double Value, string RawText, SourceSpan Span) : ExpressionNode(Span);

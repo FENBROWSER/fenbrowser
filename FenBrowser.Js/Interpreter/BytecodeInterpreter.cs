@@ -182,7 +182,8 @@ public sealed partial class BytecodeInterpreter
         IReadOnlyList<JsValue> args,
         JsValue thisValue,
         EnvironmentRecord? outerEnvironment = null,
-        EnvironmentRecord? frameEnvironment = null)
+        EnvironmentRecord? frameEnvironment = null,
+        JsFunctionObject? callee = null)
     {
         if (_callDepth >= MaxCallDepth)
         {
@@ -192,7 +193,7 @@ public sealed partial class BytecodeInterpreter
         _callDepth++;
         try
         {
-            return ExecuteInternalCore(function, args, thisValue, outerEnvironment, frameEnvironment);
+            return ExecuteInternalCore(function, args, thisValue, outerEnvironment, frameEnvironment, callee);
         }
         finally
         {
@@ -206,7 +207,8 @@ public sealed partial class BytecodeInterpreter
         IReadOnlyList<JsValue> args,
         JsValue thisValue,
         EnvironmentRecord? outerEnvironment = null,
-        EnvironmentRecord? frameEnvironment = null)
+        EnvironmentRecord? frameEnvironment = null,
+        JsFunctionObject? callee = null)
     {
         // B.6.4 — when the callee carries an outer EnvironmentRecord (set at
         // CreateFunction time on JsFunctionObject), the new frame's env is a fresh
@@ -216,7 +218,7 @@ public sealed partial class BytecodeInterpreter
         var frameEnv = frameEnvironment ?? (outerEnvironment is null
             ? null
             : new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment));
-        var frame = new InterpreterFrame(function, thisValue, frameEnv);
+        var frame = new InterpreterFrame(function, thisValue, frameEnv) { CalleeFunctionObject = callee };
         // Pre-create env bindings for locally-bound names that the spec mandates the
         // function-environment record holds: each formal parameter, and `arguments`
         // when the function gets its own arguments object. We deliberately do NOT
@@ -303,6 +305,12 @@ public sealed partial class BytecodeInterpreter
                 case OpCode.DefineGetter:
                 case OpCode.DefineSetter:
                     HandleDefineAccessor(frame, function, ins);
+                    break;
+                case OpCode.SetHomeObject:
+                    HandleSetHomeObject(frame, ins);
+                    break;
+                case OpCode.LoadSuperProperty:
+                    HandleLoadSuperProperty(frame, function, ins);
                     break;
                 case OpCode.SetPrototype:
                 {
@@ -9960,6 +9968,41 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
+    private void HandleSetHomeObject(InterpreterFrame frame, Instruction ins)
+    {
+        var fnValue = frame.Registers[ins.A];
+        var homeValue = frame.Registers[ins.B];
+        if (fnValue.Tag != JsValueTag.Object || homeValue.Tag != JsValueTag.Object) return;
+        if (_heap.GetObject(fnValue.AsObjectHandle()) is JsFunctionObject fn)
+        {
+            fn.HomeObject = homeValue.AsObjectHandle();
+            _heap.WriteBarrier(fnValue.AsObjectHandle(), homeValue.AsObjectHandle());
+        }
+    }
+
+    private void HandleLoadSuperProperty(InterpreterFrame frame, BytecodeFunction function, Instruction ins)
+    {
+        // ECMA-262 13.3.7.3 MakeSuperPropertyReference + 9.1.2 GetSuperBase.
+        var name = function.PropertyNames[ins.B];
+        if (frame.CalleeFunctionObject is not { } calleeFn || calleeFn.HomeObject is not { } home)
+        {
+            ThrowOrHandle(frame, CreateReferenceError("super reference requires a class method context."));
+            return;
+        }
+
+        var homeObj = _heap.GetObject(home);
+        if (homeObj.PrototypeHandle is not { } baseProtoHandle)
+        {
+            frame.Registers[ins.A] = JsValue.Undefined;
+            return;
+        }
+
+        var baseProto = _heap.GetObject(baseProtoHandle);
+        frame.Registers[ins.A] = TryGetPropertyValue(baseProto, JsValue.FromObject(baseProtoHandle), name, out var v)
+            ? v
+            : JsValue.Undefined;
+    }
+
     private static ObjectHandle ResolveObjectHandle(JsValue value)
     {
         if (value.Tag != JsValueTag.Object)
@@ -9975,7 +10018,7 @@ public sealed partial class BytecodeInterpreter
         var obj = ResolveObject(value);
         if (obj is JsFunctionObject fn)
         {
-            return ExecuteInternal(fn.Function, args, thisValue, fn.OuterEnvironment);
+            return ExecuteInternal(fn.Function, args, thisValue, fn.OuterEnvironment, callee: fn);
         }
 
         if (obj is NativeFunctionObject native)
@@ -10400,7 +10443,7 @@ public sealed partial class BytecodeInterpreter
         }
 
         var defaultInstance = JsValue.FromObject(_heap.AllocateObject(instanceObject, AllocationSite.Current()));
-        var result = ExecuteInternal(callee.Function, args, defaultInstance, callee.OuterEnvironment);
+        var result = ExecuteInternal(callee.Function, args, defaultInstance, callee.OuterEnvironment, callee: callee);
         return result.Tag == JsValueTag.Object ? result : defaultInstance;
     }
 

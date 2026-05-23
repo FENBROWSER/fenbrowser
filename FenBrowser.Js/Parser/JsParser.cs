@@ -1092,6 +1092,12 @@ public sealed class JsParser
             return new ThisExpressionNode(token.Span);
         }
 
+        if (token.Kind == TokenKind.Keyword && token.Text == "super")
+        {
+            Advance();
+            return new SuperExpressionNode(token.Span);
+        }
+
         if (token.Kind == TokenKind.Keyword && (token.Text == "true" || token.Text == "false"))
         {
             Advance();

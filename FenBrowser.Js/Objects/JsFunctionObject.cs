@@ -21,9 +21,20 @@ public sealed class JsFunctionObject : JsObject
     // one so free identifier references walk the lexical scope chain.
     public EnvironmentRecord? OuterEnvironment { get; }
 
+    // ECMA-262 10.2 [[HomeObject]] (H.3): the object on which this method was
+    // installed - the class prototype for instance methods, the class itself
+    // for static methods, undefined for ordinary functions. `super` property
+    // lookups walk this object's [[Prototype]] chain so super.foo() resolves to
+    // the inherited definition.
+    public Runtime.ObjectHandle? HomeObject { get; set; }
+
     public override void Trace(IHeapTracer tracer)
     {
         base.Trace(tracer);
         OuterEnvironment?.Trace(tracer);
+        if (HomeObject is { } home)
+        {
+            tracer.Trace(home);
+        }
     }
 }
