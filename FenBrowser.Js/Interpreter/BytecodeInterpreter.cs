@@ -2919,9 +2919,32 @@ public sealed class BytecodeInterpreter
             return JsValue.FromNumber(double.NaN);
         }, length: 1);
 
+        // ECMA-262 21.4.4.10 Date.prototype.getTime and 21.4.4.44 Date.prototype.valueOf
+        // both return the receiver's [[DateValue]]. Both are spec-identical; the
+        // valueOf binding doubles as Date's @@toPrimitive(default) target through
+        // OrdinaryToPrimitive when no @@toPrimitive is installed.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getTime", DatePrototypeGetTime);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "valueOf", DatePrototypeGetTime);
+
         _datePrototypeHandle = prototypeHandle;
         _dateConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    private double GetDateTimeValue(JsValue thisValue, string method)
+    {
+        if (thisValue.Tag == JsValueTag.Object &&
+            _heap.GetObject(thisValue.AsObjectHandle()) is DateObject date)
+        {
+            return date.TimeValue;
+        }
+        throw new JsThrownException(CreateTypeError($"Date.prototype.{method} called on a non-Date receiver."));
+    }
+
+    private JsValue DatePrototypeGetTime(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        return JsValue.FromNumber(GetDateTimeValue(thisValue, "getTime"));
     }
 
     private JsValue CreateDateObject(double timeValue)
