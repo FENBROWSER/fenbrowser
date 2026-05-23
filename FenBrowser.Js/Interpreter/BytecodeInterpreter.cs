@@ -302,13 +302,30 @@ public sealed partial class BytecodeInterpreter
                 }
                 case OpCode.SetPropByName:
                 {
-                    var ownerHandle = ResolveObjectHandle(frame.Registers[ins.A]);
-                    var obj = _heap.GetObject(ownerHandle);
+                    var receiverValue = frame.Registers[ins.A];
                     var prop = function.PropertyNames[ins.B];
                     var value = frame.Registers[ins.C];
+
+                    if (receiverValue.Tag == JsValueTag.HostObject)
+                    {
+                        // F.5 - host write routes through the validated host hook.
+                        try
+                        {
+                            SetHostObjectProperty(receiverValue, prop, value);
+                        }
+                        catch (JsThrownException ex)
+                        {
+                            ThrowOrHandle(frame, ex.Value);
+                        }
+
+                        break;
+                    }
+
+                    var ownerHandle = ResolveObjectHandle(receiverValue);
+                    var obj = _heap.GetObject(ownerHandle);
                     try
                     {
-                        _ = SetPropertyValue(ownerHandle, obj, prop, value, frame.Registers[ins.A]);
+                        _ = SetPropertyValue(ownerHandle, obj, prop, value, receiverValue);
                     }
                     catch (JsThrownException ex)
                     {
@@ -5831,6 +5848,9 @@ public sealed partial class BytecodeInterpreter
                 var obj = ResolveObject(receiver);
                 return TryGetPropertyValue(obj, receiver, key, out var value) ? value : JsValue.Undefined;
             }
+            case JsValueTag.HostObject:
+                // F.5 - route through HostObjectTable validation, then IHostHooks.
+                return GetHostObjectProperty(receiver, key);
             case JsValueTag.String:
             {
                 var s = receiver.AsString();
