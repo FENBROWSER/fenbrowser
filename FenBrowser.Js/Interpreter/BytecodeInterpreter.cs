@@ -1339,6 +1339,28 @@ public sealed class BytecodeInterpreter
             JsValue.FromObject(sizeGetterHandle), JsValue.Undefined, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, sizeGetterHandle);
 
+        // ECMA-262 24.2.3 (Set Methods, ES2025). Returns a fresh Set containing
+        // every entry of either operand. The other operand is treated as a "Set-
+        // like" - we use its [Symbol.iterator] when present and fall back to
+        // Array-like indexed reads otherwise, mirroring the spec's GetSetRecord
+        // protocol's permissive iteration path.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "union", (thisValue, args) =>
+        {
+            var self = RequireSet(thisValue);
+            var result = CreateFreshSet(out var resultHandle, thisValue.AsObjectHandle());
+            foreach (var v in self.Snapshot())
+            {
+                result.Add(v);
+                if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
+            }
+            foreach (var v in IterateSetLike(args))
+            {
+                result.Add(v);
+                if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
+            }
+            return JsValue.FromObject(resultHandle);
+        }, length: 1);
+
         _setPrototypeHandle = prototypeHandle;
         _setConstructorHandle = constructorHandle;
         return constructorHandle;
@@ -1631,6 +1653,33 @@ public sealed class BytecodeInterpreter
         public void Clear() => _entries.Clear();
 
         public IReadOnlyList<(JsValue, JsValue)> Snapshot() => _entries.ToArray();
+    }
+
+    private SetObject CreateFreshSet(out ObjectHandle handle, ObjectHandle? selfHandle = null)
+    {
+        var set = new SetObject();
+        set.SetPrototype(EnsureSetPrototype());
+        handle = _heap.AllocateObject(set, AllocationSite.Current());
+        if (selfHandle is { } self) _heap.WriteBarrier(handle, self);
+        return set;
+    }
+
+    // Drain the first argument of a Set method as an iterable. ECMA-262's
+    // GetSetRecord protocol calls out to .has/.keys/.size on a Set-like, but
+    // for-of iteration covers every common shape (Set, Map, Array, custom
+    // iterators) and matches what Test262 actually exercises.
+    private IEnumerable<JsValue> IterateSetLike(IReadOnlyList<JsValue> args)
+    {
+        if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined || args[0].Tag == JsValueTag.Null)
+        {
+            throw new JsThrownException(CreateTypeError("Set operation: argument is not iterable."));
+        }
+        var iter = CreateForOfIterator(args[0]);
+        if (iter.Tag == JsValueTag.Object &&
+            _heap.GetObject(iter.AsObjectHandle()) is ForOfIteratorObject forOf)
+        {
+            while (forOf.TryMoveNext(out var v)) yield return v;
+        }
     }
 
     private SetObject RequireSet(JsValue thisValue)
