@@ -5151,6 +5151,42 @@ public sealed class BytecodeInterpreter
                 _heap.WriteBarrier(handle, protoArg.AsObjectHandle());
             }
 
+            // ECMA-262 20.1.2.2 Object.create step 3: when Properties is not undefined,
+            // call ObjectDefineProperties(obj, Properties). Each own enumerable key on
+            // the descriptors object is converted to a property descriptor via the same
+            // ObjectDefineProperty algorithm Object.defineProperties uses, so accessor
+            // / data descriptors / writable / enumerable / configurable all flow
+            // through one validator.
+            if (args.Count > 1 && args[1].Tag != JsValueTag.Undefined)
+            {
+                if (args[1].Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Object.create: properties argument must be an object."));
+                }
+                var propsObj = _heap.GetObject(args[1].AsObjectHandle());
+                var propsReceiver = args[1];
+                var keys = new List<string>();
+                foreach (var pair in propsObj.EnumerateOwnProperties())
+                {
+                    if (pair.Value.Enumerable) keys.Add(pair.Key);
+                }
+                foreach (var key in keys)
+                {
+                    if (!TryGetPropertyValue(propsObj, propsReceiver, key, out var descValue) ||
+                        descValue.Tag != JsValueTag.Object)
+                    {
+                        continue;
+                    }
+                    ObjectDefineProperty(JsValue.Undefined, new[]
+                    {
+                        JsValue.FromObject(handle),
+                        JsValue.FromString(key),
+                        descValue,
+                    });
+                }
+            }
+
             return JsValue.FromObject(handle);
         }, length: 2);
 
