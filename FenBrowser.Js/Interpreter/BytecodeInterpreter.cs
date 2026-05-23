@@ -2925,6 +2925,7 @@ public sealed class BytecodeInterpreter
         // OrdinaryToPrimitive when no @@toPrimitive is installed.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getTime", DatePrototypeGetTime);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "valueOf", DatePrototypeGetTime);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toISOString", DatePrototypeToIsoString);
 
         _datePrototypeHandle = prototypeHandle;
         _dateConstructorHandle = constructorHandle;
@@ -2945,6 +2946,30 @@ public sealed class BytecodeInterpreter
     {
         _ = args;
         return JsValue.FromNumber(GetDateTimeValue(thisValue, "getTime"));
+    }
+
+    // ECMA-262 21.4.4.36 Date.prototype.toISOString. Format is the Date Time String
+    // Format defined in 21.4.1.18: extended ISO 8601 with millisecond precision and
+    // a literal "Z" suffix (always UTC). Non-finite [[DateValue]] raises RangeError
+    // per step 3.
+    private JsValue DatePrototypeToIsoString(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        var t = GetDateTimeValue(thisValue, "toISOString");
+        if (!double.IsFinite(t))
+        {
+            throw new JsThrownException(CreateRangeError("Invalid time value."));
+        }
+        var dto = DateTimeOffset.FromUnixTimeMilliseconds((long)t);
+        // Extended year form (+YYYYYY/-YYYYYY) when outside [0, 9999] per 21.4.1.18.
+        var year = dto.Year;
+        var yearStr = (year >= 0 && year <= 9999)
+            ? year.ToString("D4", System.Globalization.CultureInfo.InvariantCulture)
+            : (year >= 0 ? "+" : "-") + Math.Abs(year).ToString("D6", System.Globalization.CultureInfo.InvariantCulture);
+        return JsValue.FromString(string.Format(
+            System.Globalization.CultureInfo.InvariantCulture,
+            "{0}-{1:D2}-{2:D2}T{3:D2}:{4:D2}:{5:D2}.{6:D3}Z",
+            yearStr, dto.Month, dto.Day, dto.Hour, dto.Minute, dto.Second, dto.Millisecond));
     }
 
     private JsValue CreateDateObject(double timeValue)
