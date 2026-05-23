@@ -45,6 +45,10 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _decodeUriComponentHandle;
     private ObjectHandle? _uriErrorConstructorHandle;
     private ObjectHandle? _uriErrorPrototypeHandle;
+    private ObjectHandle? _referenceErrorConstructorHandle;
+    private ObjectHandle? _referenceErrorPrototypeHandle;
+    private ObjectHandle? _evalErrorConstructorHandle;
+    private ObjectHandle? _evalErrorPrototypeHandle;
 
     // Shared Random for Math.random. Thread-safety: Math.random is single-threaded in
     // ECMA-262, and the runtime is single-threaded today; if we ever introduce SAB +
@@ -637,6 +641,16 @@ public sealed class BytecodeInterpreter
         if (function.VariableSlots.TryGetValue("URIError", out var uriErrSlot))
         {
             frame.Variables[uriErrSlot] = JsValue.FromObject(EnsureUriErrorConstructor());
+        }
+
+        if (function.VariableSlots.TryGetValue("ReferenceError", out var refErrSlot))
+        {
+            frame.Variables[refErrSlot] = JsValue.FromObject(EnsureReferenceErrorConstructor());
+        }
+
+        if (function.VariableSlots.TryGetValue("EvalError", out var evalErrSlot))
+        {
+            frame.Variables[evalErrSlot] = JsValue.FromObject(EnsureEvalErrorConstructor());
         }
 
         if (function.VariableSlots.TryGetValue("Object", out var objectSlot))
@@ -7234,6 +7248,61 @@ public sealed class BytecodeInterpreter
     {
         _ = EnsureUriErrorConstructor();
         return _uriErrorPrototypeHandle!.Value;
+    }
+
+    // ECMA-262 20.5.5.{3,5} ReferenceError + EvalError native error constructors.
+    // EvalError is reserved by the spec for backward compatibility - no operation in
+    // the language throws it - but ECMA-262 still requires it to exist with the
+    // standard NativeError shape.
+    private ObjectHandle EnsureReferenceErrorConstructor()
+    {
+        return EnsureNativeErrorConstructor(
+            "ReferenceError",
+            ref _referenceErrorConstructorHandle,
+            ref _referenceErrorPrototypeHandle);
+    }
+
+    private ObjectHandle EnsureEvalErrorConstructor()
+    {
+        return EnsureNativeErrorConstructor(
+            "EvalError",
+            ref _evalErrorConstructorHandle,
+            ref _evalErrorPrototypeHandle);
+    }
+
+    private ObjectHandle EnsureNativeErrorConstructor(
+        string name,
+        ref ObjectHandle? ctorField,
+        ref ObjectHandle? protoField)
+    {
+        if (ctorField is { } existing)
+        {
+            return existing;
+        }
+
+        var prototype = CreateOrdinaryObject();
+        prototype.SetPrototype(EnsureErrorPrototype());
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+        _ = prototype.DefineOwnProperty("name",
+            new JsPropertyDescriptor(JsValue.FromString(name), Writable: true, Enumerable: false, Configurable: true));
+        _ = prototype.DefineOwnProperty("message",
+            new JsPropertyDescriptor(JsValue.FromString(string.Empty), Writable: true, Enumerable: false, Configurable: true));
+
+        var capturedProto = prototypeHandle;
+        var capturedName = name;
+        var constructor = new NativeFunctionObject(
+            name,
+            (_, args) => CreateErrorObject(capturedName, capturedProto, GetOptionalMessage(args)),
+            args => CreateErrorObject(capturedName, capturedProto, GetOptionalMessage(args)),
+            length: 1);
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        protoField = prototypeHandle;
+        ctorField = constructorHandle;
+        return constructorHandle;
     }
 
     // ECMA-262 20.5.5.7 URIError native error constructor.
