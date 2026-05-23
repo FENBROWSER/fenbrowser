@@ -93,6 +93,26 @@ public enum ClassMemberKind : byte
     Setter,
 }
 
+// E.7 - top-level `import ... from "mod"` declaration. Entries holds one
+// FenBrowser.Js.Modules.ImportEntry per import binding (including the
+// `*namespace*` / `default` sentinel cases). Side-effect-only imports
+// (`import "mod"`) carry Entries=[] and just the ModuleRequest.
+public sealed record ImportDeclarationNode(
+    string ModuleRequest,
+    IReadOnlyList<FenBrowser.Js.Modules.ImportEntry> Entries,
+    SourceSpan Span) : StatementNode(Span);
+
+// E.7 - top-level `export ...` declaration. Entries lists the
+// FenBrowser.Js.Modules.ExportEntry records produced; LocalDeclaration
+// is non-null when the export wraps an inline VarDecl/FunctionDecl/
+// ClassDecl ('export var x', 'export function f', 'export class C'),
+// in which case the underlying declaration must be compiled too.
+public sealed record ExportDeclarationNode(
+    IReadOnlyList<FenBrowser.Js.Modules.ExportEntry> Entries,
+    StatementNode? LocalDeclaration,
+    ExpressionNode? DefaultExpression,
+    SourceSpan Span) : StatementNode(Span);
+
 public sealed record SwitchCaseNode(
     ExpressionNode? Test,
     IReadOnlyList<StatementNode> Consequent,

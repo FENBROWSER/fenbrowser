@@ -177,8 +177,9 @@ public sealed class JsParser
             switch (Current().Text)
             {
                 case "import":
+                    return ParseImportDeclaration();
                 case "export":
-                    throw new UnsupportedFeatureException(Current().Text, FeatureSupportLevel.ParserOnly, Current().Span);
+                    return ParseExportDeclaration();
                 case "class":
                     return ParseClassDeclaration();
                 case "let":
@@ -677,6 +678,236 @@ public sealed class JsParser
         Advance(); // finally
         var finallyOnlyBlock = ParseBlockStatement();
         return new TryFinallyStatementNode(tryBlock, finallyOnlyBlock, MergeSpan(start.Span, finallyOnlyBlock.Span));
+    }
+
+    // E.7 - module-level import declarations. Supports the common forms:
+    //   import "mod"                          -- side effect only
+    //   import x from "mod"                   -- default import
+    //   import * as ns from "mod"             -- namespace import
+    //   import { a, b as c } from "mod"       -- named imports (with aliases)
+    //   import x, { a } from "mod"            -- combined default + named
+    //   import x, * as ns from "mod"          -- combined default + namespace
+    private ImportDeclarationNode ParseImportDeclaration()
+    {
+        var start = Advance(); // import
+        var entries = new List<FenBrowser.Js.Modules.ImportEntry>();
+        string moduleRequest;
+
+        // Side-effect-only form: import "mod";
+        if (Current().Kind == TokenKind.String)
+        {
+            moduleRequest = ParseStringLiteralValue();
+            ConsumeSemicolon();
+            return new ImportDeclarationNode(moduleRequest, entries, MergeSpan(start.Span, Previous().Span));
+        }
+
+        // Default binding (always first if present).
+        string? defaultName = null;
+        if (IsIdentifierLike(Current()))
+        {
+            defaultName = Advance().Text;
+            if (IsPunctuator(","))
+            {
+                Advance();
+            }
+        }
+
+        // Optional namespace or named binding(s).
+        if (IsPunctuator("*"))
+        {
+            Advance();
+            ExpectKeyword("as");
+            var nsName = ExpectIdentifier().Text;
+            entries.Add(new FenBrowser.Js.Modules.ImportEntry(
+                ModuleRequest: "", // filled in below
+                ImportName: FenBrowser.Js.Modules.ImportEntry.NamespaceImport,
+                LocalName: nsName));
+        }
+        else if (IsPunctuator("{"))
+        {
+            Advance();
+            while (!IsPunctuator("}") && !Is(TokenKind.EndOfFile))
+            {
+                var importName = ExpectIdentifier().Text;
+                var localName = importName;
+                if (IsIdentifierLike(Current()) && Current().Text == "as")
+                {
+                    Advance();
+                    localName = ExpectIdentifier().Text;
+                }
+                entries.Add(new FenBrowser.Js.Modules.ImportEntry(
+                    ModuleRequest: "",
+                    ImportName: importName,
+                    LocalName: localName));
+                if (IsPunctuator(","))
+                {
+                    Advance();
+                }
+            }
+            ExpectPunctuator("}");
+        }
+
+        ExpectKeyword("from");
+        moduleRequest = ParseStringLiteralValue();
+        ConsumeSemicolon();
+
+        // Stamp the module request onto every entry now that it's known. Also
+        // emit a default entry if we collected one above.
+        var finalEntries = new List<FenBrowser.Js.Modules.ImportEntry>(entries.Count + 1);
+        if (defaultName is not null)
+        {
+            finalEntries.Add(new FenBrowser.Js.Modules.ImportEntry(
+                moduleRequest, FenBrowser.Js.Modules.ImportEntry.DefaultImport, defaultName));
+        }
+        foreach (var e in entries)
+        {
+            finalEntries.Add(e with { ModuleRequest = moduleRequest });
+        }
+
+        return new ImportDeclarationNode(moduleRequest, finalEntries, MergeSpan(start.Span, Previous().Span));
+    }
+
+    // E.7 - module-level export declarations. Supports:
+    //   export var/let/const x = ...
+    //   export function f() {...}
+    //   export class C {...}
+    //   export default expr
+    //   export { a, b as c }
+    //   export { a } from "mod"           -- re-export
+    //   export * from "mod"               -- star re-export
+    //   export * as ns from "mod"         -- namespace re-export
+    private ExportDeclarationNode ParseExportDeclaration()
+    {
+        var start = Advance(); // export
+        var entries = new List<FenBrowser.Js.Modules.ExportEntry>();
+
+        // export default <expr>;
+        if (PeekKeyword(0, "default"))
+        {
+            Advance();
+            var expr = ParseExpression(0);
+            ConsumeSemicolon();
+            entries.Add(new FenBrowser.Js.Modules.ExportEntry(
+                ExportName: FenBrowser.Js.Modules.ImportEntry.DefaultImport,
+                ModuleRequest: null,
+                ImportName: null,
+                LocalName: FenBrowser.Js.Modules.ExportEntry.DefaultLocalName));
+            return new ExportDeclarationNode(entries, LocalDeclaration: null, DefaultExpression: expr,
+                MergeSpan(start.Span, Previous().Span));
+        }
+
+        // export * [as ns] from "mod";
+        if (IsPunctuator("*"))
+        {
+            Advance();
+            string? exportName = null;
+            string importName = FenBrowser.Js.Modules.ExportEntry.AllExports;
+            if (IsIdentifierLike(Current()) && Current().Text == "as")
+            {
+                Advance();
+                exportName = ExpectIdentifier().Text;
+                importName = FenBrowser.Js.Modules.ExportEntry.AllButDefaultExports;
+            }
+            ExpectKeyword("from");
+            var mod = ParseStringLiteralValue();
+            ConsumeSemicolon();
+            entries.Add(new FenBrowser.Js.Modules.ExportEntry(exportName, mod, importName, LocalName: null));
+            return new ExportDeclarationNode(entries, LocalDeclaration: null, DefaultExpression: null,
+                MergeSpan(start.Span, Previous().Span));
+        }
+
+        // export { a, b as c } [from "mod"];
+        if (IsPunctuator("{"))
+        {
+            Advance();
+            var names = new List<(string Local, string Exported)>();
+            while (!IsPunctuator("}") && !Is(TokenKind.EndOfFile))
+            {
+                var local = ExpectIdentifier().Text;
+                var exported = local;
+                if (IsIdentifierLike(Current()) && Current().Text == "as")
+                {
+                    Advance();
+                    exported = ExpectIdentifier().Text;
+                }
+                names.Add((local, exported));
+                if (IsPunctuator(","))
+                {
+                    Advance();
+                }
+            }
+            ExpectPunctuator("}");
+
+            string? moduleRequest = null;
+            if (IsIdentifierLike(Current()) && Current().Text == "from")
+            {
+                Advance();
+                moduleRequest = ParseStringLiteralValue();
+            }
+            ConsumeSemicolon();
+
+            foreach (var (local, exported) in names)
+            {
+                entries.Add(moduleRequest is null
+                    ? new FenBrowser.Js.Modules.ExportEntry(exported, null, null, local)
+                    : new FenBrowser.Js.Modules.ExportEntry(exported, moduleRequest, local, null));
+            }
+            return new ExportDeclarationNode(entries, LocalDeclaration: null, DefaultExpression: null,
+                MergeSpan(start.Span, Previous().Span));
+        }
+
+        // export var x = ... / export function f() ... / export class C ...
+        var inner = ParseStatement();
+        foreach (var name in CollectExportableLocalNames(inner))
+        {
+            entries.Add(new FenBrowser.Js.Modules.ExportEntry(name, null, null, name));
+        }
+
+        return new ExportDeclarationNode(entries, LocalDeclaration: inner, DefaultExpression: null,
+            MergeSpan(start.Span, Previous().Span));
+    }
+
+    private static IEnumerable<string> CollectExportableLocalNames(StatementNode stmt)
+    {
+        switch (stmt)
+        {
+            case VariableDeclarationStatementNode varDecl:
+                foreach (var d in varDecl.Declarators) yield return d.Identifier;
+                break;
+            case FunctionDeclarationNode fn:
+                yield return fn.Name;
+                break;
+            case ClassDeclarationNode cls:
+                yield return cls.Name;
+                break;
+        }
+    }
+
+    private string ParseStringLiteralValue()
+    {
+        if (Current().Kind != TokenKind.String)
+        {
+            throw new JsParserException($"Expected string literal, found '{Current().Text}'.");
+        }
+        var tok = Advance();
+        return tok.Text.Length >= 2 ? tok.Text[1..^1] : string.Empty;
+    }
+
+    private void ExpectKeyword(string text)
+    {
+        if (!(IsIdentifierLike(Current()) && Current().Text == text))
+        {
+            throw new JsParserException($"Expected '{text}', found '{Current().Text}'.");
+        }
+        Advance();
+    }
+
+    private void ConsumeSemicolon()
+    {
+        if (IsPunctuator(";"))
+        {
+            Advance();
+        }
     }
 
     private ClassDeclarationNode ParseClassDeclaration()
