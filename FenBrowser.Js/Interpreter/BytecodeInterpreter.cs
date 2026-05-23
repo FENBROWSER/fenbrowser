@@ -3,6 +3,7 @@ using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Parser;
+using FenBrowser.Js.Promises;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
 using System.Text.Json;
@@ -10,7 +11,7 @@ using System.Text.RegularExpressions;
 
 namespace FenBrowser.Js.Interpreter;
 
-public sealed class BytecodeInterpreter
+public sealed partial class BytecodeInterpreter
 {
     private readonly JsHeap _heap;
     private ObjectHandle? _objectConstructorHandle;
@@ -55,10 +56,28 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _queueMicrotaskHandle;
 
     // Pending HostQueueMicrotask callbacks. Drained at the end of every top-level
-    // Execute() invocation, modelling a microtask checkpoint with the program as
-    // the surrounding task. Once D.6 wires PromiseJobs into the interpreter, this
-    // queue and the Promises JobQueue should collapse into one.
+    // Execute() invocation as part of the unified microtask checkpoint (D.6) which
+    // also flushes the Promise JobQueue. The two queues live separately because
+    // queueMicrotask jobs carry a single JsValue callback while PromiseJobs carry
+    // structured reaction state - but they drain interleaved FIFO within the same
+    // checkpoint so ordering matches HTML's "perform a microtask checkpoint".
     private readonly Queue<JsValue> _pendingMicrotasks = new();
+
+    // ECMA-262 9.5 Promise Job Queue. Populated by PerformPromiseThen and the
+    // resolving functions; drained by RunMicrotaskCheckpoint at the end of every
+    // top-level Execute. Public so tests can observe queue depth.
+    private readonly JobQueue _jobQueue = new();
+    private ObjectHandle? _promiseConstructorHandle;
+    private ObjectHandle? _promisePrototypeHandle;
+    private IHostPromiseRejectionTracker _promiseRejectionTracker = new InMemoryPromiseRejectionTracker();
+
+    public IHostPromiseRejectionTracker PromiseRejectionTracker
+    {
+        get => _promiseRejectionTracker;
+        set => _promiseRejectionTracker = value ?? throw new ArgumentNullException(nameof(value));
+    }
+
+    public int PromiseJobQueueDepthForTest => _jobQueue.Count;
     private ObjectHandle? _weakRefConstructorHandle;
     private ObjectHandle? _weakRefPrototypeHandle;
     private ObjectHandle? _finalizationRegistryConstructorHandle;
@@ -120,15 +139,29 @@ public sealed class BytecodeInterpreter
     }
 
     // HTML "perform a microtask checkpoint" - invoked at the end of every top-level
-    // Execute. Each pending callback runs as if it were called with no arguments
-    // and undefined this; thrown exceptions surface to the caller (matching the
-    // host's "report the exception" behaviour for the very first failing job).
+    // Execute. Drains both the queueMicrotask callback queue and the Promise
+    // JobQueue (D.6). Per spec the checkpoint runs until both queues are empty,
+    // including jobs/callbacks enqueued by earlier work in the same checkpoint;
+    // we therefore loop until a full pass produces no new work.
+    //
+    // Thrown exceptions from a queueMicrotask callback surface to the caller (host
+    // "report the exception" semantics for the first failing job); PromiseJobs
+    // catch their own errors and route them into the parent Promise's reject
+    // path via the capability, matching 27.2.2.1 NewPromiseReactionJob step 5.
     private void DrainPendingMicrotasks()
     {
-        while (_pendingMicrotasks.Count > 0)
+        while (_pendingMicrotasks.Count > 0 || _jobQueue.Count > 0)
         {
-            var callback = _pendingMicrotasks.Dequeue();
-            _ = CallFunction(callback, Array.Empty<JsValue>(), JsValue.Undefined);
+            // Drain queueMicrotask first so an early host callback that resolves a
+            // promise gets its triggered reactions into the JobQueue before we
+            // start running jobs - keeping HTML's tail-call ordering intact.
+            while (_pendingMicrotasks.Count > 0)
+            {
+                var callback = _pendingMicrotasks.Dequeue();
+                _ = CallFunction(callback, Array.Empty<JsValue>(), JsValue.Undefined);
+            }
+
+            _ = _jobQueue.RunMicrotaskCheckpoint(RunPromiseJob);
         }
     }
 
@@ -2675,6 +2708,7 @@ public sealed class BytecodeInterpreter
         DefineGlobalDataProperty(global, globalHandle, "WeakSet", JsValue.FromObject(EnsureWeakSetConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "Reflect", JsValue.FromObject(EnsureReflectObject()));
         DefineGlobalDataProperty(global, globalHandle, "Iterator", JsValue.FromObject(EnsureIteratorConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "Promise", JsValue.FromObject(EnsurePromiseConstructor()));
     }
 
     private void DefineGlobalDataProperty(
