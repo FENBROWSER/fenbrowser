@@ -2403,26 +2403,22 @@ public sealed class Test262RunnerTests
     }
 
     [Fact]
-    public void Run_ParserSubset_TcoHelperIncludeDoesNotBlockParseOnlyCoverage()
+    public void Run_ParserSubset_DoesNotRequireHarnessSupportForIncludes()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempRoot);
         var testDir = Path.Combine(tempRoot, "test");
         Directory.CreateDirectory(testDir);
-        var testFile = Path.Combine(testDir, "tco-helper-parser.js");
-        var outputPath = Path.Combine(tempRoot, "tco-helper-parser-result.json");
+        var testFile = Path.Combine(testDir, "parser-include.js");
+        var outputPath = Path.Combine(tempRoot, "parser-include-result.json");
 
         try
         {
             File.WriteAllText(testFile, """
             /*---
-            flags: [onlyStrict]
-            features: [tail-call-optimization]
-            includes: [tcoHelper.js]
+            includes: [notSupportedByRuntime.js]
             ---*/
-            (function() {
-              return f`${1}`;
-            }());
+            1 + 1;
             """);
 
             var runner = new Test262Runner();
@@ -2444,13 +2440,67 @@ public sealed class Test262RunnerTests
                 test262Path: null,
                 test262File: null,
                 featuresCsv: null,
-                supportedFeaturesCsv: "tail-call-optimization");
+                supportedFeaturesCsv: null);
 
             Assert.Equal(0, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
             Assert.Equal(1, summary.GetProperty("passed").GetInt32());
             Assert.Equal(0, summary.GetProperty("harnessUnsupported").GetInt32());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Run_RuntimeSubset_UnsupportedHarnessIncludeRemainsHarnessUnsupported()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "runtime-include.js");
+        var outputPath = Path.Combine(tempRoot, "runtime-include-result.json");
+
+        try
+        {
+            File.WriteAllText(testFile, """
+            /*---
+            includes: [notSupportedByRuntime.js]
+            ---*/
+            1 + 1;
+            """);
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: false,
+                runtimeSubset: true,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1000,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(0, summary.GetProperty("passed").GetInt32());
+            Assert.Equal(1, summary.GetProperty("harnessUnsupported").GetInt32());
+            var test = doc.RootElement.GetProperty("tests").EnumerateArray().Single();
+            Assert.Equal("HarnessUnsupported", test.GetProperty("status").GetString());
         }
         finally
         {

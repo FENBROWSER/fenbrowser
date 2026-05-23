@@ -202,17 +202,6 @@ public sealed class Test262Runner
         var failures = new List<object>();
         var unexpectedPassesList = new List<object>();
         var tests = new List<object>(subset.Count);
-        var supportedHarnessIncludes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "propertyHelper.js",
-            "sta.js",
-            "compareArray.js",
-            // Parser-only runs never execute harness helpers. Accept tcoHelper.js
-            // here so syntax coverage for tail-call-position tests is not hidden
-            // behind a runtime harness limitation.
-            "tcoHelper.js"
-        };
-
         foreach (var file in subset)
         {
             var relativePath = Path.GetRelativePath(rootPath, file).Replace('\\', '/');
@@ -249,38 +238,6 @@ public sealed class Test262Runner
                     locale = frontmatter.Locale,
                     category = "host-not-applicable",
                     message = invalidReason
-                });
-                continue;
-            }
-
-            var unsupportedHarnessInclude = frontmatter.Includes.FirstOrDefault(include => !supportedHarnessIncludes.Contains(include));
-            if (unsupportedHarnessInclude is not null)
-            {
-                harnessUnsupported++;
-                failures.Add(new
-                {
-                    path = file,
-                    relativePath,
-                    classification = "harness-unsupported",
-                    include = unsupportedHarnessInclude,
-                    message = $"Harness include '{unsupportedHarnessInclude}' is not supported in parser-subset mode."
-                });
-
-                tests.Add(new
-                {
-                    path = relativePath,
-                    status = "HarnessUnsupported",
-                    durationMs = 0,
-                    features = frontmatter.Features,
-                    flags = frontmatter.Flags,
-                    includes = frontmatter.Includes,
-                    negative = frontmatter.Negative,
-                    esid = frontmatter.Esid,
-                    description = frontmatter.Description,
-                    info = frontmatter.Info,
-                    locale = frontmatter.Locale,
-                    category = "host-not-applicable",
-                    message = $"Harness include '{unsupportedHarnessInclude}' is not supported in parser-subset mode."
                 });
                 continue;
             }
