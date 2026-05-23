@@ -69,6 +69,7 @@ public sealed class BytecodeInterpreter
     // worker threads, swap to Random.Shared (which is per-thread internally).
     private readonly Random _random = new();
     private ObjectHandle? _globalObjectHandle;
+    private GlobalEnvironmentRecord? _globalEnvironment;
     private ObjectHandle? _dateConstructorHandle;
     private ObjectHandle? _datePrototypeHandle;
     private ObjectHandle? _mathObjectHandle;
@@ -108,7 +109,13 @@ public sealed class BytecodeInterpreter
     [MayExecuteJs]
     public JsValue Execute(BytecodeFunction function)
     {
-        var result = ExecuteInternal(function, Array.Empty<JsValue>(), null, JsValue.FromObject(EnsureGlobalObject()));
+        var globalHandle = EnsureGlobalObject();
+        var result = ExecuteInternal(
+            function,
+            Array.Empty<JsValue>(),
+            null,
+            JsValue.FromObject(globalHandle),
+            frameEnvironment: EnsureGlobalEnvironment());
         DrainPendingMicrotasks();
         return result;
     }
@@ -143,7 +150,8 @@ public sealed class BytecodeInterpreter
         IReadOnlyList<JsValue> args,
         IReadOnlyDictionary<string, JsVariableCell>? capturedVariables,
         JsValue thisValue,
-        EnvironmentRecord? outerEnvironment = null)
+        EnvironmentRecord? outerEnvironment = null,
+        EnvironmentRecord? frameEnvironment = null)
     {
         if (_callDepth >= MaxCallDepth)
         {
@@ -153,7 +161,7 @@ public sealed class BytecodeInterpreter
         _callDepth++;
         try
         {
-            return ExecuteInternalCore(function, args, capturedVariables, thisValue, outerEnvironment);
+            return ExecuteInternalCore(function, args, capturedVariables, thisValue, outerEnvironment, frameEnvironment);
         }
         finally
         {
@@ -167,16 +175,17 @@ public sealed class BytecodeInterpreter
         IReadOnlyList<JsValue> args,
         IReadOnlyDictionary<string, JsVariableCell>? capturedVariables,
         JsValue thisValue,
-        EnvironmentRecord? outerEnvironment = null)
+        EnvironmentRecord? outerEnvironment = null,
+        EnvironmentRecord? frameEnvironment = null)
     {
         // B.6.4 — when the callee carries an outer EnvironmentRecord (set at
         // CreateFunction time on JsFunctionObject), the new frame's env is a fresh
         // declarative record chained to it so free identifier references walk the
         // lexical scope chain through env records. Otherwise, fall back to the
         // detached fresh env that InterpreterFrame would have allocated on its own.
-        var frameEnv = outerEnvironment is null
+        var frameEnv = frameEnvironment ?? (outerEnvironment is null
             ? null
-            : new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment);
+            : new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment));
         var frame = new InterpreterFrame(function, thisValue, capturedVariables, frameEnv);
         InitializeBuiltinGlobals(function, frame);
         if (capturedVariables is not null)
@@ -2778,7 +2787,95 @@ public sealed class BytecodeInterpreter
         var handle = _heap.AllocateObject(global, AllocationSite.Current());
         _heap.PushRoot(handle);
         _globalObjectHandle = handle;
+        InstallGlobalObjectProperties(global, handle);
         return handle;
+    }
+
+    private GlobalEnvironmentRecord EnsureGlobalEnvironment()
+    {
+        if (_globalEnvironment is { } existing)
+        {
+            return existing;
+        }
+
+        var globalHandle = EnsureGlobalObject();
+        _globalEnvironment = new GlobalEnvironmentRecord(
+            new JsObjectBindingAdapter(_heap, globalHandle),
+            JsValue.FromObject(globalHandle));
+        return _globalEnvironment;
+    }
+
+    private void InstallGlobalObjectProperties(JsObject global, ObjectHandle globalHandle)
+    {
+        // ECMA-262 19.1 value properties of the global object.
+        DefineGlobalDataProperty(global, globalHandle, "Infinity", JsValue.FromNumber(double.PositiveInfinity), writable: false, configurable: false);
+        DefineGlobalDataProperty(global, globalHandle, "NaN", JsValue.FromNumber(double.NaN), writable: false, configurable: false);
+        DefineGlobalDataProperty(global, globalHandle, "undefined", JsValue.Undefined, writable: false, configurable: false);
+        DefineGlobalDataProperty(global, globalHandle, "globalThis", JsValue.FromObject(globalHandle));
+
+        // ECMA-262 global function properties and constructor/object properties. These
+        // live on the global object, so GlobalEnvironmentRecord can resolve both bare
+        // identifiers and `globalThis.name` through the same binding surface.
+        DefineGlobalDataProperty(global, globalHandle, "eval", JsValue.FromObject(EnsureEvalFunction()));
+        DefineGlobalDataProperty(global, globalHandle, "parseInt", JsValue.FromObject(EnsureParseIntFunction()));
+        DefineGlobalDataProperty(global, globalHandle, "parseFloat", JsValue.FromObject(EnsureParseFloatFunction()));
+        DefineGlobalDataProperty(global, globalHandle, "isNaN", JsValue.FromObject(EnsureIsNaNFunction()));
+        DefineGlobalDataProperty(global, globalHandle, "isFinite", JsValue.FromObject(EnsureIsFiniteFunction()));
+        DefineGlobalDataProperty(global, globalHandle, "encodeURI", JsValue.FromObject(EnsureEncodeUriFunction()));
+        DefineGlobalDataProperty(global, globalHandle, "encodeURIComponent", JsValue.FromObject(EnsureEncodeUriComponentFunction()));
+        DefineGlobalDataProperty(global, globalHandle, "decodeURI", JsValue.FromObject(EnsureDecodeUriFunction()));
+        DefineGlobalDataProperty(global, globalHandle, "decodeURIComponent", JsValue.FromObject(EnsureDecodeUriComponentFunction()));
+        DefineGlobalDataProperty(global, globalHandle, "URIError", JsValue.FromObject(EnsureUriErrorConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "ReferenceError", JsValue.FromObject(EnsureReferenceErrorConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "EvalError", JsValue.FromObject(EnsureEvalErrorConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "AggregateError", JsValue.FromObject(EnsureAggregateErrorConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "WeakRef", JsValue.FromObject(EnsureWeakRefConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "FinalizationRegistry", JsValue.FromObject(EnsureFinalizationRegistryConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "structuredClone", JsValue.FromObject(EnsureStructuredCloneFunction()));
+        DefineGlobalDataProperty(global, globalHandle, "queueMicrotask", JsValue.FromObject(EnsureQueueMicrotaskFunction()));
+        DefineGlobalDataProperty(global, globalHandle, "Object", JsValue.FromObject(EnsureObjectConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "Array", JsValue.FromObject(EnsureArrayConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "Boolean", JsValue.FromObject(EnsureBooleanConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "Number", JsValue.FromObject(EnsureNumberConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "String", JsValue.FromObject(EnsureStringConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "Function", JsValue.FromObject(EnsureFunctionConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "Error", JsValue.FromObject(EnsureErrorConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "TypeError", JsValue.FromObject(EnsureTypeErrorConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "RangeError", JsValue.FromObject(EnsureRangeErrorConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "SyntaxError", JsValue.FromObject(EnsureSyntaxErrorConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "Date", JsValue.FromObject(EnsureDateConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "RegExp", JsValue.FromObject(EnsureRegExpConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "Math", JsValue.FromObject(EnsureMathObject()));
+        DefineGlobalDataProperty(global, globalHandle, "JSON", JsValue.FromObject(EnsureJsonObject()));
+        DefineGlobalDataProperty(global, globalHandle, "Symbol", JsValue.FromObject(EnsureSymbolConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "Set", JsValue.FromObject(EnsureSetConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "Map", JsValue.FromObject(EnsureMapConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "WeakMap", JsValue.FromObject(EnsureWeakMapConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "WeakSet", JsValue.FromObject(EnsureWeakSetConstructor()));
+        DefineGlobalDataProperty(global, globalHandle, "Reflect", JsValue.FromObject(EnsureReflectObject()));
+        DefineGlobalDataProperty(global, globalHandle, "Iterator", JsValue.FromObject(EnsureIteratorConstructor()));
+    }
+
+    private void DefineGlobalDataProperty(
+        JsObject global,
+        ObjectHandle globalHandle,
+        string name,
+        JsValue value,
+        bool writable = true,
+        bool configurable = true)
+    {
+        _ = global.DefineOwnProperty(
+            name,
+            new JsPropertyDescriptor(
+                value,
+                Writable: writable,
+                Enumerable: false,
+                Configurable: configurable));
+
+        if (value.Tag == JsValueTag.Object)
+        {
+            _heap.WriteBarrier(globalHandle, value.AsObjectHandle());
+        }
     }
 
     // B.6.3 env-record shim. LoadName/StoreName funnel every slot-based LoadVar/StoreVar

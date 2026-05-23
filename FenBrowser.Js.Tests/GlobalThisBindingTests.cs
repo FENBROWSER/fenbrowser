@@ -30,15 +30,38 @@ public sealed class GlobalThisBindingTests
     [Fact]
     public void PropertiesAssignedToGlobalThisRoundTripThroughIt()
     {
-        // Reading the assigned property back through globalThis works today; reading
-        // by bare identifier requires the global-object env-record routing that lands
-        // with B.6.5.
         Assert.Equal(42, RunNum("globalThis.x = 42; globalThis.x;"));
+    }
+
+    [Fact]
+    public void PropertiesAssignedToGlobalThisResolveAsBareGlobalBindings()
+    {
+        Assert.Equal(42, RunNum("globalThis.x = 42; x;"));
     }
 
     [Fact]
     public void GlobalVarIsReachableThroughGlobalThis()
     {
         Assert.Equal(7, RunNum("var y = 7; globalThis.y;"));
+    }
+
+    [Fact]
+    public void BareGlobalAssignmentIsReachableThroughGlobalThis()
+    {
+        Assert.Equal(11, RunNum("z = 11; globalThis.z;"));
+    }
+
+    [Fact]
+    public void StandardGlobalsAreGlobalThisProperties()
+    {
+        Assert.True(RunBool("globalThis.globalThis === globalThis;"));
+        Assert.True(RunBool("Object === globalThis.Object;"));
+        Assert.True(RunBool("parseInt === globalThis.parseInt;"));
+    }
+
+    [Fact]
+    public void FunctionBodiesResolveGlobalObjectBindings()
+    {
+        Assert.Equal(5, RunNum("globalThis.shared = 5; function read() { return shared; } read();"));
     }
 }

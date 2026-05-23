@@ -47,7 +47,9 @@ This volume details the infrastructure used to extend the browser and verify its
 - The shell supports `--version`, `--eval [code]`, and `--file <path>` on the same bytecode verifier/interpreter path.
 - The shell also exposes `--test262 <path>` and `--test262-file <file>` as thin adapters over `FenBrowser.Js.Test262`, keeping test262 out of the core `FenBrowser.Js` engine assembly while making conformance smoke runs available from the standalone shell.
 - `--eval` accepts empty source and returns `undefined`, matching the milestone 0.1 smoke contract that empty input must not crash.
+- Top-level standalone execution now uses a `GlobalEnvironmentRecord` backed by the realm global object, so `globalThis.name`, bare global identifier resolution, and standard global constructors/functions share the same object binding surface.
 - `FenBrowser.Js.Tests/ShellSmokeTests.cs` runs process-level CLI regressions for empty eval, file execution, and shell-routed test262 file/directory subsets.
+- `FenBrowser.Js.Tests/GlobalThisBindingTests.cs` plus exact `FenBrowser.Js.Test262` rechecks for `built-ins/global/global-object.js` and `built-ins/global/property-descriptor.js` guard the `globalThis` identity/property-descriptor contract.
 
 ## 2. WebDriver Implementation (`FenBrowser.WebDriver`)
 
