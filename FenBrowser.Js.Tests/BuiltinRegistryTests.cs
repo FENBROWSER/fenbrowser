@@ -13,7 +13,7 @@ public sealed class BuiltinRegistryTests
 
         public string Name { get; } = name;
 
-        public IReadOnlyList<BuiltinBinding> GetBindings(JsHeap heap)
+        public IReadOnlyList<BuiltinBinding> GetBindings(IBuiltinContext context)
         {
             MaterializeCalls++;
             return bindings;
@@ -76,7 +76,7 @@ public sealed class BuiltinRegistryTests
             new BuiltinBinding("b1", JsValue.FromInt32(2)),
             new BuiltinBinding("b2", JsValue.FromInt32(3))));
 
-        var bindings = registry.Materialize(new JsHeap());
+        var bindings = registry.Materialize(new TestBuiltinContext(new JsHeap()));
 
         Assert.Equal(3, bindings.Count);
         Assert.Equal("a1", bindings[0].Name);
@@ -92,7 +92,7 @@ public sealed class BuiltinRegistryTests
         var b = new FakeModule("B", new BuiltinBinding("b1", JsValue.FromInt32(2)));
         registry.Register(a).Register(b);
 
-        _ = registry.Materialize(new JsHeap());
+        _ = registry.Materialize(new TestBuiltinContext(new JsHeap()));
 
         Assert.Equal(1, a.MaterializeCalls);
         Assert.Equal(1, b.MaterializeCalls);

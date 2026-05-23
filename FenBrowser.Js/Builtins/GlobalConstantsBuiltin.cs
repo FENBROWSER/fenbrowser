@@ -1,4 +1,3 @@
-using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Builtins;
@@ -31,9 +30,9 @@ public sealed class GlobalConstantsBuiltin : IBuiltinModule
 
     public string Name => "GlobalConstants";
 
-    public IReadOnlyList<BuiltinBinding> GetBindings(JsHeap heap)
+    public IReadOnlyList<BuiltinBinding> GetBindings(IBuiltinContext context)
     {
-        ArgumentNullException.ThrowIfNull(heap);
+        ArgumentNullException.ThrowIfNull(context);
 
         var bindings = new List<BuiltinBinding>(4)
         {

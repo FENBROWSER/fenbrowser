@@ -1,5 +1,3 @@
-using FenBrowser.Js.Heap;
-
 namespace FenBrowser.Js.Builtins;
 
 // Contract every builtin module (Math, JSON, Date, the error constructors, etc.)
@@ -7,11 +5,9 @@ namespace FenBrowser.Js.Builtins;
 // hard-coding the per-builtin construction logic into BytecodeInterpreter.
 //
 // A module is a stateless factory: GetBindings is called once per realm, lazily, when
-// the registry needs to materialize the module's exports against a specific heap. The
-// heap argument lets the module allocate the constructor / prototype / per-method
-// callable objects that back the builtin; the returned BuiltinBinding sequence names
-// each exported global (almost always exactly one - "Math", "JSON", etc., though a
-// module like GlobalConstants returns several).
+// the registry needs to materialize the module's exports. The context provides heap
+// access for allocation and coercion services (ToNumber, etc.) that route through the
+// interpreter's reentrancy-safe paths.
 //
 // Modules carry their ECMA-262 spec section via [EcmaSpecReference] on the
 // implementing type so audits can map each module to its spec home without parsing
@@ -28,5 +24,5 @@ public interface IBuiltinModule
     // objects, install methods, etc.; the registry calls this exactly once per realm
     // per module and pins any ObjectHandle values it receives via WriteBarrier-friendly
     // ordinary global property installs.
-    IReadOnlyList<BuiltinBinding> GetBindings(JsHeap heap);
+    IReadOnlyList<BuiltinBinding> GetBindings(IBuiltinContext context);
 }

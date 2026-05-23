@@ -20,7 +20,7 @@ public sealed class GlobalConstantsBuiltinTests
     [Fact]
     public void EmitsNaNInfinityUndefinedWithFrozenAttributes()
     {
-        var bindings = new GlobalConstantsBuiltin().GetBindings(new JsHeap());
+        var bindings = new GlobalConstantsBuiltin().GetBindings(new TestBuiltinContext(new JsHeap()));
 
         Assert.Equal(3, bindings.Count);
         foreach (var name in new[] { "NaN", "Infinity", "undefined" })
@@ -35,35 +35,35 @@ public sealed class GlobalConstantsBuiltinTests
     [Fact]
     public void NaNIsActualDoubleNaN()
     {
-        var nan = ByName(new GlobalConstantsBuiltin().GetBindings(new JsHeap()), "NaN");
+        var nan = ByName(new GlobalConstantsBuiltin().GetBindings(new TestBuiltinContext(new JsHeap())), "NaN");
         Assert.True(double.IsNaN(nan.Value.AsNumber()));
     }
 
     [Fact]
     public void InfinityIsPositiveInfinity()
     {
-        var inf = ByName(new GlobalConstantsBuiltin().GetBindings(new JsHeap()), "Infinity");
+        var inf = ByName(new GlobalConstantsBuiltin().GetBindings(new TestBuiltinContext(new JsHeap())), "Infinity");
         Assert.True(double.IsPositiveInfinity(inf.Value.AsNumber()));
     }
 
     [Fact]
     public void UndefinedIsTheUndefinedValue()
     {
-        var u = ByName(new GlobalConstantsBuiltin().GetBindings(new JsHeap()), "undefined");
+        var u = ByName(new GlobalConstantsBuiltin().GetBindings(new TestBuiltinContext(new JsHeap())), "undefined");
         Assert.Equal(JsValueTag.Undefined, u.Value.Tag);
     }
 
     [Fact]
     public void GlobalThisIsOptional()
     {
-        var bindings = new GlobalConstantsBuiltin().GetBindings(new JsHeap());
+        var bindings = new GlobalConstantsBuiltin().GetBindings(new TestBuiltinContext(new JsHeap()));
         Assert.DoesNotContain(bindings, b => b.Name == "globalThis");
     }
 
     [Fact]
     public void GlobalThisIsEmittedWithNonEnumerableAttributesWhenProvided()
     {
-        var bindings = new GlobalConstantsBuiltin(JsValue.FromInt32(7)).GetBindings(new JsHeap());
+        var bindings = new GlobalConstantsBuiltin(JsValue.FromInt32(7)).GetBindings(new TestBuiltinContext(new JsHeap()));
         var g = ByName(bindings, "globalThis");
 
         Assert.True(g.Writable);

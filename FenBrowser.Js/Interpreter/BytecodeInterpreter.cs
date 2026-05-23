@@ -12,9 +12,11 @@ using System.Text.RegularExpressions;
 
 namespace FenBrowser.Js.Interpreter;
 
-public sealed partial class BytecodeInterpreter
+public sealed partial class BytecodeInterpreter : IBuiltinContext
 {
     private readonly JsHeap _heap;
+    public JsHeap Heap => _heap;
+    double IBuiltinContext.ToNumber(JsValue value) => ToNumber(value);
     private ObjectHandle? _objectConstructorHandle;
     private ObjectHandle? _objectPrototypeHandle;
     private ObjectHandle? _arrayConstructorHandle;
@@ -84,15 +86,10 @@ public sealed partial class BytecodeInterpreter
     private ObjectHandle? _finalizationRegistryConstructorHandle;
     private ObjectHandle? _finalizationRegistryPrototypeHandle;
 
-    // Shared Random for Math.random. Thread-safety: Math.random is single-threaded in
-    // ECMA-262, and the runtime is single-threaded today; if we ever introduce SAB +
-    // worker threads, swap to Random.Shared (which is per-thread internally).
-    private readonly Random _random = new();
     private ObjectHandle? _globalObjectHandle;
     private GlobalEnvironmentRecord? _globalEnvironment;
     private ObjectHandle? _dateConstructorHandle;
     private ObjectHandle? _datePrototypeHandle;
-    private ObjectHandle? _mathObjectHandle;
     private ObjectHandle? _regexpConstructorHandle;
     private ObjectHandle? _regexpPrototypeHandle;
     private ObjectHandle? _jsonObjectHandle;
@@ -2788,11 +2785,17 @@ public sealed partial class BytecodeInterpreter
 
     private void InstallGlobalObjectProperties(JsObject global, ObjectHandle globalHandle)
     {
-        // ECMA-262 19.1 value properties of the global object.
-        DefineGlobalDataProperty(global, globalHandle, "Infinity", JsValue.FromNumber(double.PositiveInfinity), writable: false, configurable: false);
-        DefineGlobalDataProperty(global, globalHandle, "NaN", JsValue.FromNumber(double.NaN), writable: false, configurable: false);
-        DefineGlobalDataProperty(global, globalHandle, "undefined", JsValue.Undefined, writable: false, configurable: false);
-        DefineGlobalDataProperty(global, globalHandle, "globalThis", JsValue.FromObject(globalHandle));
+        // ECMA-262 19.1 value properties + Math are now registry-driven.
+        // The BuiltinRegistry is built once lazily; GlobalConstantsBuiltin owns
+        // NaN / Infinity / undefined / globalThis, MathBuiltin owns the Math object.
+        var registry = new BuiltinRegistry()
+            .Register(new GlobalConstantsBuiltin(JsValue.FromObject(globalHandle)))
+            .Register(new MathBuiltin());
+        var bindings = registry.Materialize(this);
+        foreach (var binding in bindings)
+        {
+            InstallBinding(global, globalHandle, binding);
+        }
 
         // ECMA-262 global function properties and constructor/object properties. These
         // live on the global object, so GlobalEnvironmentRecord can resolve both bare
@@ -2826,7 +2829,6 @@ public sealed partial class BytecodeInterpreter
         DefineGlobalDataProperty(global, globalHandle, "SyntaxError", JsValue.FromObject(EnsureSyntaxErrorConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "Date", JsValue.FromObject(EnsureDateConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "RegExp", JsValue.FromObject(EnsureRegExpConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "Math", JsValue.FromObject(EnsureMathObject()));
         DefineGlobalDataProperty(global, globalHandle, "JSON", JsValue.FromObject(EnsureJsonObject()));
         DefineGlobalDataProperty(global, globalHandle, "Symbol", JsValue.FromObject(EnsureSymbolConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "Set", JsValue.FromObject(EnsureSetConstructor()));
@@ -2836,6 +2838,22 @@ public sealed partial class BytecodeInterpreter
         DefineGlobalDataProperty(global, globalHandle, "Reflect", JsValue.FromObject(EnsureReflectObject()));
         DefineGlobalDataProperty(global, globalHandle, "Iterator", JsValue.FromObject(EnsureIteratorConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "Promise", JsValue.FromObject(EnsurePromiseConstructor()));
+    }
+
+    private void InstallBinding(JsObject global, ObjectHandle globalHandle, BuiltinBinding binding)
+    {
+        _ = global.DefineOwnProperty(
+            binding.Name,
+            new JsPropertyDescriptor(
+                binding.Value,
+                Writable: binding.Writable,
+                Enumerable: binding.Enumerable,
+                Configurable: binding.Configurable));
+
+        if (binding.Value.Tag == JsValueTag.Object)
+        {
+            Heap.WriteBarrier(globalHandle, binding.Value.AsObjectHandle());
+        }
     }
 
     private void DefineGlobalDataProperty(
@@ -3942,265 +3960,6 @@ public sealed partial class BytecodeInterpreter
             seenIgnoreCase ? "i" : string.Empty,
             seenMultiline ? "m" : string.Empty);
     }
-
-    private ObjectHandle EnsureMathObject()
-    {
-        if (_mathObjectHandle is { } existing)
-        {
-            return existing;
-        }
-
-        var math = CreateOrdinaryObject();
-        var handle = _heap.AllocateObject(math, AllocationSite.Current());
-        _heap.PushRoot(handle);
-
-        DefineMathConstant(math, "E", Math.E);
-        DefineMathConstant(math, "LN10", Math.Log(10d));
-        DefineMathConstant(math, "LN2", Math.Log(2d));
-        DefineMathConstant(math, "LOG10E", 1d / Math.Log(10d));
-        DefineMathConstant(math, "LOG2E", 1d / Math.Log(2d));
-        DefineMathConstant(math, "PI", Math.PI);
-        DefineMathConstant(math, "SQRT1_2", Math.Sqrt(0.5d));
-        DefineMathConstant(math, "SQRT2", Math.Sqrt(2d));
-
-        DefineMathFunction(handle, math, "abs", args => MathUnary(args, Math.Abs), length: 1);
-        DefineMathFunction(handle, math, "acos", args => MathUnary(args, Math.Acos), length: 1);
-        DefineMathFunction(handle, math, "asin", args => MathUnary(args, Math.Asin), length: 1);
-        DefineMathFunction(handle, math, "atan", args => MathUnary(args, Math.Atan), length: 1);
-        DefineMathFunction(handle, math, "atan2", MathAtan2, length: 2);
-        DefineMathFunction(handle, math, "ceil", args => MathUnary(args, Math.Ceiling), length: 1);
-        DefineMathFunction(handle, math, "cos", args => MathUnary(args, Math.Cos), length: 1);
-        DefineMathFunction(handle, math, "exp", args => MathUnary(args, Math.Exp), length: 1);
-        DefineMathFunction(handle, math, "floor", args => MathUnary(args, Math.Floor), length: 1);
-        DefineMathFunction(handle, math, "log", args => MathUnary(args, Math.Log), length: 1);
-        DefineMathFunction(handle, math, "max", MathMax, length: 2);
-        DefineMathFunction(handle, math, "min", MathMin, length: 2);
-        DefineMathFunction(handle, math, "pow", MathPow, length: 2);
-        DefineMathFunction(handle, math, "round", MathRound, length: 1);
-        DefineMathFunction(handle, math, "sin", args => MathUnary(args, Math.Sin), length: 1);
-        DefineMathFunction(handle, math, "sqrt", args => MathUnary(args, Math.Sqrt), length: 1);
-        DefineMathFunction(handle, math, "tan", args => MathUnary(args, Math.Tan), length: 1);
-        // ECMA-262 21.3.2.28 Math.sign - returns -1/0/+1/-0/NaN matching argument sign.
-        DefineMathFunction(handle, math, "sign", args => MathUnary(args, MathHelpers.MathSign), length: 1);
-        // ECMA-262 21.3.2.35 Math.trunc - round toward zero.
-        DefineMathFunction(handle, math, "trunc", args => MathUnary(args, MathHelpers.MathTrunc), length: 1);
-        // ECMA-262 21.3.2.9 Math.cbrt - cube root.
-        DefineMathFunction(handle, math, "cbrt", args => MathUnary(args, Math.Cbrt), length: 1);
-        // ECMA-262 21.3.2.22 Math.log2 - base-2 logarithm.
-        DefineMathFunction(handle, math, "log2", args => MathUnary(args, Math.Log2), length: 1);
-        // ECMA-262 21.3.2.21 Math.log10 - base-10 logarithm.
-        DefineMathFunction(handle, math, "log10", args => MathUnary(args, Math.Log10), length: 1);
-        // ECMA-262 21.3.2.18 Math.hypot - sqrt of sum of squares; variadic.
-        DefineMathFunction(handle, math, "hypot", MathHypot, length: 2);
-        // ECMA-262 21.3.2.11 Math.clz32 - count leading zero bits of a Uint32.
-        DefineMathFunction(handle, math, "clz32", args => JsValue.FromNumber(MathClz32(args)), length: 1);
-        // ECMA-262 21.3.2.19 Math.imul - 32-bit signed integer multiplication.
-        DefineMathFunction(handle, math, "imul", args => JsValue.FromNumber(MathImul(args)), length: 2);
-        // ECMA-262 21.3.2.16 Math.fround - round to nearest IEEE-754 single-precision.
-        DefineMathFunction(handle, math, "fround", args => MathUnary(args, v => (double)(float)v), length: 1);
-        // ECMA-262 21.3.2.31/.12/.33 sinh/cosh/tanh.
-        DefineMathFunction(handle, math, "sinh", args => MathUnary(args, Math.Sinh), length: 1);
-        DefineMathFunction(handle, math, "cosh", args => MathUnary(args, Math.Cosh), length: 1);
-        DefineMathFunction(handle, math, "tanh", args => MathUnary(args, Math.Tanh), length: 1);
-        // ECMA-262 21.3.2.7/.2/.8 asinh/acosh/atanh.
-        DefineMathFunction(handle, math, "asinh", args => MathUnary(args, Math.Asinh), length: 1);
-        DefineMathFunction(handle, math, "acosh", args => MathUnary(args, Math.Acosh), length: 1);
-        DefineMathFunction(handle, math, "atanh", args => MathUnary(args, Math.Atanh), length: 1);
-        // ECMA-262 21.3.2.14 expm1 - more accurate for small x than Math.exp(x) - 1.
-        DefineMathFunction(handle, math, "expm1", args => MathUnary(args, MathHelpers.MathExpm1), length: 1);
-        // ECMA-262 21.3.2.20 log1p - more accurate for small x than Math.log(1 + x).
-        DefineMathFunction(handle, math, "log1p", args => MathUnary(args, MathHelpers.MathLog1p), length: 1);
-        // ECMA-262 21.3.2.27 Math.random - pseudorandom in [0, 1). Backed by a single
-        // process-shared Random instance; not cryptographically secure (the spec
-        // explicitly forbids using Math.random for cryptography).
-        DefineMathFunction(handle, math, "random", _ => JsValue.FromNumber(_random.NextDouble()), length: 0);
-
-        _mathObjectHandle = handle;
-        return handle;
-    }
-
-    private static void DefineMathConstant(JsObject math, string name, double value)
-    {
-        _ = math.DefineOwnProperty(
-            name,
-            new JsPropertyDescriptor(
-                JsValue.FromNumber(value),
-                Writable: false,
-                Enumerable: false,
-                Configurable: false));
-    }
-
-    private void DefineMathFunction(
-        ObjectHandle mathHandle,
-        JsObject math,
-        string name,
-        Func<IReadOnlyList<JsValue>, JsValue> call,
-        int length)
-    {
-        var function = new NativeFunctionObject(name, (_, args) => call(args), length: length);
-        var functionHandle = _heap.AllocateObject(function, AllocationSite.Current());
-        _ = math.DefineOwnProperty(
-            name,
-            new JsPropertyDescriptor(
-                JsValue.FromObject(functionHandle),
-                Writable: true,
-                Enumerable: false,
-                Configurable: true));
-        _heap.WriteBarrier(mathHandle, functionHandle);
-    }
-
-    private JsValue MathUnary(IReadOnlyList<JsValue> args, Func<double, double> operation)
-    {
-        var value = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
-        return JsValue.FromNumber(operation(value));
-    }
-
-    private JsValue MathAtan2(IReadOnlyList<JsValue> args)
-    {
-        var y = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
-        var x = args.Count > 1 ? ToNumber(args[1]) : double.NaN;
-        return JsValue.FromNumber(Math.Atan2(y, x));
-    }
-
-    private JsValue MathPow(IReadOnlyList<JsValue> args)
-    {
-        var x = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
-        var y = args.Count > 1 ? ToNumber(args[1]) : double.NaN;
-        return JsValue.FromNumber(Math.Pow(x, y));
-    }
-
-    private JsValue MathRound(IReadOnlyList<JsValue> args)
-    {
-        var value = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
-        if (double.IsNaN(value) || double.IsInfinity(value) || value == 0d)
-        {
-            return JsValue.FromNumber(value);
-        }
-
-        if (value is > -0.5d and < 0d)
-        {
-            return JsValue.FromNumber(-0d);
-        }
-
-        return JsValue.FromNumber(Math.Floor(value + 0.5d));
-    }
-
-    private JsValue MathMax(IReadOnlyList<JsValue> args)
-    {
-        if (args.Count == 0)
-        {
-            return JsValue.FromNumber(double.NegativeInfinity);
-        }
-
-        var result = double.NegativeInfinity;
-        foreach (var arg in args)
-        {
-            var value = ToNumber(arg);
-            if (double.IsNaN(value))
-            {
-                return JsValue.FromNumber(double.NaN);
-            }
-
-            if (value > result || (value == 0d && result == 0d && !MathHelpers.IsNegativeZero(value)))
-            {
-                result = value;
-            }
-        }
-
-        return JsValue.FromNumber(result);
-    }
-
-    private JsValue MathMin(IReadOnlyList<JsValue> args)
-    {
-        if (args.Count == 0)
-        {
-            return JsValue.FromNumber(double.PositiveInfinity);
-        }
-
-        var result = double.PositiveInfinity;
-        foreach (var arg in args)
-        {
-            var value = ToNumber(arg);
-            if (double.IsNaN(value))
-            {
-                return JsValue.FromNumber(double.NaN);
-            }
-
-            if (value < result || (value == 0d && result == 0d && MathHelpers.IsNegativeZero(value)))
-            {
-                result = value;
-            }
-        }
-
-        return JsValue.FromNumber(result);
-    }
-
-    // 21.3.2.18 Math.hypot - sqrt(x^2 + y^2 + ...). Any +-Infinity argument wins
-    // (return +Infinity); NaN sticks unless +-Infinity is also present.
-    private JsValue MathHypot(IReadOnlyList<JsValue> args)
-    {
-        var sawNaN = false;
-        var sum = 0d;
-        for (var i = 0; i < args.Count; i++)
-        {
-            var v = ToNumber(args[i]);
-            if (double.IsInfinity(v))
-            {
-                return JsValue.FromNumber(double.PositiveInfinity);
-            }
-
-            if (double.IsNaN(v))
-            {
-                sawNaN = true;
-                continue;
-            }
-
-            sum += v * v;
-        }
-
-        if (sawNaN)
-        {
-            return JsValue.FromNumber(double.NaN);
-        }
-
-        return JsValue.FromNumber(Math.Sqrt(sum));
-    }
-
-    // 21.3.2.11 Math.clz32 - returns the number of leading zero bits when the
-    // argument is converted to a Uint32. 32 when the value coerces to 0 or NaN.
-    private double MathClz32(IReadOnlyList<JsValue> args)
-    {
-        var value = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
-        if (double.IsNaN(value) || double.IsInfinity(value))
-        {
-            return 32d;
-        }
-
-        var u = MathHelpers.ToUint32(value);
-        if (u == 0u)
-        {
-            return 32d;
-        }
-
-        var n = 0;
-        while ((u & 0x80000000u) == 0u)
-        {
-            u <<= 1;
-            n++;
-        }
-
-        return n;
-    }
-
-    // 21.3.2.19 Math.imul - convert both arguments to Int32 and return the low
-    // 32 bits of the signed product.
-    private double MathImul(IReadOnlyList<JsValue> args)
-    {
-        var x = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
-        var y = args.Count > 1 ? ToNumber(args[1]) : double.NaN;
-        return unchecked((int)((uint)MathHelpers.ToInt32(x) * (uint)MathHelpers.ToInt32(y)));
-    }
-
 
     private ObjectHandle EnsureJsonObject()
     {
@@ -10494,51 +10253,6 @@ public sealed partial class BytecodeInterpreter
     {
         String,
         Number
-    }
-
-    private sealed class NativeFunctionObject : JsObject
-    {
-        private readonly Func<JsValue, IReadOnlyList<JsValue>, JsValue> _call;
-        private readonly Func<IReadOnlyList<JsValue>, JsValue>? _construct;
-
-        public NativeFunctionObject(
-            string name,
-            Func<JsValue, IReadOnlyList<JsValue>, JsValue> call,
-            Func<IReadOnlyList<JsValue>, JsValue>? construct = null,
-            int length = 0)
-        {
-            Name = name;
-            _call = call;
-            _construct = construct;
-            _ = DefineOwnProperty(
-                "name",
-                new JsPropertyDescriptor(
-                    JsValue.FromString(name),
-                    Writable: false,
-                    Enumerable: false,
-                    Configurable: true));
-            _ = DefineOwnProperty(
-                "length",
-                new JsPropertyDescriptor(
-                    JsValue.FromNumber(length),
-                    Writable: false,
-                    Enumerable: false,
-                    Configurable: true));
-        }
-
-        public string Name { get; }
-
-        public JsValue Call(JsValue thisValue, IReadOnlyList<JsValue> args) => _call(thisValue, args);
-
-        public JsValue Construct(IReadOnlyList<JsValue> args)
-        {
-            if (_construct is null)
-            {
-                throw new InvalidOperationException("Value is not constructible.");
-            }
-
-            return _construct(args);
-        }
     }
 
     private sealed class ArrayObject : JsObject

@@ -1,5 +1,3 @@
-using FenBrowser.Js.Heap;
-
 namespace FenBrowser.Js.Builtins;
 
 // Per-realm collection of builtin modules. The registry owns:
@@ -8,12 +6,12 @@ namespace FenBrowser.Js.Builtins;
 //     a fully-built dependency),
 //   * duplicate-name rejection (two modules claiming the same Name is a configuration
 //     bug, not a silent overwrite),
-//   * a one-shot materialize pass that calls each module's GetBindings(heap) exactly
+//   * a one-shot materialize pass that calls each module's GetBindings(context) exactly
 //     once and returns the flattened binding list ready for the interpreter (or any
 //     other host) to install on its global object.
 //
 // The registry itself is realm-agnostic - it never touches the heap. The Materialize
-// step is the only place the heap is involved, so a host that wants to share a
+// step is the only place the context is involved, so a host that wants to share a
 // registry definition across realms can register modules once at startup and call
 // Materialize per realm.
 public sealed class BuiltinRegistry
@@ -49,18 +47,18 @@ public sealed class BuiltinRegistry
         return _names.Contains(name);
     }
 
-    // Build every registered module's bindings against the given heap, preserving
+    // Build every registered module's bindings against the given context, preserving
     // registration order. Each module is queried exactly once; the caller is expected
     // to install the resulting BuiltinBinding entries onto its global object using
     // whatever DefineOwnProperty surface the host has.
-    public IReadOnlyList<BuiltinBinding> Materialize(JsHeap heap)
+    public IReadOnlyList<BuiltinBinding> Materialize(IBuiltinContext context)
     {
-        ArgumentNullException.ThrowIfNull(heap);
+        ArgumentNullException.ThrowIfNull(context);
 
         var result = new List<BuiltinBinding>(_modules.Count);
         foreach (var module in _modules)
         {
-            var bindings = module.GetBindings(heap);
+            var bindings = module.GetBindings(context);
             if (bindings is null)
             {
                 continue;
