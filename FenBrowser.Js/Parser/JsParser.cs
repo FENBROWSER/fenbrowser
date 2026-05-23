@@ -890,7 +890,8 @@ public sealed class JsParser
             throw new JsParserException($"Expected string literal, found '{Current().Text}'.");
         }
         var tok = Advance();
-        return tok.Text.Length >= 2 ? tok.Text[1..^1] : string.Empty;
+        var raw = tok.Text.Length >= 2 ? tok.Text[1..^1] : string.Empty;
+        return DecodeStringLiteralBody(raw);
     }
 
     private void ExpectKeyword(string text)
@@ -1077,6 +1078,117 @@ public sealed class JsParser
         return (members, close);
     }
 
+    // ECMA-262 12.8.4 SV (String Value) of a StringLiteral. Decodes the
+    // common escape forms: single-character escapes, \xHH, \uHHHH,
+    // \u{HHHHHH}, line continuations, octal `\0` (when not followed by a
+    // digit). The input must NOT include the surrounding quotes - pass the
+    // already-stripped body.
+    internal static string DecodeStringLiteralBody(string body)
+    {
+        if (body.IndexOf('\\') < 0) return body;
+        var sb = new System.Text.StringBuilder(body.Length);
+        for (int i = 0; i < body.Length; i++)
+        {
+            var c = body[i];
+            if (c != '\\' || i + 1 >= body.Length)
+            {
+                sb.Append(c);
+                continue;
+            }
+            var next = body[++i];
+            switch (next)
+            {
+                case 'n': sb.Append('\n'); break;
+                case 't': sb.Append('\t'); break;
+                case 'r': sb.Append('\r'); break;
+                case 'b': sb.Append('\b'); break;
+                case 'f': sb.Append('\f'); break;
+                case 'v': sb.Append('\v'); break;
+                case '0':
+                    // \0 is the null escape only when not followed by a digit.
+                    if (i + 1 >= body.Length || body[i + 1] < '0' || body[i + 1] > '9')
+                    {
+                        sb.Append('\0');
+                    }
+                    else
+                    {
+                        sb.Append('\0');
+                    }
+                    break;
+                case '\'': sb.Append('\''); break;
+                case '"': sb.Append('"'); break;
+                case '\\': sb.Append('\\'); break;
+                case '`': sb.Append('`'); break;
+                case '\n':
+                case '\r':
+                    // Line continuation: skip the line terminator. If \r\n, eat both.
+                    if (next == '\r' && i + 1 < body.Length && body[i + 1] == '\n') i++;
+                    break;
+                case 'x':
+                    if (i + 2 < body.Length
+                        && TryParseHex(body[i + 1], out var h1)
+                        && TryParseHex(body[i + 2], out var h2))
+                    {
+                        sb.Append((char)((h1 << 4) | h2));
+                        i += 2;
+                    }
+                    else
+                    {
+                        sb.Append('x');
+                    }
+                    break;
+                case 'u':
+                    if (i + 1 < body.Length && body[i + 1] == '{')
+                    {
+                        var end = body.IndexOf('}', i + 2);
+                        if (end > i + 2)
+                        {
+                            var hex = body.Substring(i + 2, end - (i + 2));
+                            if (int.TryParse(
+                                    hex,
+                                    System.Globalization.NumberStyles.HexNumber,
+                                    System.Globalization.CultureInfo.InvariantCulture,
+                                    out var cp) && cp >= 0 && cp <= 0x10FFFF)
+                            {
+                                sb.Append(char.ConvertFromUtf32(cp));
+                                i = end;
+                                break;
+                            }
+                        }
+                        sb.Append('u');
+                        break;
+                    }
+                    if (i + 4 < body.Length
+                        && TryParseHex(body[i + 1], out var u1)
+                        && TryParseHex(body[i + 2], out var u2)
+                        && TryParseHex(body[i + 3], out var u3)
+                        && TryParseHex(body[i + 4], out var u4))
+                    {
+                        sb.Append((char)((u1 << 12) | (u2 << 8) | (u3 << 4) | u4));
+                        i += 4;
+                    }
+                    else
+                    {
+                        sb.Append('u');
+                    }
+                    break;
+                default:
+                    sb.Append(next);
+                    break;
+            }
+        }
+        return sb.ToString();
+    }
+
+    private static bool TryParseHex(char c, out int value)
+    {
+        if (c >= '0' && c <= '9') { value = c - '0'; return true; }
+        if (c >= 'a' && c <= 'f') { value = c - 'a' + 10; return true; }
+        if (c >= 'A' && c <= 'F') { value = c - 'A' + 10; return true; }
+        value = 0;
+        return false;
+    }
+
     // ECMA-262 7.1.17 ToString(Number): integers within Int32 range render
     // without a decimal point; other finite values use the shortest round-trip
     // form. We approximate via "R" formatting; "G17" would be too verbose.
@@ -1128,11 +1240,11 @@ public sealed class JsParser
         if (tok.Kind == TokenKind.String)
         {
             Advance();
-            // ECMA-262 12.2.6.7: StringLiteral PropertyNames use the SV (string
-            // value) of the literal, i.e. with surrounding quotes stripped.
-            // Escape sequences inside the literal are not processed here yet;
-            // simple unquoted forms ('foo', "bar", "") are the common cases.
-            return tok.Text.Length >= 2 ? tok.Text[1..^1] : string.Empty;
+            // ECMA-262 12.2.6.7: StringLiteral PropertyNames use the SV
+            // (string value) of the literal: surrounding quotes stripped and
+            // escape sequences decoded.
+            var raw = tok.Text.Length >= 2 ? tok.Text[1..^1] : string.Empty;
+            return DecodeStringLiteralBody(raw);
         }
         if (tok.Kind == TokenKind.Number)
         {
@@ -1529,7 +1641,8 @@ public sealed class JsParser
                 throw new JsParserException("Legacy string escape sequence is not allowed in strict mode.");
             }
 
-            var value = token.Text.Length >= 2 ? token.Text[1..^1] : string.Empty;
+            var raw = token.Text.Length >= 2 ? token.Text[1..^1] : string.Empty;
+            var value = DecodeStringLiteralBody(raw);
             return new StringLiteralExpressionNode(value, token.Text, token.Span);
         }
 

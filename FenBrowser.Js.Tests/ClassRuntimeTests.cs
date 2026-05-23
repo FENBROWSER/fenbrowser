@@ -751,6 +751,39 @@ public sealed class ClassRuntimeTests
     }
 
     [Fact]
+    public void HexEscapeInStringLiteralClassMemberKey()
+    {
+        Assert.Equal("ok", Run(@"
+            class C {
+                get '\x41'() { return 'ok'; }
+            }
+            (new C())['A'];
+        ").AsString());
+    }
+
+    [Fact]
+    public void UnicodeEscapeInStringLiteralClassMemberKey()
+    {
+        Assert.Equal("ok", Run(@"
+            class C {
+                get 'B'() { return 'ok'; }
+            }
+            (new C())['B'];
+        ").AsString());
+    }
+
+    [Fact]
+    public void UnicodeBraceEscapeInStringLiteralClassMemberKey()
+    {
+        Assert.Equal("ok", Run(@"
+            class C {
+                get '\u{0043}'() { return 'ok'; }
+            }
+            (new C())['C'];
+        ").AsString());
+    }
+
+    [Fact]
     public void EmptyStringLiteralClassMemberKey()
     {
         Assert.Equal(9d, Run(@"
