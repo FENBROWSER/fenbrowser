@@ -978,6 +978,27 @@ public sealed class JsParser
                 isStatic = true;
             }
 
+            // H.5 - static initialization block: `static { ... }`. ECMA-262 15.7
+            // ClassStaticBlock. The block body runs once at class-definition time
+            // with `this` bound to the class itself; lowered to a synthesised
+            // parameterless function invoked with this=class.
+            if (isStatic && IsPunctuator("{"))
+            {
+                var block = ParseBlockStatement();
+                var staticFn = new FunctionExpressionNode(
+                    null,
+                    Array.Empty<string>(),
+                    block,
+                    MergeSpan(memberStart, block.Span));
+                members.Add(new ClassMemberNode(
+                    string.Empty,
+                    ClassMemberKind.StaticBlock,
+                    IsStatic: true,
+                    staticFn,
+                    MergeSpan(memberStart, block.Span)));
+                continue;
+            }
+
             var isAsync = false;
             if (IsIdentifierLike(Current()) && Current().Text == "async" && !IsPunctuatorAt(1, "(") &&
                 (IsPunctuatorAt(1, "*") || IsClassMemberNameStartAt(1)))

@@ -252,10 +252,19 @@ public sealed class BytecodeCompiler
     // ("a class binding is created before any of its computations").
     private void CompileClassDeclaration(ClassDeclarationNode classDecl)
     {
-        var classReg = CompileClassExpressionToRegister(classDecl.Name, classDecl.BaseClass, classDecl.Members);
         _lexicalDeclarationNames.Add(classDecl.Name);
         var slot = GetOrCreateVariableSlot(classDecl.Name);
-        _instructions.Add(new Instruction(OpCode.InitVar, classReg, slot, 0));
+        // Bind the class name in the outer scope BEFORE static initialization
+        // blocks run so they (and any methods they call) can resolve the class
+        // by name. ECMA-262 puts the binding in an inner class-scope environment
+        // that the body sees but the outer scope doesn't see until after the body
+        // runs; we approximate that with a single hoisted binding for now.
+        var classReg = CompileClassExpressionToRegister(
+            classDecl.Name,
+            classDecl.BaseClass,
+            classDecl.Members,
+            bindNameBeforeStaticBlocks: reg =>
+                _instructions.Add(new Instruction(OpCode.InitVar, reg, slot, 0)));
     }
 
     // Synthesise the constructor function + prototype object, install methods
@@ -266,7 +275,8 @@ public sealed class BytecodeCompiler
     private int CompileClassExpressionToRegister(
         string? className,
         ExpressionNode? baseClass,
-        IReadOnlyList<ClassMemberNode> members)
+        IReadOnlyList<ClassMemberNode> members,
+        Action<int>? bindNameBeforeStaticBlocks = null)
     {
         // H.2 - evaluate the base-class expression BEFORE compiling the class body
         // so that class B extends A {} fails fast when A is a TDZ binding (ECMA-
@@ -295,7 +305,7 @@ foreach (var member in members)
             // H.5 - computed property names are now supported for methods, getters, and setters
             // Private fields and methods are still deferred to a later step.
 
-            if (member.IsAsync || member.IsGenerator)
+            if (member.Kind != ClassMemberKind.StaticBlock && (member.IsAsync || member.IsGenerator))
             {
                 throw new UnsupportedFeatureException("async-or-generator-class-method", FeatureSupportLevel.ParserOnly, member.Span);
             }
@@ -346,9 +356,11 @@ foreach (var member in members)
         foreach (var member in members)
         {
             if (member.Kind == ClassMemberKind.Constructor) continue;
+            if (member.Kind == ClassMemberKind.StaticBlock) continue;
             if (member.Function is not FunctionExpressionNode methodFn) continue;
 
             var methodReg = CompileFunctionExpressionToRegister(methodFn);
+
             var targetReg = member.IsStatic ? classReg : protoReg;
             // H.3 - record the home object so `super.x` lookups can walk the
             // prototype chain from inside the method body.
@@ -395,6 +407,25 @@ foreach (var member in members)
         _instructions.Add(new Instruction(OpCode.SetPropByName, protoReg, ctorNameIdx, classReg));
         var protoNameIdx = GetOrCreatePropertyName("prototype");
         _instructions.Add(new Instruction(OpCode.SetPropByName, classReg, protoNameIdx, protoReg));
+
+        // H.5 - bind the class name in the outer scope BEFORE running static
+        // initialization blocks, so the block body can resolve the class by
+        // name (e.g. `static { C.x = 1; }`). Approximates ECMA-262 15.7.14
+        // step 37 ordering relative to the inner class scope.
+        bindNameBeforeStaticBlocks?.Invoke(classReg);
+
+        // H.5 - static initialization blocks. ECMA-262 15.7.10. Run each block
+        // with this=class and HomeObject=class so `super.foo` walks the base
+        // class's static side. Result is discarded.
+        foreach (var member in members)
+        {
+            if (member.Kind != ClassMemberKind.StaticBlock) continue;
+            if (member.Function is not FunctionExpressionNode blockFn) continue;
+            var blockReg = CompileFunctionExpressionToRegister(blockFn);
+            _instructions.Add(new Instruction(OpCode.SetHomeObject, blockReg, classReg, 0));
+            var discard = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.CallMethod0, discard, blockReg, classReg));
+        }
 
         return classReg;
     }

@@ -96,6 +96,7 @@ public enum ClassMemberKind : byte
     Getter,
     Setter,
     Field,
+    StaticBlock,
 }
 
 // E.7 - top-level `import ... from "mod"` declaration. Entries holds one

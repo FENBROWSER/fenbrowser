@@ -411,4 +411,88 @@ public sealed class ClassRuntimeTests
             c['add'](1, 2) + c['sub'](5, 1) + c['mul'](2, 1);
         ").AsNumber()); // 3 + 4 + 2 = 9
     }
+
+    // H.5 - static initialization blocks (ECMA-262 15.7.10).
+    [Fact]
+    public void StaticBlockRunsAtClassDefinition()
+    {
+        Assert.Equal(7d, Run(@"
+            class C {
+                static { C.x = 7; }
+            }
+            C.x;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void StaticBlockThisIsTheClass()
+    {
+        Assert.True(Run(@"
+            var captured;
+            class C {
+                static { captured = this; }
+            }
+            captured === C;
+        ").AsBoolean());
+    }
+
+    [Fact]
+    public void MultipleStaticBlocksRunInSourceOrder()
+    {
+        Assert.Equal("ab", Run(@"
+            class C {
+                static { C.s = 'a'; }
+                static { C.s += 'b'; }
+            }
+            C.s;
+        ").AsString());
+    }
+
+    [Fact]
+    public void StaticBlockInterleavesWithStaticMethods()
+    {
+        Assert.Equal(11d, Run(@"
+            class C {
+                static add(a, b) { return a + b; }
+                static { C.total = C.add(4, 7); }
+            }
+            C.total;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void StaticBlockCanReadStaticGetter()
+    {
+        Assert.Equal(5d, Run(@"
+            class C {
+                static get five() { return 5; }
+                static { C.captured = C.five; }
+            }
+            C.captured;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void StaticBlockSeesLocalScopeOfBlock()
+    {
+        // Per spec the block has its own lexical scope; `let x` here must not
+        // leak onto the class.
+        Assert.Equal("undefined", Run(@"
+            class C {
+                static { let x = 99; C.y = x + 1; }
+            }
+            typeof C.x + ':' + C.y;
+        ").AsString().Substring(0, 9));
+    }
+
+    [Fact]
+    public void EmptyStaticBlockIsValid()
+    {
+        Assert.Equal("function", Run(@"
+            class C {
+                static {}
+            }
+            typeof C;
+        ").AsString());
+    }
 }
