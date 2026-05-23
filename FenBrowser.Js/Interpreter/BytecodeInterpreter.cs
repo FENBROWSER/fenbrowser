@@ -2926,6 +2926,7 @@ public sealed class BytecodeInterpreter
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getTime", DatePrototypeGetTime);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "valueOf", DatePrototypeGetTime);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toISOString", DatePrototypeToIsoString);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toJSON", DatePrototypeToJson, length: 1);
 
         _datePrototypeHandle = prototypeHandle;
         _dateConstructorHandle = constructorHandle;
@@ -2946,6 +2947,25 @@ public sealed class BytecodeInterpreter
     {
         _ = args;
         return JsValue.FromNumber(GetDateTimeValue(thisValue, "getTime"));
+    }
+
+    // ECMA-262 21.4.4.37 Date.prototype.toJSON(key). Per spec it ToPrimitive(this,
+    // "number")s the receiver; if the result is a non-finite Number it returns null
+    // (so JSON.stringify emits null instead of throwing), otherwise it delegates to
+    // this.toISOString(). The (key) argument is unused per step 4.
+    private JsValue DatePrototypeToJson(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        if (thisValue.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Date.prototype.toJSON called on non-object."));
+        }
+        var primitive = ToPrimitive(thisValue, PrimitiveHint.Number);
+        if (primitive.Tag == JsValueTag.Number && !double.IsFinite(primitive.AsNumber()))
+        {
+            return JsValue.Null;
+        }
+        return DatePrototypeToIsoString(thisValue, Array.Empty<JsValue>());
     }
 
     // ECMA-262 21.4.4.36 Date.prototype.toISOString. Format is the Date Time String
