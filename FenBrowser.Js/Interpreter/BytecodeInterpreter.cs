@@ -51,6 +51,7 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _evalErrorPrototypeHandle;
     private ObjectHandle? _aggregateErrorConstructorHandle;
     private ObjectHandle? _aggregateErrorPrototypeHandle;
+    private ObjectHandle? _structuredCloneHandle;
     private ObjectHandle? _weakRefConstructorHandle;
     private ObjectHandle? _weakRefPrototypeHandle;
     private ObjectHandle? _finalizationRegistryConstructorHandle;
@@ -679,6 +680,11 @@ public sealed class BytecodeInterpreter
         if (function.VariableSlots.TryGetValue("FinalizationRegistry", out var frSlot))
         {
             frame.Variables[frSlot] = JsValue.FromObject(EnsureFinalizationRegistryConstructor());
+        }
+
+        if (function.VariableSlots.TryGetValue("structuredClone", out var scSlot))
+        {
+            frame.Variables[scSlot] = JsValue.FromObject(EnsureStructuredCloneFunction());
         }
 
         if (function.VariableSlots.TryGetValue("Object", out var objectSlot))
@@ -8131,6 +8137,120 @@ public sealed class BytecodeInterpreter
         _finalizationRegistryPrototypeHandle = prototypeHandle;
         _finalizationRegistryConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    // HTML Living Standard "structured serialize" + "structured deserialize". A
+    // single in-process pass that walks the input, remembers visited source handles
+    // so cycles produce shared references in the result, and rebuilds via fresh
+    // allocations on the same heap. Functions, host objects, and Symbol values
+    // raise the HTML-spec'd DataCloneError (we surface it as a plain Error with
+    // the spec-mandated name 'DataCloneError' for code that string-checks).
+    private ObjectHandle EnsureStructuredCloneFunction()
+    {
+        if (_structuredCloneHandle is { } existing)
+        {
+            return existing;
+        }
+        var fn = new NativeFunctionObject("structuredClone", (_, args) =>
+        {
+            if (args.Count == 0) return JsValue.Undefined;
+            return StructuredCloneValue(args[0], new Dictionary<ObjectHandle, ObjectHandle>());
+        }, length: 1);
+        _structuredCloneHandle = _heap.AllocateObject(fn, AllocationSite.Current());
+        _heap.PushRoot(_structuredCloneHandle.Value);
+        return _structuredCloneHandle.Value;
+    }
+
+    private JsValue StructuredCloneValue(JsValue value, Dictionary<ObjectHandle, ObjectHandle> memo)
+    {
+        switch (value.Tag)
+        {
+            case JsValueTag.Undefined:
+            case JsValueTag.Null:
+            case JsValueTag.Boolean:
+            case JsValueTag.Int32:
+            case JsValueTag.Number:
+            case JsValueTag.String:
+                return value;
+            case JsValueTag.Symbol:
+                throw new JsThrownException(CreateDataCloneError("Symbol values cannot be structured-cloned."));
+        }
+        if (value.Tag != JsValueTag.Object)
+        {
+            return value;
+        }
+
+        var sourceHandle = value.AsObjectHandle();
+        if (memo.TryGetValue(sourceHandle, out var existingClone))
+        {
+            return JsValue.FromObject(existingClone);
+        }
+
+        var sourceObj = _heap.GetObject(sourceHandle);
+        switch (sourceObj)
+        {
+            case JsFunctionObject:
+            case NativeFunctionObject:
+                throw new JsThrownException(CreateDataCloneError("Functions cannot be structured-cloned."));
+            case DateObject d:
+            {
+                var cloneObj = new DateObject(d.TimeValue);
+                cloneObj.SetPrototype(EnsureDatePrototype());
+                var h = _heap.AllocateObject(cloneObj, AllocationSite.Current());
+                memo[sourceHandle] = h;
+                return JsValue.FromObject(h);
+            }
+            case RegExpObject r:
+            {
+                var cloneObj = new RegExpObject(r.Pattern, r.Flags, r.Regex);
+                cloneObj.SetPrototype(EnsureRegExpPrototype());
+                var h = _heap.AllocateObject(cloneObj, AllocationSite.Current());
+                memo[sourceHandle] = h;
+                return JsValue.FromObject(h);
+            }
+            case ArrayObject:
+            {
+                var arr = new ArrayObject();
+                arr.SetPrototype(EnsureArrayPrototype());
+                var h = _heap.AllocateObject(arr, AllocationSite.Current());
+                memo[sourceHandle] = h;
+                var length = GetArrayLength(sourceObj);
+                for (var i = 0; i < length; i++)
+                {
+                    var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    if (!TryGetPropertyValue(sourceObj, value, key, out var v)) continue;
+                    var cloned = StructuredCloneValue(v, memo);
+                    arr.SetProperty(key, cloned);
+                    if (cloned.Tag == JsValueTag.Object) _heap.WriteBarrier(h, cloned.AsObjectHandle());
+                }
+                arr.SetProperty("length", JsValue.FromNumber(length));
+                return JsValue.FromObject(h);
+            }
+            default:
+            {
+                var clone = CreateOrdinaryObject();
+                var h = _heap.AllocateObject(clone, AllocationSite.Current());
+                memo[sourceHandle] = h;
+                foreach (var pair in sourceObj.EnumerateOwnProperties())
+                {
+                    if (!pair.Value.Enumerable) continue;
+                    if (!TryGetPropertyValue(sourceObj, value, pair.Key, out var v)) continue;
+                    var cloned = StructuredCloneValue(v, memo);
+                    clone.SetProperty(pair.Key, cloned);
+                    if (cloned.Tag == JsValueTag.Object) _heap.WriteBarrier(h, cloned.AsObjectHandle());
+                }
+                return JsValue.FromObject(h);
+            }
+        }
+    }
+
+    private JsValue CreateDataCloneError(string message)
+    {
+        var err = new JsObject();
+        err.SetPrototype(EnsureErrorPrototype());
+        err.SetProperty("name", JsValue.FromString("DataCloneError"));
+        err.SetProperty("message", JsValue.FromString(message));
+        return JsValue.FromObject(_heap.AllocateObject(err, AllocationSite.Current()));
     }
 
     private FinalizationRegistryObject RequireFinalizationRegistry(JsValue thisValue)
