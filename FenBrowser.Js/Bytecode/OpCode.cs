@@ -91,4 +91,11 @@ public enum OpCode : byte
     // ECMA-262 13.3.7.3 MakeSuperPropertyReference + 9.1.2 GetSuperBase.
     // Throws ReferenceError when called from a function with no HomeObject.
     LoadSuperProperty,
+
+    // H.3.2 - LoadSuperConstructor(A=dest reg). Reads the parent class from
+    // the executing constructor's HomeObject prototype slot. ECMA-262
+    // 13.3.7.4 GetSuperConstructor. Used by `super(...)` to obtain the
+    // base class as a callable/constructible value. Throws ReferenceError
+    // when called outside a class with extends.
+    LoadSuperConstructor,
 }

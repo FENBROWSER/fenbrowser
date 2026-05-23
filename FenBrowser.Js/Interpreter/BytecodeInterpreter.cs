@@ -312,6 +312,9 @@ public sealed partial class BytecodeInterpreter
                 case OpCode.LoadSuperProperty:
                     HandleLoadSuperProperty(frame, function, ins);
                     break;
+                case OpCode.LoadSuperConstructor:
+                    HandleLoadSuperConstructor(frame, ins);
+                    break;
                 case OpCode.SetPrototype:
                 {
                     // ECMA-262 7.3.5 OrdinarySetPrototypeOf - the V argument must be
@@ -10001,6 +10004,27 @@ public sealed partial class BytecodeInterpreter
         frame.Registers[ins.A] = TryGetPropertyValue(baseProto, JsValue.FromObject(baseProtoHandle), name, out var v)
             ? v
             : JsValue.Undefined;
+    }
+
+    private void HandleLoadSuperConstructor(InterpreterFrame frame, Instruction ins)
+    {
+        // ECMA-262 13.3.7.4 GetSuperConstructor: read the active function's
+        // HomeObject (which the class compiler sets to the class itself for the
+        // constructor), then return HomeObject.[[Prototype]] - the base class.
+        if (frame.CalleeFunctionObject is not { } callee || callee.HomeObject is not { } home)
+        {
+            ThrowOrHandle(frame, CreateReferenceError("super constructor call requires a class constructor context."));
+            return;
+        }
+
+        var homeObj = _heap.GetObject(home);
+        if (homeObj.PrototypeHandle is not { } baseHandle)
+        {
+            ThrowOrHandle(frame, CreateTypeError("super constructor is not callable (no base class)."));
+            return;
+        }
+
+        frame.Registers[ins.A] = JsValue.FromObject(baseHandle);
     }
 
     private static ObjectHandle ResolveObjectHandle(JsValue value)

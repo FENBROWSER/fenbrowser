@@ -117,6 +117,9 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidatePropertyName(function, ip, ins.B);
                 break;
+            case OpCode.LoadSuperConstructor:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                break;
             case OpCode.SetPropByName:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidatePropertyName(function, ip, ins.B);

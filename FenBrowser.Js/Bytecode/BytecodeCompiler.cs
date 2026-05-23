@@ -307,6 +307,12 @@ public sealed class BytecodeCompiler
             _instructions.Add(new Instruction(OpCode.SetPrototype, classReg, baseReg, 0));
         }
 
+        // H.3.2 - record the class itself as the constructor's HomeObject so
+        // LoadSuperConstructor can read HomeObject.[[Prototype]] to find the
+        // base class. The constructor is the class object itself, so this is
+        // an intentional self-reference.
+        _instructions.Add(new Instruction(OpCode.SetHomeObject, classReg, classReg, 0));
+
         // For each non-constructor member, compile its function and install it
         // on either the prototype (instance methods) or the constructor (static).
         // Getter/setter members get accessor descriptors; method members get
@@ -735,7 +741,20 @@ public sealed class BytecodeCompiler
                 var calleeReg = -1;
                 var thisReg = -1;
                 var isMethodCall = false;
-                if (call.Callee is MemberExpressionNode memberCallee)
+
+                // H.3.2 - super(args) call. The base constructor is loaded via
+                // LoadSuperConstructor; we pass the current frame's `this` as the
+                // receiver so base-class field initialisation (this.x = ...)
+                // surfaces on the derived instance.
+                if (call.Callee is SuperExpressionNode)
+                {
+                    calleeReg = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.LoadSuperConstructor, calleeReg, 0, 0));
+                    thisReg = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.LoadThis, thisReg, 0, 0));
+                    isMethodCall = true;
+                }
+                else if (call.Callee is MemberExpressionNode memberCallee)
                 {
                     // H.3 - super.method(args): callee comes from LoadSuperProperty,
                     // thisValue stays the current frame's `this`. Without this branch

@@ -276,4 +276,41 @@ public sealed class ClassRuntimeTests
         Assert.Throws<JsThrownException>(() =>
             Run("function f() { return super.x; } f();"));
     }
+
+    // H.3.2 - super(...) constructor calls.
+
+    [Fact]
+    public void SuperConstructorCallInitialisesBaseFieldsOnDerivedInstance()
+    {
+        Assert.Equal(99d, Run(@"
+            class A { constructor(v) { this.value = v; } }
+            class B extends A { constructor(v) { super(v); } }
+            (new B(99)).value;
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void DerivedConstructorAddsItsOwnFieldsAfterSuper()
+    {
+        Assert.Equal(7d, Run(@"
+            class A { constructor(v) { this.a = v; } }
+            class B extends A {
+                constructor(v) { super(v); this.b = v + 1; }
+            }
+            var b = new B(3);
+            b.a + b.b;
+        ").AsNumber()); // 3 + 4 = 7
+    }
+
+    [Fact]
+    public void ThreeLevelSuperCallChainsAllConstructors()
+    {
+        Assert.Equal(6d, Run(@"
+            class A { constructor() { this.x = 1; } }
+            class B extends A { constructor() { super(); this.y = 2; } }
+            class C extends B { constructor() { super(); this.z = 3; } }
+            var c = new C();
+            c.x + c.y + c.z;
+        ").AsNumber());
+    }
 }
