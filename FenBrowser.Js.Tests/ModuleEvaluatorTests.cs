@@ -178,4 +178,35 @@ public sealed class ModuleEvaluatorTests
         Assert.True(interpreter.TryReadGlobalValue("tag", out var v));
         Assert.Equal("[object Module]", v.AsString());
     }
+
+    // E.6.next - host source resolver delegate.
+
+    [Fact]
+    public void HostResolverIsConsultedOnSourceMiss()
+    {
+        var interpreter = new BytecodeInterpreter();
+        var fetched = new System.Collections.Generic.List<string>();
+        var evaluator = new ModuleEvaluator(interpreter, hostSourceResolver: spec =>
+        {
+            fetched.Add(spec);
+            return spec switch
+            {
+                "lib" => "export default 5;",
+                _ => null,
+            };
+        });
+        evaluator.RegisterSource("main", "import x from 'lib'; var out = x;");
+        _ = evaluator.Evaluate("main");
+        Assert.True(interpreter.TryReadGlobalValue("out", out var v));
+        Assert.Equal(5d, v.AsNumber());
+        Assert.Contains("lib", fetched);
+    }
+
+    [Fact]
+    public void HostResolverNullForUnknownThrows()
+    {
+        var interpreter = new BytecodeInterpreter();
+        var evaluator = new ModuleEvaluator(interpreter, hostSourceResolver: _ => null);
+        Assert.Throws<System.InvalidOperationException>(() => evaluator.Evaluate("missing"));
+    }
 }

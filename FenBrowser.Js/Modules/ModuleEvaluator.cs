@@ -36,11 +36,23 @@ public sealed class ModuleEvaluator
     private readonly BytecodeInterpreter _interpreter;
     private readonly Dictionary<string, EvaluatedModule> _evaluated = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _sources = new(StringComparer.Ordinal);
+    private readonly Func<string, string?>? _hostSourceResolver;
 
     public ModuleEvaluator(BytecodeInterpreter interpreter)
+        : this(interpreter, hostSourceResolver: null)
+    {
+    }
+
+    // Hosts that fetch on demand pass a resolver delegate that maps a module
+    // specifier to its source text (or null if the specifier is unknown). The
+    // evaluator first checks RegisterSource entries; on a miss it calls the
+    // resolver, which is intended to model HostLoadImportedModule
+    // (ECMA-262 16.2.1.7) for hosts that own the fetch path.
+    public ModuleEvaluator(BytecodeInterpreter interpreter, Func<string, string?>? hostSourceResolver)
     {
         ArgumentNullException.ThrowIfNull(interpreter);
         _interpreter = interpreter;
+        _hostSourceResolver = hostSourceResolver;
     }
 
     // Pre-seed the source for a module specifier. Hosts that fetch over HTTP
@@ -63,8 +75,15 @@ public sealed class ModuleEvaluator
 
         if (!_sources.TryGetValue(specifier, out var source))
         {
-            throw new InvalidOperationException(
-                $"Module '{specifier}' has no registered source; call RegisterSource first.");
+            source = _hostSourceResolver?.Invoke(specifier);
+            if (source is null)
+            {
+                throw new InvalidOperationException(
+                    $"Module '{specifier}' has no registered source and the host resolver returned null.");
+            }
+
+            // Cache so subsequent re-imports of the same specifier don't refetch.
+            _sources[specifier] = source;
         }
 
         // Mark in-progress before recursion so a cyclic import sees us as
