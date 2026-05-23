@@ -52,6 +52,13 @@ public sealed class BytecodeInterpreter
     private ObjectHandle? _aggregateErrorConstructorHandle;
     private ObjectHandle? _aggregateErrorPrototypeHandle;
     private ObjectHandle? _structuredCloneHandle;
+    private ObjectHandle? _queueMicrotaskHandle;
+
+    // Pending HostQueueMicrotask callbacks. Drained at the end of every top-level
+    // Execute() invocation, modelling a microtask checkpoint with the program as
+    // the surrounding task. Once D.6 wires PromiseJobs into the interpreter, this
+    // queue and the Promises JobQueue should collapse into one.
+    private readonly Queue<JsValue> _pendingMicrotasks = new();
     private ObjectHandle? _weakRefConstructorHandle;
     private ObjectHandle? _weakRefPrototypeHandle;
     private ObjectHandle? _finalizationRegistryConstructorHandle;
@@ -101,7 +108,22 @@ public sealed class BytecodeInterpreter
     [MayExecuteJs]
     public JsValue Execute(BytecodeFunction function)
     {
-        return ExecuteInternal(function, Array.Empty<JsValue>(), null, JsValue.FromObject(EnsureGlobalObject()));
+        var result = ExecuteInternal(function, Array.Empty<JsValue>(), null, JsValue.FromObject(EnsureGlobalObject()));
+        DrainPendingMicrotasks();
+        return result;
+    }
+
+    // HTML "perform a microtask checkpoint" - invoked at the end of every top-level
+    // Execute. Each pending callback runs as if it were called with no arguments
+    // and undefined this; thrown exceptions surface to the caller (matching the
+    // host's "report the exception" behaviour for the very first failing job).
+    private void DrainPendingMicrotasks()
+    {
+        while (_pendingMicrotasks.Count > 0)
+        {
+            var callback = _pendingMicrotasks.Dequeue();
+            _ = CallFunction(callback, Array.Empty<JsValue>(), JsValue.Undefined);
+        }
     }
 
     // Bounds JS recursion so a runaway tail-less recursive function surfaces as a
@@ -685,6 +707,11 @@ public sealed class BytecodeInterpreter
         if (function.VariableSlots.TryGetValue("structuredClone", out var scSlot))
         {
             frame.Variables[scSlot] = JsValue.FromObject(EnsureStructuredCloneFunction());
+        }
+
+        if (function.VariableSlots.TryGetValue("queueMicrotask", out var qmSlot))
+        {
+            frame.Variables[qmSlot] = JsValue.FromObject(EnsureQueueMicrotaskFunction());
         }
 
         if (function.VariableSlots.TryGetValue("Object", out var objectSlot))
@@ -8291,6 +8318,30 @@ public sealed class BytecodeInterpreter
                 return JsValue.FromObject(h);
             }
         }
+    }
+
+    // HTML queueMicrotask(callback). The callback is appended to the pending
+    // microtask queue and drained when the current Execute returns. Non-callable
+    // argument raises TypeError per the HTML spec.
+    private ObjectHandle EnsureQueueMicrotaskFunction()
+    {
+        if (_queueMicrotaskHandle is { } existing)
+        {
+            return existing;
+        }
+        var fn = new NativeFunctionObject("queueMicrotask", (_, args) =>
+        {
+            if (args.Count == 0 || args[0].Tag != JsValueTag.Object ||
+                _heap.GetObject(args[0].AsObjectHandle()) is not (JsFunctionObject or NativeFunctionObject))
+            {
+                throw new JsThrownException(CreateTypeError("queueMicrotask: argument must be callable."));
+            }
+            _pendingMicrotasks.Enqueue(args[0]);
+            return JsValue.Undefined;
+        }, length: 1);
+        _queueMicrotaskHandle = _heap.AllocateObject(fn, AllocationSite.Current());
+        _heap.PushRoot(_queueMicrotaskHandle.Value);
+        return _queueMicrotaskHandle.Value;
     }
 
     private JsValue CreateDataCloneError(string message)
