@@ -5416,6 +5416,16 @@ public sealed class BytecodeInterpreter
         // sorts using the same comparator/SortCompare rules as Array.prototype.sort,
         // and returns a fresh Array. Original is never observed mutating.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toSorted", ArrayPrototypeToSorted, length: 1);
+        // ECMA-262 23.1.3.34 Array.prototype.toSpliced(start, skipCount, ...items)
+        // (ES2023). Non-mutating splice: returns a fresh Array equal to a copy of the
+        // receiver with skipCount entries at start removed and items inserted in their
+        // place. The receiver is never mutated and the result is a fresh allocation.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toSpliced", ArrayPrototypeToSpliced, length: 2);
+        // ECMA-262 23.1.3.36 Array.prototype.with(index, value) (ES2023). Returns a
+        // fresh Array equal to the receiver with element at the resolved index
+        // replaced by value. Negative index counts from length; out-of-range raises
+        // RangeError per step 3.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "with", ArrayPrototypeWith, length: 2);
 
         // ECMA-262 23.1.2.3 Array.of(...items). Returns a fresh Array populated with
         // exactly the supplied items - distinct from new Array(n), which uses a
@@ -5670,6 +5680,67 @@ public sealed class BytecodeInterpreter
 
     // ECMA-262 23.1.3.26 Array.prototype.reverse. Swaps slot i with slot len-1-i
     // for i < len/2; preserves holes (a missing source slot deletes the target).
+    private JsValue ArrayPrototypeToSpliced(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        var start = NormaliseSliceIndex(args, 0, 0, length);
+        // skipCount: missing or undefined => 0 (ES2023 step 7 actualSkipCount default).
+        var skipRaw = args.Count > 1 && args[1].Tag != JsValueTag.Undefined ? (int)ToNumber(args[1]) : 0;
+        var skip = Math.Clamp(skipRaw, 0, length - start);
+        var insertCount = args.Count > 2 ? args.Count - 2 : 0;
+        var newLen = length - skip + insertCount;
+
+        var result = new JsValue[newLen];
+        var w = 0;
+        for (var i = 0; i < start; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            result[w++] = TryGetPropertyValue(obj, thisValue, key, out var v) ? v : JsValue.Undefined;
+        }
+        for (var i = 0; i < insertCount; i++)
+        {
+            result[w++] = args[2 + i];
+        }
+        for (var i = start + skip; i < length; i++)
+        {
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            result[w++] = TryGetPropertyValue(obj, thisValue, key, out var v) ? v : JsValue.Undefined;
+        }
+
+        var arr = CreateArrayFromElements(result);
+        return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+    }
+
+    private JsValue ArrayPrototypeWith(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ResolveObject(thisValue);
+        var length = GetArrayLength(obj);
+        var rawIndex = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
+        var actual = rawIndex < 0 ? length + rawIndex : rawIndex;
+        if (actual < 0 || actual >= length)
+        {
+            throw new JsThrownException(CreateRangeError("Array.prototype.with: index out of range."));
+        }
+        var value = args.Count > 1 ? args[1] : JsValue.Undefined;
+
+        var result = new JsValue[length];
+        for (var i = 0; i < length; i++)
+        {
+            if (i == actual)
+            {
+                result[i] = value;
+            }
+            else
+            {
+                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                result[i] = TryGetPropertyValue(obj, thisValue, key, out var v) ? v : JsValue.Undefined;
+            }
+        }
+        var arr = CreateArrayFromElements(result);
+        return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+    }
+
     private JsValue ArrayPrototypeToSorted(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var obj = ResolveObject(thisValue);
