@@ -3934,6 +3934,15 @@ public sealed class BytecodeInterpreter
         return JsValue.FromObject(handle);
     }
 
+    // Context carried through the JSON.stringify recursive walk per ECMA-262 25.5.2:
+    // gap = indent string (empty when no indent), stack = circular-reference guard,
+    // depth = current nesting level (drives gap repetition).
+    private sealed class JsonStringifyContext
+    {
+        public HashSet<ObjectHandle> Stack { get; } = new();
+        public string Gap { get; init; } = string.Empty;
+    }
+
     private JsValue JsonStringify(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = thisValue;
@@ -3942,11 +3951,32 @@ public sealed class BytecodeInterpreter
             return JsValue.Undefined;
         }
 
-        var json = StringifyJsonValue(args[0], new HashSet<ObjectHandle>(), depth: 0, inArray: false);
+        // ECMA-262 25.5.2 SerializeJSONProperty - third argument 'space'. Numbers
+        // clamp to [0, 10] and indent that many spaces; strings clamp to first 10
+        // characters and indent literally. Anything else (Boolean, Object) drops
+        // back to no-indent compact form.
+        var gap = string.Empty;
+        if (args.Count > 2)
+        {
+            var space = args[2];
+            if (space.Tag == JsValueTag.Number || space.Tag == JsValueTag.Int32)
+            {
+                var n = (int)Math.Clamp(Math.Floor(ToNumber(space)), 0, 10);
+                if (n > 0) gap = new string(' ', n);
+            }
+            else if (space.Tag == JsValueTag.String)
+            {
+                var s = space.AsString();
+                gap = s.Length > 10 ? s.Substring(0, 10) : s;
+            }
+        }
+
+        var ctx = new JsonStringifyContext { Gap = gap };
+        var json = StringifyJsonValue(args[0], ctx, depth: 0, inArray: false);
         return json is null ? JsValue.Undefined : JsValue.FromString(json);
     }
 
-    private string? StringifyJsonValue(JsValue value, HashSet<ObjectHandle> stack, int depth, bool inArray)
+    private string? StringifyJsonValue(JsValue value, JsonStringifyContext ctx, int depth, bool inArray)
     {
         if (depth > 200)
         {
@@ -3961,7 +3991,7 @@ public sealed class BytecodeInterpreter
             JsValueTag.Int32 => value.AsInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
             JsValueTag.Number => StringifyJsonNumber(value.AsNumber()),
             JsValueTag.String => JsonSerializer.Serialize(value.AsString()),
-            JsValueTag.Object => StringifyJsonObject(value, stack, depth, inArray),
+            JsValueTag.Object => StringifyJsonObject(value, ctx, depth, inArray),
             _ => inArray ? "null" : null
         };
     }
@@ -3973,7 +4003,7 @@ public sealed class BytecodeInterpreter
             : "null";
     }
 
-    private string? StringifyJsonObject(JsValue value, HashSet<ObjectHandle> stack, int depth, bool inArray)
+    private string? StringifyJsonObject(JsValue value, JsonStringifyContext ctx, int depth, bool inArray)
     {
         var handle = value.AsObjectHandle();
         var obj = _heap.GetObject(handle);
@@ -3982,7 +4012,7 @@ public sealed class BytecodeInterpreter
             return inArray ? "null" : null;
         }
 
-        if (!stack.Add(handle))
+        if (!ctx.Stack.Add(handle))
         {
             throw new JsThrownException(CreateTypeError("Cannot stringify circular structure."));
         }
@@ -3991,7 +4021,7 @@ public sealed class BytecodeInterpreter
         {
             if (obj is ArrayObject)
             {
-                return StringifyJsonArray(obj, value, stack, depth);
+                return StringifyJsonArray(obj, value, ctx, depth);
             }
 
             var parts = new List<string>();
@@ -4003,22 +4033,36 @@ public sealed class BytecodeInterpreter
                     continue;
                 }
 
-                var serialized = StringifyJsonValue(propertyValue, stack, depth + 1, inArray: false);
+                var serialized = StringifyJsonValue(propertyValue, ctx, depth + 1, inArray: false);
                 if (serialized is not null)
                 {
-                    parts.Add(JsonSerializer.Serialize(property.Key) + ":" + serialized);
+                    var colon = ctx.Gap.Length > 0 ? ": " : ":";
+                    parts.Add(JsonSerializer.Serialize(property.Key) + colon + serialized);
                 }
             }
 
-            return "{" + string.Join(",", parts) + "}";
+            if (parts.Count == 0)
+            {
+                return "{}";
+            }
+
+            if (ctx.Gap.Length == 0)
+            {
+                return "{" + string.Join(",", parts) + "}";
+            }
+
+            // Indent each member by depth+1 levels of Gap, with newline separators.
+            var inner = string.Concat(System.Linq.Enumerable.Repeat(ctx.Gap, depth + 1));
+            var outer = string.Concat(System.Linq.Enumerable.Repeat(ctx.Gap, depth));
+            return "{\n" + inner + string.Join(",\n" + inner, parts) + "\n" + outer + "}";
         }
         finally
         {
-            _ = stack.Remove(handle);
+            _ = ctx.Stack.Remove(handle);
         }
     }
 
-    private string StringifyJsonArray(JsObject obj, JsValue receiver, HashSet<ObjectHandle> stack, int depth)
+    private string StringifyJsonArray(JsObject obj, JsValue receiver, JsonStringifyContext ctx, int depth)
     {
         var length = GetArrayLength(obj);
         var parts = new string[length];
@@ -4026,11 +4070,23 @@ public sealed class BytecodeInterpreter
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
             parts[i] = TryGetPropertyValue(obj, receiver, key, out var value)
-                ? StringifyJsonValue(value, stack, depth + 1, inArray: true) ?? "null"
+                ? StringifyJsonValue(value, ctx, depth + 1, inArray: true) ?? "null"
                 : "null";
         }
 
-        return "[" + string.Join(",", parts) + "]";
+        if (length == 0)
+        {
+            return "[]";
+        }
+
+        if (ctx.Gap.Length == 0)
+        {
+            return "[" + string.Join(",", parts) + "]";
+        }
+
+        var inner = string.Concat(System.Linq.Enumerable.Repeat(ctx.Gap, depth + 1));
+        var outer = string.Concat(System.Linq.Enumerable.Repeat(ctx.Gap, depth));
+        return "[\n" + inner + string.Join(",\n" + inner, parts) + "\n" + outer + "]";
     }
 
     private ObjectHandle EnsureObjectPrototype()
