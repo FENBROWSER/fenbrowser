@@ -1384,6 +1384,54 @@ public sealed class BytecodeInterpreter
             return JsValue.FromObject(resultHandle);
         }, length: 1);
 
+        // ECMA-262 24.2.3 (Set Methods, ES2025) difference. Result = entries of
+        // this not present in other.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "difference", (thisValue, args) =>
+        {
+            var self = RequireSet(thisValue);
+            var other = new SetObject();
+            foreach (var v in IterateSetLike(args)) other.Add(v);
+
+            var result = CreateFreshSet(out var resultHandle, thisValue.AsObjectHandle());
+            foreach (var v in self.Snapshot())
+            {
+                if (!other.Has(v))
+                {
+                    result.Add(v);
+                    if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
+                }
+            }
+            return JsValue.FromObject(resultHandle);
+        }, length: 1);
+
+        // ECMA-262 24.2.3 (Set Methods, ES2025) symmetricDifference. Result =
+        // entries present in exactly one operand.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "symmetricDifference", (thisValue, args) =>
+        {
+            var self = RequireSet(thisValue);
+            var other = new SetObject();
+            foreach (var v in IterateSetLike(args)) other.Add(v);
+
+            var result = CreateFreshSet(out var resultHandle, thisValue.AsObjectHandle());
+            foreach (var v in self.Snapshot())
+            {
+                if (!other.Has(v))
+                {
+                    result.Add(v);
+                    if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
+                }
+            }
+            foreach (var v in other.Snapshot())
+            {
+                if (!self.Has(v))
+                {
+                    result.Add(v);
+                    if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
+                }
+            }
+            return JsValue.FromObject(resultHandle);
+        }, length: 1);
+
         _setPrototypeHandle = prototypeHandle;
         _setConstructorHandle = constructorHandle;
         return constructorHandle;
