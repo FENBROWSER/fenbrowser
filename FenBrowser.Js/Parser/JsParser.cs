@@ -1189,9 +1189,10 @@ public sealed class JsParser
         return false;
     }
 
-    // ECMA-262 7.1.17 ToString(Number): integers within Int32 range render
-    // without a decimal point; other finite values use the shortest round-trip
-    // form. We approximate via "R" formatting; "G17" would be too verbose.
+    // ECMA-262 6.1.6.1.13 Number::toString. Integers in range render without
+    // a decimal point; small or very large magnitudes use scientific notation
+    // with a lowercase 'e' and a signed exponent stripped of leading zeros
+    // (`1e-7`, not `1E-07`). Approximate via "R" then normalize the exponent.
     private static string ToJsNumberString(double n)
     {
         if (double.IsNaN(n)) return "NaN";
@@ -1202,7 +1203,22 @@ public sealed class JsParser
         {
             return ((long)n).ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
-        return n.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        var s = n.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        var eIdx = s.IndexOfAny(new[] { 'e', 'E' });
+        if (eIdx < 0) return s;
+        var mantissa = s.Substring(0, eIdx);
+        var expPart = s.Substring(eIdx + 1);
+        int sign = 1;
+        int j = 0;
+        if (expPart.Length > 0 && (expPart[0] == '+' || expPart[0] == '-'))
+        {
+            if (expPart[0] == '-') sign = -1;
+            j = 1;
+        }
+        while (j < expPart.Length - 1 && expPart[j] == '0') j++;
+        var expDigits = expPart.Substring(j);
+        var expStr = sign < 0 ? "-" + expDigits : expDigits;
+        return mantissa + "e" + expStr;
     }
 
     private static string ToJsNumberString(long n) =>

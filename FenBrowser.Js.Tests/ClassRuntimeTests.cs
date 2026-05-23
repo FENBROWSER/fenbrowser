@@ -795,6 +795,17 @@ public sealed class ClassRuntimeTests
     }
 
     [Fact]
+    public void SmallDecimalNumericLiteralCanonicalForm()
+    {
+        // ECMA-262 6.1.6.1.13: 0.0000001 stringifies to "1e-7" (lowercase
+        // 'e', signed exponent with no leading zero), not "1E-07".
+        Assert.Equal("ok", Run(@"
+            class C { get 0.0000001() { return 'ok'; } }
+            C.prototype['1e-7'];
+        ").AsString());
+    }
+
+    [Fact]
     public void HexLiteralClassMemberInstallsUnderCanonicalKey()
     {
         Assert.Equal(7d, Run(@"
