@@ -77,8 +77,279 @@ public sealed partial class BytecodeInterpreter
             return PromisePrototypeFinally(thisValue, onFinally);
         }, length: 1);
 
+        // 27.2.4.1 Promise.all(iterable).
+        DefineIntrinsicFunction(constructorHandle, constructor, "all", (_, args) =>
+        {
+            var iterable = args.Count > 0 ? args[0] : JsValue.Undefined;
+            return PromiseAll(iterable);
+        }, length: 1);
+
+        // 27.2.4.2 Promise.allSettled(iterable).
+        DefineIntrinsicFunction(constructorHandle, constructor, "allSettled", (_, args) =>
+        {
+            var iterable = args.Count > 0 ? args[0] : JsValue.Undefined;
+            return PromiseAllSettled(iterable);
+        }, length: 1);
+
+        // 27.2.4.3 Promise.any(iterable).
+        DefineIntrinsicFunction(constructorHandle, constructor, "any", (_, args) =>
+        {
+            var iterable = args.Count > 0 ? args[0] : JsValue.Undefined;
+            return PromiseAny(iterable);
+        }, length: 1);
+
+        // 27.2.4.5 Promise.race(iterable).
+        DefineIntrinsicFunction(constructorHandle, constructor, "race", (_, args) =>
+        {
+            var iterable = args.Count > 0 ? args[0] : JsValue.Undefined;
+            return PromiseRace(iterable);
+        }, length: 1);
+
         _promiseConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    // Drain an iterable into a list of JsValues using the engine's existing
+    // for-of iterator path so Symbol.iterator dispatch works for Arrays, Sets,
+    // and user-defined iterables alike.
+    private List<JsValue> DrainIterableToList(JsValue iterable, string operation)
+    {
+        if (iterable.Tag == JsValueTag.Undefined || iterable.Tag == JsValueTag.Null)
+        {
+            throw new JsThrownException(CreateTypeError(operation + ": argument is not iterable."));
+        }
+
+        var values = new List<JsValue>();
+        var iter = CreateForOfIterator(iterable);
+        if (iter.Tag == JsValueTag.Object &&
+            _heap.GetObject(iter.AsObjectHandle()) is ForOfIteratorObject forOf)
+        {
+            while (forOf.TryMoveNext(out var v))
+            {
+                values.Add(v);
+            }
+        }
+        return values;
+    }
+
+    // 27.2.4.1.1 PerformPromiseAll. Returns a promise that fulfills with an
+    // Array of values once every input promise fulfills, or rejects with the
+    // first rejection.
+    private JsValue PromiseAll(JsValue iterable)
+    {
+        var capability = NewPromiseCapability();
+        List<JsValue> sources;
+        try
+        {
+            sources = DrainIterableToList(iterable, "Promise.all");
+        }
+        catch (JsThrownException ex)
+        {
+            _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
+            return capability.Promise;
+        }
+
+        if (sources.Count == 0)
+        {
+            var emptyArr = CreateArrayFromElements(Array.Empty<JsValue>());
+            var emptyHandle = _heap.AllocateObject(emptyArr, AllocationSite.Current());
+            _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(emptyHandle) }, JsValue.Undefined);
+            return capability.Promise;
+        }
+
+        var slots = new JsValue[sources.Count];
+        for (var i = 0; i < slots.Length; i++) slots[i] = JsValue.Undefined;
+        var remaining = new[] { sources.Count };
+
+        for (var i = 0; i < sources.Count; i++)
+        {
+            var index = i;
+            var child = PromiseResolveStatic(sources[i]);
+            var onFulfilled = AllocateNativeCallback((_, fnArgs) =>
+            {
+                slots[index] = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
+                remaining[0]--;
+                if (remaining[0] == 0)
+                {
+                    var arr = CreateArrayFromElements(slots);
+                    var handle = _heap.AllocateObject(arr, AllocationSite.Current());
+                    _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(handle) }, JsValue.Undefined);
+                }
+                return JsValue.Undefined;
+            });
+            _ = PromisePrototypeThen(child, onFulfilled, capability.Reject);
+        }
+
+        return capability.Promise;
+    }
+
+    // 27.2.4.2.1 PerformPromiseAllSettled.
+    private JsValue PromiseAllSettled(JsValue iterable)
+    {
+        var capability = NewPromiseCapability();
+        List<JsValue> sources;
+        try
+        {
+            sources = DrainIterableToList(iterable, "Promise.allSettled");
+        }
+        catch (JsThrownException ex)
+        {
+            _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
+            return capability.Promise;
+        }
+
+        if (sources.Count == 0)
+        {
+            var emptyArr = CreateArrayFromElements(Array.Empty<JsValue>());
+            var emptyHandle = _heap.AllocateObject(emptyArr, AllocationSite.Current());
+            _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(emptyHandle) }, JsValue.Undefined);
+            return capability.Promise;
+        }
+
+        var slots = new JsValue[sources.Count];
+        for (var i = 0; i < slots.Length; i++) slots[i] = JsValue.Undefined;
+        var remaining = new[] { sources.Count };
+
+        void TrySettleAggregate()
+        {
+            remaining[0]--;
+            if (remaining[0] == 0)
+            {
+                var arr = CreateArrayFromElements(slots);
+                var handle = _heap.AllocateObject(arr, AllocationSite.Current());
+                _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(handle) }, JsValue.Undefined);
+            }
+        }
+
+        for (var i = 0; i < sources.Count; i++)
+        {
+            var index = i;
+            var child = PromiseResolveStatic(sources[i]);
+            var onFulfilled = AllocateNativeCallback((_, fnArgs) =>
+            {
+                var v = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
+                slots[index] = MakeSettledRecord("fulfilled", "value", v);
+                TrySettleAggregate();
+                return JsValue.Undefined;
+            });
+            var onRejected = AllocateNativeCallback((_, fnArgs) =>
+            {
+                var r = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
+                slots[index] = MakeSettledRecord("rejected", "reason", r);
+                TrySettleAggregate();
+                return JsValue.Undefined;
+            });
+            _ = PromisePrototypeThen(child, onFulfilled, onRejected);
+        }
+
+        return capability.Promise;
+    }
+
+    private JsValue MakeSettledRecord(string status, string payloadKey, JsValue payload)
+    {
+        var obj = CreateOrdinaryObject();
+        _ = obj.DefineOwnProperty("status",
+            new Objects.JsPropertyDescriptor(JsValue.FromString(status), Writable: true, Enumerable: true, Configurable: true));
+        _ = obj.DefineOwnProperty(payloadKey,
+            new Objects.JsPropertyDescriptor(payload, Writable: true, Enumerable: true, Configurable: true));
+        var handle = _heap.AllocateObject(obj, AllocationSite.Current());
+        return JsValue.FromObject(handle);
+    }
+
+    // 27.2.4.3.1 PerformPromiseAny - aggregates rejections into an AggregateError
+    // when every input rejects; fulfills with the first fulfillment otherwise.
+    private JsValue PromiseAny(JsValue iterable)
+    {
+        var capability = NewPromiseCapability();
+        List<JsValue> sources;
+        try
+        {
+            sources = DrainIterableToList(iterable, "Promise.any");
+        }
+        catch (JsThrownException ex)
+        {
+            _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
+            return capability.Promise;
+        }
+
+        if (sources.Count == 0)
+        {
+            _ = CallFunction(capability.Reject,
+                new[] { BuildAggregateError(Array.Empty<JsValue>()) },
+                JsValue.Undefined);
+            return capability.Promise;
+        }
+
+        var errors = new JsValue[sources.Count];
+        for (var i = 0; i < errors.Length; i++) errors[i] = JsValue.Undefined;
+        var remaining = new[] { sources.Count };
+
+        for (var i = 0; i < sources.Count; i++)
+        {
+            var index = i;
+            var child = PromiseResolveStatic(sources[i]);
+            var onRejected = AllocateNativeCallback((_, fnArgs) =>
+            {
+                errors[index] = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
+                remaining[0]--;
+                if (remaining[0] == 0)
+                {
+                    _ = CallFunction(capability.Reject, new[] { BuildAggregateError(errors) }, JsValue.Undefined);
+                }
+                return JsValue.Undefined;
+            });
+            _ = PromisePrototypeThen(child, capability.Resolve, onRejected);
+        }
+
+        return capability.Promise;
+    }
+
+    private JsValue BuildAggregateError(IReadOnlyList<JsValue> errors)
+    {
+        var errArr = CreateArrayFromElements(errors.ToArray());
+        var errArrHandle = _heap.AllocateObject(errArr, AllocationSite.Current());
+
+        var err = new JsObject();
+        err.SetPrototype(EnsureAggregateErrorPrototype());
+        _ = err.DefineOwnProperty("errors",
+            new Objects.JsPropertyDescriptor(JsValue.FromObject(errArrHandle),
+                Writable: true, Enumerable: false, Configurable: true));
+        _ = err.DefineOwnProperty("message",
+            new Objects.JsPropertyDescriptor(JsValue.FromString("All promises were rejected"),
+                Writable: true, Enumerable: false, Configurable: true));
+        return JsValue.FromObject(_heap.AllocateObject(err, AllocationSite.Current()));
+    }
+
+    // 27.2.4.5.1 PerformPromiseRace - settles with the first input that settles.
+    private JsValue PromiseRace(JsValue iterable)
+    {
+        var capability = NewPromiseCapability();
+        List<JsValue> sources;
+        try
+        {
+            sources = DrainIterableToList(iterable, "Promise.race");
+        }
+        catch (JsThrownException ex)
+        {
+            _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
+            return capability.Promise;
+        }
+
+        // Empty iterable returns a never-settling promise per spec.
+        foreach (var source in sources)
+        {
+            var child = PromiseResolveStatic(source);
+            _ = PromisePrototypeThen(child, capability.Resolve, capability.Reject);
+        }
+
+        return capability.Promise;
+    }
+
+    private JsValue AllocateNativeCallback(Func<JsValue, IReadOnlyList<JsValue>, JsValue> call)
+    {
+        var fn = new NativeFunctionObject("", call, length: 1);
+        var handle = _heap.AllocateObject(fn, AllocationSite.Current());
+        return JsValue.FromObject(handle);
     }
 
     // 27.2.3.1 Promise(executor). executor is called synchronously with the
