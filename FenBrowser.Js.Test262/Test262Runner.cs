@@ -1330,10 +1330,18 @@ public sealed class Test262Runner
                assert.notSameValue = function (actual, expected, message) {
                  if (actual === expected) { throw (message || "assert.notSameValue failed"); }
                };
-               assert.throws = function (_expectedError, fn, message) {
+               assert.throws = function (expectedError, fn, message) {
                  var threw = false;
-                 try { fn(); } catch (_e) { threw = true; }
-                 if (!threw) { throw (message || "assert.throws failed"); }
+                 var error = undefined;
+                 try { fn(); } catch (e) { threw = true; error = e; }
+                 if (!threw) { throw new Test262Error(message || "assert.throws failed: no error thrown"); }
+                 if (expectedError !== undefined && expectedError !== null) {
+                   if (error === undefined) { throw new Test262Error(message || "assert.throws: could not catch error"); }
+                   if (typeof expectedError === 'function' && !(error instanceof expectedError)) {
+                     throw new Test262Error(message || ("assert.throws: expected " + (expectedError.name || expectedError) + " but got " + (error.name || error.constructor.name)));
+                   }
+                 }
+                 return error;
                };
                assert.compareArray = function (actual, expected, message) {
                  if (actual.length !== expected.length) { throw (message || "assert.compareArray length"); }

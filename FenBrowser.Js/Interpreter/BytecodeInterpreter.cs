@@ -191,6 +191,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return result;
     }
 
+    // ECMA-262 27.5 — execute a generator function body from its saved state.
+    public JsValue ExecuteGenerator(GeneratorObject gen)
+    {
+        _instructionCount = 0;
+        var result = ExecuteInternal(
+            gen.Function,
+            Array.Empty<JsValue>(),
+            gen.ThisValue,
+            gen.OuterEnvironment,
+            frameEnvironment: gen.Environment);
+        return result;
+    }
+
     // E.6.next - execute a top-level function with a caller-supplied
     // environment record as the frame env. Used by ModuleEvaluator to give
     // every module its own environment so module-local declarations don't
@@ -2991,7 +3004,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new ReflectBuiltin())
             .Register(new IteratorBuiltin())
             .Register(new MiscGlobalsBuiltin())
-            .Register(new AggregateErrorBuiltin());
+            .Register(new AggregateErrorBuiltin())
+            .Register(new GeneratorBuiltin());
         foreach (var b in registry.Materialize(this))
             InstallBinding(global, globalHandle, b);
     }
@@ -8924,6 +8938,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             "String" => EnsureStringPrototype(),
             "Date" => EnsureDatePrototype(),
             "RegExp" => EnsureRegExpPrototype(),
+            "GeneratorPrototype" => EnsureObjectPrototype(),
             "Error" => EnsureErrorPrototype(),
             "TypeError" => EnsureTypeErrorPrototype(),
             "RangeError" => EnsureRangeErrorPrototype(),
@@ -10058,7 +10073,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
                 var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment);
                 genObj.ThisValue = thisValue;
-                genObj.SetPrototype(EnsureObjectPrototype());
+                genObj.SetPrototype(GetGlobalPrototype("GeneratorPrototype"));
                 return JsValue.FromObject(_heap.AllocateObject(genObj, AllocationSite.Current()));
             }
 
