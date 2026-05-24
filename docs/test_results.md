@@ -1,19 +1,37 @@
 # Test262 Conformance Results
 
-This file is the canonical full-suite snapshot consumed by `scripts/ci/verify-verification-guards.ps1`.
-Category- or tranche-specific progress reports must live at separate paths so CI drift checks stay stable.
+Canonical snapshot consumed by CI verification guards. Per-category reports live in `docs/test262_0_8_report.md`.
 
-**Total Tests:** 52,871
-**Total Passed:** 8,857
-**Total Failed:** 44,014
-**Overall Pass Rate:** 16.8%
+**Engine:** FenJS (interpreter) | **Test262:** b1f9a0a | **Date:** 2026-05-24
 
-## Chunk Details
+## Parser Subset (500 tests)
 
-| Chunk | Range | Time (ms) | Tests | Passed | Failed | Pass % | Avg/Test (ms) |
-|---|---|---|---|---|---|---|---|
-| 0 | 0-52871 | 0 | 52871 | 8857 | 44014 | 16.8 | 0 |
+| Status | Count |
+|--------|-------|
+| Passed | 492 (98.4%) |
+| Invalid Config | 8 |
 
-## Supplemental Reports
+## Runtime Subset (2,000 tests)
 
-- Built-in fix category summary (2026-03-29): `docs/test262_category_results_2026_03_29.md`
+| Status | Count |
+|--------|-------|
+| Passed | 548 (27.4%) |
+| Failed | 1,189 |
+| Harness Unsupported | 251 |
+| Timed Out | 4 |
+| Crashed | 0 |
+
+## Category Breakdown (Runtime)
+
+| Category | Count | Description |
+|----------|-------|-------------|
+| runtimeMissing | 1,186 | Feature not implemented |
+| runtimeSemanticBug | 1,186 | Spec deviation |
+| hostNotApplicable | 259 | Browser/Node-specific |
+| parserBug | 3 | Parser regression |
+| timeout | 4 | > 15s |
+
+## Baselines
+
+- `FenBrowser.Js.Test262/Baselines/latest-results.json` — runtime subset
+- `FenBrowser.Js.Test262/Baselines/latest-parser.json` — parser subset
