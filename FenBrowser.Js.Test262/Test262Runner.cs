@@ -698,7 +698,25 @@ public sealed class Test262Runner
         {
             "propertyHelper.js",
             "sta.js",
-            "compareArray.js"
+            "compareArray.js",
+            "isConstructor.js",
+            "fnGlobalObject.js",
+            "promiseHelper.js",
+            "nans.js",
+            "dateConstants.js",
+            "byteConversionValues.js",
+            "deepEqual.js",
+            "nativeFunctionMatcher.js",
+            "doneprintHandle.js",
+            "assertRelativeDateMs.js",
+            "decimalToHexString.js",
+            "tcoHelper.js",
+            "iteratorZipUtils.js",
+            "compareIterator.js",
+            "asyncHelpers.js",
+            "testTypedArray.js",
+            "proxyTrapsHelper.js",
+            "regExpUtils.js",
         };
 
         foreach (var file in subset)
@@ -1349,7 +1367,34 @@ public sealed class Test262Runner
                }
                function $DONE(error) { if (error !== undefined) { throw error; } }
                var $262 = {
-                 evalScript: function (sourceText) { return eval(sourceText); }
+                 evalScript: function (sourceText) { return eval(sourceText); },
+                 global: Function('return this;')(),
+                 createRealm: function () { return { global: Function('return this;')() }; },
+                 detachArrayBuffer: function () { throw new Error('detachArrayBuffer is not supported'); }
+               };
+               function isConstructor(fn) { try { new fn(); return true; } catch (_e) { return false; } }
+               var fnGlobalObject = Function('return this;');
+               var helpers = {
+                 promiseHelper: function (promise) {
+                   var result = { value: undefined, resolved: false, rejected: false };
+                   promise.then(function(v) { result.value = v; result.resolved = true; },
+                               function(e) { result.value = e; result.rejected = true; });
+                   return result;
+                 }
+               };
+               function checkPromise(promise) { return helpers.promiseHelper(promise); }
+               var NaNVal = NaN;
+               var InfinityVal = Infinity;
+               var startOfTime = new Date(0);
+               function asyncTest(testFunc) {
+                 if (typeof testFunc !== 'function') { $DONE(new Test262Error('asyncTest called with non-function')); return; }
+                 try {
+                   testFunc().then(function () { $DONE(); }, function (error) { $DONE(error); });
+                 } catch (e) { $DONE(e); }
+               }
+               assert.throwsAsync = function (expectedError, fn, message) {
+                 return fn().then(function () { throw new Test262Error(message || 'assert.throwsAsync failed'); },
+                   function (e) { if (!(e instanceof expectedError)) throw new Test262Error(message || 'Wrong error type'); });
                };
                """;
     }
