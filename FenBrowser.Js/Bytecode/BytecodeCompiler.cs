@@ -1082,6 +1082,16 @@ public sealed class BytecodeCompiler
             }
             case UnaryExpressionNode unary:
             {
+                // ECMA-262 15.5 — yield / yield*.
+                if (unary.Operator == "yield" || unary.Operator == "yield*")
+                {
+                    var yieldDest = AllocateRegister();
+                    var valueReg = CompileExpression(unary.Operand);
+                    var yieldOp = unary.Operator == "yield*" ? OpCode.YieldStar : OpCode.Yield;
+                    _instructions.Add(new Instruction(yieldOp, yieldDest, valueReg, 0));
+                    return yieldDest;
+                }
+
                 if (unary.Operator == "delete")
                 {
                     if (unary.Operand is IdentifierExpressionNode identifier)

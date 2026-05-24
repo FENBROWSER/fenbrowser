@@ -124,7 +124,14 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 break;
             case OpCode.InitThisBinding:
-                // No operands to validate — just toggles the frame's binding status.
+                break;
+            case OpCode.Yield:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                break;
+            case OpCode.YieldStar:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 break;
             case OpCode.DefinePrivateField:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");

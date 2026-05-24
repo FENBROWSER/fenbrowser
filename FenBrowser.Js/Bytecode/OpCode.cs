@@ -131,7 +131,15 @@ public enum OpCode : byte
     LoadNewTarget,
 
     // H.5 - InitThisBinding. Transitions the frame's FunctionEnvironmentRecord
-    // ThisBindingStatus from Uninitialized to Initialized. Emitted in derived
-    // constructors after super() returns, so subsequent `this` access works.
+    // ThisBindingStatus from Uninitialized to Initialized.
     InitThisBinding,
+
+    // ECMA-262 15.5 — Yield(A=dest, B=value). Suspends generator execution and
+    // returns {value, done:false} to the caller. The generator frame is saved
+    // for later resumption via Generator.prototype.next().
+    Yield,
+
+    // ECMA-262 15.5 — YieldStar. Delegates to another iterator, yielding each
+    // of its values in sequence before resuming with the delegated return value.
+    YieldStar,
 }

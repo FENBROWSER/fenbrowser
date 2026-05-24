@@ -436,6 +436,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     if (frame.Environment is FunctionEnvironmentRecord fenInit && fenInit.ThisBindingStatus == ThisBindingStatus.Uninitialized)
                         fenInit.BindThisValue(frame.ThisValue);
                     break;
+                case OpCode.Yield:
+                {
+                    // ECMA-262 27.5.1.2 — yield returns {value, done}.
+                    var resultObj = CreateOrdinaryObject();
+                    resultObj.DefineOwnProperty("value", new JsPropertyDescriptor(frame.Registers[ins.B], Writable: true, Enumerable: true, Configurable: true));
+                    resultObj.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
+                    return JsValue.FromObject(_heap.AllocateObject(resultObj, AllocationSite.Current()));
+                }
+                case OpCode.YieldStar:
+                {
+                    var starObj = CreateOrdinaryObject();
+                    starObj.DefineOwnProperty("value", new JsPropertyDescriptor(frame.Registers[ins.B], Writable: true, Enumerable: true, Configurable: true));
+                    starObj.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+                    return JsValue.FromObject(_heap.AllocateObject(starObj, AllocationSite.Current()));
+                }
                 case OpCode.SetPrototype:
                 {
                     // ECMA-262 7.3.5 OrdinarySetPrototypeOf - the V argument must be
