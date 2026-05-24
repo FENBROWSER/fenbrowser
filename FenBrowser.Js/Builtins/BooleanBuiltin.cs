@@ -1,0 +1,98 @@
+using FenBrowser.Js.Heap;
+using FenBrowser.Js.Interpreter;
+using FenBrowser.Js.Objects;
+using FenBrowser.Js.Runtime;
+
+namespace FenBrowser.Js.Builtins;
+
+// ECMA-262 20.3 — The Boolean Constructor.
+[EcmaSpecReference(
+    "20.3",
+    AbstractOperation = "Boolean",
+    Url = "https://tc39.es/ecma262/#sec-boolean-objects")]
+public sealed class BooleanBuiltin : IBuiltinModule
+{
+    public string Name => "Boolean";
+
+    public IReadOnlyList<BuiltinBinding> GetBindings(IBuiltinContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var heap = context.Heap;
+
+        // 20.3.3 Properties of the Boolean Prototype Object
+        var prototype = new BooleanObject(false);
+        prototype.SetPrototype(context.GetObjectPrototype());
+        var prototypeHandle = heap.AllocateObject(prototype, AllocationSite.Current());
+        heap.PushRoot(prototypeHandle);
+
+        var capturedProto = prototypeHandle;
+        var capturedCtx = context;
+
+        var constructor = new NativeFunctionObject(
+            "Boolean",
+            (_, args) => JsValue.FromBoolean(args.Count > 0 && IsTruthy(args[0])),
+            args =>
+            {
+                var obj = new BooleanObject(args.Count > 0 && IsTruthy(args[0]));
+                obj.SetPrototype(capturedProto);
+                return JsValue.FromObject(heap.AllocateObject(obj, AllocationSite.Current()));
+            },
+            length: 1);
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
+        heap.PushRoot(constructorHandle);
+        heap.WriteBarrier(constructorHandle, prototypeHandle);
+
+        var protoObj = heap.GetObject(prototypeHandle);
+        _ = protoObj.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        // 20.3.3.2 Boolean.prototype.toString()
+        DefinePrototypeMethod(capturedCtx, prototypeHandle, protoObj, "toString", (ctx, thisValue, _) =>
+            JsValue.FromString(BooleanThisValue(ctx, thisValue) ? "true" : "false"));
+
+        // 20.3.3.3 Boolean.prototype.valueOf()
+        DefinePrototypeMethod(capturedCtx, prototypeHandle, protoObj, "valueOf", (ctx, thisValue, _) =>
+            JsValue.FromBoolean(BooleanThisValue(ctx, thisValue)));
+
+        return new[] { BuiltinBinding.NonEnumerable("Boolean", JsValue.FromObject(constructorHandle)) };
+    }
+
+    private static bool BooleanThisValue(IBuiltinContext ctx, JsValue thisValue)
+    {
+        if (thisValue.Tag == JsValueTag.Boolean)
+            return thisValue.AsBoolean();
+        if (thisValue.Tag == JsValueTag.Object && ctx.Heap.GetObject(thisValue.AsObjectHandle()) is BooleanObject bo)
+            return bo.Value;
+        throw new JsThrownException(ctx.CreateTypeError("Boolean.prototype method called on incompatible receiver."));
+    }
+
+    private static bool IsTruthy(JsValue value)
+    {
+        return value.Tag switch
+        {
+            JsValueTag.Undefined => false,
+            JsValueTag.Null => false,
+            JsValueTag.Boolean => value.AsBoolean(),
+            JsValueTag.Int32 => value.AsInt32() != 0,
+            JsValueTag.Number => !double.IsNaN(value.AsNumber()) && value.AsNumber() != 0d,
+            JsValueTag.String => value.AsString().Length > 0,
+            _ => true // Objects (incl. Symbols) are always truthy.
+        };
+    }
+
+    private static void DefinePrototypeMethod(
+        IBuiltinContext ctx,
+        ObjectHandle prototypeHandle,
+        JsObject prototype,
+        string name,
+        Func<IBuiltinContext, JsValue, IReadOnlyList<JsValue>, JsValue> call)
+    {
+        var captured = ctx;
+        var fn = new NativeFunctionObject(name, (thisValue, args) => call(captured, thisValue, args), length: 0);
+        var fnHandle = ctx.Heap.AllocateObject(fn, AllocationSite.Current());
+        _ = prototype.DefineOwnProperty(name,
+            new JsPropertyDescriptor(JsValue.FromObject(fnHandle), Writable: true, Enumerable: false, Configurable: true));
+        ctx.Heap.WriteBarrier(prototypeHandle, fnHandle);
+    }
+}

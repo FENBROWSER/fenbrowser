@@ -17,6 +17,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private readonly JsHeap _heap;
     public JsHeap Heap => _heap;
     double IBuiltinContext.ToNumber(JsValue value) => ToNumber(value);
+    string IBuiltinContext.ToStringValue(JsValue value) => ToStringValue(value);
+    JsValue IBuiltinContext.CallFunction(JsValue fn, IReadOnlyList<JsValue> args, JsValue thisValue) => CallFunction(fn, args, thisValue);
+    JsValue IBuiltinContext.ConstructFunction(JsValue ctor, IReadOnlyList<JsValue> args) => ConstructFunction(ctor, args);
+    bool IBuiltinContext.TryGetPropertyValue(JsObject obj, JsValue receiver, string name, out JsValue value) => TryGetPropertyValue(obj, receiver, name, out value);
+    int IBuiltinContext.GetArrayLength(JsObject obj) => GetArrayLength(obj);
+    JsValue IBuiltinContext.CreateTypeError(string message) => CreateTypeError(message);
+    JsValue IBuiltinContext.CreateRangeError(string message) => CreateRangeError(message);
+    JsValue IBuiltinContext.CreateSyntaxError(string message) => CreateSyntaxError(message);
+    JsValue IBuiltinContext.CreateError(string message) => CreateError(message);
+    JsValue IBuiltinContext.CreateUriError(string message) => CreateUriError(message);
+    JsValue IBuiltinContext.CreateReferenceError(string message) => CreateReferenceError(message);
+    void IBuiltinContext.DefineIntrinsicFunction(
+        ObjectHandle ownerHandle, JsObject owner, string name,
+        Func<JsValue, IReadOnlyList<JsValue>, JsValue> call, int length)
+        => DefineIntrinsicFunction(ownerHandle, owner, name, call, length);
+    ObjectHandle IBuiltinContext.GetObjectPrototype() => EnsureObjectPrototype();
+    ObjectHandle IBuiltinContext.GetErrorPrototype() => EnsureErrorPrototype();
+    ObjectHandle IBuiltinContext.GetParseIntFunction() => EnsureParseIntFunction();
+    ObjectHandle IBuiltinContext.GetParseFloatFunction() => EnsureParseFloatFunction();
     private ObjectHandle? _objectConstructorHandle;
     private ObjectHandle? _objectPrototypeHandle;
     private ObjectHandle? _arrayConstructorHandle;
@@ -2785,12 +2804,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private void InstallGlobalObjectProperties(JsObject global, ObjectHandle globalHandle)
     {
-        // ECMA-262 19.1 value properties + Math are now registry-driven.
-        // The BuiltinRegistry is built once lazily; GlobalConstantsBuiltin owns
-        // NaN / Infinity / undefined / globalThis, MathBuiltin owns the Math object.
+        // ECMA-262 19.1 value properties + Math + global functions are now registry-driven.
         var registry = new BuiltinRegistry()
             .Register(new GlobalConstantsBuiltin(JsValue.FromObject(globalHandle)))
-            .Register(new MathBuiltin());
+            .Register(new MathBuiltin())
+            .Register(new GlobalFunctionsBuiltin())
+            .Register(new BooleanBuiltin())
+            .Register(new NumberBuiltin());
         var bindings = registry.Materialize(this);
         foreach (var binding in bindings)
         {
@@ -2800,15 +2820,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         // ECMA-262 global function properties and constructor/object properties. These
         // live on the global object, so GlobalEnvironmentRecord can resolve both bare
         // identifiers and `globalThis.name` through the same binding surface.
+        //
+        // Extracted (registry-driven): NaN, Infinity, undefined, globalThis (GlobalConstantsBuiltin),
+        // Math (MathBuiltin), isNaN, isFinite, encodeURI, encodeURIComponent, decodeURI,
+        // decodeURIComponent (GlobalFunctionsBuiltin).
+        //
+        // Still inline: parseInt/parseFloat (shared with Number.parseInt/parseFloat),
+        // and all constructors/prototypes pending further extraction.
         DefineGlobalDataProperty(global, globalHandle, "eval", JsValue.FromObject(EnsureEvalFunction()));
         DefineGlobalDataProperty(global, globalHandle, "parseInt", JsValue.FromObject(EnsureParseIntFunction()));
         DefineGlobalDataProperty(global, globalHandle, "parseFloat", JsValue.FromObject(EnsureParseFloatFunction()));
-        DefineGlobalDataProperty(global, globalHandle, "isNaN", JsValue.FromObject(EnsureIsNaNFunction()));
-        DefineGlobalDataProperty(global, globalHandle, "isFinite", JsValue.FromObject(EnsureIsFiniteFunction()));
-        DefineGlobalDataProperty(global, globalHandle, "encodeURI", JsValue.FromObject(EnsureEncodeUriFunction()));
-        DefineGlobalDataProperty(global, globalHandle, "encodeURIComponent", JsValue.FromObject(EnsureEncodeUriComponentFunction()));
-        DefineGlobalDataProperty(global, globalHandle, "decodeURI", JsValue.FromObject(EnsureDecodeUriFunction()));
-        DefineGlobalDataProperty(global, globalHandle, "decodeURIComponent", JsValue.FromObject(EnsureDecodeUriComponentFunction()));
         DefineGlobalDataProperty(global, globalHandle, "URIError", JsValue.FromObject(EnsureUriErrorConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "ReferenceError", JsValue.FromObject(EnsureReferenceErrorConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "EvalError", JsValue.FromObject(EnsureEvalErrorConstructor()));
@@ -2820,7 +2841,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         DefineGlobalDataProperty(global, globalHandle, "Object", JsValue.FromObject(EnsureObjectConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "Array", JsValue.FromObject(EnsureArrayConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "Boolean", JsValue.FromObject(EnsureBooleanConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "Number", JsValue.FromObject(EnsureNumberConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "String", JsValue.FromObject(EnsureStringConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "Function", JsValue.FromObject(EnsureFunctionConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "Error", JsValue.FromObject(EnsureErrorConstructor()));
@@ -3045,6 +3065,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         throw new JsThrownException(value);
+    }
+
+    private JsValue CreateError(string message)
+    {
+        return CreateErrorObject("Error", EnsureErrorPrototype(), message);
     }
 
     private JsValue CreateTypeError(string message)
@@ -7423,7 +7448,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private JsValue CreateBooleanObject(bool value)
     {
         var obj = new BooleanObject(value);
-        obj.SetPrototype(EnsureBooleanPrototype());
+        obj.SetPrototype(GetGlobalPrototype("Boolean"));
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
@@ -8762,8 +8787,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private JsValue CreateNumberObject(double value)
     {
         var obj = new NumberObject(value);
-        obj.SetPrototype(EnsureNumberPrototype());
+        obj.SetPrototype(GetGlobalPrototype("Number"));
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
+    }
+
+    private ObjectHandle GetGlobalPrototype(string constructorName)
+    {
+        var globalHandle = EnsureGlobalObject();
+        var global = _heap.GetObject(globalHandle);
+        if (TryGetPropertyValue(global, JsValue.FromObject(globalHandle), constructorName, out var ctorVal) &&
+            ctorVal.Tag == JsValueTag.Object &&
+            _heap.GetObject(ctorVal.AsObjectHandle()) is JsFunctionObject or NativeFunctionObject &&
+            TryGetPropertyValue(_heap.GetObject(ctorVal.AsObjectHandle()), ctorVal, "prototype", out var protoVal) &&
+            protoVal.Tag == JsValueTag.Object)
+        {
+            return protoVal.AsObjectHandle();
+        }
+        // Fallback during bootstrap — the global property hasn't been set up yet.
+        return constructorName switch
+        {
+            "Boolean" => EnsureBooleanPrototype(),
+            "Number" => EnsureNumberPrototype(),
+            "String" => EnsureStringPrototype(),
+            _ => throw new InvalidOperationException($"Unknown prototype fallback for {constructorName}.")
+        };
     }
 
     private ObjectHandle EnsureStringPrototype()
@@ -10259,35 +10306,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     {
     }
 
-    private sealed class BooleanObject : JsObject
-    {
-        public BooleanObject(bool value)
-        {
-            Value = value;
-        }
-
-        public bool Value { get; }
-    }
-
-    private sealed class NumberObject : JsObject
-    {
-        public NumberObject(double value)
-        {
-            Value = value;
-        }
-
-        public double Value { get; }
-    }
-
-    private sealed class StringObject : JsObject
-    {
-        public StringObject(string value)
-        {
-            Value = value;
-        }
-
-        public string Value { get; }
-    }
 
     private sealed class DateObject : JsObject
     {
