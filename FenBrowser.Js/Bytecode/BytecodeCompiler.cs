@@ -1040,6 +1040,7 @@ public sealed class BytecodeCompiler
                     calleeReg = CompileExpression(call.Callee);
                 }
 
+                var isSuperCall = call.Callee is SuperExpressionNode;
                 var dest = AllocateRegister();
                 switch (call.Arguments.Count)
                 {
@@ -1047,6 +1048,7 @@ public sealed class BytecodeCompiler
                         _instructions.Add(isMethodCall
                             ? new Instruction(OpCode.CallMethod0, dest, calleeReg, thisReg)
                             : new Instruction(OpCode.Call0, dest, calleeReg, 0));
+                        if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
                         return dest;
                     case 1:
                     {
@@ -1054,6 +1056,7 @@ public sealed class BytecodeCompiler
                         _instructions.Add(isMethodCall
                             ? new Instruction(OpCode.CallMethod1, dest, calleeReg, thisReg, arg0)
                             : new Instruction(OpCode.Call1, dest, calleeReg, arg0));
+                        if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
                         return dest;
                     }
                     default:
@@ -1072,6 +1075,7 @@ public sealed class BytecodeCompiler
                         _instructions.Add(isMethodCall
                             ? new Instruction(OpCode.CallMethodN, dest, calleeReg, thisReg, argStart, call.Arguments.Count)
                             : new Instruction(OpCode.CallN, dest, calleeReg, argStart, call.Arguments.Count));
+                        if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
                         return dest;
                     }
                 }

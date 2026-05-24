@@ -312,7 +312,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         // detached fresh env that InterpreterFrame would have allocated on its own.
         var frameEnv = frameEnvironment ?? (outerEnvironment is null
             ? null
-            : new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment));
+            : function.IsDerivedConstructor
+                ? new FunctionEnvironmentRecord(ThisBindingStatus.Uninitialized, JsValue.Undefined, JsValue.Undefined, callee?.HomeObject, outerEnvironment)
+                : new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment));
         var frame = new InterpreterFrame(function, thisValue, frameEnv) { CalleeFunctionObject = callee };
         // H.5 - new.target: consume the one-shot pending slot set by
         // ExecuteConstruct. Ordinary calls leave it Undefined.
@@ -364,9 +366,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     frame.Registers[ins.A] = LoadName(frame, ins.B);
                     break;
                 case OpCode.LoadThis:
-                    // H.5 — must-call-super-before-this check for derived constructors.
-                    if (frame.Environment is FunctionEnvironmentRecord fenv && fenv.ThisBindingStatus == ThisBindingStatus.Uninitialized)
-                        throw new JsThrownException(CreateReferenceError("Must call super constructor before accessing 'this' in derived class constructor."));
                     frame.Registers[ins.A] = frame.ThisValue;
                     break;
                 case OpCode.StoreVar:
