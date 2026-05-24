@@ -2812,7 +2812,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new GlobalFunctionsBuiltin())
             .Register(new BooleanBuiltin())
             .Register(new NumberBuiltin())
-            .Register(new StringBuiltin());
+            .Register(new StringBuiltin())
+            .Register(new ErrorBuiltins());
         var bindings = registry.Materialize(this);
         foreach (var binding in bindings)
         {
@@ -2832,9 +2833,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         DefineGlobalDataProperty(global, globalHandle, "eval", JsValue.FromObject(EnsureEvalFunction()));
         DefineGlobalDataProperty(global, globalHandle, "parseInt", JsValue.FromObject(EnsureParseIntFunction()));
         DefineGlobalDataProperty(global, globalHandle, "parseFloat", JsValue.FromObject(EnsureParseFloatFunction()));
-        DefineGlobalDataProperty(global, globalHandle, "URIError", JsValue.FromObject(EnsureUriErrorConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "ReferenceError", JsValue.FromObject(EnsureReferenceErrorConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "EvalError", JsValue.FromObject(EnsureEvalErrorConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "AggregateError", JsValue.FromObject(EnsureAggregateErrorConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "WeakRef", JsValue.FromObject(EnsureWeakRefConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "FinalizationRegistry", JsValue.FromObject(EnsureFinalizationRegistryConstructor()));
