@@ -27,4 +27,7 @@ public sealed class BytecodeFunction
     public required IReadOnlyList<BytecodeFunction> NestedFunctions { get; init; }
 
     public int RegisterCount { get; init; }
+
+    internal Dictionary<int, PolymorphicInlineCache>? LoadICs { get; set; }
+    internal Dictionary<int, PolymorphicInlineCache>? StoreICs { get; set; }
 }

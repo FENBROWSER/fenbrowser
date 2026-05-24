@@ -459,16 +459,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
                     if (receiverValue.Tag == JsValueTag.HostObject)
                     {
-                        // F.5 - host write routes through the validated host hook.
-                        try
-                        {
-                            SetHostObjectProperty(receiverValue, prop, value);
-                        }
-                        catch (JsThrownException ex)
-                        {
-                            ThrowOrHandle(frame, ex.Value);
-                        }
-
+                        try { SetHostObjectProperty(receiverValue, prop, value); }
+                        catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                         break;
                     }
 
@@ -489,15 +481,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 {
                     var receiver = frame.Registers[ins.B];
                     var prop = function.PropertyNames[ins.C];
+                    var icOffset = frame.InstructionPointer - 1;
+                    if (TryGetLoadIC(function, icOffset, receiver, prop, out var icResult))
+                    {
+                        frame.Registers[ins.A] = icResult;
+                        break;
+                    }
                     try
                     {
                         frame.Registers[ins.A] = GetReceiverProperty(receiver, prop);
+                        PopulateLoadIC(function, icOffset, receiver, prop);
                     }
                     catch (JsThrownException ex)
                     {
                         ThrowOrHandle(frame, ex.Value);
                     }
-
                     break;
                 }
                 case OpCode.DeletePropByName:
