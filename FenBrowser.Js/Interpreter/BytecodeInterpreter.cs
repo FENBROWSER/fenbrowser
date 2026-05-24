@@ -37,6 +37,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     ObjectHandle IBuiltinContext.GetErrorPrototype() => EnsureErrorPrototype();
     ObjectHandle IBuiltinContext.GetParseIntFunction() => EnsureParseIntFunction();
     ObjectHandle IBuiltinContext.GetParseFloatFunction() => EnsureParseFloatFunction();
+    JsValue IBuiltinContext.CreateSymbol(string? description) => JsValue.FromSymbol(description);
+    JsValue IBuiltinContext.CreateWellKnownSymbol(string name) => GetWellKnownSymbol(name);
+    JsValue IBuiltinContext.SymbolFor(string key) => SymbolFor(key);
+    JsValue IBuiltinContext.SymbolKeyFor(long id) => SymbolKeyFor(id);
     private ObjectHandle? _objectConstructorHandle;
     private ObjectHandle? _objectPrototypeHandle;
     private ObjectHandle? _arrayConstructorHandle;
@@ -1228,6 +1232,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _wellKnownSymbols[name] = symbol.AsSymbolId();
         constructor.DefineOwnProperty(name, new JsPropertyDescriptor(
             symbol, Writable: false, Enumerable: false, Configurable: false));
+    }
+
+    private JsValue GetWellKnownSymbol(string name)
+    {
+        if (_wellKnownSymbols.Count == 0) _ = EnsureSymbolConstructor();
+        return _wellKnownSymbols.TryGetValue(name, out var id)
+            ? JsValue.SymbolFromId(id) : JsValue.Undefined;
+    }
+
+    private JsValue SymbolFor(string key)
+    {
+        if (_symbolRegistryByKey.TryGetValue(key, out var existingId))
+            return JsValue.SymbolFromId(existingId);
+        var fresh = JsValue.FromSymbol(key);
+        var id = fresh.AsSymbolId();
+        _symbolRegistryByKey[key] = id;
+        _symbolRegistryById[id] = key;
+        return fresh;
+    }
+
+    private JsValue SymbolKeyFor(long id)
+    {
+        return _symbolRegistryById.TryGetValue(id, out var key)
+            ? JsValue.FromString(key) : JsValue.Undefined;
     }
 
     // Returns the cached id for a well-known symbol, materialising the Symbol
@@ -2813,7 +2841,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new BooleanBuiltin())
             .Register(new NumberBuiltin())
             .Register(new StringBuiltin())
-            .Register(new ErrorBuiltins());
+            .Register(new ErrorBuiltins())
+            .Register(new SymbolBuiltin());
         var bindings = registry.Materialize(this);
         foreach (var binding in bindings)
         {
@@ -2849,7 +2878,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         DefineGlobalDataProperty(global, globalHandle, "Date", JsValue.FromObject(EnsureDateConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "RegExp", JsValue.FromObject(EnsureRegExpConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "JSON", JsValue.FromObject(EnsureJsonObject()));
-        DefineGlobalDataProperty(global, globalHandle, "Symbol", JsValue.FromObject(EnsureSymbolConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "Set", JsValue.FromObject(EnsureSetConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "Map", JsValue.FromObject(EnsureMapConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "WeakMap", JsValue.FromObject(EnsureWeakMapConstructor()));

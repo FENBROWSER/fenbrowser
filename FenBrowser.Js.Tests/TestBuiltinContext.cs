@@ -99,4 +99,16 @@ internal sealed class TestBuiltinContext : IBuiltinContext
 
     public ObjectHandle GetParseFloatFunction()
         => throw new NotSupportedException("GetParseFloatFunction is not supported in TestBuiltinContext.");
+
+    public JsValue CreateSymbol(string? description)
+        => JsValue.FromSymbol(description);
+
+    public JsValue CreateWellKnownSymbol(string name)
+        => JsValue.FromSymbol("Symbol." + name);
+
+    public JsValue SymbolFor(string key)
+        => JsValue.FromSymbol(key);
+
+    public JsValue SymbolKeyFor(long id)
+        => JsValue.Undefined;
 }

@@ -70,4 +70,11 @@ public interface IBuiltinContext
     // global scope and Number.parseInt / Number.parseFloat (ECMA-262 21.1.2.13).
     ObjectHandle GetParseIntFunction();
     ObjectHandle GetParseFloatFunction();
+
+    // Symbol primitives. The interpreter owns the per-realm Symbol registry so
+    // Symbol.for / Symbol.keyFor produce stable identities within a realm.
+    JsValue CreateSymbol(string? description);
+    JsValue CreateWellKnownSymbol(string name);
+    JsValue SymbolFor(string key);
+    JsValue SymbolKeyFor(long id);
 }
