@@ -91,6 +91,9 @@ public sealed class BooleanBuiltin : IBuiltinModule
         var captured = ctx;
         var fn = new NativeFunctionObject(name, (thisValue, args) => call(captured, thisValue, args), length: 0);
         var fnHandle = ctx.Heap.AllocateObject(fn, AllocationSite.Current());
+        var callHandle = ctx.GetFunctionCallMethod();
+        fn.SetProperty("call", JsValue.FromObject(callHandle));
+        ctx.Heap.WriteBarrier(fnHandle, callHandle);
         _ = prototype.DefineOwnProperty(name,
             new JsPropertyDescriptor(JsValue.FromObject(fnHandle), Writable: true, Enumerable: false, Configurable: true));
         ctx.Heap.WriteBarrier(prototypeHandle, fnHandle);

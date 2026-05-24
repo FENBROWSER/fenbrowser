@@ -8,37 +8,30 @@ namespace FenBrowser.Js.Builtins;
 // BytecodeInterpreter). Every method added to this interface expands the
 // surface that every IBuiltinModule implementation can reach, so only add
 // a service when at least two builtin modules genuinely need it.
-//
-// ToNumber was the first: virtually every builtin that accepts user arguments
-// must coerce through ECMA-262 ToNumber, which can execute user code (valueOf /
-// toString / Symbol.toPrimitive) and must route through the interpreter's
-// reentrancy-safe path. ToStringValue, CallFunction, and TryGetPropertyValue
-// are similarly on the hot path for builtins that handle callbacks (JSON,
-// Array.prototype.map/filter/forEach, Promise, etc.).
 public interface IBuiltinContext
 {
-    // ECMA-262 7.1.4 ToNumber. May execute user code when value is an Object.
+    // ECMA-262 7.1.4 ToNumber.
     double ToNumber(JsValue value);
 
-    // ECMA-262 7.1.17 ToString. May execute user code when value is an Object.
+    // ECMA-262 7.1.17 ToString.
     string ToStringValue(JsValue value);
 
     // The heap this context operates on.
     JsHeap Heap { get; }
 
-    // ECMA-262 7.3.13 Call. Invokes [[Call]] on a function value.
+    // ECMA-262 7.3.13 Call.
     JsValue CallFunction(JsValue fn, IReadOnlyList<JsValue> args, JsValue thisValue);
 
-    // ECMA-262 7.3.14 Construct. Invokes [[Construct]] on a constructor value.
+    // ECMA-262 7.3.14 Construct.
     JsValue ConstructFunction(JsValue ctor, IReadOnlyList<JsValue> args);
 
-    // Property access on a heap object via [[Get]].
+    // Property access via [[Get]].
     bool TryGetPropertyValue(JsObject obj, JsValue receiver, string name, out JsValue value);
 
     // ECMA-262 10.4.2.2 length of an Array exotic object.
     int GetArrayLength(JsObject obj);
 
-    // Error constructors — each returns a fresh error JsValue.
+    // Error constructors.
     JsValue CreateTypeError(string message);
     JsValue CreateRangeError(string message);
     JsValue CreateSyntaxError(string message);
@@ -46,41 +39,54 @@ public interface IBuiltinContext
     JsValue CreateUriError(string message);
     JsValue CreateReferenceError(string message);
 
-    // Convenience: define a [Writable, !Enumerable, Configurable] native function
-    // property on an owner object, with a WriteBarrier from owner to the function.
+    // Define a [Writable, !Enumerable, Configurable] native function property.
     void DefineIntrinsicFunction(
-        ObjectHandle ownerHandle,
-        JsObject owner,
-        string name,
-        Func<JsValue, IReadOnlyList<JsValue>, JsValue> call,
-        int length);
+        ObjectHandle ownerHandle, JsObject owner, string name,
+        Func<JsValue, IReadOnlyList<JsValue>, JsValue> call, int length);
 
-    // The %Object.prototype% object — the root of the prototype chain.
+    // Prototype access.
     ObjectHandle GetObjectPrototype();
-
-    // The %Array.prototype% object — used by String.prototype.split and other
-    // builtins that create array results.
     ObjectHandle GetArrayPrototype();
-
-    // The %Error.prototype% object. All native error constructors (TypeError,
-    // RangeError, URIError, etc.) set their prototype's [[Prototype]] to this.
     ObjectHandle GetErrorPrototype();
-
-    // %parseInt% and %parseFloat% — shared function objects used by both the
-    // global scope and Number.parseInt / Number.parseFloat (ECMA-262 21.1.2.13).
     ObjectHandle GetParseIntFunction();
     ObjectHandle GetParseFloatFunction();
 
-    // Symbol primitives. The interpreter owns the per-realm Symbol registry so
-    // Symbol.for / Symbol.keyFor produce stable identities within a realm.
+    // Symbol primitives.
     JsValue CreateSymbol(string? description);
     JsValue CreateWellKnownSymbol(string name);
     JsValue SymbolFor(string key);
     JsValue SymbolKeyFor(long id);
 
-    // Install all Date.prototype methods onto the given prototype object.
-    void InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto);
+    // The %Function.prototype.call% shared function object.
+    ObjectHandle GetFunctionCallMethod();
 
-    // Install RegExp.prototype methods (test, toString) onto the prototype.
+    // eval(x).
+    JsValue Eval(IReadOnlyList<JsValue> args);
+
+    // queueMicrotask(callback).
+    void EnqueueMicrotask(JsValue callback);
+
+    // Builtin constructor/materialize helpers — each returns the ObjectHandle of the
+    // fully-wired constructor (including prototype + methods). Used by thin-wrapper
+    // builtin modules for complex types whose prototype methods still live on the
+    // interpreter.
+    ObjectHandle MaterializeObjectConstructor();
+    ObjectHandle MaterializeArrayConstructor();
+    ObjectHandle MaterializeFunctionConstructor();
+    ObjectHandle MaterializeSetConstructor();
+    ObjectHandle MaterializeMapConstructor();
+    ObjectHandle MaterializeWeakMapConstructor();
+    ObjectHandle MaterializeWeakSetConstructor();
+    ObjectHandle MaterializePromiseConstructor();
+    ObjectHandle MaterializeJsonObject();
+    ObjectHandle MaterializeReflectObject();
+    ObjectHandle MaterializeIteratorConstructor();
+    ObjectHandle MaterializeWeakRefConstructor();
+    ObjectHandle MaterializeFinalizationRegistryConstructor();
+    ObjectHandle MaterializeStructuredCloneFunction();
+
+    // Install prototype methods on already-created prototypes (for builtins that
+    // create their own prototypes and need the interpreter to install methods).
+    void InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto);
     void InstallRegExpPrototypeMethods(ObjectHandle protoHandle, JsObject proto);
 }

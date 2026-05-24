@@ -21,16 +21,19 @@ public sealed class ErrorBuiltins : IBuiltinModule
         var errorCtor = CreateErrorConstructor(context, errorProtoHandle, "Error");
         bindings.Add(BuiltinBinding.NonEnumerable("Error", JsValue.FromObject(errorCtor)));
 
-        // ECMA-262 20.5.3.4 Error.prototype.toString()
-        DefineProtoMethod(context, heap, errorProtoHandle, heap.GetObject(errorProtoHandle), "toString", ErrorToString);
+        // Store Error.prototype in a place subclasses can reach
+        var errorProto = errorProtoHandle;
 
-        // Native error subclasses — all chain to Error.prototype
-        bindings.Add(BuiltinBinding.NonEnumerable("TypeError", JsValue.FromObject(CreateNativeError(context, "TypeError"))));
-        bindings.Add(BuiltinBinding.NonEnumerable("RangeError", JsValue.FromObject(CreateNativeError(context, "RangeError"))));
-        bindings.Add(BuiltinBinding.NonEnumerable("SyntaxError", JsValue.FromObject(CreateNativeError(context, "SyntaxError"))));
-        bindings.Add(BuiltinBinding.NonEnumerable("ReferenceError", JsValue.FromObject(CreateNativeError(context, "ReferenceError"))));
-        bindings.Add(BuiltinBinding.NonEnumerable("EvalError", JsValue.FromObject(CreateNativeError(context, "EvalError"))));
-        bindings.Add(BuiltinBinding.NonEnumerable("URIError", JsValue.FromObject(CreateNativeError(context, "URIError"))));
+        // Subclasses chain to Error.prototype
+        bindings.Add(BuiltinBinding.NonEnumerable("TypeError", JsValue.FromObject(CreateNativeError(context, errorProto, "TypeError"))));
+        bindings.Add(BuiltinBinding.NonEnumerable("RangeError", JsValue.FromObject(CreateNativeError(context, errorProto, "RangeError"))));
+        bindings.Add(BuiltinBinding.NonEnumerable("SyntaxError", JsValue.FromObject(CreateNativeError(context, errorProto, "SyntaxError"))));
+        bindings.Add(BuiltinBinding.NonEnumerable("ReferenceError", JsValue.FromObject(CreateNativeError(context, errorProto, "ReferenceError"))));
+        bindings.Add(BuiltinBinding.NonEnumerable("EvalError", JsValue.FromObject(CreateNativeError(context, errorProto, "EvalError"))));
+        bindings.Add(BuiltinBinding.NonEnumerable("URIError", JsValue.FromObject(CreateNativeError(context, errorProto, "URIError"))));
+
+        // Error.prototype.toString
+        DefineProtoMethod(context, heap, errorProto, heap.GetObject(errorProto), "toString", ErrorToString);
 
         return bindings;
     }
@@ -65,9 +68,9 @@ public sealed class ErrorBuiltins : IBuiltinModule
         return ctorHandle;
     }
 
-    private static ObjectHandle CreateNativeError(IBuiltinContext ctx, string name)
+    private static ObjectHandle CreateNativeError(IBuiltinContext ctx, ObjectHandle errorProtoHandle, string name)
     {
-        var protoHandle = CreateErrorPrototype(ctx, ctx.GetErrorPrototype(), name);
+        var protoHandle = CreateErrorPrototype(ctx, errorProtoHandle, name);
         return CreateErrorConstructor(ctx, protoHandle, name);
     }
 
@@ -86,16 +89,13 @@ public sealed class ErrorBuiltins : IBuiltinModule
         _ = args;
         if (thisValue.Tag != JsValueTag.Object)
             throw new JsThrownException(ctx.CreateTypeError("Error.prototype.toString called on non-object."));
-
         var obj = ctx.Heap.GetObject(thisValue.AsObjectHandle());
         var name = "Error";
         if (ctx.TryGetPropertyValue(obj, thisValue, "name", out var nameValue) && nameValue.Tag != JsValueTag.Undefined)
             name = ctx.ToStringValue(nameValue);
-
         var message = string.Empty;
         if (ctx.TryGetPropertyValue(obj, thisValue, "message", out var messageValue) && messageValue.Tag != JsValueTag.Undefined)
             message = ctx.ToStringValue(messageValue);
-
         if (name.Length == 0) return JsValue.FromString(message);
         if (message.Length == 0) return JsValue.FromString(name);
         return JsValue.FromString(name + ": " + message);
@@ -108,6 +108,9 @@ public sealed class ErrorBuiltins : IBuiltinModule
         var captured = ctx;
         var fn = new NativeFunctionObject(name, (thisValue, args) => method(captured, thisValue, args), length: length);
         var fnHandle = heap.AllocateObject(fn, AllocationSite.Current());
+        var callHandle = ctx.GetFunctionCallMethod();
+        fn.SetProperty("call", JsValue.FromObject(callHandle));
+        heap.WriteBarrier(fnHandle, callHandle);
         proto.DefineOwnProperty(name, new JsPropertyDescriptor(JsValue.FromObject(fnHandle), Writable: true, Enumerable: false, Configurable: true));
         heap.WriteBarrier(protoHandle, fnHandle);
     }

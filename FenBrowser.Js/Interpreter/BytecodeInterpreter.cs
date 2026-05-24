@@ -32,10 +32,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         ObjectHandle ownerHandle, JsObject owner, string name,
         Func<JsValue, IReadOnlyList<JsValue>, JsValue> call, int length)
         => DefineIntrinsicFunction(ownerHandle, owner, name, call, length);
-    ObjectHandle IBuiltinContext.GetObjectPrototype() => EnsureObjectPrototype();
-    ObjectHandle IBuiltinContext.GetArrayPrototype() => EnsureArrayPrototype();
+    ObjectHandle IBuiltinContext.GetObjectPrototype() => GetGlobalPrototype("Object");
+    ObjectHandle IBuiltinContext.GetArrayPrototype() => GetGlobalPrototype("Array");
     ObjectHandle IBuiltinContext.GetErrorPrototype() => EnsureErrorPrototype();
     ObjectHandle IBuiltinContext.GetParseIntFunction() => EnsureParseIntFunction();
+    ObjectHandle IBuiltinContext.GetFunctionCallMethod() => EnsureFunctionCallMethod();
     ObjectHandle IBuiltinContext.GetParseFloatFunction() => EnsureParseFloatFunction();
     JsValue IBuiltinContext.CreateSymbol(string? description) => JsValue.FromSymbol(description);
     JsValue IBuiltinContext.CreateWellKnownSymbol(string name) => GetWellKnownSymbol(name);
@@ -43,6 +44,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     JsValue IBuiltinContext.SymbolKeyFor(long id) => SymbolKeyFor(id);
     void IBuiltinContext.InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto) => InstallPrototypeMethodsOnDatePrototype(protoHandle, proto);
     void IBuiltinContext.InstallRegExpPrototypeMethods(ObjectHandle protoHandle, JsObject proto) => InstallPrototypeMethodsOnRegExpPrototype(protoHandle, proto);
+    JsValue IBuiltinContext.Eval(IReadOnlyList<JsValue> args) => Eval(args);
+    void IBuiltinContext.EnqueueMicrotask(JsValue callback) => _pendingMicrotasks.Enqueue(callback);
+    ObjectHandle IBuiltinContext.MaterializeObjectConstructor() => EnsureObjectConstructor();
+    ObjectHandle IBuiltinContext.MaterializeArrayConstructor() => EnsureArrayConstructor();
+    ObjectHandle IBuiltinContext.MaterializeFunctionConstructor() => EnsureFunctionConstructor();
+    ObjectHandle IBuiltinContext.MaterializeSetConstructor() => EnsureSetConstructor();
+    ObjectHandle IBuiltinContext.MaterializeMapConstructor() => EnsureMapConstructor();
+    ObjectHandle IBuiltinContext.MaterializeWeakMapConstructor() => EnsureWeakMapConstructor();
+    ObjectHandle IBuiltinContext.MaterializeWeakSetConstructor() => EnsureWeakSetConstructor();
+    ObjectHandle IBuiltinContext.MaterializePromiseConstructor() => EnsurePromiseConstructor();
+    ObjectHandle IBuiltinContext.MaterializeJsonObject() => EnsureJsonObject();
+    ObjectHandle IBuiltinContext.MaterializeReflectObject() => EnsureReflectObject();
+    ObjectHandle IBuiltinContext.MaterializeIteratorConstructor() => EnsureIteratorConstructor();
+    ObjectHandle IBuiltinContext.MaterializeWeakRefConstructor() => EnsureWeakRefConstructor();
+    ObjectHandle IBuiltinContext.MaterializeFinalizationRegistryConstructor() => EnsureFinalizationRegistryConstructor();
+    ObjectHandle IBuiltinContext.MaterializeStructuredCloneFunction() => EnsureStructuredCloneFunction();
     private ObjectHandle? _objectConstructorHandle;
     private ObjectHandle? _objectPrototypeHandle;
     private ObjectHandle? _arrayConstructorHandle;
@@ -2835,7 +2852,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private void InstallGlobalObjectProperties(JsObject global, ObjectHandle globalHandle)
     {
-        // ECMA-262 19.1 value properties + Math + global functions are now registry-driven.
         var registry = new BuiltinRegistry()
             .Register(new GlobalConstantsBuiltin(JsValue.FromObject(globalHandle)))
             .Register(new MathBuiltin())
@@ -2846,47 +2862,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new ErrorBuiltins())
             .Register(new SymbolBuiltin())
             .Register(new DateBuiltin())
-            .Register(new RegExpBuiltin());
+            .Register(new RegExpBuiltin())
+            .Register(new ObjectBuiltin())
+            .Register(new ArrayBuiltin())
+            .Register(new FunctionBuiltin())
+            .Register(new SetBuiltin())
+            .Register(new MapBuiltin())
+            .Register(new WeakMapBuiltin())
+            .Register(new WeakSetBuiltin())
+            .Register(new PromiseBuiltin())
+            .Register(new JsonBuiltin())
+            .Register(new ReflectBuiltin())
+            .Register(new IteratorBuiltin())
+            .Register(new MiscGlobalsBuiltin());
         var bindings = registry.Materialize(this);
         foreach (var binding in bindings)
         {
             InstallBinding(global, globalHandle, binding);
         }
 
-        // ECMA-262 global function properties and constructor/object properties. These
-        // live on the global object, so GlobalEnvironmentRecord can resolve both bare
-        // identifiers and `globalThis.name` through the same binding surface.
-        //
-        // Extracted (registry-driven): NaN, Infinity, undefined, globalThis (GlobalConstantsBuiltin),
-        // Math (MathBuiltin), isNaN, isFinite, encodeURI, encodeURIComponent, decodeURI,
-        // decodeURIComponent (GlobalFunctionsBuiltin).
-        //
         // Still inline: parseInt/parseFloat (shared with Number.parseInt/parseFloat),
-        // and all constructors/prototypes pending further extraction.
-        DefineGlobalDataProperty(global, globalHandle, "eval", JsValue.FromObject(EnsureEvalFunction()));
+        // AggregateError (requires for-of iterator support).
         DefineGlobalDataProperty(global, globalHandle, "parseInt", JsValue.FromObject(EnsureParseIntFunction()));
         DefineGlobalDataProperty(global, globalHandle, "parseFloat", JsValue.FromObject(EnsureParseFloatFunction()));
         DefineGlobalDataProperty(global, globalHandle, "AggregateError", JsValue.FromObject(EnsureAggregateErrorConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "WeakRef", JsValue.FromObject(EnsureWeakRefConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "FinalizationRegistry", JsValue.FromObject(EnsureFinalizationRegistryConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "structuredClone", JsValue.FromObject(EnsureStructuredCloneFunction()));
-        DefineGlobalDataProperty(global, globalHandle, "queueMicrotask", JsValue.FromObject(EnsureQueueMicrotaskFunction()));
-        DefineGlobalDataProperty(global, globalHandle, "Object", JsValue.FromObject(EnsureObjectConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "Array", JsValue.FromObject(EnsureArrayConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "Boolean", JsValue.FromObject(EnsureBooleanConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "Function", JsValue.FromObject(EnsureFunctionConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "Error", JsValue.FromObject(EnsureErrorConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "TypeError", JsValue.FromObject(EnsureTypeErrorConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "RangeError", JsValue.FromObject(EnsureRangeErrorConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "SyntaxError", JsValue.FromObject(EnsureSyntaxErrorConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "JSON", JsValue.FromObject(EnsureJsonObject()));
-        DefineGlobalDataProperty(global, globalHandle, "Set", JsValue.FromObject(EnsureSetConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "Map", JsValue.FromObject(EnsureMapConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "WeakMap", JsValue.FromObject(EnsureWeakMapConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "WeakSet", JsValue.FromObject(EnsureWeakSetConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "Reflect", JsValue.FromObject(EnsureReflectObject()));
-        DefineGlobalDataProperty(global, globalHandle, "Iterator", JsValue.FromObject(EnsureIteratorConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "Promise", JsValue.FromObject(EnsurePromiseConstructor()));
     }
 
     private void InstallBinding(JsObject global, ObjectHandle globalHandle, BuiltinBinding binding)
@@ -3098,27 +3097,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private JsValue CreateError(string message)
     {
-        return CreateErrorObject("Error", EnsureErrorPrototype(), message);
+        return CreateErrorObject("Error", GetGlobalPrototype("Error"), message);
     }
 
     private JsValue CreateTypeError(string message)
     {
-        return CreateErrorObject("TypeError", EnsureTypeErrorPrototype(), message);
+        return CreateErrorObject("TypeError", GetGlobalPrototype("TypeError"), message);
     }
 
     private JsValue CreateReferenceError(string message)
     {
-        return CreateErrorObject("ReferenceError", EnsureReferenceErrorPrototype(), message);
+        return CreateErrorObject("ReferenceError", GetGlobalPrototype("ReferenceError"), message);
     }
 
     private JsValue CreateRangeError(string message)
     {
-        return CreateErrorObject("RangeError", EnsureRangeErrorPrototype(), message);
+        return CreateErrorObject("RangeError", GetGlobalPrototype("RangeError"), message);
     }
 
     private JsValue CreateSyntaxError(string message)
     {
-        return CreateErrorObject("SyntaxError", EnsureSyntaxErrorPrototype(), message);
+        return CreateErrorObject("SyntaxError", GetGlobalPrototype("SyntaxError"), message);
     }
 
     private JsValue CreateErrorObject(string name, ObjectHandle prototypeHandle, string message)
@@ -7854,7 +7853,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private JsValue CreateUriError(string message)
     {
-        return CreateErrorObject("URIError", EnsureUriErrorPrototype(), message);
+        return CreateErrorObject("URIError", GetGlobalPrototype("URIError"), message);
     }
 
     private ObjectHandle EnsureUriErrorPrototype()
@@ -7901,7 +7900,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         var prototype = CreateOrdinaryObject();
-        prototype.SetPrototype(EnsureErrorPrototype());
+        prototype.SetPrototype(GetGlobalPrototype("Error"));
         var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
         _heap.PushRoot(prototypeHandle);
         _ = prototype.DefineOwnProperty("name",
@@ -8814,7 +8813,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             "String" => EnsureStringPrototype(),
             "Date" => EnsureDatePrototype(),
             "RegExp" => EnsureRegExpPrototype(),
-            _ => throw new InvalidOperationException($"Unknown prototype fallback for {constructorName}.")
+            "Error" => EnsureErrorPrototype(),
+            "TypeError" => EnsureTypeErrorPrototype(),
+            "RangeError" => EnsureRangeErrorPrototype(),
+            "SyntaxError" => EnsureSyntaxErrorPrototype(),
+            "ReferenceError" => EnsureReferenceErrorPrototype(),
+            "EvalError" => EnsureErrorPrototype(),
+            "URIError" => EnsureErrorPrototype(),
+            "Object" => EnsureObjectPrototype(),
+            "Array" => EnsureArrayPrototype(),
+            _ => EnsureObjectPrototype(),
         };
     }
 

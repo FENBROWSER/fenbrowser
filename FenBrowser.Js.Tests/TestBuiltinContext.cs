@@ -112,9 +112,33 @@ internal sealed class TestBuiltinContext : IBuiltinContext
     public JsValue SymbolKeyFor(long id)
         => JsValue.Undefined;
 
+    public ObjectHandle GetFunctionCallMethod()
+        => throw new NotSupportedException("GetFunctionCallMethod is not supported in TestBuiltinContext.");
+
+    public JsValue Eval(IReadOnlyList<JsValue> args)
+        => throw new NotSupportedException("Eval is not supported in TestBuiltinContext.");
+
+    public void EnqueueMicrotask(JsValue callback)
+        => throw new NotSupportedException("EnqueueMicrotask is not supported in TestBuiltinContext.");
+
     public void InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto)
         => throw new NotSupportedException("InstallDatePrototypeMethods is not supported in TestBuiltinContext.");
 
     public void InstallRegExpPrototypeMethods(ObjectHandle protoHandle, JsObject proto)
         => throw new NotSupportedException("InstallRegExpPrototypeMethods is not supported in TestBuiltinContext.");
+
+    public ObjectHandle MaterializeObjectConstructor() => throw new NotSupportedException();
+    public ObjectHandle MaterializeArrayConstructor() => throw new NotSupportedException();
+    public ObjectHandle MaterializeFunctionConstructor() => throw new NotSupportedException();
+    public ObjectHandle MaterializeSetConstructor() => throw new NotSupportedException();
+    public ObjectHandle MaterializeMapConstructor() => throw new NotSupportedException();
+    public ObjectHandle MaterializeWeakMapConstructor() => throw new NotSupportedException();
+    public ObjectHandle MaterializeWeakSetConstructor() => throw new NotSupportedException();
+    public ObjectHandle MaterializePromiseConstructor() => throw new NotSupportedException();
+    public ObjectHandle MaterializeJsonObject() => throw new NotSupportedException();
+    public ObjectHandle MaterializeReflectObject() => throw new NotSupportedException();
+    public ObjectHandle MaterializeIteratorConstructor() => throw new NotSupportedException();
+    public ObjectHandle MaterializeWeakRefConstructor() => throw new NotSupportedException();
+    public ObjectHandle MaterializeFinalizationRegistryConstructor() => throw new NotSupportedException();
+    public ObjectHandle MaterializeStructuredCloneFunction() => throw new NotSupportedException();
 }

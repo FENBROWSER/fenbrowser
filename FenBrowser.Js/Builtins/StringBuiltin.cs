@@ -147,7 +147,10 @@ public sealed class StringBuiltin : IBuiltinModule
         var captured = ctx;
         var fn = new NativeFunctionObject(name, (thisValue, args) => method(captured, thisValue, args), length: length);
         var fnHandle = heap.AllocateObject(fn, AllocationSite.Current());
-        _ = proto.DefineOwnProperty(name, new JsPropertyDescriptor(JsValue.FromObject(fnHandle), Writable: true, Enumerable: false, Configurable: true));
+        var callHandle = ctx.GetFunctionCallMethod();
+        fn.SetProperty("call", JsValue.FromObject(callHandle));
+        heap.WriteBarrier(fnHandle, callHandle);
+        proto.DefineOwnProperty(name, new JsPropertyDescriptor(JsValue.FromObject(fnHandle), Writable: true, Enumerable: false, Configurable: true));
         heap.WriteBarrier(protoHandle, fnHandle);
     }
 
