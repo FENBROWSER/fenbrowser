@@ -8,13 +8,18 @@ public sealed class JsFunctionObject : JsObject
 {
     public JsFunctionObject(
         BytecodeFunction function,
-        EnvironmentRecord? outerEnvironment = null)
+        EnvironmentRecord? outerEnvironment = null,
+        FunctionKind kind = FunctionKind.Ordinary)
     {
         Function = function;
         OuterEnvironment = outerEnvironment;
+        Kind = kind;
     }
 
     public BytecodeFunction Function { get; }
+
+    // Plan §18: how this function was created (ordinary, arrow, method, constructor, etc.)
+    public FunctionKind Kind { get; }
 
     // ECMA-262 10.2 [[Environment]]: the lexical EnvironmentRecord active when this
     // function was created. Callee frames chain a fresh declarative record to this

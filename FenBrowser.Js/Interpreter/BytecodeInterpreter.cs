@@ -167,6 +167,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private readonly Dictionary<string, long> _symbolRegistryByKey = new(StringComparer.Ordinal);
     private readonly Dictionary<long, string> _symbolRegistryById = new();
 
+    // Plan §14.2: instruction budget. Zero = no limit.
+    public int InstructionBudget { get; set; }
+    public Func<bool>? InterruptCallback { get; set; }
+    private int _instructionCount;
+
     public BytecodeInterpreter(JsHeap? heap = null)
     {
         _heap = heap ?? new JsHeap();
@@ -175,6 +180,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     [MayExecuteJs]
     public JsValue Execute(BytecodeFunction function)
     {
+        _instructionCount = 0;
         var globalHandle = EnsureGlobalObject();
         var result = ExecuteInternal(
             function,
@@ -342,6 +348,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
         while (frame.InstructionPointer < function.Instructions.Count)
         {
+            // Plan §14.2: instruction budget and interrupt check.
+            if (InstructionBudget > 0 && ++_instructionCount > InstructionBudget)
+                throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded."));
+            if (InterruptCallback is { } cb && !cb())
+                throw new JsThrownException(CreateRangeError("Execution interrupted."));
+
             var ins = function.Instructions[frame.InstructionPointer++];
             switch (ins.OpCode)
             {
