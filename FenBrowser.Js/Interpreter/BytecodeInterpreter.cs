@@ -10035,6 +10035,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 return capability.Promise;
             }
 
+            if (fn.Kind == FunctionKind.Generator)
+            {
+                // ECMA-262 27.5.1.1 — calling a generator function returns a
+                // GeneratorObject without executing the body. Execution starts
+                // on the first .next() call.
+                var registers = new JsValue[fn.Function.RegisterCount];
+                for (var i = 0; i < registers.Length; i++)
+                    registers[i] = JsValue.Undefined;
+                // Bind parameters into registers
+                var paramCount = Math.Min(args.Count, fn.Function.ParameterNames.Count);
+                for (var i = 0; i < paramCount; i++)
+                    registers[i + 1] = args[i]; // register 0 is return slot, params start at 1
+
+                var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment);
+                genObj.ThisValue = thisValue;
+                genObj.SetPrototype(EnsureObjectPrototype());
+                return JsValue.FromObject(_heap.AllocateObject(genObj, AllocationSite.Current()));
+            }
+
             return ExecuteInternal(fn.Function, args, thisValue, fn.OuterEnvironment, callee: fn);
         }
 
@@ -10051,6 +10070,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         var obj = ResolveObject(value);
         if (obj is JsFunctionObject fn)
         {
+            if (fn.Kind == FunctionKind.Generator)
+                throw new JsThrownException(CreateTypeError("Generator functions cannot be used as constructors."));
             return ExecuteConstruct(fn, args, newTarget: value);
         }
 
