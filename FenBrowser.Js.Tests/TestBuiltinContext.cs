@@ -111,4 +111,7 @@ internal sealed class TestBuiltinContext : IBuiltinContext
 
     public JsValue SymbolKeyFor(long id)
         => JsValue.Undefined;
+
+    public void InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto)
+        => throw new NotSupportedException("InstallDatePrototypeMethods is not supported in TestBuiltinContext.");
 }

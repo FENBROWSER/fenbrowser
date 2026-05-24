@@ -41,6 +41,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     JsValue IBuiltinContext.CreateWellKnownSymbol(string name) => GetWellKnownSymbol(name);
     JsValue IBuiltinContext.SymbolFor(string key) => SymbolFor(key);
     JsValue IBuiltinContext.SymbolKeyFor(long id) => SymbolKeyFor(id);
+    void IBuiltinContext.InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto) => InstallPrototypeMethodsOnDatePrototype(protoHandle, proto);
     private ObjectHandle? _objectConstructorHandle;
     private ObjectHandle? _objectPrototypeHandle;
     private ObjectHandle? _arrayConstructorHandle;
@@ -2842,7 +2843,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new NumberBuiltin())
             .Register(new StringBuiltin())
             .Register(new ErrorBuiltins())
-            .Register(new SymbolBuiltin());
+            .Register(new SymbolBuiltin())
+            .Register(new DateBuiltin());
         var bindings = registry.Materialize(this);
         foreach (var binding in bindings)
         {
@@ -2875,7 +2877,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         DefineGlobalDataProperty(global, globalHandle, "TypeError", JsValue.FromObject(EnsureTypeErrorConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "RangeError", JsValue.FromObject(EnsureRangeErrorConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "SyntaxError", JsValue.FromObject(EnsureSyntaxErrorConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "Date", JsValue.FromObject(EnsureDateConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "RegExp", JsValue.FromObject(EnsureRegExpConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "JSON", JsValue.FromObject(EnsureJsonObject()));
         DefineGlobalDataProperty(global, globalHandle, "Set", JsValue.FromObject(EnsureSetConstructor()));
@@ -3445,125 +3446,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             return JsValue.FromNumber(double.NaN);
         }, length: 1);
 
-        // ECMA-262 21.4.4.10 Date.prototype.getTime and 21.4.4.44 Date.prototype.valueOf
-        // both return the receiver's [[DateValue]]. Both are spec-identical; the
-        // valueOf binding doubles as Date's @@toPrimitive(default) target through
-        // OrdinaryToPrimitive when no @@toPrimitive is installed.
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getTime", DatePrototypeGetTime);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "valueOf", DatePrototypeGetTime);
-
-        // ECMA-262 21.4.4.27 Date.prototype.setTime(time). Coerces time to a Number,
-        // applies TimeClip, writes the result into the receiver's [[DateValue]],
-        // and returns the new time value. Non-Date receiver raises TypeError.
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setTime", (thisValue, args) =>
-        {
-            var date = RequireDate(thisValue, "setTime");
-            var t = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
-            date.TimeValue = TimeClip(t);
-            return JsValue.FromNumber(date.TimeValue);
-        }, length: 1);
-
-        // ECMA-262 21.4.4.{21,22,23} Date.prototype.setFullYear / setMonth / setDate
-        // and the matching UTC variants (.setUTCFullYear / setUTCMonth / setUTCDate).
-        // The engine has LocalTZA=0 so local and UTC variants share the same
-        // implementation. setFullYear(year[, month[, date]]) overwrites the year and
-        // optionally further fields; setMonth and setDate only touch their own
-        // portion. Each returns the new TimeClip'd millisecond value.
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setFullYear",
-            (t, a) => SetDateField(t, "setFullYear", a, hasYear: true, hasMonth: a.Count > 1, hasDay: a.Count > 2), length: 3);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCFullYear",
-            (t, a) => SetDateField(t, "setUTCFullYear", a, hasYear: true, hasMonth: a.Count > 1, hasDay: a.Count > 2), length: 3);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setMonth",
-            (t, a) => SetDateField(t, "setMonth", a, hasYear: false, hasMonth: true, hasDay: a.Count > 1, monthArgIndex: 0, dayArgIndex: 1), length: 2);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCMonth",
-            (t, a) => SetDateField(t, "setUTCMonth", a, hasYear: false, hasMonth: true, hasDay: a.Count > 1, monthArgIndex: 0, dayArgIndex: 1), length: 2);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setDate",
-            (t, a) => SetDateField(t, "setDate", a, hasYear: false, hasMonth: false, hasDay: true, dayArgIndex: 0), length: 1);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCDate",
-            (t, a) => SetDateField(t, "setUTCDate", a, hasYear: false, hasMonth: false, hasDay: true, dayArgIndex: 0), length: 1);
-
-        // ECMA-262 21.4.4.{24,25,26,29} Date.prototype.setHours / setMinutes /
-        // setSeconds / setMilliseconds plus the UTC variants. Each takes its own
-        // portion plus any trailing lower-order portions, mirroring MakeTime.
-        // Engine LocalTZA=0 so local == UTC.
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setHours",
-            (t, a) => SetTimeField(t, "setHours", a, startIndex: 0), length: 4);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCHours",
-            (t, a) => SetTimeField(t, "setUTCHours", a, startIndex: 0), length: 4);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setMinutes",
-            (t, a) => SetTimeField(t, "setMinutes", a, startIndex: 1), length: 3);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCMinutes",
-            (t, a) => SetTimeField(t, "setUTCMinutes", a, startIndex: 1), length: 3);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setSeconds",
-            (t, a) => SetTimeField(t, "setSeconds", a, startIndex: 2), length: 2);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCSeconds",
-            (t, a) => SetTimeField(t, "setUTCSeconds", a, startIndex: 2), length: 2);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setMilliseconds",
-            (t, a) => SetTimeField(t, "setMilliseconds", a, startIndex: 3), length: 1);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCMilliseconds",
-            (t, a) => SetTimeField(t, "setUTCMilliseconds", a, startIndex: 3), length: 1);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toISOString", DatePrototypeToIsoString);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toJSON", DatePrototypeToJson, length: 1);
-
-        // ECMA-262 21.4.4.{2,3,5,6,7,8,9,11} Date.prototype local-time component getters.
-        // The engine has no host TimeZone model yet, so local time == UTC across the
-        // board (per 21.4.1.10 LocalTime when LocalTZA = 0). Each method extracts the
-        // matching component from DateTimeOffset; NaN time produces NaN.
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getFullYear",
-            (t, _) => GetDateComponent(t, "getFullYear", d => d.Year));
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getMonth",
-            (t, _) => GetDateComponent(t, "getMonth", d => d.Month - 1));
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getDate",
-            (t, _) => GetDateComponent(t, "getDate", d => d.Day));
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getDay",
-            (t, _) => GetDateComponent(t, "getDay", d => (int)d.DayOfWeek));
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getHours",
-            (t, _) => GetDateComponent(t, "getHours", d => d.Hour));
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getMinutes",
-            (t, _) => GetDateComponent(t, "getMinutes", d => d.Minute));
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getSeconds",
-            (t, _) => GetDateComponent(t, "getSeconds", d => d.Second));
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getMilliseconds",
-            (t, _) => GetDateComponent(t, "getMilliseconds", d => d.Millisecond));
-
-        // ECMA-262 21.4.4.{12,...,19} Date.prototype UTC-time component getters. The
-        // engine has no TimeZone offset, so the UTC variants share the same extractor
-        // as the local ones - kept under distinct names so JS code that explicitly
-        // wants UTC keeps round-tripping (and so that a future host-LocalTZA wiring
-        // only touches the local-time entries).
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCFullYear",
-            (t, _) => GetDateComponent(t, "getUTCFullYear", d => d.Year));
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCMonth",
-            (t, _) => GetDateComponent(t, "getUTCMonth", d => d.Month - 1));
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCDate",
-            (t, _) => GetDateComponent(t, "getUTCDate", d => d.Day));
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCDay",
-            (t, _) => GetDateComponent(t, "getUTCDay", d => (int)d.DayOfWeek));
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCHours",
-            (t, _) => GetDateComponent(t, "getUTCHours", d => d.Hour));
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCMinutes",
-            (t, _) => GetDateComponent(t, "getUTCMinutes", d => d.Minute));
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCSeconds",
-            (t, _) => GetDateComponent(t, "getUTCSeconds", d => d.Second));
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCMilliseconds",
-            (t, _) => GetDateComponent(t, "getUTCMilliseconds", d => d.Millisecond));
-
-        // ECMA-262 21.4.4.20 Date.prototype.getTimezoneOffset - difference in minutes
-        // between local time and UTC. Always 0 until a host TimeZone model lands.
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getTimezoneOffset",
-            (t, _) => GetDateComponent(t, "getTimezoneOffset", _ => 0));
-
-        // ECMA-262 21.4.4.{41,35,42} Date.prototype.toString / toDateString / toTimeString.
-        // The spec's format is fixed: "Day Mon DD YYYY HH:MM:SS GMT+HHMM (Time Zone Name)".
-        // Engine LocalTZA = 0, so the zone offset is always +0000 and the name is the
-        // IANA designator for UTC. NaN time stringifies to the spec-mandated literal
-        // "Invalid Date" for every variant (21.4.4.41 step 3, 21.4.4.35 step 3,
-        // 21.4.4.42 step 3 all funnel through DateString / TimeString which collapse
-        // to the same literal).
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", DatePrototypeToString);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toDateString", DatePrototypeToDateString);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toTimeString", DatePrototypeToTimeString);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toUTCString", DatePrototypeToUtcString);
+        InstallPrototypeMethodsOnDatePrototype(prototypeHandle, prototype);
 
         _datePrototypeHandle = prototypeHandle;
         _dateConstructorHandle = constructorHandle;
@@ -3679,6 +3562,93 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     {
         if (!double.IsFinite(t) || Math.Abs(t) > 8.64e15) return double.NaN;
         return t >= 0 ? Math.Floor(t) : -Math.Floor(-t);
+    }
+
+    private void InstallPrototypeMethodsOnDatePrototype(ObjectHandle prototypeHandle, JsObject prototype)
+    {
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getTime", DatePrototypeGetTime);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "valueOf", DatePrototypeGetTime);
+
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setTime", (thisValue, args) =>
+        {
+            var date = RequireDate(thisValue, "setTime");
+            var t = args.Count > 0 ? ToNumber(args[0]) : double.NaN;
+            date.TimeValue = TimeClip(t);
+            return JsValue.FromNumber(date.TimeValue);
+        }, length: 1);
+
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setFullYear",
+            (t, a) => SetDateField(t, "setFullYear", a, hasYear: true, hasMonth: a.Count > 1, hasDay: a.Count > 2), length: 3);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCFullYear",
+            (t, a) => SetDateField(t, "setUTCFullYear", a, hasYear: true, hasMonth: a.Count > 1, hasDay: a.Count > 2), length: 3);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setMonth",
+            (t, a) => SetDateField(t, "setMonth", a, hasYear: false, hasMonth: true, hasDay: a.Count > 1, monthArgIndex: 0, dayArgIndex: 1), length: 2);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCMonth",
+            (t, a) => SetDateField(t, "setUTCMonth", a, hasYear: false, hasMonth: true, hasDay: a.Count > 1, monthArgIndex: 0, dayArgIndex: 1), length: 2);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setDate",
+            (t, a) => SetDateField(t, "setDate", a, hasYear: false, hasMonth: false, hasDay: true, dayArgIndex: 0), length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCDate",
+            (t, a) => SetDateField(t, "setUTCDate", a, hasYear: false, hasMonth: false, hasDay: true, dayArgIndex: 0), length: 1);
+
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setHours",
+            (t, a) => SetTimeField(t, "setHours", a, startIndex: 0), length: 4);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCHours",
+            (t, a) => SetTimeField(t, "setUTCHours", a, startIndex: 0), length: 4);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setMinutes",
+            (t, a) => SetTimeField(t, "setMinutes", a, startIndex: 1), length: 3);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCMinutes",
+            (t, a) => SetTimeField(t, "setUTCMinutes", a, startIndex: 1), length: 3);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setSeconds",
+            (t, a) => SetTimeField(t, "setSeconds", a, startIndex: 2), length: 2);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCSeconds",
+            (t, a) => SetTimeField(t, "setUTCSeconds", a, startIndex: 2), length: 2);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setMilliseconds",
+            (t, a) => SetTimeField(t, "setMilliseconds", a, startIndex: 3), length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setUTCMilliseconds",
+            (t, a) => SetTimeField(t, "setUTCMilliseconds", a, startIndex: 3), length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toISOString", DatePrototypeToIsoString);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toJSON", DatePrototypeToJson, length: 1);
+
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getFullYear",
+            (t, _) => GetDateComponent(t, "getFullYear", d => d.Year));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getMonth",
+            (t, _) => GetDateComponent(t, "getMonth", d => d.Month - 1));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getDate",
+            (t, _) => GetDateComponent(t, "getDate", d => d.Day));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getDay",
+            (t, _) => GetDateComponent(t, "getDay", d => (int)d.DayOfWeek));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getHours",
+            (t, _) => GetDateComponent(t, "getHours", d => d.Hour));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getMinutes",
+            (t, _) => GetDateComponent(t, "getMinutes", d => d.Minute));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getSeconds",
+            (t, _) => GetDateComponent(t, "getSeconds", d => d.Second));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getMilliseconds",
+            (t, _) => GetDateComponent(t, "getMilliseconds", d => d.Millisecond));
+
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCFullYear",
+            (t, _) => GetDateComponent(t, "getUTCFullYear", d => d.Year));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCMonth",
+            (t, _) => GetDateComponent(t, "getUTCMonth", d => d.Month - 1));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCDate",
+            (t, _) => GetDateComponent(t, "getUTCDate", d => d.Day));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCDay",
+            (t, _) => GetDateComponent(t, "getUTCDay", d => (int)d.DayOfWeek));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCHours",
+            (t, _) => GetDateComponent(t, "getUTCHours", d => d.Hour));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCMinutes",
+            (t, _) => GetDateComponent(t, "getUTCMinutes", d => d.Minute));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCSeconds",
+            (t, _) => GetDateComponent(t, "getUTCSeconds", d => d.Second));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCMilliseconds",
+            (t, _) => GetDateComponent(t, "getUTCMilliseconds", d => d.Millisecond));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getTimezoneOffset",
+            (t, _) => GetDateComponent(t, "getTimezoneOffset", _ => 0));
+
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", DatePrototypeToString);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toDateString", DatePrototypeToDateString);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toTimeString", DatePrototypeToTimeString);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toUTCString", DatePrototypeToUtcString);
     }
 
     private DateObject RequireDate(JsValue thisValue, string method)
@@ -3816,7 +3786,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private JsValue CreateDateObject(double timeValue)
     {
         var obj = new DateObject(timeValue);
-        obj.SetPrototype(EnsureDatePrototype());
+        obj.SetPrototype(GetGlobalPrototype("Date"));
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
@@ -8836,6 +8806,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             "Boolean" => EnsureBooleanPrototype(),
             "Number" => EnsureNumberPrototype(),
             "String" => EnsureStringPrototype(),
+            "Date" => EnsureDatePrototype(),
             _ => throw new InvalidOperationException($"Unknown prototype fallback for {constructorName}.")
         };
     }
@@ -10327,18 +10298,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     {
         String,
         Number
-    }
-
-    private sealed class DateObject : JsObject
-    {
-        public DateObject(double timeValue)
-        {
-            TimeValue = timeValue;
-        }
-
-        // ECMA-262 21.4.1.30 [[DateValue]] is a mutable internal slot that
-        // setTime / setFullYear / setHours / ... overwrite.
-        public double TimeValue { get; set; }
     }
 
     private sealed class RegExpObject : JsObject

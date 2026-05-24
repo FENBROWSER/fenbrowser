@@ -77,4 +77,9 @@ public interface IBuiltinContext
     JsValue CreateWellKnownSymbol(string name);
     JsValue SymbolFor(string key);
     JsValue SymbolKeyFor(long id);
+
+    // Install all Date.prototype methods onto the given prototype object.
+    // Kept on the context because each method needs interpreter internals
+    // (RequireDate, MakeDate, MakeDay, TimeClip, etc.).
+    void InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto);
 }
