@@ -128,7 +128,10 @@ public enum OpCode : byte
     SetPrivateField,
 
     // H.5 - LoadNewTarget(A=dest reg). Reads the current frame's NewTarget.
-    // ECMA-262 13.3.12 The new.target Meta Property. Returns undefined outside
-    // a [[Construct]] invocation.
     LoadNewTarget,
+
+    // H.5 - InitThisBinding. Transitions the frame's FunctionEnvironmentRecord
+    // ThisBindingStatus from Uninitialized to Initialized. Emitted in derived
+    // constructors after super() returns, so subsequent `this` access works.
+    InitThisBinding,
 }

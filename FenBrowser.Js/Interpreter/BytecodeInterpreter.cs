@@ -364,6 +364,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     frame.Registers[ins.A] = LoadName(frame, ins.B);
                     break;
                 case OpCode.LoadThis:
+                    // H.5 — must-call-super-before-this check for derived constructors.
+                    if (frame.Environment is FunctionEnvironmentRecord fenv && fenv.ThisBindingStatus == ThisBindingStatus.Uninitialized)
+                        throw new JsThrownException(CreateReferenceError("Must call super constructor before accessing 'this' in derived class constructor."));
                     frame.Registers[ins.A] = frame.ThisValue;
                     break;
                 case OpCode.StoreVar:
@@ -429,6 +432,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     break;
                 case OpCode.LoadNewTarget:
                     frame.Registers[ins.A] = frame.NewTarget;
+                    break;
+                case OpCode.InitThisBinding:
+                    if (frame.Environment is FunctionEnvironmentRecord fenInit && fenInit.ThisBindingStatus == ThisBindingStatus.Uninitialized)
+                        fenInit.BindThisValue(frame.ThisValue);
                     break;
                 case OpCode.SetPrototype:
                 {
@@ -10349,10 +10356,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         var defaultInstance = JsValue.FromObject(_heap.AllocateObject(instanceObject, AllocationSite.Current()));
-        // H.5 - publish new.target for the constructor frame. When no explicit
-        // target is passed, default to the callee value (the typical case for
-        // `new C(...)` reaching here from ConstructFunction with newTarget = the
-        // constructor's JsValue).
         _pendingNewTarget = newTarget.Tag == JsValueTag.Undefined
             ? JsValue.Undefined
             : newTarget;

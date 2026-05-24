@@ -20,6 +20,7 @@ public sealed class BytecodeCompiler
     // H.5: true while compiling the constructor body of a class with private fields.
     // Private field writes in this context emit DefinePrivateField instead of SetPrivateField.
     private bool _compilingClassConstructor;
+    private bool _isDerivedConstructor;
 
     private readonly List<Instruction> _instructions = new();
     private readonly List<JsValue> _constants = new();
@@ -89,6 +90,7 @@ public sealed class BytecodeCompiler
         return new BytecodeFunction
         {
             Name = _name,
+            IsDerivedConstructor = _isDerivedConstructor,
             Instructions = _instructions.ToArray(),
             Constants = _constants.ToArray(),
             VariableSlots = new Dictionary<string, int>(_variables),
@@ -440,9 +442,12 @@ public sealed class BytecodeCompiler
         // Compile constructor.
         // H.5: compile constructor with private field brand awareness.
         var savedConstructorContext = _compilingClassConstructor;
+        var savedIsDerived = _isDerivedConstructor;
         _compilingClassConstructor = privateMangle.Count > 0;
+        _isDerivedConstructor = isDerived;
         var classReg = CompileFunctionExpressionToRegister(constructorFn);
         _compilingClassConstructor = savedConstructorContext;
+        _isDerivedConstructor = savedIsDerived;
 
         // Build prototype object.
         var protoReg = AllocateRegister();
@@ -570,7 +575,7 @@ public sealed class BytecodeCompiler
     private int CompileFunctionExpressionToRegister(FunctionExpressionNode fnExpr)
     {
         var nestedProgram = new ProgramNode(ProgramKind.Script, fnExpr.Body.Statements, fnExpr.Body.Span);
-        var childCompiler = new BytecodeCompiler { _compilingClassConstructor = this._compilingClassConstructor };
+        var childCompiler = new BytecodeCompiler { _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             fnExpr.Parameters,

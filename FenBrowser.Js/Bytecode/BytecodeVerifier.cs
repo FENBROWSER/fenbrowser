@@ -123,6 +123,9 @@ public sealed class BytecodeVerifier
             case OpCode.LoadNewTarget:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 break;
+            case OpCode.InitThisBinding:
+                // No operands to validate — just toggles the frame's binding status.
+                break;
             case OpCode.DefinePrivateField:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidatePropertyName(function, ip, ins.B);

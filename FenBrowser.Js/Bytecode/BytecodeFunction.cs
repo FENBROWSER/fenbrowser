@@ -28,6 +28,10 @@ public sealed class BytecodeFunction
 
     public int RegisterCount { get; init; }
 
+    // H.5: true if this function is the constructor of a class with `extends`.
+    // Derived constructors must call super() before accessing `this`.
+    public bool IsDerivedConstructor { get; init; }
+
     internal Dictionary<int, PolymorphicInlineCache>? LoadICs { get; set; }
     internal Dictionary<int, PolymorphicInlineCache>? StoreICs { get; set; }
 }
