@@ -9969,11 +9969,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         frame.Registers[ins.A] = JsValue.FromObject(baseHandle);
     }
 
-    private static ObjectHandle ResolveObjectHandle(JsValue value)
+    private ObjectHandle ResolveObjectHandle(JsValue value)
     {
         if (value.Tag != JsValueTag.Object)
         {
-            throw new InvalidOperationException($"Expected object value, found {value.Tag}.");
+            throw new JsThrownException(CreateTypeError(
+                value.Tag == JsValueTag.Undefined
+                    ? "Cannot read properties of undefined."
+                    : value.Tag == JsValueTag.Null
+                        ? "Cannot read properties of null."
+                        : $"Cannot convert {value.Tag} to object."));
         }
 
         return value.AsObjectHandle();
