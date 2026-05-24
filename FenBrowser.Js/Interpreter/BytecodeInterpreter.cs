@@ -616,6 +616,46 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     frame.Registers[ins.A] = JsValue.FromString(key);
                     break;
                 }
+                // H.5 — private field ops with brand validation.
+                case OpCode.DefinePrivateField:
+                {
+                    var target = frame.Registers[ins.A];
+                    var name = function.PropertyNames[ins.B];
+                    var value = frame.Registers[ins.C];
+                    if (target.Tag != JsValueTag.Object)
+                        throw new JsThrownException(CreateTypeError("Cannot define private field on non-object."));
+                    var targetObj = _heap.GetObject(target.AsObjectHandle());
+                    targetObj.PrivateBrand = targetObj.PrivateBrand != 0 ? targetObj.PrivateBrand : targetObj.GetHashCode();
+                    targetObj.DefineOwnProperty(name, new JsPropertyDescriptor(value, Writable: true, Enumerable: false, Configurable: false));
+                    break;
+                }
+                case OpCode.GetPrivateField:
+                {
+                    var objVal = frame.Registers[ins.B];
+                    var name = function.PropertyNames[ins.C];
+                    if (objVal.Tag != JsValueTag.Object)
+                        throw new JsThrownException(CreateTypeError("Cannot read private field from non-object."));
+                    var obj = _heap.GetObject(objVal.AsObjectHandle());
+                    if (obj.PrivateBrand == 0)
+                        throw new JsThrownException(CreateTypeError("Cannot read private field from an object whose class did not declare it."));
+                    if (!obj.TryGetOwnProperty(name, out var desc))
+                        throw new JsThrownException(CreateTypeError("Cannot read private field from an object whose class did not declare it."));
+                    frame.Registers[ins.A] = desc.Value;
+                    break;
+                }
+                case OpCode.SetPrivateField:
+                {
+                    var objVal = frame.Registers[ins.A];
+                    var name = function.PropertyNames[ins.B];
+                    var value = frame.Registers[ins.C];
+                    if (objVal.Tag != JsValueTag.Object)
+                        throw new JsThrownException(CreateTypeError("Cannot write private field to non-object."));
+                    var obj = _heap.GetObject(objVal.AsObjectHandle());
+                    if (obj.PrivateBrand == 0 || !obj.TryGetOwnProperty(name, out var existing))
+                        throw new JsThrownException(CreateTypeError("Cannot write private field to an object whose class did not declare it."));
+                    obj.DefineOwnProperty(name, existing with { Value = value });
+                    break;
+                }
                 case OpCode.GetElem:
                 {
                     var receiver = frame.Registers[ins.B];

@@ -123,6 +123,21 @@ public sealed class BytecodeVerifier
             case OpCode.LoadNewTarget:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 break;
+            case OpCode.DefinePrivateField:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidatePropertyName(function, ip, ins.B);
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
+                break;
+            case OpCode.GetPrivateField:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidatePropertyName(function, ip, ins.C);
+                break;
+            case OpCode.SetPrivateField:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidatePropertyName(function, ip, ins.B);
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
+                break;
             case OpCode.SetPropByName:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidatePropertyName(function, ip, ins.B);

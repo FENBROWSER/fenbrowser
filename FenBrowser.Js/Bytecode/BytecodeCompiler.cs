@@ -17,6 +17,10 @@ public sealed class BytecodeCompiler
 
     private static int s_privateClassCounter;
 
+    // H.5: true while compiling the constructor body of a class with private fields.
+    // Private field writes in this context emit DefinePrivateField instead of SetPrivateField.
+    private bool _compilingClassConstructor;
+
     private readonly List<Instruction> _instructions = new();
     private readonly List<JsValue> _constants = new();
     private readonly Dictionary<string, int> _variables = new(StringComparer.Ordinal);
@@ -434,7 +438,11 @@ public sealed class BytecodeCompiler
         }
 
         // Compile constructor.
+        // H.5: compile constructor with private field brand awareness.
+        var savedConstructorContext = _compilingClassConstructor;
+        _compilingClassConstructor = privateMangle.Count > 0;
         var classReg = CompileFunctionExpressionToRegister(constructorFn);
+        _compilingClassConstructor = savedConstructorContext;
 
         // Build prototype object.
         var protoReg = AllocateRegister();
@@ -562,7 +570,7 @@ public sealed class BytecodeCompiler
     private int CompileFunctionExpressionToRegister(FunctionExpressionNode fnExpr)
     {
         var nestedProgram = new ProgramNode(ProgramKind.Script, fnExpr.Body.Statements, fnExpr.Body.Span);
-        var childCompiler = new BytecodeCompiler();
+        var childCompiler = new BytecodeCompiler { _compilingClassConstructor = this._compilingClassConstructor };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             fnExpr.Parameters,
@@ -932,7 +940,12 @@ public sealed class BytecodeCompiler
                 else
                 {
                     var nameIndex = GetOrCreatePropertyName(member.Property);
-                    _instructions.Add(new Instruction(OpCode.SetPropByName, objectReg, nameIndex, valueReg));
+                    OpCode setOp;
+                    if (IsPrivateMangled(member.Property))
+                        setOp = _compilingClassConstructor ? OpCode.DefinePrivateField : OpCode.SetPrivateField;
+                    else
+                        setOp = OpCode.SetPropByName;
+                    _instructions.Add(new Instruction(setOp, objectReg, nameIndex, valueReg));
                 }
 
                 return valueReg;
@@ -960,7 +973,8 @@ public sealed class BytecodeCompiler
                 else
                 {
                     var nameIndex = GetOrCreatePropertyName(member.Property);
-                    _instructions.Add(new Instruction(OpCode.GetPropByName, dest, objectReg, nameIndex));
+                    var op = IsPrivateMangled(member.Property) ? OpCode.GetPrivateField : OpCode.GetPropByName;
+                    _instructions.Add(new Instruction(op, dest, objectReg, nameIndex));
                 }
 
                 return dest;
@@ -1425,6 +1439,10 @@ public sealed class BytecodeCompiler
         _propertyNameToIndex[name] = idx;
         return idx;
     }
+
+    // H.5 — private names are mangled to __priv<N>__<name>. Detect so we can
+    // emit the brand-checked GetPrivateField/SetPrivateField opcodes.
+    private static bool IsPrivateMangled(string name) => name.StartsWith("__priv", StringComparison.Ordinal);
 
     private int EmitPlaceholder(OpCode opCode, int a = 0)
     {

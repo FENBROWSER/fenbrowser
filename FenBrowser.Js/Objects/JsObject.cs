@@ -23,9 +23,15 @@ public class JsObject : ITraceable
     // Deleted properties are set to null so slot indices stay valid.
     private JsPropertyDescriptor?[] _properties = Array.Empty<JsPropertyDescriptor?>();
 
-    // Symbol-keyed own properties (unchanged — symbols are not shape-tracked
-    // and won't benefit from ICs in the initial implementation).
+    // Symbol-keyed own properties (unchanged — symbols are not shape-tracked).
     private Dictionary<long, JsPropertyDescriptor>? _symbolProperties;
+
+    // Plan H.5: private field brand. Each class with private members gets a unique
+    // brand Symbol stored here. The constructor stamps it; private field access
+    // checks it. Null means "no brand on this object."
+    internal long PrivateBrand { get; set; }
+
+    internal bool HasPrivateBrand(long brand) => PrivateBrand == brand;
 
     public ObjectHandle? PrototypeHandle { get; private set; }
 
