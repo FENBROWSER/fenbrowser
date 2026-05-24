@@ -3,43 +3,93 @@ using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Objects;
 
+// ECMA-262 ordinary object with shape-based property storage (plan §31).
+//
+// Properties are stored in a flat JsPropertyDescriptor[] array indexed by the
+// slot number obtained from Shape.TryGetSlot(). Shapes form a parent-linked
+// tree and only grow — deletion marks the slot as absent rather than shrinking
+// the array, so existing inline caches stay valid.
+//
+// The older Dictionary<string, JsPropertyDescriptor> storage is replaced by
+// Shape + array. For enumeration and legacy paths, EnumerateOwnProperties
+// walks the array and Shape lineage simultaneously.
 public class JsObject : ITraceable
 {
-    private readonly Dictionary<string, JsPropertyDescriptor> _properties = new(StringComparer.Ordinal);
+    // Current shape describing the property layout. Starts at the root shape
+    // (empty) and transitions each time DefineOwnProperty adds a new property.
+    private Shape _shape = Shape.Root;
 
-    // Symbol-keyed own properties live in a separate dictionary so string-key
-    // enumeration paths (Object.keys, for-in, JSON.stringify) skip them
-    // automatically per ECMA-262 7.3.23 OrdinaryOwnPropertyKeys ordering: integer
-    // index keys, then string keys, then symbol keys. The runtime only needs to
-    // distinguish whether a given Symbol id has a binding.
+    // Flat property storage indexed by Shape slot. Grows on property addition.
+    // Deleted properties are set to null so slot indices stay valid.
+    private JsPropertyDescriptor?[] _properties = Array.Empty<JsPropertyDescriptor?>();
+
+    // Symbol-keyed own properties (unchanged — symbols are not shape-tracked
+    // and won't benefit from ICs in the initial implementation).
     private Dictionary<long, JsPropertyDescriptor>? _symbolProperties;
 
     public ObjectHandle? PrototypeHandle { get; private set; }
 
-    // ECMA-262 [[Extensible]] - new own properties may be added while true. Flips to
-    // false on Object.preventExtensions / freeze / seal. DefineOwnProperty does not
-    // yet honor this; env records that need to respect extensibility consult it
-    // directly through IGlobalObject.IsExtensible.
     public bool Extensible { get; private set; } = true;
+
+    // Internal accessors for inline caches.
+    internal Shape CurrentShape => _shape;
+    internal JsPropertyDescriptor?[] PropertyArray => _properties;
 
     public void PreventExtensions()
     {
         Extensible = false;
     }
 
+    // ECMA-262 9.1.6 [[DefineOwnProperty]].
     public bool DefineOwnProperty(string key, JsPropertyDescriptor descriptor)
     {
-        _properties[key] = descriptor;
+        if (_shape.TryGetSlot(key, out var existingSlot))
+        {
+            _properties[existingSlot] = descriptor;
+            return true;
+        }
+
+        // New property: transition shape and grow array.
+        _shape = _shape.TransitionTo(key);
+        var slot = _shape.PropertyCount - 1;
+        if (slot >= _properties.Length)
+        {
+            var bigger = new JsPropertyDescriptor?[Math.Max(_properties.Length * 2, slot + 1)];
+            Array.Copy(_properties, bigger, _properties.Length);
+            _properties = bigger;
+        }
+        _properties[slot] = descriptor;
         return true;
     }
 
-    public bool TryGetOwnProperty(string key, out JsPropertyDescriptor descriptor) => _properties.TryGetValue(key, out descriptor);
+    // Own property lookup via Shape → slot → array. Null slot = deleted.
+    public bool TryGetOwnProperty(string key, out JsPropertyDescriptor descriptor)
+    {
+        if (_shape.TryGetSlot(key, out var slot) && _properties[slot] is { } desc)
+        {
+            descriptor = desc;
+            return true;
+        }
+        descriptor = default;
+        return false;
+    }
 
-    public IEnumerable<KeyValuePair<string, JsPropertyDescriptor>> EnumerateOwnProperties() => _properties;
+    // Enumerate own string-keyed properties in insertion order.
+    public IEnumerable<KeyValuePair<string, JsPropertyDescriptor>> EnumerateOwnProperties()
+    {
+        var chain = new List<(string key, int slot)>();
+        for (Shape? s = _shape; s != null && s != Shape.Root; s = s.Parent)
+            chain.Add((s.AddedProperty!, s.AddedSlot));
+        chain.Reverse();
 
-    // ECMA-262 9.1.1 [[Get/Set/Delete]] for Symbol keys. The Symbol's identity is
-    // the 64-bit id from JsValue.AsSymbolId(); descriptors are kept in a parallel
-    // dictionary so string-keyed enumeration is unaffected.
+        foreach (var (key, slot) in chain)
+        {
+            if (_properties[slot] is { } desc)
+                yield return new KeyValuePair<string, JsPropertyDescriptor>(key, desc);
+        }
+    }
+
+    // Symbol-keyed property access (unchanged).
     public bool DefineOwnSymbolProperty(long symbolId, JsPropertyDescriptor descriptor)
     {
         _symbolProperties ??= new Dictionary<long, JsPropertyDescriptor>();
@@ -50,10 +100,7 @@ public class JsObject : ITraceable
     public bool TryGetOwnSymbolProperty(long symbolId, out JsPropertyDescriptor descriptor)
     {
         if (_symbolProperties is not null && _symbolProperties.TryGetValue(symbolId, out descriptor))
-        {
             return true;
-        }
-
         descriptor = default;
         return false;
     }
@@ -61,15 +108,9 @@ public class JsObject : ITraceable
     public bool TryGetSymbolProperty(long symbolId, Func<ObjectHandle, JsObject> prototypeResolver, out JsPropertyDescriptor descriptor)
     {
         if (TryGetOwnSymbolProperty(symbolId, out descriptor))
-        {
             return true;
-        }
-
         if (PrototypeHandle is { } proto)
-        {
             return prototypeResolver(proto).TryGetSymbolProperty(symbolId, prototypeResolver, out descriptor);
-        }
-
         descriptor = default;
         return false;
     }
@@ -78,55 +119,42 @@ public class JsObject : ITraceable
     {
         if (_symbolProperties is null) return false;
         if (_symbolProperties.TryGetValue(symbolId, out var existing) && !existing.Configurable)
-        {
             return false;
-        }
-
         return _symbolProperties.Remove(symbolId);
     }
 
+    // Full property lookup: own + prototype chain walk.
     public bool TryGetProperty(string key, Func<ObjectHandle, JsObject> prototypeResolver, out JsPropertyDescriptor descriptor)
     {
-        if (_properties.TryGetValue(key, out descriptor))
-        {
+        if (TryGetOwnProperty(key, out descriptor))
             return true;
-        }
-
         if (PrototypeHandle is { } proto)
-        {
             return prototypeResolver(proto).TryGetProperty(key, prototypeResolver, out descriptor);
-        }
-
         descriptor = default;
         return false;
     }
 
     public bool SetProperty(string key, JsValue value)
     {
-        if (_properties.TryGetValue(key, out var existing))
+        if (_shape.TryGetSlot(key, out var slot) && _properties[slot] is { } existing)
         {
-            if (!existing.Writable)
-            {
-                return false;
-            }
-
-            _properties[key] = existing with { Value = value };
+            if (!existing.Writable) return false;
+            _properties[slot] = existing with { Value = value };
             return true;
         }
-
-        _properties[key] = new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true);
+        DefineOwnProperty(key, new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
         return true;
     }
 
     public bool DeleteProperty(string key)
     {
-        if (_properties.TryGetValue(key, out var existing) && !existing.Configurable)
+        if (_shape.TryGetSlot(key, out var slot) && _properties[slot] is { } existing)
         {
-            return false;
+            if (!existing.Configurable) return false;
+            _properties[slot] = null;
+            return true;
         }
-
-        _ = _properties.Remove(key);
-        return true;
+        return false;
     }
 
     public void SetPrototype(ObjectHandle? prototypeHandle)
@@ -137,27 +165,21 @@ public class JsObject : ITraceable
     public virtual void Trace(IHeapTracer tracer)
     {
         if (PrototypeHandle is { } proto)
-        {
             tracer.Trace(proto);
-        }
 
-        foreach (var descriptor in _properties.Values)
+        foreach (var descriptor in _properties)
         {
-            if (descriptor.IsAccessor)
+            if (descriptor is not { } d) continue;
+            if (d.IsAccessor)
             {
-                if (descriptor.Get.Tag == JsValueTag.Object)
-                {
-                    tracer.Trace(descriptor.Get.AsObjectHandle());
-                }
-
-                if (descriptor.Set.Tag == JsValueTag.Object)
-                {
-                    tracer.Trace(descriptor.Set.AsObjectHandle());
-                }
+                if (d.Get.Tag == JsValueTag.Object)
+                    tracer.Trace(d.Get.AsObjectHandle());
+                if (d.Set.Tag == JsValueTag.Object)
+                    tracer.Trace(d.Set.AsObjectHandle());
             }
-            else if (descriptor.Value.Tag == JsValueTag.Object)
+            else if (d.Value.Tag == JsValueTag.Object)
             {
-                tracer.Trace(descriptor.Value.AsObjectHandle());
+                tracer.Trace(d.Value.AsObjectHandle());
             }
         }
     }
