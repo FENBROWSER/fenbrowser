@@ -79,7 +79,8 @@ public interface IBuiltinContext
     JsValue SymbolKeyFor(long id);
 
     // Install all Date.prototype methods onto the given prototype object.
-    // Kept on the context because each method needs interpreter internals
-    // (RequireDate, MakeDate, MakeDay, TimeClip, etc.).
     void InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto);
+
+    // Install RegExp.prototype methods (test, toString) onto the prototype.
+    void InstallRegExpPrototypeMethods(ObjectHandle protoHandle, JsObject proto);
 }

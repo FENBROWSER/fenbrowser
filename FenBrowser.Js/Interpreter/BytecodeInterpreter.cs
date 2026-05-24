@@ -42,6 +42,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     JsValue IBuiltinContext.SymbolFor(string key) => SymbolFor(key);
     JsValue IBuiltinContext.SymbolKeyFor(long id) => SymbolKeyFor(id);
     void IBuiltinContext.InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto) => InstallPrototypeMethodsOnDatePrototype(protoHandle, proto);
+    void IBuiltinContext.InstallRegExpPrototypeMethods(ObjectHandle protoHandle, JsObject proto) => InstallPrototypeMethodsOnRegExpPrototype(protoHandle, proto);
     private ObjectHandle? _objectConstructorHandle;
     private ObjectHandle? _objectPrototypeHandle;
     private ObjectHandle? _arrayConstructorHandle;
@@ -2844,7 +2845,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new StringBuiltin())
             .Register(new ErrorBuiltins())
             .Register(new SymbolBuiltin())
-            .Register(new DateBuiltin());
+            .Register(new DateBuiltin())
+            .Register(new RegExpBuiltin());
         var bindings = registry.Materialize(this);
         foreach (var binding in bindings)
         {
@@ -2877,7 +2879,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         DefineGlobalDataProperty(global, globalHandle, "TypeError", JsValue.FromObject(EnsureTypeErrorConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "RangeError", JsValue.FromObject(EnsureRangeErrorConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "SyntaxError", JsValue.FromObject(EnsureSyntaxErrorConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "RegExp", JsValue.FromObject(EnsureRegExpConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "JSON", JsValue.FromObject(EnsureJsonObject()));
         DefineGlobalDataProperty(global, globalHandle, "Set", JsValue.FromObject(EnsureSetConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "Map", JsValue.FromObject(EnsureMapConstructor()));
@@ -3818,8 +3819,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
         _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "test", RegExpPrototypeTest, length: 1);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", RegExpPrototypeToString);
+        InstallPrototypeMethodsOnRegExpPrototype(prototypeHandle, prototype);
 
         // ES2025 RegExp.escape(string). Returns a String that can be safely embedded
         // in a regex pattern to match the literal input. The proposal mandates
@@ -3875,6 +3875,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return sb.ToString();
     }
 
+    private void InstallPrototypeMethodsOnRegExpPrototype(ObjectHandle prototypeHandle, JsObject prototype)
+    {
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "test", RegExpPrototypeTest, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", RegExpPrototypeToString);
+    }
+
     private JsValue CreateRegExpObject(IReadOnlyList<JsValue> args)
     {
         var pattern = args.Count > 0 && args[0].Tag != JsValueTag.Undefined
@@ -3906,7 +3912,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         var obj = new RegExpObject(pattern, normalizedFlags, regex);
-        obj.SetPrototype(EnsureRegExpPrototype());
+        obj.SetPrototype(GetGlobalPrototype("RegExp"));
         _ = obj.DefineOwnProperty(
             "source",
             new JsPropertyDescriptor(JsValue.FromString(pattern), Writable: false, Enumerable: false, Configurable: true));
@@ -8807,6 +8813,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             "Number" => EnsureNumberPrototype(),
             "String" => EnsureStringPrototype(),
             "Date" => EnsureDatePrototype(),
+            "RegExp" => EnsureRegExpPrototype(),
             _ => throw new InvalidOperationException($"Unknown prototype fallback for {constructorName}.")
         };
     }
@@ -10300,21 +10307,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         Number
     }
 
-    private sealed class RegExpObject : JsObject
-    {
-        public RegExpObject(string pattern, string flags, Regex regex)
-        {
-            Pattern = pattern;
-            Flags = flags;
-            Regex = regex;
-        }
-
-        public string Pattern { get; }
-
-        public string Flags { get; }
-
-        public Regex Regex { get; }
-    }
 
     private sealed class ForOfIteratorObject : JsObject
     {
