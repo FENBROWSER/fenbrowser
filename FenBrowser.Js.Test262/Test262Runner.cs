@@ -1320,6 +1320,7 @@ public sealed class Test262Runner
     private static string BuildRuntimeHarnessPrelude()
     {
         return """
+
                function Test262Error(message) { this.message = message; }
                var assert = function (condition, message) {
                  if (!condition) { throw (message || "assert failed"); }
