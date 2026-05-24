@@ -33,6 +33,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         Func<JsValue, IReadOnlyList<JsValue>, JsValue> call, int length)
         => DefineIntrinsicFunction(ownerHandle, owner, name, call, length);
     ObjectHandle IBuiltinContext.GetObjectPrototype() => EnsureObjectPrototype();
+    ObjectHandle IBuiltinContext.GetArrayPrototype() => EnsureArrayPrototype();
     ObjectHandle IBuiltinContext.GetErrorPrototype() => EnsureErrorPrototype();
     ObjectHandle IBuiltinContext.GetParseIntFunction() => EnsureParseIntFunction();
     ObjectHandle IBuiltinContext.GetParseFloatFunction() => EnsureParseFloatFunction();
@@ -2810,7 +2811,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new MathBuiltin())
             .Register(new GlobalFunctionsBuiltin())
             .Register(new BooleanBuiltin())
-            .Register(new NumberBuiltin());
+            .Register(new NumberBuiltin())
+            .Register(new StringBuiltin());
         var bindings = registry.Materialize(this);
         foreach (var binding in bindings)
         {
@@ -2841,7 +2843,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         DefineGlobalDataProperty(global, globalHandle, "Object", JsValue.FromObject(EnsureObjectConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "Array", JsValue.FromObject(EnsureArrayConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "Boolean", JsValue.FromObject(EnsureBooleanConstructor()));
-        DefineGlobalDataProperty(global, globalHandle, "String", JsValue.FromObject(EnsureStringConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "Function", JsValue.FromObject(EnsureFunctionConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "Error", JsValue.FromObject(EnsureErrorConstructor()));
         DefineGlobalDataProperty(global, globalHandle, "TypeError", JsValue.FromObject(EnsureTypeErrorConstructor()));
@@ -5671,18 +5672,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 // Fall through to String.prototype - lookup returns the inherited method
                 // value; the caller (CallMethodN opcode) keeps the receiver string as
                 // `thisValue` so the native method receives the primitive directly.
-                var stringProto = _heap.GetObject(EnsureStringPrototype());
+                var stringProto = _heap.GetObject(GetGlobalPrototype("String"));
                 return TryGetPropertyValue(stringProto, receiver, key, out var sv) ? sv : JsValue.Undefined;
             }
             case JsValueTag.Number:
             case JsValueTag.Int32:
             {
-                var numberProto = _heap.GetObject(EnsureNumberPrototype());
+                var numberProto = _heap.GetObject(GetGlobalPrototype("Number"));
                 return TryGetPropertyValue(numberProto, receiver, key, out var nv) ? nv : JsValue.Undefined;
             }
             case JsValueTag.Boolean:
             {
-                var boolProto = _heap.GetObject(EnsureBooleanPrototype());
+                var boolProto = _heap.GetObject(GetGlobalPrototype("Boolean"));
                 return TryGetPropertyValue(boolProto, receiver, key, out var bv) ? bv : JsValue.Undefined;
             }
             case JsValueTag.Undefined:
@@ -5713,7 +5714,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             }
             case JsValueTag.String:
             {
-                var stringProto = _heap.GetObject(EnsureStringPrototype());
+                var stringProto = _heap.GetObject(GetGlobalPrototype("String"));
                 return stringProto.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
                     ? GetDescriptorValue(desc, receiver)
                     : JsValue.Undefined;
@@ -5721,14 +5722,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             case JsValueTag.Number:
             case JsValueTag.Int32:
             {
-                var numberProto = _heap.GetObject(EnsureNumberPrototype());
+                var numberProto = _heap.GetObject(GetGlobalPrototype("Number"));
                 return numberProto.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
                     ? GetDescriptorValue(desc, receiver)
                     : JsValue.Undefined;
             }
             case JsValueTag.Boolean:
             {
-                var boolProto = _heap.GetObject(EnsureBooleanPrototype());
+                var boolProto = _heap.GetObject(GetGlobalPrototype("Boolean"));
                 return boolProto.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
                     ? GetDescriptorValue(desc, receiver)
                     : JsValue.Undefined;
@@ -9490,7 +9491,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private JsValue CreateStringObject(string value)
     {
         var obj = new StringObject(value);
-        obj.SetPrototype(EnsureStringPrototype());
+        obj.SetPrototype(GetGlobalPrototype("String"));
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
@@ -10301,11 +10302,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         String,
         Number
     }
-
-    private sealed class ArrayObject : JsObject
-    {
-    }
-
 
     private sealed class DateObject : JsObject
     {

@@ -58,6 +58,10 @@ public interface IBuiltinContext
     // The %Object.prototype% object — the root of the prototype chain.
     ObjectHandle GetObjectPrototype();
 
+    // The %Array.prototype% object — used by String.prototype.split and other
+    // builtins that create array results.
+    ObjectHandle GetArrayPrototype();
+
     // The %Error.prototype% object. All native error constructors (TypeError,
     // RangeError, URIError, etc.) set their prototype's [[Prototype]] to this.
     ObjectHandle GetErrorPrototype();

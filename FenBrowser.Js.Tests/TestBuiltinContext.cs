@@ -88,6 +88,9 @@ internal sealed class TestBuiltinContext : IBuiltinContext
     public ObjectHandle GetObjectPrototype()
         => throw new NotSupportedException("GetObjectPrototype is not supported in TestBuiltinContext.");
 
+    public ObjectHandle GetArrayPrototype()
+        => throw new NotSupportedException("GetArrayPrototype is not supported in TestBuiltinContext.");
+
     public ObjectHandle GetErrorPrototype()
         => throw new NotSupportedException("GetErrorPrototype is not supported in TestBuiltinContext.");
 
