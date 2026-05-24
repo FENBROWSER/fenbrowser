@@ -1,4 +1,5 @@
 using FenBrowser.Js.Runtime;
+using FenBrowser.Js.Objects;
 
 namespace FenBrowser.Js.Bytecode;
 
@@ -23,6 +24,8 @@ public sealed class BytecodeFunction
     public required IReadOnlyList<string> ParameterNames { get; init; }
 
     public bool HasOwnArgumentsObject { get; init; }
+
+    public FunctionKind Kind { get; init; } = FunctionKind.Ordinary;
 
     public required IReadOnlyList<BytecodeFunction> NestedFunctions { get; init; }
 

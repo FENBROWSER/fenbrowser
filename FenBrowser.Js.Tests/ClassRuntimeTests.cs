@@ -314,6 +314,16 @@ public sealed class ClassRuntimeTests
         ").AsNumber());
     }
 
+    [Fact]
+    public void DerivedConstructorThisBeforeSuperThrowsReferenceError()
+    {
+        Assert.Equal("ReferenceError", Run(@"
+            class A { constructor() {} }
+            class B extends A { constructor() { this.x = 1; super(); } }
+            try { new B(); 'no-throw'; } catch (e) { e.name; }
+        ").AsString());
+    }
+
     // H.5 - computed property names.
 
     [Fact]

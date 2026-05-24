@@ -1,5 +1,6 @@
 using FenBrowser.Js.Ast;
 using FenBrowser.Js.AstValidation;
+using FenBrowser.Js.Objects;
 using FenBrowser.Js.Parser;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
@@ -35,6 +36,7 @@ public sealed class BytecodeCompiler
     private readonly Stack<LoopContext> _loopStack = new();
     private string? _name;
     private int _nextRegister = 1;
+    private FunctionKind _currentFunctionKind = FunctionKind.Ordinary;
 
     public BytecodeFunction CompileScript(SourceText source)
     {
@@ -44,20 +46,31 @@ public sealed class BytecodeCompiler
 
     public BytecodeFunction CompileProgram(ProgramNode program)
     {
-        return CompileProgramCore(program, parameters: Array.Empty<string>(), name: null, hasOwnArgumentsObject: false);
+        return CompileProgramCore(
+            program,
+            parameters: Array.Empty<string>(),
+            name: null,
+            hasOwnArgumentsObject: false,
+            functionKind: FunctionKind.Ordinary);
     }
 
     public BytecodeFunction CompileFunctionBody(SourceText body, IReadOnlyList<string> parameters, string? name)
     {
         var program = JsParser.ParseScript(body);
-        return CompileProgramCore(program, parameters, name, hasOwnArgumentsObject: true);
+        return CompileProgramCore(
+            program,
+            parameters,
+            name,
+            hasOwnArgumentsObject: true,
+            functionKind: FunctionKind.Ordinary);
     }
 
     private BytecodeFunction CompileProgramCore(
         ProgramNode program,
         IReadOnlyList<string> parameters,
         string? name,
-        bool hasOwnArgumentsObject)
+        bool hasOwnArgumentsObject,
+        FunctionKind functionKind)
     {
         _instructions.Clear();
         _constants.Clear();
@@ -72,6 +85,7 @@ public sealed class BytecodeCompiler
         _loopStack.Clear();
         _name = name;
         _nextRegister = 1;
+        _currentFunctionKind = functionKind;
         foreach (var p in parameters)
         {
             _parameterNames.Add(p);
@@ -90,6 +104,7 @@ public sealed class BytecodeCompiler
         return new BytecodeFunction
         {
             Name = _name,
+            Kind = _currentFunctionKind,
             IsDerivedConstructor = _isDerivedConstructor,
             Instructions = _instructions.ToArray(),
             Constants = _constants.ToArray(),
@@ -243,7 +258,8 @@ public sealed class BytecodeCompiler
             nestedProgram,
             functionDecl.Parameters,
             functionDecl.Name,
-            hasOwnArgumentsObject: true);
+            hasOwnArgumentsObject: true,
+            functionKind: SelectFunctionKind(functionDecl.IsAsync, functionDecl.IsGenerator, isArrow: false));
         var nestedIndex = _nestedFunctions.Count;
         _nestedFunctions.Add(nestedFunction);
 
@@ -580,7 +596,8 @@ public sealed class BytecodeCompiler
             nestedProgram,
             fnExpr.Parameters,
             fnExpr.Name,
-            hasOwnArgumentsObject: true);
+            hasOwnArgumentsObject: true,
+            functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false));
         var nestedIndex = _nestedFunctions.Count;
         _nestedFunctions.Add(nestedFunction);
         var dest = AllocateRegister();
@@ -891,7 +908,7 @@ public sealed class BytecodeCompiler
             case TemplateLiteralExpressionNode template:
                 return CompileTemplateLiteral(template);
             case TaggedTemplateExpressionNode tagged:
-                throw new UnsupportedFeatureException("tagged-template", FeatureSupportLevel.ParserOnly, tagged.Span);
+                return CompileTaggedTemplateExpression(tagged);
             case BooleanLiteralExpressionNode boolean:
             {
                 var reg = AllocateRegister();
@@ -1092,6 +1109,19 @@ public sealed class BytecodeCompiler
                     return yieldDest;
                 }
 
+                if (unary.Operator == "await")
+                {
+                    if (_currentFunctionKind != FunctionKind.Async)
+                    {
+                        throw new UnsupportedFeatureException("await-outside-async", FeatureSupportLevel.ParserOnly, unary.Span);
+                    }
+
+                    var awaitDest = AllocateRegister();
+                    var awaitValueReg = CompileExpression(unary.Operand);
+                    _instructions.Add(new Instruction(OpCode.Await, awaitDest, awaitValueReg, 0));
+                    return awaitDest;
+                }
+
                 if (unary.Operator == "delete")
                 {
                     if (unary.Operand is IdentifierExpressionNode identifier)
@@ -1165,7 +1195,8 @@ public sealed class BytecodeCompiler
                     nestedProgram,
                     fnExpr.Parameters,
                     fnExpr.Name,
-                    hasOwnArgumentsObject: true);
+                    hasOwnArgumentsObject: true,
+                    functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false));
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();
@@ -1200,7 +1231,8 @@ public sealed class BytecodeCompiler
                     nestedProgram,
                     arrow.Parameters,
                     "<arrow>",
-                    hasOwnArgumentsObject: false);
+                    hasOwnArgumentsObject: false,
+                    functionKind: SelectFunctionKind(arrow.IsAsync, isGenerator: false, isArrow: true));
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();
@@ -1385,6 +1417,21 @@ public sealed class BytecodeCompiler
 
     private int AllocateRegister() => _nextRegister++;
 
+    private static FunctionKind SelectFunctionKind(bool isAsync, bool isGenerator, bool isArrow)
+    {
+        if (isAsync)
+        {
+            return FunctionKind.Async;
+        }
+
+        if (isGenerator)
+        {
+            return FunctionKind.Generator;
+        }
+
+        return isArrow ? FunctionKind.Arrow : FunctionKind.Ordinary;
+    }
+
     private static void ThrowIfPrivateMemberAccess(MemberExpressionNode member)
     {
         if (!member.Computed && member.Property.StartsWith('#'))
@@ -1418,6 +1465,101 @@ public sealed class BytecodeCompiler
         }
 
         return currentReg;
+    }
+
+    // Tagged template literals lower to a normal call where the first argument is
+    // a template object array and remaining arguments are substitution values.
+    // We currently materialize a fresh template object per evaluation site.
+    private int CompileTaggedTemplateExpression(TaggedTemplateExpressionNode tagged)
+    {
+        var calleeReg = -1;
+        var thisReg = -1;
+        var isMethodCall = false;
+
+        if (tagged.Tag is MemberExpressionNode memberTag)
+        {
+            ThrowIfPrivateMemberAccess(memberTag);
+            thisReg = CompileExpression(memberTag.Object);
+            calleeReg = AllocateRegister();
+            if (memberTag.Computed)
+            {
+                var keyReg = CompileExpression(memberTag.PropertyExpression!);
+                _instructions.Add(new Instruction(OpCode.GetElem, calleeReg, thisReg, keyReg));
+            }
+            else
+            {
+                var nameIndex = GetOrCreatePropertyName(memberTag.Property);
+                _instructions.Add(new Instruction(OpCode.GetPropByName, calleeReg, thisReg, nameIndex));
+            }
+
+            isMethodCall = true;
+        }
+        else
+        {
+            calleeReg = CompileExpression(tagged.Tag);
+        }
+
+        var argRegs = new List<int>(tagged.Template.Expressions.Count + 1)
+        {
+            CompileTemplateObject(tagged.Template)
+        };
+
+        foreach (var expression in tagged.Template.Expressions)
+        {
+            argRegs.Add(CompileExpression(expression));
+        }
+
+        var dest = AllocateRegister();
+        switch (argRegs.Count)
+        {
+            case 1:
+                _instructions.Add(isMethodCall
+                    ? new Instruction(OpCode.CallMethod1, dest, calleeReg, thisReg, argRegs[0])
+                    : new Instruction(OpCode.Call1, dest, calleeReg, argRegs[0]));
+                return dest;
+            default:
+            {
+                var argStart = AllocateRegister();
+                for (var i = 0; i < argRegs.Count; i++)
+                {
+                    _instructions.Add(new Instruction(OpCode.Move, argStart + i, argRegs[i], 0));
+                    if (i + 1 < argRegs.Count)
+                    {
+                        _ = AllocateRegister();
+                    }
+                }
+
+                _instructions.Add(isMethodCall
+                    ? new Instruction(OpCode.CallMethodN, dest, calleeReg, thisReg, argStart, argRegs.Count)
+                    : new Instruction(OpCode.CallN, dest, calleeReg, argStart, argRegs.Count));
+                return dest;
+            }
+        }
+    }
+
+    private int CompileTemplateObject(TemplateLiteralExpressionNode template)
+    {
+        var cookedArrayReg = CompileTemplateStringArray(template.Quasis);
+        var rawArrayReg = CompileTemplateStringArray(template.Quasis);
+        var rawNameIndex = GetOrCreatePropertyName("raw");
+        _instructions.Add(new Instruction(OpCode.SetPropByName, cookedArrayReg, rawNameIndex, rawArrayReg));
+        return cookedArrayReg;
+    }
+
+    private int CompileTemplateStringArray(IReadOnlyList<string> parts)
+    {
+        var arrayReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.NewArray, arrayReg, 0, 0));
+        for (var i = 0; i < parts.Count; i++)
+        {
+            var indexReg = AllocateRegister();
+            var indexConst = AddConstant(JsValue.FromNumber(i));
+            _instructions.Add(new Instruction(OpCode.LoadConst, indexReg, indexConst, 0));
+            var valueReg = LoadStringConstant(parts[i]);
+            _instructions.Add(new Instruction(OpCode.SetElem, arrayReg, indexReg, valueReg));
+        }
+
+        return arrayReg;
     }
 
     private int LoadStringConstant(string value)

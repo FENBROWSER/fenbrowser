@@ -142,4 +142,9 @@ public enum OpCode : byte
     // ECMA-262 15.5 — YieldStar. Delegates to another iterator, yielding each
     // of its values in sequence before resuming with the delegated return value.
     YieldStar,
+
+    // ECMA-262 15.8 — Await(value). Inside async functions this suspends until
+    // the awaited value settles, then resumes with either the fulfillment value
+    // or a throw completion for rejection.
+    Await,
 }

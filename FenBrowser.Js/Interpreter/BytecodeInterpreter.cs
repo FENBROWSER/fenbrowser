@@ -262,13 +262,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     // Bounds JS recursion so a runaway tail-less recursive function surfaces as a
     // catchable JS RangeError instead of crashing the host with a native
-    // StackOverflowException. Each ExecuteInternal call consumes one C# stack frame
-    // plus the inner CallFunction/StoreCallResult chain - empirically ~6KB per JS
-    // call - so the cap is set conservatively below the default 1MB thread stack.
-    // Test262 has tests that legitimately recurse 50-80 times; the 80-frame cap
-    // accommodates them while leaving headroom for the unwinding path itself
-    // (which also consumes stack to run the per-frame `finally` blocks).
-    private const int MaxCallDepth = 80;
+    // StackOverflowException. ExecuteInternalCore is a large method and its native
+    // frame cost is meaningfully higher than a trivial function call; on this
+    // runtime, allowing up to 80 JS frames can overflow before the guard triggers.
+    // Keep the cap just above the deepest intentional regression depth (50) while
+    // reserving stack headroom for unwind/exception paths.
+    private const int MaxCallDepth = 56;
     private int _callDepth;
 
     [MayExecuteJs]
@@ -366,7 +365,31 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     frame.Registers[ins.A] = LoadName(frame, ins.B);
                     break;
                 case OpCode.LoadThis:
-                    frame.Registers[ins.A] = frame.ThisValue;
+                    if (function.IsDerivedConstructor &&
+                        frame.Environment is FunctionEnvironmentRecord fenDerived &&
+                        fenDerived.ThisBindingStatus == ThisBindingStatus.Uninitialized)
+                    {
+                        // Allow the compiler-emitted receiver load for `super(...)`.
+                        // Any other `this` access before super must throw.
+                        var currentIp = frame.InstructionPointer - 1;
+                        var isSuperReceiverLoad = currentIp > 0 &&
+                                                  function.Instructions[currentIp - 1].OpCode == OpCode.LoadSuperConstructor;
+                        if (!isSuperReceiverLoad)
+                        {
+                            ThrowReferenceError(frame, "Must call super constructor in derived class before accessing 'this'.");
+                            break;
+                        }
+                    }
+
+                    if (frame.Environment is FunctionEnvironmentRecord fenThis &&
+                        fenThis.GetThisBinding(out var boundThis) == BindingOpResult.Ok)
+                    {
+                        frame.Registers[ins.A] = boundThis;
+                    }
+                    else
+                    {
+                        frame.Registers[ins.A] = frame.ThisValue;
+                    }
                     break;
                 case OpCode.StoreVar:
                     StoreName(frame, ins.B, frame.Registers[ins.A]);
@@ -450,6 +473,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     starObj.DefineOwnProperty("value", new JsPropertyDescriptor(frame.Registers[ins.B], Writable: true, Enumerable: true, Configurable: true));
                     starObj.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
                     return JsValue.FromObject(_heap.AllocateObject(starObj, AllocationSite.Current()));
+                }
+                case OpCode.Await:
+                {
+                    try
+                    {
+                        frame.Registers[ins.A] = AwaitValue(frame.Registers[ins.B]);
+                    }
+                    catch (JsThrownException ex)
+                    {
+                        ThrowOrHandle(frame, ex.Value);
+                    }
+
+                    break;
                 }
                 case OpCode.SetPrototype:
                 {
@@ -5224,7 +5260,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         BytecodeFunction function,
         EnvironmentRecord? outerEnvironment = null)
     {
-        var fnObj = new JsFunctionObject(function, outerEnvironment);
+        var fnObj = new JsFunctionObject(function, outerEnvironment, function.Kind);
         fnObj.SetPrototype(EnsureFunctionPrototype());
         _ = fnObj.DefineOwnProperty(
             "name",
@@ -9940,11 +9976,65 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return value.AsObjectHandle();
     }
 
+    private JsValue AwaitValue(JsValue value)
+    {
+        var awaitedPromise = PromiseResolveStatic(value);
+        if (awaitedPromise.Tag != JsValueTag.Object ||
+            _heap.GetObject(awaitedPromise.AsObjectHandle()) is not PromiseInstance instance)
+        {
+            return value;
+        }
+
+        var spins = 0;
+        while (instance.Promise.State == PromiseState.Pending)
+        {
+            if (_pendingMicrotasks.Count == 0 && _jobQueue.Count == 0)
+            {
+                break;
+            }
+
+            DrainPendingMicrotasks();
+            if (++spins > 1024)
+            {
+                break;
+            }
+        }
+
+        if (instance.Promise.State == PromiseState.Pending)
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Await on a still-pending Promise is not supported in this runtime slice."));
+        }
+
+        if (instance.Promise.State == PromiseState.Rejected)
+        {
+            throw new JsThrownException(instance.Promise.GetResultUnchecked());
+        }
+
+        return instance.Promise.GetResultUnchecked();
+    }
+
     private JsValue CallFunction(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
     {
         var obj = ResolveObject(value);
         if (obj is JsFunctionObject fn)
         {
+            if (fn.Kind == FunctionKind.Async)
+            {
+                var capability = NewPromiseCapability();
+                try
+                {
+                    var result = ExecuteInternal(fn.Function, args, thisValue, fn.OuterEnvironment, callee: fn);
+                    _ = CallFunction(capability.Resolve, new[] { result }, JsValue.Undefined);
+                }
+                catch (JsThrownException ex)
+                {
+                    _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
+                }
+
+                return capability.Promise;
+            }
+
             return ExecuteInternal(fn.Function, args, thisValue, fn.OuterEnvironment, callee: fn);
         }
 

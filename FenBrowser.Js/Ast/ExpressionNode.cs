@@ -36,7 +36,12 @@ public sealed record AssignmentExpressionNode(ExpressionNode Left, ExpressionNod
 
 public sealed record CallExpressionNode(ExpressionNode Callee, IReadOnlyList<ExpressionNode> Arguments, SourceSpan Span) : ExpressionNode(Span);
 
-public sealed record ArrowFunctionExpressionNode(IReadOnlyList<string> Parameters, BlockStatementNode? BlockBody, ExpressionNode? ExpressionBody, SourceSpan Span) : ExpressionNode(Span);
+public sealed record ArrowFunctionExpressionNode(
+    IReadOnlyList<string> Parameters,
+    BlockStatementNode? BlockBody,
+    ExpressionNode? ExpressionBody,
+    SourceSpan Span,
+    bool IsAsync = false) : ExpressionNode(Span);
 
 public sealed record ObjectPropertyNode(string? Key, ExpressionNode? ComputedKey, bool IsComputed, ExpressionNode Value, SourceSpan Span);
 
@@ -52,7 +57,13 @@ public sealed record UnaryExpressionNode(string Operator, ExpressionNode Operand
 
 public sealed record ConditionalExpressionNode(ExpressionNode Test, ExpressionNode Consequent, ExpressionNode Alternate, SourceSpan Span) : ExpressionNode(Span);
 
-public sealed record FunctionExpressionNode(string? Name, IReadOnlyList<string> Parameters, BlockStatementNode Body, SourceSpan Span) : ExpressionNode(Span);
+public sealed record FunctionExpressionNode(
+    string? Name,
+    IReadOnlyList<string> Parameters,
+    BlockStatementNode Body,
+    SourceSpan Span,
+    bool IsAsync = false,
+    bool IsGenerator = false) : ExpressionNode(Span);
 
 public sealed record NewExpressionNode(ExpressionNode Callee, IReadOnlyList<ExpressionNode> Arguments, SourceSpan Span) : ExpressionNode(Span);
 

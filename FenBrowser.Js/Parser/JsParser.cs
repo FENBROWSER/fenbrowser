@@ -597,8 +597,10 @@ public sealed class JsParser
     private FunctionDeclarationNode ParseFunctionDeclaration()
     {
         Token start;
+        var isAsync = false;
         if (Current().Kind == TokenKind.Keyword && Current().Text == "async")
         {
+            isAsync = true;
             start = Advance(); // async
             if (!(Current().Kind == TokenKind.Keyword && Current().Text == "function"))
             {
@@ -612,8 +614,10 @@ public sealed class JsParser
             start = Advance(); // function
         }
 
+        var isGenerator = false;
         if (IsPunctuator("*"))
         {
+            isGenerator = true;
             Advance();
         }
 
@@ -621,7 +625,13 @@ public sealed class JsParser
         var parameters = ParseParameterList();
         var body = ParseBlockStatement();
         ValidateDirectivePrologueStrictStringEscapes(body.Statements);
-        return new FunctionDeclarationNode(name.Text, parameters, body, MergeSpan(start.Span, body.Span));
+        return new FunctionDeclarationNode(
+            name.Text,
+            parameters,
+            body,
+            MergeSpan(start.Span, body.Span),
+            IsAsync: isAsync,
+            IsGenerator: isGenerator);
     }
 
     private ThrowStatementNode ParseThrowStatement()
@@ -1056,7 +1066,13 @@ public sealed class JsParser
 
             var parameters = ParseParameterList();
             var body = ParseBlockStatement();
-            var fn = new FunctionExpressionNode(memberName, parameters, body, MergeSpan(memberStart, body.Span));
+            var fn = new FunctionExpressionNode(
+                memberName,
+                parameters,
+                body,
+                MergeSpan(memberStart, body.Span),
+                IsAsync: isAsync,
+                IsGenerator: isGenerator);
             members.Add(new ClassMemberNode(
                 memberName,
                 kind,
@@ -1813,8 +1829,10 @@ public sealed class JsParser
     private FunctionExpressionNode ParseFunctionExpression()
     {
         Token start;
+        var isAsync = false;
         if (Current().Kind == TokenKind.Keyword && Current().Text == "async")
         {
+            isAsync = true;
             start = Advance(); // async
             if (!(Current().Kind == TokenKind.Keyword && Current().Text == "function"))
             {
@@ -1828,8 +1846,10 @@ public sealed class JsParser
             start = Advance(); // function
         }
 
+        var isGenerator = false;
         if (IsPunctuator("*"))
         {
+            isGenerator = true;
             Advance();
         }
 
@@ -1842,7 +1862,13 @@ public sealed class JsParser
         var parameters = ParseParameterList();
         var body = ParseBlockStatement();
         ValidateDirectivePrologueStrictStringEscapes(body.Statements);
-        return new FunctionExpressionNode(name, parameters, body, MergeSpan(start.Span, body.Span));
+        return new FunctionExpressionNode(
+            name,
+            parameters,
+            body,
+            MergeSpan(start.Span, body.Span),
+            IsAsync: isAsync,
+            IsGenerator: isGenerator);
     }
 
     private ExpressionNode ParseNewExpression()
@@ -2189,7 +2215,7 @@ public sealed class JsParser
                 var parameter = Advance().Text;
                 Advance(); // =
                 Advance(); // >
-                expression = ParseArrowFunctionBody(new[] { parameter }, _tokens[saved].Span);
+                expression = ParseArrowFunctionBody(new[] { parameter }, _tokens[saved].Span, isAsync: true);
                 return true;
             }
 
@@ -2244,7 +2270,7 @@ public sealed class JsParser
 
                 Advance(); // =
                 Advance(); // >
-                expression = ParseArrowFunctionBody(asyncParameters, _tokens[saved].Span);
+                expression = ParseArrowFunctionBody(asyncParameters, _tokens[saved].Span, isAsync: true);
                 return true;
             }
 
@@ -2256,7 +2282,7 @@ public sealed class JsParser
             var parameter = Advance().Text;
             Advance(); // =
             Advance(); // >
-            expression = ParseArrowFunctionBody(new[] { parameter }, _tokens[saved].Span);
+            expression = ParseArrowFunctionBody(new[] { parameter }, _tokens[saved].Span, isAsync: false);
             return true;
         }
 
@@ -2311,24 +2337,27 @@ public sealed class JsParser
 
             Advance(); // =
             Advance(); // >
-            expression = ParseArrowFunctionBody(parameters, _tokens[saved].Span);
+            expression = ParseArrowFunctionBody(parameters, _tokens[saved].Span, isAsync: false);
             return true;
         }
 
         return false;
     }
 
-    private ArrowFunctionExpressionNode ParseArrowFunctionBody(IReadOnlyList<string> parameters, SourceSpan start)
+    private ArrowFunctionExpressionNode ParseArrowFunctionBody(
+        IReadOnlyList<string> parameters,
+        SourceSpan start,
+        bool isAsync)
     {
         if (IsPunctuator("{"))
         {
             var block = ParseBlockStatement();
             ValidateDirectivePrologueStrictStringEscapes(block.Statements);
-            return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span));
+            return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span), IsAsync: isAsync);
         }
 
         var bodyExpression = ParseExpression(2);
-        return new ArrowFunctionExpressionNode(parameters, null, bodyExpression, MergeSpan(start, bodyExpression.Span));
+        return new ArrowFunctionExpressionNode(parameters, null, bodyExpression, MergeSpan(start, bodyExpression.Span), IsAsync: isAsync);
     }
 
     private IReadOnlyList<ExpressionNode> ParseCallArguments()

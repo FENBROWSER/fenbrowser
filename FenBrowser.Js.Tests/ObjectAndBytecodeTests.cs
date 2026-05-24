@@ -113,13 +113,36 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
-    public void CompilerRejectsTaggedTemplateAsParserOnly()
+    public void CompilerAndInterpreterHandleTaggedTemplateCall()
     {
         var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("function tag(strings, a, b){ return strings[0] + a + strings[1] + b + strings[2]; } tag`x${1}y${2}z`;"));
+        new BytecodeVerifier().Verify(fn);
 
-        var ex = Assert.Throws<UnsupportedFeatureException>(() => compiler.CompileScript(new SourceText("tag`value`;")));
-        Assert.Equal("tagged-template", ex.FeatureName);
-        Assert.Equal(FeatureSupportLevel.ParserOnly, ex.Level);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal("x1y2z", result.AsString());
+    }
+
+    [Fact]
+    public void TaggedTemplateExposesRawArray()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("function tag(strings){ return (strings.raw[0] === strings[0]) && (strings.raw.length === strings.length); } tag`plain`;"));
+        new BytecodeVerifier().Verify(fn);
+
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void TaggedTemplateMemberCallBindsThis()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let o = { prefix: \"P\", tag: function(strings){ return this.prefix + strings[0]; } }; o.tag`x`;"));
+        new BytecodeVerifier().Verify(fn);
+
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal("Px", result.AsString());
     }
 
     [Theory]
