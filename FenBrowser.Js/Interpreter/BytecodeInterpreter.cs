@@ -5396,7 +5396,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     // undefined yields an empty argument list per step 3-4.
     private JsValue FunctionPrototypeApply(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var thisArgument = args.Count > 0 ? args[0] : JsValue.Undefined;
+        // ECMA-262 20.2.3.1 step 1: coerce null/undefined thisArg to global object.
+        var thisArgument = args.Count > 0 && args[0].Tag != JsValueTag.Null && args[0].Tag != JsValueTag.Undefined
+            ? args[0]
+            : JsValue.FromObject(EnsureGlobalObject());
         var argsArray = args.Count > 1 ? args[1] : JsValue.Undefined;
 
         JsValue[] callArgs;
