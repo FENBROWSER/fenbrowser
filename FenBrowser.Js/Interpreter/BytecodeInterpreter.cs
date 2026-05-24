@@ -59,6 +59,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     ObjectHandle IBuiltinContext.MaterializeIteratorConstructor() => EnsureIteratorConstructor();
     ObjectHandle IBuiltinContext.MaterializeWeakRefConstructor() => EnsureWeakRefConstructor();
     ObjectHandle IBuiltinContext.MaterializeFinalizationRegistryConstructor() => EnsureFinalizationRegistryConstructor();
+    ObjectHandle IBuiltinContext.MaterializeAggregateErrorConstructor() => EnsureAggregateErrorConstructor();
     ObjectHandle IBuiltinContext.MaterializeStructuredCloneFunction() => EnsureStructuredCloneFunction();
     private ObjectHandle? _objectConstructorHandle;
     private ObjectHandle? _objectPrototypeHandle;
@@ -2852,6 +2853,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private void InstallGlobalObjectProperties(JsObject global, ObjectHandle globalHandle)
     {
+        // Pass 1: Error constructors must be installed first so AggregateError
+        // can resolve GetGlobalPrototype("Error") during its materialization.
+        var errorRegistry = new BuiltinRegistry()
+            .Register(new ErrorBuiltins());
+        foreach (var b in errorRegistry.Materialize(this))
+            InstallBinding(global, globalHandle, b);
+
+        // Pass 2: all remaining builtins, including AggregateError which chains
+        // its prototype to the now-installed Error.prototype.
         var registry = new BuiltinRegistry()
             .Register(new GlobalConstantsBuiltin(JsValue.FromObject(globalHandle)))
             .Register(new MathBuiltin())
@@ -2859,7 +2869,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new BooleanBuiltin())
             .Register(new NumberBuiltin())
             .Register(new StringBuiltin())
-            .Register(new ErrorBuiltins())
             .Register(new SymbolBuiltin())
             .Register(new DateBuiltin())
             .Register(new RegExpBuiltin())
@@ -2874,18 +2883,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new JsonBuiltin())
             .Register(new ReflectBuiltin())
             .Register(new IteratorBuiltin())
-            .Register(new MiscGlobalsBuiltin());
-        var bindings = registry.Materialize(this);
-        foreach (var binding in bindings)
-        {
-            InstallBinding(global, globalHandle, binding);
-        }
-
-        // Still inline: parseInt/parseFloat (shared with Number.parseInt/parseFloat),
-        // AggregateError (requires for-of iterator support).
-        DefineGlobalDataProperty(global, globalHandle, "parseInt", JsValue.FromObject(EnsureParseIntFunction()));
-        DefineGlobalDataProperty(global, globalHandle, "parseFloat", JsValue.FromObject(EnsureParseFloatFunction()));
-        DefineGlobalDataProperty(global, globalHandle, "AggregateError", JsValue.FromObject(EnsureAggregateErrorConstructor()));
+            .Register(new MiscGlobalsBuiltin())
+            .Register(new AggregateErrorBuiltin());
+        foreach (var b in registry.Materialize(this))
+            InstallBinding(global, globalHandle, b);
     }
 
     private void InstallBinding(JsObject global, ObjectHandle globalHandle, BuiltinBinding binding)

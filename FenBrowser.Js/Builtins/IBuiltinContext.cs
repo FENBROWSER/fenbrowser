@@ -83,6 +83,7 @@ public interface IBuiltinContext
     ObjectHandle MaterializeIteratorConstructor();
     ObjectHandle MaterializeWeakRefConstructor();
     ObjectHandle MaterializeFinalizationRegistryConstructor();
+    ObjectHandle MaterializeAggregateErrorConstructor();
     ObjectHandle MaterializeStructuredCloneFunction();
 
     // Install prototype methods on already-created prototypes (for builtins that

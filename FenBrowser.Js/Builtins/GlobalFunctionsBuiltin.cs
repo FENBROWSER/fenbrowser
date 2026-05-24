@@ -7,11 +7,12 @@ namespace FenBrowser.Js.Builtins;
 
 // ECMA-262 19.2 — Function Properties of the Global Object.
 //
-// isNaN, isFinite, encodeURI, encodeURIComponent, decodeURI, decodeURIComponent.
+// isNaN, isFinite, encodeURI, encodeURIComponent, decodeURI, decodeURIComponent,
+// parseInt, parseFloat.
 //
-// parseInt and parseFloat are NOT in this module — they stay inline in the
-// interpreter because Number.parseInt / Number.parseFloat must share the same
-// function object (ECMA-262 21.1.2.13 / 21.1.2.14).
+// parseInt and parseFloat use the context's GetParseIntFunction/GetParseFloatFunction
+// to return the SAME function object used by Number.parseInt/Number.parseFloat
+// (ECMA-262 21.1.2.13 / 21.1.2.14).
 [EcmaSpecReference(
     "19.2",
     AbstractOperation = "GlobalFunctionProperties",
@@ -24,7 +25,13 @@ public sealed class GlobalFunctionsBuiltin : IBuiltinModule
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        var bindings = new List<BuiltinBinding>(6);
+        var bindings = new List<BuiltinBinding>(8);
+
+        // 19.2.5 parseInt(string, radix) — same object as Number.parseInt
+        bindings.Add(BuiltinBinding.NonEnumerable("parseInt", JsValue.FromObject(context.GetParseIntFunction())));
+
+        // 19.2.4 parseFloat(string) — same object as Number.parseFloat
+        bindings.Add(BuiltinBinding.NonEnumerable("parseFloat", JsValue.FromObject(context.GetParseFloatFunction())));
 
         // 19.2.3 isNaN(number)
         AddFunction(context, bindings, "isNaN", (ctx, _, args) =>
