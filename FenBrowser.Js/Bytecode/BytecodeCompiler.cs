@@ -333,14 +333,6 @@ public sealed class BytecodeCompiler
             }
         }
 
-        foreach (var member in members)
-        {
-            if (member.Kind != ClassMemberKind.StaticBlock && (member.IsAsync || member.IsGenerator))
-            {
-                throw new UnsupportedFeatureException("async-or-generator-class-method", FeatureSupportLevel.ParserOnly, member.Span);
-            }
-        }
-
         // H.5 - apply the private-name mangle to each member's function body /
         // field initializer, and to the member's installed name when the member
         // itself is private.
@@ -355,7 +347,13 @@ public sealed class BytecodeCompiler
                     var newBody = new BlockStatementNode(
                         PrivateNameRewriter.RewriteStatements(fn.Body.Statements, privateMangle),
                         fn.Body.Span);
-                    newFn = new FunctionExpressionNode(fn.Name, fn.Parameters, newBody, fn.Span);
+                    newFn = new FunctionExpressionNode(
+                        fn.Name,
+                        fn.Parameters,
+                        newBody,
+                        fn.Span,
+                        IsAsync: fn.IsAsync,
+                        IsGenerator: fn.IsGenerator);
                 }
                 else
                 {
