@@ -15,7 +15,9 @@ public sealed class JsParser
         bool HasDuplicateNames,
         bool RestHasInitializer,
         bool HasTrailingCommaAfterRest,
-        bool HasSuperCallInInitializers);
+        bool HasSuperCallInInitializers,
+        bool HasYieldReferenceInInitializers,
+        bool HasAwaitReferenceInInitializers);
 
     private static readonly HashSet<string> AlwaysReservedIdentifierNames = new(StringComparer.Ordinal)
     {
@@ -36,6 +38,8 @@ public sealed class JsParser
     private bool _strictMode;
     private bool _moduleMode;
     private bool _inDirectivePrologue = true;
+    private bool _allowYieldExpression;
+    private bool _allowAwaitExpression;
 
     private JsParser(IReadOnlyList<Token> tokens)
     {
@@ -60,6 +64,8 @@ public sealed class JsParser
     {
         _moduleMode = kind == ProgramKind.Module;
         _strictMode = kind == ProgramKind.Module;
+        _allowYieldExpression = false;
+        _allowAwaitExpression = true;
         var statements = new List<StatementNode>();
         var start = Current().Span;
 
@@ -265,6 +271,84 @@ public sealed class JsParser
             _ => false
         };
 
+    private static bool ContainsIdentifierReferenceInExpression(ExpressionNode expression, string name) =>
+        expression switch
+        {
+            IdentifierExpressionNode identifier => string.Equals(identifier.Name, name, StringComparison.Ordinal),
+            ParenthesizedExpressionNode parenthesized => ContainsIdentifierReferenceInExpression(parenthesized.Expression, name),
+            BinaryExpressionNode binary => ContainsIdentifierReferenceInExpression(binary.Left, name) ||
+                                           ContainsIdentifierReferenceInExpression(binary.Right, name),
+            AssignmentExpressionNode assignment => ContainsIdentifierReferenceInExpression(assignment.Left, name) ||
+                                                   ContainsIdentifierReferenceInExpression(assignment.Right, name),
+            CallExpressionNode call => ContainsIdentifierReferenceInExpression(call.Callee, name) ||
+                                       call.Arguments.Any(a => ContainsIdentifierReferenceInExpression(a, name)),
+            ObjectLiteralExpressionNode objectLiteral => objectLiteral.Properties.Any(p =>
+                (p.ComputedKey is not null && ContainsIdentifierReferenceInExpression(p.ComputedKey, name)) ||
+                ContainsIdentifierReferenceInExpression(p.Value, name)),
+            ArrayLiteralExpressionNode arrayLiteral => arrayLiteral.Elements.Any(e => ContainsIdentifierReferenceInExpression(e, name)),
+            SpreadElementExpressionNode spread => ContainsIdentifierReferenceInExpression(spread.Argument, name),
+            MemberExpressionNode member => ContainsIdentifierReferenceInExpression(member.Object, name) ||
+                                           (member.PropertyExpression is not null && ContainsIdentifierReferenceInExpression(member.PropertyExpression, name)),
+            UnaryExpressionNode unary => ContainsIdentifierReferenceInExpression(unary.Operand, name),
+            ConditionalExpressionNode conditional => ContainsIdentifierReferenceInExpression(conditional.Test, name) ||
+                                                     ContainsIdentifierReferenceInExpression(conditional.Consequent, name) ||
+                                                     ContainsIdentifierReferenceInExpression(conditional.Alternate, name),
+            NewExpressionNode @new => ContainsIdentifierReferenceInExpression(@new.Callee, name) ||
+                                      @new.Arguments.Any(a => ContainsIdentifierReferenceInExpression(a, name)),
+            TemplateLiteralExpressionNode template => template.Expressions.Any(e => ContainsIdentifierReferenceInExpression(e, name)),
+            TaggedTemplateExpressionNode taggedTemplate => ContainsIdentifierReferenceInExpression(taggedTemplate.Tag, name) ||
+                                                           ContainsIdentifierReferenceInExpression(taggedTemplate.Template, name),
+            _ => false
+        };
+
+    private static bool ContainsYieldReferenceInExpression(ExpressionNode expression) =>
+        expression switch
+        {
+            IdentifierExpressionNode identifier => string.Equals(identifier.Name, "yield", StringComparison.Ordinal),
+            UnaryExpressionNode unary when unary.Operator is "yield" or "yield*" => true,
+            ParenthesizedExpressionNode parenthesized => ContainsYieldReferenceInExpression(parenthesized.Expression),
+            BinaryExpressionNode binary => ContainsYieldReferenceInExpression(binary.Left) || ContainsYieldReferenceInExpression(binary.Right),
+            AssignmentExpressionNode assignment => ContainsYieldReferenceInExpression(assignment.Left) || ContainsYieldReferenceInExpression(assignment.Right),
+            CallExpressionNode call => ContainsYieldReferenceInExpression(call.Callee) || call.Arguments.Any(ContainsYieldReferenceInExpression),
+            ObjectLiteralExpressionNode objectLiteral => objectLiteral.Properties.Any(p =>
+                (p.ComputedKey is not null && ContainsYieldReferenceInExpression(p.ComputedKey)) || ContainsYieldReferenceInExpression(p.Value)),
+            ArrayLiteralExpressionNode arrayLiteral => arrayLiteral.Elements.Any(ContainsYieldReferenceInExpression),
+            SpreadElementExpressionNode spread => ContainsYieldReferenceInExpression(spread.Argument),
+            MemberExpressionNode member => ContainsYieldReferenceInExpression(member.Object) ||
+                                           (member.PropertyExpression is not null && ContainsYieldReferenceInExpression(member.PropertyExpression)),
+            ConditionalExpressionNode conditional => ContainsYieldReferenceInExpression(conditional.Test) ||
+                                                     ContainsYieldReferenceInExpression(conditional.Consequent) ||
+                                                     ContainsYieldReferenceInExpression(conditional.Alternate),
+            NewExpressionNode @new => ContainsYieldReferenceInExpression(@new.Callee) || @new.Arguments.Any(ContainsYieldReferenceInExpression),
+            TemplateLiteralExpressionNode template => template.Expressions.Any(ContainsYieldReferenceInExpression),
+            TaggedTemplateExpressionNode taggedTemplate => ContainsYieldReferenceInExpression(taggedTemplate.Tag) ||
+                                                           ContainsYieldReferenceInExpression(taggedTemplate.Template),
+            _ => false
+        };
+
+    private static HashSet<string> CollectTopLevelLexicallyDeclaredNames(IReadOnlyList<StatementNode> statements)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var statement in statements)
+        {
+            switch (statement)
+            {
+                case VariableDeclarationStatementNode declaration when declaration.Kind is "let" or "const":
+                    foreach (var declarator in declaration.Declarators)
+                    {
+                        names.Add(declarator.Identifier);
+                    }
+
+                    break;
+                case ClassDeclarationNode classDeclaration:
+                    names.Add(classDeclaration.Name);
+                    break;
+            }
+        }
+
+        return names;
+    }
+
     private static void ValidateClassMethodEarlyErrors(
         ParameterListInfo parameterInfo,
         BlockStatementNode body,
@@ -293,6 +377,16 @@ public sealed class JsParser
             throw new JsParserException("super() is not allowed in method parameter initializers.");
         }
 
+        if (forbidYieldIdentifier && parameterInfo.HasYieldReferenceInInitializers)
+        {
+            throw new JsParserException("yield is not allowed in method parameter initializers in this method context.");
+        }
+
+        if (forbidAwaitIdentifier && parameterInfo.HasAwaitReferenceInInitializers)
+        {
+            throw new JsParserException("await is not allowed in method parameter initializers in this method context.");
+        }
+
         if (!parameterInfo.IsSimple && ContainsUseStrictDirective(body.Statements))
         {
             throw new JsParserException("A strict directive is not allowed with a non-simple parameter list.");
@@ -312,6 +406,20 @@ public sealed class JsParser
                 IsRestrictedIdentifier(parameter, forbidAwaitIdentifier, forbidYieldIdentifier))
             {
                 throw new JsParserException($"Reserved identifier '{parameter}' is not allowed in this method context.");
+            }
+        }
+
+        var lexicalNames = CollectTopLevelLexicallyDeclaredNames(body.Statements);
+        foreach (var parameter in parameterInfo.Parameters)
+        {
+            if (IsSyntheticPatternBinding(parameter))
+            {
+                continue;
+            }
+
+            if (lexicalNames.Contains(parameter))
+            {
+                throw new JsParserException($"Parameter '{parameter}' conflicts with a lexical declaration in the method body.");
             }
         }
 
@@ -716,10 +824,46 @@ public sealed class JsParser
         var closeText = openText == "[" ? "]" : "}";
         _ = Advance();
         var depth = 1;
+        var arrayRestElementSeen = false;
+        var arrayRestNestedDepth = 0;
 
         while (!Is(TokenKind.EndOfFile) && depth > 0)
         {
             var token = Advance();
+
+            if (openText == "[" && token.Kind == TokenKind.Punctuator)
+            {
+                if (!arrayRestElementSeen && depth == 1 && token.Text == "...")
+                {
+                    arrayRestElementSeen = true;
+                    arrayRestNestedDepth = 0;
+                }
+                else if (arrayRestElementSeen)
+                {
+                    if (token.Text is "[" or "{" or "(")
+                    {
+                        arrayRestNestedDepth++;
+                    }
+                    else if (arrayRestNestedDepth > 0 && token.Text is "]" or "}" or ")")
+                    {
+                        arrayRestNestedDepth--;
+                    }
+
+                    if (depth == 1 && arrayRestNestedDepth == 0)
+                    {
+                        if (token.Text == "=")
+                        {
+                            throw new JsParserException("Array binding rest elements cannot have initializers.");
+                        }
+
+                        if (token.Text == ",")
+                        {
+                            throw new JsParserException("Array binding rest elements must be the final element.");
+                        }
+                    }
+                }
+            }
+
             if (token.Kind != TokenKind.Punctuator)
             {
                 continue;
@@ -1028,9 +1172,10 @@ public sealed class JsParser
         }
 
         var name = ExpectIdentifier();
-        var parameterInfo = ParseParameterList();
+        var (parameterInfo, body) = ParseFunctionParametersAndBody(
+            allowYieldInBody: isGenerator,
+            allowAwaitInBody: isAsync);
         var parameters = parameterInfo.Parameters;
-        var body = ParseBlockStatement();
         ValidateDirectivePrologueStrictStringEscapes(body.Statements);
         return new FunctionDeclarationNode(
             name.Text,
@@ -1328,10 +1473,19 @@ public sealed class JsParser
         }
     }
 
+    private static void ValidateClassNameIdentifier(Token name)
+    {
+        if (StrictModeReservedIdentifierNames.Contains(name.Text))
+        {
+            throw new JsParserException($"Reserved identifier '{name.Text}' is not allowed as a class name.");
+        }
+    }
+
     private ClassDeclarationNode ParseClassDeclaration()
     {
         var start = Advance(); // class
         var name = ExpectIdentifier();
+        ValidateClassNameIdentifier(name);
 
         ExpressionNode? baseClass = null;
         if (Current().Kind == TokenKind.Keyword && Current().Text == "extends")
@@ -1350,7 +1504,9 @@ public sealed class JsParser
         string? name = null;
         if (IsIdentifierLike(Current()))
         {
-            name = Advance().Text;
+            var nameToken = Advance();
+            ValidateClassNameIdentifier(nameToken);
+            name = nameToken.Text;
         }
 
         ExpressionNode? baseClass = null;
@@ -1481,9 +1637,11 @@ public sealed class JsParser
                 continue;
             }
 
-            var parameterInfo = ParseParameterList();
+            var (parameterInfo, body) = ParseFunctionParametersAndBody(
+                allowYieldInBody: isGenerator,
+                allowAwaitInBody: isAsync,
+                strictModeOverride: true);
             var parameters = parameterInfo.Parameters;
-            var body = ParseBlockStatement();
             ValidateClassMethodEarlyErrors(
                 parameterInfo,
                 body,
@@ -1769,6 +1927,9 @@ public sealed class JsParser
         return _tokens[idx].Span.Line != Current().Span.Line;
     }
 
+    private static bool HasLineTerminatorBetween(Token left, Token right) =>
+        right.Span.Line != left.Span.Line;
+
     private TokenKind PeekKind(int offset)
     {
         var idx = Math.Min(_index + offset, _tokens.Count - 1);
@@ -1843,6 +2004,52 @@ public sealed class JsParser
         return new ContinueStatementNode(token.Span);
     }
 
+    private T ParseWithExpressionContext<T>(bool allowYieldExpression, bool allowAwaitExpression, Func<T> parse)
+    {
+        var previousAllowYield = _allowYieldExpression;
+        var previousAllowAwait = _allowAwaitExpression;
+        _allowYieldExpression = allowYieldExpression;
+        _allowAwaitExpression = allowAwaitExpression;
+        try
+        {
+            return parse();
+        }
+        finally
+        {
+            _allowYieldExpression = previousAllowYield;
+            _allowAwaitExpression = previousAllowAwait;
+        }
+    }
+
+    private (ParameterListInfo Parameters, BlockStatementNode Body) ParseFunctionParametersAndBody(
+        bool allowYieldInBody,
+        bool allowAwaitInBody,
+        bool? strictModeOverride = null)
+    {
+        var previousStrictMode = _strictMode;
+        if (strictModeOverride.HasValue)
+        {
+            _strictMode = strictModeOverride.Value;
+        }
+
+        try
+        {
+            var parameterInfo = ParseWithExpressionContext(
+                allowYieldExpression: false,
+                allowAwaitExpression: false,
+                parse: ParseParameterList);
+            var body = ParseWithExpressionContext(
+                allowYieldExpression: allowYieldInBody,
+                allowAwaitExpression: allowAwaitInBody,
+                parse: ParseBlockStatement);
+            return (parameterInfo, body);
+        }
+        finally
+        {
+            _strictMode = previousStrictMode;
+        }
+    }
+
     private ParameterListInfo ParseParameterList()
     {
         var parameters = new List<string>();
@@ -1852,6 +2059,8 @@ public sealed class JsParser
         var restHasInitializer = false;
         var hasTrailingCommaAfterRest = false;
         var hasSuperCallInInitializers = false;
+        var hasYieldReferenceInInitializers = false;
+        var hasAwaitReferenceInInitializers = false;
 
         ExpectPunctuator("(");
         while (!Is(TokenKind.EndOfFile) && !IsPunctuator(")"))
@@ -1889,6 +2098,16 @@ public sealed class JsParser
                 {
                     hasSuperCallInInitializers = true;
                 }
+
+                if (ContainsYieldReferenceInExpression(initializer))
+                {
+                    hasYieldReferenceInInitializers = true;
+                }
+
+                if (ContainsIdentifierReferenceInExpression(initializer, "await"))
+                {
+                    hasAwaitReferenceInInitializers = true;
+                }
             }
 
             if (IsPunctuator(","))
@@ -1912,7 +2131,9 @@ public sealed class JsParser
             HasDuplicateNames: hasDuplicateNames,
             RestHasInitializer: restHasInitializer,
             HasTrailingCommaAfterRest: hasTrailingCommaAfterRest,
-            HasSuperCallInInitializers: hasSuperCallInInitializers);
+            HasSuperCallInInitializers: hasSuperCallInInitializers,
+            HasYieldReferenceInInitializers: hasYieldReferenceInInitializers,
+            HasAwaitReferenceInInitializers: hasAwaitReferenceInInitializers);
     }
 
     private ExpressionNode ParseExpression(int minBindingPower)
@@ -1931,7 +2152,7 @@ public sealed class JsParser
                 Advance();
                 var consequent = ParseExpression(0);
                 ExpectPunctuator(":");
-                var alternate = ParseExpression(4);
+                var alternate = ParseExpression(2);
                 left = new ConditionalExpressionNode(left, consequent, alternate, MergeSpan(left.Span, alternate.Span));
                 continue;
             }
@@ -2031,18 +2252,66 @@ public sealed class JsParser
             return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
         }
 
-        if (token.Kind == TokenKind.Keyword && (token.Text == "typeof" || token.Text == "delete" || token.Text == "void" || token.Text == "await"))
+        if (token.Kind == TokenKind.Keyword && (token.Text == "typeof" || token.Text == "delete" || token.Text == "void"))
         {
             var op = Advance();
             var operand = ParseExpression(40);
             return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
         }
 
-        if (token.Kind == TokenKind.Keyword && token.Text == "yield" && minBindingPower <= 2)
+        if (token.Kind == TokenKind.Keyword && token.Text == "await")
         {
+            if (_allowAwaitExpression)
+            {
+                var op = Advance();
+                var operand = ParseExpression(40);
+                return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
+            }
+
+            if (IsIdentifierLike(token))
+            {
+                Advance();
+                return new IdentifierExpressionNode(token.Text, token.Span);
+            }
+        }
+
+        if (token.Kind == TokenKind.Keyword && token.Text == "yield")
+        {
+            if (!_allowYieldExpression)
+            {
+                if (IsIdentifierLike(token))
+                {
+                    // Legacy FenJS behavior: allow yield-like expressions in non-generator
+                    // function bodies when the token is not an assignment target.
+                    if (minBindingPower <= 2 && !IsPunctuatorAt(1, "="))
+                    {
+                        // Fall through to parse as a yield expression.
+                    }
+                    else
+                    {
+                        Advance();
+                        return new IdentifierExpressionNode(token.Text, token.Span);
+                    }
+                }
+                else
+                {
+                    throw new JsParserException($"Unexpected token '{token.Text}' ({token.Kind}).");
+                }
+            }
+            else if (minBindingPower > 2)
+            {
+                if (IsIdentifierLike(token))
+                {
+                    Advance();
+                    return new IdentifierExpressionNode(token.Text, token.Span);
+                }
+
+                throw new JsParserException($"Unexpected token '{token.Text}' ({token.Kind}).");
+            }
+
             var op = Advance();
             var delegated = false;
-            if (IsPunctuator("*"))
+            if (IsPunctuator("*") && !HasLineTerminatorBetween(op, Current()))
             {
                 delegated = true;
                 Advance();
@@ -2329,9 +2598,10 @@ public sealed class JsParser
             name = Advance().Text;
         }
 
-        var parameterInfo = ParseParameterList();
+        var (parameterInfo, body) = ParseFunctionParametersAndBody(
+            allowYieldInBody: isGenerator,
+            allowAwaitInBody: isAsync);
         var parameters = parameterInfo.Parameters;
-        var body = ParseBlockStatement();
         ValidateDirectivePrologueStrictStringEscapes(body.Statements);
         return new FunctionExpressionNode(
             name,
@@ -2409,9 +2679,10 @@ public sealed class JsParser
                     throw new JsParserException($"Expected object property key, found '{accessorKeyToken.Text}'.");
                 }
 
-                var parameterInfo = ParseParameterList();
+                var (parameterInfo, body) = ParseFunctionParametersAndBody(
+                    allowYieldInBody: false,
+                    allowAwaitInBody: false);
                 var parameters = parameterInfo.Parameters;
-                var body = ParseBlockStatement();
                 var strictObjectMethod = _strictMode || ContainsUseStrictDirective(body.Statements);
                 ValidateClassMethodEarlyErrors(
                     parameterInfo,
@@ -2466,9 +2737,10 @@ public sealed class JsParser
                     throw new JsParserException($"Expected object property key, found '{methodKeyToken.Text}'.");
                 }
 
-                var parameterInfo = ParseParameterList();
+                var (parameterInfo, body) = ParseFunctionParametersAndBody(
+                    allowYieldInBody: false,
+                    allowAwaitInBody: true);
                 var parameters = parameterInfo.Parameters;
-                var body = ParseBlockStatement();
                 var strictObjectMethod = _strictMode || ContainsUseStrictDirective(body.Statements);
                 ValidateClassMethodEarlyErrors(
                     parameterInfo,
@@ -2529,9 +2801,10 @@ public sealed class JsParser
                     throw new JsParserException($"Expected object property key, found '{methodKeyToken.Text}'.");
                 }
 
-                var parameterInfo = ParseParameterList();
+                var (parameterInfo, body) = ParseFunctionParametersAndBody(
+                    allowYieldInBody: true,
+                    allowAwaitInBody: true);
                 var parameters = parameterInfo.Parameters;
-                var body = ParseBlockStatement();
                 var strictObjectMethod = _strictMode || ContainsUseStrictDirective(body.Statements);
                 ValidateClassMethodEarlyErrors(
                     parameterInfo,
@@ -2590,9 +2863,10 @@ public sealed class JsParser
                     throw new JsParserException($"Expected object property key, found '{methodKeyToken.Text}'.");
                 }
 
-                var parameterInfo = ParseParameterList();
+                var (parameterInfo, body) = ParseFunctionParametersAndBody(
+                    allowYieldInBody: true,
+                    allowAwaitInBody: false);
                 var parameters = parameterInfo.Parameters;
-                var body = ParseBlockStatement();
                 var strictObjectMethod = _strictMode || ContainsUseStrictDirective(body.Statements);
                 ValidateClassMethodEarlyErrors(
                     parameterInfo,
@@ -2664,9 +2938,10 @@ public sealed class JsParser
             ExpressionNode value;
             if (IsPunctuator("("))
             {
-                var parameterInfo = ParseParameterList();
+                var (parameterInfo, body) = ParseFunctionParametersAndBody(
+                    allowYieldInBody: false,
+                    allowAwaitInBody: false);
                 var parameters = parameterInfo.Parameters;
-                var body = ParseBlockStatement();
                 var strictObjectMethod = _strictMode || ContainsUseStrictDirective(body.Statements);
                 ValidateClassMethodEarlyErrors(
                     parameterInfo,
@@ -3047,7 +3322,9 @@ public sealed class JsParser
         {
             _strictMode = _strictMode,
             _moduleMode = _moduleMode,
-            _inDirectivePrologue = false
+            _inDirectivePrologue = false,
+            _allowYieldExpression = _allowYieldExpression,
+            _allowAwaitExpression = _allowAwaitExpression
         };
         var expression = parser.ParseExpression(0);
         if (!parser.Is(TokenKind.EndOfFile))
@@ -3354,7 +3631,8 @@ public sealed class JsParser
 
     private static bool IsAssignmentOperator(Token token)
     {
-        return token.Kind == TokenKind.Punctuator && token.Text is "=" or "+=" or "-=" or "*=" or "/=" or "&&=" or "||=" or "??=";
+        return token.Kind == TokenKind.Punctuator &&
+               token.Text is "=" or "+=" or "-=" or "*=" or "/=" or "%=" or "<<=" or ">>=" or ">>>=" or "&=" or "^=" or "|=" or "**=" or "&&=" or "||=" or "??=";
     }
 
     private static ExpressionNode BuildAssignmentRight(ExpressionNode left, string op, ExpressionNode right)
@@ -3366,6 +3644,14 @@ public sealed class JsParser
             "-=" => new BinaryExpressionNode("-", left, right, MergeSpan(left.Span, right.Span)),
             "*=" => new BinaryExpressionNode("*", left, right, MergeSpan(left.Span, right.Span)),
             "/=" => new BinaryExpressionNode("/", left, right, MergeSpan(left.Span, right.Span)),
+            "%=" => new BinaryExpressionNode("%", left, right, MergeSpan(left.Span, right.Span)),
+            "<<=" => new BinaryExpressionNode("<<", left, right, MergeSpan(left.Span, right.Span)),
+            ">>=" => new BinaryExpressionNode(">>", left, right, MergeSpan(left.Span, right.Span)),
+            ">>>=" => new BinaryExpressionNode(">>>", left, right, MergeSpan(left.Span, right.Span)),
+            "&=" => new BinaryExpressionNode("&", left, right, MergeSpan(left.Span, right.Span)),
+            "^=" => new BinaryExpressionNode("^", left, right, MergeSpan(left.Span, right.Span)),
+            "|=" => new BinaryExpressionNode("|", left, right, MergeSpan(left.Span, right.Span)),
+            "**=" => new BinaryExpressionNode("**", left, right, MergeSpan(left.Span, right.Span)),
             "&&=" => new BinaryExpressionNode("&&", left, right, MergeSpan(left.Span, right.Span)),
             "||=" => new BinaryExpressionNode("||", left, right, MergeSpan(left.Span, right.Span)),
             "??=" => new BinaryExpressionNode("??", left, right, MergeSpan(left.Span, right.Span)),

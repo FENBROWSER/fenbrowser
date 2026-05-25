@@ -1045,7 +1045,21 @@ public sealed class ParserTests
     public void RejectsYieldIdentifierReferenceInsideAsyncGeneratorClassMethod()
     {
         Assert.Throws<JsParserException>(() =>
-            JsParser.ParseScript(new SourceText("class C { async *m() { void yield; } }")));
+            JsParser.ParseScript(new SourceText("class C { async *m(yield) { } }")));
+    }
+
+    [Fact]
+    public void RejectsYieldInNestedFunctionInsideClassGeneratorMethod()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("class C { *g(){ function h(){ yield = 1; } } }")));
+    }
+
+    [Fact]
+    public void RejectsYieldFunctionExpressionNameInsideClassGeneratorMethod()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("class C { *g(){ (function yield() {}); } }")));
     }
 
     [Fact]
@@ -1102,6 +1116,100 @@ public sealed class ParserTests
     {
         Assert.Throws<JsParserException>(() =>
             JsParser.ParseScript(new SourceText("({ async foo(x = super()) {} });")));
+    }
+
+    [Fact]
+    public void RejectsAwaitInAsyncMethodParameterInitializer()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("({ async foo(x = await) {} });")));
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("class C { async foo(x = await) {} }")));
+    }
+
+    [Fact]
+    public void ParsesYieldExpressionInObjectGeneratorConditionalBranches()
+    {
+        var program = JsParser.ParseScript(new SourceText("({ *g(){ (yield 1) ? yield 2 : yield 3; } });"));
+        var statement = Assert.IsType<ExpressionStatementNode>(Assert.Single(program.Body));
+        var wrapped = Assert.IsType<ParenthesizedExpressionNode>(statement.Expression);
+        var obj = Assert.IsType<ObjectLiteralExpressionNode>(wrapped.Expression);
+        var fn = Assert.IsType<FunctionExpressionNode>(Assert.Single(obj.Properties).Value);
+        var exprStatement = Assert.IsType<ExpressionStatementNode>(Assert.Single(fn.Body.Statements));
+        Assert.IsType<ConditionalExpressionNode>(exprStatement.Expression);
+    }
+
+    [Fact]
+    public void RejectsYieldStarWithLineTerminatorInObjectGeneratorMethod()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("({ *g(){ yield\n* 1; } });")));
+    }
+
+    [Fact]
+    public void AllowsYieldIdentifierInNestedFunctionInsideObjectGeneratorMethod()
+    {
+        var program = JsParser.ParseScript(new SourceText("({ *g(){ function h(){ yield = 1; } } });"));
+        var statement = Assert.IsType<ExpressionStatementNode>(Assert.Single(program.Body));
+        var wrapped = Assert.IsType<ParenthesizedExpressionNode>(statement.Expression);
+        var obj = Assert.IsType<ObjectLiteralExpressionNode>(wrapped.Expression);
+        Assert.IsType<FunctionExpressionNode>(Assert.Single(obj.Properties).Value);
+    }
+
+    [Fact]
+    public void RejectsYieldInGeneratorMethodParameterInitializer()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("({ *g(x = yield) {} });")));
+    }
+
+    [Fact]
+    public void RejectsArrayPatternRestInitializerInMethodParameters()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("class C { async *m([...[x] = []]) {} }")));
+    }
+
+    [Fact]
+    public void RejectsArrayPatternRestNotFinalInMethodParameters()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("class C { async *m([...[x], y]) {} }")));
+    }
+
+    [Fact]
+    public void RejectsLexicalRedeclarationOfObjectMethodParameter()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("({ m(param){ let param; } });")));
+    }
+
+    [Fact]
+    public void ParsesAwaitIdentifierInNonAsyncObjectMethod()
+    {
+        var program = JsParser.ParseScript(new SourceText("({ m(x = await){ return await; } });"));
+        var statement = Assert.IsType<ExpressionStatementNode>(Assert.Single(program.Body));
+        var wrapped = Assert.IsType<ParenthesizedExpressionNode>(statement.Expression);
+        var obj = Assert.IsType<ObjectLiteralExpressionNode>(wrapped.Expression);
+        Assert.IsType<FunctionExpressionNode>(Assert.Single(obj.Properties).Value);
+    }
+
+    [Fact]
+    public void RejectsStrictReservedClassNameIdentifiers()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("class static {}")));
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("class let {}")));
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("class yield {}")));
+    }
+
+    [Fact]
+    public void ParsesBitwiseOrAssignmentInComputedClassMemberName()
+    {
+        var program = JsParser.ParseScript(new SourceText("let x = 0; class C { [x |= 1]() {} }"));
+        Assert.Equal(2, program.Body.Count);
+        var classDecl = Assert.IsType<ClassDeclarationNode>(program.Body[1]);
+        Assert.Single(classDecl.Members);
+        Assert.NotNull(classDecl.Members[0].ComputedName);
     }
 
     [Fact]

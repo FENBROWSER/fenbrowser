@@ -595,6 +595,18 @@ public sealed class JsLexer
 
     private bool TryReadPunctuator(out string text)
     {
+        if (_index + 3 < _source.Length)
+        {
+            var four = _source.Substring(_index, 4);
+            if (four is ">>>=")
+            {
+                _index += 4;
+                _column += 4;
+                text = four;
+                return true;
+            }
+        }
+
         if (_index + 2 < _source.Length)
         {
             var three = _source.Substring(_index, 3);
@@ -610,7 +622,7 @@ public sealed class JsLexer
         if (_index + 1 < _source.Length)
         {
             var two = _source.Substring(_index, 2);
-            if (two is "==" or "!=" or "<=" or ">=" or "&&" or "||" or "??" or "+=" or "-=" or "*=" or "/=" or "%=" or "++" or "--" or "<<" or ">>" or "**")
+            if (two is "==" or "!=" or "<=" or ">=" or "&&" or "||" or "??" or "+=" or "-=" or "*=" or "/=" or "%=" or "&=" or "^=" or "|=" or "++" or "--" or "<<" or ">>" or "**")
             {
                 _index += 2;
                 _column += 2;
