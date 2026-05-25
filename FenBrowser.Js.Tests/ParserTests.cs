@@ -1213,6 +1213,31 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesDecoratedClassDeclaration()
+    {
+        var program = JsParser.ParseScript(new SourceText("function d() {} @d class C {}"));
+        Assert.Equal(2, program.Body.Count);
+        Assert.IsType<ClassDeclarationNode>(program.Body[1]);
+    }
+
+    [Fact]
+    public void ParsesDecoratedClassElements()
+    {
+        var program = JsParser.ParseScript(new SourceText("function d() {} class C { @d m() {} @d static s() {} @d f; @d static g; }"));
+        Assert.Equal(2, program.Body.Count);
+        var classDecl = Assert.IsType<ClassDeclarationNode>(program.Body[1]);
+        Assert.Equal(4, classDecl.Members.Count);
+    }
+
+    [Fact]
+    public void ParsesDecoratedClassDeclarationInsideStaticBlock()
+    {
+        var program = JsParser.ParseScript(new SourceText("class C { static #m(){} static { @C.#m class D {} } }"));
+        var classDecl = Assert.IsType<ClassDeclarationNode>(Assert.Single(program.Body));
+        Assert.Equal(2, classDecl.Members.Count);
+    }
+
+    [Fact]
     public void ParsesDotMemberWithKeywordPropertyName()
     {
         var program = JsParser.ParseScript(new SourceText("obj.return(1);"));

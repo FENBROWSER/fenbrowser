@@ -667,6 +667,17 @@ public sealed class JsParser
 
     private StatementNode ParseStatement()
     {
+        if (IsPunctuator("@"))
+        {
+            ParseDecoratorList();
+            if (Current().Kind == TokenKind.Keyword && Current().Text == "class")
+            {
+                return ParseClassDeclaration();
+            }
+
+            throw new JsParserException("Decorators are only supported before class declarations in statement position.");
+        }
+
         if (IsIdentifierLike(Current()) && PeekIsPunctuator(1, ":"))
         {
             var labelToken = Advance();
@@ -1520,6 +1531,82 @@ public sealed class JsParser
         return new ClassExpressionNode(name, baseClass, members, MergeSpan(start.Span, close.Span));
     }
 
+    private void ParseDecoratorList()
+    {
+        while (IsPunctuator("@"))
+        {
+            ParseDecorator();
+        }
+    }
+
+    private void ParseDecorator()
+    {
+        ExpectPunctuator("@");
+
+        if (IsPunctuator("("))
+        {
+            Advance();
+            ParseDecoratorParenthesizedExpression();
+            ExpectPunctuator(")");
+            return;
+        }
+
+        ParseDecoratorMemberExpression();
+        if (IsPunctuator("("))
+        {
+            _ = ParseCallArguments();
+        }
+    }
+
+    private void ParseDecoratorParenthesizedExpression()
+    {
+        if (IsPunctuator("("))
+        {
+            Advance();
+            ParseDecoratorParenthesizedExpression();
+            ExpectPunctuator(")");
+            return;
+        }
+
+        ParseDecoratorMemberExpression();
+    }
+
+    private void ParseDecoratorMemberExpression()
+    {
+        ParseDecoratorIdentifierReference();
+        while (IsPunctuator("."))
+        {
+            Advance();
+            if (Current().Kind != TokenKind.Identifier &&
+                Current().Kind != TokenKind.Keyword &&
+                Current().Kind != TokenKind.PrivateIdentifier)
+            {
+                throw new JsParserException($"Expected decorator member segment, found '{Current().Text}'.");
+            }
+
+            Advance();
+        }
+    }
+
+    private void ParseDecoratorIdentifierReference()
+    {
+        var token = Current();
+        if (token.Kind == TokenKind.Identifier)
+        {
+            Advance();
+            return;
+        }
+
+        if (token.Kind == TokenKind.Keyword &&
+            (token.Text == "await" || token.Text == "yield" || IsIdentifierLike(token)))
+        {
+            Advance();
+            return;
+        }
+
+        throw new JsParserException($"Expected decorator identifier reference, found '{token.Text}'.");
+    }
+
     // ECMA-262 15.7 ClassBody. The minimum v1 grammar:
     //   '{' (ClassMember | ';')* '}'
     //   ClassMember := 'static'? (constructor-method | named-method | getter | setter)
@@ -1541,6 +1628,7 @@ public sealed class JsParser
                 continue;
             }
 
+            ParseDecoratorList();
             var memberStart = Current().Span;
             bool isStatic = false;
             // The 'static' modifier is a contextual keyword (lexed as Identifier).

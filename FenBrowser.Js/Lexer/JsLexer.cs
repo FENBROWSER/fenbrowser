@@ -632,7 +632,7 @@ public sealed class JsLexer
         }
 
         var ch = _source[_index];
-        if (ch is '{' or '}' or '(' or ')' or '[' or ']' or ';' or ',' or '.' or ':' or '?' or '+' or '-' or '*' or '/' or '%' or '=' or '!' or '<' or '>' or '&' or '|')
+        if (ch is '{' or '}' or '(' or ')' or '[' or ']' or ';' or ',' or '.' or ':' or '?' or '+' or '-' or '*' or '/' or '%' or '=' or '!' or '<' or '>' or '&' or '|' or '@')
         {
             _index++;
             _column++;
