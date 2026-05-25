@@ -6,6 +6,7 @@ public enum TokenKind
     Identifier,
     Keyword,
     Number,
+    BigInt,
     String,
     Punctuator,
     PrivateIdentifier,

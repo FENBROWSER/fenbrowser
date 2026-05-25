@@ -534,7 +534,7 @@ public sealed class ParserTests
         var decl1 = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
         Assert.IsType<NumericLiteralExpressionNode>(decl1.Declarators[0].Initializer);
         var decl2 = Assert.IsType<VariableDeclarationStatementNode>(program.Body[1]);
-        Assert.IsType<NumericLiteralExpressionNode>(decl2.Declarators[0].Initializer);
+        Assert.IsType<BigIntLiteralExpressionNode>(decl2.Declarators[0].Initializer);
     }
 
     [Fact]
@@ -796,7 +796,7 @@ public sealed class ParserTests
         foreach (var statement in program.Body)
         {
             var expr = Assert.IsType<ExpressionStatementNode>(statement);
-            Assert.IsType<NumericLiteralExpressionNode>(expr.Expression);
+            Assert.IsType<BigIntLiteralExpressionNode>(expr.Expression);
         }
     }
 

@@ -2506,6 +2506,12 @@ public sealed class JsParser
             return new NumericLiteralExpressionNode(value, token.Text, token.Span);
         }
 
+        if (token.Kind == TokenKind.BigInt)
+        {
+            Advance();
+            return new BigIntLiteralExpressionNode(token.Text, token.Span);
+        }
+
         if (token.Kind == TokenKind.String)
         {
             Advance();

@@ -337,8 +337,10 @@ public sealed class JsLexer
                     }
                 }
 
+                var isBigInt = false;
                 if (_index < _source.Length && _source[_index] == 'n')
                 {
+                    isBigInt = true;
                     _index++;
                     _column++;
                 }
@@ -346,7 +348,7 @@ public sealed class JsLexer
                 var numberText = _source[start.._index];
                 var numberKind = HasInvalidNumericLiteralBoundary() || !HasValidNumericLiteralSeparators(numberText)
                     ? TokenKind.Unknown
-                    : TokenKind.Number;
+                    : isBigInt ? TokenKind.BigInt : TokenKind.Number;
                 var token = new Token(numberKind, numberText, new SourceSpan(start, _index - start, line, column));
                 tokens.Add(token);
                 _lastSignificantToken = token;

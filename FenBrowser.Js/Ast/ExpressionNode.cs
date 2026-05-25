@@ -22,6 +22,8 @@ public sealed record ClassExpressionNode(string? Name, ExpressionNode? BaseClass
 
 public sealed record NumericLiteralExpressionNode(double Value, string RawText, SourceSpan Span) : ExpressionNode(Span);
 
+public sealed record BigIntLiteralExpressionNode(string RawText, SourceSpan Span) : ExpressionNode(Span);
+
 public sealed record StringLiteralExpressionNode(string Value, string RawText, SourceSpan Span) : ExpressionNode(Span);
 
 public sealed record BooleanLiteralExpressionNode(bool Value, string RawText, SourceSpan Span) : ExpressionNode(Span);

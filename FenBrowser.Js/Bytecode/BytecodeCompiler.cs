@@ -943,6 +943,15 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
                 return reg;
             }
+            case BigIntLiteralExpressionNode bigInt:
+            {
+                var reg = AllocateRegister();
+                var text = bigInt.RawText.EndsWith('n') ? bigInt.RawText[..^1] : bigInt.RawText;
+                var value = ParseBigIntLiteral(text);
+                var ci = AddConstant(JsValue.FromBigInt(value));
+                _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
+                return reg;
+            }
             case StringLiteralExpressionNode str:
             {
                 var reg = AllocateRegister();
@@ -1746,5 +1755,41 @@ public sealed class BytecodeCompiler
             OpCode.PushHandler => ins with { A = target },
             _ => throw new InvalidOperationException($"Cannot patch opcode {ins.OpCode} as jump.")
         };
+    }
+
+    private static System.Numerics.BigInteger ParseBigIntLiteral(string text)
+    {
+        if (text.Length >= 2 && text[0] == '0')
+        {
+            switch (text[1])
+            {
+                case 'x' or 'X':
+                    return ParseBigIntWithRadix(text[2..], 16);
+                case 'o' or 'O':
+                    return ParseBigIntWithRadix(text[2..], 8);
+                case 'b' or 'B':
+                    return ParseBigIntWithRadix(text[2..], 2);
+            }
+        }
+
+        return System.Numerics.BigInteger.Parse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static System.Numerics.BigInteger ParseBigIntWithRadix(string digits, int radix)
+    {
+        var result = System.Numerics.BigInteger.Zero;
+        foreach (var ch in digits)
+        {
+            if (ch == '_') continue;
+            var digit = ch switch
+            {
+                >= '0' and <= '9' => ch - '0',
+                >= 'a' and <= 'z' => ch - 'a' + 10,
+                >= 'A' and <= 'Z' => ch - 'A' + 10,
+                _ => 0
+            };
+            result = result * radix + digit;
+        }
+        return result;
     }
 }

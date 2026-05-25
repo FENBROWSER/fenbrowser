@@ -1088,7 +1088,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     frame.Registers[ins.A] = JsValue.FromNumber(ToNumber(frame.Registers[ins.B]));
                     break;
                 case OpCode.Neg:
-                    frame.Registers[ins.A] = JsValue.FromNumber(-ToNumber(frame.Registers[ins.B]));
+                    try
+                    {
+                        if (frame.Registers[ins.B].Tag == JsValueTag.BigInt)
+                            frame.Registers[ins.A] = JsValue.FromBigInt(-frame.Registers[ins.B].AsBigInt());
+                        else
+                            frame.Registers[ins.A] = JsValue.FromNumber(-ToNumber(frame.Registers[ins.B]));
+                    }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Void:
                     frame.Registers[ins.A] = JsValue.Undefined;
@@ -1100,19 +1107,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     frame.Registers[ins.A] = JsValue.FromString(TypeOfValue(frame.Registers[ins.B]));
                     break;
                 case OpCode.Add:
-                    frame.Registers[ins.A] = Add(frame.Registers[ins.B], frame.Registers[ins.C]);
+                    try { frame.Registers[ins.A] = Add(frame.Registers[ins.B], frame.Registers[ins.C]); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Sub:
-                    frame.Registers[ins.A] = JsValue.FromNumber(ToNumber(frame.Registers[ins.B]) - ToNumber(frame.Registers[ins.C]));
+                    try { frame.Registers[ins.A] = BigIntArith(frame.Registers[ins.B], frame.Registers[ins.C], "subtraction", (a, b) => a - b, (a, b) => a - b); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Mul:
-                    frame.Registers[ins.A] = JsValue.FromNumber(ToNumber(frame.Registers[ins.B]) * ToNumber(frame.Registers[ins.C]));
+                    try { frame.Registers[ins.A] = BigIntArith(frame.Registers[ins.B], frame.Registers[ins.C], "multiplication", (a, b) => a * b, (a, b) => a * b); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Mod:
-                    frame.Registers[ins.A] = JsValue.FromNumber(ToNumber(frame.Registers[ins.B]) % ToNumber(frame.Registers[ins.C]));
+                    try { frame.Registers[ins.A] = BigIntArith(frame.Registers[ins.B], frame.Registers[ins.C], "modulo", (a, b) => a % b, (a, b) => a % b); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Div:
-                    frame.Registers[ins.A] = JsValue.FromNumber(ToNumber(frame.Registers[ins.B]) / ToNumber(frame.Registers[ins.C]));
+                    try { frame.Registers[ins.A] = BigIntArith(frame.Registers[ins.B], frame.Registers[ins.C], "division", (a, b) => a / b, (a, b) => a / b); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Eq:
                     frame.Registers[ins.A] = JsValue.FromBoolean(AreEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
@@ -9958,6 +9970,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 JsValueTag.Boolean => left.AsBoolean() == right.AsBoolean(),
                 JsValueTag.Int32 => left.AsInt32() == right.AsInt32(),
                 JsValueTag.Number => left.AsNumber() == right.AsNumber(),
+                JsValueTag.BigInt => left.AsBigInt() == right.AsBigInt(),
                 JsValueTag.String => left.AsString() == right.AsString(),
                 JsValueTag.Symbol => left.AsSymbolId() == right.AsSymbolId(),
                 JsValueTag.Object => left.AsObjectHandle().Equals(right.AsObjectHandle()),
@@ -10081,6 +10094,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             JsValueTag.Boolean => left.AsBoolean() == right.AsBoolean(),
             JsValueTag.Int32 => left.AsInt32() == right.AsInt32(),
             JsValueTag.Number => left.AsNumber() == right.AsNumber(),
+            JsValueTag.BigInt => left.AsBigInt() == right.AsBigInt(),
             JsValueTag.String => left.AsString() == right.AsString(),
             JsValueTag.Symbol => left.AsSymbolId() == right.AsSymbolId(),
             JsValueTag.Object => left.AsObjectHandle().Equals(right.AsObjectHandle()),
@@ -10517,8 +10531,29 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                _heap.GetObject(value.AsObjectHandle()) is JsFunctionObject or NativeFunctionObject;
     }
 
+    private JsValue BigIntArith(JsValue left, JsValue right, string opName,
+        Func<System.Numerics.BigInteger, System.Numerics.BigInteger, System.Numerics.BigInteger> bigIntOp,
+        Func<double, double, double> numOp)
+    {
+        if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
+            return JsValue.FromBigInt(bigIntOp(left.AsBigInt(), right.AsBigInt()));
+        if (left.Tag == JsValueTag.BigInt || right.Tag == JsValueTag.BigInt)
+            throw new JsThrownException(CreateTypeError($"Cannot mix BigInt and other types in {opName}."));
+        return JsValue.FromNumber(numOp(ToNumber(left), ToNumber(right)));
+    }
+
     private JsValue Add(JsValue left, JsValue right)
     {
+        if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
+        {
+            return JsValue.FromBigInt(left.AsBigInt() + right.AsBigInt());
+        }
+
+        if (left.Tag == JsValueTag.BigInt || right.Tag == JsValueTag.BigInt)
+        {
+            throw new JsThrownException(CreateTypeError("Cannot mix BigInt and other types in addition."));
+        }
+
         if (left.Tag is JsValueTag.String or JsValueTag.Object || right.Tag is JsValueTag.String or JsValueTag.Object)
         {
             return JsValue.FromString(ToStringValue(left) + ToStringValue(right));
@@ -10565,6 +10600,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             JsValueTag.Number => FormatNumberForString(value.AsNumber()),
             JsValueTag.String => value.AsString(),
             JsValueTag.Symbol => "Symbol(" + (value.AsSymbolDescription() ?? string.Empty) + ")",
+            JsValueTag.BigInt => value.AsBigInt().ToString(System.Globalization.CultureInfo.InvariantCulture) + "n",
             JsValueTag.Object => "[object Object]",
             JsValueTag.HostObject => "[object Object]",
             _ => value.Tag.ToString()
@@ -10684,6 +10720,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             return ToNumber(primitive);
         }
 
+        if (value.Tag == JsValueTag.BigInt)
+            throw new JsThrownException(CreateTypeError("Cannot convert a BigInt value to a number."));
+
         return value.Tag switch
         {
             JsValueTag.Int32 => value.AsInt32(),
@@ -10699,40 +10738,36 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private bool IsLessThan(JsValue left, JsValue right)
     {
         if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.String)
-        {
             return string.CompareOrdinal(left.AsString(), right.AsString()) < 0;
-        }
-
+        if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
+            return left.AsBigInt() < right.AsBigInt();
         return ToNumber(left) < ToNumber(right);
     }
 
     private bool IsGreaterThan(JsValue left, JsValue right)
     {
         if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.String)
-        {
             return string.CompareOrdinal(left.AsString(), right.AsString()) > 0;
-        }
-
+        if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
+            return left.AsBigInt() > right.AsBigInt();
         return ToNumber(left) > ToNumber(right);
     }
 
     private bool IsLessThanOrEqual(JsValue left, JsValue right)
     {
         if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.String)
-        {
             return string.CompareOrdinal(left.AsString(), right.AsString()) <= 0;
-        }
-
+        if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
+            return left.AsBigInt() <= right.AsBigInt();
         return ToNumber(left) <= ToNumber(right);
     }
 
     private bool IsGreaterThanOrEqual(JsValue left, JsValue right)
     {
         if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.String)
-        {
             return string.CompareOrdinal(left.AsString(), right.AsString()) >= 0;
-        }
-
+        if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
+            return left.AsBigInt() >= right.AsBigInt();
         return ToNumber(left) >= ToNumber(right);
     }
 

@@ -248,18 +248,18 @@ public sealed class LexerTests
     }
 
     [Theory]
-    [InlineData("1_0")]
-    [InlineData("1.2_3e4_5")]
-    [InlineData(".1_0")]
-    [InlineData("0xA_Bn")]
-    [InlineData("0b1_0")]
-    [InlineData("0o7_0")]
-    public void NumericSeparatorsBetweenDigitsRemainNumeric(string source)
+    [InlineData("1_0", TokenKind.Number)]
+    [InlineData("1.2_3e4_5", TokenKind.Number)]
+    [InlineData(".1_0", TokenKind.Number)]
+    [InlineData("0xA_Bn", TokenKind.BigInt)]
+    [InlineData("0b1_0", TokenKind.Number)]
+    [InlineData("0o7_0", TokenKind.Number)]
+    public void NumericSeparatorsBetweenDigitsRemainNumeric(string source, TokenKind expectedKind)
     {
         var lexer = new JsLexer(new SourceText(source));
         var tokens = lexer.LexAll();
 
-        Assert.Equal(TokenKind.Number, tokens[0].Kind);
+        Assert.Equal(expectedKind, tokens[0].Kind);
     }
 
     [Fact]

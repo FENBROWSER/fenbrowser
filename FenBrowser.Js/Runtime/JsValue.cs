@@ -15,6 +15,11 @@ public readonly struct JsValue
     private static readonly Dictionary<long, string?> SymbolPool = new();
     private static readonly Lock SymbolPoolLock = new();
 
+    // BigInt pool. BigInts are interned by id (same pattern as String and Symbol).
+    private static long _nextBigIntId;
+    private static readonly Dictionary<long, System.Numerics.BigInteger> BigIntPool = new();
+    private static readonly Lock BigIntPoolLock = new();
+
     public readonly JsValueTag Tag;
     private readonly long _payload;
     private readonly double _number;
@@ -116,6 +121,29 @@ public readonly struct JsValue
         lock (SymbolPoolLock)
         {
             return SymbolPool.TryGetValue(_payload, out var d) ? d : null;
+        }
+    }
+
+    public static JsValue FromBigInt(System.Numerics.BigInteger value)
+    {
+        lock (BigIntPoolLock)
+        {
+            var id = ++_nextBigIntId;
+            BigIntPool[id] = value;
+            return new JsValue(JsValueTag.BigInt, id, 0);
+        }
+    }
+
+    public System.Numerics.BigInteger AsBigInt()
+    {
+        if (Tag != JsValueTag.BigInt)
+        {
+            throw new InvalidOperationException($"Value is not a BigInt (tag={Tag}).");
+        }
+
+        lock (BigIntPoolLock)
+        {
+            return BigIntPool.TryGetValue(_payload, out var value) ? value : System.Numerics.BigInteger.Zero;
         }
     }
 }
