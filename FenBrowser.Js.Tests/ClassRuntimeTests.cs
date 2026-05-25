@@ -591,6 +591,28 @@ public sealed class ClassRuntimeTests
         ").AsNumber());
     }
 
+    // ECMA-262 15.7.10 — derived default constructor forwards arguments
+    // via super(...arguments).
+    [Fact]
+    public void DerivedDefaultConstructorForwardsArguments()
+    {
+        Assert.Equal("hello", Run(@"
+            class A { constructor(x) { this.name = x; } }
+            class B extends A {}
+            (new B('hello')).name;
+        ").AsString());
+    }
+
+    [Fact]
+    public void DerivedDefaultConstructorForwardsMultipleArguments()
+    {
+        Assert.Equal(42d, Run(@"
+            class A { constructor(a, b) { this.sum = a + b; } }
+            class B extends A {}
+            (new B(20, 22)).sum;
+        ").AsNumber());
+    }
+
     [Fact]
     public void DerivedClassInstanceFieldInitsAfterDefaultSuper()
     {

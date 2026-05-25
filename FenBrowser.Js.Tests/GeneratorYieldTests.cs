@@ -177,21 +177,21 @@ public class GeneratorYieldTests
 
     // ECMA-262 27.5.1.4 — Generator.prototype.throw injects an exception
     // that is caught by the nearest try/catch in the generator body.
-    // Known limitation: the catch binding variable (e) is not yet accessible
-    // on the first resume after .throw(); it works after a subsequent yield.
     [Fact]
     public void GeneratorThrowInjectsExceptionCaughtByCatch()
     {
         var code = @"
+            var observed = 'none';
             function* g() {
                 try { yield 1; }
-                catch (e) { return 'caught'; }
+                catch (e) { observed = 'ok'; return 'caught'; }
             }
             var gen = g();
-            gen.next();              // yield 1
-            gen.throw('boom').value; // inject, caught, returns 'caught'
+            gen.next();
+            try { gen.throw('boom'); } catch (ex) { observed = 'top-error'; }
+            observed;
         ";
-        Assert.Equal("caught", Run(code).AsString());
+        Assert.Equal("ok", Run(code).AsString());
     }
 
     // .throw() on completed generator propagates the exception.
@@ -236,6 +236,133 @@ public class GeneratorYieldTests
             var gen = g();
             var r = gen.return('early');
             r.done === true && r.value === 'early';
+        ";
+        Assert.True(Run(code).AsBoolean());
+    }
+
+    // ECMA-262 15.5.5 — yield* delegation: values from inner iterator are
+    // yielded in sequence — generator-to-generator delegation.
+    [Fact]
+    public void YieldStarDelegatesValues()
+    {
+        var code = @"
+            function* inner() { yield 1; yield 2; }
+            function* outer() { yield* inner(); }
+            var gen = outer();
+            gen.next().value;
+        ";
+        Assert.Equal(1d, Run(code).AsNumber());
+    }
+
+    // yield* returns the completion value of the inner iterator.
+    // After delegation completes, the generator continues execution.
+    [Fact]
+    public void YieldStarReturnsCompletionValue()
+    {
+        var code = @"
+            function* inner() { yield 1; return 'done'; }
+            function* outer() { var r = yield* inner(); return r; }
+            var gen = outer();
+            gen.next();              // yield 1 from inner
+            gen.next().value;        // return 'done' (inner's return value)
+        ";
+        Assert.Equal("done", Run(code).AsString());
+    }
+
+    // yield* with multiple inner yields and outer yield — generator delegation.
+    [Fact]
+    public void YieldStarMixedWithOuterYields()
+    {
+        var code = @"
+            function* inner() { yield 'a'; yield 'b'; }
+            function* outer() { yield* inner(); yield 'c'; }
+            var gen = outer();
+            var v1 = gen.next().value;
+            var v2 = gen.next().value;
+            var v3 = gen.next().value;
+            v1 + v2 + v3;
+        ";
+        Assert.Equal("abc", Run(code).AsString());
+    }
+
+    // ECMA-262 15.5.5 step 5.d — .return() on outer generator during yield*
+    // forwards to the inner generator. The outer .return() produces the value.
+    [Fact]
+    public void YieldStarReturnForwardsToInner()
+    {
+        var code = @"
+            function* inner() {
+                try { yield 1; }
+                finally { }
+            }
+            function* outer() { yield* inner(); }
+            var gen = outer();
+            gen.next();              // yield 1 from inner
+            var r = gen.return(99);
+            r.done === true;
+        ";
+        Assert.True(Run(code).AsBoolean());
+    }
+
+    // .return() value propagates correctly through yield*.
+    [Fact]
+    public void YieldStarReturnValuePropagates()
+    {
+        var code = @"
+            function* inner() { yield 1; }
+            function* outer() { yield* inner(); yield 2; }
+            var gen = outer();
+            gen.next();               // yield 1 (from inner)
+            gen.return(42).value;     // .return() value should be 42
+        ";
+        Assert.Equal(42d, Run(code).AsNumber());
+    }
+
+    // .throw() during yield* propagates when inner iterator has no .throw().
+    [Fact]
+    public void YieldStarThrowInjectsWhenInnerHasNoThrow()
+    {
+        var code = @"
+            function* outer() {
+                try { yield* [1, 2]; }
+                catch (e) { return 'caught'; }
+            }
+            var gen = outer();
+            gen.next();              // yield 1
+            gen.throw('boom').value; // propagates through yield*, caught by outer
+        ";
+        Assert.Equal("caught", Run(code).AsString());
+    }
+
+    // Catch variable is accessible on resume after .throw().
+    [Fact]
+    public void GeneratorThrowCatchVariableAccessible()
+    {
+        var code = @"
+            function* g() {
+                try { yield 1; }
+                catch (e) { return (e === 'boom') ? 'ok' : 'fail'; }
+            }
+            var gen = g();
+            gen.next();
+            gen.throw('boom').value;
+        ";
+        Assert.Equal("ok", Run(code).AsString());
+    }
+
+    // Catch variable properly scoped — does not leak to outer scope.
+    [Fact]
+    public void CatchVariableDoesNotLeakToGlobal()
+    {
+        var code = @"
+            function* g() {
+                try { yield 1; }
+                catch (e) { }
+            }
+            var gen = g();
+            gen.next();
+            gen.throw('err');
+            typeof globalThis.e === 'undefined';
         ";
         Assert.True(Run(code).AsBoolean());
     }
