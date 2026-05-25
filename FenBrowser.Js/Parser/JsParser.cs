@@ -14,7 +14,8 @@ public sealed class JsParser
         bool IsSimple,
         bool HasDuplicateNames,
         bool RestHasInitializer,
-        bool HasTrailingCommaAfterRest);
+        bool HasTrailingCommaAfterRest,
+        bool HasSuperCallInInitializers);
 
     private static readonly HashSet<string> AlwaysReservedIdentifierNames = new(StringComparer.Ordinal)
     {
@@ -190,11 +191,87 @@ public sealed class JsParser
     private static bool IsSyntheticPatternBinding(string name) =>
         name.StartsWith("__pattern", StringComparison.Ordinal);
 
+    private static bool ContainsSuperCallInStatements(IReadOnlyList<StatementNode> statements)
+    {
+        foreach (var statement in statements)
+        {
+            if (ContainsSuperCallInStatement(statement))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ContainsSuperCallInStatement(StatementNode statement) =>
+        statement switch
+        {
+            BlockStatementNode block => ContainsSuperCallInStatements(block.Statements),
+            ExpressionStatementNode expressionStatement => ContainsSuperCallInExpression(expressionStatement.Expression),
+            LabeledStatementNode labeled => ContainsSuperCallInStatement(labeled.Body),
+            VariableDeclarationStatementNode declaration => declaration.Declarators.Any(d => d.Initializer is not null && ContainsSuperCallInExpression(d.Initializer)),
+            IfStatementNode ifStatement => ContainsSuperCallInExpression(ifStatement.Test) ||
+                                           ContainsSuperCallInStatement(ifStatement.Consequent) ||
+                                           (ifStatement.Alternate is not null && ContainsSuperCallInStatement(ifStatement.Alternate)),
+            WhileStatementNode whileStatement => ContainsSuperCallInExpression(whileStatement.Test) ||
+                                                ContainsSuperCallInStatement(whileStatement.Body),
+            ForStatementNode forStatement => (forStatement.Initializer is not null && ContainsSuperCallInStatement(forStatement.Initializer)) ||
+                                             (forStatement.Test is not null && ContainsSuperCallInExpression(forStatement.Test)) ||
+                                             (forStatement.Update is not null && ContainsSuperCallInExpression(forStatement.Update)) ||
+                                             ContainsSuperCallInStatement(forStatement.Body),
+            ForInStatementNode forInStatement => ContainsSuperCallInStatement(forInStatement.Initializer) ||
+                                                 ContainsSuperCallInExpression(forInStatement.Iterable) ||
+                                                 ContainsSuperCallInStatement(forInStatement.Body),
+            ForOfStatementNode forOfStatement => ContainsSuperCallInStatement(forOfStatement.Initializer) ||
+                                                 ContainsSuperCallInExpression(forOfStatement.Iterable) ||
+                                                 ContainsSuperCallInStatement(forOfStatement.Body),
+            ReturnStatementNode returnStatement => returnStatement.Argument is not null && ContainsSuperCallInExpression(returnStatement.Argument),
+            ThrowStatementNode throwStatement => ContainsSuperCallInExpression(throwStatement.Argument),
+            TryCatchStatementNode tryCatch => ContainsSuperCallInStatement(tryCatch.TryBlock) ||
+                                              ContainsSuperCallInStatement(tryCatch.CatchBlock),
+            TryFinallyStatementNode tryFinally => ContainsSuperCallInStatement(tryFinally.TryBlock) ||
+                                                  ContainsSuperCallInStatement(tryFinally.FinallyBlock),
+            TryCatchFinallyStatementNode tryCatchFinally => ContainsSuperCallInStatement(tryCatchFinally.TryBlock) ||
+                                                            ContainsSuperCallInStatement(tryCatchFinally.CatchBlock) ||
+                                                            ContainsSuperCallInStatement(tryCatchFinally.FinallyBlock),
+            SwitchStatementNode switchStatement => ContainsSuperCallInExpression(switchStatement.Discriminant) ||
+                                                   switchStatement.Cases.Any(c => (c.Test is not null && ContainsSuperCallInExpression(c.Test)) || ContainsSuperCallInStatements(c.Consequent)),
+            _ => false
+        };
+
+    private static bool ContainsSuperCallInExpression(ExpressionNode expression) =>
+        expression switch
+        {
+            CallExpressionNode { Callee: SuperExpressionNode } => true,
+            ParenthesizedExpressionNode parenthesized => ContainsSuperCallInExpression(parenthesized.Expression),
+            BinaryExpressionNode binary => ContainsSuperCallInExpression(binary.Left) || ContainsSuperCallInExpression(binary.Right),
+            AssignmentExpressionNode assignment => ContainsSuperCallInExpression(assignment.Left) || ContainsSuperCallInExpression(assignment.Right),
+            CallExpressionNode call => ContainsSuperCallInExpression(call.Callee) || call.Arguments.Any(ContainsSuperCallInExpression),
+            ObjectLiteralExpressionNode objectLiteral => objectLiteral.Properties.Any(p =>
+                (p.ComputedKey is not null && ContainsSuperCallInExpression(p.ComputedKey)) || ContainsSuperCallInExpression(p.Value)),
+            ArrayLiteralExpressionNode arrayLiteral => arrayLiteral.Elements.Any(ContainsSuperCallInExpression),
+            SpreadElementExpressionNode spread => ContainsSuperCallInExpression(spread.Argument),
+            MemberExpressionNode member => ContainsSuperCallInExpression(member.Object) ||
+                                           (member.PropertyExpression is not null && ContainsSuperCallInExpression(member.PropertyExpression)),
+            UnaryExpressionNode unary => ContainsSuperCallInExpression(unary.Operand),
+            ConditionalExpressionNode conditional => ContainsSuperCallInExpression(conditional.Test) ||
+                                                     ContainsSuperCallInExpression(conditional.Consequent) ||
+                                                     ContainsSuperCallInExpression(conditional.Alternate),
+            NewExpressionNode @new => ContainsSuperCallInExpression(@new.Callee) || @new.Arguments.Any(ContainsSuperCallInExpression),
+            TemplateLiteralExpressionNode template => template.Expressions.Any(ContainsSuperCallInExpression),
+            TaggedTemplateExpressionNode taggedTemplate => ContainsSuperCallInExpression(taggedTemplate.Tag) ||
+                                                           ContainsSuperCallInExpression(taggedTemplate.Template),
+            _ => false
+        };
+
     private static void ValidateClassMethodEarlyErrors(
         ParameterListInfo parameterInfo,
         BlockStatementNode body,
         bool forbidAwaitIdentifier,
-        bool forbidYieldIdentifier)
+        bool forbidYieldIdentifier,
+        bool strictMode,
+        bool rejectSuperCallInBody)
     {
         if (parameterInfo.RestHasInitializer)
         {
@@ -211,6 +288,11 @@ public sealed class JsParser
             throw new JsParserException("Duplicate parameter names are not allowed in class methods.");
         }
 
+        if (parameterInfo.HasSuperCallInInitializers)
+        {
+            throw new JsParserException("super() is not allowed in method parameter initializers.");
+        }
+
         if (!parameterInfo.IsSimple && ContainsUseStrictDirective(body.Statements))
         {
             throw new JsParserException("A strict directive is not allowed with a non-simple parameter list.");
@@ -218,11 +300,24 @@ public sealed class JsParser
 
         foreach (var parameter in parameterInfo.Parameters)
         {
+            if (strictMode &&
+                !IsSyntheticPatternBinding(parameter) &&
+                (string.Equals(parameter, "eval", StringComparison.Ordinal) ||
+                 string.Equals(parameter, "arguments", StringComparison.Ordinal)))
+            {
+                throw new JsParserException($"Restricted identifier '{parameter}' is not allowed in strict-mode parameters.");
+            }
+
             if (!IsSyntheticPatternBinding(parameter) &&
                 IsRestrictedIdentifier(parameter, forbidAwaitIdentifier, forbidYieldIdentifier))
             {
                 throw new JsParserException($"Reserved identifier '{parameter}' is not allowed in this method context.");
             }
+        }
+
+        if (rejectSuperCallInBody && ContainsSuperCallInStatements(body.Statements))
+        {
+            throw new JsParserException("super() calls are not allowed in this method context.");
         }
 
         ValidateRestrictedIdentifiersInStatements(body.Statements, forbidAwaitIdentifier, forbidYieldIdentifier);
@@ -1323,7 +1418,9 @@ public sealed class JsParser
             }
 
             var isAsync = false;
-            if (IsUnescapedIdentifierLike(Current(), "async") && !IsPunctuatorAt(1, "(") &&
+            if (IsUnescapedIdentifierLike(Current(), "async") &&
+                !HasLineTerminatorBetweenCurrentAnd(1) &&
+                !IsPunctuatorAt(1, "(") &&
                 (IsPunctuatorAt(1, "*") || IsClassMemberNameStartAt(1)))
             {
                 Advance();
@@ -1387,7 +1484,13 @@ public sealed class JsParser
             var parameterInfo = ParseParameterList();
             var parameters = parameterInfo.Parameters;
             var body = ParseBlockStatement();
-            ValidateClassMethodEarlyErrors(parameterInfo, body, forbidAwaitIdentifier: isAsync, forbidYieldIdentifier: isGenerator);
+            ValidateClassMethodEarlyErrors(
+                parameterInfo,
+                body,
+                forbidAwaitIdentifier: isAsync,
+                forbidYieldIdentifier: isGenerator,
+                strictMode: true,
+                rejectSuperCallInBody: kind != ClassMemberKind.Constructor);
             var fn = new FunctionExpressionNode(
                 memberName,
                 parameters,
@@ -1660,6 +1763,12 @@ public sealed class JsParser
         return tok.Kind == TokenKind.Identifier || tok.Kind == TokenKind.Keyword;
     }
 
+    private bool HasLineTerminatorBetweenCurrentAnd(int offset)
+    {
+        var idx = Math.Min(_index + offset, _tokens.Count - 1);
+        return _tokens[idx].Span.Line != Current().Span.Line;
+    }
+
     private TokenKind PeekKind(int offset)
     {
         var idx = Math.Min(_index + offset, _tokens.Count - 1);
@@ -1742,6 +1851,7 @@ public sealed class JsParser
         var hasDuplicateNames = false;
         var restHasInitializer = false;
         var hasTrailingCommaAfterRest = false;
+        var hasSuperCallInInitializers = false;
 
         ExpectPunctuator("(");
         while (!Is(TokenKind.EndOfFile) && !IsPunctuator(")"))
@@ -1774,7 +1884,11 @@ public sealed class JsParser
 
                 isSimple = false;
                 Advance();
-                _ = ParseExpression(2);
+                var initializer = ParseExpression(2);
+                if (ContainsSuperCallInExpression(initializer))
+                {
+                    hasSuperCallInInitializers = true;
+                }
             }
 
             if (IsPunctuator(","))
@@ -1797,7 +1911,8 @@ public sealed class JsParser
             IsSimple: isSimple,
             HasDuplicateNames: hasDuplicateNames,
             RestHasInitializer: restHasInitializer,
-            HasTrailingCommaAfterRest: hasTrailingCommaAfterRest);
+            HasTrailingCommaAfterRest: hasTrailingCommaAfterRest,
+            HasSuperCallInInitializers: hasSuperCallInInitializers);
     }
 
     private ExpressionNode ParseExpression(int minBindingPower)
@@ -2297,7 +2412,14 @@ public sealed class JsParser
                 var parameterInfo = ParseParameterList();
                 var parameters = parameterInfo.Parameters;
                 var body = ParseBlockStatement();
-                ValidateClassMethodEarlyErrors(parameterInfo, body, forbidAwaitIdentifier: false, forbidYieldIdentifier: false);
+                var strictObjectMethod = _strictMode || ContainsUseStrictDirective(body.Statements);
+                ValidateClassMethodEarlyErrors(
+                    parameterInfo,
+                    body,
+                    forbidAwaitIdentifier: false,
+                    forbidYieldIdentifier: false,
+                    strictMode: strictObjectMethod,
+                    rejectSuperCallInBody: true);
                 var accessorFnName = accessorKey ?? accessorKind.Text;
                 var accessorFn = new FunctionExpressionNode(accessorFnName, parameters, body, MergeSpan(accessorKind.Span, body.Span));
                 properties.Add(new ObjectPropertyNode(accessorKey, accessorComputedKey, accessorIsComputed, accessorFn, accessorFn.Span));
@@ -2347,7 +2469,14 @@ public sealed class JsParser
                 var parameterInfo = ParseParameterList();
                 var parameters = parameterInfo.Parameters;
                 var body = ParseBlockStatement();
-                ValidateClassMethodEarlyErrors(parameterInfo, body, forbidAwaitIdentifier: true, forbidYieldIdentifier: false);
+                var strictObjectMethod = _strictMode || ContainsUseStrictDirective(body.Statements);
+                ValidateClassMethodEarlyErrors(
+                    parameterInfo,
+                    body,
+                    forbidAwaitIdentifier: true,
+                    forbidYieldIdentifier: false,
+                    strictMode: strictObjectMethod,
+                    rejectSuperCallInBody: true);
                 var methodFnName = methodKey ?? "async";
                 var asyncMethodFn = new FunctionExpressionNode(
                     methodFnName,
@@ -2403,7 +2532,14 @@ public sealed class JsParser
                 var parameterInfo = ParseParameterList();
                 var parameters = parameterInfo.Parameters;
                 var body = ParseBlockStatement();
-                ValidateClassMethodEarlyErrors(parameterInfo, body, forbidAwaitIdentifier: true, forbidYieldIdentifier: true);
+                var strictObjectMethod = _strictMode || ContainsUseStrictDirective(body.Statements);
+                ValidateClassMethodEarlyErrors(
+                    parameterInfo,
+                    body,
+                    forbidAwaitIdentifier: true,
+                    forbidYieldIdentifier: true,
+                    strictMode: strictObjectMethod,
+                    rejectSuperCallInBody: true);
                 var methodFnName = methodKey ?? "async*";
                 var asyncMethodFn = new FunctionExpressionNode(
                     methodFnName,
@@ -2457,7 +2593,14 @@ public sealed class JsParser
                 var parameterInfo = ParseParameterList();
                 var parameters = parameterInfo.Parameters;
                 var body = ParseBlockStatement();
-                ValidateClassMethodEarlyErrors(parameterInfo, body, forbidAwaitIdentifier: false, forbidYieldIdentifier: true);
+                var strictObjectMethod = _strictMode || ContainsUseStrictDirective(body.Statements);
+                ValidateClassMethodEarlyErrors(
+                    parameterInfo,
+                    body,
+                    forbidAwaitIdentifier: false,
+                    forbidYieldIdentifier: true,
+                    strictMode: strictObjectMethod,
+                    rejectSuperCallInBody: true);
                 var methodFnName = methodKey ?? "*";
                 var methodFn = new FunctionExpressionNode(
                     methodFnName,
@@ -2524,7 +2667,14 @@ public sealed class JsParser
                 var parameterInfo = ParseParameterList();
                 var parameters = parameterInfo.Parameters;
                 var body = ParseBlockStatement();
-                ValidateClassMethodEarlyErrors(parameterInfo, body, forbidAwaitIdentifier: false, forbidYieldIdentifier: false);
+                var strictObjectMethod = _strictMode || ContainsUseStrictDirective(body.Statements);
+                ValidateClassMethodEarlyErrors(
+                    parameterInfo,
+                    body,
+                    forbidAwaitIdentifier: false,
+                    forbidYieldIdentifier: false,
+                    strictMode: strictObjectMethod,
+                    rejectSuperCallInBody: true);
                 value = new FunctionExpressionNode(key, parameters, body, MergeSpan(keyToken.Span, body.Span));
             }
             else if (IsPunctuator(":"))
@@ -3298,6 +3448,11 @@ public sealed class JsParser
             return false;
         }
 
+        if (HasLineTerminatorBetweenCurrentAnd(1))
+        {
+            return false;
+        }
+
         var nextIndex = Math.Min(_index + 1, _tokens.Count - 1);
         var next = _tokens[nextIndex];
         if (next.Kind == TokenKind.Punctuator && next.Text == "[")
@@ -3349,6 +3504,11 @@ public sealed class JsParser
     {
         var current = Current();
         if (!IsUnescapedIdentifierLike(current, "async"))
+        {
+            return false;
+        }
+
+        if (HasLineTerminatorBetweenCurrentAnd(1))
         {
             return false;
         }

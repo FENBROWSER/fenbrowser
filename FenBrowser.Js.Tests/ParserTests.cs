@@ -1070,6 +1070,41 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void RejectsStrictObjectAsyncMethodEvalParameter()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("\"use strict\"; ({ async foo(eval) {} });")));
+    }
+
+    [Fact]
+    public void RejectsStrictObjectAsyncMethodArgumentsParameter()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("\"use strict\"; ({ async foo(arguments) {} });")));
+    }
+
+    [Fact]
+    public void RejectsObjectAsyncMethodLineTerminatorAfterAsync()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("({ async\nfoo() {} });")));
+    }
+
+    [Fact]
+    public void RejectsObjectAsyncMethodBodyContainingSuperCall()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("({ async foo() { super(); } });")));
+    }
+
+    [Fact]
+    public void RejectsObjectAsyncMethodFormalContainingSuperCall()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("({ async foo(x = super()) {} });")));
+    }
+
+    [Fact]
     public void ParsesDotMemberWithKeywordPropertyName()
     {
         var program = JsParser.ParseScript(new SourceText("obj.return(1);"));
