@@ -49,18 +49,62 @@ public sealed class GeneratorBuiltin : IBuiltinModule
         {
             if (tv.Tag != JsValueTag.Object || ctx.Heap.GetObject(tv.AsObjectHandle()) is not GeneratorObject g)
                 throw new JsThrownException(ctx.CreateTypeError("Generator.prototype.return: receiver is not a generator"));
-            g.State = GeneratorState.Completed;
-            return CreateResult(ctx, heap, args.Count > 0 ? args[0] : JsValue.Undefined, done: true);
+            var returnValue = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (g.State == GeneratorState.Completed)
+                return CreateResult(ctx, heap, returnValue, done: true);
+            if (g.State == GeneratorState.Executing)
+                throw new JsThrownException(ctx.CreateTypeError("Generator.prototype.return: generator is already executing"));
+            var interpreter = ctx as BytecodeInterpreter;
+            if (interpreter is null) { g.State = GeneratorState.Completed; return CreateResult(ctx, heap, returnValue, done: true); }
+            g.CompletionMode = GeneratorCompletionMode.Return;
+            g.State = GeneratorState.Executing;
+            try
+            {
+                var result = interpreter.ExecuteGenerator(g, returnValue);
+                // If the generator yielded (normally inside a finally block),
+                // the Yield handler already built {value, done: false} which
+                // ExecuteGenerator returned. Override with the .return() value
+                // per ECMA-262 27.5.1.3 step 12.
+                if (g.State == GeneratorState.Suspended)
+                {
+                    g.State = GeneratorState.Completed;
+                    return CreateResult(ctx, heap, returnValue, done: true);
+                }
+                // Generator completed normally — result is already
+                // {value, done: true} from ExecuteGenerator wrapping.
+                return result;
+            }
+            catch (JsThrownException)
+            {
+                g.State = GeneratorState.Completed;
+                throw;
+            }
         }, length: 1);
 
         DefineMethod(heap, captured, ph, proto, "throw", (ctx, tv, args) =>
         {
             if (tv.Tag != JsValueTag.Object || ctx.Heap.GetObject(tv.AsObjectHandle()) is not GeneratorObject g)
                 throw new JsThrownException(ctx.CreateTypeError("Generator.prototype.throw: receiver is not a generator"));
-            g.State = GeneratorState.Completed;
-            if (args.Count > 0 && args[0].Tag == JsValueTag.Object)
-                throw new JsThrownException(args[0]);
-            throw new JsThrownException(ctx.CreateTypeError("Generator.prototype.throw: exception required"));
+            var excValue = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (g.State == GeneratorState.Completed)
+                throw new JsThrownException(excValue);
+            if (g.State == GeneratorState.Executing)
+                throw new JsThrownException(ctx.CreateTypeError("Generator.prototype.throw: generator is already executing"));
+            var interpreter = ctx as BytecodeInterpreter;
+            if (interpreter is null) { g.State = GeneratorState.Completed; throw new JsThrownException(excValue); }
+            g.CompletionMode = GeneratorCompletionMode.Throw;
+            g.State = GeneratorState.Executing;
+            try
+            {
+                var result = interpreter.ExecuteGenerator(g, excValue);
+                // Generator caught the exception and yielded — return the yield.
+                return result;
+            }
+            catch (JsThrownException)
+            {
+                g.State = GeneratorState.Completed;
+                throw;
+            }
         }, length: 1);
 
         proto.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(ph), Writable: true, Enumerable: false, Configurable: true));

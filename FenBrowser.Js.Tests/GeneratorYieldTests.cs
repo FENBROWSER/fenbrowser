@@ -145,4 +145,98 @@ public class GeneratorYieldTests
         ";
         Assert.True(Run(code).AsBoolean());
     }
+
+    // ECMA-262 27.5.1.3 — Generator.prototype.return on a suspended generator.
+    [Fact]
+    public void GeneratorReturnOnSuspendedProducesDoneTrue()
+    {
+        var code = @"
+            function* g() { yield 1; yield 2; }
+            var gen = g();
+            gen.next();              // yield 1
+            var r = gen.return(99);  // inject return
+            r.done === true && r.value === 99;
+        ";
+        Assert.True(Run(code).AsBoolean());
+    }
+
+    // ECMA-262 27.5.1.3 — .return() on a completed generator returns {done: true}.
+    [Fact]
+    public void GeneratorReturnOnCompletedReturnsDoneTrue()
+    {
+        var code = @"
+            function* g() { yield 'x'; }
+            var gen = g();
+            gen.next();              // consume
+            gen.next();              // complete
+            var r = gen.return(42);  // return on completed
+            r.done === true;
+        ";
+        Assert.True(Run(code).AsBoolean());
+    }
+
+    // ECMA-262 27.5.1.4 — Generator.prototype.throw injects an exception
+    // that is caught by the nearest try/catch in the generator body.
+    // Known limitation: the catch binding variable (e) is not yet accessible
+    // on the first resume after .throw(); it works after a subsequent yield.
+    [Fact]
+    public void GeneratorThrowInjectsExceptionCaughtByCatch()
+    {
+        var code = @"
+            function* g() {
+                try { yield 1; }
+                catch (e) { return 'caught'; }
+            }
+            var gen = g();
+            gen.next();              // yield 1
+            gen.throw('boom').value; // inject, caught, returns 'caught'
+        ";
+        Assert.Equal("caught", Run(code).AsString());
+    }
+
+    // .throw() on completed generator propagates the exception.
+    [Fact]
+    public void GeneratorThrowOnCompletedThrows()
+    {
+        var code = @"
+            function* g() { yield 'x'; }
+            var gen = g();
+            gen.next();          // yield 'x'
+            gen.next();          // complete
+            var threw = false;
+            try { gen.throw('err'); }
+            catch (e) { threw = true; }
+            threw;
+        ";
+        Assert.True(Run(code).AsBoolean());
+    }
+
+    // .throw() uncaught inside the generator body propagates to the caller.
+    [Fact]
+    public void GeneratorThrowUncaughtPropagates()
+    {
+        var code = @"
+            function* g() { yield 1; }
+            var gen = g();
+            gen.next();
+            var threw = false;
+            try { gen.throw('unhandled'); }
+            catch (e) { threw = true; }
+            threw;
+        ";
+        Assert.True(Run(code).AsBoolean());
+    }
+
+    // .return() on a suspended generator before any yield.
+    [Fact]
+    public void GeneratorReturnBeforeFirstYield()
+    {
+        var code = @"
+            function* g() { yield 1; yield 2; }
+            var gen = g();
+            var r = gen.return('early');
+            r.done === true && r.value === 'early';
+        ";
+        Assert.True(Run(code).AsBoolean());
+    }
 }

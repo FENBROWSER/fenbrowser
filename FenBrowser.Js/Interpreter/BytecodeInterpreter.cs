@@ -204,6 +204,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         gen.Environment = frame.Environment;
         gen.State = GeneratorState.Suspended;
         gen.YieldDestReg = yieldDestReg;
+
+        // Preserve exception handler stack so try/catch blocks survive yield.
+        gen.SavedExceptionHandlers = frame.ExceptionHandlers.ToArray();
     }
 
     // ECMA-262 27.5.1.2 — execute (or resume) a generator function body.
@@ -389,6 +392,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             if (ownerGenerator.YieldDestReg >= 0)
                 frame.Registers[ownerGenerator.YieldDestReg] = ownerGenerator.SentValue;
             ownerGenerator.YieldDestReg = -1;
+            // Restore exception handler stack so try/catch blocks survive yield.
+            // ToArray returns top-first; push in reverse to reconstruct original.
+            var saved = ownerGenerator.SavedExceptionHandlers;
+            for (var i = saved.Length - 1; i >= 0; i--)
+                frame.ExceptionHandlers.Push(saved[i]);
         }
         else
         {
@@ -425,6 +433,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded."));
             if (InterruptCallback is { } cb && !cb())
                 throw new JsThrownException(CreateRangeError("Execution interrupted."));
+
+            // ECMA-262 27.5.1.5 GeneratorResumeAbrupt — inject a throw-mode
+            // completion into the resumed generator body. ThrowOrHandle routes
+            // through the frame's exception handler stack so try/catch blocks
+            // inside the generator can intercept the injected exception.
+            if (frame.OwnerGenerator is { } genFrame && genFrame.CompletionMode == GeneratorCompletionMode.Throw)
+            {
+                genFrame.CompletionMode = GeneratorCompletionMode.Normal;
+                ThrowOrHandle(frame, genFrame.SentValue);
+                continue;
+            }
 
             var ins = function.Instructions[frame.InstructionPointer++];
             switch (ins.OpCode)

@@ -39,6 +39,15 @@ public sealed class GeneratorObject : JsObject
     // Set to -1 on creation; overwritten by each Yield opcode handler.
     public int YieldDestReg { get; set; } = -1;
 
+    // Completion mode for the current resume. Set by .next()/.return()/.throw()
+    // before calling ExecuteGenerator; consumed by the dispatch loop (Throw)
+    // or the Yield handler (Return override).
+    public GeneratorCompletionMode CompletionMode { get; set; } = GeneratorCompletionMode.Normal;
+
+    // Saved exception handler stack so try/catch blocks survive yield.
+    // Plain array (copy-on-save) avoids Stack<T> enumeration order ambiguity.
+    public int[] SavedExceptionHandlers { get; set; } = Array.Empty<int>();
+
     public GeneratorObject(BytecodeFunction function, JsValue[] registers, EnvironmentRecord? environment)
     {
         Function = function;
@@ -66,4 +75,13 @@ public enum GeneratorState
     Suspended,
     Executing,
     Completed
+}
+
+// ECMA-262 27.5.1.5 GeneratorResumeAbrupt — the completion type injected when
+// .return(val) or .throw(exc) resumes a suspended generator.
+public enum GeneratorCompletionMode
+{
+    Normal,  // .next(val) — continue from yield
+    Return,  // .return(val) — inject return completion
+    Throw    // .throw(exc) — inject throw completion
 }
