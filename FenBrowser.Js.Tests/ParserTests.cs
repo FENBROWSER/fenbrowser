@@ -1021,6 +1021,20 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void RejectsEscapedAsyncContextualKeywordInClassAsyncGeneratorMethod()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("class C { \\u0061sync* m(){} }")));
+    }
+
+    [Fact]
+    public void RejectsEscapedAsyncContextualKeywordInObjectAsyncGeneratorMethod()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("({ \\u0061sync* m(){} });")));
+    }
+
+    [Fact]
     public void ParsesDotMemberWithKeywordPropertyName()
     {
         var program = JsParser.ParseScript(new SourceText("obj.return(1);"));

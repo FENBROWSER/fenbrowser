@@ -983,7 +983,7 @@ public sealed class JsParser
             // The 'static' modifier is a contextual keyword (lexed as Identifier).
             // Disambiguate against a method literally named "static" by peeking the
             // next token: if it's '(', the current token is the method name.
-            if (IsIdentifierLike(Current()) && Current().Text == "static" && !IsPunctuatorAt(1, "("))
+            if (IsUnescapedIdentifierLike(Current(), "static") && !IsPunctuatorAt(1, "("))
             {
                 Advance();
                 isStatic = true;
@@ -1011,7 +1011,7 @@ public sealed class JsParser
             }
 
             var isAsync = false;
-            if (IsIdentifierLike(Current()) && Current().Text == "async" && !IsPunctuatorAt(1, "(") &&
+            if (IsUnescapedIdentifierLike(Current(), "async") && !IsPunctuatorAt(1, "(") &&
                 (IsPunctuatorAt(1, "*") || IsClassMemberNameStartAt(1)))
             {
                 Advance();
@@ -1027,7 +1027,7 @@ public sealed class JsParser
 
             // Detect getter/setter prefix - "get name() { ... }" / "set name(v) { ... }".
             ClassMemberKind kind = ClassMemberKind.Method;
-            if (IsIdentifierLike(Current()) && (Current().Text == "get" || Current().Text == "set")
+            if ((IsUnescapedIdentifierLike(Current(), "get") || IsUnescapedIdentifierLike(Current(), "set"))
                 && !IsPunctuatorAt(1, "(")
                 && IsClassMemberNameStartAt(1))
             {
@@ -1050,7 +1050,15 @@ public sealed class JsParser
                     fieldInitializer = ParseExpression(0);
                 }
 
-                ConsumeSemicolon();
+                if (IsPunctuator(";"))
+                {
+                    Advance();
+                }
+                else if (!IsPunctuator("}") && Current().Span.Line == Previous().Span.Line)
+                {
+                    throw new JsParserException("Expected ';' after class field declaration.");
+                }
+
                 members.Add(new ClassMemberNode(
                     memberName,
                     ClassMemberKind.Field,
@@ -2785,6 +2793,11 @@ public sealed class JsParser
         return !_strictMode || !StrictModeReservedIdentifierNames.Contains(token.Text);
     }
 
+    private static bool IsUnescapedIdentifierLike(Token token, string text) =>
+        (token.Kind == TokenKind.Identifier || token.Kind == TokenKind.Keyword) &&
+        !token.ContainsEscape &&
+        string.Equals(token.Text, text, StringComparison.Ordinal);
+
     private void ExpectPunctuator(string text)
     {
         if (!IsPunctuator(text))
@@ -2837,8 +2850,7 @@ public sealed class JsParser
     private bool IsAccessorPropertyStart()
     {
         var current = Current();
-        if (!((current.Kind == TokenKind.Identifier || current.Kind == TokenKind.Keyword) &&
-              (current.Text == "get" || current.Text == "set")))
+        if (!(IsUnescapedIdentifierLike(current, "get") || IsUnescapedIdentifierLike(current, "set")))
         {
             return false;
         }
@@ -2893,7 +2905,7 @@ public sealed class JsParser
     private bool IsAsyncMethodPropertyStart()
     {
         var current = Current();
-        if (!(current.Kind == TokenKind.Identifier || current.Kind == TokenKind.Keyword) || current.Text != "async")
+        if (!IsUnescapedIdentifierLike(current, "async"))
         {
             return false;
         }
@@ -2948,7 +2960,7 @@ public sealed class JsParser
     private bool IsAsyncGeneratorMethodPropertyStart()
     {
         var current = Current();
-        if (!(current.Kind == TokenKind.Identifier || current.Kind == TokenKind.Keyword) || current.Text != "async")
+        if (!IsUnescapedIdentifierLike(current, "async"))
         {
             return false;
         }
