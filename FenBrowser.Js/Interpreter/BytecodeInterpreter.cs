@@ -5504,11 +5504,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return CallFunction(thisValue, callArgs, thisArgument);
     }
 
-    // ECMA-262 20.2.3.2 Function.prototype.bind. Returns a fresh NativeFunctionObject
-    // that, when called, delegates to the original with thisArg pinned and any bound
-    // args prepended to the call-site args. The exotic [[Construct]] / target-name
-    // / target-length spec subtleties are deferred; the common bind use case
-    // (this + partial application) is covered.
+    // ECMA-262 20.2.3.2 Function.prototype.bind. Returns a BoundFunctionObject
+    // exotic object with [[BoundTargetFunction]], [[BoundThis]], and [[BoundArguments]].
     private JsValue FunctionPrototypeBind(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         if (thisValue.Tag != JsValueTag.Object)
@@ -5517,7 +5514,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         var targetObj = _heap.GetObject(thisValue.AsObjectHandle());
-        if (targetObj is not JsFunctionObject && targetObj is not NativeFunctionObject)
+        if (targetObj is not JsFunctionObject && targetObj is not NativeFunctionObject && targetObj is not BoundFunctionObject)
         {
             throw new JsThrownException(CreateTypeError("Function.prototype.bind called on non-callable."));
         }
@@ -5529,28 +5526,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             boundArgs[i - 1] = args[i];
         }
 
-        // Capture the original handle so the bound function never re-resolves to a
-        // moved object if the heap compacts under it.
-        var targetValue = thisValue;
-        var bound = new NativeFunctionObject(
-            "bound",
-            (_, callArgs) =>
-            {
-                var merged = new JsValue[boundArgs.Length + callArgs.Count];
-                Array.Copy(boundArgs, merged, boundArgs.Length);
-                for (var i = 0; i < callArgs.Count; i++)
-                {
-                    merged[boundArgs.Length + i] = callArgs[i];
-                }
-
-                return CallFunction(targetValue, merged, boundThis);
-            },
-            length: Math.Max(0, GetCallableLength(targetObj) - boundArgs.Length));
-        // Inherit Function.prototype so .bind/.call/.apply work on the bound result.
+        var bound = new BoundFunctionObject(
+            thisValue,
+            boundThis,
+            boundArgs,
+            Math.Max(0, GetCallableLength(targetObj) - boundArgs.Length));
         bound.SetPrototype(EnsureFunctionPrototype());
 
         var boundHandle = _heap.AllocateObject(bound, AllocationSite.Current());
         return JsValue.FromObject(boundHandle);
+    }
+
+    // Merge bound args + call-site args for BoundFunctionObject [[Call]]/[[Construct]].
+    private static JsValue[] MergeBoundArgs(JsValue[] boundArgs, IReadOnlyList<JsValue> callArgs)
+    {
+        var merged = new JsValue[boundArgs.Length + callArgs.Count];
+        Array.Copy(boundArgs, merged, boundArgs.Length);
+        for (var i = 0; i < callArgs.Count; i++)
+            merged[boundArgs.Length + i] = callArgs[i];
+        return merged;
     }
 
     private static int GetCallableLength(JsObject callable)
@@ -10122,6 +10116,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private JsValue CallFunction(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
     {
         var obj = ResolveObject(value);
+
+        // ECMA-262 10.4.1.3 [[Call]] — merge bound args + call-site args,
+        // then delegate to [[BoundTargetFunction]] with [[BoundThis]].
+        if (obj is BoundFunctionObject bound)
+        {
+            var merged = MergeBoundArgs(bound.BoundArgs, args);
+            return CallFunction(bound.TargetFunction, merged, bound.BoundThis);
+        }
+
         if (obj is JsFunctionObject fn)
         {
             if (fn.Kind == FunctionKind.Async)
@@ -10173,6 +10176,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private JsValue ConstructFunction(JsValue value, IReadOnlyList<JsValue> args)
     {
         var obj = ResolveObject(value);
+
+        // ECMA-262 10.4.1.4 [[Construct]] — merge bound args + call-site args,
+        // then construct [[BoundTargetFunction]].
+        if (obj is BoundFunctionObject bound)
+        {
+            var merged = MergeBoundArgs(bound.BoundArgs, args);
+            return ConstructFunction(bound.TargetFunction, merged);
+        }
+
         if (obj is JsFunctionObject fn)
         {
             if (fn.Kind == FunctionKind.Generator)

@@ -74,4 +74,63 @@ public sealed class FunctionApplyBindTests
     {
         Assert.Equal(7, RunNum("function add(a,b){return a+b;} var p = add.bind(null, 3).bind(null, 4); p();"));
     }
+
+    // ECMA-262 10.4.1.4 — [[Construct]] on a bound function delegates to target.
+    [Fact]
+    public void NewOnBoundFunctionConstructsTarget()
+    {
+        var result = RunNum(@"
+            function Ctor(a, b) { this.v = a + b; }
+            var BoundCtor = Ctor.bind(null, 3);
+            var inst = new BoundCtor(4);
+            inst.v;
+        ");
+        Assert.Equal(7, result);
+    }
+
+    // Bound function's .length excludes the bound arguments per spec 20.2.3.2 step 8.
+    [Fact]
+    public void BoundFunctionLengthExcludesBoundArgs()
+    {
+        Assert.True(RunBool("function f(a,b,c,d){} f.bind(null, 1, 2).length === 2;"));
+    }
+
+    // Bound function's .length is max(0, targetLength - boundArgsCount).
+    [Fact]
+    public void BoundFunctionLengthClampedAtZero()
+    {
+        Assert.True(RunBool("function f(a){} f.bind(null, 1, 2).length === 0;"));
+    }
+
+    // instanceof works with bound constructors.
+    [Fact]
+    public void InstanceOfBoundConstructor()
+    {
+        Assert.True(RunBool(@"
+            function Ctor() {}
+            var B = Ctor.bind(null);
+            var inst = new B();
+            inst instanceof Ctor;
+        "));
+    }
+
+    // Bound function of a BoundFunctionObject works (chained bind).
+    [Fact]
+    public void ChainedBoundFunctionCallWorks()
+    {
+        var result = RunNum(@"
+            function add(a, b, c) { return a + b + c; }
+            var f1 = add.bind(null, 1);
+            var f2 = f1.bind(null, 2);
+            f2(3);
+        ");
+        Assert.Equal(6, result);
+    }
+
+    private static bool RunBool(string source)
+    {
+        var fn = new BytecodeCompiler().CompileScript(new SourceText(source));
+        new BytecodeVerifier().Verify(fn);
+        return new BytecodeInterpreter().Execute(fn).AsBoolean();
+    }
 }
