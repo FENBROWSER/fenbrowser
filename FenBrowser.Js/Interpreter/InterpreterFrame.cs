@@ -29,7 +29,7 @@ public sealed class InterpreterFrame
 
     public JsValue[] Registers { get; }
 
-    public EnvironmentRecord Environment { get; }
+    public EnvironmentRecord Environment { get; set; }
 
     public Stack<int> ExceptionHandlers { get; }
 

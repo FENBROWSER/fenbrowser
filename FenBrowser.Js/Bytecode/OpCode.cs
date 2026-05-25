@@ -149,7 +149,17 @@ public enum OpCode : byte
     Await,
 
     // ECMA-262 13.3.7.1 — call a function with a spread argument (...args).
-    // A=dest, B=callee, C=spreadArrayReg. Unpacks the array from register C
-    // into individual arguments and calls the callee.
+    // A=dest, B=callee, C=spreadArrayReg, D=thisReg (0 means no this).
+    // Unpacks the array from register C into individual arguments and calls
+    // the callee with the given this value.
     CallSpread,
+
+    // ECMA-262 9.1.1.1 — push a new DeclarativeEnvironmentRecord onto the
+    // frame's lexical environment chain. Used by catch blocks and block-scoped
+    // declarations (let/const in blocks).
+    EnterScope,
+
+    // ECMA-262 9.1.1.1 — pop the current lexical environment, restoring
+    // frame.Environment to its outer (parent) record.
+    LeaveScope,
 }

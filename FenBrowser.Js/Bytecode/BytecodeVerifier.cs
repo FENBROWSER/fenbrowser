@@ -119,6 +119,12 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 ValidateRegister(ins.C, function.RegisterCount, ip, "C");
+                if (ins.D != 0)
+                    ValidateRegister(ins.D, function.RegisterCount, ip, "D (thisReg)");
+                break;
+            case OpCode.EnterScope:
+                break;
+            case OpCode.LeaveScope:
                 break;
             case OpCode.SetHomeObject:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");

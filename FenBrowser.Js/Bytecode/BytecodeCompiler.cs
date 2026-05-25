@@ -621,16 +621,14 @@ public sealed class BytecodeCompiler
     private static FunctionExpressionNode SynthesizeDefaultConstructor(string? className, bool isDerived = false)
     {
         // ECMA-262 15.7.10 Default Constructor. For base classes: empty body.
-        // For derived classes: `constructor() { super(); }`.
-        // TODO: emit `super(...arguments)` once the arguments binding is
-        // accessible inside synthesized constructors.
+        // For derived classes: `constructor() { super(...arguments); }`.
         var span = default(SourceSpan);
         IReadOnlyList<StatementNode> body;
         if (isDerived)
         {
             var superCall = new CallExpressionNode(
                 new SuperExpressionNode(span),
-                Array.Empty<ExpressionNode>(),
+                new ExpressionNode[] { new SpreadElementExpressionNode(new IdentifierExpressionNode("arguments", span), span) },
                 span);
             body = new StatementNode[] { new ExpressionStatementNode(superCall, span) };
         }
@@ -919,7 +917,15 @@ public sealed class BytecodeCompiler
         var catchEntry = _instructions.Count;
         PatchJump(pushHandlerIndex, catchEntry);
 
+        // ECMA-262 14.3 — catch creates a new EnvironmentRecord for the catch
+        // parameter. We add it as a var declaration so InstantiateVarDeclarations
+        // creates the binding in the function env (initialized to undefined,
+        // surviving generator save/restore). StoreVar then writes the actual
+        // exception value from register 0. The catch var is function-scoped
+        // rather than block-scoped; proper block scoping (EnterScope/LeaveScope)
+        // will replace this once those opcodes are fully debugged.
         var catchSlot = GetOrCreateVariableSlot(tryCatchStmt.CatchIdentifier);
+        _varDeclarationNames.Add(tryCatchStmt.CatchIdentifier);
         _instructions.Add(new Instruction(OpCode.StoreVar, 0, catchSlot, 0));
         CompileStatement(tryCatchStmt.CatchBlock);
 
@@ -1052,7 +1058,7 @@ public sealed class BytecodeCompiler
             case CallExpressionNode call:
             {
                 var calleeReg = -1;
-                var thisReg = -1;
+                var thisReg = 0;
                 var isMethodCall = false;
 
                 // H.3.2 - super(args) call. The base constructor is loaded via
@@ -1113,7 +1119,7 @@ public sealed class BytecodeCompiler
                 if (hasSpread)
                 {
                     var spreadArg = CompileExpression(call.Arguments[0]);
-                    _instructions.Add(new Instruction(OpCode.CallSpread, dest, calleeReg, spreadArg));
+                    _instructions.Add(new Instruction(OpCode.CallSpread, dest, calleeReg, spreadArg, thisReg));
                     if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
                     return dest;
                 }
