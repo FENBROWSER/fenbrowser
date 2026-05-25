@@ -37,4 +37,10 @@ public sealed class BytecodeFunction
 
     internal Dictionary<int, PolymorphicInlineCache>? LoadICs { get; set; }
     internal Dictionary<int, PolymorphicInlineCache>? StoreICs { get; set; }
+
+    // Brand tokens for private fields/methods. Each class with private members
+    // gets a unique long token. The D field on DefinePrivateField/GetPrivateField/
+    // SetPrivateField instructions indexes into this list. The interpreter checks
+    // obj.PrivateBrand == BrandTokens[ins.D] for access.
+    public IReadOnlyList<long> BrandTokens { get; init; } = Array.Empty<long>();
 }

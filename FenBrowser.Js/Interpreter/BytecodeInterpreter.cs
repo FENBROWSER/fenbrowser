@@ -769,6 +769,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     break;
                 }
                 // H.5 — private field ops with brand validation.
+                // ECMA-262 9.1.10 PrivateFieldAdd / PrivateFieldGet / PrivateFieldFind.
+                // Brand is a class-unique token stored in function.BrandTokens[ins.D].
                 case OpCode.DefinePrivateField:
                 {
                     var target = frame.Registers[ins.A];
@@ -777,7 +779,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     if (target.Tag != JsValueTag.Object)
                         throw new JsThrownException(CreateTypeError("Cannot define private field on non-object."));
                     var targetObj = _heap.GetObject(target.AsObjectHandle());
-                    targetObj.PrivateBrand = targetObj.PrivateBrand != 0 ? targetObj.PrivateBrand : targetObj.GetHashCode();
+                    var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
+                    targetObj.PrivateBrand = targetObj.PrivateBrand != 0 ? targetObj.PrivateBrand : brand;
                     targetObj.DefineOwnProperty(name, new JsPropertyDescriptor(value, Writable: true, Enumerable: false, Configurable: false));
                     break;
                 }
@@ -788,7 +791,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     if (objVal.Tag != JsValueTag.Object)
                         throw new JsThrownException(CreateTypeError("Cannot read private field from non-object."));
                     var obj = _heap.GetObject(objVal.AsObjectHandle());
-                    if (obj.PrivateBrand == 0)
+                    var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
+                    if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand)
                         throw new JsThrownException(CreateTypeError("Cannot read private field from an object whose class did not declare it."));
                     if (!obj.TryGetOwnProperty(name, out var desc))
                         throw new JsThrownException(CreateTypeError("Cannot read private field from an object whose class did not declare it."));
@@ -803,7 +807,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     if (objVal.Tag != JsValueTag.Object)
                         throw new JsThrownException(CreateTypeError("Cannot write private field to non-object."));
                     var obj = _heap.GetObject(objVal.AsObjectHandle());
-                    if (obj.PrivateBrand == 0 || !obj.TryGetOwnProperty(name, out var existing))
+                    var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
+                    if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand || !obj.TryGetOwnProperty(name, out var existing))
                         throw new JsThrownException(CreateTypeError("Cannot write private field to an object whose class did not declare it."));
                     obj.DefineOwnProperty(name, existing with { Value = value });
                     break;

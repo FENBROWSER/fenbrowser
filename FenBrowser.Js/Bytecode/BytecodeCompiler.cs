@@ -17,11 +17,15 @@ public sealed class BytecodeCompiler
     }
 
     private static int s_privateClassCounter;
+    private static long s_brandCounter;
 
     // H.5: true while compiling the constructor body of a class with private fields.
     // Private field writes in this context emit DefinePrivateField instead of SetPrivateField.
     private bool _compilingClassConstructor;
     private bool _isDerivedConstructor;
+
+    // Per-function brand tokens for private field access validation.
+    private List<long> _brandTokens = new();
 
     private readonly List<Instruction> _instructions = new();
     private readonly List<JsValue> _constants = new();
@@ -116,7 +120,8 @@ public sealed class BytecodeCompiler
             ParameterNames = _parameterNames.ToArray(),
             HasOwnArgumentsObject = hasOwnArgumentsObject,
             NestedFunctions = _nestedFunctions.ToArray(),
-            RegisterCount = Math.Max(2, _nextRegister)
+            RegisterCount = Math.Max(2, _nextRegister),
+            BrandTokens = _brandTokens.ToArray()
         };
     }
 
@@ -331,6 +336,14 @@ public sealed class BytecodeCompiler
                     privateMangle[member.Name] = "__priv" + id + "__" + member.Name.Substring(1);
                 }
             }
+        }
+
+        // Generate a per-class brand token for private field access validation.
+        // All DefinePrivateField/GetPrivateField/SetPrivateField instructions in
+        // this class's constructor will carry D=0 (index into BrandTokens).
+        if (privateMangle.Count > 0 && _brandTokens.Count == 0)
+        {
+            _brandTokens.Add(System.Threading.Interlocked.Increment(ref s_brandCounter));
         }
 
         // H.5 - apply the private-name mangle to each member's function body /
@@ -591,7 +604,7 @@ public sealed class BytecodeCompiler
     private int CompileFunctionExpressionToRegister(FunctionExpressionNode fnExpr)
     {
         var nestedProgram = new ProgramNode(ProgramKind.Script, fnExpr.Body.Statements, fnExpr.Body.Span);
-        var childCompiler = new BytecodeCompiler { _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor };
+        var childCompiler = new BytecodeCompiler { _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _brandTokens = this._brandTokens };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             fnExpr.Parameters,
