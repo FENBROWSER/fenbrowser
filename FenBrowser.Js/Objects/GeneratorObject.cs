@@ -1,5 +1,6 @@
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
+using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Objects;
@@ -48,11 +49,25 @@ public sealed class GeneratorObject : JsObject
     // Plain array (copy-on-save) avoids Stack<T> enumeration order ambiguity.
     public int[] SavedExceptionHandlers { get; set; } = Array.Empty<int>();
 
+    // ECMA-262 15.5.5 — yield* delegation: the inner iterator being delegated to.
+    // Set when YieldStar first executes; cleared when delegation completes.
+    // Stored as ObjectHandle so GC can trace it.
+    public ObjectHandle? YieldStarIterator { get; set; }
+
     public GeneratorObject(BytecodeFunction function, JsValue[] registers, EnvironmentRecord? environment)
     {
         Function = function;
         Registers = registers;
         Environment = environment;
+        OuterEnvironment = environment;
+    }
+
+    public override void Trace(IHeapTracer tracer)
+    {
+        base.Trace(tracer);
+        if (YieldStarIterator is { } iter)
+            tracer.Trace(iter);
+        Environment?.Trace(tracer);
     }
 
     // Extract the initial parameter values that were bound when the generator
