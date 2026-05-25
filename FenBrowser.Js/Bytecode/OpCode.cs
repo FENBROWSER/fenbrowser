@@ -147,4 +147,9 @@ public enum OpCode : byte
     // the awaited value settles, then resumes with either the fulfillment value
     // or a throw completion for rejection.
     Await,
+
+    // ECMA-262 13.3.7.1 — call a function with a spread argument (...args).
+    // A=dest, B=callee, C=spreadArrayReg. Unpacks the array from register C
+    // into individual arguments and calls the callee.
+    CallSpread,
 }

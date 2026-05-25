@@ -880,6 +880,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     StoreCallResult(frame, ins.A, frame.Registers[ins.B], callArgs, JsValue.Undefined);
                     break;
                 }
+                case OpCode.CallSpread:
+                {
+                    // ECMA-262 13.3.7.1 — unpack a spread array into individual args.
+                    var spreadArray = frame.Registers[ins.C];
+                    var unpackedArgs = Array.Empty<JsValue>();
+                    if (spreadArray.Tag == JsValueTag.Object)
+                    {
+                        var arrObj = _heap.GetObject(spreadArray.AsObjectHandle());
+                        if (arrObj.TryGetOwnProperty("length", out var lenDesc))
+                        {
+                            var len = (int)lenDesc.Value.AsNumber();
+                            unpackedArgs = new JsValue[len];
+                            for (var i = 0; i < len; i++)
+                            {
+                                if (arrObj.TryGetOwnProperty(i.ToString(), out var elemDesc))
+                                    unpackedArgs[i] = elemDesc.Value;
+                                else
+                                    unpackedArgs[i] = JsValue.Undefined;
+                            }
+                        }
+                    }
+                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], unpackedArgs, JsValue.Undefined);
+                    break;
+                }
                 case OpCode.Construct0:
                 {
                     StoreConstructResult(frame, ins.A, frame.Registers[ins.B], Array.Empty<JsValue>());

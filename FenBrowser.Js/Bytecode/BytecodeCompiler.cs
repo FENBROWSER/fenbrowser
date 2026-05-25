@@ -621,9 +621,9 @@ public sealed class BytecodeCompiler
     private static FunctionExpressionNode SynthesizeDefaultConstructor(string? className, bool isDerived = false)
     {
         // ECMA-262 15.7.10 Default Constructor. For base classes: empty body.
-        // For derived classes: `constructor() { super(); }`. The spec actually
-        // synthesises `constructor(...args) { super(...args); }`; we forward
-        // zero args until call-with-spread is wired through the compiler.
+        // For derived classes: `constructor() { super(); }`.
+        // TODO: emit `super(...arguments)` once the arguments binding is
+        // accessible inside synthesized constructors.
         var span = default(SourceSpan);
         IReadOnlyList<StatementNode> body;
         if (isDerived)
@@ -1107,6 +1107,17 @@ public sealed class BytecodeCompiler
 
                 var isSuperCall = call.Callee is SuperExpressionNode;
                 var dest = AllocateRegister();
+
+                // ECMA-262 13.3.7.1 — handle spread arguments (...args) via CallSpread.
+                var hasSpread = call.Arguments.Count == 1 && call.Arguments[0] is SpreadElementExpressionNode;
+                if (hasSpread)
+                {
+                    var spreadArg = CompileExpression(call.Arguments[0]);
+                    _instructions.Add(new Instruction(OpCode.CallSpread, dest, calleeReg, spreadArg));
+                    if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
+                    return dest;
+                }
+
                 switch (call.Arguments.Count)
                 {
                     case 0:
@@ -1458,6 +1469,10 @@ public sealed class BytecodeCompiler
             }
             case ParenthesizedExpressionNode paren:
                 return CompileExpression(paren.Expression);
+            case SpreadElementExpressionNode spread:
+                // ECMA-262 13.3.7.1 — compile the spread argument; the containing
+                // CallExpressionNode emits CallSpread to unpack it.
+                return CompileExpression(spread.Argument);
             default:
                 throw new InvalidOperationException($"Unsupported expression type {expr.GetType().Name}.");
         }

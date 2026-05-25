@@ -570,6 +570,16 @@ public sealed class ClassRuntimeTests
         ").AsNumber());
     }
 
+    // ECMA-262 13.3.7.1 — explicit spread in call expressions.
+    [Fact]
+    public void ExplicitSpreadInCallUnpacksArgs()
+    {
+        Assert.Equal(6d, Run(@"
+            function add(a, b, c) { return a + b + c; }
+            add(...[1, 2, 3]);
+        ").AsNumber());
+    }
+
     // H.5 - derived classes with default constructor + instance fields.
     [Fact]
     public void DerivedClassDefaultConstructorCallsSuper()
