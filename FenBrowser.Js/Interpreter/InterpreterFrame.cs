@@ -45,4 +45,10 @@ public sealed class InterpreterFrame
     // frame is a construct call, or JsValue.Undefined for ordinary calls.
     // ECMA-262 9.1.1.3 NewTarget.
     public JsValue NewTarget { get; set; } = JsValue.Undefined;
+
+    // Generator that owns this frame. When set, the Yield/YieldStar opcodes
+    // will save frame state (IP, registers, environment) back to the generator
+    // before returning, so the next .next()/resume can continue from this point.
+    // ECMA-262 27.5.1.3 GeneratorYield / 27.5.1.2 Resume.
+    public GeneratorObject? OwnerGenerator { get; set; }
 }

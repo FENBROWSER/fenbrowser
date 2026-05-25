@@ -33,11 +33,31 @@ public sealed class GeneratorObject : JsObject
     // The last value sent into the generator (via .next(val)).
     public JsValue SentValue { get; set; } = JsValue.Undefined;
 
+    // The A-operand (destination register) of the last Yield instruction.
+    // When the generator is resumed, SentValue is injected into this register
+    // so `var x = yield expr;` evaluates x to the value passed to .next().
+    // Set to -1 on creation; overwritten by each Yield opcode handler.
+    public int YieldDestReg { get; set; } = -1;
+
     public GeneratorObject(BytecodeFunction function, JsValue[] registers, EnvironmentRecord? environment)
     {
         Function = function;
         Registers = registers;
         Environment = environment;
+    }
+
+    // Extract the initial parameter values that were bound when the generator
+    // function was called. These live in registers[1..paramCount+1] (register 0
+    // is the return slot). On the first .next() call, ExecuteGenerator passes
+    // these as the args to ExecuteInternal so the frame environment binds the
+    // correct parameter values.
+    public JsValue[] GetInitialParameters()
+    {
+        var paramCount = Function.ParameterNames.Count;
+        var result = new JsValue[paramCount];
+        for (var i = 0; i < paramCount; i++)
+            result[i] = Registers[i + 1]; // register 0 = return slot
+        return result;
     }
 }
 

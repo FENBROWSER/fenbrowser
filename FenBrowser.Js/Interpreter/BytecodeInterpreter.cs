@@ -92,6 +92,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private ObjectHandle? _decodeUriHandle;
     private ObjectHandle? _decodeUriComponentHandle;
     private ObjectHandle? _uriErrorConstructorHandle;
+    private ObjectHandle? _generatorPrototypeHandle;
     private ObjectHandle? _uriErrorPrototypeHandle;
     private ObjectHandle? _referenceErrorConstructorHandle;
     private ObjectHandle? _referenceErrorPrototypeHandle;
@@ -191,16 +192,55 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return result;
     }
 
-    // ECMA-262 27.5 — execute a generator function body from its saved state.
-    public JsValue ExecuteGenerator(GeneratorObject gen)
+    // ECMA-262 27.5.1.3 GeneratorYield — save frame execution state into the
+    // owner generator so a subsequent .next()/resume can continue from this point.
+    private static void SaveGeneratorState(InterpreterFrame frame, int yieldDestReg)
+    {
+        if (frame.OwnerGenerator is not { } gen)
+            return;
+
+        gen.InstructionPointer = frame.InstructionPointer;
+        Array.Copy(frame.Registers, gen.Registers, frame.Registers.Length);
+        gen.Environment = frame.Environment;
+        gen.State = GeneratorState.Suspended;
+        gen.YieldDestReg = yieldDestReg;
+    }
+
+    // ECMA-262 27.5.1.2 — execute (or resume) a generator function body.
+    public JsValue ExecuteGenerator(GeneratorObject gen, JsValue sentValue)
     {
         _instructionCount = 0;
+        gen.SentValue = sentValue;
+
+        // First call: let ExecuteInternalCore create a proper DeclarativeEnvironmentRecord
+        // chained to the outer scope. Resume: reuse the saved frame environment so local
+        // bindings from the first call are still visible.
+        var isResume = gen.InstructionPointer > 0;
+        // First call: pass the initial parameters that were bound when the
+        // generator function was called (stored in gen.Registers[1..n]).
+        // Resume: pass no args — the saved registers and env already hold
+        // all local state.
+        var initialArgs = isResume ? Array.Empty<JsValue>() : gen.GetInitialParameters();
         var result = ExecuteInternal(
             gen.Function,
-            Array.Empty<JsValue>(),
+            initialArgs,
             gen.ThisValue,
             gen.OuterEnvironment,
-            frameEnvironment: gen.Environment);
+            frameEnvironment: isResume ? gen.Environment : null,
+            ownerGenerator: gen);
+
+        // If Yield didn't set state to Suspended, the generator body completed
+        // (return or fell off end). Wrap the raw return value into {value, done: true}
+        // per ECMA-262 27.5.1.2 GeneratorYield step 5.
+        if (gen.State != GeneratorState.Suspended)
+        {
+            gen.State = GeneratorState.Completed;
+            var retObj = CreateOrdinaryObject();
+            retObj.DefineOwnProperty("value", new JsPropertyDescriptor(result, Writable: true, Enumerable: true, Configurable: true));
+            retObj.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            return JsValue.FromObject(_heap.AllocateObject(retObj, AllocationSite.Current()));
+        }
+
         return result;
     }
 
@@ -290,7 +330,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         JsValue thisValue,
         EnvironmentRecord? outerEnvironment = null,
         EnvironmentRecord? frameEnvironment = null,
-        JsFunctionObject? callee = null)
+        JsFunctionObject? callee = null,
+        GeneratorObject? ownerGenerator = null)
     {
         if (_callDepth >= MaxCallDepth)
         {
@@ -300,7 +341,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _callDepth++;
         try
         {
-            return ExecuteInternalCore(function, args, thisValue, outerEnvironment, frameEnvironment, callee);
+            return ExecuteInternalCore(function, args, thisValue, outerEnvironment, frameEnvironment, callee, ownerGenerator);
         }
         finally
         {
@@ -315,7 +356,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         JsValue thisValue,
         EnvironmentRecord? outerEnvironment = null,
         EnvironmentRecord? frameEnvironment = null,
-        JsFunctionObject? callee = null)
+        JsFunctionObject? callee = null,
+        GeneratorObject? ownerGenerator = null)
     {
         // B.6.4 — when the callee carries an outer EnvironmentRecord (set at
         // CreateFunction time on JsFunctionObject), the new frame's env is a fresh
@@ -327,7 +369,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             : function.IsDerivedConstructor
                 ? new FunctionEnvironmentRecord(ThisBindingStatus.Uninitialized, JsValue.Undefined, JsValue.Undefined, callee?.HomeObject, outerEnvironment)
                 : new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment));
-        var frame = new InterpreterFrame(function, thisValue, frameEnv) { CalleeFunctionObject = callee };
+        var frame = new InterpreterFrame(function, thisValue, frameEnv) { CalleeFunctionObject = callee, OwnerGenerator = ownerGenerator };
         // H.5 - new.target: consume the one-shot pending slot set by
         // ExecuteConstruct. Ordinary calls leave it Undefined.
         if (_pendingNewTarget.Tag != JsValueTag.Undefined)
@@ -335,30 +377,46 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             frame.NewTarget = _pendingNewTarget;
             _pendingNewTarget = JsValue.Undefined;
         }
-        // Pre-create env bindings for locally-bound names that the spec mandates the
-        // function-environment record holds: each formal parameter, and `arguments`
-        // when the function gets its own arguments object. We deliberately do NOT
-        // pre-bind every VariableSlots entry: the inner compiler also allocates slots
-        // for free variable references, and creating local bindings for those would
-        // shadow the outer chain that LoadName/StoreName walks.
-        for (var i = 0; i < function.ParameterNames.Count; i++)
-        {
-            var paramName = function.ParameterNames[i];
-            var paramValue = i < args.Count ? args[i] : JsValue.Undefined;
-            _ = frame.Environment.CreateMutableBinding(paramName, deletable: false);
-            _ = frame.Environment.InitializeBinding(paramName, paramValue);
-        }
 
-        if (function.HasOwnArgumentsObject &&
-            !function.ParameterNames.Contains("arguments", StringComparer.Ordinal))
+        // Generator resume: restore saved execution state instead of fresh init.
+        // ECMA-262 27.5.1.2 Resume — the [[GeneratorContext]] holds IP, registers,
+        // and environment; we skip parameter binding and declaration instantiation
+        // because those were already done on the first .next() call.
+        if (ownerGenerator != null && ownerGenerator.InstructionPointer > 0)
         {
-            var argumentsObject = CreateArgumentsObject(args);
-            _ = frame.Environment.CreateMutableBinding("arguments", deletable: false);
-            _ = frame.Environment.InitializeBinding("arguments", argumentsObject);
+            Array.Copy(ownerGenerator.Registers, frame.Registers, frame.Registers.Length);
+            frame.InstructionPointer = ownerGenerator.InstructionPointer;
+            if (ownerGenerator.YieldDestReg >= 0)
+                frame.Registers[ownerGenerator.YieldDestReg] = ownerGenerator.SentValue;
+            ownerGenerator.YieldDestReg = -1;
         }
+        else
+        {
+            // Pre-create env bindings for locally-bound names that the spec mandates the
+            // function-environment record holds: each formal parameter, and `arguments`
+            // when the function gets its own arguments object. We deliberately do NOT
+            // pre-bind every VariableSlots entry: the inner compiler also allocates slots
+            // for free variable references, and creating local bindings for those would
+            // shadow the outer chain that LoadName/StoreName walks.
+            for (var i = 0; i < function.ParameterNames.Count; i++)
+            {
+                var paramName = function.ParameterNames[i];
+                var paramValue = i < args.Count ? args[i] : JsValue.Undefined;
+                _ = frame.Environment.CreateMutableBinding(paramName, deletable: false);
+                _ = frame.Environment.InitializeBinding(paramName, paramValue);
+            }
 
-        InstantiateVarDeclarations(function, frame);
-        InstantiateLexicalDeclarations(function, frame);
+            if (function.HasOwnArgumentsObject &&
+                !function.ParameterNames.Contains("arguments", StringComparer.Ordinal))
+            {
+                var argumentsObject = CreateArgumentsObject(args);
+                _ = frame.Environment.CreateMutableBinding("arguments", deletable: false);
+                _ = frame.Environment.InitializeBinding("arguments", argumentsObject);
+            }
+
+            InstantiateVarDeclarations(function, frame);
+            InstantiateLexicalDeclarations(function, frame);
+        }
 
         while (frame.InstructionPointer < function.Instructions.Count)
         {
@@ -474,7 +532,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     break;
                 case OpCode.Yield:
                 {
-                    // ECMA-262 27.5.1.2 — yield returns {value, done}.
+                    // ECMA-262 27.5.1.3 GeneratorYield — save frame state to the
+                    // owner generator so the next .next()/resume continues here.
+                    SaveGeneratorState(frame, ins.A);
+
                     var resultObj = CreateOrdinaryObject();
                     resultObj.DefineOwnProperty("value", new JsPropertyDescriptor(frame.Registers[ins.B], Writable: true, Enumerable: true, Configurable: true));
                     resultObj.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
@@ -482,6 +543,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 }
                 case OpCode.YieldStar:
                 {
+                    SaveGeneratorState(frame, ins.A);
+
                     var starObj = CreateOrdinaryObject();
                     starObj.DefineOwnProperty("value", new JsPropertyDescriptor(frame.Registers[ins.B], Writable: true, Enumerable: true, Configurable: true));
                     starObj.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
@@ -8938,7 +9001,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             "String" => EnsureStringPrototype(),
             "Date" => EnsureDatePrototype(),
             "RegExp" => EnsureRegExpPrototype(),
-            "GeneratorPrototype" => EnsureObjectPrototype(),
+            "GeneratorPrototype" => EnsureGeneratorPrototype(),
             "Error" => EnsureErrorPrototype(),
             "TypeError" => EnsureTypeErrorPrototype(),
             "RangeError" => EnsureRangeErrorPrototype(),
@@ -8950,6 +9013,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             "Array" => EnsureArrayPrototype(),
             _ => EnsureObjectPrototype(),
         };
+    }
+
+    private ObjectHandle EnsureGeneratorPrototype()
+    {
+        if (_generatorPrototypeHandle is { } existing)
+            return existing;
+
+        // GeneratorBuiltin installs "GeneratorPrototype" as a global property during
+        // InstallGlobalObjectProperties. Read it back so GetGlobalPrototype resolves
+        // the real prototype with .next()/.return()/.throw() rather than Object.prototype.
+        var global = EnsureGlobalObject();
+        var globalObj = _heap.GetObject(global);
+        if (globalObj.TryGetOwnProperty("GeneratorPrototype", out var desc) && desc.Value.Tag == JsValueTag.Object)
+        {
+            _generatorPrototypeHandle = desc.Value.AsObjectHandle();
+            return _generatorPrototypeHandle.Value;
+        }
+
+        return EnsureObjectPrototype();
     }
 
     private ObjectHandle EnsureStringPrototype()

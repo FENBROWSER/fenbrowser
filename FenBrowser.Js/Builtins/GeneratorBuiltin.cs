@@ -25,13 +25,17 @@ public sealed class GeneratorBuiltin : IBuiltinModule
                 throw new JsThrownException(ctx.CreateTypeError("Generator.prototype.next: receiver is not a generator"));
             if (g.State == GeneratorState.Completed)
                 return CreateResult(ctx, heap, JsValue.Undefined, done: true);
+            if (g.State == GeneratorState.Executing)
+                throw new JsThrownException(ctx.CreateTypeError("Generator.prototype.next: generator is already executing"));
+            var sentValue = args.Count > 0 ? args[0] : JsValue.Undefined;
             g.State = GeneratorState.Executing;
             try
             {
                 var interpreter = ctx as BytecodeInterpreter;
                 if (interpreter is null) return CreateResult(ctx, heap, JsValue.Undefined, done: true);
-                var result = interpreter.ExecuteGenerator(g);
-                g.State = GeneratorState.Completed;
+                var result = interpreter.ExecuteGenerator(g, sentValue);
+                // ExecuteGenerator already updated g.State (Suspended if yielded,
+                // Completed if returned). Don't override here.
                 return result;
             }
             catch (JsThrownException)
