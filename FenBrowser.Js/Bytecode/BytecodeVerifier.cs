@@ -109,6 +109,12 @@ public sealed class BytecodeVerifier
                 ValidatePropertyName(function, ip, ins.B);
                 ValidateRegister(ins.C, function.RegisterCount, ip, "C");
                 break;
+            case OpCode.DefineGetterByReg:
+            case OpCode.DefineSetterByReg:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
+                break;
             case OpCode.SetHomeObject:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
