@@ -1035,6 +1035,41 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void RejectsAwaitBindingInsideAsyncClassMethod()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("class C { async m() { var await; } }")));
+    }
+
+    [Fact]
+    public void RejectsYieldIdentifierReferenceInsideAsyncGeneratorClassMethod()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("class C { async *m() { void yield; } }")));
+    }
+
+    [Fact]
+    public void RejectsRestParameterInitializerInAsyncClassMethod()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("class C { async m(...x = []) {} }")));
+    }
+
+    [Fact]
+    public void RejectsTrailingCommaAfterRestParameterInAsyncClassMethod()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("class C { async m(...x,) {} }")));
+    }
+
+    [Fact]
+    public void RejectsUseStrictWithNonSimpleAsyncClassMethodParameters()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("class C { async m([x]) { \"use strict\"; } }")));
+    }
+
+    [Fact]
     public void ParsesDotMemberWithKeywordPropertyName()
     {
         var program = JsParser.ParseScript(new SourceText("obj.return(1);"));

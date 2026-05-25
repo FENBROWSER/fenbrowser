@@ -9,6 +9,13 @@ namespace FenBrowser.Js.Parser;
 
 public sealed class JsParser
 {
+    private readonly record struct ParameterListInfo(
+        IReadOnlyList<string> Parameters,
+        bool IsSimple,
+        bool HasDuplicateNames,
+        bool RestHasInitializer,
+        bool HasTrailingCommaAfterRest);
+
     private static readonly HashSet<string> AlwaysReservedIdentifierNames = new(StringComparer.Ordinal)
     {
         "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete",
@@ -149,6 +156,310 @@ public sealed class JsParser
         }
 
         return false;
+    }
+
+    private static bool ContainsUseStrictDirective(IReadOnlyList<StatementNode> statements)
+    {
+        foreach (var statement in statements)
+        {
+            if (statement is not ExpressionStatementNode expressionStatement ||
+                expressionStatement.Expression is not StringLiteralExpressionNode stringLiteral)
+            {
+                return false;
+            }
+
+            if (string.Equals(stringLiteral.Value, "use strict", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsRestrictedIdentifier(string name, bool forbidAwaitIdentifier, bool forbidYieldIdentifier)
+    {
+        if (forbidAwaitIdentifier && string.Equals(name, "await", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return forbidYieldIdentifier && string.Equals(name, "yield", StringComparison.Ordinal);
+    }
+
+    private static bool IsSyntheticPatternBinding(string name) =>
+        name.StartsWith("__pattern", StringComparison.Ordinal);
+
+    private static void ValidateClassMethodEarlyErrors(
+        ParameterListInfo parameterInfo,
+        BlockStatementNode body,
+        bool forbidAwaitIdentifier,
+        bool forbidYieldIdentifier)
+    {
+        if (parameterInfo.RestHasInitializer)
+        {
+            throw new JsParserException("Rest parameters cannot have initializers.");
+        }
+
+        if (parameterInfo.HasTrailingCommaAfterRest)
+        {
+            throw new JsParserException("A trailing comma is not allowed after a rest parameter.");
+        }
+
+        if (parameterInfo.HasDuplicateNames)
+        {
+            throw new JsParserException("Duplicate parameter names are not allowed in class methods.");
+        }
+
+        if (!parameterInfo.IsSimple && ContainsUseStrictDirective(body.Statements))
+        {
+            throw new JsParserException("A strict directive is not allowed with a non-simple parameter list.");
+        }
+
+        foreach (var parameter in parameterInfo.Parameters)
+        {
+            if (!IsSyntheticPatternBinding(parameter) &&
+                IsRestrictedIdentifier(parameter, forbidAwaitIdentifier, forbidYieldIdentifier))
+            {
+                throw new JsParserException($"Reserved identifier '{parameter}' is not allowed in this method context.");
+            }
+        }
+
+        ValidateRestrictedIdentifiersInStatements(body.Statements, forbidAwaitIdentifier, forbidYieldIdentifier);
+    }
+
+    private static void ValidateRestrictedIdentifiersInStatements(
+        IReadOnlyList<StatementNode> statements,
+        bool forbidAwaitIdentifier,
+        bool forbidYieldIdentifier)
+    {
+        foreach (var statement in statements)
+        {
+            ValidateRestrictedIdentifiersInStatement(statement, forbidAwaitIdentifier, forbidYieldIdentifier);
+        }
+    }
+
+    private static void ValidateRestrictedIdentifiersInStatement(
+        StatementNode statement,
+        bool forbidAwaitIdentifier,
+        bool forbidYieldIdentifier)
+    {
+        switch (statement)
+        {
+            case BlockStatementNode block:
+                ValidateRestrictedIdentifiersInStatements(block.Statements, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case LabeledStatementNode labeled:
+                if (IsRestrictedIdentifier(labeled.Label, forbidAwaitIdentifier, forbidYieldIdentifier))
+                {
+                    throw new JsParserException($"Reserved label identifier '{labeled.Label}' is not allowed in this method context.");
+                }
+
+                ValidateRestrictedIdentifiersInStatement(labeled.Body, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case VariableDeclarationStatementNode declaration:
+                foreach (var declarator in declaration.Declarators)
+                {
+                    if (!IsSyntheticPatternBinding(declarator.Identifier) &&
+                        IsRestrictedIdentifier(declarator.Identifier, forbidAwaitIdentifier, forbidYieldIdentifier))
+                    {
+                        throw new JsParserException($"Reserved identifier '{declarator.Identifier}' is not allowed in this method context.");
+                    }
+
+                    if (declarator.Initializer is not null)
+                    {
+                        ValidateRestrictedIdentifiersInExpression(declarator.Initializer, forbidAwaitIdentifier, forbidYieldIdentifier);
+                    }
+                }
+
+                break;
+            case ExpressionStatementNode expressionStatement:
+                ValidateRestrictedIdentifiersInExpression(expressionStatement.Expression, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case IfStatementNode ifStatement:
+                ValidateRestrictedIdentifiersInExpression(ifStatement.Test, forbidAwaitIdentifier, forbidYieldIdentifier);
+                ValidateRestrictedIdentifiersInStatement(ifStatement.Consequent, forbidAwaitIdentifier, forbidYieldIdentifier);
+                if (ifStatement.Alternate is not null)
+                {
+                    ValidateRestrictedIdentifiersInStatement(ifStatement.Alternate, forbidAwaitIdentifier, forbidYieldIdentifier);
+                }
+
+                break;
+            case WhileStatementNode whileStatement:
+                ValidateRestrictedIdentifiersInExpression(whileStatement.Test, forbidAwaitIdentifier, forbidYieldIdentifier);
+                ValidateRestrictedIdentifiersInStatement(whileStatement.Body, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case ForStatementNode forStatement:
+                if (forStatement.Initializer is not null)
+                {
+                    ValidateRestrictedIdentifiersInStatement(forStatement.Initializer, forbidAwaitIdentifier, forbidYieldIdentifier);
+                }
+
+                if (forStatement.Test is not null)
+                {
+                    ValidateRestrictedIdentifiersInExpression(forStatement.Test, forbidAwaitIdentifier, forbidYieldIdentifier);
+                }
+
+                if (forStatement.Update is not null)
+                {
+                    ValidateRestrictedIdentifiersInExpression(forStatement.Update, forbidAwaitIdentifier, forbidYieldIdentifier);
+                }
+
+                ValidateRestrictedIdentifiersInStatement(forStatement.Body, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case ForInStatementNode forInStatement:
+                ValidateRestrictedIdentifiersInStatement(forInStatement.Initializer, forbidAwaitIdentifier, forbidYieldIdentifier);
+                ValidateRestrictedIdentifiersInExpression(forInStatement.Iterable, forbidAwaitIdentifier, forbidYieldIdentifier);
+                ValidateRestrictedIdentifiersInStatement(forInStatement.Body, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case ForOfStatementNode forOfStatement:
+                ValidateRestrictedIdentifiersInStatement(forOfStatement.Initializer, forbidAwaitIdentifier, forbidYieldIdentifier);
+                ValidateRestrictedIdentifiersInExpression(forOfStatement.Iterable, forbidAwaitIdentifier, forbidYieldIdentifier);
+                ValidateRestrictedIdentifiersInStatement(forOfStatement.Body, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case ReturnStatementNode returnStatement when returnStatement.Argument is not null:
+                ValidateRestrictedIdentifiersInExpression(returnStatement.Argument, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case ThrowStatementNode throwStatement:
+                ValidateRestrictedIdentifiersInExpression(throwStatement.Argument, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case TryCatchStatementNode tryCatch:
+                ValidateRestrictedIdentifiersInStatement(tryCatch.TryBlock, forbidAwaitIdentifier, forbidYieldIdentifier);
+                if (IsRestrictedIdentifier(tryCatch.CatchIdentifier, forbidAwaitIdentifier, forbidYieldIdentifier))
+                {
+                    throw new JsParserException($"Reserved identifier '{tryCatch.CatchIdentifier}' is not allowed in this method context.");
+                }
+
+                ValidateRestrictedIdentifiersInStatement(tryCatch.CatchBlock, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case TryFinallyStatementNode tryFinally:
+                ValidateRestrictedIdentifiersInStatement(tryFinally.TryBlock, forbidAwaitIdentifier, forbidYieldIdentifier);
+                ValidateRestrictedIdentifiersInStatement(tryFinally.FinallyBlock, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case TryCatchFinallyStatementNode tryCatchFinally:
+                ValidateRestrictedIdentifiersInStatement(tryCatchFinally.TryBlock, forbidAwaitIdentifier, forbidYieldIdentifier);
+                if (IsRestrictedIdentifier(tryCatchFinally.CatchIdentifier, forbidAwaitIdentifier, forbidYieldIdentifier))
+                {
+                    throw new JsParserException($"Reserved identifier '{tryCatchFinally.CatchIdentifier}' is not allowed in this method context.");
+                }
+
+                ValidateRestrictedIdentifiersInStatement(tryCatchFinally.CatchBlock, forbidAwaitIdentifier, forbidYieldIdentifier);
+                ValidateRestrictedIdentifiersInStatement(tryCatchFinally.FinallyBlock, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case SwitchStatementNode switchStatement:
+                ValidateRestrictedIdentifiersInExpression(switchStatement.Discriminant, forbidAwaitIdentifier, forbidYieldIdentifier);
+                foreach (var switchCase in switchStatement.Cases)
+                {
+                    if (switchCase.Test is not null)
+                    {
+                        ValidateRestrictedIdentifiersInExpression(switchCase.Test, forbidAwaitIdentifier, forbidYieldIdentifier);
+                    }
+
+                    ValidateRestrictedIdentifiersInStatements(switchCase.Consequent, forbidAwaitIdentifier, forbidYieldIdentifier);
+                }
+
+                break;
+            case FunctionDeclarationNode:
+            case ClassDeclarationNode:
+                break;
+        }
+    }
+
+    private static void ValidateRestrictedIdentifiersInExpression(
+        ExpressionNode expression,
+        bool forbidAwaitIdentifier,
+        bool forbidYieldIdentifier)
+    {
+        switch (expression)
+        {
+            case IdentifierExpressionNode identifier:
+                if (IsRestrictedIdentifier(identifier.Name, forbidAwaitIdentifier, forbidYieldIdentifier))
+                {
+                    throw new JsParserException($"Reserved identifier '{identifier.Name}' is not allowed in this method context.");
+                }
+
+                break;
+            case ParenthesizedExpressionNode parenthesized:
+                ValidateRestrictedIdentifiersInExpression(parenthesized.Expression, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case BinaryExpressionNode binary:
+                ValidateRestrictedIdentifiersInExpression(binary.Left, forbidAwaitIdentifier, forbidYieldIdentifier);
+                ValidateRestrictedIdentifiersInExpression(binary.Right, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case AssignmentExpressionNode assignment:
+                ValidateRestrictedIdentifiersInExpression(assignment.Left, forbidAwaitIdentifier, forbidYieldIdentifier);
+                ValidateRestrictedIdentifiersInExpression(assignment.Right, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case CallExpressionNode call:
+                ValidateRestrictedIdentifiersInExpression(call.Callee, forbidAwaitIdentifier, forbidYieldIdentifier);
+                foreach (var argument in call.Arguments)
+                {
+                    ValidateRestrictedIdentifiersInExpression(argument, forbidAwaitIdentifier, forbidYieldIdentifier);
+                }
+
+                break;
+            case ObjectLiteralExpressionNode objectLiteral:
+                foreach (var property in objectLiteral.Properties)
+                {
+                    if (property.ComputedKey is not null)
+                    {
+                        ValidateRestrictedIdentifiersInExpression(property.ComputedKey, forbidAwaitIdentifier, forbidYieldIdentifier);
+                    }
+
+                    ValidateRestrictedIdentifiersInExpression(property.Value, forbidAwaitIdentifier, forbidYieldIdentifier);
+                }
+
+                break;
+            case ArrayLiteralExpressionNode arrayLiteral:
+                foreach (var element in arrayLiteral.Elements)
+                {
+                    ValidateRestrictedIdentifiersInExpression(element, forbidAwaitIdentifier, forbidYieldIdentifier);
+                }
+
+                break;
+            case SpreadElementExpressionNode spread:
+                ValidateRestrictedIdentifiersInExpression(spread.Argument, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case MemberExpressionNode member:
+                ValidateRestrictedIdentifiersInExpression(member.Object, forbidAwaitIdentifier, forbidYieldIdentifier);
+                if (member.PropertyExpression is not null)
+                {
+                    ValidateRestrictedIdentifiersInExpression(member.PropertyExpression, forbidAwaitIdentifier, forbidYieldIdentifier);
+                }
+
+                break;
+            case UnaryExpressionNode unary:
+                ValidateRestrictedIdentifiersInExpression(unary.Operand, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case ConditionalExpressionNode conditional:
+                ValidateRestrictedIdentifiersInExpression(conditional.Test, forbidAwaitIdentifier, forbidYieldIdentifier);
+                ValidateRestrictedIdentifiersInExpression(conditional.Consequent, forbidAwaitIdentifier, forbidYieldIdentifier);
+                ValidateRestrictedIdentifiersInExpression(conditional.Alternate, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case NewExpressionNode @new:
+                ValidateRestrictedIdentifiersInExpression(@new.Callee, forbidAwaitIdentifier, forbidYieldIdentifier);
+                foreach (var argument in @new.Arguments)
+                {
+                    ValidateRestrictedIdentifiersInExpression(argument, forbidAwaitIdentifier, forbidYieldIdentifier);
+                }
+
+                break;
+            case TemplateLiteralExpressionNode template:
+                foreach (var templateExpression in template.Expressions)
+                {
+                    ValidateRestrictedIdentifiersInExpression(templateExpression, forbidAwaitIdentifier, forbidYieldIdentifier);
+                }
+
+                break;
+            case TaggedTemplateExpressionNode taggedTemplate:
+                ValidateRestrictedIdentifiersInExpression(taggedTemplate.Tag, forbidAwaitIdentifier, forbidYieldIdentifier);
+                ValidateRestrictedIdentifiersInExpression(taggedTemplate.Template, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
+            case FunctionExpressionNode:
+            case ArrowFunctionExpressionNode:
+            case ClassExpressionNode:
+                break;
+        }
     }
 
     private StatementNode ParseStatement()
@@ -622,7 +933,8 @@ public sealed class JsParser
         }
 
         var name = ExpectIdentifier();
-        var parameters = ParseParameterList();
+        var parameterInfo = ParseParameterList();
+        var parameters = parameterInfo.Parameters;
         var body = ParseBlockStatement();
         ValidateDirectivePrologueStrictStringEscapes(body.Statements);
         return new FunctionDeclarationNode(
@@ -1072,8 +1384,10 @@ public sealed class JsParser
                 continue;
             }
 
-            var parameters = ParseParameterList();
+            var parameterInfo = ParseParameterList();
+            var parameters = parameterInfo.Parameters;
             var body = ParseBlockStatement();
+            ValidateClassMethodEarlyErrors(parameterInfo, body, forbidAwaitIdentifier: isAsync, forbidYieldIdentifier: isGenerator);
             var fn = new FunctionExpressionNode(
                 memberName,
                 parameters,
@@ -1420,9 +1734,15 @@ public sealed class JsParser
         return new ContinueStatementNode(token.Span);
     }
 
-    private IReadOnlyList<string> ParseParameterList()
+    private ParameterListInfo ParseParameterList()
     {
         var parameters = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var isSimple = true;
+        var hasDuplicateNames = false;
+        var restHasInitializer = false;
+        var hasTrailingCommaAfterRest = false;
+
         ExpectPunctuator("(");
         while (!Is(TokenKind.EndOfFile) && !IsPunctuator(")"))
         {
@@ -1430,12 +1750,29 @@ public sealed class JsParser
             if (rest)
             {
                 Advance();
+                isSimple = false;
             }
 
-            parameters.Add(ParseBindingIdentifierOrPattern().Text);
+            var binding = ParseBindingIdentifierOrPattern();
+            var bindingName = binding.Text;
+            parameters.Add(bindingName);
+            if (bindingName.StartsWith("__pattern", StringComparison.Ordinal))
+            {
+                isSimple = false;
+            }
+            else if (!seen.Add(bindingName))
+            {
+                hasDuplicateNames = true;
+            }
 
             if (IsPunctuator("="))
             {
+                if (rest)
+                {
+                    restHasInitializer = true;
+                }
+
+                isSimple = false;
                 Advance();
                 _ = ParseExpression(2);
             }
@@ -1443,6 +1780,11 @@ public sealed class JsParser
             if (IsPunctuator(","))
             {
                 Advance();
+                if (rest)
+                {
+                    hasTrailingCommaAfterRest = true;
+                }
+
                 continue;
             }
 
@@ -1450,7 +1792,12 @@ public sealed class JsParser
         }
 
         ExpectPunctuator(")");
-        return parameters;
+        return new ParameterListInfo(
+            parameters,
+            IsSimple: isSimple,
+            HasDuplicateNames: hasDuplicateNames,
+            RestHasInitializer: restHasInitializer,
+            HasTrailingCommaAfterRest: hasTrailingCommaAfterRest);
     }
 
     private ExpressionNode ParseExpression(int minBindingPower)
@@ -1460,7 +1807,7 @@ public sealed class JsParser
             return arrow;
         }
 
-        var left = ParsePrefix();
+        var left = ParsePrefix(minBindingPower);
 
         while (true)
         {
@@ -1547,7 +1894,7 @@ public sealed class JsParser
         return left;
     }
 
-    private ExpressionNode ParsePrefix()
+    private ExpressionNode ParsePrefix(int minBindingPower)
     {
         var token = Current();
         if (token.Kind == TokenKind.Punctuator && (token.Text == "++" || token.Text == "--"))
@@ -1576,7 +1923,7 @@ public sealed class JsParser
             return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
         }
 
-        if (token.Kind == TokenKind.Keyword && token.Text == "yield")
+        if (token.Kind == TokenKind.Keyword && token.Text == "yield" && minBindingPower <= 2)
         {
             var op = Advance();
             var delegated = false;
@@ -1586,12 +1933,12 @@ public sealed class JsParser
                 Advance();
             }
 
-            if (IsPunctuator(";") || IsPunctuator("}") || Is(TokenKind.EndOfFile))
+            if (IsPunctuator(";") || IsPunctuator("}") || IsPunctuator(")") || IsPunctuator("]") || IsPunctuator(",") || IsPunctuator(":") || Is(TokenKind.EndOfFile))
             {
                 return new UnaryExpressionNode(op.Text, new IdentifierExpressionNode("undefined", op.Span), op.Span);
             }
 
-            var operand = ParseExpression(40);
+            var operand = ParseExpression(2);
             var opText = delegated ? "yield*" : op.Text;
             return new UnaryExpressionNode(opText, operand, MergeSpan(op.Span, operand.Span));
         }
@@ -1867,7 +2214,8 @@ public sealed class JsParser
             name = Advance().Text;
         }
 
-        var parameters = ParseParameterList();
+        var parameterInfo = ParseParameterList();
+        var parameters = parameterInfo.Parameters;
         var body = ParseBlockStatement();
         ValidateDirectivePrologueStrictStringEscapes(body.Statements);
         return new FunctionExpressionNode(
@@ -1893,7 +2241,7 @@ public sealed class JsParser
             return new NewTargetExpressionNode(MergeSpan(start.Span, property.Span));
         }
 
-        var callee = ParsePrefix();
+        var callee = ParsePrefix(40);
         callee = ParsePostfix(callee, minBindingPower: 35, allowCall: false);
 
         IReadOnlyList<ExpressionNode> args = Array.Empty<ExpressionNode>();
@@ -1946,8 +2294,10 @@ public sealed class JsParser
                     throw new JsParserException($"Expected object property key, found '{accessorKeyToken.Text}'.");
                 }
 
-                var parameters = ParseParameterList();
+                var parameterInfo = ParseParameterList();
+                var parameters = parameterInfo.Parameters;
                 var body = ParseBlockStatement();
+                ValidateClassMethodEarlyErrors(parameterInfo, body, forbidAwaitIdentifier: false, forbidYieldIdentifier: false);
                 var accessorFnName = accessorKey ?? accessorKind.Text;
                 var accessorFn = new FunctionExpressionNode(accessorFnName, parameters, body, MergeSpan(accessorKind.Span, body.Span));
                 properties.Add(new ObjectPropertyNode(accessorKey, accessorComputedKey, accessorIsComputed, accessorFn, accessorFn.Span));
@@ -1994,8 +2344,10 @@ public sealed class JsParser
                     throw new JsParserException($"Expected object property key, found '{methodKeyToken.Text}'.");
                 }
 
-                var parameters = ParseParameterList();
+                var parameterInfo = ParseParameterList();
+                var parameters = parameterInfo.Parameters;
                 var body = ParseBlockStatement();
+                ValidateClassMethodEarlyErrors(parameterInfo, body, forbidAwaitIdentifier: true, forbidYieldIdentifier: false);
                 var methodFnName = methodKey ?? "async";
                 var asyncMethodFn = new FunctionExpressionNode(
                     methodFnName,
@@ -2048,8 +2400,10 @@ public sealed class JsParser
                     throw new JsParserException($"Expected object property key, found '{methodKeyToken.Text}'.");
                 }
 
-                var parameters = ParseParameterList();
+                var parameterInfo = ParseParameterList();
+                var parameters = parameterInfo.Parameters;
                 var body = ParseBlockStatement();
+                ValidateClassMethodEarlyErrors(parameterInfo, body, forbidAwaitIdentifier: true, forbidYieldIdentifier: true);
                 var methodFnName = methodKey ?? "async*";
                 var asyncMethodFn = new FunctionExpressionNode(
                     methodFnName,
@@ -2100,8 +2454,10 @@ public sealed class JsParser
                     throw new JsParserException($"Expected object property key, found '{methodKeyToken.Text}'.");
                 }
 
-                var parameters = ParseParameterList();
+                var parameterInfo = ParseParameterList();
+                var parameters = parameterInfo.Parameters;
                 var body = ParseBlockStatement();
+                ValidateClassMethodEarlyErrors(parameterInfo, body, forbidAwaitIdentifier: false, forbidYieldIdentifier: true);
                 var methodFnName = methodKey ?? "*";
                 var methodFn = new FunctionExpressionNode(
                     methodFnName,
@@ -2110,6 +2466,21 @@ public sealed class JsParser
                     MergeSpan(methodStart.Span, body.Span),
                     IsGenerator: true);
                 properties.Add(new ObjectPropertyNode(methodKey, methodComputedKey, methodIsComputed, methodFn, methodFn.Span));
+                if (IsPunctuator(","))
+                {
+                    Advance();
+                    continue;
+                }
+
+                break;
+            }
+
+            if (IsPunctuator("..."))
+            {
+                var spread = Advance();
+                var argument = ParseExpression(2);
+                var spreadExpression = new SpreadElementExpressionNode(argument, MergeSpan(spread.Span, argument.Span));
+                properties.Add(new ObjectPropertyNode(null, null, false, spreadExpression, spreadExpression.Span));
                 if (IsPunctuator(","))
                 {
                     Advance();
@@ -2150,8 +2521,10 @@ public sealed class JsParser
             ExpressionNode value;
             if (IsPunctuator("("))
             {
-                var parameters = ParseParameterList();
+                var parameterInfo = ParseParameterList();
+                var parameters = parameterInfo.Parameters;
                 var body = ParseBlockStatement();
+                ValidateClassMethodEarlyErrors(parameterInfo, body, forbidAwaitIdentifier: false, forbidYieldIdentifier: false);
                 value = new FunctionExpressionNode(key, parameters, body, MergeSpan(keyToken.Span, body.Span));
             }
             else if (IsPunctuator(":"))
@@ -2772,7 +3145,22 @@ public sealed class JsParser
     {
         if (token.Kind == TokenKind.Keyword)
         {
-            return token.Text == "async" || (token.Text == "await" && !_moduleMode);
+            if (token.Text == "async")
+            {
+                return true;
+            }
+
+            if (token.Text == "await")
+            {
+                return !_moduleMode;
+            }
+
+            if (token.Text == "yield")
+            {
+                return !_strictMode && !_moduleMode;
+            }
+
+            return false;
         }
 
         if (token.Kind != TokenKind.Identifier)
