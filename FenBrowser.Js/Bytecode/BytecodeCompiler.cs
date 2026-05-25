@@ -754,7 +754,18 @@ public sealed class BytecodeCompiler
 
     private void CompileForInStatement(ForInStatementNode forInStmt)
     {
-        var targetSlot = GetForInTargetSlot(forInStmt.Initializer);
+        if (!TryGetForInTargetSlot(forInStmt.Initializer, out var targetSlot))
+        {
+            if (forInStmt.Initializer is ExpressionStatementNode expressionInitializer)
+            {
+                _ = CompileExpression(expressionInitializer.Expression);
+                EmitRuntimeReferenceError("Invalid left-hand side in for-in.");
+                return;
+            }
+
+            throw new InvalidOperationException("Unsupported for-in initializer target.");
+        }
+
         var sourceReg = CompileExpression(forInStmt.Iterable);
         var iteratorReg = AllocateRegister();
         _instructions.Add(new Instruction(OpCode.EnumerateKeys, iteratorReg, sourceReg, 0));
@@ -800,7 +811,18 @@ public sealed class BytecodeCompiler
     // continue/break stack so labelled break still works.
     private void CompileForOfStatement(ForOfStatementNode forOfStmt)
     {
-        var targetSlot = GetForInTargetSlot(forOfStmt.Initializer);
+        if (!TryGetForInTargetSlot(forOfStmt.Initializer, out var targetSlot))
+        {
+            if (forOfStmt.Initializer is ExpressionStatementNode expressionInitializer)
+            {
+                _ = CompileExpression(expressionInitializer.Expression);
+                EmitRuntimeReferenceError("Invalid left-hand side in for-of.");
+                return;
+            }
+
+            throw new InvalidOperationException("Unsupported for-of initializer target.");
+        }
+
         var sourceReg = CompileExpression(forOfStmt.Iterable);
         var iteratorReg = AllocateRegister();
         _instructions.Add(new Instruction(OpCode.EnumerateValues, iteratorReg, sourceReg, 0));
@@ -841,16 +863,20 @@ public sealed class BytecodeCompiler
         }
     }
 
-    private int GetForInTargetSlot(StatementNode initializer)
+    private bool TryGetForInTargetSlot(StatementNode initializer, out int slot)
     {
-        return initializer switch
+        switch (initializer)
         {
-            VariableDeclarationStatementNode { Declarators.Count: 1 } declaration =>
-                GetForInDeclarationTargetSlot(declaration),
-            ExpressionStatementNode { Expression: IdentifierExpressionNode identifier } =>
-                GetOrCreateVariableSlot(identifier.Name),
-            _ => throw new InvalidOperationException("Unsupported for-in initializer target.")
-        };
+            case VariableDeclarationStatementNode { Declarators.Count: 1 } declaration:
+                slot = GetForInDeclarationTargetSlot(declaration);
+                return true;
+            case ExpressionStatementNode { Expression: IdentifierExpressionNode identifier }:
+                slot = GetOrCreateVariableSlot(identifier.Name);
+                return true;
+            default:
+                slot = 0;
+                return false;
+        }
     }
 
     private int GetForInDeclarationTargetSlot(VariableDeclarationStatementNode declaration)
@@ -971,6 +997,15 @@ public sealed class BytecodeCompiler
                 }
 
                 return valueReg;
+            }
+            case AssignmentExpressionNode assign:
+            {
+                // Annex B web-compat runtime error behavior for non-reference
+                // assignment targets (for example CallExpression left-hand sides):
+                // evaluate left side effects, then throw ReferenceError.
+                _ = CompileExpression(assign.Left);
+                EmitRuntimeReferenceError("Invalid left-hand side in assignment.");
+                return LoadUndefinedConstant();
             }
             case MemberExpressionNode member:
             {
@@ -1566,6 +1601,26 @@ public sealed class BytecodeCompiler
     {
         var reg = AllocateRegister();
         var ci = AddConstant(JsValue.FromString(value));
+        _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
+        return reg;
+    }
+
+    private void EmitRuntimeReferenceError(string message)
+    {
+        var referenceErrorReg = AllocateRegister();
+        var referenceErrorSlot = GetOrCreateVariableSlot("ReferenceError");
+        _instructions.Add(new Instruction(OpCode.LoadVar, referenceErrorReg, referenceErrorSlot, 0));
+
+        var messageReg = LoadStringConstant(message);
+        var errorObjectReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.Call1, errorObjectReg, referenceErrorReg, messageReg));
+        _instructions.Add(new Instruction(OpCode.Throw, errorObjectReg, 0, 0));
+    }
+
+    private int LoadUndefinedConstant()
+    {
+        var reg = AllocateRegister();
+        var ci = AddConstant(JsValue.Undefined);
         _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
         return reg;
     }

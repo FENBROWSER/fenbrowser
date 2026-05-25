@@ -1012,6 +1012,20 @@ public sealed class JsParser
             else if (IsPunctuator(")"))
             {
                 if (initializerExpression is not null &&
+                    TryGetTopLevelInBinary(initializerExpression, out var inLeftCandidate, out var inRightCandidate))
+                {
+                    var forInInitializer = new ExpressionStatementNode(inLeftCandidate, inLeftCandidate.Span);
+                    ValidateForInInitializer(forInInitializer);
+                    Advance();
+                    var forInBody = ParseStatement();
+                    return new ForInStatementNode(
+                        forInInitializer,
+                        inRightCandidate,
+                        forInBody,
+                        MergeSpan(start.Span, forInBody.Span));
+                }
+
+                if (initializerExpression is not null &&
                     TryGetTopLevelInBinary(initializerExpression, out var inLeft, out _) &&
                     inLeft is AssignmentExpressionNode)
                 {

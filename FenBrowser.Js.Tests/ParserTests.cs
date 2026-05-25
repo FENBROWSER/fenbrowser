@@ -1331,6 +1331,13 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesForInWithCallExpressionTargetAsForInStatement()
+    {
+        var program = JsParser.ParseScript(new SourceText("for (async() in obj) { }"));
+        Assert.IsType<ForInStatementNode>(Assert.Single(program.Body));
+    }
+
+    [Fact]
     public void ParsesForAwaitOfStatementSubset()
     {
         var program = JsParser.ParseScript(new SourceText("for await (var x of iter) { x; }"));
