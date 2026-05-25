@@ -1989,7 +1989,12 @@ public sealed class JsParser
                 var parameters = ParseParameterList();
                 var body = ParseBlockStatement();
                 var methodFnName = methodKey ?? "async";
-                var asyncMethodFn = new FunctionExpressionNode(methodFnName, parameters, body, MergeSpan(asyncStart.Span, body.Span));
+                var asyncMethodFn = new FunctionExpressionNode(
+                    methodFnName,
+                    parameters,
+                    body,
+                    MergeSpan(asyncStart.Span, body.Span),
+                    IsAsync: true);
                 properties.Add(new ObjectPropertyNode(methodKey, methodComputedKey, methodIsComputed, asyncMethodFn, asyncMethodFn.Span));
                 if (IsPunctuator(","))
                 {
@@ -2038,7 +2043,13 @@ public sealed class JsParser
                 var parameters = ParseParameterList();
                 var body = ParseBlockStatement();
                 var methodFnName = methodKey ?? "async*";
-                var asyncMethodFn = new FunctionExpressionNode(methodFnName, parameters, body, MergeSpan(asyncStart.Span, body.Span));
+                var asyncMethodFn = new FunctionExpressionNode(
+                    methodFnName,
+                    parameters,
+                    body,
+                    MergeSpan(asyncStart.Span, body.Span),
+                    IsAsync: true,
+                    IsGenerator: true);
                 properties.Add(new ObjectPropertyNode(methodKey, methodComputedKey, methodIsComputed, asyncMethodFn, asyncMethodFn.Span));
                 if (IsPunctuator(","))
                 {
@@ -2084,7 +2095,12 @@ public sealed class JsParser
                 var parameters = ParseParameterList();
                 var body = ParseBlockStatement();
                 var methodFnName = methodKey ?? "*";
-                var methodFn = new FunctionExpressionNode(methodFnName, parameters, body, MergeSpan(methodStart.Span, body.Span));
+                var methodFn = new FunctionExpressionNode(
+                    methodFnName,
+                    parameters,
+                    body,
+                    MergeSpan(methodStart.Span, body.Span),
+                    IsGenerator: true);
                 properties.Add(new ObjectPropertyNode(methodKey, methodComputedKey, methodIsComputed, methodFn, methodFn.Span));
                 if (IsPunctuator(","))
                 {

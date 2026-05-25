@@ -991,7 +991,33 @@ public sealed class ParserTests
         var obj = Assert.IsType<ObjectLiteralExpressionNode>(decl.Declarators[0].Initializer);
         Assert.Single(obj.Properties);
         Assert.Equal("next", obj.Properties[0].Key);
-        Assert.IsType<FunctionExpressionNode>(obj.Properties[0].Value);
+        var fn = Assert.IsType<FunctionExpressionNode>(obj.Properties[0].Value);
+        Assert.True(fn.IsAsync);
+    }
+
+    [Fact]
+    public void ParsesObjectLiteralGeneratorMethodShorthand()
+    {
+        var program = JsParser.ParseScript(new SourceText("let o = { *next() { yield 1; } };"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var obj = Assert.IsType<ObjectLiteralExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Single(obj.Properties);
+        Assert.Equal("next", obj.Properties[0].Key);
+        var fn = Assert.IsType<FunctionExpressionNode>(obj.Properties[0].Value);
+        Assert.True(fn.IsGenerator);
+    }
+
+    [Fact]
+    public void ParsesObjectLiteralAsyncGeneratorMethodShorthand()
+    {
+        var program = JsParser.ParseScript(new SourceText("let o = { async *next() { yield 1; } };"));
+        var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
+        var obj = Assert.IsType<ObjectLiteralExpressionNode>(decl.Declarators[0].Initializer);
+        Assert.Single(obj.Properties);
+        Assert.Equal("next", obj.Properties[0].Key);
+        var fn = Assert.IsType<FunctionExpressionNode>(obj.Properties[0].Value);
+        Assert.True(fn.IsAsync);
+        Assert.True(fn.IsGenerator);
     }
 
     [Fact]

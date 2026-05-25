@@ -450,7 +450,9 @@ public sealed class BytecodeCompiler
                 constructorFn.Name,
                 constructorFn.Parameters,
                 newBody,
-                constructorFn.Span);
+                constructorFn.Span,
+                IsAsync: constructorFn.IsAsync,
+                IsGenerator: constructorFn.IsGenerator);
         }
 
         // Compile constructor.

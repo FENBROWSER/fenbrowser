@@ -34,6 +34,9 @@ public class AsyncMethodTests
     [Fact] public void AsyncObjectLiteralMethod_Compiles()
         => Assert.True(Run("var obj={async fetch(){return 1;}};typeof obj.fetch==='function';").AsBoolean());
 
+    [Fact] public void AsyncObjectLiteralMethod_ReturnsPromise()
+        => Assert.True(Run("var obj={async fetch(){return 1;}};typeof obj.fetch().then==='function';").AsBoolean());
+
     [Fact] public void GeneratorClassMethod_Compiles()
         => Assert.True(Run("class C{*gen(){yield 1;}}typeof C.prototype.gen==='function';").AsBoolean());
 
@@ -49,10 +52,6 @@ public class AsyncMethodTests
     [Fact]
     public void AsyncFunction_ReturnsPromise()
         => Assert.True(Run("async function f(){return 1;}typeof f().then==='function';").AsBoolean());
-
-    // Object literal async method Promise wrapping depends on parser setting
-    // IsAsync on object literal members (currently only class members have it).
-    // Tracked as follow-up: object literal async method support.
 
     [Fact]
     public void AsyncFunction_PreservesReturnValue()

@@ -216,11 +216,22 @@ internal static class PrivateNameRewriter
                 ExpressionNode? newExprBody = af.ExpressionBody is null
                     ? null
                     : RewriteExpression(af.ExpressionBody, m);
-                return new ArrowFunctionExpressionNode(af.Parameters, newBlock, newExprBody, af.Span);
+                return new ArrowFunctionExpressionNode(
+                    af.Parameters,
+                    newBlock,
+                    newExprBody,
+                    af.Span,
+                    IsAsync: af.IsAsync);
 
             case FunctionExpressionNode fn:
                 var newFnBody = new BlockStatementNode(RewriteStatements(fn.Body.Statements, m), fn.Body.Span);
-                return new FunctionExpressionNode(fn.Name, fn.Parameters, newFnBody, fn.Span);
+                return new FunctionExpressionNode(
+                    fn.Name,
+                    fn.Parameters,
+                    newFnBody,
+                    fn.Span,
+                    IsAsync: fn.IsAsync,
+                    IsGenerator: fn.IsGenerator);
 
             case TemplateLiteralExpressionNode tl:
                 var tlExprs = new ExpressionNode[tl.Expressions.Count];
