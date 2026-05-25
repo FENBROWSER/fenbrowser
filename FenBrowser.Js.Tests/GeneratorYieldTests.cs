@@ -227,6 +227,40 @@ public class GeneratorYieldTests
         Assert.True(Run(code).AsBoolean());
     }
 
+    // ECMA-262 15.5 — function* declaration creates a generator.
+    [Fact]
+    public void GeneratorFunctionDeclarationCreatesGenerator()
+    {
+        var code = @"
+            function* g() { yield 1; yield 2; }
+            var gen = g();
+            typeof gen === 'object' && typeof gen.next === 'function';
+        ";
+        Assert.True(Run(code).AsBoolean());
+    }
+
+    [Fact]
+    public void GeneratorFunctionYieldsValues()
+    {
+        var code = @"
+            function* g() { yield 'a'; yield 'b'; }
+            var gen = g();
+            gen.next().value + gen.next().value;
+        ";
+        Assert.Equal("ab", Run(code).AsString());
+    }
+
+    [Fact]
+    public void GeneratorFunctionExpressionWorks()
+    {
+        var code = @"
+            var g = function*() { yield 42; };
+            var gen = g();
+            gen.next().value;
+        ";
+        Assert.Equal(42d, Run(code).AsNumber());
+    }
+
     // .return() on a suspended generator before any yield.
     [Fact]
     public void GeneratorReturnBeforeFirstYield()
