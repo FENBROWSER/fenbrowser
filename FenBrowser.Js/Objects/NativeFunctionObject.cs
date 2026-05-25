@@ -1,3 +1,4 @@
+using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Objects;
@@ -47,7 +48,10 @@ public sealed class NativeFunctionObject : JsObject
     {
         if (_construct is null)
         {
-            throw new InvalidOperationException("Value is not constructible.");
+            // ECMA-262 9.1.10 — throw TypeError for non-constructor callables.
+            // Callers (ConstructFunction) catch JsThrownException and convert
+            // to a proper TypeError via ThrowOrHandle.
+            throw new JsThrownException(JsValue.Undefined);
         }
 
         return _construct(args);

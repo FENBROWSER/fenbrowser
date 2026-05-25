@@ -54,6 +54,13 @@ public sealed class GeneratorBuiltin : IBuiltinModule
                 return CreateResult(ctx, heap, returnValue, done: true);
             if (g.State == GeneratorState.Executing)
                 throw new JsThrownException(ctx.CreateTypeError("Generator.prototype.return: generator is already executing"));
+            // ECMA-262 27.5.1.3 step 4: if state is suspendedStart, transition
+            // to completed without executing the body.
+            if (g.InstructionPointer == 0)
+            {
+                g.State = GeneratorState.Completed;
+                return CreateResult(ctx, heap, returnValue, done: true);
+            }
             var interpreter = ctx as BytecodeInterpreter;
             if (interpreter is null) { g.State = GeneratorState.Completed; return CreateResult(ctx, heap, returnValue, done: true); }
             g.CompletionMode = GeneratorCompletionMode.Return;
