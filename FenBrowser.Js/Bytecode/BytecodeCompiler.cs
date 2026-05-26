@@ -1716,6 +1716,7 @@ public sealed class BytecodeCompiler
                     "*" => OpCode.Mul,
                     "%" => OpCode.Mod,
                     "/" => OpCode.Div,
+                    "**" => OpCode.Exp,
                     "&" => OpCode.BitAnd,
                     "|" => OpCode.BitOr,
                     "^" => OpCode.BitXor,
