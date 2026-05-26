@@ -1,0 +1,279 @@
+using FenBrowser.Js.Bytecode;
+using FenBrowser.Js.Interpreter;
+using FenBrowser.Js.Runtime;
+using FenBrowser.Js.Source;
+using Xunit;
+
+namespace FenBrowser.Js.Tests;
+
+public sealed class ProxyTests
+{
+    private static double RunNum(string source)
+    {
+        var fn = new BytecodeCompiler().CompileScript(new SourceText(source));
+        new BytecodeVerifier().Verify(fn);
+        return new BytecodeInterpreter().Execute(fn).AsNumber();
+    }
+
+    private static bool RunBool(string source)
+    {
+        var fn = new BytecodeCompiler().CompileScript(new SourceText(source));
+        new BytecodeVerifier().Verify(fn);
+        return new BytecodeInterpreter().Execute(fn).AsBoolean();
+    }
+
+    private static string RunStr(string source)
+    {
+        var fn = new BytecodeCompiler().CompileScript(new SourceText(source));
+        new BytecodeVerifier().Verify(fn);
+        return new BytecodeInterpreter().Execute(fn).AsString();
+    }
+
+    [Fact]
+    public void ProxyConstructorExists()
+    {
+        Assert.True(RunBool("typeof Proxy === 'function';"));
+    }
+
+    [Fact]
+    public void ProxyConstructorRequiresTwoArgs()
+    {
+        Assert.Throws<JsThrownException>(() => RunBool("new Proxy();"));
+    }
+
+    [Fact]
+    public void ProxyTargetMustBeObject()
+    {
+        Assert.Throws<JsThrownException>(() => RunBool("new Proxy(42, {});"));
+    }
+
+    [Fact]
+    public void ProxyHandlerMustBeObject()
+    {
+        Assert.Throws<JsThrownException>(() => RunBool("new Proxy({}, 42);"));
+    }
+
+    [Fact]
+    public void ProxyWithoutTrapsForwardsGet()
+    {
+        Assert.True(RunBool(@"
+            var target = { x: 42 };
+            var p = new Proxy(target, {});
+            p.x === 42;
+        "));
+    }
+
+    [Fact]
+    public void ProxyWithoutTrapsForwardsSet()
+    {
+        Assert.True(RunBool(@"
+            var target = {};
+            var p = new Proxy(target, {});
+            p.a = 10;
+            target.a === 10;
+        "));
+    }
+
+    [Fact]
+    public void ProxyWithoutTrapsForwardsHas()
+    {
+        Assert.True(RunBool(@"
+            var target = { a: 1 };
+            var p = new Proxy(target, {});
+            'a' in p && !('b' in p);
+        "));
+    }
+
+    [Fact]
+    public void ProxyWithoutTrapsForwardsDelete()
+    {
+        Assert.True(RunBool(@"
+            var target = { a: 1, b: 2 };
+            var p = new Proxy(target, {});
+            delete p.a;
+            !target.hasOwnProperty('a') && target.b === 2;
+        "));
+    }
+
+    [Fact]
+    public void ProxyWithoutTrapsForwardsFunctionCall()
+    {
+        Assert.Equal(15, RunNum(@"
+            var target = function(a, b) { return a + b; };
+            var p = new Proxy(target, {});
+            p(5, 10);
+        "));
+    }
+
+    [Fact]
+    public void ProxyWithoutTrapsForwardsConstruct()
+    {
+        Assert.True(RunBool(@"
+            function Target(x) { this.value = x; }
+            var p = new Proxy(Target, {});
+            var inst = new p(7);
+            inst.value === 7;
+        "));
+    }
+
+    [Fact]
+    public void ProxyGetTrapIntercepts()
+    {
+        Assert.True(RunBool(@"
+            var target = { a: 1 };
+            var handler = {
+                get: function(t, prop, receiver) { return 42; }
+            };
+            var p = new Proxy(target, handler);
+            p.a === 42;
+        "));
+    }
+
+    [Fact]
+    public void ProxySetTrapIntercepts()
+    {
+        Assert.True(RunBool(@"
+            var target = {};
+            var handler = {
+                set: function(t, prop, value, receiver) { t[prop] = value + 1; return true; }
+            };
+            var p = new Proxy(target, handler);
+            p.x = 5;
+            target.x === 6;
+        "));
+    }
+
+    [Fact]
+    public void ProxyHasTrapIntercepts()
+    {
+        Assert.True(RunBool(@"
+            var target = {};
+            var handler = {
+                has: function(t, prop) { return prop === 'magic'; }
+            };
+            var p = new Proxy(target, handler);
+            'magic' in p && !('other' in p);
+        "));
+    }
+
+    [Fact]
+    public void ProxyDeletePropertyTrapIntercepts()
+    {
+        Assert.True(RunBool(@"
+            var target = { a: 1 };
+            var handler = {
+                deleteProperty: function(t, prop) { return prop === 'a'; }
+            };
+            var p = new Proxy(target, handler);
+            delete p.a;
+        "));
+    }
+
+    [Fact]
+    public void ProxyApplyTrapIntercepts()
+    {
+        Assert.True(RunBool(@"
+            var target = function(x) { return x; };
+            var handler = {
+                apply: function(t, thisArg, args) { return args[0] + 100; }
+            };
+            var p = new Proxy(target, handler);
+            p(5) === 105;
+        "));
+    }
+
+    [Fact]
+    public void ProxyConstructTrapIntercepts()
+    {
+        Assert.True(RunBool(@"
+            var target = function(x) { this.value = x; };
+            var handler = {
+                construct: function(t, args) { return { ok: true, val: args[0] }; }
+            };
+            var p = new Proxy(target, handler);
+            var inst = new p(42);
+            inst.ok === true && inst.val === 42;
+        "));
+    }
+
+    [Fact]
+    public void ProxyRevocableReturnsObjectWithProxyAndRevoke()
+    {
+        Assert.True(RunBool(@"
+            var r = Proxy.revocable({x: 1}, {});
+            typeof r.proxy === 'object' && typeof r.revoke === 'function';
+        "));
+    }
+
+    [Fact]
+    public void ProxyRevocableGetTrapFiresBeforeRevoke()
+    {
+        Assert.True(RunBool(@"
+            var trapped = false;
+            var r = Proxy.revocable({}, {
+                get: function(t, k) { trapped = true; return 42; }
+            });
+            var v = r.proxy.foo;
+            trapped && v === 42;
+        "));
+    }
+
+    [Fact]
+    public void ProxyRevocableThrowsAfterRevoke()
+    {
+        Assert.True(RunBool(@"
+            var r = Proxy.revocable({}, { get: function() { return 1; } });
+            r.revoke();
+            var threw = false;
+            try { var v = r.proxy.foo; } catch (e) { threw = e instanceof TypeError; }
+            threw;
+        "));
+    }
+
+    [Fact]
+    public void ProxyDoubleRevokeIsNoop()
+    {
+        Assert.True(RunBool(@"
+            var r = Proxy.revocable({}, {});
+            r.revoke();
+            var ok = true;
+            try { r.revoke(); } catch (e) { ok = false; }
+            ok;
+        "));
+    }
+
+    [Fact]
+    public void ProxyGetTrapReceiversAreCorrect()
+    {
+        Assert.True(RunBool(@"
+            var observed = {};
+            var target = { attr: 1 };
+            var handler = {
+                get: function(t, prop, receiver) {
+                    observed.t = t;
+                    observed.prop = prop;
+                    observed.receiver = receiver;
+                    return 99;
+                }
+            };
+            var p = new Proxy(target, handler);
+            var val = p.attr;
+            val === 99 && observed.t === target && observed.prop === 'attr' &&
+            observed.receiver === p;
+        "));
+    }
+
+    [Fact]
+    public void ProxySetTrapThisBindingIsHandler()
+    {
+        Assert.True(RunBool(@"
+            var handlerThis;
+            var handler = {
+                set: function(t, p, v, r) { handlerThis = this; return true; }
+            };
+            var p = new Proxy({}, handler);
+            p.x = 1;
+            handlerThis === handler;
+        "));
+    }
+}
