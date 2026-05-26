@@ -23,6 +23,8 @@ public sealed class BytecodeFunction
 
     public required IReadOnlyList<string> ParameterNames { get; init; }
 
+    public int RestParameterIndex { get; init; } = -1;
+
     public bool HasOwnArgumentsObject { get; init; }
 
     public FunctionKind Kind { get; init; } = FunctionKind.Ordinary;

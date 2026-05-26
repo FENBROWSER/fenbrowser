@@ -519,7 +519,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             for (var i = 0; i < function.ParameterNames.Count; i++)
             {
                 var paramName = function.ParameterNames[i];
-                var paramValue = i < args.Count ? args[i] : JsValue.Undefined;
+                JsValue paramValue;
+                if (i == function.RestParameterIndex)
+                {
+                    var restCount = Math.Max(0, args.Count - i);
+                    var restValues = new JsValue[restCount];
+                    for (var restIndex = 0; restIndex < restCount; restIndex++)
+                    {
+                        restValues[restIndex] = args[i + restIndex];
+                    }
+
+                    var restArray = CreateArrayObject(restValues);
+                    paramValue = JsValue.FromObject(_heap.AllocateObject(restArray, AllocationSite.Current()));
+                }
+                else if (function.RestParameterIndex >= 0 && i > function.RestParameterIndex)
+                {
+                    // The parser disallows trailing parameters after a rest
+                    // parameter, but keep runtime behavior deterministic.
+                    paramValue = JsValue.Undefined;
+                }
+                else
+                {
+                    paramValue = i < args.Count ? args[i] : JsValue.Undefined;
+                }
+
                 _ = frame.Environment.CreateMutableBinding(paramName, deletable: false);
                 _ = frame.Environment.InitializeBinding(paramName, paramValue);
             }

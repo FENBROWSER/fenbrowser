@@ -74,6 +74,7 @@ public sealed class BytecodeCompiler
         return CompileProgramCore(
             program,
             parameters: Array.Empty<string>(),
+            restParameterIndex: -1,
             name: null,
             hasOwnArgumentsObject: false,
             functionKind: FunctionKind.Ordinary,
@@ -86,6 +87,7 @@ public sealed class BytecodeCompiler
         return CompileProgramCore(
             program,
             parameters,
+            restParameterIndex: -1,
             name,
             hasOwnArgumentsObject: true,
             functionKind: FunctionKind.Ordinary,
@@ -95,6 +97,7 @@ public sealed class BytecodeCompiler
     private BytecodeFunction CompileProgramCore(
         ProgramNode program,
         IReadOnlyList<string> parameters,
+        int restParameterIndex,
         string? name,
         bool hasOwnArgumentsObject,
         FunctionKind functionKind,
@@ -145,6 +148,7 @@ public sealed class BytecodeCompiler
             ConstDeclarationNames = _constDeclarationNames.ToArray(),
             PropertyNames = _propertyNames.ToArray(),
             ParameterNames = _parameterNames.ToArray(),
+            RestParameterIndex = restParameterIndex,
             HasOwnArgumentsObject = hasOwnArgumentsObject,
             NestedFunctions = _nestedFunctions.ToArray(),
             RegisterCount = Math.Max(2, _nextRegister),
@@ -324,6 +328,7 @@ public sealed class BytecodeCompiler
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             functionDecl.Parameters,
+            functionDecl.RestParameterIndex,
             functionDecl.Name,
             hasOwnArgumentsObject: true,
             functionKind: SelectFunctionKind(functionDecl.IsAsync, functionDecl.IsGenerator, isArrow: false),
@@ -671,6 +676,7 @@ public sealed class BytecodeCompiler
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             fnExpr.Parameters,
+            fnExpr.RestParameterIndex,
             fnExpr.Name,
             hasOwnArgumentsObject: true,
             functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false),
@@ -1569,6 +1575,7 @@ public sealed class BytecodeCompiler
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
                     fnExpr.Parameters,
+                    fnExpr.RestParameterIndex,
                     fnExpr.Name,
                     hasOwnArgumentsObject: true,
                     functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false),
@@ -1606,6 +1613,7 @@ public sealed class BytecodeCompiler
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
                     arrow.Parameters,
+                    arrow.RestParameterIndex,
                     "<arrow>",
                     hasOwnArgumentsObject: false,
                     functionKind: SelectFunctionKind(arrow.IsAsync, isGenerator: false, isArrow: true),

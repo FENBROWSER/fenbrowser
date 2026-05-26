@@ -36,7 +36,8 @@ public sealed record FunctionDeclarationNode(
     BlockStatementNode Body,
     SourceSpan Span,
     bool IsAsync = false,
-    bool IsGenerator = false) : StatementNode(Span);
+    bool IsGenerator = false,
+    int RestParameterIndex = -1) : StatementNode(Span);
 
 public sealed record ThrowStatementNode(ExpressionNode Argument, SourceSpan Span) : StatementNode(Span);
 

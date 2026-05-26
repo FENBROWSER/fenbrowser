@@ -112,7 +112,10 @@ internal static class PrivateNameRewriter
                     fd.Name,
                     fd.Parameters,
                     new BlockStatementNode(RewriteStatements(fd.Body.Statements, m), fd.Body.Span),
-                    fd.Span);
+                    fd.Span,
+                    IsAsync: fd.IsAsync,
+                    IsGenerator: fd.IsGenerator,
+                    RestParameterIndex: fd.RestParameterIndex);
             default:
                 return stmt;
         }
