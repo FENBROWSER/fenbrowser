@@ -99,6 +99,11 @@ public sealed class BytecodeVerifier
             case OpCode.NewArray:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 break;
+            case OpCode.NewRegExp:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                if (ins.B < 0 || ins.B >= function.Constants.Count)
+                    throw new InvalidOperationException($"Invalid constant index {ins.B} at ip {ip}.");
+                break;
             case OpCode.SetPrototype:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");

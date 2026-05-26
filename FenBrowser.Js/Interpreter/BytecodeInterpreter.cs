@@ -4751,15 +4751,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return handle;
     }
 
-    private JsValue DateTimeFormatConstruct(IReadOnlyList<JsValue> args)
-    {
-        // Stub: returns a plain object. Real implementation in follow-up
-        // will parse locales/options and wire the format method.
-        var obj = CreateOrdinaryObject();
-        var objHandle = _heap.AllocateObject(obj, AllocationSite.Current());
-        return JsValue.FromObject(objHandle);
-    }
-
     private JsValue NumberFormatConstruct(IReadOnlyList<JsValue> args)
     {
         // Stub: returns a plain object. Real implementation in follow-up

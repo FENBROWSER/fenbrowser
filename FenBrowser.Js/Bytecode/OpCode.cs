@@ -15,6 +15,9 @@ public enum OpCode : byte
     Throw,
     NewObject,
     NewArray,
+    // ECMA-262 12.2.8 regex literal -> RegExpObject.
+    // A = dest register, B = constant pool index (raw text "/pattern/flags").
+    NewRegExp,
     SetPropByName,
     GetPropByName,
     DeletePropByName,
