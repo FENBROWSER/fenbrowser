@@ -4674,19 +4674,140 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         throw new JsThrownException(CreateTypeError("RegExp.prototype method called on incompatible receiver."));
     }
 
-    // Proxy intercept stubs — full Proxy implementation deferred.
-    private static bool ProxySet(ProxyObject proxy, JsValue receiver, string prop, JsValue value)
-        => true;
-    private static bool ProxyDelete(ProxyObject proxy, string prop)
-        => true;
-    private static JsValue ProxyGet(ProxyObject proxy, JsValue receiver, string prop)
-        => JsValue.Undefined;
-    private static bool ProxyHas(ProxyObject proxy, string prop)
-        => false;
-    private static JsValue ProxyCall(ProxyObject proxy, IReadOnlyList<JsValue> args, JsValue thisValue)
-        => throw new JsThrownException(new JsValue());
-    private static JsValue ProxyConstruct(ProxyObject proxy, IReadOnlyList<JsValue> args, JsValue newTarget)
-        => throw new JsThrownException(new JsValue());
+    // Proxy intercept helpers — ECMA-262 28.2 internal method dispatch.
+    // Each method checks for a handler trap; when present the trap is called
+    // with the proper arguments. When absent the operation falls through to
+    // the target object.
+
+    [MayExecuteJs]
+    private JsValue? TryGetProxyTrap(ProxyObject proxy, string trapName)
+    {
+        if (proxy.IsRevoked)
+            throw new JsThrownException(CreateTypeError(
+                "Cannot perform '" + trapName + "' on a revoked proxy."));
+        var handlerHandle = proxy.HandlerHandle!.Value;
+        var handler = _heap.GetObject(handlerHandle);
+        return handler.TryGetProperty(trapName, h => _heap.GetObject(h), out var desc) &&
+               desc.Value.Tag == JsValueTag.Object &&
+               IsCallable(desc.Value)
+            ? desc.Value
+            : null;
+    }
+
+    private static bool ValueToBooleanProxy(JsValue value)
+    {
+        return value.Tag switch
+        {
+            JsValueTag.Undefined => false,
+            JsValueTag.Null => false,
+            JsValueTag.Boolean => value.AsBoolean(),
+            JsValueTag.Int32 => value.AsInt32() != 0,
+            JsValueTag.Number => value.AsNumber() != 0.0 && !double.IsNaN(value.AsNumber()),
+            JsValueTag.String => value.AsString().Length > 0,
+            JsValueTag.Symbol => true,
+            JsValueTag.Object => true,
+            JsValueTag.HostObject => true,
+            _ => false
+        };
+    }
+
+    [MayExecuteJs]
+    private JsValue ProxyGet(ProxyObject proxy, JsValue receiver, string prop)
+    {
+        var trap = TryGetProxyTrap(proxy, "get");
+        if (trap is not null)
+        {
+            var target = JsValue.FromObject(proxy.TargetHandle);
+            var propVal = JsValue.FromString(prop);
+            return CallFunction(trap.Value, new[] { target, propVal, receiver },
+                JsValue.FromObject(proxy.HandlerHandle!.Value));
+        }
+        var targetObj = _heap.GetObject(proxy.TargetHandle);
+        return TryGetPropertyValue(targetObj, receiver, prop, out var value)
+            ? value : JsValue.Undefined;
+    }
+
+    [MayExecuteJs]
+    private bool ProxySet(ProxyObject proxy, JsValue receiver, string prop, JsValue value)
+    {
+        var trap = TryGetProxyTrap(proxy, "set");
+        if (trap is not null)
+        {
+            var target = JsValue.FromObject(proxy.TargetHandle);
+            var propVal = JsValue.FromString(prop);
+            var result = CallFunction(trap.Value,
+                new[] { target, propVal, value, receiver },
+                JsValue.FromObject(proxy.HandlerHandle!.Value));
+            return ValueToBooleanProxy(result);
+        }
+        var targetObj = _heap.GetObject(proxy.TargetHandle);
+        return targetObj.SetProperty(prop, value);
+    }
+
+    [MayExecuteJs]
+    private bool ProxyHas(ProxyObject proxy, string prop)
+    {
+        var trap = TryGetProxyTrap(proxy, "has");
+        if (trap is not null)
+        {
+            var target = JsValue.FromObject(proxy.TargetHandle);
+            var propVal = JsValue.FromString(prop);
+            var result = CallFunction(trap.Value, new[] { target, propVal },
+                JsValue.FromObject(proxy.HandlerHandle!.Value));
+            return ValueToBooleanProxy(result);
+        }
+        var targetObj = _heap.GetObject(proxy.TargetHandle);
+        return targetObj.TryGetProperty(prop, h => _heap.GetObject(h), out _);
+    }
+
+    [MayExecuteJs]
+    private bool ProxyDelete(ProxyObject proxy, string prop)
+    {
+        var trap = TryGetProxyTrap(proxy, "deleteProperty");
+        if (trap is not null)
+        {
+            var target = JsValue.FromObject(proxy.TargetHandle);
+            var propVal = JsValue.FromString(prop);
+            var result = CallFunction(trap.Value, new[] { target, propVal },
+                JsValue.FromObject(proxy.HandlerHandle!.Value));
+            return ValueToBooleanProxy(result);
+        }
+        var targetObj = _heap.GetObject(proxy.TargetHandle);
+        return targetObj.DeleteProperty(prop);
+    }
+
+    [MayExecuteJs]
+    private JsValue ProxyCall(ProxyObject proxy, IReadOnlyList<JsValue> args, JsValue thisValue)
+    {
+        var trap = TryGetProxyTrap(proxy, "apply");
+        if (trap is not null)
+        {
+            var target = JsValue.FromObject(proxy.TargetHandle);
+            var argsArray = CreateArrayFromElements(args);
+            var argsHandle = _heap.AllocateObject(argsArray, AllocationSite.Current());
+            return CallFunction(trap.Value,
+                new[] { target, thisValue, JsValue.FromObject(argsHandle) },
+                JsValue.FromObject(proxy.HandlerHandle!.Value));
+        }
+        return CallFunction(JsValue.FromObject(proxy.TargetHandle), args, thisValue);
+    }
+
+    [MayExecuteJs]
+    private JsValue ProxyConstruct(ProxyObject proxy, IReadOnlyList<JsValue> args, JsValue newTarget)
+    {
+        var trap = TryGetProxyTrap(proxy, "construct");
+        if (trap is not null)
+        {
+            var target = JsValue.FromObject(proxy.TargetHandle);
+            var argsArray = CreateArrayFromElements(args);
+            var argsHandle = _heap.AllocateObject(argsArray, AllocationSite.Current());
+            return CallFunction(trap.Value,
+                new[] { target, JsValue.FromObject(argsHandle), newTarget },
+                JsValue.FromObject(proxy.HandlerHandle!.Value));
+        }
+        return ConstructFunction(JsValue.FromObject(proxy.TargetHandle), args, newTarget);
+    }
+
 
     private string NormalizeRegExpFlags(string flags)
     {
