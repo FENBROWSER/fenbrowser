@@ -61,6 +61,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     ObjectHandle IBuiltinContext.MaterializeFinalizationRegistryConstructor() => EnsureFinalizationRegistryConstructor();
     ObjectHandle IBuiltinContext.MaterializeAggregateErrorConstructor() => EnsureAggregateErrorConstructor();
     ObjectHandle IBuiltinContext.MaterializeStructuredCloneFunction() => EnsureStructuredCloneFunction();
+    ObjectHandle IBuiltinContext.MaterializeIntlObject() => EnsureIntlObject();
     ObjectHandle IBuiltinContext.MaterializeArrayBufferConstructor() => EnsureArrayBufferConstructor();
     ObjectHandle IBuiltinContext.MaterializeDataViewConstructor() => EnsureDataViewConstructor();
     BuiltinBinding[] IBuiltinContext.MaterializeTypedArrayConstructors() => EnsureTypedArrayConstructors();
@@ -151,6 +152,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private ObjectHandle? _weakMapPrototypeHandle;
     private ObjectHandle? _weakSetConstructorHandle;
     private ObjectHandle? _weakSetPrototypeHandle;
+    private ObjectHandle? _intlObjectHandle;
     private ObjectHandle? _reflectObjectHandle;
     private ObjectHandle? _iteratorConstructorHandle;
     private ObjectHandle? _iteratorPrototypeHandle;
@@ -2941,6 +2943,43 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             return CallFunction(args[0], callArgs, thisArg);
         }, length: 3);
 
+        // 28.1.2 construct(target, argumentsList [, newTarget])
+        DefineIntrinsicFunction(handle, reflect, "construct", (_, args) =>
+        {
+            var target = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var argumentsList = args.Count > 1 ? args[1] : JsValue.Undefined;
+            var newTarget = args.Count > 2 ? args[2] : target;
+
+            if (target.Tag != JsValueTag.Object)
+                throw new JsThrownException(CreateTypeError("Reflect.construct: target must be an object."));
+            if (newTarget.Tag != JsValueTag.Object)
+                throw new JsThrownException(CreateTypeError("Reflect.construct: newTarget must be an object."));
+
+            // Unpack argumentsList (must be array-like) into individual args.
+            JsValue[] callArgs;
+            if (argumentsList.Tag == JsValueTag.Object)
+            {
+                var lobj = _heap.GetObject(argumentsList.AsObjectHandle());
+                var len = GetArrayLength(lobj);
+                callArgs = new JsValue[len];
+                for (var i = 0; i < len; i++)
+                {
+                    var k = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    TryGetPropertyValue(lobj, argumentsList, k, out callArgs[i]);
+                }
+            }
+            else if (argumentsList.Tag == JsValueTag.Undefined || argumentsList.Tag == JsValueTag.Null)
+            {
+                callArgs = Array.Empty<JsValue>();
+            }
+            else
+            {
+                throw new JsThrownException(CreateTypeError("Reflect.construct argumentsList must be Array-like."));
+            }
+
+            return ConstructFunction(target, callArgs, newTarget);
+        }, length: 2);
+
         _reflectObjectHandle = handle;
         return handle;
     }
@@ -3390,7 +3429,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new GeneratorBuiltin())
             .Register(new ArrayBufferBuiltin())
             .Register(new DataViewBuiltin())
-            .Register(new TypedArrayBuiltin());
+            .Register(new TypedArrayBuiltin())
+            .Register(new IntlBuiltin());
         foreach (var b in registry.Materialize(this))
             InstallBinding(global, globalHandle, b);
     }
@@ -4396,7 +4436,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             ? ToStringValue(args[1])
             : string.Empty;
         var normalizedFlags = NormalizeRegExpFlags(flags);
-        var options = RegexOptions.ECMAScript | RegexOptions.CultureInvariant;
+        // ECMA-262 22.2.4 flags → RegexOptions mapping.
+        // ECMAScript mode is the default; dotAll (s) conflicts with it and
+        // Unicode (u) restricts \w/\d to ASCII in ECMAScript mode, so both
+        // remove the ECMAScript option to get fuller Unicode behaviour.
+        bool hasS = normalizedFlags.Contains('s', StringComparison.Ordinal);
+        bool hasU = normalizedFlags.Contains('u', StringComparison.Ordinal);
+        var options = (hasS || hasU)
+            ? RegexOptions.CultureInvariant
+            : RegexOptions.ECMAScript | RegexOptions.CultureInvariant;
         if (normalizedFlags.Contains('i', StringComparison.Ordinal))
         {
             options |= RegexOptions.IgnoreCase;
@@ -4406,6 +4454,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         {
             options |= RegexOptions.Multiline;
         }
+
+        if (hasS) options |= RegexOptions.Singleline;
 
         Regex regex;
         try
@@ -4431,6 +4481,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = obj.DefineOwnProperty(
             "multiline",
             new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('m', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty(
+            "dotAll",
+            new JsPropertyDescriptor(JsValue.FromBoolean(hasS), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty(
+            "unicode",
+            new JsPropertyDescriptor(JsValue.FromBoolean(hasU), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty(
+            "sticky",
+            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('y', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty(
+            "hasIndices",
+            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('d', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty(
+            "flags",
+            new JsPropertyDescriptor(JsValue.FromString(normalizedFlags), Writable: false, Enumerable: false, Configurable: true));
         _ = obj.DefineOwnProperty(
             "lastIndex",
             new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
@@ -4467,6 +4532,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         var seenGlobal = false;
         var seenIgnoreCase = false;
         var seenMultiline = false;
+        var seenDotAll = false;
+        var seenUnicode = false;
+        var seenSticky = false;
+        var seenHasIndices = false;
         foreach (var flag in flags)
         {
             switch (flag)
@@ -4480,9 +4549,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 case 'm' when !seenMultiline:
                     seenMultiline = true;
                     break;
+                case 's' when !seenDotAll:
+                    seenDotAll = true;
+                    break;
+                case 'u' when !seenUnicode:
+                    seenUnicode = true;
+                    break;
+                case 'y' when !seenSticky:
+                    seenSticky = true;
+                    break;
+                case 'd' when !seenHasIndices:
+                    seenHasIndices = true;
+                    break;
                 case 'g':
                 case 'i':
                 case 'm':
+                case 's':
+                case 'u':
+                case 'y':
+                case 'd':
                     throw new JsThrownException(CreateSyntaxError("RegExp flags must not be duplicated."));
                 default:
                     throw new JsThrownException(CreateSyntaxError($"Invalid RegExp flag '{flag}'."));
@@ -4492,7 +4577,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return string.Concat(
             seenGlobal ? "g" : string.Empty,
             seenIgnoreCase ? "i" : string.Empty,
-            seenMultiline ? "m" : string.Empty);
+            seenMultiline ? "m" : string.Empty,
+            seenDotAll ? "s" : string.Empty,
+            seenUnicode ? "u" : string.Empty,
+            seenSticky ? "y" : string.Empty,
+            seenHasIndices ? "d" : string.Empty);
     }
 
     private ObjectHandle EnsureJsonObject()
@@ -4511,6 +4600,169 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
         _jsonObjectHandle = handle;
         return handle;
+    }
+
+    private ObjectHandle EnsureIntlObject()
+    {
+        if (_intlObjectHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var intl = CreateOrdinaryObject();
+        var handle = _heap.AllocateObject(intl, AllocationSite.Current());
+        _heap.PushRoot(handle);
+
+        // ECMA-402 §11 DateTimeFormat constructor.
+        {
+            var ctor = new NativeFunctionObject(
+                "DateTimeFormat",
+                (_, _) => throw new JsThrownException(CreateTypeError("Intl.DateTimeFormat must be invoked with 'new'.")),
+                construct: args => DateTimeFormatConstruct(args),
+                length: 0);
+            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
+            _heap.PushRoot(ctorHandle);
+            _ = intl.DefineOwnProperty(
+                "DateTimeFormat",
+                new JsPropertyDescriptor(
+                    JsValue.FromObject(ctorHandle),
+                    Writable: true,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(handle, ctorHandle);
+        }
+
+        // ECMA-402 §13 NumberFormat constructor.
+        {
+            var ctor = new NativeFunctionObject(
+                "NumberFormat",
+                (_, _) => throw new JsThrownException(CreateTypeError("Intl.NumberFormat must be invoked with 'new'.")),
+                construct: args => NumberFormatConstruct(args),
+                length: 0);
+            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
+            _heap.PushRoot(ctorHandle);
+            _ = intl.DefineOwnProperty(
+                "NumberFormat",
+                new JsPropertyDescriptor(
+                    JsValue.FromObject(ctorHandle),
+                    Writable: true,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(handle, ctorHandle);
+        }
+
+        // ECMA-402 §10 Collator constructor.
+        {
+            var ctor = new NativeFunctionObject(
+                "Collator",
+                (_, _) => throw new JsThrownException(CreateTypeError("Intl.Collator must be invoked with 'new'.")),
+                construct: args => CollatorConstruct(args),
+                length: 0);
+            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
+            _heap.PushRoot(ctorHandle);
+            _ = intl.DefineOwnProperty(
+                "Collator",
+                new JsPropertyDescriptor(
+                    JsValue.FromObject(ctorHandle),
+                    Writable: true,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(handle, ctorHandle);
+        }
+
+        // ECMA-402 §9.2.1 getCanonicalLocales(locales).
+        {
+            var fn = new NativeFunctionObject(
+                "getCanonicalLocales",
+                (_, args) => GetCanonicalLocales(args),
+                length: 1);
+            var fnHandle = _heap.AllocateObject(fn, AllocationSite.Current());
+            _ = intl.DefineOwnProperty(
+                "getCanonicalLocales",
+                new JsPropertyDescriptor(
+                    JsValue.FromObject(fnHandle),
+                    Writable: true,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(handle, fnHandle);
+        }
+
+        _intlObjectHandle = handle;
+        return handle;
+    }
+
+    private JsValue DateTimeFormatConstruct(IReadOnlyList<JsValue> args)
+    {
+        // Stub: returns a plain object. Real implementation in follow-up
+        // will parse locales/options and wire the format method.
+        var obj = CreateOrdinaryObject();
+        var objHandle = _heap.AllocateObject(obj, AllocationSite.Current());
+        return JsValue.FromObject(objHandle);
+    }
+
+    private JsValue NumberFormatConstruct(IReadOnlyList<JsValue> args)
+    {
+        // Stub: returns a plain object. Real implementation in follow-up
+        // will parse locales/options and wire the format method.
+        var obj = CreateOrdinaryObject();
+        var objHandle = _heap.AllocateObject(obj, AllocationSite.Current());
+        return JsValue.FromObject(objHandle);
+    }
+
+    private JsValue CollatorConstruct(IReadOnlyList<JsValue> args)
+    {
+        // Stub: returns a plain object. Real implementation in follow-up
+        // will parse locales/options and wire the compare method.
+        var obj = CreateOrdinaryObject();
+        var objHandle = _heap.AllocateObject(obj, AllocationSite.Current());
+        return JsValue.FromObject(objHandle);
+    }
+
+    private JsValue GetCanonicalLocales(IReadOnlyList<JsValue> args)
+    {
+        // ECMA-402 §9.2.1 CanonicalizeLocaleList.
+        // For now, just return the input locales as an array.
+        // Real implementation in Commit 5.
+        if (args.Count == 0)
+        {
+            var emptyArr = CreateArrayFromElements(Array.Empty<JsValue>());
+            return JsValue.FromObject(_heap.AllocateObject(emptyArr, AllocationSite.Current()));
+        }
+
+        var localesList = new List<JsValue>();
+        var arg = args[0];
+
+        if (arg.Tag == JsValueTag.String)
+        {
+            localesList.Add(arg);
+        }
+        else if (arg.Tag == JsValueTag.Object)
+        {
+            var argObj = _heap.GetObject(arg.AsObjectHandle());
+            if (argObj is ArrayObject)
+            {
+                var len = GetArrayLength(argObj);
+                for (var i = 0; i < len; i++)
+                {
+                    if (TryGetPropertyValue(argObj, arg, i.ToString(System.Globalization.CultureInfo.InvariantCulture), out var elem))
+                    {
+                        localesList.Add(elem);
+                    }
+                }
+            }
+            else
+            {
+                localesList.Add(arg);
+            }
+        }
+        else
+        {
+            throw new JsThrownException(CreateTypeError("locales argument must be a string or array of strings."));
+        }
+
+        var arrObj = CreateArrayFromElements(localesList);
+        var arrHandle = _heap.AllocateObject(arrObj, AllocationSite.Current());
+        return JsValue.FromObject(arrHandle);
     }
 
     private void DefineIntrinsicFunction(
@@ -10983,6 +11235,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     }
 
     private JsValue ConstructFunction(JsValue value, IReadOnlyList<JsValue> args)
+        => ConstructFunction(value, args, newTarget: value);
+
+    // ECMA-262 7.3.15 Construct(F, argumentsList, newTarget) —
+    // separate newTarget parameter so Reflect.construct can wire a different
+    // newTarget.prototype for the created object.
+    private JsValue ConstructFunction(JsValue value, IReadOnlyList<JsValue> args, JsValue newTarget)
     {
         var obj = ResolveObject(value);
 
@@ -10991,14 +11249,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         if (obj is BoundFunctionObject bound)
         {
             var merged = MergeBoundArgs(bound.BoundArgs, args);
-            return ConstructFunction(bound.TargetFunction, merged);
+            return ConstructFunction(bound.TargetFunction, merged, newTarget);
         }
 
         if (obj is JsFunctionObject fn)
         {
             if (fn.Kind == FunctionKind.Generator)
                 throw new JsThrownException(CreateTypeError("Generator functions cannot be used as constructors."));
-            return ExecuteConstruct(fn, args, newTarget: value);
+            return ExecuteConstruct(fn, args, newTarget);
         }
 
         if (obj is NativeFunctionObject native)
@@ -11418,10 +11676,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     }
 
     [MayExecuteJs]
+    // ECMA-262 10.2.2 [[Construct]] — the prototype of the created object
+    // comes from newTarget.prototype (not callee.prototype) when they differ.
+    // OrdinaryCreateFromConstructor(newTarget, ...) calls GetPrototypeFromConstructor
+    // which reads newTarget.prototype.
     private JsValue ExecuteConstruct(JsFunctionObject callee, IReadOnlyList<JsValue> args, JsValue newTarget = default)
     {
         var instanceObject = CreateOrdinaryObject();
-        if (callee.TryGetProperty("prototype", h => _heap.GetObject(h), out var prototypeDescriptor) &&
+        var protoSource = newTarget.Tag == JsValueTag.Object
+            ? ResolveObject(newTarget)
+            : callee;
+        if (protoSource.TryGetProperty("prototype", h => _heap.GetObject(h), out var prototypeDescriptor) &&
             prototypeDescriptor.Value.Tag == JsValueTag.Object)
         {
             instanceObject.SetPrototype(prototypeDescriptor.Value.AsObjectHandle());

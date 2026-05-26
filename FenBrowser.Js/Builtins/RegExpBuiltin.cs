@@ -58,9 +58,18 @@ public sealed class RegExpBuiltin : IBuiltinModule
         string normalizedFlags;
         try { normalizedFlags = NormalizeRegExpFlags(flags); }
         catch (ArgumentException) { throw new JsThrownException(ctx.CreateSyntaxError("Invalid RegExp flags.")); }
-        var options = RegexOptions.ECMAScript | RegexOptions.CultureInvariant;
+        // ECMA-262 22.2.4 flags → RegexOptions mapping.
+        // ECMAScript mode is the default; dotAll (s) conflicts with it and
+        // Unicode (u) restricts \w/\d to ASCII in ECMAScript mode, so both
+        // remove the ECMAScript option to get fuller Unicode behaviour.
+        bool hasS = normalizedFlags.Contains('s', StringComparison.Ordinal);
+        bool hasU = normalizedFlags.Contains('u', StringComparison.Ordinal);
+        var options = (hasS || hasU)
+            ? RegexOptions.CultureInvariant
+            : RegexOptions.ECMAScript | RegexOptions.CultureInvariant;
         if (normalizedFlags.Contains('i', StringComparison.Ordinal)) options |= RegexOptions.IgnoreCase;
         if (normalizedFlags.Contains('m', StringComparison.Ordinal)) options |= RegexOptions.Multiline;
+        if (hasS) options |= RegexOptions.Singleline;
 
         Regex regex;
         try { regex = new Regex(pattern, options, TimeSpan.FromMilliseconds(250)); }
@@ -72,6 +81,11 @@ public sealed class RegExpBuiltin : IBuiltinModule
         obj.DefineOwnProperty("global", new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('g', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
         obj.DefineOwnProperty("ignoreCase", new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('i', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
         obj.DefineOwnProperty("multiline", new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('m', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        obj.DefineOwnProperty("dotAll", new JsPropertyDescriptor(JsValue.FromBoolean(hasS), Writable: false, Enumerable: false, Configurable: true));
+        obj.DefineOwnProperty("unicode", new JsPropertyDescriptor(JsValue.FromBoolean(hasU), Writable: false, Enumerable: false, Configurable: true));
+        obj.DefineOwnProperty("sticky", new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('y', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        obj.DefineOwnProperty("hasIndices", new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('d', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        obj.DefineOwnProperty("flags", new JsPropertyDescriptor(JsValue.FromString(normalizedFlags), Writable: false, Enumerable: false, Configurable: true));
         obj.DefineOwnProperty("lastIndex", new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
         return JsValue.FromObject(ctx.Heap.AllocateObject(obj, AllocationSite.Current()));
     }
@@ -80,6 +94,7 @@ public sealed class RegExpBuiltin : IBuiltinModule
     {
         var sb = new System.Text.StringBuilder(flags.Length);
         var seenG = false; var seenI = false; var seenM = false;
+        var seenS = false; var seenU = false; var seenY = false; var seenD = false;
         foreach (var c in flags)
         {
             switch (c)
@@ -87,6 +102,10 @@ public sealed class RegExpBuiltin : IBuiltinModule
                 case 'g': if (!seenG) { seenG = true; sb.Append(c); } break;
                 case 'i': if (!seenI) { seenI = true; sb.Append(c); } break;
                 case 'm': if (!seenM) { seenM = true; sb.Append(c); } break;
+                case 's': if (!seenS) { seenS = true; sb.Append(c); } break;
+                case 'u': if (!seenU) { seenU = true; sb.Append(c); } break;
+                case 'y': if (!seenY) { seenY = true; sb.Append(c); } break;
+                case 'd': if (!seenD) { seenD = true; sb.Append(c); } break;
                 default: throw new ArgumentException("Invalid flag: " + c);
             }
         }
