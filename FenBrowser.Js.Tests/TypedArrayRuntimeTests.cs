@@ -82,4 +82,53 @@ public sealed class TypedArrayRuntimeTests
         ");
         Assert.Equal(12d, result.AsNumber());
     }
+
+    [Fact]
+    public void Uint8ArrayConstructorExists()
+    {
+        Assert.Equal("function", Run("typeof Uint8Array;").AsString());
+    }
+
+    [Fact]
+    public void Uint8ArrayByLength()
+    {
+        var result = Run("new Uint8Array(4).length;");
+        Assert.Equal(4d, result.AsNumber());
+    }
+
+    [Fact]
+    public void Float64ArrayByLength()
+    {
+        var result = Run("new Float64Array(3).length;");
+        Assert.Equal(3d, result.AsNumber());
+    }
+
+    [Fact]
+    public void TypedArrayGetters()
+    {
+        var result = Run(@"
+            var arr = new Uint8Array(5);
+            arr.length + arr.byteLength + arr.byteOffset;
+        ");
+        Assert.Equal(10d, result.AsNumber()); // 5 + 5 + 0
+    }
+
+    [Fact]
+    public void TypedArrayBytesPerElement()
+    {
+        Assert.Equal(4d, Run("Int32Array.BYTES_PER_ELEMENT;").AsNumber());
+        Assert.Equal(8d, Run("Float64Array.BYTES_PER_ELEMENT;").AsNumber());
+        Assert.Equal(1d, Run("Uint8Array.BYTES_PER_ELEMENT;").AsNumber());
+    }
+
+    [Fact]
+    public void AllTypedArrayConstructorsExist()
+    {
+        var names = new[] { "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array" };
+        foreach (var name in names)
+        {
+            var result = Run($"typeof {name};");
+            Assert.Equal("function", result.AsString());
+        }
+    }
 }

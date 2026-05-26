@@ -3389,7 +3389,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new AggregateErrorBuiltin())
             .Register(new GeneratorBuiltin())
             .Register(new ArrayBufferBuiltin())
-            .Register(new DataViewBuiltin());
+            .Register(new DataViewBuiltin())
+            .Register(new TypedArrayBuiltin());
         foreach (var b in registry.Materialize(this))
             InstallBinding(global, globalHandle, b);
     }
@@ -8910,10 +8911,195 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         { RequireDataView(thisValue).SetFloat64(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 ? args[1].AsNumber() : 0, args.Count > 2 && args[2].AsBoolean()); return JsValue.Undefined; }, length: 3);
     }
 
-    // ECMA-262 23.2 — all 11 %TypedArray% constructors. Stubbed for now.
+    // ECMA-262 23.2 — all 11 %TypedArray% constructors.
     private BuiltinBinding[] EnsureTypedArrayConstructors()
     {
-        throw new NotImplementedException("TypedArray constructors not yet wired.");
+        if (_typedArrayConstructors is not null)
+            return _typedArrayConstructors;
+
+        var results = new List<BuiltinBinding>(11);
+        results.Add(CreateTypedArrayCtor("Int8Array", TypedArrayElementType.Int8));
+        results.Add(CreateTypedArrayCtor("Uint8Array", TypedArrayElementType.Uint8));
+        results.Add(CreateTypedArrayCtor("Uint8ClampedArray", TypedArrayElementType.Uint8Clamped));
+        results.Add(CreateTypedArrayCtor("Int16Array", TypedArrayElementType.Int16));
+        results.Add(CreateTypedArrayCtor("Uint16Array", TypedArrayElementType.Uint16));
+        results.Add(CreateTypedArrayCtor("Int32Array", TypedArrayElementType.Int32));
+        results.Add(CreateTypedArrayCtor("Uint32Array", TypedArrayElementType.Uint32));
+        results.Add(CreateTypedArrayCtor("Float32Array", TypedArrayElementType.Float32));
+        results.Add(CreateTypedArrayCtor("Float64Array", TypedArrayElementType.Float64));
+        results.Add(CreateTypedArrayCtor("BigInt64Array", TypedArrayElementType.BigInt64));
+        results.Add(CreateTypedArrayCtor("BigUint64Array", TypedArrayElementType.BigUint64));
+
+        _typedArrayConstructors = results.ToArray();
+        return _typedArrayConstructors;
+    }
+
+    private BuiltinBinding[]? _typedArrayConstructors;
+
+    private BuiltinBinding CreateTypedArrayCtor(string name, TypedArrayElementType elementType)
+    {
+        var elementSize = elementType switch
+        {
+            TypedArrayElementType.Int8 or TypedArrayElementType.Uint8 or TypedArrayElementType.Uint8Clamped => 1,
+            TypedArrayElementType.Int16 or TypedArrayElementType.Uint16 => 2,
+            TypedArrayElementType.Int32 or TypedArrayElementType.Uint32 or TypedArrayElementType.Float32 => 4,
+            TypedArrayElementType.Float64 or TypedArrayElementType.BigInt64 or TypedArrayElementType.BigUint64 => 8,
+            _ => 1
+        };
+
+        var prototype = CreateOrdinaryObject();
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            name,
+            (_, _2) => throw new JsThrownException(CreateTypeError($"{name} constructor must be invoked with 'new'.")),
+            args => ConstructTypedArray(elementType, elementSize, prototypeHandle, args),
+            length: 1);
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.SetProperty("BYTES_PER_ELEMENT", JsValue.FromNumber(elementSize));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        InstallTypedArrayPrototypeMethods(prototypeHandle, prototype, name, elementType, elementSize);
+
+        return BuiltinBinding.NonEnumerable(name, JsValue.FromObject(constructorHandle));
+    }
+
+    private JsValue ConstructTypedArray(TypedArrayElementType elementType, int elementSize, ObjectHandle protoHandle, IReadOnlyList<JsValue> args)
+    {
+        if (args.Count == 0)
+        {
+            var emptyBuf = new ArrayBufferObject(0);
+            var empty = CreateTypedArrayInstance(elementType, emptyBuf, 0, 0);
+            empty.SetPrototype(protoHandle);
+            return JsValue.FromObject(_heap.AllocateObject(empty, AllocationSite.Current()));
+        }
+
+        var arg0 = args[0];
+
+        // new X(TypedArray) — copy elements from existing
+        if (arg0.Tag == JsValueTag.Object && _heap.GetObject(arg0.AsObjectHandle()) is TypedArrayObject src)
+        {
+            var len = src.Length;
+            var buf = new ArrayBufferObject(len * elementSize);
+            var view = CreateTypedArrayInstance(elementType, buf, 0, len * elementSize);
+            for (var i = 0; i < len; i++)
+                view.SetElement(i, src.GetElement(i));
+            view.SetPrototype(protoHandle);
+            return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
+        }
+
+        // new X(ArrayBuffer [, byteOffset [, length]])
+        if (arg0.Tag == JsValueTag.Object && _heap.GetObject(arg0.AsObjectHandle()) is ArrayBufferObject ab)
+        {
+            var byteOffset = args.Count > 1 ? (int)Math.Max(args[1].AsNumber(), 0) : 0;
+            if (byteOffset % elementSize != 0)
+                throw new JsThrownException(CreateRangeError($"{nameof(TypedArrayElementType)}: byteOffset must be a multiple of {elementSize}."));
+            var byteLength = args.Count > 2 ? (int)args[2].AsNumber() * elementSize : ab.ByteLength - byteOffset;
+            if (byteOffset + byteLength > ab.ByteLength)
+                throw new JsThrownException(CreateRangeError("TypedArray: offset + length exceeds ArrayBuffer bounds."));
+            var view = CreateTypedArrayInstance(elementType, ab, byteOffset, byteLength);
+            view.SetPrototype(protoHandle);
+            return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
+        }
+
+        // new X(length) — allocate new buffer
+        {
+            var length = (int)Math.Max(arg0.AsNumber(), 0);
+            var buf = new ArrayBufferObject(length * elementSize);
+            var view = CreateTypedArrayInstance(elementType, buf, 0, length * elementSize);
+            view.SetPrototype(protoHandle);
+            return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
+        }
+    }
+
+    private static TypedArrayObject CreateTypedArrayInstance(TypedArrayElementType elementType, ArrayBufferObject buf, int byteOffset, int byteLength)
+    {
+        return elementType switch
+        {
+            TypedArrayElementType.Int8 => new Int8Array(buf, byteOffset, byteLength),
+            TypedArrayElementType.Uint8 => new Uint8Array(buf, byteOffset, byteLength),
+            TypedArrayElementType.Uint8Clamped => new Uint8ClampedArray(buf, byteOffset, byteLength),
+            TypedArrayElementType.Int16 => new Int16Array(buf, byteOffset, byteLength),
+            TypedArrayElementType.Uint16 => new Uint16Array(buf, byteOffset, byteLength),
+            TypedArrayElementType.Int32 => new Int32Array(buf, byteOffset, byteLength),
+            TypedArrayElementType.Uint32 => new Uint32Array(buf, byteOffset, byteLength),
+            TypedArrayElementType.Float32 => new Float32Array(buf, byteOffset, byteLength),
+            TypedArrayElementType.Float64 => new Float64Array(buf, byteOffset, byteLength),
+            TypedArrayElementType.BigInt64 => new BigInt64Array(buf, byteOffset, byteLength),
+            TypedArrayElementType.BigUint64 => new BigUint64Array(buf, byteOffset, byteLength),
+            _ => throw new ArgumentOutOfRangeException(nameof(elementType))
+        };
+    }
+
+    private void InstallTypedArrayPrototypeMethods(ObjectHandle protoHandle, JsObject proto, string name, TypedArrayElementType elementType, int elementSize)
+    {
+        // 23.2.3 getters: buffer, byteLength, byteOffset, length
+        proto.DefineOwnProperty("buffer", JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(_heap.AllocateObject(new NativeFunctionObject("get buffer",
+                (thisValue, _2) => JsValue.FromObject(_heap.AllocateObject(RequireTypedArray(thisValue).Buffer, AllocationSite.Current())),
+                length: 0), AllocationSite.Current())),
+            JsValue.Undefined, Enumerable: false, Configurable: true));
+
+        proto.DefineOwnProperty("byteLength", JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(_heap.AllocateObject(new NativeFunctionObject("get byteLength",
+                (thisValue, _2) => JsValue.FromNumber(RequireTypedArray(thisValue).ByteLength),
+                length: 0), AllocationSite.Current())),
+            JsValue.Undefined, Enumerable: false, Configurable: true));
+
+        proto.DefineOwnProperty("byteOffset", JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(_heap.AllocateObject(new NativeFunctionObject("get byteOffset",
+                (thisValue, _2) => JsValue.FromNumber(RequireTypedArray(thisValue).ByteOffset),
+                length: 0), AllocationSite.Current())),
+            JsValue.Undefined, Enumerable: false, Configurable: true));
+
+        proto.DefineOwnProperty("length", JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(_heap.AllocateObject(new NativeFunctionObject("get length",
+                (thisValue, _2) => JsValue.FromNumber(RequireTypedArray(thisValue).Length),
+                length: 0), AllocationSite.Current())),
+            JsValue.Undefined, Enumerable: false, Configurable: true));
+
+        // 23.2.3.22 TypedArray.prototype.set(array [, offset])
+        DefineNativePrototypeMethod(protoHandle, proto, "set", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var source = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var targetOffset = args.Count > 1 ? (int)Math.Max(args[1].AsNumber(), 0) : 0;
+            if (source.Tag == JsValueTag.Object && _heap.GetObject(source.AsObjectHandle()) is TypedArrayObject src)
+            {
+                var count = Math.Min(src.Length, self.Length - targetOffset);
+                for (var i = 0; i < count; i++)
+                    self.SetElement(targetOffset + i, src.GetElement(i));
+            }
+            return JsValue.Undefined;
+        }, length: 2);
+
+        // 23.2.3.19 TypedArray.prototype.slice(begin, end)
+        DefineNativePrototypeMethod(protoHandle, proto, "slice", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var len = self.Length;
+            var begin = args.Count > 0 ? (int)Math.Min(Math.Max(args[0].AsNumber(), 0), len) : 0;
+            var end = args.Count > 1 ? (int)Math.Min(Math.Max(args[1].AsNumber(), 0), len) : len;
+            if (end < begin) end = begin;
+            var newLen = end - begin;
+            var buf = new ArrayBufferObject(newLen * elementSize);
+            var sliced = CreateTypedArrayInstance(elementType, buf, 0, newLen * elementSize);
+            for (var i = 0; i < newLen; i++)
+                sliced.SetElement(i, self.GetElement(begin + i));
+            sliced.SetPrototype(protoHandle);
+            return JsValue.FromObject(_heap.AllocateObject(sliced, AllocationSite.Current()));
+        }, length: 2);
+    }
+
+    private TypedArrayObject RequireTypedArray(JsValue value)
+    {
+        if (value.Tag != JsValueTag.Object || _heap.GetObject(value.AsObjectHandle()) is not TypedArrayObject ta)
+            throw new JsThrownException(CreateTypeError("TypedArray.prototype method called on non-TypedArray."));
+        return ta;
     }
 
     // HTML queueMicrotask(callback). The callback is appended to the pending
