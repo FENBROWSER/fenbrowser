@@ -255,12 +255,15 @@ public sealed class JsParser
             BinaryExpressionNode binary => ContainsSuperCallInExpression(binary.Left) || ContainsSuperCallInExpression(binary.Right),
             AssignmentExpressionNode assignment => ContainsSuperCallInExpression(assignment.Left) || ContainsSuperCallInExpression(assignment.Right),
             CallExpressionNode call => ContainsSuperCallInExpression(call.Callee) || call.Arguments.Any(ContainsSuperCallInExpression),
+            OptionalCallExpressionNode optionalCall => ContainsSuperCallInExpression(optionalCall.Callee) || optionalCall.Arguments.Any(ContainsSuperCallInExpression),
             ObjectLiteralExpressionNode objectLiteral => objectLiteral.Properties.Any(p =>
                 (p.ComputedKey is not null && ContainsSuperCallInExpression(p.ComputedKey)) || ContainsSuperCallInExpression(p.Value)),
             ArrayLiteralExpressionNode arrayLiteral => arrayLiteral.Elements.Any(ContainsSuperCallInExpression),
             SpreadElementExpressionNode spread => ContainsSuperCallInExpression(spread.Argument),
             MemberExpressionNode member => ContainsSuperCallInExpression(member.Object) ||
                                            (member.PropertyExpression is not null && ContainsSuperCallInExpression(member.PropertyExpression)),
+            OptionalMemberExpressionNode optionalMember => ContainsSuperCallInExpression(optionalMember.Object) ||
+                                           (optionalMember.PropertyExpression is not null && ContainsSuperCallInExpression(optionalMember.PropertyExpression)),
             UnaryExpressionNode unary => ContainsSuperCallInExpression(unary.Operand),
             ConditionalExpressionNode conditional => ContainsSuperCallInExpression(conditional.Test) ||
                                                      ContainsSuperCallInExpression(conditional.Consequent) ||
@@ -283,6 +286,8 @@ public sealed class JsParser
                                                    ContainsIdentifierReferenceInExpression(assignment.Right, name),
             CallExpressionNode call => ContainsIdentifierReferenceInExpression(call.Callee, name) ||
                                        call.Arguments.Any(a => ContainsIdentifierReferenceInExpression(a, name)),
+            OptionalCallExpressionNode optionalCall => ContainsIdentifierReferenceInExpression(optionalCall.Callee, name) ||
+                                       optionalCall.Arguments.Any(a => ContainsIdentifierReferenceInExpression(a, name)),
             ObjectLiteralExpressionNode objectLiteral => objectLiteral.Properties.Any(p =>
                 (p.ComputedKey is not null && ContainsIdentifierReferenceInExpression(p.ComputedKey, name)) ||
                 ContainsIdentifierReferenceInExpression(p.Value, name)),
@@ -290,6 +295,8 @@ public sealed class JsParser
             SpreadElementExpressionNode spread => ContainsIdentifierReferenceInExpression(spread.Argument, name),
             MemberExpressionNode member => ContainsIdentifierReferenceInExpression(member.Object, name) ||
                                            (member.PropertyExpression is not null && ContainsIdentifierReferenceInExpression(member.PropertyExpression, name)),
+            OptionalMemberExpressionNode optionalMember => ContainsIdentifierReferenceInExpression(optionalMember.Object, name) ||
+                                           (optionalMember.PropertyExpression is not null && ContainsIdentifierReferenceInExpression(optionalMember.PropertyExpression, name)),
             UnaryExpressionNode unary => ContainsIdentifierReferenceInExpression(unary.Operand, name),
             ConditionalExpressionNode conditional => ContainsIdentifierReferenceInExpression(conditional.Test, name) ||
                                                      ContainsIdentifierReferenceInExpression(conditional.Consequent, name) ||
@@ -311,12 +318,15 @@ public sealed class JsParser
             BinaryExpressionNode binary => ContainsYieldReferenceInExpression(binary.Left) || ContainsYieldReferenceInExpression(binary.Right),
             AssignmentExpressionNode assignment => ContainsYieldReferenceInExpression(assignment.Left) || ContainsYieldReferenceInExpression(assignment.Right),
             CallExpressionNode call => ContainsYieldReferenceInExpression(call.Callee) || call.Arguments.Any(ContainsYieldReferenceInExpression),
+            OptionalCallExpressionNode optionalCall => ContainsYieldReferenceInExpression(optionalCall.Callee) || optionalCall.Arguments.Any(ContainsYieldReferenceInExpression),
             ObjectLiteralExpressionNode objectLiteral => objectLiteral.Properties.Any(p =>
                 (p.ComputedKey is not null && ContainsYieldReferenceInExpression(p.ComputedKey)) || ContainsYieldReferenceInExpression(p.Value)),
             ArrayLiteralExpressionNode arrayLiteral => arrayLiteral.Elements.Any(ContainsYieldReferenceInExpression),
             SpreadElementExpressionNode spread => ContainsYieldReferenceInExpression(spread.Argument),
             MemberExpressionNode member => ContainsYieldReferenceInExpression(member.Object) ||
                                            (member.PropertyExpression is not null && ContainsYieldReferenceInExpression(member.PropertyExpression)),
+            OptionalMemberExpressionNode optionalMember => ContainsYieldReferenceInExpression(optionalMember.Object) ||
+                                           (optionalMember.PropertyExpression is not null && ContainsYieldReferenceInExpression(optionalMember.PropertyExpression)),
             ConditionalExpressionNode conditional => ContainsYieldReferenceInExpression(conditional.Test) ||
                                                      ContainsYieldReferenceInExpression(conditional.Consequent) ||
                                                      ContainsYieldReferenceInExpression(conditional.Alternate),
@@ -602,6 +612,14 @@ public sealed class JsParser
                 }
 
                 break;
+            case OptionalCallExpressionNode optionalCall:
+                ValidateRestrictedIdentifiersInExpression(optionalCall.Callee, forbidAwaitIdentifier, forbidYieldIdentifier);
+                foreach (var argument in optionalCall.Arguments)
+                {
+                    ValidateRestrictedIdentifiersInExpression(argument, forbidAwaitIdentifier, forbidYieldIdentifier);
+                }
+
+                break;
             case ObjectLiteralExpressionNode objectLiteral:
                 foreach (var property in objectLiteral.Properties)
                 {
@@ -629,6 +647,14 @@ public sealed class JsParser
                 if (member.PropertyExpression is not null)
                 {
                     ValidateRestrictedIdentifiersInExpression(member.PropertyExpression, forbidAwaitIdentifier, forbidYieldIdentifier);
+                }
+
+                break;
+            case OptionalMemberExpressionNode optionalMember:
+                ValidateRestrictedIdentifiersInExpression(optionalMember.Object, forbidAwaitIdentifier, forbidYieldIdentifier);
+                if (optionalMember.PropertyExpression is not null)
+                {
+                    ValidateRestrictedIdentifiersInExpression(optionalMember.PropertyExpression, forbidAwaitIdentifier, forbidYieldIdentifier);
                 }
 
                 break;
@@ -2305,6 +2331,33 @@ public sealed class JsParser
                 continue;
             }
 
+            if (IsPunctuator("?."))
+            {
+                Advance();
+
+                if (IsPunctuator("("))
+                {
+                    var args = ParseCallArguments();
+                    var end = Previous();
+                    left = new OptionalCallExpressionNode(left, args, MergeSpan(left.Span, end.Span));
+                    continue;
+                }
+
+                if (IsPunctuator("["))
+                {
+                    Advance();
+                    var propExpr = ParseExpression(0);
+                    ExpectPunctuator("]");
+                    var close = Previous();
+                    left = new OptionalMemberExpressionNode(left, string.Empty, Computed: true, PropertyExpression: propExpr, MergeSpan(left.Span, close.Span));
+                    continue;
+                }
+
+                var optionalProperty = ExpectPropertyNameAfterDot();
+                left = new OptionalMemberExpressionNode(left, optionalProperty.Text, Computed: false, PropertyExpression: null, MergeSpan(left.Span, optionalProperty.Span));
+                continue;
+            }
+
             if (IsPunctuator("."))
             {
                 if (left is NumericLiteralExpressionNode && PeekIsPunctuator(1, "."))
@@ -3396,6 +3449,33 @@ public sealed class JsParser
                 Advance();
                 var property = ExpectPropertyNameAfterDot();
                 left = new MemberExpressionNode(left, property.Text, Computed: false, PropertyExpression: null, MergeSpan(left.Span, property.Span));
+                continue;
+            }
+
+            if (IsPunctuator("?."))
+            {
+                Advance();
+
+                if (allowCall && IsPunctuator("("))
+                {
+                    var args = ParseCallArguments();
+                    var end = Previous();
+                    left = new OptionalCallExpressionNode(left, args, MergeSpan(left.Span, end.Span));
+                    continue;
+                }
+
+                if (IsPunctuator("["))
+                {
+                    Advance();
+                    var propExpr = ParseExpression(0);
+                    ExpectPunctuator("]");
+                    var close = Previous();
+                    left = new OptionalMemberExpressionNode(left, string.Empty, Computed: true, PropertyExpression: propExpr, MergeSpan(left.Span, close.Span));
+                    continue;
+                }
+
+                var property = ExpectPropertyNameAfterDot();
+                left = new OptionalMemberExpressionNode(left, property.Text, Computed: false, PropertyExpression: null, MergeSpan(left.Span, property.Span));
                 continue;
             }
 

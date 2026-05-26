@@ -56,6 +56,10 @@ public sealed record SpreadElementExpressionNode(ExpressionNode Argument, Source
 
 public sealed record MemberExpressionNode(ExpressionNode Object, string Property, bool Computed, ExpressionNode? PropertyExpression, SourceSpan Span) : ExpressionNode(Span);
 
+public sealed record OptionalMemberExpressionNode(ExpressionNode Object, string Property, bool Computed, ExpressionNode? PropertyExpression, SourceSpan Span) : ExpressionNode(Span);
+
+public sealed record OptionalCallExpressionNode(ExpressionNode Callee, IReadOnlyList<ExpressionNode> Arguments, SourceSpan Span) : ExpressionNode(Span);
+
 public sealed record UnaryExpressionNode(string Operator, ExpressionNode Operand, SourceSpan Span) : ExpressionNode(Span);
 
 public sealed record ConditionalExpressionNode(ExpressionNode Test, ExpressionNode Consequent, ExpressionNode Alternate, SourceSpan Span) : ExpressionNode(Span);
