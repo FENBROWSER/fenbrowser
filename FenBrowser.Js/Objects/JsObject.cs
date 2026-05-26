@@ -47,7 +47,7 @@ public class JsObject : ITraceable
     }
 
     // ECMA-262 9.1.6 [[DefineOwnProperty]].
-    public bool DefineOwnProperty(string key, JsPropertyDescriptor descriptor)
+    public virtual bool DefineOwnProperty(string key, JsPropertyDescriptor descriptor)
     {
         if (_shape.TryGetSlot(key, out var existingSlot))
         {
@@ -140,7 +140,7 @@ public class JsObject : ITraceable
         return false;
     }
 
-    public bool SetProperty(string key, JsValue value)
+    public virtual bool SetProperty(string key, JsValue value)
     {
         if (_shape.TryGetSlot(key, out var slot) && _properties[slot] is { } existing)
         {
@@ -152,7 +152,7 @@ public class JsObject : ITraceable
         return true;
     }
 
-    public bool DeleteProperty(string key)
+    public virtual bool DeleteProperty(string key)
     {
         if (_shape.TryGetSlot(key, out var slot) && _properties[slot] is { } existing)
         {
