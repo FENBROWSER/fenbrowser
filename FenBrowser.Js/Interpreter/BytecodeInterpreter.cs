@@ -896,6 +896,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
                     var ownerHandle = ResolveObjectHandle(receiverValue);
                     var obj = _heap.GetObject(ownerHandle);
+                    if (obj is ProxyObject proxySet)
+                    {
+                        try { _ = ProxySet(proxySet, receiverValue, prop, value); }
+                        catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                        break;
+                    }
                     try
                     {
                         _ = SetPropertyValue(ownerHandle, obj, prop, value, receiverValue);
@@ -937,8 +943,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                         break;
                     }
 
-                    var obj = ResolveObject(receiver);
                     var prop = function.PropertyNames[ins.C];
+                    var obj = ResolveObject(receiver);
+                    if (obj is ProxyObject proxyDel)
+                    {
+                        frame.Registers[ins.A] = JsValue.FromBoolean(ProxyDelete(proxyDel, prop));
+                        break;
+                    }
                     frame.Registers[ins.A] = JsValue.FromBoolean(obj.DeleteProperty(prop));
                     break;
                 }
@@ -1260,7 +1271,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     }
 
                     var obj = ResolveObject(rhs);
-                    var has = obj.TryGetProperty(key, h => _heap.GetObject(h), out _);
+                    var has = obj is ProxyObject proxyIn ? ProxyHas(proxyIn, key)
+                        : obj.TryGetProperty(key, h => _heap.GetObject(h), out _);
                     frame.Registers[ins.A] = JsValue.FromBoolean(has);
                     break;
                 }
@@ -4434,6 +4446,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         // during InstallGlobalObjectProperties, before any bytecode executes.
         _regexpPrototypeHandle ??= prototypeHandle;
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "test", RegExpPrototypeTest, length: 1);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "exec", RegExpPrototypeExec, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", RegExpPrototypeToString);
     }
 
@@ -4575,6 +4588,74 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return JsValue.FromBoolean(regexp.Regex.IsMatch(input));
     }
 
+    // ECMA-262 22.2.5.2 RegExp.prototype.exec(string).
+    private JsValue RegExpPrototypeExec(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var regexp = RegExpThisValue(thisValue);
+        var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+        var flags = regexp.Flags;
+        var global = flags.Contains('g', StringComparison.Ordinal);
+        var sticky = flags.Contains('y', StringComparison.Ordinal);
+
+        var lastIndex = 0;
+        if (TryGetPropertyValue((JsObject)regexp, thisValue, "lastIndex", out var liVal) &&
+            liVal.Tag == JsValueTag.Number)
+        {
+            var d = liVal.AsNumber();
+            if (d >= 0 && d <= input.Length && double.IsFinite(d))
+                lastIndex = (int)d;
+        }
+
+        if (!global && !sticky) lastIndex = 0;
+        if (lastIndex < 0) lastIndex = 0;
+        if (lastIndex > input.Length) lastIndex = input.Length;
+
+        var match = lastIndex <= input.Length
+            ? regexp.Regex.Match(input, lastIndex)
+            : System.Text.RegularExpressions.Match.Empty;
+
+        if (!match.Success)
+        {
+            _ = ((JsObject)regexp).SetProperty("lastIndex", JsValue.FromNumber(0));
+            return JsValue.Null;
+        }
+
+        if (sticky && match.Index != lastIndex)
+        {
+            _ = ((JsObject)regexp).SetProperty("lastIndex", JsValue.FromNumber(0));
+            return JsValue.Null;
+        }
+
+        var result = CreateArrayObject(Array.Empty<JsValue>());
+        _ = result.DefineOwnProperty("0",
+            new JsPropertyDescriptor(JsValue.FromString(match.Value), Writable: true, Enumerable: true, Configurable: true));
+
+        var nCaptures = match.Groups.Count;
+        for (var i = 1; i < nCaptures; i++)
+        {
+            var group = match.Groups[i];
+            var val = group.Success ? JsValue.FromString(group.Value) : JsValue.Undefined;
+            _ = result.DefineOwnProperty(
+                i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
+        }
+
+        _ = result.DefineOwnProperty("index",
+            new JsPropertyDescriptor(JsValue.FromNumber(match.Index), Writable: true, Enumerable: true, Configurable: true));
+        _ = result.DefineOwnProperty("input",
+            new JsPropertyDescriptor(JsValue.FromString(input), Writable: true, Enumerable: true, Configurable: true));
+        _ = result.DefineOwnProperty("groups",
+            new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true));
+        _ = result.DefineOwnProperty("length",
+            new JsPropertyDescriptor(JsValue.FromNumber(nCaptures), Writable: true, Enumerable: false, Configurable: false));
+
+        if (global || sticky)
+            _ = ((JsObject)regexp).SetProperty("lastIndex", JsValue.FromNumber(match.Index + match.Length));
+
+        var resultHandle = _heap.AllocateObject(result, AllocationSite.Current());
+        return JsValue.FromObject(resultHandle);
+    }
+
     private JsValue RegExpPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
@@ -4592,6 +4673,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
         throw new JsThrownException(CreateTypeError("RegExp.prototype method called on incompatible receiver."));
     }
+
+    // Proxy intercept stubs — full Proxy implementation deferred.
+    private static bool ProxySet(ProxyObject proxy, JsValue receiver, string prop, JsValue value)
+        => true;
+    private static bool ProxyDelete(ProxyObject proxy, string prop)
+        => true;
+    private static JsValue ProxyGet(ProxyObject proxy, JsValue receiver, string prop)
+        => JsValue.Undefined;
+    private static bool ProxyHas(ProxyObject proxy, string prop)
+        => false;
+    private static JsValue ProxyCall(ProxyObject proxy, IReadOnlyList<JsValue> args, JsValue thisValue)
+        => throw new JsThrownException(new JsValue());
+    private static JsValue ProxyConstruct(ProxyObject proxy, IReadOnlyList<JsValue> args, JsValue newTarget)
+        => throw new JsThrownException(new JsValue());
 
     private string NormalizeRegExpFlags(string flags)
     {
@@ -6460,6 +6555,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             case JsValueTag.Object:
             {
                 var obj = ResolveObject(receiver);
+                if (obj is ProxyObject proxyGet)
+                    return ProxyGet(proxyGet, receiver, key);
                 return TryGetPropertyValue(obj, receiver, key, out var value) ? value : JsValue.Undefined;
             }
             case JsValueTag.HostObject:
@@ -11193,6 +11290,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     {
         var obj = ResolveObject(value);
 
+        // ECMA-262 9.5.12 Proxy [[Call]].
+        if (obj is ProxyObject proxyCall)
+            return ProxyCall(proxyCall, args, thisValue);
+
         // ECMA-262 10.4.1.3 [[Call]] — merge bound args + call-site args,
         // then delegate to [[BoundTargetFunction]] with [[BoundThis]].
         if (obj is BoundFunctionObject bound)
@@ -11300,6 +11401,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private JsValue ConstructFunction(JsValue value, IReadOnlyList<JsValue> args, JsValue newTarget)
     {
         var obj = ResolveObject(value);
+
+        // ECMA-262 9.5.13 Proxy [[Construct]].
+        if (obj is ProxyObject proxyCons)
+            return ProxyConstruct(proxyCons, args, newTarget);
 
         // ECMA-262 10.4.1.4 [[Construct]] — merge bound args + call-site args,
         // then construct [[BoundTargetFunction]].
