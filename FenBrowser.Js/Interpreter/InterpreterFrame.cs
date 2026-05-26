@@ -51,4 +51,10 @@ public sealed class InterpreterFrame
     // before returning, so the next .next()/resume can continue from this point.
     // ECMA-262 27.5.1.3 GeneratorYield / 27.5.1.2 Resume.
     public GeneratorObject? OwnerGenerator { get; set; }
+
+    // Async context for async function suspend/resume. When set, the Await
+    // opcode will save frame state to the context before returning, so the
+    // promise reaction callback can resume execution from this point.
+    // ECMA-262 27.7.5 Await.
+    public AsyncContext? AsyncContext { get; set; }
 }
