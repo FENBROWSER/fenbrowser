@@ -60,6 +60,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     ObjectHandle IBuiltinContext.MaterializeWeakRefConstructor() => EnsureWeakRefConstructor();
     ObjectHandle IBuiltinContext.MaterializeFinalizationRegistryConstructor() => EnsureFinalizationRegistryConstructor();
     ObjectHandle IBuiltinContext.MaterializeAggregateErrorConstructor() => EnsureAggregateErrorConstructor();
+    ObjectHandle IBuiltinContext.MaterializeGeneratorFunctionConstructor() => EnsureGeneratorFunctionConstructor();
+    string IBuiltinContext.CaptureCallStack(string errorName, string message) => FormatCallStack(errorName, message);
     ObjectHandle IBuiltinContext.MaterializeStructuredCloneFunction() => EnsureStructuredCloneFunction();
     ObjectHandle IBuiltinContext.MaterializeIntlObject() => EnsureIntlObject();
     ObjectHandle IBuiltinContext.MaterializeArrayBufferConstructor() => EnsureArrayBufferConstructor();
@@ -84,6 +86,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private ObjectHandle? _syntaxErrorConstructorHandle;
     private ObjectHandle? _syntaxErrorPrototypeHandle;
     private ObjectHandle? _functionConstructorHandle;
+    private ObjectHandle? _generatorFunctionConstructorHandle;
     private ObjectHandle? _functionPrototypeHandle;
     private ObjectHandle? _functionCallMethodHandle;
     private ObjectHandle? _evalFunctionHandle;
@@ -6190,6 +6193,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _functionPrototypeHandle = prototypeHandle;
         _functionConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    private ObjectHandle EnsureGeneratorFunctionConstructor()
+    {
+        if (_generatorFunctionConstructorHandle is { } existing)
+            return existing;
+        var handle = EnsureFunctionConstructor();
+        _generatorFunctionConstructorHandle = handle;
+        return handle;
+    }
+
+    private string FormatCallStack(string errorName, string message)
+    {
+        return errorName + ": " + message;
     }
 
     private JsValue CreateFunctionObject(

@@ -62,6 +62,7 @@ public interface IBuiltinContext
 
     // eval(x).
     JsValue Eval(IReadOnlyList<JsValue> args);
+    string CaptureCallStack(string errorName, string message);
 
     // queueMicrotask(callback).
     void EnqueueMicrotask(JsValue callback);
@@ -73,6 +74,7 @@ public interface IBuiltinContext
     ObjectHandle MaterializeObjectConstructor();
     ObjectHandle MaterializeArrayConstructor();
     ObjectHandle MaterializeFunctionConstructor();
+    ObjectHandle MaterializeGeneratorFunctionConstructor();
     ObjectHandle MaterializeSetConstructor();
     ObjectHandle MaterializeMapConstructor();
     ObjectHandle MaterializeWeakMapConstructor();

@@ -179,4 +179,9 @@ public enum OpCode : byte
 	ShiftLeft,
 	ShiftRight,
 	UnsignedShiftRight,
+		// ECMA-262 13.6 Exponentiation (**).
+		Exp,
+
+		// ECMA-262 14.7.5.1 - for-await-of async iterator materialisation.
+		EnumerateValuesAsync,
 }
