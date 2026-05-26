@@ -61,6 +61,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     ObjectHandle IBuiltinContext.MaterializeFinalizationRegistryConstructor() => EnsureFinalizationRegistryConstructor();
     ObjectHandle IBuiltinContext.MaterializeAggregateErrorConstructor() => EnsureAggregateErrorConstructor();
     ObjectHandle IBuiltinContext.MaterializeStructuredCloneFunction() => EnsureStructuredCloneFunction();
+    ObjectHandle IBuiltinContext.MaterializeArrayBufferConstructor() => EnsureArrayBufferConstructor();
+    ObjectHandle IBuiltinContext.MaterializeDataViewConstructor() => EnsureDataViewConstructor();
+    BuiltinBinding[] IBuiltinContext.MaterializeTypedArrayConstructors() => EnsureTypedArrayConstructors();
     private ObjectHandle? _objectConstructorHandle;
     private ObjectHandle? _objectPrototypeHandle;
     private ObjectHandle? _arrayConstructorHandle;
@@ -3384,7 +3387,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new IteratorBuiltin())
             .Register(new MiscGlobalsBuiltin())
             .Register(new AggregateErrorBuiltin())
-            .Register(new GeneratorBuiltin());
+            .Register(new GeneratorBuiltin())
+            .Register(new ArrayBufferBuiltin());
         foreach (var b in registry.Materialize(this))
             InstallBinding(global, globalHandle, b);
     }
@@ -8714,6 +8718,99 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 return JsValue.FromObject(h);
             }
         }
+    }
+
+    // ECMA-262 25.1.3 — the %ArrayBuffer% constructor.
+    private ObjectHandle EnsureArrayBufferConstructor()
+    {
+        if (_arrayBufferConstructorHandle is { } existing)
+            return existing;
+
+        var prototype = CreateOrdinaryObject();
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "ArrayBuffer",
+            (_, _2) => throw new JsThrownException(CreateTypeError("ArrayBuffer constructor must be invoked with 'new'.")),
+            args =>
+            {
+                var length = args.Count > 0 ? args[0].AsNumber() : 0;
+                if (double.IsNaN(length) || length < 0 || length > 9007199254740991d) // 2^53-1
+                    throw new JsThrownException(CreateRangeError("Invalid ArrayBuffer length."));
+                var buf = new ArrayBufferObject((int)length);
+                buf.SetPrototype(prototypeHandle);
+                return JsValue.FromObject(_heap.AllocateObject(buf, AllocationSite.Current()));
+            },
+            length: 1);
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        // 25.1.5.2 get ArrayBuffer.prototype.byteLength
+        var byteLengthGetter = new NativeFunctionObject("get byteLength", (thisValue, _2) =>
+        {
+            if (thisValue.Tag != JsValueTag.Object || _heap.GetObject(thisValue.AsObjectHandle()) is not ArrayBufferObject buf)
+                throw new JsThrownException(CreateTypeError("ArrayBuffer.prototype.byteLength called on non-ArrayBuffer."));
+            return JsValue.FromNumber(buf.IsDetached ? 0 : buf.ByteLength);
+        }, length: 0);
+        var byteLengthGetterHandle = _heap.AllocateObject(byteLengthGetter, AllocationSite.Current());
+        prototype.DefineOwnProperty("byteLength", JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(byteLengthGetterHandle), JsValue.Undefined, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, byteLengthGetterHandle);
+
+        // 25.1.5.3 ArrayBuffer.prototype.slice(begin, end)
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "slice", (thisValue, args) =>
+        {
+            if (thisValue.Tag != JsValueTag.Object || _heap.GetObject(thisValue.AsObjectHandle()) is not ArrayBufferObject buf)
+                throw new JsThrownException(CreateTypeError("ArrayBuffer.prototype.slice called on non-ArrayBuffer."));
+            if (buf.IsDetached)
+                throw new JsThrownException(CreateTypeError("ArrayBuffer is detached."));
+            var len = buf.ByteLength;
+            var begin = args.Count > 0 ? (int)Math.Min(Math.Max(args[0].AsNumber(), 0), len) : 0;
+            var end = args.Count > 1 ? (int)Math.Min(Math.Max(args[1].AsNumber(), 0), len) : len;
+            if (end < begin) end = begin;
+            var newLen = end - begin;
+            var clone = buf.Clone(begin, newLen);
+            clone.SetPrototype(EnsureArrayBufferPrototype());
+            return JsValue.FromObject(_heap.AllocateObject(clone, AllocationSite.Current()));
+        }, length: 2);
+
+        // 25.1.5.6 ArrayBuffer.isView(arg)
+        DefineIntrinsicFunction(constructorHandle, constructor, "isView", (_, args) =>
+        {
+            if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+                return JsValue.FromBoolean(false);
+            var obj = _heap.GetObject(args[0].AsObjectHandle());
+            return JsValue.FromBoolean(obj is TypedArrayView);
+        }, length: 1);
+
+        _arrayBufferConstructorHandle = constructorHandle;
+        _arrayBufferPrototypeHandle = prototypeHandle;
+        return constructorHandle;
+    }
+
+    private ObjectHandle? _arrayBufferConstructorHandle;
+    private ObjectHandle? _arrayBufferPrototypeHandle;
+
+    private ObjectHandle EnsureArrayBufferPrototype()
+    {
+        EnsureArrayBufferConstructor();
+        return _arrayBufferPrototypeHandle!.Value;
+    }
+
+    // ECMA-262 25.3 — the %DataView% constructor. Stubbed for now.
+    private ObjectHandle EnsureDataViewConstructor()
+    {
+        throw new NotImplementedException("DataView constructor not yet wired.");
+    }
+
+    // ECMA-262 23.2 — all 11 %TypedArray% constructors. Stubbed for now.
+    private BuiltinBinding[] EnsureTypedArrayConstructors()
+    {
+        throw new NotImplementedException("TypedArray constructors not yet wired.");
     }
 
     // HTML queueMicrotask(callback). The callback is appended to the pending

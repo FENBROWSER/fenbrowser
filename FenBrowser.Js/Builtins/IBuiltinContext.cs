@@ -86,6 +86,11 @@ public interface IBuiltinContext
     ObjectHandle MaterializeAggregateErrorConstructor();
     ObjectHandle MaterializeStructuredCloneFunction();
 
+    // TypedArray / ArrayBuffer / DataView constructors.
+    ObjectHandle MaterializeArrayBufferConstructor();
+    ObjectHandle MaterializeDataViewConstructor();
+    BuiltinBinding[] MaterializeTypedArrayConstructors();
+
     // Install prototype methods on already-created prototypes (for builtins that
     // create their own prototypes and need the interpreter to install methods).
     void InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto);

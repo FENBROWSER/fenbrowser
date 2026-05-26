@@ -142,4 +142,7 @@ internal sealed class TestBuiltinContext : IBuiltinContext
     public ObjectHandle MaterializeFinalizationRegistryConstructor() => throw new NotSupportedException();
     public ObjectHandle MaterializeAggregateErrorConstructor() => throw new NotSupportedException();
     public ObjectHandle MaterializeStructuredCloneFunction() => throw new NotSupportedException();
+    public ObjectHandle MaterializeArrayBufferConstructor() => throw new NotSupportedException();
+    public ObjectHandle MaterializeDataViewConstructor() => throw new NotSupportedException();
+    public BuiltinBinding[] MaterializeTypedArrayConstructors() => throw new NotSupportedException();
 }
