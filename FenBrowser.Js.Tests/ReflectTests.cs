@@ -92,4 +92,55 @@ public sealed class ReflectTests
         Assert.Throws<JsThrownException>(() => RunNum("Reflect.get(null, 'a');"));
         Assert.Throws<JsThrownException>(() => RunNum("Reflect.set('s', 'a', 1);"));
     }
+
+    // ECMA-262 28.1.2 Reflect.construct(target, argumentsList [, newTarget])
+    [Fact] public void ReflectConstructSimple()
+    {
+        Assert.Equal(15, RunNum("function F(x) { this.v = x; } Reflect.construct(F, [15]).v;"));
+    }
+
+    [Fact] public void ReflectConstructWithNewTarget()
+    {
+        Assert.True(RunBool(@"
+            function Target(x) { this.value = x; }
+            function NewTarget() {}
+            NewTarget.prototype = { marker: 42 };
+            var constructed = Reflect.construct(Target, [9], NewTarget);
+            constructed.value === 9 &&
+            Object.getPrototypeOf(constructed) === NewTarget.prototype &&
+            constructed.marker === 42;
+        "));
+    }
+
+    [Fact] public void ReflectConstructNewTargetDefaultsToTarget()
+    {
+        Assert.True(RunBool(@"
+            function F() { this.x = 1; }
+            F.prototype = { fromProto: 99 };
+            var obj = Reflect.construct(F, []);
+            obj.x === 1 && obj.fromProto === 99;
+        "));
+    }
+
+    [Fact] public void ReflectConstructReturnsInstanceWhenCtorReturnsNonObject()
+    {
+        Assert.True(RunBool(@"
+            function F() { this.tag = 1; return 42; }
+            Reflect.construct(F, []).tag === 1;
+        "));
+    }
+
+    [Fact] public void ReflectConstructReturnsObjectWhenCtorReturnsObject()
+    {
+        Assert.True(RunBool(@"
+            function F() { return { ok: true }; }
+            Reflect.construct(F, []).ok === true;
+        "));
+    }
+
+    [Fact] public void ReflectConstructTargetMustBeObject()
+    {
+        Assert.Throws<JsThrownException>(() => RunNum("Reflect.construct(42, []);"));
+        Assert.Throws<JsThrownException>(() => RunNum("Reflect.construct(null, []);"));
+    }
 }
