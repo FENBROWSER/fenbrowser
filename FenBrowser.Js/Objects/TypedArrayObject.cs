@@ -107,3 +107,83 @@ public abstract class TypedArrayObject : TypedArrayView
         return (byte)(((int)f % 2 == 0) ? f : f + 1);
     }
 }
+
+// ECMA-262 23.2 — the 11 concrete TypedArray constructors.
+// Each is a thin shell fixing ElementType and ElementSize.
+
+public sealed class Int8Array : TypedArrayObject
+{
+    public override TypedArrayElementType ElementType => TypedArrayElementType.Int8;
+    public override int ElementSize => 1;
+    public Int8Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+}
+
+public sealed class Uint8Array : TypedArrayObject
+{
+    public override TypedArrayElementType ElementType => TypedArrayElementType.Uint8;
+    public override int ElementSize => 1;
+    public Uint8Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+}
+
+public sealed class Uint8ClampedArray : TypedArrayObject
+{
+    public override TypedArrayElementType ElementType => TypedArrayElementType.Uint8Clamped;
+    public override int ElementSize => 1;
+    public Uint8ClampedArray(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+}
+
+public sealed class Int16Array : TypedArrayObject
+{
+    public override TypedArrayElementType ElementType => TypedArrayElementType.Int16;
+    public override int ElementSize => 2;
+    public Int16Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+}
+
+public sealed class Uint16Array : TypedArrayObject
+{
+    public override TypedArrayElementType ElementType => TypedArrayElementType.Uint16;
+    public override int ElementSize => 2;
+    public Uint16Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+}
+
+public sealed class Int32Array : TypedArrayObject
+{
+    public override TypedArrayElementType ElementType => TypedArrayElementType.Int32;
+    public override int ElementSize => 4;
+    public Int32Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+}
+
+public sealed class Uint32Array : TypedArrayObject
+{
+    public override TypedArrayElementType ElementType => TypedArrayElementType.Uint32;
+    public override int ElementSize => 4;
+    public Uint32Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+}
+
+public sealed class Float32Array : TypedArrayObject
+{
+    public override TypedArrayElementType ElementType => TypedArrayElementType.Float32;
+    public override int ElementSize => 4;
+    public Float32Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+}
+
+public sealed class Float64Array : TypedArrayObject
+{
+    public override TypedArrayElementType ElementType => TypedArrayElementType.Float64;
+    public override int ElementSize => 8;
+    public Float64Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+}
+
+public sealed class BigInt64Array : TypedArrayObject
+{
+    public override TypedArrayElementType ElementType => TypedArrayElementType.BigInt64;
+    public override int ElementSize => 8;
+    public BigInt64Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+}
+
+public sealed class BigUint64Array : TypedArrayObject
+{
+    public override TypedArrayElementType ElementType => TypedArrayElementType.BigUint64;
+    public override int ElementSize => 8;
+    public BigUint64Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+}
