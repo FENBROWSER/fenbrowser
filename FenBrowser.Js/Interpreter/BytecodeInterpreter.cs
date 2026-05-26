@@ -3429,6 +3429,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new PromiseBuiltin())
             .Register(new JsonBuiltin())
             .Register(new ReflectBuiltin())
+            .Register(new ProxyBuiltin())
             .Register(new IteratorBuiltin())
             .Register(new MiscGlobalsBuiltin())
             .Register(new AggregateErrorBuiltin())
@@ -4429,6 +4430,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private void InstallPrototypeMethodsOnRegExpPrototype(ObjectHandle prototypeHandle, JsObject prototype)
     {
+        // Cache the first prototype handle seen — this comes from the builtin
+        // during InstallGlobalObjectProperties, before any bytecode executes.
+        _regexpPrototypeHandle ??= prototypeHandle;
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "test", RegExpPrototypeTest, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", RegExpPrototypeToString);
     }
@@ -4463,7 +4467,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         var obj = new RegExpObject(pattern, normalizedFlags, regex);
-        obj.SetPrototype(GetGlobalPrototype("RegExp"));
+        // Use the prototype cached from the builtin during
+        // InstallPrototypeMethodsOnRegExpPrototype, or resolve from global.
+        obj.SetPrototype(_regexpPrototypeHandle ?? GetGlobalPrototype("RegExp"));
         _ = obj.DefineOwnProperty("source",
             new JsPropertyDescriptor(JsValue.FromString(pattern), Writable: false, Enumerable: false, Configurable: true));
         _ = obj.DefineOwnProperty("global",
@@ -11300,6 +11306,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         if (obj is BoundFunctionObject bound)
         {
             var merged = MergeBoundArgs(bound.BoundArgs, args);
+            // ECMA-262 10.4.1.4 step 5: if newTarget === the bound function,
+            // replace it with [[BoundTargetFunction]] so the unbound target
+            // supplies the prototype for the created instance.
+            if (newTarget.Tag == JsValueTag.Object &&
+                value.Tag == JsValueTag.Object &&
+                newTarget.AsObjectHandle() == value.AsObjectHandle())
+            {
+                newTarget = bound.TargetFunction;
+            }
             return ConstructFunction(bound.TargetFunction, merged, newTarget);
         }
 
