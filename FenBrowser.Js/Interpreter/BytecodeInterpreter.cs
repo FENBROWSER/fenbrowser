@@ -90,6 +90,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private ObjectHandle? _functionPrototypeHandle;
     private ObjectHandle? _functionCallMethodHandle;
     private ObjectHandle? _evalFunctionHandle;
+    private EnvironmentRecord? _directEvalEnv;
     private ObjectHandle? _parseIntHandle;
     private ObjectHandle? _parseFloatHandle;
     private ObjectHandle? _isNaNHandle;
@@ -215,7 +216,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         gen.YieldDestReg = yieldDestReg;
 
         // Preserve exception handler stack so try/catch blocks survive yield.
-        gen.SavedExceptionHandlers = frame.ExceptionHandlers.ToArray();
+        gen.SavedCatchHandlers = frame.CatchHandlers.ToArray();
+		gen.SavedFinallyHandlers = frame.FinallyHandlers.ToArray();
+		gen.PendingException = frame.PendingException;
     }
 
     // ECMA-262 27.5.1.2 — execute (or resume) a generator function body.
@@ -268,7 +271,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         ctx.Environment = frame.Environment;
         ctx.IsSuspended = true;
         ctx.AwaitDestReg = awaitDestReg;
-        ctx.SavedExceptionHandlers = frame.ExceptionHandlers.ToArray();
+        ctx.SavedCatchHandlers = frame.CatchHandlers.ToArray();
+		ctx.SavedFinallyHandlers = frame.FinallyHandlers.ToArray();
+		ctx.PendingException = frame.PendingException;
     }
 
     // ECMA-262 27.7.5.3 — resume an async function after the awaited promise
@@ -471,9 +476,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             ownerGenerator.YieldDestReg = -1;
             // Restore exception handler stack so try/catch blocks survive yield.
             // ToArray returns top-first; push in reverse to reconstruct original.
-            var saved = ownerGenerator.SavedExceptionHandlers;
-            for (var i = saved.Length - 1; i >= 0; i--)
-                frame.ExceptionHandlers.Push(saved[i]);
+            var savedCatch = ownerGenerator.SavedCatchHandlers;
+			var savedFinally = ownerGenerator.SavedFinallyHandlers;
+            
+    for (var i = savedCatch.Length - 1; i >= 0; i--)
+            {
+                frame.CatchHandlers.Push(savedCatch[i]);
+                frame.FinallyHandlers.Push(savedFinally[i]);
+            }
+            frame.PendingException = ownerGenerator.PendingException;
         }
         else if (asyncContext != null && asyncContext.InstructionPointer > 0)
         {
@@ -485,9 +496,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             if (asyncContext.AwaitDestReg >= 0)
                 frame.Registers[asyncContext.AwaitDestReg] = asyncContext.SentValue;
             asyncContext.AwaitDestReg = -1;
-            var saved = asyncContext.SavedExceptionHandlers;
-            for (var i = saved.Length - 1; i >= 0; i--)
-                frame.ExceptionHandlers.Push(saved[i]);
+            var savedCatch = asyncContext.SavedCatchHandlers;
+			var savedFinally = asyncContext.SavedFinallyHandlers;
+            
+    for (var i = savedCatch.Length - 1; i >= 0; i--)
+            {
+                frame.CatchHandlers.Push(savedCatch[i]);
+                frame.FinallyHandlers.Push(savedFinally[i]);
+            }
+            frame.PendingException = asyncContext.PendingException;
         }
         else
         {
@@ -606,12 +623,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     }
                     break;
                 case OpCode.PushHandler:
-                    frame.ExceptionHandlers.Push(ins.A);
+                    frame.CatchHandlers.Push(ins.A);
+					frame.FinallyHandlers.Push(ins.D);
                     break;
                 case OpCode.PopHandler:
-                    if (frame.ExceptionHandlers.Count > 0)
+                    if (frame.CatchHandlers.Count > 0)
                     {
-                        _ = frame.ExceptionHandlers.Pop();
+                        frame.CatchHandlers.Pop(); frame.FinallyHandlers.Pop();
                     }
 
                     break;
@@ -797,7 +815,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     Array.Copy(frame.Registers, gen.Registers, frame.Registers.Length);
                     gen.Environment = frame.Environment;
                     gen.State = GeneratorState.Suspended;
-                    gen.SavedExceptionHandlers = frame.ExceptionHandlers.ToArray();
+                    gen.SavedCatchHandlers = frame.CatchHandlers.ToArray();
+		gen.SavedFinallyHandlers = frame.FinallyHandlers.ToArray();
+		gen.PendingException = frame.PendingException;
 
                     var yieldObj = CreateOrdinaryObject();
                     yieldObj.DefineOwnProperty("value", new JsPropertyDescriptor(
@@ -830,6 +850,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 case OpCode.LeaveScope:
                 {
                     frame.Environment = frame.Environment.OuterEnv ?? frame.Environment;
+                    break;
+                }
+                case OpCode.EndFinally:
+                {
+                    if (frame.PendingException is { } pending)
+                    {
+                        frame.PendingException = null;
+                        ThrowOrHandle(frame, pending);
+                    }
                     break;
                 }
                 case OpCode.Await:
@@ -1251,6 +1280,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     break;
                 case OpCode.Div:
                     try { frame.Registers[ins.A] = BigIntArith(frame.Registers[ins.B], frame.Registers[ins.C], "division", (a, b) => a / b, (a, b) => a / b); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    break;
+                case OpCode.Exp:
+                    try
+                    {
+                        var left = frame.Registers[ins.B];
+                        var right = frame.Registers[ins.C];
+                        if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
+                        {
+                            var baseVal = left.AsBigInt();
+                            var expVal = right.AsBigInt();
+                            if (expVal < System.Numerics.BigInteger.Zero)
+                                throw new JsThrownException(CreateRangeError("BigInt exponent must be non-negative."));
+                            if (expVal > int.MaxValue)
+                                throw new JsThrownException(CreateRangeError("BigInt exponent is too large."));
+                            frame.Registers[ins.A] = JsValue.FromBigInt(System.Numerics.BigInteger.Pow(baseVal, (int)expVal));
+                        }
+                        else
+                        {
+                            var a = ToNumber(left);
+                            var b = ToNumber(right);
+                            frame.Registers[ins.A] = JsValue.FromNumber(Math.Pow(a, b));
+                        }
+                    }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Eq:
@@ -3684,12 +3737,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private void ThrowOrHandle(InterpreterFrame frame, JsValue value)
     {
-        if (frame.ExceptionHandlers.Count > 0)
+        if (frame.CatchHandlers.Count > 0)
         {
-            var handlerIp = frame.ExceptionHandlers.Pop();
+            
+    var catchIp = frame.CatchHandlers.Pop();
+            var finallyIp = frame.FinallyHandlers.Pop();
             frame.Registers[0] = value;
-            frame.InstructionPointer = handlerIp;
-            return;
+
+            if (catchIp >= 0)
+            {
+                frame.InstructionPointer = catchIp;
+                return;
+            }
+
+            if (finallyIp >= 0)
+            {
+                frame.PendingException = value;
+                frame.InstructionPointer = finallyIp;
+                return;
+            }
         }
 
         throw new JsThrownException(value);
@@ -3767,11 +3833,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         var compiled = new BytecodeCompiler().CompileProgram(program);
         new BytecodeVerifier().Verify(compiled);
         var globalHandle = EnsureGlobalObject();
+        var env = _directEvalEnv ?? EnsureGlobalEnvironment();
+        _directEvalEnv = null;
         return ExecuteInternal(
             compiled,
             Array.Empty<JsValue>(),
             JsValue.FromObject(globalHandle),
-            frameEnvironment: EnsureGlobalEnvironment());
+            frameEnvironment: env);
     }
 
     private ObjectHandle EnsureTypeErrorPrototype()
@@ -11591,6 +11659,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private void StoreCallResult(InterpreterFrame frame, int destinationRegister, JsValue callee, IReadOnlyList<JsValue> args, JsValue thisValue)
     {
+        // ECMA-262 19.2.1.1 — direct eval uses the calling frame's lexical environment.
+        if (callee.Tag == JsValueTag.Object && _evalFunctionHandle is { } evalHandle &&
+            callee.AsObjectHandle() == evalHandle)
+        {
+            _directEvalEnv = frame.Environment;
+        }
+
         try
         {
             frame.Registers[destinationRegister] = CallFunction(callee, args, thisValue);

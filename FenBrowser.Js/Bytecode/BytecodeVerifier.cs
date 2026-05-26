@@ -64,6 +64,7 @@ public sealed class BytecodeVerifier
             case OpCode.Sub:
             case OpCode.Mul:
             case OpCode.Div:
+            case OpCode.Exp:
             case OpCode.BitAnd:
             case OpCode.BitOr:
             case OpCode.BitXor:
@@ -94,7 +95,10 @@ public sealed class BytecodeVerifier
                 ValidateJumpTarget(function, ip, ins.B);
                 break;
             case OpCode.PushHandler:
-                ValidateJumpTarget(function, ip, ins.A);
+                if (ins.A >= 0)
+                    ValidateJumpTarget(function, ip, ins.A);
+                if (ins.D >= 0)
+                    ValidateJumpTarget(function, ip, ins.D);
                 break;
             case OpCode.PopHandler:
                 break;
@@ -136,6 +140,7 @@ public sealed class BytecodeVerifier
             case OpCode.EnterScope:
                 break;
             case OpCode.LeaveScope:
+            case OpCode.EndFinally:
                 break;
             case OpCode.SetHomeObject:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");

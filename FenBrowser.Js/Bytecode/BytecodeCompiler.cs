@@ -263,21 +263,11 @@ public sealed class BytecodeCompiler
                 CompileTryCatchStatement(tryCatchStmt);
                 break;
             case TryFinallyStatementNode tryFinallyStmt:
-                // Parser-subset support: keep execution of try and finally blocks ordered.
-                CompileStatement(tryFinallyStmt.TryBlock);
-                CompileStatement(tryFinallyStmt.FinallyBlock);
+                CompileTryFinallyStatement(tryFinallyStmt);
                 break;
             case TryCatchFinallyStatementNode tryCatchFinallyStmt:
-            {
-                var tryCatchOnly = new TryCatchStatementNode(
-                    tryCatchFinallyStmt.TryBlock,
-                    tryCatchFinallyStmt.CatchIdentifier,
-                    tryCatchFinallyStmt.CatchBlock,
-                    tryCatchFinallyStmt.Span);
-                CompileTryCatchStatement(tryCatchOnly);
-                CompileStatement(tryCatchFinallyStmt.FinallyBlock);
+                CompileTryCatchFinallyStatement(tryCatchFinallyStmt);
                 break;
-            }
             case FunctionDeclarationNode functionDecl:
                 // Function declarations are instantiated before statement execution
                 // by HoistFunctionDeclarations, matching ECMA-262 declaration
@@ -1052,6 +1042,57 @@ public sealed class BytecodeCompiler
         CompileStatement(tryCatchStmt.CatchBlock);
 
         PatchJump(jumpAfterCatch, _instructions.Count);
+    }
+    private void CompileTryFinallyStatement(TryFinallyStatementNode stmt)
+    {
+        var pushHandler = _instructions.Count;
+        _instructions.Add(new Instruction(OpCode.PushHandler, -1, 0, 0, D: -1));
+
+        CompileStatement(stmt.TryBlock);
+
+        _instructions.Add(new Instruction(OpCode.PopHandler, 0, 0, 0));
+
+        var finallyStart = _instructions.Count;
+        CompileStatement(stmt.FinallyBlock);
+        _instructions.Add(new Instruction(OpCode.EndFinally, 0, 0, 0));
+
+        var ins = _instructions[pushHandler];
+        _instructions[pushHandler] = ins with { D = finallyStart };
+    }
+
+    private void CompileTryCatchFinallyStatement(TryCatchFinallyStatementNode stmt)
+    {
+        var pushHandler = _instructions.Count;
+        _instructions.Add(new Instruction(OpCode.PushHandler, -1, 0, 0, D: -1));
+
+        CompileStatement(stmt.TryBlock);
+
+        _instructions.Add(new Instruction(OpCode.PopHandler, 0, 0, 0));
+        var jumpPastCatch = EmitPlaceholder(OpCode.Jump);
+
+        var catchEntry = _instructions.Count;
+        var catchSlot = GetOrCreateVariableSlot(stmt.CatchIdentifier);
+        _varDeclarationNames.Add(stmt.CatchIdentifier);
+
+        var catchFinallyHandler = _instructions.Count;
+        _instructions.Add(new Instruction(OpCode.PushHandler, -1, 0, 0, D: -1));
+
+        _instructions.Add(new Instruction(OpCode.StoreVar, 0, catchSlot, 0));
+        CompileStatement(stmt.CatchBlock);
+
+        _instructions.Add(new Instruction(OpCode.PopHandler, 0, 0, 0));
+
+        PatchJump(jumpPastCatch, _instructions.Count);
+
+        var finallyStart = _instructions.Count;
+        CompileStatement(stmt.FinallyBlock);
+        _instructions.Add(new Instruction(OpCode.EndFinally, 0, 0, 0));
+
+        var outerIns = _instructions[pushHandler];
+        _instructions[pushHandler] = outerIns with { A = catchEntry, D = finallyStart };
+
+        var innerIns = _instructions[catchFinallyHandler];
+        _instructions[catchFinallyHandler] = innerIns with { D = finallyStart };
     }
 
     // ECMA-262 14.12 - switch Statement
