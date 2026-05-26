@@ -3388,7 +3388,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new MiscGlobalsBuiltin())
             .Register(new AggregateErrorBuiltin())
             .Register(new GeneratorBuiltin())
-            .Register(new ArrayBufferBuiltin());
+            .Register(new ArrayBufferBuiltin())
+            .Register(new DataViewBuiltin());
         foreach (var b in registry.Materialize(this))
             InstallBinding(global, globalHandle, b);
     }
@@ -8801,10 +8802,112 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return _arrayBufferPrototypeHandle!.Value;
     }
 
-    // ECMA-262 25.3 — the %DataView% constructor. Stubbed for now.
+    // ECMA-262 25.3 — the %DataView% constructor.
     private ObjectHandle EnsureDataViewConstructor()
     {
-        throw new NotImplementedException("DataView constructor not yet wired.");
+        if (_dataViewConstructorHandle is { } existing)
+            return existing;
+
+        var prototype = CreateOrdinaryObject();
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "DataView",
+            (_, _2) => throw new JsThrownException(CreateTypeError("DataView constructor must be invoked with 'new'.")),
+            args =>
+            {
+                if (args.Count == 0 || args[0].Tag != JsValueTag.Object ||
+                    _heap.GetObject(args[0].AsObjectHandle()) is not ArrayBufferObject buf)
+                    throw new JsThrownException(CreateTypeError("DataView: first argument must be an ArrayBuffer."));
+                if (buf.IsDetached)
+                    throw new JsThrownException(CreateTypeError("DataView: ArrayBuffer is detached."));
+                var byteOffset = args.Count > 1 ? (int)Math.Max(args[1].AsNumber(), 0) : 0;
+                var byteLength = args.Count > 2 ? (int)args[2].AsNumber() : buf.ByteLength - byteOffset;
+                if (byteOffset + byteLength > buf.ByteLength)
+                    throw new JsThrownException(CreateRangeError("DataView: offset + length exceeds ArrayBuffer bounds."));
+                var view = new DataViewObject(buf, byteOffset, byteLength);
+                view.SetPrototype(prototypeHandle);
+                return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
+            },
+            length: 1);
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        // Getters: buffer, byteLength, byteOffset
+        prototype.DefineOwnProperty("buffer", JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(_heap.AllocateObject(new NativeFunctionObject("get buffer", (thisValue, _2) =>
+            {
+                var dv = RequireDataView(thisValue);
+                return JsValue.FromObject(_heap.AllocateObject(dv.Buffer, AllocationSite.Current()));
+            }, length: 0), AllocationSite.Current())), JsValue.Undefined, Enumerable: false, Configurable: true));
+
+        prototype.DefineOwnProperty("byteLength", JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(_heap.AllocateObject(new NativeFunctionObject("get byteLength", (thisValue, _2) =>
+                JsValue.FromNumber(RequireDataView(thisValue).ByteLength), length: 0), AllocationSite.Current())), JsValue.Undefined, Enumerable: false, Configurable: true));
+
+        prototype.DefineOwnProperty("byteOffset", JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(_heap.AllocateObject(new NativeFunctionObject("get byteOffset", (thisValue, _2) =>
+                JsValue.FromNumber(RequireDataView(thisValue).ByteOffset), length: 0), AllocationSite.Current())), JsValue.Undefined, Enumerable: false, Configurable: true));
+
+        // Prototype methods: getInt8 through setBigUint64
+        InstallDataViewPrototypeMethods(prototypeHandle, prototype);
+
+        _dataViewConstructorHandle = constructorHandle;
+        _dataViewPrototypeHandle = prototypeHandle;
+        return constructorHandle;
+    }
+
+    private ObjectHandle? _dataViewConstructorHandle;
+    private ObjectHandle? _dataViewPrototypeHandle;
+
+    private DataViewObject RequireDataView(JsValue value)
+    {
+        if (value.Tag != JsValueTag.Object || _heap.GetObject(value.AsObjectHandle()) is not DataViewObject dv)
+            throw new JsThrownException(CreateTypeError("DataView.prototype method called on non-DataView."));
+        return dv;
+    }
+
+    private void InstallDataViewPrototypeMethods(ObjectHandle protoHandle, JsObject proto)
+    {
+        // 25.3.1.1 GetViewValue — all getters
+        DefineNativePrototypeMethod(protoHandle, proto, "getInt8", (thisValue, args) =>
+            JsValue.FromNumber(RequireDataView(thisValue).GetInt8(args.Count > 0 ? (int)args[0].AsNumber() : 0)), length: 1);
+        DefineNativePrototypeMethod(protoHandle, proto, "getUint8", (thisValue, args) =>
+            JsValue.FromNumber(RequireDataView(thisValue).GetUint8(args.Count > 0 ? (int)args[0].AsNumber() : 0)), length: 1);
+        DefineNativePrototypeMethod(protoHandle, proto, "getInt16", (thisValue, args) =>
+            JsValue.FromNumber(RequireDataView(thisValue).GetInt16(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean())), length: 2);
+        DefineNativePrototypeMethod(protoHandle, proto, "getUint16", (thisValue, args) =>
+            JsValue.FromNumber(RequireDataView(thisValue).GetUint16(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean())), length: 2);
+        DefineNativePrototypeMethod(protoHandle, proto, "getInt32", (thisValue, args) =>
+            JsValue.FromNumber(RequireDataView(thisValue).GetInt32(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean())), length: 2);
+        DefineNativePrototypeMethod(protoHandle, proto, "getUint32", (thisValue, args) =>
+            JsValue.FromNumber(RequireDataView(thisValue).GetUint32(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean())), length: 2);
+        DefineNativePrototypeMethod(protoHandle, proto, "getFloat32", (thisValue, args) =>
+            JsValue.FromNumber(RequireDataView(thisValue).GetFloat32(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean())), length: 2);
+        DefineNativePrototypeMethod(protoHandle, proto, "getFloat64", (thisValue, args) =>
+            JsValue.FromNumber(RequireDataView(thisValue).GetFloat64(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean())), length: 2);
+
+        // 25.3.1.2 SetViewValue — all setters
+        DefineNativePrototypeMethod(protoHandle, proto, "setInt8", (thisValue, args) =>
+        { RequireDataView(thisValue).SetInt8(args.Count > 0 ? (int)args[0].AsNumber() : 0, (sbyte)(args.Count > 1 ? args[1].AsNumber() : 0)); return JsValue.Undefined; }, length: 2);
+        DefineNativePrototypeMethod(protoHandle, proto, "setUint8", (thisValue, args) =>
+        { RequireDataView(thisValue).SetUint8(args.Count > 0 ? (int)args[0].AsNumber() : 0, (byte)(args.Count > 1 ? args[1].AsNumber() : 0)); return JsValue.Undefined; }, length: 2);
+        DefineNativePrototypeMethod(protoHandle, proto, "setInt16", (thisValue, args) =>
+        { RequireDataView(thisValue).SetInt16(args.Count > 0 ? (int)args[0].AsNumber() : 0, (short)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean()); return JsValue.Undefined; }, length: 3);
+        DefineNativePrototypeMethod(protoHandle, proto, "setUint16", (thisValue, args) =>
+        { RequireDataView(thisValue).SetUint16(args.Count > 0 ? (int)args[0].AsNumber() : 0, (ushort)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean()); return JsValue.Undefined; }, length: 3);
+        DefineNativePrototypeMethod(protoHandle, proto, "setInt32", (thisValue, args) =>
+        { RequireDataView(thisValue).SetInt32(args.Count > 0 ? (int)args[0].AsNumber() : 0, (int)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean()); return JsValue.Undefined; }, length: 3);
+        DefineNativePrototypeMethod(protoHandle, proto, "setUint32", (thisValue, args) =>
+        { RequireDataView(thisValue).SetUint32(args.Count > 0 ? (int)args[0].AsNumber() : 0, (uint)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean()); return JsValue.Undefined; }, length: 3);
+        DefineNativePrototypeMethod(protoHandle, proto, "setFloat32", (thisValue, args) =>
+        { RequireDataView(thisValue).SetFloat32(args.Count > 0 ? (int)args[0].AsNumber() : 0, (float)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean()); return JsValue.Undefined; }, length: 3);
+        DefineNativePrototypeMethod(protoHandle, proto, "setFloat64", (thisValue, args) =>
+        { RequireDataView(thisValue).SetFloat64(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 ? args[1].AsNumber() : 0, args.Count > 2 && args[2].AsBoolean()); return JsValue.Undefined; }, length: 3);
     }
 
     // ECMA-262 23.2 — all 11 %TypedArray% constructors. Stubbed for now.
