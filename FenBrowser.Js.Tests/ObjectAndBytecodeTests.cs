@@ -1604,6 +1604,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void NullishCoalescingReturnsRightForUndefinedLeft()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("undefined ?? 5;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(5, result.AsNumber());
+    }
+
+    [Fact]
     public void NullishCoalescingKeepsNonNullishLeft()
     {
         var compiler = new BytecodeCompiler();

@@ -48,6 +48,11 @@ internal static class PrivateNameRewriter
             case WhileStatementNode w:
                 return new WhileStatementNode(
                     RewriteExpression(w.Test, m), RewriteStatement(w.Body, m), w.Span);
+            case DoWhileStatementNode dw:
+                return new DoWhileStatementNode(
+                    (BlockStatementNode)RewriteStatement(dw.Body, m),
+                    RewriteExpression(dw.Test, m),
+                    dw.Span);
             case ForStatementNode f:
                 return new ForStatementNode(
                     f.Initializer is null ? null : RewriteStatement(f.Initializer, m),

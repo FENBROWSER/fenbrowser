@@ -20,6 +20,12 @@ public sealed record IfStatementNode(ExpressionNode Test, StatementNode Conseque
 
 public sealed record WhileStatementNode(ExpressionNode Test, StatementNode Body, SourceSpan Span) : StatementNode(Span);
 
+// ECMA-262 §14.7.2 — do Statement while ( Expression );
+public sealed record DoWhileStatementNode(
+    BlockStatementNode Body,
+    ExpressionNode Test,
+    SourceSpan Span) : StatementNode(Span);
+
 public sealed record WithStatementNode(ExpressionNode Object, StatementNode Body, SourceSpan Span) : StatementNode(Span);
 
 public sealed record ReturnStatementNode(ExpressionNode? Argument, SourceSpan Span) : StatementNode(Span);

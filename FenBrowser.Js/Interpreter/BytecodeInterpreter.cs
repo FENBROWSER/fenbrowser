@@ -813,10 +813,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                         var scopeName = SlotNameTable.GetName(function, ins.A);
                         if (scopeName != null)
                         {
-                            _ = newScope.CreateMutableBinding(scopeName, deletable: true);
-                            // Initialize immediately so StoreVar/SetMutableBinding
-                            // won't trip the TDZ guard.
-                            _ = newScope.InitializeBinding(scopeName, JsValue.Undefined);
+                            // B=0 → mutable (let), B=1 → immutable (const)
+                            if (ins.B == 1)
+                                _ = newScope.CreateImmutableBinding(scopeName, strict: true);
+                            else
+                                _ = newScope.CreateMutableBinding(scopeName, deletable: true);
+                            // Do NOT initialize — leave the binding in TDZ state.
                         }
                     }
                     frame.Environment = newScope;
@@ -1302,6 +1304,34 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     break;
                 case OpCode.Or:
                     frame.Registers[ins.A] = IsTruthy(frame.Registers[ins.B]) ? frame.Registers[ins.B] : frame.Registers[ins.C];
+                    break;
+                case OpCode.BitAnd:
+                    try { frame.Registers[ins.A] = JsValue.FromNumber((double)((int)ToNumber(frame.Registers[ins.B]) & (int)ToNumber(frame.Registers[ins.C]))); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    break;
+                case OpCode.BitOr:
+                    try { frame.Registers[ins.A] = JsValue.FromNumber((double)((int)ToNumber(frame.Registers[ins.B]) | (int)ToNumber(frame.Registers[ins.C]))); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    break;
+                case OpCode.BitXor:
+                    try { frame.Registers[ins.A] = JsValue.FromNumber((double)((int)ToNumber(frame.Registers[ins.B]) ^ (int)ToNumber(frame.Registers[ins.C]))); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    break;
+                case OpCode.BitNot:
+                    try { frame.Registers[ins.A] = JsValue.FromNumber((double)(~(int)ToNumber(frame.Registers[ins.B]))); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    break;
+                case OpCode.ShiftLeft:
+                    try { var sl = (int)ToNumber(frame.Registers[ins.B]); var sc = (int)ToNumber(frame.Registers[ins.C]) & 0x1F; frame.Registers[ins.A] = JsValue.FromNumber((double)(sl << sc)); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    break;
+                case OpCode.ShiftRight:
+                    try { var sr = (int)ToNumber(frame.Registers[ins.B]); var sc2 = (int)ToNumber(frame.Registers[ins.C]) & 0x1F; frame.Registers[ins.A] = JsValue.FromNumber((double)(sr >> sc2)); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    break;
+                case OpCode.UnsignedShiftRight:
+                    try { var u32 = (uint)(int)ToNumber(frame.Registers[ins.B]); var sc3 = (int)ToNumber(frame.Registers[ins.C]) & 0x1F; frame.Registers[ins.A] = JsValue.FromNumber((double)(u32 >> sc3)); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Return:
                     return frame.Registers[ins.A];

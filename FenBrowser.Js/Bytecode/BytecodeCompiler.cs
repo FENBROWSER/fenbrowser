@@ -38,6 +38,10 @@ public sealed class BytecodeCompiler
     private readonly List<BytecodeFunction> _nestedFunctions = new();
     private readonly List<string> _parameterNames = new();
     private readonly Stack<LoopContext> _loopStack = new();
+    // Tracks block-scoped let/const names so they are not added to
+    // _lexicalDeclarationNames/_constDeclarationNames. EnterScope creates
+    // their bindings instead.
+    private readonly Stack<HashSet<string>> _blockScopedNameStack = new();
     private string? _name;
     private int _nextRegister = 1;
     private FunctionKind _currentFunctionKind = FunctionKind.Ordinary;
@@ -130,28 +134,62 @@ public sealed class BytecodeCompiler
         switch (stmt)
         {
             case BlockStatementNode block:
+                // ECMA-262 14.2 - every block creates a new lexical scope.
+                // Map name → isConst so EnterScope creates the right binding kind.
+                var blockDecls = new Dictionary<string, bool>(StringComparer.Ordinal);
+                foreach (var s in block.Statements)
+                {
+                    if (s is VariableDeclarationStatementNode vd2 &&
+                        (string.Equals(vd2.Kind, "let", StringComparison.Ordinal) ||
+                         string.Equals(vd2.Kind, "const", StringComparison.Ordinal)))
+                    {
+                        bool isConst = string.Equals(vd2.Kind, "const", StringComparison.Ordinal);
+                        foreach (var d2 in vd2.Declarators)
+                        {
+                            blockDecls[d2.Identifier] = isConst;
+                        }
+                    }
+                }
+                if (blockDecls.Count > 0)
+                {
+                    var nameSet = new HashSet<string>(blockDecls.Keys, StringComparer.Ordinal);
+                    _blockScopedNameStack.Push(nameSet);
+                    foreach (var kvp in blockDecls)
+                    {
+                        var bSlot = GetOrCreateVariableSlot(kvp.Key);
+                        // B=0 → mutable (let), B=1 → immutable (const)
+                        int bImmutable = kvp.Value ? 1 : 0;
+                        _instructions.Add(new Instruction(OpCode.EnterScope, bSlot, bImmutable, 0));
+                    }
+                }
                 foreach (var nested in block.Statements)
                 {
                     CompileStatement(nested);
                 }
-
+                if (blockDecls.Count > 0)
+                {
+                    foreach (var _ in blockDecls)
+                    {
+                        _instructions.Add(new Instruction(OpCode.LeaveScope));
+                    }
+                    _blockScopedNameStack.Pop();
+                }
                 break;
             case VariableDeclarationStatementNode decl:
                 foreach (var d in decl.Declarators)
                 {
+                    bool isBlockScoped = IsBlockScopedName(d.Identifier);
                     if (string.Equals(decl.Kind, "var", StringComparison.Ordinal))
                     {
                         _varDeclarationNames.Add(d.Identifier);
                     }
-                    else if (string.Equals(decl.Kind, "const", StringComparison.Ordinal))
+                    else if (!isBlockScoped)
                     {
-                        _constDeclarationNames.Add(d.Identifier);
+                        if (string.Equals(decl.Kind, "const", StringComparison.Ordinal))
+                            _constDeclarationNames.Add(d.Identifier);
+                        else
+                            _lexicalDeclarationNames.Add(d.Identifier);
                     }
-                    else
-                    {
-                        _lexicalDeclarationNames.Add(d.Identifier);
-                    }
-
                     var slot = GetOrCreateVariableSlot(d.Identifier);
                     if (d.Initializer is not null)
                     {
@@ -163,13 +201,15 @@ public sealed class BytecodeCompiler
                     }
                     else if (string.Equals(decl.Kind, "let", StringComparison.Ordinal))
                     {
+                        // For block-scoped let without initializer, emit InitVar
+                        // with undefined to move the binding out of TDZ.
+                        // For function-scoped let, same InitVar path.
                         var reg = AllocateRegister();
                         var ci = AddConstant(JsValue.Undefined);
                         _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
                         _instructions.Add(new Instruction(OpCode.InitVar, reg, slot, 0));
                     }
                 }
-
                 break;
             case ExpressionStatementNode exprStmt:
                 var exprReg = CompileExpression(exprStmt.Expression);
@@ -180,6 +220,9 @@ public sealed class BytecodeCompiler
                 break;
             case WhileStatementNode whileStmt:
                 CompileWhileStatement(whileStmt);
+                break;
+            case DoWhileStatementNode doWhileStmt:
+                CompileDoWhileStatement(doWhileStmt);
                 break;
             case WithStatementNode withStmt:
                 throw new UnsupportedFeatureException("with", FeatureSupportLevel.ParserOnly, withStmt.Span);
@@ -232,6 +275,12 @@ public sealed class BytecodeCompiler
                 break;
             case ClassDeclarationNode classDecl:
                 CompileClassDeclaration(classDecl);
+                break;
+            case SwitchStatementNode switchStmt:
+                CompileSwitchStatement(switchStmt);
+                break;
+            case LabeledStatementNode labeledStmt:
+                CompileLabeledStatement(labeledStmt);
                 break;
             default:
                 // Minimal compiler slice currently targets literals/arithmetic/variables.
@@ -697,6 +746,42 @@ public sealed class BytecodeCompiler
         }
     }
 
+    // ECMA-262 14.7.2 - do Statement while ( Expression );
+    private void CompileDoWhileStatement(DoWhileStatementNode stmt)
+    {
+        var bodyStart = _instructions.Count;
+        var ctx = new LoopContext
+        {
+            ContinueTarget = -1,
+            BreakJumpIndices = new List<int>(),
+            ContinueJumpIndices = new List<int>()
+        };
+        _loopStack.Push(ctx);
+        try
+        {
+            CompileStatement(stmt.Body);
+            var continueTarget = _instructions.Count;
+            ctx.ContinueTarget = continueTarget;
+            var testReg = CompileExpression(stmt.Test);
+            var notReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.Not, notReg, testReg, 0));
+            _instructions.Add(new Instruction(OpCode.JumpIfFalse, notReg, bodyStart, 0));
+            var loopEnd = _instructions.Count;
+            foreach (var breakJump in ctx.BreakJumpIndices)
+            {
+                PatchJump(breakJump, loopEnd);
+            }
+            foreach (var continueJump in ctx.ContinueJumpIndices)
+            {
+                PatchJump(continueJump, continueTarget);
+            }
+        }
+        finally
+        {
+            _ = _loopStack.Pop();
+        }
+    }
+
     private void CompileReturnStatement(ReturnStatementNode returnStmt)
     {
         if (returnStmt.Argument is not null)
@@ -930,6 +1015,89 @@ public sealed class BytecodeCompiler
         CompileStatement(tryCatchStmt.CatchBlock);
 
         PatchJump(jumpAfterCatch, _instructions.Count);
+    }
+
+    // ECMA-262 14.12 - switch Statement
+    private void CompileSwitchStatement(SwitchStatementNode switchStmt)
+    {
+        var discReg = CompileExpression(switchStmt.Discriminant);
+        var caseHeaders = new List<int>(switchStmt.Cases.Count);
+        int defaultCaseIndex = -1;
+        for (int i = 0; i < switchStmt.Cases.Count; i++)
+        {
+            var c = switchStmt.Cases[i];
+            if (c.Test is not null)
+            {
+                var testReg = CompileExpression(c.Test);
+                var cmpReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.StrictEq, cmpReg, discReg, testReg));
+                var notCmpReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.Not, notCmpReg, cmpReg, 0));
+                var jumpIndex = EmitPlaceholder(OpCode.JumpIfFalse, notCmpReg);
+                caseHeaders.Add(jumpIndex);
+            }
+            else
+            {
+                defaultCaseIndex = i;
+                caseHeaders.Add(-1);
+            }
+        }
+        var jumpToDefault = EmitPlaceholder(OpCode.Jump);
+        var ctx = new LoopContext
+        {
+            ContinueTarget = -1,
+            BreakJumpIndices = new List<int>(),
+            ContinueJumpIndices = new List<int>()
+        };
+        _loopStack.Push(ctx);
+        try
+        {
+            for (int i = 0; i < switchStmt.Cases.Count; i++)
+            {
+                var bodyStart = _instructions.Count;
+                if (caseHeaders[i] != -1)
+                {
+                    PatchJump(caseHeaders[i], bodyStart);
+                }
+                if (i == defaultCaseIndex)
+                {
+                    PatchJump(jumpToDefault, bodyStart);
+                }
+                foreach (var stmt in switchStmt.Cases[i].Consequent)
+                {
+                    CompileStatement(stmt);
+                }
+            }
+            if (defaultCaseIndex == -1)
+            {
+                PatchJump(jumpToDefault, _instructions.Count);
+            }
+            var loopEnd = _instructions.Count;
+            foreach (var breakJump in ctx.BreakJumpIndices)
+            {
+                PatchJump(breakJump, loopEnd);
+            }
+        }
+        finally
+        {
+            _ = _loopStack.Pop();
+        }
+    }
+
+    // ECMA-262 14.11 - Labeled Statement.
+    private void CompileLabeledStatement(LabeledStatementNode labeled)
+    {
+        CompileStatement(labeled.Body);
+    }
+
+    // Returns true if the name is in any active block block-scoped name set.
+    private bool IsBlockScopedName(string name)
+    {
+        foreach (var set in _blockScopedNameStack)
+        {
+            if (set.Contains(name)) return true;
+        }
+        return false;
     }
 
     private int CompileExpression(ExpressionNode expr)
@@ -1238,6 +1406,7 @@ public sealed class BytecodeCompiler
                     "!" => OpCode.Not,
                     "+" => OpCode.Pos,
                     "-" => OpCode.Neg,
+                    "~" => OpCode.BitNot,
                     "void" => OpCode.Void,
                     "typeof" => OpCode.TypeOf,
                     _ => throw new InvalidOperationException($"Unsupported unary operator {unary.Operator}.")
@@ -1435,21 +1604,35 @@ public sealed class BytecodeCompiler
 
                 if (bin.Operator == "??")
                 {
+                    // ECMA-262 13.14 — nullish coalescing: both null and undefined are nullish
                     var nullishLeftReg = CompileExpression(bin.Left);
                     var nullishDest = AllocateRegister();
                     _instructions.Add(new Instruction(OpCode.Move, nullishDest, nullishLeftReg, 0));
 
                     var nullConstReg = AllocateRegister();
-                    var nullConstIndex = AddConstant(JsValue.Null);
-                    _instructions.Add(new Instruction(OpCode.LoadConst, nullConstReg, nullConstIndex, 0));
+                    _instructions.Add(new Instruction(OpCode.LoadConst, nullConstReg, AddConstant(JsValue.Null), 0));
+                    var undefConstReg = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.LoadConst, undefConstReg, AddConstant(JsValue.Undefined), 0));
 
-                    var isNullishReg = AllocateRegister();
-                    _instructions.Add(new Instruction(OpCode.Eq, isNullishReg, nullishLeftReg, nullConstReg));
-                    var nullishJumpIfNotNullish = EmitPlaceholder(OpCode.JumpIfFalse, isNullishReg);
+                    // left == null?
+                    var nullEqReg = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.StrictEq, nullEqReg, nullishLeftReg, nullConstReg));
+                    var jumpIfNotNull = EmitPlaceholder(OpCode.JumpIfFalse, nullEqReg);
+                    var jumpToRightFromNull = EmitPlaceholder(OpCode.Jump);
 
+                    // left == undefined?
+                    var checkUndefLabel = _instructions.Count;
+                    PatchJump(jumpIfNotNull, checkUndefLabel);
+                    var undefEqReg = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.StrictEq, undefEqReg, nullishLeftReg, undefConstReg));
+                    var jumpIfNotUndef = EmitPlaceholder(OpCode.JumpIfFalse, undefEqReg);
+
+                    var rightEvalLabel = _instructions.Count;
+                    PatchJump(jumpToRightFromNull, rightEvalLabel);
                     var nullishRightReg = CompileExpression(bin.Right);
                     _instructions.Add(new Instruction(OpCode.Move, nullishDest, nullishRightReg, 0));
-                    PatchJump(nullishJumpIfNotNullish, _instructions.Count);
+
+                    PatchJump(jumpIfNotUndef, _instructions.Count);
                     return nullishDest;
                 }
 
@@ -1463,6 +1646,12 @@ public sealed class BytecodeCompiler
                     "*" => OpCode.Mul,
                     "%" => OpCode.Mod,
                     "/" => OpCode.Div,
+                    "&" => OpCode.BitAnd,
+                    "|" => OpCode.BitOr,
+                    "^" => OpCode.BitXor,
+                    "<<" => OpCode.ShiftLeft,
+                    ">>" => OpCode.ShiftRight,
+                    ">>>" => OpCode.UnsignedShiftRight,
                     "==" => OpCode.Eq,
                     "!=" => OpCode.Neq,
                     "===" => OpCode.StrictEq,
