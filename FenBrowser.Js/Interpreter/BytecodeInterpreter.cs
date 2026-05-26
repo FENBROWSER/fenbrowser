@@ -248,6 +248,72 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return result;
     }
 
+    // ECMA-262 27.7.5.2 Await — save frame execution state into the async
+    // context so the promise reaction callback can resume from this point.
+    private static void SaveAsyncState(InterpreterFrame frame, int awaitDestReg)
+    {
+        if (frame.AsyncContext is not { } ctx)
+            return;
+
+        ctx.InstructionPointer = frame.InstructionPointer;
+        Array.Copy(frame.Registers, ctx.Registers, frame.Registers.Length);
+        ctx.Environment = frame.Environment;
+        ctx.IsSuspended = true;
+        ctx.AwaitDestReg = awaitDestReg;
+        ctx.SavedExceptionHandlers = frame.ExceptionHandlers.ToArray();
+    }
+
+    // ECMA-262 27.7.5.3 — resume an async function after the awaited promise
+    // settles. Restores the saved frame state and continues execution from
+    // the instruction pointer where Await suspended.
+    private JsValue ResumeAsyncFunction(AsyncContext ctx, JsValue value, bool isReject)
+    {
+        _instructionCount = 0;
+        ctx.SentValue = value;
+        ctx.IsRejectResume = isReject;
+        ctx.IsSuspended = false;
+
+        var isResume = ctx.InstructionPointer > 0;
+        var rootMark = _heap.RootCount;
+
+        try
+        {
+            var result = ExecuteInternal(
+                ctx.Function,
+                Array.Empty<JsValue>(),
+                ctx.ThisValue,
+                ctx.OuterEnvironment,
+                frameEnvironment: isResume ? ctx.Environment : null,
+                asyncContext: ctx);
+
+            if (ctx.IsSuspended)
+            {
+                // Another await suspended — resume callbacks already attached.
+                return JsValue.Undefined;
+            }
+
+            // Async function body completed normally.
+            if (ctx.CapabilityResolve is { } resolve)
+            {
+                _ = CallFunction(JsValue.FromObject(resolve), new[] { result }, JsValue.Undefined);
+            }
+
+            // Pop the GC root for this async context.
+            _heap.PopRootsTo(rootMark);
+            return result;
+        }
+        catch (JsThrownException ex)
+        {
+            if (ctx.CapabilityReject is { } reject)
+            {
+                _ = CallFunction(JsValue.FromObject(reject), new[] { ex.Value }, JsValue.Undefined);
+            }
+
+            _heap.PopRootsTo(rootMark);
+            return JsValue.Undefined;
+        }
+    }
+
     // E.6.next - execute a top-level function with a caller-supplied
     // environment record as the frame env. Used by ModuleEvaluator to give
     // every module its own environment so module-local declarations don't
@@ -335,7 +401,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         EnvironmentRecord? outerEnvironment = null,
         EnvironmentRecord? frameEnvironment = null,
         JsFunctionObject? callee = null,
-        GeneratorObject? ownerGenerator = null)
+        GeneratorObject? ownerGenerator = null,
+        AsyncContext? asyncContext = null)
     {
         if (_callDepth >= MaxCallDepth)
         {
@@ -345,7 +412,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _callDepth++;
         try
         {
-            return ExecuteInternalCore(function, args, thisValue, outerEnvironment, frameEnvironment, callee, ownerGenerator);
+            return ExecuteInternalCore(function, args, thisValue, outerEnvironment, frameEnvironment, callee, ownerGenerator, asyncContext);
         }
         finally
         {
@@ -361,7 +428,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         EnvironmentRecord? outerEnvironment = null,
         EnvironmentRecord? frameEnvironment = null,
         JsFunctionObject? callee = null,
-        GeneratorObject? ownerGenerator = null)
+        GeneratorObject? ownerGenerator = null,
+        AsyncContext? asyncContext = null)
     {
         // B.6.4 — when the callee carries an outer EnvironmentRecord (set at
         // CreateFunction time on JsFunctionObject), the new frame's env is a fresh
@@ -373,7 +441,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             : function.IsDerivedConstructor
                 ? new FunctionEnvironmentRecord(ThisBindingStatus.Uninitialized, JsValue.Undefined, JsValue.Undefined, callee?.HomeObject, outerEnvironment)
                 : new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment));
-        var frame = new InterpreterFrame(function, thisValue, frameEnv) { CalleeFunctionObject = callee, OwnerGenerator = ownerGenerator };
+        var frame = new InterpreterFrame(function, thisValue, frameEnv) { CalleeFunctionObject = callee, OwnerGenerator = ownerGenerator, AsyncContext = asyncContext };
         // H.5 - new.target: consume the one-shot pending slot set by
         // ExecuteConstruct. Ordinary calls leave it Undefined.
         if (_pendingNewTarget.Tag != JsValueTag.Undefined)
@@ -396,6 +464,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             // Restore exception handler stack so try/catch blocks survive yield.
             // ToArray returns top-first; push in reverse to reconstruct original.
             var saved = ownerGenerator.SavedExceptionHandlers;
+            for (var i = saved.Length - 1; i >= 0; i--)
+                frame.ExceptionHandlers.Push(saved[i]);
+        }
+        else if (asyncContext != null && asyncContext.InstructionPointer > 0)
+        {
+            // Async resume: restore saved IP, registers, and environment so
+            // execution continues after the Await that suspended this frame.
+            // ECMA-262 27.7.5.3 AwaitFulfilled / AwaitRejected.
+            Array.Copy(asyncContext.Registers, frame.Registers, frame.Registers.Length);
+            frame.InstructionPointer = asyncContext.InstructionPointer;
+            if (asyncContext.AwaitDestReg >= 0)
+                frame.Registers[asyncContext.AwaitDestReg] = asyncContext.SentValue;
+            asyncContext.AwaitDestReg = -1;
+            var saved = asyncContext.SavedExceptionHandlers;
             for (var i = saved.Length - 1; i >= 0; i--)
                 frame.ExceptionHandlers.Push(saved[i]);
         }
@@ -449,6 +531,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     ThrowOrHandle(frame, genFrame.SentValue);
                     continue;
                 }
+            }
+
+            // ECMA-262 27.7.5.3 AwaitRejected — when an awaited promise rejects,
+            // inject the rejection reason as a throw completion into the resumed
+            // async function body so `await rejectedPromise` throws.
+            if (frame.AsyncContext is { } acFrame && acFrame.IsRejectResume)
+            {
+                acFrame.IsRejectResume = false;
+                ThrowOrHandle(frame, acFrame.SentValue);
+                continue;
             }
 
             var ins = function.Instructions[frame.InstructionPointer++];
@@ -728,12 +820,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 {
                     try
                     {
-                        frame.Registers[ins.A] = AwaitValue(frame.Registers[ins.B]);
+                        var result = AwaitValue(frame, frame.Registers[ins.B], ins.A);
+                        frame.Registers[ins.A] = result;
                     }
                     catch (JsThrownException ex)
                     {
                         ThrowOrHandle(frame, ex.Value);
+                        break;
                     }
+
+                    // If AwaitValue suspended the frame, return from the
+                    // interpreter loop so control flows back to CallFunction
+                    // which returns the async function's pending promise.
+                    if (frame.AsyncContext is { IsSuspended: true })
+                        return JsValue.Undefined;
 
                     break;
                 }
@@ -10313,7 +10413,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return value.AsObjectHandle();
     }
 
-    private JsValue AwaitValue(JsValue value)
+    // ECMA-262 27.7.5.2 Await(value).
+    // If the awaited value is a settled promise, return (or throw) its result
+    // immediately so the interpreter can continue without suspension. If the
+    // promise is pending, save the frame state to the AsyncContext and attach
+    // fulfill/reject handlers that will resume execution when the promise settles.
+    private JsValue AwaitValue(InterpreterFrame frame, JsValue value, int destReg)
     {
         var awaitedPromise = PromiseResolveStatic(value);
         if (awaitedPromise.Tag != JsValueTag.Object ||
@@ -10322,34 +10427,72 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             return value;
         }
 
-        var spins = 0;
-        while (instance.Promise.State == PromiseState.Pending)
-        {
-            if (_pendingMicrotasks.Count == 0 && _jobQueue.Count == 0)
-            {
-                break;
-            }
-
-            DrainPendingMicrotasks();
-            if (++spins > 1024)
-            {
-                break;
-            }
-        }
-
-        if (instance.Promise.State == PromiseState.Pending)
-        {
-            throw new JsThrownException(CreateTypeError(
-                "Await on a still-pending Promise is not supported in this runtime slice."));
-        }
+        if (instance.Promise.State == PromiseState.Fulfilled)
+            return instance.Promise.GetResultUnchecked();
 
         if (instance.Promise.State == PromiseState.Rejected)
-        {
             throw new JsThrownException(instance.Promise.GetResultUnchecked());
-        }
 
-        return instance.Promise.GetResultUnchecked();
+        // Pending — suspend the async frame.
+        SaveAsyncState(frame, destReg);
+
+        var ctx = frame.AsyncContext!;
+        var onFulfilled = GetOrCreateAsyncResumeCallback(isReject: false, ctx);
+        var onRejected = GetOrCreateAsyncResumeCallback(isReject: true, ctx);
+        var onFulfilledHandle = _heap.AllocateObject(onFulfilled, AllocationSite.Current());
+        var onRejectedHandle = _heap.AllocateObject(onRejected, AllocationSite.Current());
+
+        // Attach handlers to the awaited promise.
+        PerformPromiseThen(
+            awaitedPromise.AsObjectHandle(),
+            instance.Promise,
+            JsValue.FromObject(onFulfilledHandle),
+            JsValue.FromObject(onRejectedHandle),
+            GetDummyCapability());
+
+        instance.Promise.IsHandled = true;
+        return JsValue.Undefined;
     }
+
+    // Creates (or reuses) a NativeFunctionObject that resumes the given
+    // AsyncContext when the awaited promise settles. The callback captures
+    // the async context by its ObjectHandle so GC can trace it.
+    private NativeFunctionObject GetOrCreateAsyncResumeCallback(bool isReject, AsyncContext ctx)
+    {
+        // We always create a fresh callback, capturing the specific context.
+        // Reuse of prototype patterns could be added as an optimization.
+        return new NativeFunctionObject(
+            isReject ? "asyncReject" : "asyncResolve",
+            (_, args) =>
+            {
+                var arg = args.Count > 0 ? args[0] : JsValue.Undefined;
+                // If this callback is called it means the Context is still alive,
+                // so we can safely resume.
+                return ResumeAsyncFunction(ctx, arg, isReject);
+            },
+            length: 1);
+    }
+
+    // A reusable no-op PromiseCapability for PerformPromiseThen when the caller
+    // doesn't need the chained promise (e.g., async/await's internal handlers).
+    private PromiseCapability GetDummyCapability()
+    {
+        if (_dummyCapability is not null)
+            return _dummyCapability.Value;
+
+        var noopResolve = new NativeFunctionObject("", (_, _2) => JsValue.Undefined, length: 1);
+        var noopReject = new NativeFunctionObject("", (_, _2) => JsValue.Undefined, length: 1);
+        var resolveHandle = _heap.AllocateObject(noopResolve, AllocationSite.Current());
+        var rejectHandle = _heap.AllocateObject(noopReject, AllocationSite.Current());
+        _heap.PushRoot(resolveHandle);
+        _heap.PushRoot(rejectHandle);
+        _dummyCapability = new PromiseCapability(
+            JsValue.FromObject(resolveHandle),
+            JsValue.FromObject(resolveHandle),
+            JsValue.FromObject(rejectHandle));
+        return _dummyCapability.Value;
+    }
+    private PromiseCapability? _dummyCapability;
 
     private JsValue CallFunction(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
     {
@@ -10368,13 +10511,55 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             if (fn.Kind == FunctionKind.Async)
             {
                 var capability = NewPromiseCapability();
+
+                // Create an AsyncContext to hold suspended state. If the body
+                // never awaits, the context is unused and the fast path applies.
+                var registers = new JsValue[fn.Function.RegisterCount];
+                for (var i = 0; i < registers.Length; i++)
+                    registers[i] = JsValue.Undefined;
+                var asyncCtx = new AsyncContext(fn.Function, registers, fn.OuterEnvironment)
+                {
+                    ThisValue = thisValue
+                };
+                var ctxHandle = _heap.AllocateObject(asyncCtx, AllocationSite.Current());
+
+                // Store capability handles so ResumeAsyncFunction can settle
+                // the outer promise when the body eventually completes.
+                asyncCtx.CapabilityPromise = capability.Promise.Tag == JsValueTag.Object
+                    ? capability.Promise.AsObjectHandle()
+                    : null;
+                asyncCtx.CapabilityResolve = capability.Resolve.Tag == JsValueTag.Object
+                    ? capability.Resolve.AsObjectHandle()
+                    : null;
+                asyncCtx.CapabilityReject = capability.Reject.Tag == JsValueTag.Object
+                    ? capability.Reject.AsObjectHandle()
+                    : null;
+
                 try
                 {
-                    var result = ExecuteInternal(fn.Function, args, thisValue, fn.OuterEnvironment, callee: fn);
+                    var result = ExecuteInternal(fn.Function, args, thisValue, fn.OuterEnvironment, callee: fn, asyncContext: asyncCtx);
+
+                    if (asyncCtx.IsSuspended)
+                    {
+                        // Body suspended at an await — resume callbacks already
+                        // attached. Root the context so GC doesn't collect it.
+                        _heap.PushRoot(ctxHandle);
+                        return capability.Promise;
+                    }
+
+                    // Body completed without suspension (no await encountered,
+                    // or all awaited promises were already settled).
                     _ = CallFunction(capability.Resolve, new[] { result }, JsValue.Undefined);
                 }
                 catch (JsThrownException ex)
                 {
+                    if (asyncCtx.IsSuspended)
+                    {
+                        _heap.PushRoot(ctxHandle);
+                        _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
+                        return capability.Promise;
+                    }
+
                     _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
                 }
 
