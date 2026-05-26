@@ -11,6 +11,7 @@ public sealed class JsParser
 {
     private readonly record struct ParameterListInfo(
         IReadOnlyList<string> Parameters,
+        IReadOnlyList<BindingPatternNode?> ParameterBindings,
         bool IsSimple,
         bool HasDuplicateNames,
         bool RestHasInitializer,
@@ -233,6 +234,9 @@ public sealed class JsParser
             ForOfStatementNode forOfStatement => ContainsSuperCallInStatement(forOfStatement.Initializer) ||
                                                  ContainsSuperCallInExpression(forOfStatement.Iterable) ||
                                                  ContainsSuperCallInStatement(forOfStatement.Body),
+            ForAwaitOfStatementNode forAwaitOfStatement => ContainsSuperCallInStatement(forAwaitOfStatement.Initializer) ||
+                                                 ContainsSuperCallInExpression(forAwaitOfStatement.Iterable) ||
+                                                 ContainsSuperCallInStatement(forAwaitOfStatement.Body),
             ReturnStatementNode returnStatement => returnStatement.Argument is not null && ContainsSuperCallInExpression(returnStatement.Argument),
             ThrowStatementNode throwStatement => ContainsSuperCallInExpression(throwStatement.Argument),
             TryCatchStatementNode tryCatch => ContainsSuperCallInStatement(tryCatch.TryBlock) ||
@@ -531,6 +535,11 @@ public sealed class JsParser
                 ValidateRestrictedIdentifiersInExpression(forOfStatement.Iterable, forbidAwaitIdentifier, forbidYieldIdentifier);
                 ValidateRestrictedIdentifiersInStatement(forOfStatement.Body, forbidAwaitIdentifier, forbidYieldIdentifier);
                 break;
+            case ForAwaitOfStatementNode forAwaitOfStatement:
+                ValidateRestrictedIdentifiersInStatement(forAwaitOfStatement.Initializer, forbidAwaitIdentifier, forbidYieldIdentifier);
+                ValidateRestrictedIdentifiersInExpression(forAwaitOfStatement.Iterable, forbidAwaitIdentifier, forbidYieldIdentifier);
+                ValidateRestrictedIdentifiersInStatement(forAwaitOfStatement.Body, forbidAwaitIdentifier, forbidYieldIdentifier);
+                break;
             case ReturnStatementNode returnStatement when returnStatement.Argument is not null:
                 ValidateRestrictedIdentifiersInExpression(returnStatement.Argument, forbidAwaitIdentifier, forbidYieldIdentifier);
                 break;
@@ -799,14 +808,19 @@ public sealed class JsParser
         return new BlockStatementNode(statements, MergeSpan(open.Span, close.Span));
     }
 
-    private VariableDeclarationStatementNode ParseVariableDeclarationStatement()
+    private readonly record struct ParsedVariableBinding(
+        string Identifier,
+        BindingPatternNode? Pattern,
+        SourceSpan Span);
+
+    private VariableDeclarationStatementNode ParseVariableDeclarationStatement(bool inForHead = false)
     {
         var start = Advance(); // let|const|var
         var declarators = new List<VariableDeclaratorNode>();
 
         while (true)
         {
-            var id = ParseBindingIdentifierOrPattern();
+            var binding = ParseVariableDeclaratorBinding();
             ExpressionNode? initializer = null;
             if (IsPunctuator("="))
             {
@@ -814,8 +828,13 @@ public sealed class JsParser
                 initializer = ParseExpression(2);
             }
 
-            var declaratorSpan = initializer is null ? id.Span : MergeSpan(id.Span, initializer.Span);
-            declarators.Add(new VariableDeclaratorNode(id.Text, initializer, declaratorSpan));
+            if (binding.Pattern is not null && initializer is null && !inForHead)
+            {
+                throw new JsParserException("Missing initializer in destructuring declaration.");
+            }
+
+            var declaratorSpan = initializer is null ? binding.Span : MergeSpan(binding.Span, initializer.Span);
+            declarators.Add(new VariableDeclaratorNode(binding.Identifier, initializer, declaratorSpan, binding.Pattern));
 
             if (!IsPunctuator(","))
             {
@@ -832,6 +851,215 @@ public sealed class JsParser
 
         var end = Previous();
         return new VariableDeclarationStatementNode(start.Text, declarators, MergeSpan(start.Span, end.Span));
+    }
+
+    private ParsedVariableBinding ParseVariableDeclaratorBinding()
+    {
+        if (IsIdentifierLike(Current()))
+        {
+            var token = Advance();
+            return new ParsedVariableBinding(token.Text, null, token.Span);
+        }
+
+        if (IsPunctuator("[") || IsPunctuator("{"))
+        {
+            var pattern = ParseBindingPattern();
+            var name = $"__pattern{_syntheticBindingCounter++}";
+            return new ParsedVariableBinding(name, pattern, pattern.Span);
+        }
+
+        throw new JsParserException($"Expected identifier, found '{Current().Text}'.");
+    }
+
+    private BindingPatternNode ParseBindingPattern()
+    {
+        if (IsIdentifierLike(Current()))
+        {
+            var identifier = Advance();
+            return new IdentifierBindingPatternNode(identifier.Text, identifier.Span);
+        }
+
+        if (IsPunctuator("["))
+        {
+            return ParseArrayBindingPattern();
+        }
+
+        if (IsPunctuator("{"))
+        {
+            return ParseObjectBindingPattern();
+        }
+
+        throw new JsParserException($"Expected binding pattern, found '{Current().Text}'.");
+    }
+
+    private ArrayBindingPatternNode ParseArrayBindingPattern()
+    {
+        var open = Advance();
+        var elements = new List<ArrayBindingElementNode>();
+
+        while (!Is(TokenKind.EndOfFile) && !IsPunctuator("]"))
+        {
+            if (IsPunctuator(","))
+            {
+                var comma = Advance();
+                elements.Add(new ArrayBindingElementNode(null, null, IsRest: false, comma.Span));
+                continue;
+            }
+
+            var isRest = false;
+            SourceSpan elementStart;
+            if (IsPunctuator("..."))
+            {
+                isRest = true;
+                elementStart = Advance().Span;
+            }
+            else
+            {
+                elementStart = Current().Span;
+            }
+
+            var target = ParseBindingPattern();
+            ExpressionNode? initializer = null;
+            if (IsPunctuator("="))
+            {
+                if (isRest)
+                {
+                    throw new JsParserException("Array binding rest elements cannot have initializers.");
+                }
+
+                Advance();
+                initializer = ParseExpression(2);
+            }
+
+            if (isRest && IsPunctuator(","))
+            {
+                throw new JsParserException("Array binding rest elements must be the final element.");
+            }
+
+            var elementSpan = initializer is null ? MergeSpan(elementStart, target.Span) : MergeSpan(elementStart, initializer.Span);
+            elements.Add(new ArrayBindingElementNode(target, initializer, isRest, elementSpan));
+
+            if (!IsPunctuator(","))
+            {
+                break;
+            }
+
+            Advance();
+        }
+
+        ExpectPunctuator("]");
+        var close = Previous();
+        return new ArrayBindingPatternNode(elements, MergeSpan(open.Span, close.Span));
+    }
+
+    private ObjectBindingPatternNode ParseObjectBindingPattern()
+    {
+        var open = Advance();
+        var properties = new List<ObjectBindingPropertyNode>();
+        BindingPatternNode? rest = null;
+
+        while (!Is(TokenKind.EndOfFile) && !IsPunctuator("}"))
+        {
+            if (IsPunctuator("..."))
+            {
+                var spread = Advance();
+                rest = ParseBindingPattern();
+                if (IsPunctuator("="))
+                {
+                    throw new JsParserException("Object binding rest properties cannot have initializers.");
+                }
+
+                if (IsPunctuator(","))
+                {
+                    throw new JsParserException("Object binding rest property must be the final property.");
+                }
+
+                _ = spread;
+                break;
+            }
+
+            var property = ParseObjectBindingProperty();
+            properties.Add(property);
+
+            if (!IsPunctuator(","))
+            {
+                break;
+            }
+
+            Advance();
+        }
+
+        ExpectPunctuator("}");
+        var close = Previous();
+        return new ObjectBindingPatternNode(properties, rest, MergeSpan(open.Span, close.Span));
+    }
+
+    private ObjectBindingPropertyNode ParseObjectBindingProperty()
+    {
+        var start = Current().Span;
+        string? key = null;
+        ExpressionNode? computedKey = null;
+        var isComputed = false;
+        BindingPatternNode target;
+        ExpressionNode? initializer = null;
+
+        if (IsPunctuator("["))
+        {
+            isComputed = true;
+            Advance();
+            computedKey = ParseExpression(0);
+            ExpectPunctuator("]");
+            ExpectPunctuator(":");
+            target = ParseBindingPattern();
+        }
+        else
+        {
+            Token keyToken;
+            if (IsIdentifierLike(Current()))
+            {
+                keyToken = Advance();
+                key = keyToken.Text;
+            }
+            else if (Is(TokenKind.String) || Is(TokenKind.Number))
+            {
+                keyToken = Advance();
+                key = keyToken.Kind == TokenKind.String ? keyToken.Text : NormalizeNumericPropertyName(keyToken);
+            }
+            else
+            {
+                throw new JsParserException($"Expected object binding property name, found '{Current().Text}'.");
+            }
+
+            if (IsPunctuator(":"))
+            {
+                Advance();
+                target = ParseBindingPattern();
+            }
+            else
+            {
+                target = new IdentifierBindingPatternNode(key, keyToken.Span);
+            }
+        }
+
+        if (IsPunctuator("="))
+        {
+            Advance();
+            initializer = ParseExpression(2);
+        }
+
+        var endSpan = initializer is not null ? initializer.Span : target.Span;
+        return new ObjectBindingPropertyNode(key, computedKey, isComputed, target, initializer, MergeSpan(start, endSpan));
+    }
+
+    private static string NormalizeNumericPropertyName(Token token)
+    {
+        var raw = token.Text.Replace("_", string.Empty);
+        if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
+        {
+            return number.ToString("G17", CultureInfo.InvariantCulture);
+        }
+
+        return token.Text;
     }
 
     private Token ParseBindingIdentifierOrPattern()
@@ -992,9 +1220,11 @@ public sealed class JsParser
     private StatementNode ParseForStatement()
     {
         var start = Advance(); // for
+        var isForAwait = false;
         if (Current().Kind == TokenKind.Keyword && Current().Text == "await")
         {
             Advance();
+            isForAwait = true;
         }
 
         ExpectPunctuator("(");
@@ -1007,7 +1237,7 @@ public sealed class JsParser
         {
             if (Current().Kind == TokenKind.Keyword && (Current().Text == "let" || Current().Text == "const" || Current().Text == "var"))
             {
-                initializer = ParseVariableDeclarationStatement();
+                initializer = ParseVariableDeclarationStatement(inForHead: true);
                 initializerIsDeclaration = true;
             }
             else
@@ -1050,7 +1280,14 @@ public sealed class JsParser
             var iterable = ParseExpression(0);
             ExpectPunctuator(")");
             var forOfBody = ParseStatement();
-            return new ForOfStatementNode(initializer, iterable, forOfBody, MergeSpan(start.Span, forOfBody.Span));
+            return isForAwait
+                ? new ForAwaitOfStatementNode(initializer, iterable, forOfBody, MergeSpan(start.Span, forOfBody.Span))
+                : new ForOfStatementNode(initializer, iterable, forOfBody, MergeSpan(start.Span, forOfBody.Span));
+        }
+
+        if (isForAwait)
+        {
+            throw new JsParserException("for await requires an of-clause.");
         }
 
         if (requireInitializerSemicolon)
@@ -1259,7 +1496,8 @@ public sealed class JsParser
             MergeSpan(start.Span, body.Span),
             IsAsync: isAsync,
             IsGenerator: isGenerator,
-            RestParameterIndex: parameterInfo.RestParameterIndex);
+            RestParameterIndex: parameterInfo.RestParameterIndex,
+            ParameterBindings: parameterInfo.ParameterBindings);
     }
 
     private ThrowStatementNode ParseThrowStatement()
@@ -1809,7 +2047,8 @@ public sealed class JsParser
                 MergeSpan(memberStart, body.Span),
                 IsAsync: isAsync,
                 IsGenerator: isGenerator,
-                RestParameterIndex: parameterInfo.RestParameterIndex);
+                RestParameterIndex: parameterInfo.RestParameterIndex,
+                ParameterBindings: parameterInfo.ParameterBindings);
             members.Add(new ClassMemberNode(
                 memberName,
                 kind,
@@ -2219,6 +2458,7 @@ public sealed class JsParser
     private ParameterListInfo ParseParameterList()
     {
         var parameters = new List<string>();
+        var parameterBindings = new List<BindingPatternNode?>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var isSimple = true;
         var hasDuplicateNames = false;
@@ -2245,9 +2485,10 @@ public sealed class JsParser
                 restParameterIndex = parameters.Count;
             }
 
-            var binding = ParseBindingIdentifierOrPattern();
-            var bindingName = binding.Text;
+            var binding = ParseParameterBinding();
+            var bindingName = binding.Identifier;
             parameters.Add(bindingName);
+            parameterBindings.Add(binding.Pattern);
             if (bindingName.StartsWith("__pattern", StringComparison.Ordinal))
             {
                 isSimple = false;
@@ -2300,6 +2541,7 @@ public sealed class JsParser
         ExpectPunctuator(")");
         return new ParameterListInfo(
             parameters,
+            parameterBindings,
             IsSimple: isSimple,
             HasDuplicateNames: hasDuplicateNames,
             RestHasInitializer: restHasInitializer,
@@ -2308,6 +2550,24 @@ public sealed class JsParser
             HasYieldReferenceInInitializers: hasYieldReferenceInInitializers,
             HasAwaitReferenceInInitializers: hasAwaitReferenceInInitializers,
             RestParameterIndex: restParameterIndex);
+    }
+
+    private ParsedVariableBinding ParseParameterBinding()
+    {
+        if (IsIdentifierLike(Current()))
+        {
+            var token = Advance();
+            return new ParsedVariableBinding(token.Text, null, token.Span);
+        }
+
+        if (IsPunctuator("[") || IsPunctuator("{"))
+        {
+            var pattern = ParseBindingPattern();
+            var name = $"__pattern{_syntheticBindingCounter++}";
+            return new ParsedVariableBinding(name, pattern, pattern.Span);
+        }
+
+        throw new JsParserException($"Expected identifier, found '{Current().Text}'.");
     }
 
     private ExpressionNode ParseExpression(int minBindingPower)
@@ -2817,7 +3077,8 @@ public sealed class JsParser
             MergeSpan(start.Span, body.Span),
             IsAsync: isAsync,
             IsGenerator: isGenerator,
-            RestParameterIndex: parameterInfo.RestParameterIndex);
+            RestParameterIndex: parameterInfo.RestParameterIndex,
+            ParameterBindings: parameterInfo.ParameterBindings);
     }
 
     private ExpressionNode ParseNewExpression()
@@ -2900,7 +3161,7 @@ public sealed class JsParser
                     strictMode: strictObjectMethod,
                     rejectSuperCallInBody: true);
                 var accessorFnName = accessorKey ?? accessorKind.Text;
-                var accessorFn = new FunctionExpressionNode(accessorFnName, parameters, body, MergeSpan(accessorKind.Span, body.Span), RestParameterIndex: parameterInfo.RestParameterIndex);
+                var accessorFn = new FunctionExpressionNode(accessorFnName, parameters, body, MergeSpan(accessorKind.Span, body.Span), RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings);
                 properties.Add(new ObjectPropertyNode(accessorKey, accessorComputedKey, accessorIsComputed, accessorFn, accessorFn.Span));
                 if (IsPunctuator(","))
                 {
@@ -2964,7 +3225,8 @@ public sealed class JsParser
                     body,
                     MergeSpan(asyncStart.Span, body.Span),
                     IsAsync: true,
-                    RestParameterIndex: parameterInfo.RestParameterIndex);
+                    RestParameterIndex: parameterInfo.RestParameterIndex,
+                    ParameterBindings: parameterInfo.ParameterBindings);
                 properties.Add(new ObjectPropertyNode(methodKey, methodComputedKey, methodIsComputed, asyncMethodFn, asyncMethodFn.Span));
                 if (IsPunctuator(","))
                 {
@@ -3030,7 +3292,8 @@ public sealed class JsParser
                     MergeSpan(asyncStart.Span, body.Span),
                     IsAsync: true,
                     IsGenerator: true,
-                    RestParameterIndex: parameterInfo.RestParameterIndex);
+                    RestParameterIndex: parameterInfo.RestParameterIndex,
+                    ParameterBindings: parameterInfo.ParameterBindings);
                 properties.Add(new ObjectPropertyNode(methodKey, methodComputedKey, methodIsComputed, asyncMethodFn, asyncMethodFn.Span));
                 if (IsPunctuator(","))
                 {
@@ -3092,7 +3355,8 @@ public sealed class JsParser
                     body,
                     MergeSpan(methodStart.Span, body.Span),
                     IsGenerator: true,
-                    RestParameterIndex: parameterInfo.RestParameterIndex);
+                    RestParameterIndex: parameterInfo.RestParameterIndex,
+                    ParameterBindings: parameterInfo.ParameterBindings);
                 properties.Add(new ObjectPropertyNode(methodKey, methodComputedKey, methodIsComputed, methodFn, methodFn.Span));
                 if (IsPunctuator(","))
                 {
@@ -3161,7 +3425,7 @@ public sealed class JsParser
                     forbidYieldIdentifier: false,
                     strictMode: strictObjectMethod,
                     rejectSuperCallInBody: true);
-                value = new FunctionExpressionNode(key, parameters, body, MergeSpan(keyToken.Span, body.Span), RestParameterIndex: parameterInfo.RestParameterIndex);
+                value = new FunctionExpressionNode(key, parameters, body, MergeSpan(keyToken.Span, body.Span), RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings);
             }
             else if (IsPunctuator(":"))
             {
@@ -3248,7 +3512,12 @@ public sealed class JsParser
                 var parameter = Advance().Text;
                 Advance(); // =
                 Advance(); // >
-                expression = ParseArrowFunctionBody(new[] { parameter }, _tokens[saved].Span, isAsync: true, restParameterIndex: -1);
+                expression = ParseArrowFunctionBody(
+                    new[] { parameter },
+                    new BindingPatternNode?[] { null },
+                    _tokens[saved].Span,
+                    isAsync: true,
+                    restParameterIndex: -1);
                 return true;
             }
 
@@ -3256,6 +3525,7 @@ public sealed class JsParser
             {
                 Advance();
                 var asyncParameters = new List<string>();
+                var asyncParameterBindings = new List<BindingPatternNode?>();
                 var asyncRestParameterIndex = -1;
                 var asyncValid = true;
                 if (!IsPunctuator(")"))
@@ -3279,11 +3549,21 @@ public sealed class JsParser
                             break;
                         }
 
-                        asyncParameters.Add(ParseBindingIdentifierOrPattern().Text);
-                        if (IsPunctuator("=") && !PeekIsPunctuator(1, ">"))
+                        try
                         {
-                            Advance();
-                            _ = ParseExpression(2);
+                            var binding = ParseParameterBinding();
+                            asyncParameters.Add(binding.Identifier);
+                            asyncParameterBindings.Add(binding.Pattern);
+                            if (IsPunctuator("=") && !PeekIsPunctuator(1, ">"))
+                            {
+                                Advance();
+                                _ = ParseExpression(2);
+                            }
+                        }
+                        catch (JsParserException)
+                        {
+                            asyncValid = false;
+                            break;
                         }
 
                         if (IsPunctuator(","))
@@ -3311,7 +3591,7 @@ public sealed class JsParser
 
                 Advance(); // =
                 Advance(); // >
-                expression = ParseArrowFunctionBody(asyncParameters, _tokens[saved].Span, isAsync: true, restParameterIndex: asyncRestParameterIndex);
+                expression = ParseArrowFunctionBody(asyncParameters, asyncParameterBindings, _tokens[saved].Span, isAsync: true, restParameterIndex: asyncRestParameterIndex);
                 return true;
             }
 
@@ -3323,7 +3603,12 @@ public sealed class JsParser
             var parameter = Advance().Text;
             Advance(); // =
             Advance(); // >
-            expression = ParseArrowFunctionBody(new[] { parameter }, _tokens[saved].Span, isAsync: false, restParameterIndex: -1);
+            expression = ParseArrowFunctionBody(
+                new[] { parameter },
+                new BindingPatternNode?[] { null },
+                _tokens[saved].Span,
+                isAsync: false,
+                restParameterIndex: -1);
             return true;
         }
 
@@ -3331,6 +3616,7 @@ public sealed class JsParser
         {
             Advance();
             var parameters = new List<string>();
+            var parameterBindings = new List<BindingPatternNode?>();
             var restParameterIndex = -1;
             var valid = true;
             if (!IsPunctuator(")"))
@@ -3354,11 +3640,21 @@ public sealed class JsParser
                         break;
                     }
 
-                    parameters.Add(ParseBindingIdentifierOrPattern().Text);
-                    if (IsPunctuator("=") && !PeekIsPunctuator(1, ">"))
+                    try
                     {
-                        Advance();
-                        _ = ParseExpression(2);
+                        var binding = ParseParameterBinding();
+                        parameters.Add(binding.Identifier);
+                        parameterBindings.Add(binding.Pattern);
+                        if (IsPunctuator("=") && !PeekIsPunctuator(1, ">"))
+                        {
+                            Advance();
+                            _ = ParseExpression(2);
+                        }
+                    }
+                    catch (JsParserException)
+                    {
+                        valid = false;
+                        break;
                     }
 
                     if (IsPunctuator(","))
@@ -3386,7 +3682,7 @@ public sealed class JsParser
 
             Advance(); // =
             Advance(); // >
-            expression = ParseArrowFunctionBody(parameters, _tokens[saved].Span, isAsync: false, restParameterIndex: restParameterIndex);
+            expression = ParseArrowFunctionBody(parameters, parameterBindings, _tokens[saved].Span, isAsync: false, restParameterIndex: restParameterIndex);
             return true;
         }
 
@@ -3395,6 +3691,7 @@ public sealed class JsParser
 
     private ArrowFunctionExpressionNode ParseArrowFunctionBody(
         IReadOnlyList<string> parameters,
+        IReadOnlyList<BindingPatternNode?> parameterBindings,
         SourceSpan start,
         bool isAsync,
         int restParameterIndex)
@@ -3403,11 +3700,11 @@ public sealed class JsParser
         {
             var block = ParseBlockStatement();
             ValidateDirectivePrologueStrictStringEscapes(block.Statements);
-            return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span), IsAsync: isAsync, RestParameterIndex: restParameterIndex);
+            return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span), IsAsync: isAsync, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings);
         }
 
         var bodyExpression = ParseExpression(2);
-        return new ArrowFunctionExpressionNode(parameters, null, bodyExpression, MergeSpan(start, bodyExpression.Span), IsAsync: isAsync, RestParameterIndex: restParameterIndex);
+        return new ArrowFunctionExpressionNode(parameters, null, bodyExpression, MergeSpan(start, bodyExpression.Span), IsAsync: isAsync, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings);
     }
 
     private IReadOnlyList<ExpressionNode> ParseCallArguments()

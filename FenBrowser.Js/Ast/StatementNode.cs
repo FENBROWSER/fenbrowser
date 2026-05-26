@@ -12,7 +12,11 @@ public sealed record LabeledStatementNode(string Label, StatementNode Body, Sour
 
 public sealed record BlockStatementNode(IReadOnlyList<StatementNode> Statements, SourceSpan Span) : StatementNode(Span);
 
-public sealed record VariableDeclaratorNode(string Identifier, ExpressionNode? Initializer, SourceSpan Span);
+public sealed record VariableDeclaratorNode(
+    string Identifier,
+    ExpressionNode? Initializer,
+    SourceSpan Span,
+    BindingPatternNode? BindingPattern = null);
 
 public sealed record VariableDeclarationStatementNode(string Kind, IReadOnlyList<VariableDeclaratorNode> Declarators, SourceSpan Span) : StatementNode(Span);
 
@@ -37,7 +41,8 @@ public sealed record FunctionDeclarationNode(
     SourceSpan Span,
     bool IsAsync = false,
     bool IsGenerator = false,
-    int RestParameterIndex = -1) : StatementNode(Span);
+    int RestParameterIndex = -1,
+    IReadOnlyList<BindingPatternNode?>? ParameterBindings = null) : StatementNode(Span);
 
 public sealed record ThrowStatementNode(ExpressionNode Argument, SourceSpan Span) : StatementNode(Span);
 
@@ -67,6 +72,12 @@ public sealed record ForStatementNode(
     SourceSpan Span) : StatementNode(Span);
 
 public sealed record ForOfStatementNode(
+    StatementNode Initializer,
+    ExpressionNode Iterable,
+    StatementNode Body,
+    SourceSpan Span) : StatementNode(Span);
+
+public sealed record ForAwaitOfStatementNode(
     StatementNode Initializer,
     ExpressionNode Iterable,
     StatementNode Body,

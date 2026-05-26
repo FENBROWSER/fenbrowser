@@ -173,7 +173,10 @@ public sealed class BytecodeCompiler
                         bool isConst = string.Equals(vd2.Kind, "const", StringComparison.Ordinal);
                         foreach (var d2 in vd2.Declarators)
                         {
-                            blockDecls[d2.Identifier] = isConst;
+                            foreach (var boundName in GetDeclaratorBoundNames(d2))
+                            {
+                                blockDecls[boundName] = isConst;
+                            }
                         }
                     }
                 }
@@ -205,28 +208,46 @@ public sealed class BytecodeCompiler
             case VariableDeclarationStatementNode decl:
                 foreach (var d in decl.Declarators)
                 {
-                    bool isBlockScoped = IsBlockScopedName(d.Identifier);
-                    if (string.Equals(decl.Kind, "var", StringComparison.Ordinal))
+                    var boundNames = GetDeclaratorBoundNames(d);
+                    foreach (var boundName in boundNames)
                     {
-                        _varDeclarationNames.Add(d.Identifier);
+                        bool isBlockScoped = IsBlockScopedName(boundName);
+                        if (string.Equals(decl.Kind, "var", StringComparison.Ordinal))
+                        {
+                            _varDeclarationNames.Add(boundName);
+                        }
+                        else if (!isBlockScoped)
+                        {
+                            if (string.Equals(decl.Kind, "const", StringComparison.Ordinal))
+                            {
+                                _constDeclarationNames.Add(boundName);
+                            }
+                            else
+                            {
+                                _lexicalDeclarationNames.Add(boundName);
+                            }
+                        }
+
+                        _ = GetOrCreateVariableSlot(boundName);
                     }
-                    else if (!isBlockScoped)
-                    {
-                        if (string.Equals(decl.Kind, "const", StringComparison.Ordinal))
-                            _constDeclarationNames.Add(d.Identifier);
-                        else
-                            _lexicalDeclarationNames.Add(d.Identifier);
-                    }
-                    var slot = GetOrCreateVariableSlot(d.Identifier);
+
+                    var op = string.Equals(decl.Kind, "var", StringComparison.Ordinal)
+                        ? OpCode.StoreVar
+                        : OpCode.InitVar;
                     if (d.Initializer is not null)
                     {
                         var reg = CompileExpression(d.Initializer);
-                        var op = string.Equals(decl.Kind, "var", StringComparison.Ordinal)
-                            ? OpCode.StoreVar
-                            : OpCode.InitVar;
-                        _instructions.Add(new Instruction(op, reg, slot, 0));
+                        if (d.BindingPattern is null)
+                        {
+                            var slot = GetOrCreateVariableSlot(d.Identifier);
+                            _instructions.Add(new Instruction(op, reg, slot, 0));
+                        }
+                        else
+                        {
+                            EmitBindingPatternAssignment(d.BindingPattern, reg, op);
+                        }
                     }
-                    else if (string.Equals(decl.Kind, "let", StringComparison.Ordinal))
+                    else if (string.Equals(decl.Kind, "let", StringComparison.Ordinal) && d.BindingPattern is null)
                     {
                         // For block-scoped let without initializer, emit InitVar
                         // with undefined to move the binding out of TDZ.
@@ -234,6 +255,7 @@ public sealed class BytecodeCompiler
                         var reg = AllocateRegister();
                         var ci = AddConstant(JsValue.Undefined);
                         _instructions.Add(new Instruction(OpCode.LoadConst, reg, ci, 0));
+                        var slot = GetOrCreateVariableSlot(d.Identifier);
                         _instructions.Add(new Instruction(OpCode.InitVar, reg, slot, 0));
                     }
                 }
@@ -261,6 +283,9 @@ public sealed class BytecodeCompiler
                 break;
             case ForOfStatementNode forOfStmt:
                 CompileForOfStatement(forOfStmt);
+                break;
+            case ForAwaitOfStatementNode forAwaitOfStmt:
+                CompileForAwaitOfStatement(forAwaitOfStmt);
                 break;
             case ReturnStatementNode returnStmt:
                 CompileReturnStatement(returnStmt);
@@ -323,7 +348,11 @@ public sealed class BytecodeCompiler
 
     private void CompileFunctionDeclaration(FunctionDeclarationNode functionDecl)
     {
-        var nestedProgram = new ProgramNode(ProgramKind.Script, functionDecl.Body.Statements, functionDecl.Body.Span);
+        var nestedProgram = BuildFunctionProgramWithParameterBindings(
+            functionDecl.Body.Statements,
+            functionDecl.Body.Span,
+            functionDecl.Parameters,
+            functionDecl.ParameterBindings);
         var childCompiler = new BytecodeCompiler();
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
@@ -341,6 +370,44 @@ public sealed class BytecodeCompiler
         var slot = GetOrCreateVariableSlot(functionDecl.Name);
         _varDeclarationNames.Add(functionDecl.Name);
         _instructions.Add(new Instruction(OpCode.StoreVar, dest, slot, 0));
+    }
+
+    private static ProgramNode BuildFunctionProgramWithParameterBindings(
+        IReadOnlyList<StatementNode> bodyStatements,
+        SourceSpan bodySpan,
+        IReadOnlyList<string> parameterNames,
+        IReadOnlyList<BindingPatternNode?>? parameterBindings)
+    {
+        if (parameterBindings is null || parameterBindings.Count == 0)
+        {
+            return new ProgramNode(ProgramKind.Script, bodyStatements, bodySpan);
+        }
+
+        var prelude = new List<StatementNode>();
+        var count = Math.Min(parameterNames.Count, parameterBindings.Count);
+        for (var i = 0; i < count; i++)
+        {
+            var bindingPattern = parameterBindings[i];
+            if (bindingPattern is null)
+            {
+                continue;
+            }
+
+            var parameterName = parameterNames[i];
+            var parameterRef = new IdentifierExpressionNode(parameterName, bindingPattern.Span);
+            var declarator = new VariableDeclaratorNode(parameterName, parameterRef, bindingPattern.Span, bindingPattern);
+            prelude.Add(new VariableDeclarationStatementNode("var", new[] { declarator }, bindingPattern.Span));
+        }
+
+        if (prelude.Count == 0)
+        {
+            return new ProgramNode(ProgramKind.Script, bodyStatements, bodySpan);
+        }
+
+        var statements = new List<StatementNode>(prelude.Count + bodyStatements.Count);
+        statements.AddRange(prelude);
+        statements.AddRange(bodyStatements);
+        return new ProgramNode(ProgramKind.Script, statements, bodySpan);
     }
 
     // Lower a class declaration into ordinary CreateFunction + NewObject +
@@ -671,7 +738,11 @@ public sealed class BytecodeCompiler
 
     private int CompileFunctionExpressionToRegister(FunctionExpressionNode fnExpr)
     {
-        var nestedProgram = new ProgramNode(ProgramKind.Script, fnExpr.Body.Statements, fnExpr.Body.Span);
+        var nestedProgram = BuildFunctionProgramWithParameterBindings(
+            fnExpr.Body.Statements,
+            fnExpr.Body.Span,
+            fnExpr.Parameters,
+            fnExpr.ParameterBindings);
         var childCompiler = new BytecodeCompiler { _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _brandTokens = this._brandTokens };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
@@ -886,7 +957,7 @@ public sealed class BytecodeCompiler
 
     private void CompileForInStatement(ForInStatementNode forInStmt)
     {
-        if (!TryGetForInTargetSlot(forInStmt.Initializer, out var targetSlot))
+        if (!TryGetForBindingTarget(forInStmt.Initializer, out var targetSlot, out var targetPattern))
         {
             if (forInStmt.Initializer is ExpressionStatementNode expressionInitializer)
             {
@@ -906,7 +977,7 @@ public sealed class BytecodeCompiler
         var keyReg = AllocateRegister();
         var nextIndex = _instructions.Count;
         _instructions.Add(new Instruction(OpCode.ForInNext, keyReg, iteratorReg, -1));
-        _instructions.Add(new Instruction(OpCode.StoreVar, keyReg, targetSlot, 0));
+        EmitForBindingAssignment(targetSlot, targetPattern, keyReg);
 
         var ctx = new LoopContext
         {
@@ -948,7 +1019,7 @@ public sealed class BytecodeCompiler
     // continue/break stack so labelled break still works.
     private void CompileForOfStatement(ForOfStatementNode forOfStmt)
     {
-        if (!TryGetForInTargetSlot(forOfStmt.Initializer, out var targetSlot))
+        if (!TryGetForBindingTarget(forOfStmt.Initializer, out var targetSlot, out var targetPattern))
         {
             if (forOfStmt.Initializer is ExpressionStatementNode expressionInitializer)
             {
@@ -968,7 +1039,7 @@ public sealed class BytecodeCompiler
         var valueReg = AllocateRegister();
         var nextIndex = _instructions.Count;
         _instructions.Add(new Instruction(OpCode.ForOfNext, valueReg, iteratorReg, -1));
-        _instructions.Add(new Instruction(OpCode.StoreVar, valueReg, targetSlot, 0));
+        EmitForBindingAssignment(targetSlot, targetPattern, valueReg);
 
         var ctx = new LoopContext
         {
@@ -1005,31 +1076,125 @@ public sealed class BytecodeCompiler
         }
     }
 
-    private bool TryGetForInTargetSlot(StatementNode initializer, out int slot)
+    private void CompileForAwaitOfStatement(ForAwaitOfStatementNode forAwaitOfStmt)
+    {
+        if (_currentFunctionKind is not FunctionKind.Async and not FunctionKind.AsyncGenerator)
+        {
+            throw new UnsupportedFeatureException("for-await-outside-async", FeatureSupportLevel.ParserOnly, forAwaitOfStmt.Span);
+        }
+
+        if (!TryGetForBindingTarget(forAwaitOfStmt.Initializer, out var targetSlot, out var targetPattern))
+        {
+            if (forAwaitOfStmt.Initializer is ExpressionStatementNode expressionInitializer)
+            {
+                _ = CompileExpression(expressionInitializer.Expression);
+                EmitRuntimeReferenceError("Invalid left-hand side in for-await-of.");
+                return;
+            }
+
+            throw new InvalidOperationException("Unsupported for-await-of initializer target.");
+        }
+
+        var sourceReg = CompileExpression(forAwaitOfStmt.Iterable);
+        var iteratorReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.EnumerateValues, iteratorReg, sourceReg, 0));
+
+        var loopStart = _instructions.Count;
+        var valueReg = AllocateRegister();
+        var nextIndex = _instructions.Count;
+        _instructions.Add(new Instruction(OpCode.ForOfNext, valueReg, iteratorReg, -1));
+
+        var awaitedReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.Await, awaitedReg, valueReg, 0));
+        EmitForBindingAssignment(targetSlot, targetPattern, awaitedReg);
+
+        var ctx = new LoopContext
+        {
+            ContinueTarget = loopStart,
+            BreakJumpIndices = new List<int>(),
+            ContinueJumpIndices = new List<int>()
+        };
+        _loopStack.Push(ctx);
+        if (_pendingLabel != null)
+        {
+            ctx.Label = _pendingLabel;
+            _pendingLabel = null;
+        }
+        try
+        {
+            CompileStatement(forAwaitOfStmt.Body);
+            _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
+            var loopEnd = _instructions.Count;
+            _instructions[nextIndex] = _instructions[nextIndex] with { C = loopEnd };
+
+            foreach (var breakJump in ctx.BreakJumpIndices)
+            {
+                PatchJump(breakJump, loopEnd);
+            }
+
+            foreach (var continueJump in ctx.ContinueJumpIndices)
+            {
+                PatchJump(continueJump, loopStart);
+            }
+        }
+        finally
+        {
+            _ = _loopStack.Pop();
+        }
+    }
+
+    private bool TryGetForBindingTarget(StatementNode initializer, out int slot, out BindingPatternNode? pattern)
     {
         switch (initializer)
         {
             case VariableDeclarationStatementNode { Declarators.Count: 1 } declaration:
-                slot = GetForInDeclarationTargetSlot(declaration);
+                (slot, pattern) = GetForDeclarationTarget(declaration);
                 return true;
             case ExpressionStatementNode { Expression: IdentifierExpressionNode identifier }:
                 slot = GetOrCreateVariableSlot(identifier.Name);
+                pattern = null;
                 return true;
             default:
                 slot = 0;
+                pattern = null;
                 return false;
         }
     }
 
-    private int GetForInDeclarationTargetSlot(VariableDeclarationStatementNode declaration)
+    private (int Slot, BindingPatternNode? Pattern) GetForDeclarationTarget(VariableDeclarationStatementNode declaration)
     {
-        var name = declaration.Declarators[0].Identifier;
+        var declarator = declaration.Declarators[0];
+        var name = declarator.Identifier;
         if (string.Equals(declaration.Kind, "var", StringComparison.Ordinal))
         {
-            _varDeclarationNames.Add(name);
+            foreach (var boundName in GetDeclaratorBoundNames(declarator))
+            {
+                _varDeclarationNames.Add(boundName);
+            }
         }
 
-        return GetOrCreateVariableSlot(name);
+        if (declarator.BindingPattern is null)
+        {
+            return (GetOrCreateVariableSlot(name), null);
+        }
+
+        foreach (var boundName in GetDeclaratorBoundNames(declarator))
+        {
+            _ = GetOrCreateVariableSlot(boundName);
+        }
+
+        return (-1, declarator.BindingPattern);
+    }
+
+    private void EmitForBindingAssignment(int slot, BindingPatternNode? pattern, int valueReg)
+    {
+        if (pattern is null)
+        {
+            _instructions.Add(new Instruction(OpCode.StoreVar, valueReg, slot, 0));
+            return;
+        }
+
+        EmitBindingPatternAssignment(pattern, valueReg, OpCode.StoreVar);
     }
 
     private void CompileThrowStatement(ThrowStatementNode throwStmt)
@@ -1193,7 +1358,7 @@ public sealed class BytecodeCompiler
     private void CompileLabeledStatement(LabeledStatementNode labeled)
     {
         var isLoop = labeled.Body is WhileStatementNode or ForStatementNode or DoWhileStatementNode
-            or ForInStatementNode or ForOfStatementNode;
+            or ForInStatementNode or ForOfStatementNode or ForAwaitOfStatementNode;
         var isSwitch = labeled.Body is SwitchStatementNode;
 
         if (isLoop || isSwitch)
@@ -1686,7 +1851,7 @@ public sealed class BytecodeCompiler
 
                 if (unary.Operator == "await")
                 {
-                    if (_currentFunctionKind != FunctionKind.Async)
+                    if (_currentFunctionKind is not FunctionKind.Async and not FunctionKind.AsyncGenerator)
                     {
                         throw new UnsupportedFeatureException("await-outside-async", FeatureSupportLevel.ParserOnly, unary.Span);
                     }
@@ -1765,7 +1930,11 @@ public sealed class BytecodeCompiler
             }
             case FunctionExpressionNode fnExpr:
             {
-                var nestedProgram = new ProgramNode(ProgramKind.Script, fnExpr.Body.Statements, fnExpr.Body.Span);
+                var nestedProgram = BuildFunctionProgramWithParameterBindings(
+                    fnExpr.Body.Statements,
+                    fnExpr.Body.Span,
+                    fnExpr.Parameters,
+                    fnExpr.ParameterBindings);
                 var childCompiler = new BytecodeCompiler();
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
@@ -1803,7 +1972,11 @@ public sealed class BytecodeCompiler
                     bodySpan = arrow.Span;
                 }
 
-                var nestedProgram = new ProgramNode(ProgramKind.Script, statements, bodySpan);
+                var nestedProgram = BuildFunctionProgramWithParameterBindings(
+                    statements,
+                    bodySpan,
+                    arrow.Parameters,
+                    arrow.ParameterBindings);
                 var childCompiler = new BytecodeCompiler();
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
@@ -2016,10 +2189,266 @@ public sealed class BytecodeCompiler
         }
     }
 
+    private static IReadOnlyList<string> GetDeclaratorBoundNames(VariableDeclaratorNode declarator)
+    {
+        if (declarator.BindingPattern is null)
+        {
+            return new[] { declarator.Identifier };
+        }
+
+        var names = new List<string>();
+        CollectBoundNames(declarator.BindingPattern, names);
+        return names;
+    }
+
+    private static void CollectBoundNames(BindingPatternNode pattern, List<string> names)
+    {
+        switch (pattern)
+        {
+            case IdentifierBindingPatternNode identifier:
+                names.Add(identifier.Name);
+                break;
+            case ArrayBindingPatternNode array:
+                foreach (var element in array.Elements)
+                {
+                    if (element.Target is not null)
+                    {
+                        CollectBoundNames(element.Target, names);
+                    }
+                }
+
+                break;
+            case ObjectBindingPatternNode obj:
+                foreach (var property in obj.Properties)
+                {
+                    CollectBoundNames(property.Target, names);
+                }
+
+                if (obj.Rest is not null)
+                {
+                    CollectBoundNames(obj.Rest, names);
+                }
+
+                break;
+            default:
+                throw new InvalidOperationException($"Unsupported binding pattern type {pattern.GetType().Name}.");
+        }
+    }
+
+    private void EmitBindingPatternAssignment(BindingPatternNode pattern, int sourceReg, OpCode storeOp)
+    {
+        switch (pattern)
+        {
+            case IdentifierBindingPatternNode identifier:
+            {
+                var slot = GetOrCreateVariableSlot(identifier.Name);
+                _instructions.Add(new Instruction(storeOp, sourceReg, slot, 0));
+                return;
+            }
+            case ArrayBindingPatternNode array:
+            {
+                var index = 0;
+                foreach (var element in array.Elements)
+                {
+                    if (element.Target is null)
+                    {
+                        index++;
+                        continue;
+                    }
+
+                    if (element.IsRest)
+                    {
+                        var restReg = BuildArrayRest(sourceReg, index);
+                        EmitBindingPatternAssignment(element.Target, restReg, storeOp);
+                        continue;
+                    }
+
+                    var valueReg = LoadArrayElement(sourceReg, index);
+                    if (element.Initializer is not null)
+                    {
+                        valueReg = ApplyDefaultInitializerIfUndefined(valueReg, element.Initializer);
+                    }
+
+                    EmitBindingPatternAssignment(element.Target, valueReg, storeOp);
+                    index++;
+                }
+
+                return;
+            }
+            case ObjectBindingPatternNode obj:
+            {
+                // Object binding patterns require object-coercible input even
+                // when they have no properties.
+                var nullReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.LoadConst, nullReg, AddConstant(JsValue.Null), 0));
+                var undefReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.LoadConst, undefReg, AddConstant(JsValue.Undefined), 0));
+
+                var isNullReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.StrictEq, isNullReg, sourceReg, nullReg));
+                var jumpIfNotNull = EmitPlaceholder(OpCode.JumpIfFalse, isNullReg);
+                EmitRuntimeTypeError("Cannot destructure object from null.");
+
+                PatchJump(jumpIfNotNull, _instructions.Count);
+                var isUndefinedReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.StrictEq, isUndefinedReg, sourceReg, undefReg));
+                var jumpIfNotUndefined = EmitPlaceholder(OpCode.JumpIfFalse, isUndefinedReg);
+                EmitRuntimeTypeError("Cannot destructure object from undefined.");
+                PatchJump(jumpIfNotUndefined, _instructions.Count);
+
+                var excludedKeyRegs = new List<int>();
+                foreach (var property in obj.Properties)
+                {
+                    int valueReg;
+                    if (property.IsComputed)
+                    {
+                        var keyReg = CompileExpression(property.ComputedKey!);
+                        valueReg = AllocateRegister();
+                        _instructions.Add(new Instruction(OpCode.GetElem, valueReg, sourceReg, keyReg));
+                        excludedKeyRegs.Add(keyReg);
+                    }
+                    else
+                    {
+                        if (property.Key is null)
+                        {
+                            throw new InvalidOperationException("Object binding property key cannot be null.");
+                        }
+
+                        var nameIndex = GetOrCreatePropertyName(property.Key);
+                        valueReg = AllocateRegister();
+                        _instructions.Add(new Instruction(OpCode.GetPropByName, valueReg, sourceReg, nameIndex));
+
+                        var excludedKeyReg = AllocateRegister();
+                        var keyConst = AddConstant(JsValue.FromString(property.Key));
+                        _instructions.Add(new Instruction(OpCode.LoadConst, excludedKeyReg, keyConst, 0));
+                        excludedKeyRegs.Add(excludedKeyReg);
+                    }
+
+                    if (property.Initializer is not null)
+                    {
+                        valueReg = ApplyDefaultInitializerIfUndefined(valueReg, property.Initializer);
+                    }
+
+                    EmitBindingPatternAssignment(property.Target, valueReg, storeOp);
+                }
+
+                if (obj.Rest is not null)
+                {
+                    var restReg = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.NewObject, restReg, 0, 0));
+
+                    var iteratorReg = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.EnumerateKeys, iteratorReg, sourceReg, 0));
+                    var loopStart = _instructions.Count;
+
+                    var keyReg = AllocateRegister();
+                    var nextIndex = _instructions.Count;
+                    _instructions.Add(new Instruction(OpCode.ForInNext, keyReg, iteratorReg, -1));
+
+                    var skipCopyJumps = new List<int>();
+                    foreach (var excludedKeyReg in excludedKeyRegs)
+                    {
+                        var isExcludedReg = AllocateRegister();
+                        _instructions.Add(new Instruction(OpCode.StrictEq, isExcludedReg, keyReg, excludedKeyReg));
+                        var jumpIfFalse = EmitPlaceholder(OpCode.JumpIfFalse, isExcludedReg);
+                        skipCopyJumps.Add(EmitPlaceholder(OpCode.Jump));
+                        PatchJump(jumpIfFalse, _instructions.Count);
+                    }
+
+                    var valueReg = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.GetElem, valueReg, sourceReg, keyReg));
+                    _instructions.Add(new Instruction(OpCode.SetElem, restReg, keyReg, valueReg));
+
+                    var postCopy = _instructions.Count;
+                    foreach (var skipCopyJump in skipCopyJumps)
+                    {
+                        PatchJump(skipCopyJump, postCopy);
+                    }
+
+                    _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
+                    var loopEnd = _instructions.Count;
+                    _instructions[nextIndex] = _instructions[nextIndex] with { C = loopEnd };
+
+                    EmitBindingPatternAssignment(obj.Rest, restReg, storeOp);
+                }
+
+                return;
+            }
+            default:
+                throw new InvalidOperationException($"Unsupported binding pattern type {pattern.GetType().Name}.");
+        }
+    }
+
+    private int LoadArrayElement(int arrayReg, int index)
+    {
+        var indexReg = AllocateRegister();
+        var indexConst = AddConstant(JsValue.FromNumber(index));
+        _instructions.Add(new Instruction(OpCode.LoadConst, indexReg, indexConst, 0));
+        var valueReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.GetElem, valueReg, arrayReg, indexReg));
+        return valueReg;
+    }
+
+    private int BuildArrayRest(int sourceReg, int startIndex)
+    {
+        var restReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.NewArray, restReg, 0, 0));
+
+        var indexReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.LoadConst, indexReg, AddConstant(JsValue.FromNumber(startIndex)), 0));
+        var writeIndexReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.LoadConst, writeIndexReg, AddConstant(JsValue.FromNumber(0)), 0));
+
+        var oneReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.LoadConst, oneReg, AddConstant(JsValue.FromNumber(1)), 0));
+
+        var lengthReg = AllocateRegister();
+        var lengthNameIndex = GetOrCreatePropertyName("length");
+        _instructions.Add(new Instruction(OpCode.GetPropByName, lengthReg, sourceReg, lengthNameIndex));
+
+        var loopStart = _instructions.Count;
+        var hasNextReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.Lt, hasNextReg, indexReg, lengthReg));
+        var jumpEnd = EmitPlaceholder(OpCode.JumpIfFalse, hasNextReg);
+
+        var elementReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.GetElem, elementReg, sourceReg, indexReg));
+        _instructions.Add(new Instruction(OpCode.SetElem, restReg, writeIndexReg, elementReg));
+
+        var nextIndexReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.Add, nextIndexReg, indexReg, oneReg));
+        _instructions.Add(new Instruction(OpCode.Move, indexReg, nextIndexReg, 0));
+        var nextWriteReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.Add, nextWriteReg, writeIndexReg, oneReg));
+        _instructions.Add(new Instruction(OpCode.Move, writeIndexReg, nextWriteReg, 0));
+
+        _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
+        PatchJump(jumpEnd, _instructions.Count);
+        return restReg;
+    }
+
+    private int ApplyDefaultInitializerIfUndefined(int valueReg, ExpressionNode initializer)
+    {
+        var undefinedReg = LoadUndefinedConstant();
+        var isUndefinedReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.StrictEq, isUndefinedReg, valueReg, undefinedReg));
+        var jumpIfNotUndefined = EmitPlaceholder(OpCode.JumpIfFalse, isUndefinedReg);
+
+        var initializerReg = CompileExpression(initializer);
+        _instructions.Add(new Instruction(OpCode.Move, valueReg, initializerReg, 0));
+        PatchJump(jumpIfNotUndefined, _instructions.Count);
+        return valueReg;
+    }
+
     private int AllocateRegister() => _nextRegister++;
 
     private static FunctionKind SelectFunctionKind(bool isAsync, bool isGenerator, bool isArrow)
     {
+        if (isAsync && isGenerator)
+        {
+            return FunctionKind.AsyncGenerator;
+        }
+
         if (isAsync)
         {
             return FunctionKind.Async;
@@ -2209,6 +2638,18 @@ public sealed class BytecodeCompiler
         var messageReg = LoadStringConstant(message);
         var errorObjectReg = AllocateRegister();
         _instructions.Add(new Instruction(OpCode.Call1, errorObjectReg, referenceErrorReg, messageReg));
+        _instructions.Add(new Instruction(OpCode.Throw, errorObjectReg, 0, 0));
+    }
+
+    private void EmitRuntimeTypeError(string message)
+    {
+        var typeErrorReg = AllocateRegister();
+        var typeErrorSlot = GetOrCreateVariableSlot("TypeError");
+        _instructions.Add(new Instruction(OpCode.LoadVar, typeErrorReg, typeErrorSlot, 0));
+
+        var messageReg = LoadStringConstant(message);
+        var errorObjectReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.Call1, errorObjectReg, typeErrorReg, messageReg));
         _instructions.Add(new Instruction(OpCode.Throw, errorObjectReg, 0, 0));
     }
 

@@ -24,6 +24,7 @@ public sealed class GeneratorObject : JsObject
 	public JsValue? PendingException { get; set; }
 
 	public ObjectHandle? YieldStarIterator { get; set; }
+    public bool IsAsyncGenerator { get; set; }
 
 	public GeneratorObject(BytecodeFunction function, JsValue[] registers, EnvironmentRecord? environment)
 	{

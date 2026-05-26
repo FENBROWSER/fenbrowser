@@ -174,7 +174,7 @@ public sealed class ParserTests
     {
         var program = JsParser.ParseScript(new SourceText("const [a] = arr;"));
         var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
-        Assert.StartsWith("__pattern", decl.Declarators[0].Identifier);
+        Assert.IsType<ArrayBindingPatternNode>(decl.Declarators[0].BindingPattern);
         Assert.NotNull(decl.Declarators[0].Initializer);
     }
 
@@ -183,8 +183,14 @@ public sealed class ParserTests
     {
         var program = JsParser.ParseScript(new SourceText("const {x} = obj;"));
         var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
-        Assert.StartsWith("__pattern", decl.Declarators[0].Identifier);
+        Assert.IsType<ObjectBindingPatternNode>(decl.Declarators[0].BindingPattern);
         Assert.NotNull(decl.Declarators[0].Initializer);
+    }
+
+    [Fact]
+    public void RejectsDestructuringDeclarationWithoutInitializer()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("let {x};")));
     }
 
     [Fact]
@@ -1341,7 +1347,7 @@ public sealed class ParserTests
     public void ParsesForAwaitOfStatementSubset()
     {
         var program = JsParser.ParseScript(new SourceText("for await (var x of iter) { x; }"));
-        Assert.IsType<ForOfStatementNode>(Assert.Single(program.Body));
+        Assert.IsType<ForAwaitOfStatementNode>(Assert.Single(program.Body));
     }
 
     [Fact]

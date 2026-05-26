@@ -103,6 +103,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private ObjectHandle? _uriErrorConstructorHandle;
     private ObjectHandle? _generatorPrototypeHandle;
     private ObjectHandle? _generatorIteratorHandle;
+    private ObjectHandle? _asyncGeneratorPrototypeHandle;
+    private ObjectHandle? _asyncGeneratorAsyncIteratorHandle;
     private ObjectHandle? _uriErrorPrototypeHandle;
     private ObjectHandle? _referenceErrorConstructorHandle;
     private ObjectHandle? _referenceErrorPrototypeHandle;
@@ -10395,6 +10397,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             "Date" => EnsureDatePrototype(),
             "RegExp" => EnsureRegExpPrototype(),
             "GeneratorPrototype" => EnsureGeneratorPrototype(),
+            "AsyncGeneratorPrototype" => EnsureAsyncGeneratorPrototype(),
             "Error" => EnsureErrorPrototype(),
             "TypeError" => EnsureTypeErrorPrototype(),
             "RangeError" => EnsureRangeErrorPrototype(),
@@ -10445,6 +10448,208 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         return EnsureObjectPrototype();
+    }
+
+    private ObjectHandle EnsureAsyncGeneratorPrototype()
+    {
+        if (_asyncGeneratorPrototypeHandle is { } existing)
+            return existing;
+
+        var prototype = CreateOrdinaryObject();
+        prototype.SetPrototype(EnsureObjectPrototype());
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var nextFn = new NativeFunctionObject(
+            "next",
+            (thisValue, args) =>
+            {
+                if (thisValue.Tag != JsValueTag.Object ||
+                    _heap.GetObject(thisValue.AsObjectHandle()) is not GeneratorObject generator ||
+                    !generator.IsAsyncGenerator)
+                {
+                    throw new JsThrownException(CreateTypeError("AsyncGenerator.prototype.next: receiver is not an async generator"));
+                }
+
+                if (generator.State == GeneratorState.Completed)
+                {
+                    var doneResult = CreateIteratorResult(JsValue.Undefined, done: true);
+                    return CreateResolvedPromise(doneResult);
+                }
+
+                if (generator.State == GeneratorState.Executing)
+                {
+                    return CreateRejectedPromise(CreateTypeError("AsyncGenerator.prototype.next: generator is already executing"));
+                }
+
+                var sentValue = args.Count > 0 ? args[0] : JsValue.Undefined;
+                generator.State = GeneratorState.Executing;
+                try
+                {
+                    var result = ExecuteGenerator(generator, sentValue);
+                    return CreateResolvedPromise(result);
+                }
+                catch (JsThrownException ex)
+                {
+                    generator.State = GeneratorState.Completed;
+                    return CreateRejectedPromise(ex.Value);
+                }
+            },
+            length: 1);
+        var nextHandle = _heap.AllocateObject(nextFn, AllocationSite.Current());
+        _heap.PushRoot(nextHandle);
+        _ = prototype.DefineOwnProperty(
+            "next",
+            new JsPropertyDescriptor(JsValue.FromObject(nextHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, nextHandle);
+
+        var returnFn = new NativeFunctionObject(
+            "return",
+            (thisValue, args) =>
+            {
+                if (thisValue.Tag != JsValueTag.Object ||
+                    _heap.GetObject(thisValue.AsObjectHandle()) is not GeneratorObject generator ||
+                    !generator.IsAsyncGenerator)
+                {
+                    throw new JsThrownException(CreateTypeError("AsyncGenerator.prototype.return: receiver is not an async generator"));
+                }
+
+                var returnValue = args.Count > 0 ? args[0] : JsValue.Undefined;
+                if (generator.State == GeneratorState.Completed)
+                {
+                    var doneResult = CreateIteratorResult(returnValue, done: true);
+                    return CreateResolvedPromise(doneResult);
+                }
+
+                if (generator.State == GeneratorState.Executing)
+                {
+                    return CreateRejectedPromise(CreateTypeError("AsyncGenerator.prototype.return: generator is already executing"));
+                }
+
+                if (generator.InstructionPointer == 0)
+                {
+                    generator.State = GeneratorState.Completed;
+                    var doneResult = CreateIteratorResult(returnValue, done: true);
+                    return CreateResolvedPromise(doneResult);
+                }
+
+                generator.CompletionMode = GeneratorCompletionMode.Return;
+                generator.State = GeneratorState.Executing;
+                try
+                {
+                    var result = ExecuteGenerator(generator, returnValue);
+                    if (generator.State == GeneratorState.Suspended)
+                    {
+                        generator.State = GeneratorState.Completed;
+                        var doneResult = CreateIteratorResult(returnValue, done: true);
+                        return CreateResolvedPromise(doneResult);
+                    }
+
+                    return CreateResolvedPromise(result);
+                }
+                catch (JsThrownException ex)
+                {
+                    generator.State = GeneratorState.Completed;
+                    return CreateRejectedPromise(ex.Value);
+                }
+            },
+            length: 1);
+        var returnHandle = _heap.AllocateObject(returnFn, AllocationSite.Current());
+        _heap.PushRoot(returnHandle);
+        _ = prototype.DefineOwnProperty(
+            "return",
+            new JsPropertyDescriptor(JsValue.FromObject(returnHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, returnHandle);
+
+        var throwFn = new NativeFunctionObject(
+            "throw",
+            (thisValue, args) =>
+            {
+                if (thisValue.Tag != JsValueTag.Object ||
+                    _heap.GetObject(thisValue.AsObjectHandle()) is not GeneratorObject generator ||
+                    !generator.IsAsyncGenerator)
+                {
+                    throw new JsThrownException(CreateTypeError("AsyncGenerator.prototype.throw: receiver is not an async generator"));
+                }
+
+                var throwValue = args.Count > 0 ? args[0] : JsValue.Undefined;
+                if (generator.State == GeneratorState.Completed)
+                {
+                    return CreateRejectedPromise(throwValue);
+                }
+
+                if (generator.State == GeneratorState.Executing)
+                {
+                    return CreateRejectedPromise(CreateTypeError("AsyncGenerator.prototype.throw: generator is already executing"));
+                }
+
+                generator.CompletionMode = GeneratorCompletionMode.Throw;
+                generator.State = GeneratorState.Executing;
+                try
+                {
+                    var result = ExecuteGenerator(generator, throwValue);
+                    return CreateResolvedPromise(result);
+                }
+                catch (JsThrownException ex)
+                {
+                    generator.State = GeneratorState.Completed;
+                    return CreateRejectedPromise(ex.Value);
+                }
+            },
+            length: 1);
+        var throwHandle = _heap.AllocateObject(throwFn, AllocationSite.Current());
+        _heap.PushRoot(throwHandle);
+        _ = prototype.DefineOwnProperty(
+            "throw",
+            new JsPropertyDescriptor(JsValue.FromObject(throwHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, throwHandle);
+
+        if (_asyncGeneratorAsyncIteratorHandle is null)
+        {
+            var asyncIteratorId = GetWellKnownSymbolId("asyncIterator");
+            if (asyncIteratorId != 0)
+            {
+                var asyncIteratorFn = new NativeFunctionObject(
+                    "[Symbol.asyncIterator]",
+                    (thisValue, _) => thisValue,
+                    length: 0);
+                _asyncGeneratorAsyncIteratorHandle = _heap.AllocateObject(asyncIteratorFn, AllocationSite.Current());
+                _heap.PushRoot(_asyncGeneratorAsyncIteratorHandle.Value);
+                prototype.DefineOwnSymbolProperty(
+                    asyncIteratorId,
+                    new JsPropertyDescriptor(JsValue.FromObject(_asyncGeneratorAsyncIteratorHandle.Value), Writable: true, Enumerable: false, Configurable: true));
+                _heap.WriteBarrier(prototypeHandle, _asyncGeneratorAsyncIteratorHandle.Value);
+            }
+        }
+
+        _asyncGeneratorPrototypeHandle = prototypeHandle;
+        return prototypeHandle;
+    }
+
+    private JsValue CreateIteratorResult(JsValue value, bool done)
+    {
+        var result = CreateOrdinaryObject();
+        _ = result.DefineOwnProperty(
+            "value",
+            new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+        _ = result.DefineOwnProperty(
+            "done",
+            new JsPropertyDescriptor(JsValue.FromBoolean(done), Writable: true, Enumerable: true, Configurable: true));
+        return JsValue.FromObject(_heap.AllocateObject(result, AllocationSite.Current()));
+    }
+
+    private JsValue CreateResolvedPromise(JsValue value)
+    {
+        var capability = NewPromiseCapability();
+        _ = CallFunction(capability.Resolve, new[] { value }, JsValue.Undefined);
+        return capability.Promise;
+    }
+
+    private JsValue CreateRejectedPromise(JsValue reason)
+    {
+        var capability = NewPromiseCapability();
+        _ = CallFunction(capability.Reject, new[] { reason }, JsValue.Undefined);
+        return capability.Promise;
     }
 
     private ObjectHandle EnsureStringPrototype()
@@ -11516,6 +11721,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         if (instance.Promise.State == PromiseState.Rejected)
             throw new JsThrownException(instance.Promise.GetResultUnchecked());
 
+        if (frame.AsyncContext is null)
+        {
+            throw new JsThrownException(CreateTypeError("Pending await is not supported in this execution context."));
+        }
+
         // Pending — suspend the async frame.
         SaveAsyncState(frame, destReg);
 
@@ -11672,6 +11882,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 return JsValue.FromObject(_heap.AllocateObject(genObj, AllocationSite.Current()));
             }
 
+            if (fn.Kind == FunctionKind.AsyncGenerator)
+            {
+                var registers = new JsValue[fn.Function.RegisterCount];
+                for (var i = 0; i < registers.Length; i++)
+                    registers[i] = JsValue.Undefined;
+                var paramCount = Math.Min(args.Count, fn.Function.ParameterNames.Count);
+                for (var i = 0; i < paramCount; i++)
+                    registers[i + 1] = args[i];
+
+                var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment)
+                {
+                    ThisValue = thisValue,
+                    IsAsyncGenerator = true
+                };
+                genObj.SetPrototype(EnsureAsyncGeneratorPrototype());
+                return JsValue.FromObject(_heap.AllocateObject(genObj, AllocationSite.Current()));
+            }
+
             return ExecuteInternal(fn.Function, args, thisValue, fn.OuterEnvironment, callee: fn);
         }
 
@@ -11716,7 +11944,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
         if (obj is JsFunctionObject fn)
         {
-            if (fn.Kind == FunctionKind.Generator)
+            if (fn.Kind is FunctionKind.Generator or FunctionKind.AsyncGenerator)
                 throw new JsThrownException(CreateTypeError("Generator functions cannot be used as constructors."));
             return ExecuteConstruct(fn, args, newTarget);
         }

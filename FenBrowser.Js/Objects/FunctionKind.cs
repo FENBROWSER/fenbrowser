@@ -1,6 +1,6 @@
 namespace FenBrowser.Js.Objects;
 
-// Plan §18: formal function kind classification.
+// Plan Section 18: formal function kind classification.
 // Distinguishes how a function was created so the runtime can enforce
 // [[Construct]] rules, super() access, new.target, and this-binding.
 public enum FunctionKind
@@ -14,7 +14,7 @@ public enum FunctionKind
     // class { method() {} }, { method() {} }
     Method,
 
-    // class Foo { constructor() {} } — only constructors have [[Construct]]
+    // class Foo { constructor() {} } - only constructors have [[Construct]]
     Constructor,
 
     // Function.prototype.bind() result
@@ -23,9 +23,12 @@ public enum FunctionKind
     // Builtins implemented as NativeFunctionObject (parseInt, Math.abs, etc.)
     Native,
 
-    // async function foo() {} — deferred until async support lands
+    // async function foo() {}
     Async,
 
-    // function* foo() {} — deferred until generator support lands
-    Generator
+    // function* foo() {}
+    Generator,
+
+    // async function* foo() {}
+    AsyncGenerator
 }
