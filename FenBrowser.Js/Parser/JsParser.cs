@@ -2110,23 +2110,35 @@ public sealed class JsParser
     private BreakStatementNode ParseBreakStatement()
     {
         var token = Advance(); // break
+        string? label = null;
+        if (!IsPunctuator(";") && !IsPunctuator("}") && !Is(TokenKind.EndOfFile)
+            && IsIdentifierLike(Current()) && !HasLineTerminatorBetween(token, Current()))
+        {
+            label = Advance().Text;
+        }
         if (IsPunctuator(";"))
         {
             Advance();
         }
 
-        return new BreakStatementNode(token.Span);
+        return new BreakStatementNode(label, token.Span);
     }
 
     private ContinueStatementNode ParseContinueStatement()
     {
         var token = Advance(); // continue
+        string? label = null;
+        if (!IsPunctuator(";") && !IsPunctuator("}") && !Is(TokenKind.EndOfFile)
+            && IsIdentifierLike(Current()) && !HasLineTerminatorBetween(token, Current()))
+        {
+            label = Advance().Text;
+        }
         if (IsPunctuator(";"))
         {
             Advance();
         }
 
-        return new ContinueStatementNode(token.Span);
+        return new ContinueStatementNode(label, token.Span);
     }
 
     private T ParseWithExpressionContext<T>(bool allowYieldExpression, bool allowAwaitExpression, Func<T> parse)

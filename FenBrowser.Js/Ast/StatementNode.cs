@@ -77,9 +77,9 @@ public sealed record ForInStatementNode(
     StatementNode Body,
     SourceSpan Span) : StatementNode(Span);
 
-public sealed record BreakStatementNode(SourceSpan Span) : StatementNode(Span);
+public sealed record BreakStatementNode(string? Label, SourceSpan Span) : StatementNode(Span);
 
-public sealed record ContinueStatementNode(SourceSpan Span) : StatementNode(Span);
+public sealed record ContinueStatementNode(string? Label, SourceSpan Span) : StatementNode(Span);
 
 public sealed record ClassDeclarationNode(
     string Name,

@@ -14,6 +14,14 @@ public sealed class BytecodeCompiler
         public int ContinueTarget { get; set; }
         public required List<int> BreakJumpIndices { get; init; }
         public required List<int> ContinueJumpIndices { get; init; }
+        public string? Label { get; set; }
+        public bool IsSwitch { get; set; }
+    }
+
+    private sealed class LabelTarget
+    {
+        public required string Name { get; init; }
+        public required List<int> BreakJumpIndices { get; init; }
     }
 
     private static int s_privateClassCounter;
@@ -38,6 +46,7 @@ public sealed class BytecodeCompiler
     private readonly List<BytecodeFunction> _nestedFunctions = new();
     private readonly List<string> _parameterNames = new();
     private readonly Stack<LoopContext> _loopStack = new();
+    private readonly Stack<LabelTarget> _labelStack = new();
     // Tracks block-scoped let/const names so they are not added to
     // _lexicalDeclarationNames/_constDeclarationNames. EnterScope creates
     // their bindings instead.
@@ -45,6 +54,8 @@ public sealed class BytecodeCompiler
     private string? _name;
     private int _nextRegister = 1;
     private FunctionKind _currentFunctionKind = FunctionKind.Ordinary;
+    // When non-null, the next LoopContext pushed should take this label.
+    private string? _pendingLabel;
 
     public BytecodeFunction CompileScript(SourceText source)
     {
@@ -91,6 +102,7 @@ public sealed class BytecodeCompiler
         _nestedFunctions.Clear();
         _parameterNames.Clear();
         _loopStack.Clear();
+        _labelStack.Clear();
         _name = name;
         _nextRegister = 1;
         _currentFunctionKind = functionKind;
@@ -238,11 +250,11 @@ public sealed class BytecodeCompiler
             case ReturnStatementNode returnStmt:
                 CompileReturnStatement(returnStmt);
                 break;
-            case BreakStatementNode:
-                CompileBreakStatement();
+            case BreakStatementNode breakStmt:
+                CompileBreakStatement(breakStmt.Label);
                 break;
-            case ContinueStatementNode:
-                CompileContinueStatement();
+            case ContinueStatementNode continueStmt:
+                CompileContinueStatement(continueStmt.Label);
                 break;
             case ThrowStatementNode throwStmt:
                 CompileThrowStatement(throwStmt);
@@ -724,6 +736,11 @@ public sealed class BytecodeCompiler
             ContinueJumpIndices = new List<int>()
         };
         _loopStack.Push(ctx);
+        if (_pendingLabel != null)
+        {
+            ctx.Label = _pendingLabel;
+            _pendingLabel = null;
+        }
         try
         {
             CompileStatement(whileStmt.Body);
@@ -754,9 +771,14 @@ public sealed class BytecodeCompiler
         {
             ContinueTarget = -1,
             BreakJumpIndices = new List<int>(),
-            ContinueJumpIndices = new List<int>()
+            ContinueJumpIndices = new List<int>(),
         };
         _loopStack.Push(ctx);
+        if (_pendingLabel != null)
+        {
+            ctx.Label = _pendingLabel;
+            _pendingLabel = null;
+        }
         try
         {
             CompileStatement(stmt.Body);
@@ -815,6 +837,11 @@ public sealed class BytecodeCompiler
             ContinueJumpIndices = new List<int>()
         };
         _loopStack.Push(ctx);
+        if (_pendingLabel != null)
+        {
+            ctx.Label = _pendingLabel;
+            _pendingLabel = null;
+        }
         try
         {
             CompileStatement(forStmt.Body);
@@ -879,6 +906,11 @@ public sealed class BytecodeCompiler
             ContinueJumpIndices = new List<int>()
         };
         _loopStack.Push(ctx);
+        if (_pendingLabel != null)
+        {
+            ctx.Label = _pendingLabel;
+            _pendingLabel = null;
+        }
         try
         {
             CompileStatement(forInStmt.Body);
@@ -936,6 +968,11 @@ public sealed class BytecodeCompiler
             ContinueJumpIndices = new List<int>()
         };
         _loopStack.Push(ctx);
+        if (_pendingLabel != null)
+        {
+            ctx.Label = _pendingLabel;
+            _pendingLabel = null;
+        }
         try
         {
             CompileStatement(forOfStmt.Body);
@@ -1047,9 +1084,15 @@ public sealed class BytecodeCompiler
         {
             ContinueTarget = -1,
             BreakJumpIndices = new List<int>(),
-            ContinueJumpIndices = new List<int>()
+            ContinueJumpIndices = new List<int>(),
+            IsSwitch = true
         };
         _loopStack.Push(ctx);
+        if (_pendingLabel != null)
+        {
+            ctx.Label = _pendingLabel;
+            _pendingLabel = null;
+        }
         try
         {
             for (int i = 0; i < switchStmt.Cases.Count; i++)
@@ -1085,9 +1128,36 @@ public sealed class BytecodeCompiler
     }
 
     // ECMA-262 14.11 - Labeled Statement.
+    // Labeled loops and switches use _pendingLabel so the loop/switch compilation
+    // can tag its LoopContext. Non-loop labels push a LabelTarget for break exit.
     private void CompileLabeledStatement(LabeledStatementNode labeled)
     {
-        CompileStatement(labeled.Body);
+        var isLoop = labeled.Body is WhileStatementNode or ForStatementNode or DoWhileStatementNode
+            or ForInStatementNode or ForOfStatementNode;
+        var isSwitch = labeled.Body is SwitchStatementNode;
+
+        if (isLoop || isSwitch)
+        {
+            _pendingLabel = labeled.Label;
+            CompileStatement(labeled.Body);
+            _pendingLabel = null;
+        }
+        else
+        {
+            var target = new LabelTarget
+            {
+                Name = labeled.Label,
+                BreakJumpIndices = new List<int>()
+            };
+            _labelStack.Push(target);
+            CompileStatement(labeled.Body);
+            var end = _instructions.Count;
+            foreach (var jumpIdx in target.BreakJumpIndices)
+            {
+                PatchJump(jumpIdx, end);
+            }
+            _labelStack.Pop();
+        }
     }
 
     // Returns true if the name is in any active block block-scoped name set.
@@ -1901,33 +1971,87 @@ public sealed class BytecodeCompiler
         return _instructions.Count - 1;
     }
 
-    private void CompileBreakStatement()
+    private void CompileBreakStatement(string? label)
     {
-        if (_loopStack.Count == 0)
+        if (label == null)
         {
-            throw new InvalidOperationException("'break' is only valid inside loops.");
-        }
+            if (_loopStack.Count == 0)
+            {
+                throw new InvalidOperationException("'break' is only valid inside loops or switch statements.");
+            }
 
-        var jump = EmitPlaceholder(OpCode.Jump);
-        _loopStack.Peek().BreakJumpIndices.Add(jump);
-    }
-
-    private void CompileContinueStatement()
-    {
-        if (_loopStack.Count == 0)
-        {
-            throw new InvalidOperationException("'continue' is only valid inside loops.");
-        }
-
-        var target = _loopStack.Peek().ContinueTarget;
-        if (target >= 0)
-        {
-            _instructions.Add(new Instruction(OpCode.Jump, target, 0, 0));
+            var jump = EmitPlaceholder(OpCode.Jump);
+            _loopStack.Peek().BreakJumpIndices.Add(jump);
             return;
         }
 
-        var jump = EmitPlaceholder(OpCode.Jump);
-        _loopStack.Peek().ContinueJumpIndices.Add(jump);
+        foreach (var labelCtx in _labelStack)
+        {
+            if (labelCtx.Name == label)
+            {
+                var jump = EmitPlaceholder(OpCode.Jump);
+                labelCtx.BreakJumpIndices.Add(jump);
+                return;
+            }
+        }
+
+        foreach (var ctx in _loopStack)
+        {
+            if (ctx.Label == label)
+            {
+                var jump = EmitPlaceholder(OpCode.Jump);
+                ctx.BreakJumpIndices.Add(jump);
+                return;
+            }
+        }
+
+        throw new InvalidOperationException($"Undefined label '{label}'.");
+    }
+
+    private void CompileContinueStatement(string? label)
+    {
+        if (label == null)
+        {
+            if (_loopStack.Count == 0)
+            {
+                throw new InvalidOperationException("'continue' is only valid inside loops.");
+            }
+
+            var target = _loopStack.Peek().ContinueTarget;
+            if (target >= 0)
+            {
+                _instructions.Add(new Instruction(OpCode.Jump, target, 0, 0));
+                return;
+            }
+
+            var jump = EmitPlaceholder(OpCode.Jump);
+            _loopStack.Peek().ContinueJumpIndices.Add(jump);
+            return;
+        }
+
+        foreach (var ctx in _loopStack)
+        {
+            if (ctx.Label == label)
+            {
+                if (ctx.IsSwitch)
+                {
+                    throw new InvalidOperationException($"Label '{label}' does not mark a loop.");
+                }
+
+                var target = ctx.ContinueTarget;
+                if (target >= 0)
+                {
+                    _instructions.Add(new Instruction(OpCode.Jump, target, 0, 0));
+                    return;
+                }
+
+                var jump = EmitPlaceholder(OpCode.Jump);
+                ctx.ContinueJumpIndices.Add(jump);
+                return;
+            }
+        }
+
+        throw new InvalidOperationException($"Undefined label '{label}'.");
     }
 
     private void PatchJump(int instructionIndex, int target)
