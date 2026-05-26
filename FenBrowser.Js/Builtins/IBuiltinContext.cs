@@ -86,6 +86,9 @@ public interface IBuiltinContext
     ObjectHandle MaterializeAggregateErrorConstructor();
     ObjectHandle MaterializeStructuredCloneFunction();
 
+    // Intl (ECMA-402).
+    ObjectHandle MaterializeIntlObject();
+
     // TypedArray / ArrayBuffer / DataView constructors.
     ObjectHandle MaterializeArrayBufferConstructor();
     ObjectHandle MaterializeDataViewConstructor();

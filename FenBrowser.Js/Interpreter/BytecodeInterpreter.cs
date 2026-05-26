@@ -628,6 +628,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     frame.Registers[ins.A] = JsValue.FromObject(handle);
                     break;
                 }
+                case OpCode.NewRegExp:
+                {
+                    var rawText = function.Constants[ins.B].AsString();
+                    frame.Registers[ins.A] = NewRegExpLiteral(rawText);
+                    break;
+                }
                 case OpCode.DefineGetter:
                 case OpCode.DefineSetter:
                     HandleDefineAccessor(frame, function, ins);
@@ -4425,6 +4431,60 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     {
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "test", RegExpPrototypeTest, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", RegExpPrototypeToString);
+    }
+
+    // ECMA-262 12.2.8 RegularExpressionLiteral.
+    // Parses raw text "/pattern/flags" into a RegExpObject with compiled .NET Regex.
+    private JsValue NewRegExpLiteral(string rawText)
+    {
+        // rawText is "/pattern/flags" — find the last '/' to separate flags.
+        var lastSlash = rawText.LastIndexOf('/');
+        // Pattern: rawText[1..lastSlash], Flags: rawText[(lastSlash+1)..]
+        var pattern = rawText.Substring(1, lastSlash - 1);
+        var flags = lastSlash + 1 < rawText.Length ? rawText.Substring(lastSlash + 1) : string.Empty;
+        var normalizedFlags = NormalizeRegExpFlags(flags);
+        var hasS = normalizedFlags.Contains('s', StringComparison.Ordinal);
+        var hasU = normalizedFlags.Contains('u', StringComparison.Ordinal);
+        var options = (hasS || hasU)
+            ? RegexOptions.CultureInvariant
+            : RegexOptions.ECMAScript | RegexOptions.CultureInvariant;
+        if (normalizedFlags.Contains('i', StringComparison.Ordinal)) options |= RegexOptions.IgnoreCase;
+        if (normalizedFlags.Contains('m', StringComparison.Ordinal)) options |= RegexOptions.Multiline;
+        if (hasS) options |= RegexOptions.Singleline;
+
+        Regex regex;
+        try
+        {
+            regex = new Regex(pattern, options, TimeSpan.FromMilliseconds(250));
+        }
+        catch (ArgumentException ex)
+        {
+            throw new JsThrownException(CreateSyntaxError(ex.Message));
+        }
+
+        var obj = new RegExpObject(pattern, normalizedFlags, regex);
+        obj.SetPrototype(GetGlobalPrototype("RegExp"));
+        _ = obj.DefineOwnProperty("source",
+            new JsPropertyDescriptor(JsValue.FromString(pattern), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty("global",
+            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('g', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty("ignoreCase",
+            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('i', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty("multiline",
+            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('m', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty("dotAll",
+            new JsPropertyDescriptor(JsValue.FromBoolean(hasS), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty("unicode",
+            new JsPropertyDescriptor(JsValue.FromBoolean(hasU), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty("sticky",
+            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('y', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty("hasIndices",
+            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('d', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty("flags",
+            new JsPropertyDescriptor(JsValue.FromString(normalizedFlags), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty("lastIndex",
+            new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
+        return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
     private JsValue CreateRegExpObject(IReadOnlyList<JsValue> args)
