@@ -3479,6 +3479,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new MiscGlobalsBuiltin())
             .Register(new AggregateErrorBuiltin())
             .Register(new GeneratorBuiltin())
+            .Register(new GeneratorFunctionBuiltin())
             .Register(new ArrayBufferBuiltin())
             .Register(new DataViewBuiltin())
             .Register(new TypedArrayBuiltin())
