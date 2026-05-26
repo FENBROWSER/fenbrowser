@@ -405,9 +405,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     // StackOverflowException. ExecuteInternalCore is a large method and its native
     // frame cost is meaningfully higher than a trivial function call; on this
     // runtime, allowing up to 80 JS frames can overflow before the guard triggers.
-    // Keep the cap just above the deepest intentional regression depth (50) while
+    // Keep the cap just above the deepest intentional regression depth (35) while
     // reserving stack headroom for unwind/exception paths.
-    private const int MaxCallDepth = 56;
+    private const int MaxCallDepth = 40;
     private int _callDepth;
 
     [MayExecuteJs]
@@ -11981,6 +11981,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
         catch (JsThrownException ex)
         {
+            if (frame.CatchHandlers.Count == 0)
+            {
+                throw;
+            }
+
             ThrowOrHandle(frame, ex.Value);
         }
     }
@@ -11993,6 +11998,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
         catch (JsThrownException ex)
         {
+            if (frame.CatchHandlers.Count == 0)
+            {
+                throw;
+            }
+
             ThrowOrHandle(frame, ex.Value);
         }
     }
