@@ -165,4 +165,18 @@ public enum OpCode : byte
     // ECMA-262 9.1.1.1 — pop the current lexical environment, restoring
     // frame.Environment to its outer (parent) record.
     LeaveScope,
+
+	// ECMA-262 14.4.13 — EndFinally.
+	EndFinally,
+
+	// Bitwise binary operators (&, |, ^)
+	BitAnd,
+	BitOr,
+	BitXor,
+	// Bitwise NOT (~)
+	BitNot,
+	// Shift operators (<<, >>, >>>)
+	ShiftLeft,
+	ShiftRight,
+	UnsignedShiftRight,
 }

@@ -64,6 +64,12 @@ public sealed class BytecodeVerifier
             case OpCode.Sub:
             case OpCode.Mul:
             case OpCode.Div:
+            case OpCode.BitAnd:
+            case OpCode.BitOr:
+            case OpCode.BitXor:
+            case OpCode.ShiftLeft:
+            case OpCode.ShiftRight:
+            case OpCode.UnsignedShiftRight:
             case OpCode.Eq:
             case OpCode.Neq:
             case OpCode.StrictEq:
@@ -301,6 +307,7 @@ public sealed class BytecodeVerifier
             case OpCode.Not:
             case OpCode.Pos:
             case OpCode.Neg:
+            case OpCode.BitNot:
             case OpCode.Void:
             case OpCode.TypeOf:
             case OpCode.Await:

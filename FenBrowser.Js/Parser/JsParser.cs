@@ -713,6 +713,8 @@ public sealed class JsParser
                     return ParseVariableDeclarationStatement();
                 case "if":
                     return ParseIfStatement();
+                case "do":
+                    return ParseDoWhileStatement();
                 case "while":
                     return ParseWhileStatement();
                 case "with":
@@ -912,6 +914,27 @@ public sealed class JsParser
 
         var endSpan = alternate?.Span ?? consequent.Span;
         return new IfStatementNode(test, consequent, alternate, MergeSpan(start.Span, endSpan));
+    }
+
+    // ECMA-262 14.7.2 - do Statement while ( Expression );
+    private DoWhileStatementNode ParseDoWhileStatement()
+    {
+        var start = Advance(); // do
+        var bodyStmt = ParseStatement();
+        var body = bodyStmt is BlockStatementNode block ? block
+            : new BlockStatementNode(new[] { bodyStmt }, bodyStmt.Span);
+        if (!(Current().Kind == TokenKind.Keyword && Current().Text == "while"))
+            throw new JsParserException("Expected 'while' after do body.");
+        Advance();
+        ExpectPunctuator("(");
+        var test = ParseExpression(0);
+        ExpectPunctuator(")");
+        if (IsPunctuator(";"))
+        {
+            _ = Advance();
+        }
+        var close = Previous();
+        return new DoWhileStatementNode(body, test, MergeSpan(start.Span, close.Span));
     }
 
     private WhileStatementNode ParseWhileStatement()
@@ -2347,7 +2370,7 @@ public sealed class JsParser
             return BuildUpdateAssignment(target, op.Text, op.Span, isPostfix: false);
         }
 
-        if (token.Kind == TokenKind.Punctuator && (token.Text == "!" || token.Text == "-" || token.Text == "+"))
+        if (token.Kind == TokenKind.Punctuator && (token.Text == "!" || token.Text == "-" || token.Text == "+" || token.Text == "~"))
         {
             var op = Advance();
             var operand = ParseExpression(40);
@@ -3585,12 +3608,24 @@ public sealed class JsParser
                 leftBindingPower = 7;
                 rightBindingPower = 8;
                 return true;
+            case "|":
+                leftBindingPower = 8;
+                rightBindingPower = 9;
+                return true;
+            case "^":
+                leftBindingPower = 9;
+                rightBindingPower = 10;
+                return true;
+            case "&":
+                leftBindingPower = 10;
+                rightBindingPower = 11;
+                return true;
             case "==":
             case "!=":
             case "===":
             case "!==":
-                leftBindingPower = 10;
-                rightBindingPower = 11;
+                leftBindingPower = 11;
+                rightBindingPower = 12;
                 return true;
             case "<":
             case ">":
