@@ -4973,24 +4973,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return handle;
     }
 
-    private JsValue NumberFormatConstruct(IReadOnlyList<JsValue> args)
-    {
-        // Stub: returns a plain object. Real implementation in follow-up
-        // will parse locales/options and wire the format method.
-        var obj = CreateOrdinaryObject();
-        var objHandle = _heap.AllocateObject(obj, AllocationSite.Current());
-        return JsValue.FromObject(objHandle);
-    }
-
-    private JsValue CollatorConstruct(IReadOnlyList<JsValue> args)
-    {
-        // Stub: returns a plain object. Real implementation in follow-up
-        // will parse locales/options and wire the compare method.
-        var obj = CreateOrdinaryObject();
-        var objHandle = _heap.AllocateObject(obj, AllocationSite.Current());
-        return JsValue.FromObject(objHandle);
-    }
-
     private JsValue GetCanonicalLocales(IReadOnlyList<JsValue> args)
     {
         // ECMA-402 §9.2.1 CanonicalizeLocaleList.

@@ -8,11 +8,6 @@ namespace FenBrowser.Js.Interpreter;
 // Also carries EnsureProxyConstructor() placeholder until full Proxy lands.
 public sealed partial class BytecodeInterpreter
 {
-    private ObjectHandle EnsureProxyConstructor()
-    {
-        throw new NotSupportedException("Proxy is not yet implemented.");
-    }
-
     // ECMA-402 11.1.1 InitializeDateTimeFormat.
     private JsValue DateTimeFormatConstruct(IReadOnlyList<JsValue> args)
     {
@@ -66,6 +61,73 @@ public sealed partial class BytecodeInterpreter
         {
             return JsValue.FromString("Invalid Date");
         }
+    }
+
+    // ECMA-402 13.1.1 InitializeNumberFormat.
+    private JsValue NumberFormatConstruct(IReadOnlyList<JsValue> args)
+    {
+        var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
+        var culture = ResolveCulture(locale);
+
+        var prototype = CreateOrdinaryObject();
+        var protoHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(protoHandle);
+
+        var protoMethod = new NativeFunctionObject(
+            "format",
+            (_, fmtArgs) =>
+            {
+                var num = fmtArgs.Count > 0 ? fmtArgs[0].AsNumber() : double.NaN;
+                if (double.IsNaN(num))
+                    return JsValue.FromString("NaN");
+                try { return JsValue.FromString(num.ToString("N", culture)); }
+                catch { return JsValue.FromString(num.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
+            },
+            length: 1);
+        var protoMethodHandle = _heap.AllocateObject(protoMethod, AllocationSite.Current());
+        prototype.DefineOwnProperty("format",
+            new JsPropertyDescriptor(JsValue.FromObject(protoMethodHandle),
+                Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, protoMethodHandle);
+
+        var instance = CreateOrdinaryObject();
+        instance.SetPrototype(protoHandle);
+        var instanceHandle = _heap.AllocateObject(instance, AllocationSite.Current());
+        _heap.WriteBarrier(instanceHandle, protoHandle);
+        return JsValue.FromObject(instanceHandle);
+    }
+
+    // ECMA-402 10.1.1 InitializeCollator.
+    private JsValue CollatorConstruct(IReadOnlyList<JsValue> args)
+    {
+        var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
+        var culture = ResolveCulture(locale);
+
+        var prototype = CreateOrdinaryObject();
+        var protoHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(protoHandle);
+
+        var protoMethod = new NativeFunctionObject(
+            "compare",
+            (_, cmpArgs) =>
+            {
+                var a = cmpArgs.Count > 0 ? ToStringValue(cmpArgs[0]) : string.Empty;
+                var b = cmpArgs.Count > 1 ? ToStringValue(cmpArgs[1]) : string.Empty;
+                var result = culture.CompareInfo.Compare(a, b, System.Globalization.CompareOptions.None);
+                return JsValue.FromNumber(result);
+            },
+            length: 2);
+        var protoMethodHandle = _heap.AllocateObject(protoMethod, AllocationSite.Current());
+        prototype.DefineOwnProperty("compare",
+            new JsPropertyDescriptor(JsValue.FromObject(protoMethodHandle),
+                Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, protoMethodHandle);
+
+        var instance = CreateOrdinaryObject();
+        instance.SetPrototype(protoHandle);
+        var instanceHandle = _heap.AllocateObject(instance, AllocationSite.Current());
+        _heap.WriteBarrier(instanceHandle, protoHandle);
+        return JsValue.FromObject(instanceHandle);
     }
 
     // Resolve a BCP 47 locale tag to a System.Globalization.CultureInfo, falling
