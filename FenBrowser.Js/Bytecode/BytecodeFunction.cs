@@ -27,6 +27,8 @@ public sealed class BytecodeFunction
 
     public FunctionKind Kind { get; init; } = FunctionKind.Ordinary;
 
+    public bool IsStrictMode { get; init; }
+
     public required IReadOnlyList<BytecodeFunction> NestedFunctions { get; init; }
 
     public int RegisterCount { get; init; }

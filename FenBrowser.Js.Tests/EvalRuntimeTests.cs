@@ -25,8 +25,30 @@ public sealed class EvalRuntimeTests
     [Fact]
     public void DirectEval_CreatesVarInCallerScope()
     {
-        // ECMA-262 19.2.1.1 — direct eval creates 'var' in the calling environment.
+        // ECMA-262 19.2.1.1 - direct eval creates 'var' in the calling environment.
         Assert.Equal(42, RunNum("function f(){ eval('var x = 42;'); return x; } f();"));
+    }
+
+    [Fact]
+    public void IndirectEval_DoesNotUseCallerLexicalEnvironment()
+    {
+        Assert.Equal(1, RunNum("function f(){ var localOnly = 1; (0, eval)('__indirectEvalX = 2;'); return localOnly; } f();"));
+    }
+
+    [Fact]
+    public void StrictDirectEval_DoesNotLeakVarToCaller()
+    {
+        Assert.Equal(
+            "ReferenceError",
+            Run("function f(){ 'use strict'; eval('var __strictLeakProbe = 1;'); let observed = 'ok'; try { __strictLeakProbe; observed = 'leaked'; } catch (e) { observed = e.name; } return observed; } f();").AsString());
+    }
+
+    [Fact]
+    public void DirectEvalCall_IsTaggedInBytecode()
+    {
+        var script = new BytecodeCompiler().CompileScript(new SourceText("function f(){ eval('1'); }"));
+        var f = Assert.Single(script.NestedFunctions, n => n.Name == "f");
+        Assert.Contains(f.Instructions, ins => ins.OpCode == OpCode.Call1 && ins.E == 1);
     }
 
     [Fact]

@@ -54,6 +54,7 @@ public sealed class BytecodeCompiler
     private string? _name;
     private int _nextRegister = 1;
     private FunctionKind _currentFunctionKind = FunctionKind.Ordinary;
+    private bool _isStrictMode;
     // When non-null, the next LoopContext pushed should take this label.
     private string? _pendingLabel;
 
@@ -65,12 +66,18 @@ public sealed class BytecodeCompiler
 
     public BytecodeFunction CompileProgram(ProgramNode program)
     {
+        return CompileProgram(program, inheritedStrictMode: false);
+    }
+
+    public BytecodeFunction CompileProgram(ProgramNode program, bool inheritedStrictMode)
+    {
         return CompileProgramCore(
             program,
             parameters: Array.Empty<string>(),
             name: null,
             hasOwnArgumentsObject: false,
-            functionKind: FunctionKind.Ordinary);
+            functionKind: FunctionKind.Ordinary,
+            inheritedStrictMode: inheritedStrictMode);
     }
 
     public BytecodeFunction CompileFunctionBody(SourceText body, IReadOnlyList<string> parameters, string? name)
@@ -81,7 +88,8 @@ public sealed class BytecodeCompiler
             parameters,
             name,
             hasOwnArgumentsObject: true,
-            functionKind: FunctionKind.Ordinary);
+            functionKind: FunctionKind.Ordinary,
+            inheritedStrictMode: false);
     }
 
     private BytecodeFunction CompileProgramCore(
@@ -89,7 +97,8 @@ public sealed class BytecodeCompiler
         IReadOnlyList<string> parameters,
         string? name,
         bool hasOwnArgumentsObject,
-        FunctionKind functionKind)
+        FunctionKind functionKind,
+        bool inheritedStrictMode)
     {
         _instructions.Clear();
         _constants.Clear();
@@ -106,6 +115,7 @@ public sealed class BytecodeCompiler
         _name = name;
         _nextRegister = 1;
         _currentFunctionKind = functionKind;
+        _isStrictMode = inheritedStrictMode || program.Kind == ProgramKind.Module || HasUseStrictDirective(program.Body);
         foreach (var p in parameters)
         {
             _parameterNames.Add(p);
@@ -125,6 +135,7 @@ public sealed class BytecodeCompiler
         {
             Name = _name,
             Kind = _currentFunctionKind,
+            IsStrictMode = _isStrictMode,
             IsDerivedConstructor = _isDerivedConstructor,
             Instructions = _instructions.ToArray(),
             Constants = _constants.ToArray(),
@@ -315,7 +326,8 @@ public sealed class BytecodeCompiler
             functionDecl.Parameters,
             functionDecl.Name,
             hasOwnArgumentsObject: true,
-            functionKind: SelectFunctionKind(functionDecl.IsAsync, functionDecl.IsGenerator, isArrow: false));
+            functionKind: SelectFunctionKind(functionDecl.IsAsync, functionDecl.IsGenerator, isArrow: false),
+            inheritedStrictMode: _isStrictMode);
         var nestedIndex = _nestedFunctions.Count;
         _nestedFunctions.Add(nestedFunction);
 
@@ -661,7 +673,8 @@ public sealed class BytecodeCompiler
             fnExpr.Parameters,
             fnExpr.Name,
             hasOwnArgumentsObject: true,
-            functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false));
+            functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false),
+            inheritedStrictMode: _isStrictMode);
         var nestedIndex = _nestedFunctions.Count;
         _nestedFunctions.Add(nestedFunction);
         var dest = AllocateRegister();
@@ -1348,6 +1361,7 @@ public sealed class BytecodeCompiler
                 var calleeReg = -1;
                 var thisReg = 0;
                 var isMethodCall = false;
+                var isDirectEvalCall = false;
 
                 // H.3.2 - super(args) call. The base constructor is loaded via
                 // LoadSuperConstructor; we pass the current frame's `this` as the
@@ -1397,6 +1411,7 @@ public sealed class BytecodeCompiler
                 else
                 {
                     calleeReg = CompileExpression(call.Callee);
+                    isDirectEvalCall = IsDirectEvalCallCallee(call.Callee);
                 }
 
                 var isSuperCall = call.Callee is SuperExpressionNode;
@@ -1407,7 +1422,13 @@ public sealed class BytecodeCompiler
                 if (hasSpread)
                 {
                     var spreadArg = CompileExpression(call.Arguments[0]);
-                    _instructions.Add(new Instruction(OpCode.CallSpread, dest, calleeReg, spreadArg, thisReg));
+                    _instructions.Add(new Instruction(
+                        OpCode.CallSpread,
+                        dest,
+                        calleeReg,
+                        spreadArg,
+                        thisReg,
+                        !isMethodCall && isDirectEvalCall ? 1 : 0));
                     if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
                     return dest;
                 }
@@ -1417,7 +1438,7 @@ public sealed class BytecodeCompiler
                     case 0:
                         _instructions.Add(isMethodCall
                             ? new Instruction(OpCode.CallMethod0, dest, calleeReg, thisReg)
-                            : new Instruction(OpCode.Call0, dest, calleeReg, 0));
+                            : new Instruction(OpCode.Call0, dest, calleeReg, 0, 0, !isMethodCall && isDirectEvalCall ? 1 : 0));
                         if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
                         return dest;
                     case 1:
@@ -1425,7 +1446,7 @@ public sealed class BytecodeCompiler
                         var arg0 = CompileExpression(call.Arguments[0]);
                         _instructions.Add(isMethodCall
                             ? new Instruction(OpCode.CallMethod1, dest, calleeReg, thisReg, arg0)
-                            : new Instruction(OpCode.Call1, dest, calleeReg, arg0));
+                            : new Instruction(OpCode.Call1, dest, calleeReg, arg0, 0, !isMethodCall && isDirectEvalCall ? 1 : 0));
                         if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
                         return dest;
                     }
@@ -1444,7 +1465,7 @@ public sealed class BytecodeCompiler
 
                         _instructions.Add(isMethodCall
                             ? new Instruction(OpCode.CallMethodN, dest, calleeReg, thisReg, argStart, call.Arguments.Count)
-                            : new Instruction(OpCode.CallN, dest, calleeReg, argStart, call.Arguments.Count));
+                            : new Instruction(OpCode.CallN, dest, calleeReg, argStart, call.Arguments.Count, !isMethodCall && isDirectEvalCall ? 1 : 0));
                         if (isSuperCall) _instructions.Add(new Instruction(OpCode.InitThisBinding, 0, 0, 0));
                         return dest;
                     }
@@ -1550,7 +1571,8 @@ public sealed class BytecodeCompiler
                     fnExpr.Parameters,
                     fnExpr.Name,
                     hasOwnArgumentsObject: true,
-                    functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false));
+                    functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false),
+                    inheritedStrictMode: _isStrictMode);
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();
@@ -1586,7 +1608,8 @@ public sealed class BytecodeCompiler
                     arrow.Parameters,
                     "<arrow>",
                     hasOwnArgumentsObject: false,
-                    functionKind: SelectFunctionKind(arrow.IsAsync, isGenerator: false, isArrow: true));
+                    functionKind: SelectFunctionKind(arrow.IsAsync, isGenerator: false, isArrow: true),
+                    inheritedStrictMode: _isStrictMode);
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();
@@ -1805,6 +1828,35 @@ public sealed class BytecodeCompiler
         }
 
         return isArrow ? FunctionKind.Arrow : FunctionKind.Ordinary;
+    }
+
+    private static bool IsDirectEvalCallCallee(ExpressionNode callee)
+    {
+        while (callee is ParenthesizedExpressionNode parenthesized)
+        {
+            callee = parenthesized.Expression;
+        }
+
+        return callee is IdentifierExpressionNode { Name: "eval" };
+    }
+
+    private static bool HasUseStrictDirective(IReadOnlyList<StatementNode> statements)
+    {
+        foreach (var statement in statements)
+        {
+            if (statement is not ExpressionStatementNode expressionStatement ||
+                expressionStatement.Expression is not StringLiteralExpressionNode stringLiteral)
+            {
+                break;
+            }
+
+            if (string.Equals(stringLiteral.Value, "use strict", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static void ThrowIfPrivateMemberAccess(MemberExpressionNode member)

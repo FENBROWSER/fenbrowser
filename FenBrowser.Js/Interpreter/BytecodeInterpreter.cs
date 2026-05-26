@@ -91,6 +91,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private ObjectHandle? _functionCallMethodHandle;
     private ObjectHandle? _evalFunctionHandle;
     private EnvironmentRecord? _directEvalEnv;
+    private bool _directEvalStrictMode;
     private ObjectHandle? _parseIntHandle;
     private ObjectHandle? _parseFloatHandle;
     private ObjectHandle? _isNaNHandle;
@@ -127,6 +128,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private ObjectHandle? _promiseConstructorHandle;
     private ObjectHandle? _promisePrototypeHandle;
     private IHostPromiseRejectionTracker _promiseRejectionTracker = new InMemoryPromiseRejectionTracker();
+    private const int DirectEvalCallFlag = 1;
 
     public IHostPromiseRejectionTracker PromiseRejectionTracker
     {
@@ -1151,12 +1153,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 }
                 case OpCode.Call0:
                 {
-                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], Array.Empty<JsValue>(), JsValue.Undefined);
+                    StoreCallResult(
+                        frame,
+                        ins.A,
+                        frame.Registers[ins.B],
+                        Array.Empty<JsValue>(),
+                        JsValue.Undefined,
+                        allowDirectEval: ins.E == DirectEvalCallFlag);
                     break;
                 }
                 case OpCode.Call1:
                 {
-                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], new[] { frame.Registers[ins.C] }, JsValue.Undefined);
+                    StoreCallResult(
+                        frame,
+                        ins.A,
+                        frame.Registers[ins.B],
+                        new[] { frame.Registers[ins.C] },
+                        JsValue.Undefined,
+                        allowDirectEval: ins.E == DirectEvalCallFlag);
                     break;
                 }
                 case OpCode.CallMethod0:
@@ -1188,7 +1202,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                         callArgs[i] = frame.Registers[ins.C + i];
                     }
 
-                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], callArgs, JsValue.Undefined);
+                    StoreCallResult(
+                        frame,
+                        ins.A,
+                        frame.Registers[ins.B],
+                        callArgs,
+                        JsValue.Undefined,
+                        allowDirectEval: ins.E == DirectEvalCallFlag);
                     break;
                 }
                 case OpCode.CallSpread:
@@ -1213,7 +1233,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                         }
                     }
                     var thisVal = ins.D != 0 ? frame.Registers[ins.D] : JsValue.Undefined;
-                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], unpackedArgs, thisVal);
+                    StoreCallResult(
+                        frame,
+                        ins.A,
+                        frame.Registers[ins.B],
+                        unpackedArgs,
+                        thisVal,
+                        allowDirectEval: ins.E == DirectEvalCallFlag);
                     break;
                 }
                 case OpCode.Construct0:
@@ -3598,7 +3624,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     continue;
                 }
 
-                var status = env.GetBindingValue(name, strict: false, out var envValue);
+                var status = env.GetBindingValue(name, strict: frame.Function.IsStrictMode, out var envValue);
                 if (status == BindingOpResult.Ok)
                 {
                     return envValue;
@@ -3625,13 +3651,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     continue;
                 }
 
-                var status = env.SetMutableBinding(name, value, strict: false);
+                var status = env.SetMutableBinding(name, value, strict: frame.Function.IsStrictMode);
                 if (status == BindingOpResult.Ok)
                 {
                     return;
                 }
 
                 ThrowBindingFailure(frame, status, name, assignment: true);
+                return;
+            }
+
+            if (frame.Function.IsStrictMode)
+            {
+                ThrowReferenceError(frame, $"{name} is not defined.");
                 return;
             }
 
@@ -3830,11 +3862,28 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         var program = JsParser.ParseScript(new SourceText(args[0].AsString(), "<eval>"));
-        var compiled = new BytecodeCompiler().CompileProgram(program);
+        var directEvalEnvironment = _directEvalEnv;
+        var directEvalStrictMode = _directEvalStrictMode;
+        _directEvalEnv = null;
+        _directEvalStrictMode = false;
+
+        var compiled = new BytecodeCompiler().CompileProgram(program, inheritedStrictMode: directEvalStrictMode);
         new BytecodeVerifier().Verify(compiled);
         var globalHandle = EnsureGlobalObject();
-        var env = _directEvalEnv ?? EnsureGlobalEnvironment();
-        _directEvalEnv = null;
+        EnvironmentRecord env;
+        if (directEvalEnvironment is not null)
+        {
+            // Strict direct eval gets a fresh lexical scope so var/function
+            // declarations do not leak into the caller's environment.
+            env = directEvalStrictMode
+                ? new DeclarativeEnvironmentRecord(directEvalEnvironment)
+                : directEvalEnvironment;
+        }
+        else
+        {
+            env = EnsureGlobalEnvironment();
+        }
+
         return ExecuteInternal(
             compiled,
             Array.Empty<JsValue>(),
@@ -11657,13 +11706,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         throw new InvalidOperationException("Value is not constructible.");
     }
 
-    private void StoreCallResult(InterpreterFrame frame, int destinationRegister, JsValue callee, IReadOnlyList<JsValue> args, JsValue thisValue)
+    private void StoreCallResult(
+        InterpreterFrame frame,
+        int destinationRegister,
+        JsValue callee,
+        IReadOnlyList<JsValue> args,
+        JsValue thisValue,
+        bool allowDirectEval = false)
     {
         // ECMA-262 19.2.1.1 — direct eval uses the calling frame's lexical environment.
-        if (callee.Tag == JsValueTag.Object && _evalFunctionHandle is { } evalHandle &&
-            callee.AsObjectHandle() == evalHandle)
+        if (allowDirectEval &&
+            callee.Tag == JsValueTag.Object &&
+            _heap.GetObject(callee.AsObjectHandle()) is NativeFunctionObject native &&
+            string.Equals(native.Name, "eval", StringComparison.Ordinal))
         {
             _directEvalEnv = frame.Environment;
+            _directEvalStrictMode = frame.Function.IsStrictMode;
         }
 
         try
