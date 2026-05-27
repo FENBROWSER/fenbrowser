@@ -1,4 +1,4 @@
-using FenBrowser.Js.Builtins;
+﻿using FenBrowser.Js.Builtins;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
@@ -182,7 +182,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private readonly Dictionary<string, long> _symbolRegistryByKey = new(StringComparer.Ordinal);
     private readonly Dictionary<long, string> _symbolRegistryById = new();
 
-    // Plan §14.2: instruction budget. Zero = no limit.
+    // Plan Â§14.2: instruction budget. Zero = no limit.
     public int InstructionBudget { get; set; }
     public Func<bool>? InterruptCallback { get; set; }
     private int _instructionCount;
@@ -230,7 +230,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return result;
     }
 
-    // ECMA-262 27.5.1.3 GeneratorYield — save frame execution state into the
+    // ECMA-262 27.5.1.3 GeneratorYield â€” save frame execution state into the
     // owner generator so a subsequent .next()/resume can continue from this point.
     private static void SaveGeneratorState(InterpreterFrame frame, int yieldDestReg)
     {
@@ -249,7 +249,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 		gen.PendingException = frame.PendingException;
     }
 
-    // ECMA-262 27.5.1.2 — execute (or resume) a generator function body.
+    // ECMA-262 27.5.1.2 â€” execute (or resume) a generator function body.
     public JsValue ExecuteGenerator(GeneratorObject gen, JsValue sentValue)
     {
         _instructionCount = 0;
@@ -261,7 +261,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         var isResume = gen.InstructionPointer > 0;
         // First call: pass the initial parameters that were bound when the
         // generator function was called (stored in gen.Registers[1..n]).
-        // Resume: pass no args — the saved registers and env already hold
+        // Resume: pass no args â€” the saved registers and env already hold
         // all local state.
         var initialArgs = isResume ? Array.Empty<JsValue>() : gen.GetInitialParameters();
         var result = ExecuteInternal(
@@ -287,7 +287,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return result;
     }
 
-    // ECMA-262 27.7.5.2 Await — save frame execution state into the async
+    // ECMA-262 27.7.5.2 Await â€” save frame execution state into the async
     // context so the promise reaction callback can resume from this point.
     private static void SaveAsyncState(InterpreterFrame frame, int awaitDestReg)
     {
@@ -304,7 +304,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 		ctx.PendingException = frame.PendingException;
     }
 
-    // ECMA-262 27.7.5.3 — resume an async function after the awaited promise
+    // ECMA-262 27.7.5.3 â€” resume an async function after the awaited promise
     // settles. Restores the saved frame state and continues execution from
     // the instruction pointer where Await suspended.
     private JsValue ResumeAsyncFunction(AsyncContext ctx, JsValue value, bool isReject)
@@ -329,7 +329,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
             if (ctx.IsSuspended)
             {
-                // Another await suspended — resume callbacks already attached.
+                // Another await suspended â€” resume callbacks already attached.
                 return JsValue.Undefined;
             }
 
@@ -472,7 +472,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         GeneratorObject? ownerGenerator = null,
         AsyncContext? asyncContext = null)
     {
-        // B.6.4 — when the callee carries an outer EnvironmentRecord (set at
+        // B.6.4 â€” when the callee carries an outer EnvironmentRecord (set at
         // CreateFunction time on JsFunctionObject), the new frame's env is a fresh
         // declarative record chained to it so free identifier references walk the
         // lexical scope chain through env records. Otherwise, fall back to the
@@ -492,7 +492,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         // Generator resume: restore saved execution state instead of fresh init.
-        // ECMA-262 27.5.1.2 Resume — the [[GeneratorContext]] holds IP, registers,
+        // ECMA-262 27.5.1.2 Resume â€” the [[GeneratorContext]] holds IP, registers,
         // and environment; we skip parameter binding and declaration instantiation
         // because those were already done on the first .next() call.
         if (ownerGenerator != null && ownerGenerator.InstructionPointer > 0)
@@ -596,7 +596,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
         while (frame.InstructionPointer < function.Instructions.Count)
         {
-            // Plan §14.2: instruction budget and interrupt check.
+            // Plan Â§14.2: instruction budget and interrupt check.
             if (InstructionBudget > 0 && ++_instructionCount > InstructionBudget)
                 throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded."));
             if (InterruptCallback is { } cb && !cb())
@@ -610,7 +610,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded."));
             }
 
-            // ECMA-262 27.5.1.5 GeneratorResumeAbrupt — inject a throw-mode
+            // ECMA-262 27.5.1.5 GeneratorResumeAbrupt â€” inject a throw-mode
             // completion into the resumed generator body. ThrowOrHandle routes
             // through the frame's exception handler stack so try/catch blocks
             // inside the generator can intercept the injected exception.
@@ -626,7 +626,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 }
             }
 
-            // ECMA-262 27.7.5.3 AwaitRejected — when an awaited promise rejects,
+            // ECMA-262 27.7.5.3 AwaitRejected â€” when an awaited promise rejects,
             // inject the rejection reason as a throw completion into the resumed
             // async function body so `await rejectedPromise` throws.
             if (frame.AsyncContext is { } acFrame && acFrame.IsRejectResume)
@@ -749,7 +749,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     break;
                 case OpCode.Yield:
                 {
-                    // ECMA-262 27.5.1.3 GeneratorYield — save frame state to the
+                    // ECMA-262 27.5.1.3 GeneratorYield â€” save frame state to the
                     // owner generator so the next .next()/resume continues here.
                     SaveGeneratorState(frame, ins.A);
 
@@ -760,7 +760,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 }
                 case OpCode.YieldStar:
                 {
-                    // ECMA-262 15.5.5 — yield* delegation.
+                    // ECMA-262 15.5.5 â€” yield* delegation.
                     // The operand expression is already evaluated in register B.
                     // This handler runs on every resume while yield* is active.
                     var gen = frame.OwnerGenerator!;
@@ -773,7 +773,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     }
                     else
                     {
-                        // GetIterator(operand) — ECMA-262 7.4.1.
+                        // GetIterator(operand) â€” ECMA-262 7.4.1.
                         var operand = frame.Registers[ins.B];
                         if (operand.Tag != JsValueTag.Object)
                             throw new JsThrownException(CreateTypeError("yield* operand is not iterable."));
@@ -832,7 +832,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                             // Method missing.
                             if (methodName == "throw")
                             {
-                                // ECMA-262 15.5.5 step 5.c.ii — .throw() missing:
+                                // ECMA-262 15.5.5 step 5.c.ii â€” .throw() missing:
                                 // clear delegation state and propagate the exception.
                                 gen.YieldStarIterator = null;
                                 ThrowOrHandle(frame, methodArg);
@@ -849,7 +849,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     }
                     catch (JsThrownException)
                     {
-                        // ECMA-262 15.5.5 step 5.c.iii — if .throw() throws,
+                        // ECMA-262 15.5.5 step 5.c.iii â€” if .throw() throws,
                         // clear delegation and propagate.
                         if (methodName == "throw")
                         {
@@ -904,12 +904,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                         var scopeName = SlotNameTable.GetName(function, ins.A);
                         if (scopeName != null)
                         {
-                            // B=0 → mutable (let), B=1 → immutable (const)
+                            // B=0 â†’ mutable (let), B=1 â†’ immutable (const)
                             if (ins.B == 1)
                                 _ = newScope.CreateImmutableBinding(scopeName, strict: true);
                             else
                                 _ = newScope.CreateMutableBinding(scopeName, deletable: true);
-                            // Do NOT initialize — leave the binding in TDZ state.
+                            // Do NOT initialize â€” leave the binding in TDZ state.
                         }
                     }
                     frame.Environment = newScope;
@@ -1155,7 +1155,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     frame.Registers[ins.A] = JsValue.FromString(key);
                     break;
                 }
-                // H.5 — private field ops with brand validation.
+                // H.5 â€” private field ops with brand validation.
                 // ECMA-262 9.1.10 PrivateFieldAdd / PrivateFieldGet / PrivateFieldFind.
                 // Brand is a class-unique token stored in function.BrandTokens[ins.D].
                 case OpCode.DefinePrivateField:
@@ -1313,7 +1313,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 }
                 case OpCode.CallSpread:
                 {
-                    // ECMA-262 13.3.7.1 — unpack a spread array into individual args.
+                    // ECMA-262 13.3.7.1 â€” unpack a spread array into individual args.
                     var spreadArray = frame.Registers[ins.C];
                     var unpackedArgs = Array.Empty<JsValue>();
                     if (spreadArray.Tag == JsValueTag.Object)
@@ -2075,7 +2075,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         // ECMA-262 24.2.3.1 add (returns the set for chaining).
@@ -2362,7 +2362,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         // 24.1.3.9 set (returns the map for chaining).
@@ -2802,7 +2802,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         DefineNativePrototypeMethod(prototypeHandle, prototype, "set", (thisValue, args) =>
@@ -2914,7 +2914,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         DefineNativePrototypeMethod(prototypeHandle, prototype, "add", (thisValue, args) =>
@@ -3275,7 +3275,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         // 27.1.4.1 Iterator.from(O). If O already inherits from %Iterator.prototype%
@@ -4689,7 +4689,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         InstallPrototypeMethodsOnRegExpPrototype(prototypeHandle, prototype);
 
@@ -4749,7 +4749,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private void InstallPrototypeMethodsOnRegExpPrototype(ObjectHandle prototypeHandle, JsObject prototype)
     {
-        // Cache the first prototype handle seen — this comes from the builtin
+        // Cache the first prototype handle seen â€” this comes from the builtin
         // during InstallGlobalObjectProperties, before any bytecode executes.
         _regexpPrototypeHandle ??= prototypeHandle;
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "test", RegExpPrototypeTest, length: 1);
@@ -4789,7 +4789,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     // Parses raw text "/pattern/flags" into a RegExpObject with compiled .NET Regex.
     internal JsValue NewRegExpLiteral(string rawText)
     {
-        // rawText is "/pattern/flags" — find the last '/' to separate flags.
+        // rawText is "/pattern/flags" â€” find the last '/' to separate flags.
         var lastSlash = rawText.LastIndexOf('/');
         // Pattern: rawText[1..lastSlash], Flags: rawText[(lastSlash+1)..]
         var pattern = rawText.Substring(1, lastSlash - 1);
@@ -4850,7 +4850,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             ? ToStringValue(args[1])
             : string.Empty;
         var normalizedFlags = NormalizeRegExpFlags(flags);
-        // ECMA-262 22.2.4 flags → RegexOptions mapping.
+        // ECMA-262 22.2.4 flags â†’ RegexOptions mapping.
         // ECMAScript mode is the default; dotAll (s) conflicts with it and
         // Unicode (u) restricts \w/\d to ASCII in ECMAScript mode, so both
         // remove the ECMAScript option to get fuller Unicode behaviour.
@@ -5111,7 +5111,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         throw new JsThrownException(CreateTypeError("RegExp.prototype method called on incompatible receiver."));
     }
 
-    // Proxy intercept helpers — ECMA-262 28.2 internal method dispatch.
+    // Proxy intercept helpers â€” ECMA-262 28.2 internal method dispatch.
     // Each method checks for a handler trap; when present the trap is called
     // with the proper arguments. When absent the operation falls through to
     // the target object.
@@ -5551,7 +5551,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         var handle = _heap.AllocateObject(intl, AllocationSite.Current());
         _heap.PushRoot(handle);
 
-        // ECMA-402 §11 DateTimeFormat constructor.
+        // ECMA-402 Â§11 DateTimeFormat constructor.
         {
             var ctor = new NativeFunctionObject(
                 "DateTimeFormat",
@@ -5570,7 +5570,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             _heap.WriteBarrier(handle, ctorHandle);
         }
 
-        // ECMA-402 §13 NumberFormat constructor.
+        // ECMA-402 Â§13 NumberFormat constructor.
         {
             var ctor = new NativeFunctionObject(
                 "NumberFormat",
@@ -5589,7 +5589,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             _heap.WriteBarrier(handle, ctorHandle);
         }
 
-        // ECMA-402 §10 Collator constructor.
+        // ECMA-402 Â§10 Collator constructor.
         {
             var ctor = new NativeFunctionObject(
                 "Collator",
@@ -5608,7 +5608,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             _heap.WriteBarrier(handle, ctorHandle);
         }
 
-        // ECMA-402 §9.2.1 getCanonicalLocales(locales).
+        // ECMA-402 Â§9.2.1 getCanonicalLocales(locales).
         {
             var fn = new NativeFunctionObject(
                 "getCanonicalLocales",
@@ -5631,7 +5631,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private JsValue GetCanonicalLocales(IReadOnlyList<JsValue> args)
     {
-        // ECMA-402 §9.2.1 CanonicalizeLocaleList.
+        // ECMA-402 Â§9.2.1 CanonicalizeLocaleList.
         // For now, just return the input locales as an array.
         // Real implementation in Commit 5.
         if (args.Count == 0)
@@ -6760,7 +6760,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }, length: 1);
 
         var prototype = _heap.GetObject(prototypeHandle);
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", (thisValue, _) => ObjectPrototypeToString(thisValue));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleString", (thisValue, _) => ObjectPrototypeToString(thisValue));
@@ -6894,7 +6894,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _heap.PushRoot(constructorHandle);
 
         var callHandle = EnsureFunctionCallMethod();
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _ = prototype.SetProperty("call", JsValue.FromObject(callHandle));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _heap.WriteBarrier(prototypeHandle, callHandle);
@@ -7866,7 +7866,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "push", ArrayPrototypePush, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", ArrayPrototypeToString);
@@ -9387,7 +9387,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _heap.PushRoot(constructorHandle);
 
         var prototypeObject = _heap.GetObject(prototypeHandle);
-        _ = prototypeObject.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototypeObject.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toString", BooleanPrototypeToString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "valueOf", BooleanPrototypeValueOf);
@@ -9497,7 +9497,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _heap.WriteBarrier(constructorHandle, parseFloatHandle);
 
         var prototypeObject = _heap.GetObject(prototypeHandle);
-        _ = prototypeObject.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototypeObject.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toString", NumberPrototypeToString);
         // ECMA-262 21.1.3.3 Number.prototype.toFixed(fractionDigits).
@@ -9985,7 +9985,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         DefineNativePrototypeMethod(prototypeHandle, prototype, "deref", (thisValue, _) =>
@@ -10053,7 +10053,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         DefineNativePrototypeMethod(prototypeHandle, prototype, "register", (thisValue, args) =>
@@ -10195,7 +10195,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
     }
 
-    // ECMA-262 25.1.3 — the %ArrayBuffer% constructor.
+    // ECMA-262 25.1.3 â€” the %ArrayBuffer% constructor.
     private ObjectHandle EnsureArrayBufferConstructor()
     {
         if (_arrayBufferConstructorHandle is { } existing)
@@ -10221,7 +10221,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         // 25.1.5.2 get ArrayBuffer.prototype.byteLength
@@ -10276,7 +10276,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return _arrayBufferPrototypeHandle!.Value;
     }
 
-    // ECMA-262 25.3 — the %DataView% constructor.
+    // ECMA-262 25.3 â€” the %DataView% constructor.
     private ObjectHandle EnsureDataViewConstructor()
     {
         if (_dataViewConstructorHandle is { } existing)
@@ -10308,7 +10308,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         // Getters: buffer, byteLength, byteOffset
@@ -10347,7 +10347,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private void InstallDataViewPrototypeMethods(ObjectHandle protoHandle, JsObject proto)
     {
-        // 25.3.1.1 GetViewValue — all getters
+        // 25.3.1.1 GetViewValue â€” all getters
         DefineNativePrototypeMethod(protoHandle, proto, "getInt8", (thisValue, args) =>
             JsValue.FromNumber(RequireDataView(thisValue).GetInt8(args.Count > 0 ? (int)args[0].AsNumber() : 0)), length: 1);
         DefineNativePrototypeMethod(protoHandle, proto, "getUint8", (thisValue, args) =>
@@ -10365,7 +10365,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         DefineNativePrototypeMethod(protoHandle, proto, "getFloat64", (thisValue, args) =>
             JsValue.FromNumber(RequireDataView(thisValue).GetFloat64(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean())), length: 2);
 
-        // 25.3.1.2 SetViewValue — all setters
+        // 25.3.1.2 SetViewValue â€” all setters
         DefineNativePrototypeMethod(protoHandle, proto, "setInt8", (thisValue, args) =>
         { RequireDataView(thisValue).SetInt8(args.Count > 0 ? (int)args[0].AsNumber() : 0, (sbyte)(args.Count > 1 ? args[1].AsNumber() : 0)); return JsValue.Undefined; }, length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setUint8", (thisValue, args) =>
@@ -10384,7 +10384,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         { RequireDataView(thisValue).SetFloat64(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 ? args[1].AsNumber() : 0, args.Count > 2 && args[2].AsBoolean()); return JsValue.Undefined; }, length: 3);
     }
 
-    // ECMA-262 23.2 — all 11 %TypedArray% constructors.
+    // ECMA-262 23.2 â€” all 11 %TypedArray% constructors.
     private BuiltinBinding[] EnsureTypedArrayConstructors()
     {
         if (_typedArrayConstructors is not null)
@@ -10450,7 +10450,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = constructor.SetProperty("BYTES_PER_ELEMENT", JsValue.FromNumber(elementSize));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
-        _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         InstallTypedArrayPrototypeMethods(prototypeHandle, prototype, name, elementType, elementSize);
@@ -10470,7 +10470,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
         var arg0 = args[0];
 
-        // new X(TypedArray) — copy elements from existing
+        // new X(TypedArray) â€” copy elements from existing
         if (arg0.Tag == JsValueTag.Object && _heap.GetObject(arg0.AsObjectHandle()) is TypedArrayObject src)
         {
             var len = src.Length;
@@ -10496,7 +10496,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
         }
 
-        // new X(length) — allocate new buffer
+        // new X(length) â€” allocate new buffer
         {
             var length = (int)Math.Max(arg0.AsNumber(), 0);
             var buf = new ArrayBufferObject(length * elementSize);
@@ -11574,7 +11574,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         {
             return protoVal.AsObjectHandle();
         }
-        // Fallback during bootstrap — the global property hasn't been set up yet.
+        // Fallback during bootstrap â€” the global property hasn't been set up yet.
         return constructorName switch
         {
             "Boolean" => EnsureBooleanPrototype(),
@@ -11614,7 +11614,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             var protoHandle = desc.Value.AsObjectHandle();
             var protoObj = _heap.GetObject(protoHandle);
 
-            // ECMA-262 27.5.1 — Generator objects are iterable. @@iterator returns
+            // ECMA-262 27.5.1 â€” Generator objects are iterable. @@iterator returns
             // the generator object itself so yield* can delegate to generators.
             if (_generatorIteratorHandle is null)
             {
@@ -11868,7 +11868,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _heap.PushRoot(constructorHandle);
 
         var prototypeObject = _heap.GetObject(prototypeHandle);
-        _ = prototypeObject.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = prototypeObject.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "toString", StringPrototypeToString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "valueOf", StringPrototypeValueOf);
@@ -12535,14 +12535,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
-    // Tier 4 #24: JIT helpers — each mirrors one opcode case in
+    // Tier 4 #24: JIT helpers â€” each mirrors one opcode case in
     // ExecuteInternalCore so the JIT-emitted Expression-tree code can
     // invoke a single method rather than inline equivalent logic. Keeping
     // the implementation in one place avoids semantic drift between the
     // interpreter and the JIT.
     // Tier 4 #24: JIT helpers for the property-access opcodes. Each
-    // mirrors the corresponding interpreter case body — including the
-    // inline-cache fast path and the try/catch → ThrowOrHandle fallback.
+    // mirrors the corresponding interpreter case body â€” including the
+    // inline-cache fast path and the try/catch â†’ ThrowOrHandle fallback.
     // Safe to call from JIT because TryEmitExpressionTree's pre-pass
     // bails on any handler opcode, so ThrowOrHandle's no-handler path
     // (which throws JsThrownException) is always the one taken.
@@ -12862,7 +12862,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return frame.ThisValue;
     }
 
-    // Binary-op multiplexer for the JIT — mirrors the interpreter's
+    // Binary-op multiplexer for the JIT â€” mirrors the interpreter's
     // arithmetic / comparison / bitwise / shift / logical case bodies
     // one-for-one. Bodies catch JsThrownException and route through
     // ThrowOrHandle, which in JIT context (no PushHandler exists in the
@@ -13561,7 +13561,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             throw new JsThrownException(CreateTypeError("Pending await is not supported in this execution context."));
         }
 
-        // Pending — suspend the async frame.
+        // Pending â€” suspend the async frame.
         SaveAsyncState(frame, destReg);
 
         var ctx = frame.AsyncContext!;
@@ -13630,7 +13630,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         if (obj is ProxyObject proxyCall)
             return ProxyCall(proxyCall, args, thisValue);
 
-        // ECMA-262 10.4.1.3 [[Call]] — merge bound args + call-site args,
+        // ECMA-262 10.4.1.3 [[Call]] â€” merge bound args + call-site args,
         // then delegate to [[BoundTargetFunction]] with [[BoundThis]].
         if (obj is BoundFunctionObject bound)
         {
@@ -13673,7 +13673,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
                     if (asyncCtx.IsSuspended)
                     {
-                        // Body suspended at an await — resume callbacks already
+                        // Body suspended at an await â€” resume callbacks already
                         // attached. Root the context so GC doesn't collect it.
                         _heap.PushRoot(ctxHandle);
                         return capability.Promise;
@@ -13700,7 +13700,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
             if (fn.Kind == FunctionKind.Generator)
             {
-                // ECMA-262 27.5.1.1 — calling a generator function returns a
+                // ECMA-262 27.5.1.1 â€” calling a generator function returns a
                 // GeneratorObject without executing the body. Execution starts
                 // on the first .next() call.
                 var registers = new JsValue[fn.Function.RegisterCount];
@@ -13760,7 +13760,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private JsValue ConstructFunction(JsValue value, IReadOnlyList<JsValue> args)
         => ConstructFunction(value, args, newTarget: value);
 
-    // ECMA-262 7.3.15 Construct(F, argumentsList, newTarget) —
+    // ECMA-262 7.3.15 Construct(F, argumentsList, newTarget) â€”
     // separate newTarget parameter so Reflect.construct can wire a different
     // newTarget.prototype for the created object.
     private JsValue ConstructFunction(JsValue value, IReadOnlyList<JsValue> args, JsValue newTarget)
@@ -13771,7 +13771,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         if (obj is ProxyObject proxyCons)
             return ProxyConstruct(proxyCons, args, newTarget);
 
-        // ECMA-262 10.4.1.4 [[Construct]] — merge bound args + call-site args,
+        // ECMA-262 10.4.1.4 [[Construct]] â€” merge bound args + call-site args,
         // then construct [[BoundTargetFunction]].
         if (obj is BoundFunctionObject bound)
         {
@@ -13816,7 +13816,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         bool allowDirectEval = false,
         int icOffset = -1)
     {
-        // ECMA-262 19.2.1.1 — direct eval uses the calling frame's lexical environment.
+        // ECMA-262 19.2.1.1 â€” direct eval uses the calling frame's lexical environment.
         if (allowDirectEval &&
             callee.Tag == JsValueTag.Object &&
             _heap.GetObject(callee.AsObjectHandle()) is NativeFunctionObject native &&
@@ -14334,7 +14334,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     }
 
     [MayExecuteJs]
-    // ECMA-262 10.2.2 [[Construct]] — the prototype of the created object
+    // ECMA-262 10.2.2 [[Construct]] â€” the prototype of the created object
     // comes from newTarget.prototype (not callee.prototype) when they differ.
     // OrdinaryCreateFromConstructor(newTarget, ...) calls GetPrototypeFromConstructor
     // which reads newTarget.prototype.
@@ -14411,3 +14411,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
     }
 }
+
+
+
