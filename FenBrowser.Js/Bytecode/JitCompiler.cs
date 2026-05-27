@@ -195,6 +195,24 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.SetElemForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiDeleteElem = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.DeleteElemForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiCall0 = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.Call0ForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiCall1 = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.Call1ForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiCallN = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.CallNForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiCallMethod0 = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.CallMethod0ForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiCallMethod1 = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.CallMethod1ForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiCallMethodN = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.CallMethodNForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiConstruct0 = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.Construct0ForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiConstruct1 = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.Construct1ForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiConstructN = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.ConstructNForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly PropertyInfo PiRegisters = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Registers))!;
     private static readonly PropertyInfo PiFunction = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Function))!;
     private static readonly PropertyInfo PiConstants = typeof(BytecodeFunction).GetProperty(nameof(BytecodeFunction.Constants))!;
@@ -407,6 +425,52 @@ public static class JitCompiler
                 if (ins.C < 0 || ins.C >= function.RegisterCount) return false;
                 body.Add(Expression.Call(interp, MiDeleteElem, frame,
                     Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C)));
+                return true;
+            case OpCode.Call0:
+                body.Add(Expression.Call(interp, MiCall0, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B),
+                    Expression.Constant(ins.E), Expression.Constant(ip)));
+                return true;
+            case OpCode.Call1:
+                body.Add(Expression.Call(interp, MiCall1, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C),
+                    Expression.Constant(ins.E), Expression.Constant(ip)));
+                return true;
+            case OpCode.CallN:
+                if (ins.D < 0) return false;
+                body.Add(Expression.Call(interp, MiCallN, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C),
+                    Expression.Constant(ins.D), Expression.Constant(ins.E), Expression.Constant(ip)));
+                return true;
+            case OpCode.CallMethod0:
+                body.Add(Expression.Call(interp, MiCallMethod0, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C),
+                    Expression.Constant(ip)));
+                return true;
+            case OpCode.CallMethod1:
+                body.Add(Expression.Call(interp, MiCallMethod1, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C),
+                    Expression.Constant(ins.D), Expression.Constant(ip)));
+                return true;
+            case OpCode.CallMethodN:
+                if (ins.E < 0) return false;
+                body.Add(Expression.Call(interp, MiCallMethodN, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C),
+                    Expression.Constant(ins.D), Expression.Constant(ins.E), Expression.Constant(ip)));
+                return true;
+            case OpCode.Construct0:
+                body.Add(Expression.Call(interp, MiConstruct0, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B)));
+                return true;
+            case OpCode.Construct1:
+                body.Add(Expression.Call(interp, MiConstruct1, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C)));
+                return true;
+            case OpCode.ConstructN:
+                if (ins.D < 0) return false;
+                body.Add(Expression.Call(interp, MiConstructN, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C),
+                    Expression.Constant(ins.D)));
                 return true;
             // Future opcodes added here as the IL-emit work continues.
             default:

@@ -12675,6 +12675,69 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
     }
 
+    // Tier 4 #24: JIT helpers for the call/construct opcode family.
+    // Each builds the args array on the heap (matching how the
+    // interpreter does it) and dispatches through StoreCallResult /
+    // StoreConstructResult. icOffset is the call-site offset for the
+    // Call IC; passed as a JIT-compile-time constant.
+    internal void Call0ForJit(InterpreterFrame frame, int destReg, int calleeReg, int directEvalFlag, int icOffset)
+    {
+        StoreCallResult(frame, destReg, frame.Registers[calleeReg],
+            Array.Empty<JsValue>(), JsValue.Undefined,
+            allowDirectEval: directEvalFlag == DirectEvalCallFlag, icOffset: icOffset);
+    }
+
+    internal void Call1ForJit(InterpreterFrame frame, int destReg, int calleeReg, int argReg, int directEvalFlag, int icOffset)
+    {
+        StoreCallResult(frame, destReg, frame.Registers[calleeReg],
+            new[] { frame.Registers[argReg] }, JsValue.Undefined,
+            allowDirectEval: directEvalFlag == DirectEvalCallFlag, icOffset: icOffset);
+    }
+
+    internal void CallNForJit(InterpreterFrame frame, int destReg, int calleeReg, int argStartReg, int argCount, int directEvalFlag, int icOffset)
+    {
+        var callArgs = new JsValue[argCount];
+        for (var i = 0; i < argCount; i++) callArgs[i] = frame.Registers[argStartReg + i];
+        StoreCallResult(frame, destReg, frame.Registers[calleeReg], callArgs, JsValue.Undefined,
+            allowDirectEval: directEvalFlag == DirectEvalCallFlag, icOffset: icOffset);
+    }
+
+    internal void CallMethod0ForJit(InterpreterFrame frame, int destReg, int calleeReg, int thisReg, int icOffset)
+    {
+        StoreCallResult(frame, destReg, frame.Registers[calleeReg],
+            Array.Empty<JsValue>(), frame.Registers[thisReg], icOffset: icOffset);
+    }
+
+    internal void CallMethod1ForJit(InterpreterFrame frame, int destReg, int calleeReg, int thisReg, int argReg, int icOffset)
+    {
+        StoreCallResult(frame, destReg, frame.Registers[calleeReg],
+            new[] { frame.Registers[argReg] }, frame.Registers[thisReg], icOffset: icOffset);
+    }
+
+    internal void CallMethodNForJit(InterpreterFrame frame, int destReg, int calleeReg, int thisReg, int argStartReg, int argCount, int icOffset)
+    {
+        var callArgs = new JsValue[argCount];
+        for (var i = 0; i < argCount; i++) callArgs[i] = frame.Registers[argStartReg + i];
+        StoreCallResult(frame, destReg, frame.Registers[calleeReg], callArgs, frame.Registers[thisReg], icOffset: icOffset);
+    }
+
+    internal void Construct0ForJit(InterpreterFrame frame, int destReg, int ctorReg)
+    {
+        StoreConstructResult(frame, destReg, frame.Registers[ctorReg], Array.Empty<JsValue>());
+    }
+
+    internal void Construct1ForJit(InterpreterFrame frame, int destReg, int ctorReg, int argReg)
+    {
+        StoreConstructResult(frame, destReg, frame.Registers[ctorReg], new[] { frame.Registers[argReg] });
+    }
+
+    internal void ConstructNForJit(InterpreterFrame frame, int destReg, int ctorReg, int argStartReg, int argCount)
+    {
+        var args = new JsValue[argCount];
+        for (var i = 0; i < argCount; i++) args[i] = frame.Registers[argStartReg + i];
+        StoreConstructResult(frame, destReg, frame.Registers[ctorReg], args);
+    }
+
     internal void DeleteElemForJit(InterpreterFrame frame, int destReg, int receiverReg, int keyReg)
     {
         var receiver = frame.Registers[receiverReg];
