@@ -21,9 +21,26 @@ public static class BytecodeCache
     public static long HitCount { get; private set; }
     public static long MissCount { get; private set; }
 
+    // Tier 5 #28: per-thread bypass. Isolated realms (JsRealm.Isolated=true)
+    // push a BypassScope across compile/execute so their bytecode is never
+    // mixed with another realm's cached entries. Implemented as ThreadStatic
+    // rather than AsyncLocal because the compiler runs synchronously on the
+    // caller thread.
+    [ThreadStatic] private static int _bypassDepth;
+
+    public static bool IsBypassed => _bypassDepth > 0;
+
+    public static IDisposable BypassScope() => new BypassToken();
+
+    private sealed class BypassToken : IDisposable
+    {
+        public BypassToken() => _bypassDepth++;
+        public void Dispose() => _bypassDepth--;
+    }
+
     public static bool TryGet(string sourceText, bool strictMode, out BytecodeFunction function)
     {
-        if (!Enabled || sourceText is null)
+        if (!Enabled || IsBypassed || sourceText is null)
         {
             function = null!;
             return false;
@@ -45,7 +62,7 @@ public static class BytecodeCache
 
     public static void Put(string sourceText, bool strictMode, BytecodeFunction function)
     {
-        if (!Enabled || sourceText is null || function is null) return;
+        if (!Enabled || IsBypassed || sourceText is null || function is null) return;
 
         var key = new CacheKey(sourceText, strictMode);
         lock (Sync)
