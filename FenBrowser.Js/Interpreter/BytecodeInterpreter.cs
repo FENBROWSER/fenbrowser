@@ -4787,7 +4787,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     // ECMA-262 12.2.8 RegularExpressionLiteral.
     // Parses raw text "/pattern/flags" into a RegExpObject with compiled .NET Regex.
-    private JsValue NewRegExpLiteral(string rawText)
+    internal JsValue NewRegExpLiteral(string rawText)
     {
         // rawText is "/pattern/flags" — find the last '/' to separate flags.
         var lastSlash = rawText.LastIndexOf('/');
@@ -12540,6 +12540,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     // invoke a single method rather than inline equivalent logic. Keeping
     // the implementation in one place avoids semantic drift between the
     // interpreter and the JIT.
+    internal JsValue CreateFunctionFromNestedForJit(InterpreterFrame frame, int nestedIndex)
+    {
+        var nested = frame.Function.NestedFunctions[nestedIndex];
+        return CreateFunctionObject(nested, frame.Environment);
+    }
+
+    internal JsValue NewRegExpForJit(InterpreterFrame frame, int constIndex)
+    {
+        var rawText = frame.Function.Constants[constIndex].AsString();
+        return NewRegExpLiteral(rawText);
+    }
+
+    internal void ThrowForJit(InterpreterFrame frame, JsValue value)
+    {
+        // Only safe to call from JIT when the function has no PushHandler
+        // instructions (which TryEmitExpressionTree enforces). Otherwise
+        // ThrowOrHandle could redirect frame.InstructionPointer to a
+        // catch/finally target that the JIT delegate has no label for.
+        ThrowOrHandle(frame, value);
+    }
+
     internal JsValue NewObjectForJit()
     {
         var handle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());

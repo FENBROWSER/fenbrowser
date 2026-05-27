@@ -177,6 +177,12 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.EnterScopeForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiLeaveScope = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.LeaveScopeForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiCreateFunctionFromNested = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.CreateFunctionFromNestedForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiNewRegExp = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.NewRegExpForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiThrow = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.ThrowForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly PropertyInfo PiRegisters = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Registers))!;
     private static readonly PropertyInfo PiFunction = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Function))!;
     private static readonly PropertyInfo PiConstants = typeof(BytecodeFunction).GetProperty(nameof(BytecodeFunction.Constants))!;
@@ -185,6 +191,18 @@ public static class JitCompiler
 
     private static JitDelegate? TryEmitExpressionTree(BytecodeFunction function)
     {
+        // Pre-pass: bail if the function contains any opcode that the
+        // current emitter does not handle — particularly handler ops,
+        // because Throw / ThrowOrHandle would otherwise redirect
+        // frame.InstructionPointer to a catch target the JIT delegate
+        // has no label for.
+        for (var i = 0; i < function.Instructions.Count; i++)
+        {
+            var op = function.Instructions[i].OpCode;
+            if (op == OpCode.PushHandler || op == OpCode.PopHandler || op == OpCode.EndFinally)
+                return null;
+        }
+
         var interpParam = Expression.Parameter(typeof(BytecodeInterpreter), "interp");
         var frameParam = Expression.Parameter(typeof(InterpreterFrame), "frame");
         var registersLocal = Expression.Variable(typeof(JsValue[]), "registers");
@@ -313,6 +331,25 @@ public static class JitCompiler
                 return true;
             case OpCode.LeaveScope:
                 body.Add(Expression.Call(interp, MiLeaveScope, frame));
+                return true;
+            case OpCode.CreateFunction:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.NestedFunctions.Count) return false;
+                body.Add(Expression.Assign(
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
+                    Expression.Call(interp, MiCreateFunctionFromNested, frame, Expression.Constant(ins.B))));
+                return true;
+            case OpCode.NewRegExp:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.Constants.Count) return false;
+                body.Add(Expression.Assign(
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
+                    Expression.Call(interp, MiNewRegExp, frame, Expression.Constant(ins.B))));
+                return true;
+            case OpCode.Throw:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                body.Add(Expression.Call(interp, MiThrow, frame,
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A))));
                 return true;
             // Future opcodes added here as the IL-emit work continues.
             default:
