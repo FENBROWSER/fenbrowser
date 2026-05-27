@@ -225,6 +225,32 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.DeleteForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiSetPrototypeOp = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.SetPrototypeForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiEnumerateKeys = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.EnumerateKeysForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiEnumerateValues = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.EnumerateValuesForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiForOfNext = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.ForOfNextForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiForInNext = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.ForInNextForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiDefinePrivateField = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.DefinePrivateFieldForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiGetPrivateField = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.GetPrivateFieldForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiSetPrivateField = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.SetPrivateFieldForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiCallSpread = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.CallSpreadForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiHandleDefineAccessor = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.HandleDefineAccessor), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiHandleDefineAccessorByReg = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.HandleDefineAccessorByReg), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiHandleSetHomeObject = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.HandleSetHomeObject), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiHandleLoadSuperProperty = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.HandleLoadSuperProperty), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiHandleLoadSuperConstructor = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.HandleLoadSuperConstructor), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly PropertyInfo PiRegisters = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Registers))!;
     private static readonly PropertyInfo PiFunction = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Function))!;
     private static readonly PropertyInfo PiConstants = typeof(BytecodeFunction).GetProperty(nameof(BytecodeFunction.Constants))!;
@@ -242,6 +268,11 @@ public static class JitCompiler
         {
             var op = function.Instructions[i].OpCode;
             if (op == OpCode.PushHandler || op == OpCode.PopHandler || op == OpCode.EndFinally)
+                return null;
+            // Frame-suspending ops can't be JIT'd — they need IP save/restore
+            // across delegate boundaries which the JIT lambda doesn't model.
+            if (op == OpCode.Yield || op == OpCode.YieldStar ||
+                op == OpCode.Await || op == OpCode.EnumerateValuesAsync)
                 return null;
         }
 
@@ -549,6 +580,83 @@ public static class JitCompiler
                 if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
                 body.Add(Expression.Call(interp, MiSetPrototypeOp, frame,
                     Expression.Constant(ins.A), Expression.Constant(ins.B)));
+                return true;
+            case OpCode.EnumerateKeys:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
+                body.Add(Expression.Assign(
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
+                    Expression.Call(interp, MiEnumerateKeys, frame, Expression.Constant(ins.B))));
+                return true;
+            case OpCode.EnumerateValues:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
+                body.Add(Expression.Assign(
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
+                    Expression.Call(interp, MiEnumerateValues, frame, Expression.Constant(ins.B))));
+                return true;
+            case OpCode.ForOfNext:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
+                if (ins.C < 0 || ins.C >= function.Instructions.Count) return false;
+                body.Add(Expression.IfThen(
+                    Expression.Call(interp, MiForOfNext, frame,
+                        Expression.Constant(ins.A), Expression.Constant(ins.B)),
+                    Expression.Goto(labels[ins.C])));
+                return true;
+            case OpCode.ForInNext:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
+                if (ins.C < 0 || ins.C >= function.Instructions.Count) return false;
+                body.Add(Expression.IfThen(
+                    Expression.Call(interp, MiForInNext, frame,
+                        Expression.Constant(ins.A), Expression.Constant(ins.B)),
+                    Expression.Goto(labels[ins.C])));
+                return true;
+            case OpCode.DefinePrivateField:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.PropertyNames.Count) return false;
+                if (ins.C < 0 || ins.C >= function.RegisterCount) return false;
+                body.Add(Expression.Call(interp, MiDefinePrivateField, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C)));
+                return true;
+            case OpCode.GetPrivateField:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
+                if (ins.C < 0 || ins.C >= function.PropertyNames.Count) return false;
+                body.Add(Expression.Call(interp, MiGetPrivateField, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C)));
+                return true;
+            case OpCode.SetPrivateField:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.PropertyNames.Count) return false;
+                if (ins.C < 0 || ins.C >= function.RegisterCount) return false;
+                body.Add(Expression.Call(interp, MiSetPrivateField, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C)));
+                return true;
+            case OpCode.CallSpread:
+                body.Add(Expression.Call(interp, MiCallSpread, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B),
+                    Expression.Constant(ins.C), Expression.Constant(ins.D)));
+                return true;
+            case OpCode.DefineGetter:
+            case OpCode.DefineSetter:
+                body.Add(Expression.Call(interp, MiHandleDefineAccessor, frame,
+                    Expression.Property(frame, PiFunction), Expression.Constant(ins)));
+                return true;
+            case OpCode.DefineGetterByReg:
+            case OpCode.DefineSetterByReg:
+                body.Add(Expression.Call(interp, MiHandleDefineAccessorByReg, frame, Expression.Constant(ins)));
+                return true;
+            case OpCode.SetHomeObject:
+                body.Add(Expression.Call(interp, MiHandleSetHomeObject, frame, Expression.Constant(ins)));
+                return true;
+            case OpCode.LoadSuperProperty:
+                body.Add(Expression.Call(interp, MiHandleLoadSuperProperty, frame,
+                    Expression.Property(frame, PiFunction), Expression.Constant(ins)));
+                return true;
+            case OpCode.LoadSuperConstructor:
+                body.Add(Expression.Call(interp, MiHandleLoadSuperConstructor, frame, Expression.Constant(ins)));
                 return true;
             // Future opcodes added here as the IL-emit work continues.
             default:

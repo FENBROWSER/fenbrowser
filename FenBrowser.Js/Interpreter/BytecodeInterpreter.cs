@@ -13039,6 +13039,100 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         frame.Registers[destReg] = DeleteName(frame, nameSlot);
     }
 
+    internal JsValue EnumerateKeysForJit(InterpreterFrame frame, int srcReg) =>
+        CreateForInIterator(frame.Registers[srcReg]);
+
+    internal JsValue EnumerateValuesForJit(InterpreterFrame frame, int srcReg) =>
+        CreateForOfIterator(frame.Registers[srcReg]);
+
+    // Returns true when the iterator is exhausted (JIT must goto end label).
+    internal bool ForOfNextForJit(InterpreterFrame frame, int destReg, int iterReg)
+    {
+        var iter = ResolveObject(frame.Registers[iterReg]) as ForOfIteratorObject
+            ?? throw new InvalidOperationException("Invalid for-of iterator object.");
+        if (!iter.TryMoveNext(out var value)) return true;
+        frame.Registers[destReg] = value;
+        return false;
+    }
+
+    internal bool ForInNextForJit(InterpreterFrame frame, int destReg, int iterReg)
+    {
+        var iter = ResolveObject(frame.Registers[iterReg]) as ForInIteratorObject
+            ?? throw new InvalidOperationException("Invalid for-in iterator object.");
+        if (!iter.TryMoveNext(out var key)) return true;
+        frame.Registers[destReg] = JsValue.FromString(key);
+        return false;
+    }
+
+    internal void DefinePrivateFieldForJit(InterpreterFrame frame, int targetReg, int nameIndex, int valueReg)
+    {
+        var function = frame.Function;
+        var target = frame.Registers[targetReg];
+        var name = function.PropertyNames[nameIndex];
+        var value = frame.Registers[valueReg];
+        if (target.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("Cannot define private field on non-object."));
+        var targetObj = _heap.GetObject(target.AsObjectHandle());
+        var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
+        targetObj.PrivateBrand = targetObj.PrivateBrand != 0 ? targetObj.PrivateBrand : brand;
+        targetObj.DefineOwnProperty(name, new JsPropertyDescriptor(value, Writable: true, Enumerable: false, Configurable: false));
+    }
+
+    internal void GetPrivateFieldForJit(InterpreterFrame frame, int destReg, int objReg, int nameIndex)
+    {
+        var function = frame.Function;
+        var objVal = frame.Registers[objReg];
+        var name = function.PropertyNames[nameIndex];
+        if (objVal.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("Cannot read private field from non-object."));
+        var obj = _heap.GetObject(objVal.AsObjectHandle());
+        var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
+        if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand)
+            throw new JsThrownException(CreateTypeError("Cannot read private field from an object whose class did not declare it."));
+        if (!obj.TryGetOwnProperty(name, out var desc))
+            throw new JsThrownException(CreateTypeError("Cannot read private field from an object whose class did not declare it."));
+        frame.Registers[destReg] = desc.Value;
+    }
+
+    internal void SetPrivateFieldForJit(InterpreterFrame frame, int objReg, int nameIndex, int valueReg)
+    {
+        var function = frame.Function;
+        var objVal = frame.Registers[objReg];
+        var name = function.PropertyNames[nameIndex];
+        var value = frame.Registers[valueReg];
+        if (objVal.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("Cannot write private field to non-object."));
+        var obj = _heap.GetObject(objVal.AsObjectHandle());
+        var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
+        if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand || !obj.TryGetOwnProperty(name, out var existing))
+            throw new JsThrownException(CreateTypeError("Cannot write private field to an object whose class did not declare it."));
+        obj.DefineOwnProperty(name, existing with { Value = value });
+    }
+
+    internal void CallSpreadForJit(InterpreterFrame frame, int destReg, int calleeReg, int spreadReg, int thisReg)
+    {
+        var spreadArray = frame.Registers[spreadReg];
+        var unpackedArgs = Array.Empty<JsValue>();
+        if (spreadArray.Tag == JsValueTag.Object)
+        {
+            var arrObj = _heap.GetObject(spreadArray.AsObjectHandle());
+            if (arrObj.TryGetOwnProperty("length", out var lenDesc))
+            {
+                var len = (int)lenDesc.Value.AsNumber();
+                unpackedArgs = new JsValue[len];
+                for (var i = 0; i < len; i++)
+                {
+                    unpackedArgs[i] = arrObj.TryGetOwnProperty(i.ToString(), out var elemDesc)
+                        ? elemDesc.Value
+                        : JsValue.Undefined;
+                }
+            }
+        }
+
+        var thisValue = thisReg == 0 ? JsValue.Undefined : frame.Registers[thisReg];
+        StoreCallResult(frame, destReg, frame.Registers[calleeReg], unpackedArgs, thisValue, icOffset: -1);
+    }
+
     internal void SetPrototypeForJit(InterpreterFrame frame, int childReg, int parentReg)
     {
         var childValue = frame.Registers[childReg];
@@ -13283,7 +13377,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return _heap.GetObject(ResolveObjectHandle(value));
     }
 
-    private void HandleDefineAccessor(InterpreterFrame frame, BytecodeFunction function, Instruction ins)
+    internal void HandleDefineAccessor(InterpreterFrame frame, BytecodeFunction function, Instruction ins)
     {
         // H.4 - install or update an accessor descriptor on the target object
         // under the given property name. Preserves the companion half (get/set)
@@ -13329,7 +13423,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     // H.5 - HandleDefineAccessorByReg: Like HandleDefineAccessor but the property
     // key is a JsValue in a register (for computed property names) instead of an
     // index into the constant pool.
-    private void HandleDefineAccessorByReg(InterpreterFrame frame, Instruction ins)
+    internal void HandleDefineAccessorByReg(InterpreterFrame frame, Instruction ins)
     {
         var targetValue = frame.Registers[ins.A];
         if (targetValue.Tag != JsValueTag.Object)
@@ -13371,7 +13465,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
     }
 
-    private void HandleSetHomeObject(InterpreterFrame frame, Instruction ins)
+    internal void HandleSetHomeObject(InterpreterFrame frame, Instruction ins)
     {
         var fnValue = frame.Registers[ins.A];
         var homeValue = frame.Registers[ins.B];
@@ -13383,7 +13477,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
     }
 
-    private void HandleLoadSuperProperty(InterpreterFrame frame, BytecodeFunction function, Instruction ins)
+    internal void HandleLoadSuperProperty(InterpreterFrame frame, BytecodeFunction function, Instruction ins)
     {
         // ECMA-262 13.3.7.3 MakeSuperPropertyReference + 9.1.2 GetSuperBase.
         var name = function.PropertyNames[ins.B];
@@ -13406,7 +13500,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             : JsValue.Undefined;
     }
 
-    private void HandleLoadSuperConstructor(InterpreterFrame frame, Instruction ins)
+    internal void HandleLoadSuperConstructor(InterpreterFrame frame, Instruction ins)
     {
         // ECMA-262 13.3.7.4 GetSuperConstructor: read the active function's
         // HomeObject (which the class compiler sets to the class itself for the
