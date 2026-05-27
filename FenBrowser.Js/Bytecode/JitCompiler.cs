@@ -52,41 +52,118 @@ public static class JitCompiler
         // yields the register. No environment lookups, no allocation, no
         // observable side effect. The compiled delegate produces the
         // same result as the interpreter for every call.
-        if (function.Instructions.Count < 2) return null;
-        var last = function.Instructions[^1];
-        if (last.OpCode != OpCode.Return) return null;
+        if (function.Instructions.Count < 1) return null;
 
-        // Track each register's static value as we walk forward. Slot is
-        // null if the register has not been touched by an opcode in the
-        // whitelist (e.g., a parameter binding). A Return that names such
-        // a register cannot be folded to a constant here, so we bail.
+        // Abstract-interpret the function following control flow. Each
+        // register holds a statically-known JsValue or null (unknown).
+        // Unconditional Jump follows the target; JumpIfFalse follows the
+        // statically-resolved branch if the condition is known. An unknown
+        // condition causes the whole compile to bail. Bounded iteration
+        // cap protects against statically-true loops that would otherwise
+        // spin forever in the abstract interpreter.
         var registerValues = new JsValue?[function.RegisterCount];
+        var ip = 0;
+        var stepsRemaining = function.Instructions.Count * 4;
 
-        for (var i = 0; i < function.Instructions.Count - 1; i++)
+        while (stepsRemaining-- > 0)
         {
-            var ins = function.Instructions[i];
+            if ((uint)ip >= (uint)function.Instructions.Count) return null;
+            var ins = function.Instructions[ip];
             switch (ins.OpCode)
             {
                 case OpCode.LoadConst:
                     if (ins.A < 0 || ins.A >= function.RegisterCount) return null;
                     if (ins.B < 0 || ins.B >= function.Constants.Count) return null;
                     registerValues[ins.A] = function.Constants[ins.B];
+                    ip++;
                     break;
                 case OpCode.Move:
                     if (ins.A < 0 || ins.A >= function.RegisterCount) return null;
                     if (ins.B < 0 || ins.B >= function.RegisterCount) return null;
                     if (registerValues[ins.B] is not { } srcValue) return null;
                     registerValues[ins.A] = srcValue;
+                    ip++;
                     break;
+                case OpCode.Add:
+                case OpCode.Sub:
+                case OpCode.Mul:
+                case OpCode.Div:
+                    if (!TryFoldNumericBinop(function, ins, registerValues, out var foldedValue))
+                        return null;
+                    registerValues[ins.A] = foldedValue;
+                    ip++;
+                    break;
+                case OpCode.Jump:
+                    if (ins.A < 0 || ins.A >= function.Instructions.Count) return null;
+                    ip = ins.A;
+                    break;
+                case OpCode.JumpIfFalse:
+                    if (ins.A < 0 || ins.A >= function.RegisterCount) return null;
+                    if (ins.B < 0 || ins.B >= function.Instructions.Count) return null;
+                    if (registerValues[ins.A] is not { } condValue) return null;
+                    ip = IsTruthy(condValue) ? ip + 1 : ins.B;
+                    break;
+                case OpCode.Return:
+                    if (ins.A < 0 || ins.A >= function.RegisterCount) return null;
+                    if (registerValues[ins.A] is not { } returnValue) return null;
+                    Interlocked.Increment(ref CompileSuccesses);
+                    return (_, _) => returnValue;
                 default:
-                    return null; // unsupported opcode — bail.
+                    return null;
             }
         }
 
-        if (last.A < 0 || last.A >= function.RegisterCount) return null;
-        if (registerValues[last.A] is not { } returnValue) return null;
+        // Iteration cap exhausted — likely a runtime-dependent loop.
+        return null;
+    }
 
-        Interlocked.Increment(ref CompileSuccesses);
-        return (_, _) => returnValue;
+    // ECMA-262 7.1.2 ToBoolean used only for JumpIfFalse condition
+    // resolution against compile-time-known values.
+    private static bool IsTruthy(JsValue v) => v.Tag switch
+    {
+        JsValueTag.Undefined => false,
+        JsValueTag.Null => false,
+        JsValueTag.Boolean => v.AsBoolean(),
+        JsValueTag.Int32 => v.AsInt32() != 0,
+        JsValueTag.Number => v.AsNumber() != 0 && !double.IsNaN(v.AsNumber()),
+        JsValueTag.String => v.AsString().Length > 0,
+        _ => true,
+    };
+
+    // Tier 4 #24 (arithmetic extension): constant-fold a numeric binary
+    // opcode at compile time. Both operands must already be known
+    // numeric constants — anything that depends on runtime parameter or
+    // identifier values bails out. Semantics mirror the interpreter's
+    // double-precision arithmetic; string concatenation via Add is not
+    // attempted because that would also need to model ToPrimitive.
+    private static bool TryFoldNumericBinop(BytecodeFunction function, Instruction ins, JsValue?[] regs, out JsValue result)
+    {
+        result = default;
+        if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+        if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
+        if (ins.C < 0 || ins.C >= function.RegisterCount) return false;
+        if (regs[ins.B] is not { } lhs || regs[ins.C] is not { } rhs) return false;
+        if (!TryGetNumber(lhs, out var ln) || !TryGetNumber(rhs, out var rn)) return false;
+
+        double folded = ins.OpCode switch
+        {
+            OpCode.Add => ln + rn,
+            OpCode.Sub => ln - rn,
+            OpCode.Mul => ln * rn,
+            OpCode.Div => ln / rn,
+            _ => double.NaN,
+        };
+        result = JsValue.FromNumber(folded);
+        return true;
+    }
+
+    private static bool TryGetNumber(JsValue v, out double n)
+    {
+        switch (v.Tag)
+        {
+            case JsValueTag.Number: n = v.AsNumber(); return true;
+            case JsValueTag.Int32: n = v.AsInt32(); return true;
+            default: n = 0; return false;
+        }
     }
 }

@@ -37,6 +37,23 @@ public class JsObject : ITraceable
 
     public bool Extensible { get; private set; } = true;
 
+    // Tier 4 #22: GC bookkeeping. Set by JsHeap.AllocateObject when this
+    // object is registered with the heap. WriteBarrier on every
+    // object-valued property write keeps the generational remembered set
+    // accurate without forcing every callsite to remember to barrier.
+    internal ObjectHandle? OwnerHandle;
+    internal JsHeap? OwnerHeap;
+
+    private void BarrierIfObject(JsValue value)
+    {
+        if (value.Tag == JsValueTag.Object &&
+            OwnerHandle is { } owner &&
+            OwnerHeap is { } heap)
+        {
+            heap.WriteBarrier(owner, value.AsObjectHandle());
+        }
+    }
+
     // Internal accessors for inline caches.
     internal Shape CurrentShape => _shape;
     internal JsPropertyDescriptor?[] PropertyArray => _properties;
@@ -52,6 +69,12 @@ public class JsObject : ITraceable
         if (_shape.TryGetSlot(key, out var existingSlot))
         {
             _properties[existingSlot] = descriptor;
+            BarrierIfObject(descriptor.Value);
+            if (descriptor.IsAccessor)
+            {
+                BarrierIfObject(descriptor.Get);
+                BarrierIfObject(descriptor.Set);
+            }
             return true;
         }
 
@@ -65,6 +88,12 @@ public class JsObject : ITraceable
             _properties = bigger;
         }
         _properties[slot] = descriptor;
+        BarrierIfObject(descriptor.Value);
+        if (descriptor.IsAccessor)
+        {
+            BarrierIfObject(descriptor.Get);
+            BarrierIfObject(descriptor.Set);
+        }
         return true;
     }
 
@@ -95,11 +124,17 @@ public class JsObject : ITraceable
         }
     }
 
-    // Symbol-keyed property access (unchanged).
+    // Symbol-keyed property access.
     public bool DefineOwnSymbolProperty(long symbolId, JsPropertyDescriptor descriptor)
     {
         _symbolProperties ??= new Dictionary<long, JsPropertyDescriptor>();
         _symbolProperties[symbolId] = descriptor;
+        BarrierIfObject(descriptor.Value);
+        if (descriptor.IsAccessor)
+        {
+            BarrierIfObject(descriptor.Get);
+            BarrierIfObject(descriptor.Set);
+        }
         return true;
     }
 
@@ -154,6 +189,7 @@ public class JsObject : ITraceable
         {
             if (!existing.Writable) return false;
             _properties[slot] = existing with { Value = value };
+            BarrierIfObject(value);
             return true;
         }
         DefineOwnProperty(key, new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
@@ -174,6 +210,10 @@ public class JsObject : ITraceable
     public void SetPrototype(ObjectHandle? prototypeHandle)
     {
         PrototypeHandle = prototypeHandle;
+        if (prototypeHandle is { } proto && OwnerHandle is { } owner && OwnerHeap is { } heap)
+        {
+            heap.WriteBarrier(owner, proto);
+        }
     }
 
     public virtual void Trace(IHeapTracer tracer)

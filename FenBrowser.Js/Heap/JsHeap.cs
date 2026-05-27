@@ -77,6 +77,12 @@ public sealed class JsHeap
         MaybeStressGc();
 
         var handle = AllocateCell(HeapCellKind.Object, obj);
+        var objHandle = new ObjectHandle(handle.Index, handle.Generation);
+        // Tier 4 #22: stamp the freshly-allocated object with its handle
+        // and owning heap so JsObject.SetProperty / DefineOwnProperty can
+        // emit write barriers centrally.
+        obj.OwnerHandle = objHandle;
+        obj.OwnerHeap = this;
 
         if (_stressMode == GcStressMode.AfterEveryAlloc)
         {
@@ -87,7 +93,7 @@ public sealed class JsHeap
             MaybeAutoMinorCollect();
         }
 
-        return new ObjectHandle(handle.Index, handle.Generation);
+        return objHandle;
     }
 
     public StringHandle AllocateString(string value, AllocationSite site)
@@ -241,7 +247,13 @@ public sealed class JsHeap
             if (cell is not null) cell.Marked = false;
         }
 
-        var marker = new MarkingTracer(this);
+        // Tier 4 #22: minor-mode tracer stops at Old cells. Soundness
+        // depends on every Old→Young pointer being in the remembered
+        // set — which is now true because JsObject.SetProperty /
+        // DefineOwnProperty / DefineOwnSymbolProperty / SetPrototype
+        // all funnel through BarrierIfObject.
+        _currentMarkMinorMode = true;
+        var marker = new MarkingTracer(this, minorMode: true);
         foreach (var root in _roots.Snapshot()) marker.Trace(root);
         foreach (var root in _roots.StringSnapshot()) marker.Trace(root);
         foreach (var root in _roots.SymbolSnapshot()) marker.Trace(root);
@@ -289,6 +301,7 @@ public sealed class JsHeap
 
         _lastMinorMarked = _cells.Count(c => c is not null && c.Marked);
         PruneStaleRememberedSetEntries();
+        _currentMarkMinorMode = false;
 
         if (_verifyHeapAfterGc) _verifier.Verify(this);
     }
@@ -441,6 +454,11 @@ public sealed class JsHeap
         return cell is not null && cell.Generation == handle.Generation && cell.Kind == HeapCellKind.Object;
     }
 
+    // Tier 4 #22: the minor-mode tracer needs to propagate through nested
+    // child traces, so Mark takes the mode and constructs a matching
+    // tracer for the recursive Trace call.
+    private bool _currentMarkMinorMode;
+
     private void Mark(ObjectHandle handle)
     {
         var cell = Validate(handle);
@@ -451,7 +469,7 @@ public sealed class JsHeap
 
         cell.Marked = true;
         _lastGcMarkedCells++;
-        cell.Payload.Trace(new MarkingTracer(this));
+        cell.Payload.Trace(new MarkingTracer(this, _currentMarkMinorMode));
     }
 
     private void Mark(StringHandle handle)
@@ -464,7 +482,7 @@ public sealed class JsHeap
 
         cell.Marked = true;
         _lastGcMarkedCells++;
-        cell.Payload.Trace(new MarkingTracer(this));
+        cell.Payload.Trace(new MarkingTracer(this, _currentMarkMinorMode));
     }
 
     private void Mark(SymbolHandle handle)
@@ -477,7 +495,7 @@ public sealed class JsHeap
 
         cell.Marked = true;
         _lastGcMarkedCells++;
-        cell.Payload.Trace(new MarkingTracer(this));
+        cell.Payload.Trace(new MarkingTracer(this, _currentMarkMinorMode));
     }
 
     private (int Index, int Generation) AllocateCell(HeapCellKind kind, ITraceable payload)
@@ -551,26 +569,42 @@ public sealed class JsHeap
     private sealed class MarkingTracer : IHeapTracer
     {
         private readonly JsHeap _heap;
+        // Tier 4 #22: when true, mark traversal stops at Old cells. The
+        // remembered set is responsible for keeping any reachable Young
+        // children of those Old cells alive. Major collections set this
+        // false and mark everything.
+        private readonly bool _minorMode;
 
-        public MarkingTracer(JsHeap heap)
+        public MarkingTracer(JsHeap heap, bool minorMode = false)
         {
             _heap = heap;
+            _minorMode = minorMode;
         }
 
         public void Trace(ObjectHandle handle)
         {
+            if (_minorMode && _heap.IsOld(handle.Index)) return;
             _heap.Mark(handle);
         }
 
         public void Trace(StringHandle handle)
         {
+            if (_minorMode && _heap.IsOld(handle.Index)) return;
             _heap.Mark(handle);
         }
 
         public void Trace(SymbolHandle handle)
         {
+            if (_minorMode && _heap.IsOld(handle.Index)) return;
             _heap.Mark(handle);
         }
+    }
+
+    internal bool IsOld(int index)
+    {
+        if ((uint)index >= (uint)_cells.Count) return false;
+        var cell = _cells[index];
+        return cell is not null && cell.Tier == GenerationTier.Old;
     }
 
     private sealed class StringPayload : ITraceable
