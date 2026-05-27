@@ -88,9 +88,38 @@ public static class JitCompiler
                 case OpCode.Sub:
                 case OpCode.Mul:
                 case OpCode.Div:
-                    if (!TryFoldNumericBinop(function, ins, registerValues, out var foldedValue))
+                case OpCode.Mod:
+                case OpCode.Exp:
+                case OpCode.BitAnd:
+                case OpCode.BitOr:
+                case OpCode.BitXor:
+                case OpCode.ShiftLeft:
+                case OpCode.ShiftRight:
+                case OpCode.UnsignedShiftRight:
+                case OpCode.Eq:
+                case OpCode.Neq:
+                case OpCode.StrictEq:
+                case OpCode.StrictNeq:
+                case OpCode.Lt:
+                case OpCode.Gt:
+                case OpCode.Le:
+                case OpCode.Ge:
+                case OpCode.And:
+                case OpCode.Or:
+                    if (!TryFoldBinop(function, ins, registerValues, out var foldedValue))
                         return null;
                     registerValues[ins.A] = foldedValue;
+                    ip++;
+                    break;
+                case OpCode.Not:
+                case OpCode.Pos:
+                case OpCode.Neg:
+                case OpCode.BitNot:
+                case OpCode.Void:
+                case OpCode.TypeOf:
+                    if (!TryFoldUnaryOp(function, ins, registerValues, out var foldedUnary))
+                        return null;
+                    registerValues[ins.A] = foldedUnary;
                     ip++;
                     break;
                 case OpCode.Jump:
@@ -130,31 +159,167 @@ public static class JitCompiler
         _ => true,
     };
 
-    // Tier 4 #24 (arithmetic extension): constant-fold a numeric binary
-    // opcode at compile time. Both operands must already be known
-    // numeric constants — anything that depends on runtime parameter or
-    // identifier values bails out. Semantics mirror the interpreter's
-    // double-precision arithmetic; string concatenation via Add is not
-    // attempted because that would also need to model ToPrimitive.
-    private static bool TryFoldNumericBinop(BytecodeFunction function, Instruction ins, JsValue?[] regs, out JsValue result)
+    // Tier 4 #24 (binary opcode coverage): constant-fold a binary opcode
+    // when both operands have known compile-time values. Numeric ops use
+    // double-precision IEEE-754 semantics (matching the interpreter);
+    // Add additionally folds string-string concatenation; the equality
+    // family handles primitive operand pairs only. Anything that depends
+    // on runtime values bails to the interpreter.
+    private static bool TryFoldBinop(BytecodeFunction function, Instruction ins, JsValue?[] regs, out JsValue result)
     {
         result = default;
         if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
         if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
         if (ins.C < 0 || ins.C >= function.RegisterCount) return false;
         if (regs[ins.B] is not { } lhs || regs[ins.C] is not { } rhs) return false;
-        if (!TryGetNumber(lhs, out var ln) || !TryGetNumber(rhs, out var rn)) return false;
 
-        double folded = ins.OpCode switch
+        switch (ins.OpCode)
         {
-            OpCode.Add => ln + rn,
-            OpCode.Sub => ln - rn,
-            OpCode.Mul => ln * rn,
-            OpCode.Div => ln / rn,
-            _ => double.NaN,
+            case OpCode.Add:
+                if (lhs.Tag == JsValueTag.String && rhs.Tag == JsValueTag.String)
+                { result = JsValue.FromString(lhs.AsString() + rhs.AsString()); return true; }
+                if (!TryGetNumber(lhs, out var addL) || !TryGetNumber(rhs, out var addR)) return false;
+                result = JsValue.FromNumber(addL + addR); return true;
+            case OpCode.Sub:
+            case OpCode.Mul:
+            case OpCode.Div:
+            case OpCode.Mod:
+            case OpCode.Exp:
+                if (!TryGetNumber(lhs, out var nL) || !TryGetNumber(rhs, out var nR)) return false;
+                result = JsValue.FromNumber(ins.OpCode switch
+                {
+                    OpCode.Sub => nL - nR,
+                    OpCode.Mul => nL * nR,
+                    OpCode.Div => nL / nR,
+                    OpCode.Mod => nL % nR,
+                    OpCode.Exp => Math.Pow(nL, nR),
+                    _ => double.NaN,
+                });
+                return true;
+            case OpCode.BitAnd:
+            case OpCode.BitOr:
+            case OpCode.BitXor:
+                if (!TryGetInt32(lhs, out var iL) || !TryGetInt32(rhs, out var iR)) return false;
+                result = JsValue.FromInt32(ins.OpCode switch
+                {
+                    OpCode.BitAnd => iL & iR,
+                    OpCode.BitOr => iL | iR,
+                    OpCode.BitXor => iL ^ iR,
+                    _ => 0,
+                });
+                return true;
+            case OpCode.ShiftLeft:
+            case OpCode.ShiftRight:
+                if (!TryGetInt32(lhs, out var sL) || !TryGetInt32(rhs, out var sR)) return false;
+                var shift = sR & 0x1F;
+                result = JsValue.FromInt32(ins.OpCode == OpCode.ShiftLeft ? sL << shift : sL >> shift);
+                return true;
+            case OpCode.UnsignedShiftRight:
+                if (!TryGetInt32(lhs, out var uL) || !TryGetInt32(rhs, out var uR)) return false;
+                var ushift = uR & 0x1F;
+                result = JsValue.FromNumber((double)((uint)uL >> ushift));
+                return true;
+            case OpCode.StrictEq:
+                result = JsValue.FromBoolean(StrictEquals(lhs, rhs)); return true;
+            case OpCode.StrictNeq:
+                result = JsValue.FromBoolean(!StrictEquals(lhs, rhs)); return true;
+            case OpCode.Eq:
+            case OpCode.Neq:
+                // Loose equality across distinct types needs ToPrimitive
+                // and string→number coercion paths that we don't model
+                // here. Same-type loose equality reduces to strict.
+                if (lhs.Tag != rhs.Tag) return false;
+                var eqResult = StrictEquals(lhs, rhs);
+                result = JsValue.FromBoolean(ins.OpCode == OpCode.Eq ? eqResult : !eqResult);
+                return true;
+            case OpCode.Lt:
+            case OpCode.Gt:
+            case OpCode.Le:
+            case OpCode.Ge:
+                if (!TryGetNumber(lhs, out var cL) || !TryGetNumber(rhs, out var cR)) return false;
+                if (double.IsNaN(cL) || double.IsNaN(cR))
+                { result = JsValue.FromBoolean(false); return true; }
+                result = JsValue.FromBoolean(ins.OpCode switch
+                {
+                    OpCode.Lt => cL < cR,
+                    OpCode.Gt => cL > cR,
+                    OpCode.Le => cL <= cR,
+                    OpCode.Ge => cL >= cR,
+                    _ => false,
+                });
+                return true;
+            case OpCode.And:
+                // ECMA-262 short-circuit: returns the left value if falsy,
+                // otherwise the right value. Both must be known.
+                result = IsTruthy(lhs) ? rhs : lhs; return true;
+            case OpCode.Or:
+                result = IsTruthy(lhs) ? lhs : rhs; return true;
+        }
+        return false;
+    }
+
+    private static bool TryFoldUnaryOp(BytecodeFunction function, Instruction ins, JsValue?[] regs, out JsValue result)
+    {
+        result = default;
+        if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+        if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
+        if (regs[ins.B] is not { } v) return false;
+
+        switch (ins.OpCode)
+        {
+            case OpCode.Not:
+                result = JsValue.FromBoolean(!IsTruthy(v)); return true;
+            case OpCode.Void:
+                result = JsValue.Undefined; return true;
+            case OpCode.Pos:
+                if (!TryGetNumber(v, out var pn)) return false;
+                result = JsValue.FromNumber(pn); return true;
+            case OpCode.Neg:
+                if (!TryGetNumber(v, out var nn)) return false;
+                result = JsValue.FromNumber(-nn); return true;
+            case OpCode.BitNot:
+                if (!TryGetInt32(v, out var bi)) return false;
+                result = JsValue.FromInt32(~bi); return true;
+            case OpCode.TypeOf:
+                result = JsValue.FromString(v.Tag switch
+                {
+                    JsValueTag.Undefined => "undefined",
+                    JsValueTag.Null => "object",
+                    JsValueTag.Boolean => "boolean",
+                    JsValueTag.Int32 or JsValueTag.Number => "number",
+                    JsValueTag.String => "string",
+                    JsValueTag.Symbol => "symbol",
+                    JsValueTag.BigInt => "bigint",
+                    _ => "object",
+                });
+                return true;
+        }
+        return false;
+    }
+
+    private static bool StrictEquals(JsValue a, JsValue b)
+    {
+        if (a.Tag != b.Tag)
+        {
+            // Numeric tags compare across Int32/Number per ECMA-262 7.2.15.
+            if ((a.Tag == JsValueTag.Int32 || a.Tag == JsValueTag.Number) &&
+                (b.Tag == JsValueTag.Int32 || b.Tag == JsValueTag.Number))
+            {
+                TryGetNumber(a, out var na);
+                TryGetNumber(b, out var nb);
+                return na == nb;
+            }
+            return false;
+        }
+        return a.Tag switch
+        {
+            JsValueTag.Undefined or JsValueTag.Null => true,
+            JsValueTag.Boolean => a.AsBoolean() == b.AsBoolean(),
+            JsValueTag.Int32 => a.AsInt32() == b.AsInt32(),
+            JsValueTag.Number => a.AsNumber() == b.AsNumber(),
+            JsValueTag.String => string.Equals(a.AsString(), b.AsString(), StringComparison.Ordinal),
+            _ => false, // objects/symbols/bigints require identity that we don't track here
         };
-        result = JsValue.FromNumber(folded);
-        return true;
     }
 
     private static bool TryGetNumber(JsValue v, out double n)
@@ -163,6 +328,24 @@ public static class JitCompiler
         {
             case JsValueTag.Number: n = v.AsNumber(); return true;
             case JsValueTag.Int32: n = v.AsInt32(); return true;
+            case JsValueTag.Boolean: n = v.AsBoolean() ? 1 : 0; return true;
+            case JsValueTag.Null: n = 0; return true;
+            default: n = 0; return false;
+        }
+    }
+
+    private static bool TryGetInt32(JsValue v, out int n)
+    {
+        switch (v.Tag)
+        {
+            case JsValueTag.Int32: n = v.AsInt32(); return true;
+            case JsValueTag.Number:
+                var d = v.AsNumber();
+                if (double.IsNaN(d) || double.IsInfinity(d)) { n = 0; return true; }
+                n = unchecked((int)(uint)d);
+                return true;
+            case JsValueTag.Boolean: n = v.AsBoolean() ? 1 : 0; return true;
+            case JsValueTag.Null: n = 0; return true;
             default: n = 0; return false;
         }
     }
