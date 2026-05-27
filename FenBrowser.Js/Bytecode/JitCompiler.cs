@@ -39,19 +39,54 @@ public static class JitCompiler
         Interlocked.Increment(ref CompileAttempts);
         if (function is null || function.Instructions.Count == 0) return null;
 
-        // Whitelist: only trivial straight-line bodies. The simplest viable
-        // shape is `LoadConst RA, constIdx; Return RA` (a constant-returning
-        // function), which is what we recognize here.
-        if (function.Instructions.Count != 2) return null;
-        var loadIns = function.Instructions[0];
-        var retIns = function.Instructions[1];
-        if (loadIns.OpCode != OpCode.LoadConst) return null;
-        if (retIns.OpCode != OpCode.Return) return null;
-        if (loadIns.A != retIns.A) return null;
-        if (loadIns.B < 0 || loadIns.B >= function.Constants.Count) return null;
+        // Whitelist: straight-line bodies composed of LoadConst and Move
+        // followed by a single Return. The JIT abstract-interprets the
+        // sequence to compute the final value of the returned register
+        // and bakes it into the returned delegate. Anything outside this
+        // shape (calls, jumps, arithmetic, side effects, handlers) bails
+        // to the interpreter.
+        //
+        // Why this is sound: every selected opcode is purely intra-frame
+        // register manipulation with deterministic semantics — LoadConst
+        // copies a constant table entry, Move copies a register, Return
+        // yields the register. No environment lookups, no allocation, no
+        // observable side effect. The compiled delegate produces the
+        // same result as the interpreter for every call.
+        if (function.Instructions.Count < 2) return null;
+        var last = function.Instructions[^1];
+        if (last.OpCode != OpCode.Return) return null;
 
-        var constantValue = function.Constants[loadIns.B];
+        // Track each register's static value as we walk forward. Slot is
+        // null if the register has not been touched by an opcode in the
+        // whitelist (e.g., a parameter binding). A Return that names such
+        // a register cannot be folded to a constant here, so we bail.
+        var registerValues = new JsValue?[function.RegisterCount];
+
+        for (var i = 0; i < function.Instructions.Count - 1; i++)
+        {
+            var ins = function.Instructions[i];
+            switch (ins.OpCode)
+            {
+                case OpCode.LoadConst:
+                    if (ins.A < 0 || ins.A >= function.RegisterCount) return null;
+                    if (ins.B < 0 || ins.B >= function.Constants.Count) return null;
+                    registerValues[ins.A] = function.Constants[ins.B];
+                    break;
+                case OpCode.Move:
+                    if (ins.A < 0 || ins.A >= function.RegisterCount) return null;
+                    if (ins.B < 0 || ins.B >= function.RegisterCount) return null;
+                    if (registerValues[ins.B] is not { } srcValue) return null;
+                    registerValues[ins.A] = srcValue;
+                    break;
+                default:
+                    return null; // unsupported opcode — bail.
+            }
+        }
+
+        if (last.A < 0 || last.A >= function.RegisterCount) return null;
+        if (registerValues[last.A] is not { } returnValue) return null;
+
         Interlocked.Increment(ref CompileSuccesses);
-        return (_, _) => constantValue;
+        return (_, _) => returnValue;
     }
 }

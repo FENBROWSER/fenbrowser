@@ -29,6 +29,14 @@ public sealed class JsHeap
     // Tier 4 #22: after this many minor collections, a surviving Young cell
     // is promoted to Old. Default mirrors common nursery survival heuristics.
     public byte PromotionThreshold { get; set; } = 2;
+
+    // Tier 4 #22: auto-trigger a MinorCollect after this many Young
+    // allocations. Zero disables the auto-trigger (caller drives GC
+    // manually). Default is conservative — large enough that test suites
+    // don't pay nursery overhead unnecessarily, small enough that long
+    // allocation-heavy runs see periodic minor sweeps.
+    public int YoungAllocationsPerMinorGc { get; set; } = 4096;
+    private int _youngAllocationsSinceLastMinorGc;
     private readonly bool _verifyHeapBeforeGc;
     private readonly bool _verifyHeapAfterGc;
     private readonly HeapVerifier _verifier = new();
@@ -73,6 +81,10 @@ public sealed class JsHeap
         if (_stressMode == GcStressMode.AfterEveryAlloc)
         {
             CollectGarbage();
+        }
+        else
+        {
+            MaybeAutoMinorCollect();
         }
 
         return new ObjectHandle(handle.Index, handle.Generation);
@@ -279,6 +291,19 @@ public sealed class JsHeap
         PruneStaleRememberedSetEntries();
 
         if (_verifyHeapAfterGc) _verifier.Verify(this);
+    }
+
+    // Tier 4 #22: invoked from AllocateObject. Skipped in stress modes
+    // because those drive collection on their own cadence.
+    private void MaybeAutoMinorCollect()
+    {
+        if (YoungAllocationsPerMinorGc <= 0) return;
+        _youngAllocationsSinceLastMinorGc++;
+        if (_youngAllocationsSinceLastMinorGc >= YoungAllocationsPerMinorGc)
+        {
+            _youngAllocationsSinceLastMinorGc = 0;
+            MinorCollect();
+        }
     }
 
     private void PruneStaleRememberedSetEntries()
