@@ -41,6 +41,7 @@ public sealed class BytecodeFunction
 
     internal Dictionary<int, PolymorphicInlineCache>? LoadICs { get; set; }
     internal Dictionary<int, PolymorphicInlineCache>? StoreICs { get; set; }
+    internal Dictionary<int, CallICEntry>? CallICs { get; set; }
 
     // Brand tokens for private fields/methods. Each class with private members
     // gets a unique long token. The D field on DefinePrivateField/GetPrivateField/

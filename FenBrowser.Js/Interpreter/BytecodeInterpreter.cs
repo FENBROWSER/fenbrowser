@@ -1197,9 +1197,32 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     var keyValue = frame.Registers[ins.C];
                     try
                     {
-                        frame.Registers[ins.A] = keyValue.Tag == JsValueTag.Symbol
-                            ? GetReceiverSymbolProperty(receiver, keyValue.AsSymbolId())
-                            : GetReceiverProperty(receiver, ToPropertyKey(keyValue));
+                        if (keyValue.Tag == JsValueTag.Symbol)
+                        {
+                            frame.Registers[ins.A] = GetReceiverSymbolProperty(receiver, keyValue.AsSymbolId());
+                        }
+                        else
+                        {
+                            // Tier 4 #20: GetElem IC fast path for the common
+                            // `obj["foo"]` (string-keyed) form. Other key types
+                            // (Int32 indices into Arrays, Number, etc.) fall
+                            // through to the generic ToPropertyKey path.
+                            var icOffsetElem = frame.InstructionPointer - 1;
+                            if (keyValue.Tag == JsValueTag.String &&
+                                TryGetElemStringIC(function, icOffsetElem, receiver, keyValue.AsString(), out var elemResult))
+                            {
+                                frame.Registers[ins.A] = elemResult;
+                            }
+                            else
+                            {
+                                var propKey = ToPropertyKey(keyValue);
+                                frame.Registers[ins.A] = GetReceiverProperty(receiver, propKey);
+                                if (keyValue.Tag == JsValueTag.String)
+                                {
+                                    PopulateGetElemStringIC(function, icOffsetElem, receiver, propKey);
+                                }
+                            }
+                        }
                     }
                     catch (JsThrownException ex)
                     {
@@ -1224,7 +1247,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                         frame.Registers[ins.B],
                         Array.Empty<JsValue>(),
                         JsValue.Undefined,
-                        allowDirectEval: ins.E == DirectEvalCallFlag);
+                        allowDirectEval: ins.E == DirectEvalCallFlag,
+                        icOffset: frame.InstructionPointer - 1);
                     break;
                 }
                 case OpCode.Call1:
@@ -1235,17 +1259,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                         frame.Registers[ins.B],
                         new[] { frame.Registers[ins.C] },
                         JsValue.Undefined,
-                        allowDirectEval: ins.E == DirectEvalCallFlag);
+                        allowDirectEval: ins.E == DirectEvalCallFlag,
+                        icOffset: frame.InstructionPointer - 1);
                     break;
                 }
                 case OpCode.CallMethod0:
                 {
-                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], Array.Empty<JsValue>(), frame.Registers[ins.C]);
+                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], Array.Empty<JsValue>(), frame.Registers[ins.C], icOffset: frame.InstructionPointer - 1);
                     break;
                 }
                 case OpCode.CallMethod1:
                 {
-                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], new[] { frame.Registers[ins.D] }, frame.Registers[ins.C]);
+                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], new[] { frame.Registers[ins.D] }, frame.Registers[ins.C], icOffset: frame.InstructionPointer - 1);
                     break;
                 }
                 case OpCode.CallMethodN:
@@ -1256,7 +1281,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                         callArgs[i] = frame.Registers[ins.D + i];
                     }
 
-                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], callArgs, frame.Registers[ins.C]);
+                    StoreCallResult(frame, ins.A, frame.Registers[ins.B], callArgs, frame.Registers[ins.C], icOffset: frame.InstructionPointer - 1);
                     break;
                 }
                 case OpCode.CallN:
@@ -1273,7 +1298,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                         frame.Registers[ins.B],
                         callArgs,
                         JsValue.Undefined,
-                        allowDirectEval: ins.E == DirectEvalCallFlag);
+                        allowDirectEval: ins.E == DirectEvalCallFlag,
+                        icOffset: frame.InstructionPointer - 1);
                     break;
                 }
                 case OpCode.CallSpread:
@@ -13138,7 +13164,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         JsValue callee,
         IReadOnlyList<JsValue> args,
         JsValue thisValue,
-        bool allowDirectEval = false)
+        bool allowDirectEval = false,
+        int icOffset = -1)
     {
         // ECMA-262 19.2.1.1 — direct eval uses the calling frame's lexical environment.
         if (allowDirectEval &&
@@ -13152,7 +13179,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
         try
         {
+            // Tier 4 #20: try the Call IC fast path before the generic dispatch.
+            if (icOffset >= 0 &&
+                TryDispatchCallIC(frame.Function, icOffset, callee, args, thisValue, out var icResult))
+            {
+                frame.Registers[destinationRegister] = icResult;
+                return;
+            }
+
             frame.Registers[destinationRegister] = CallFunction(callee, args, thisValue);
+            if (icOffset >= 0)
+            {
+                PopulateCallIC(frame.Function, icOffset, callee);
+            }
         }
         catch (JsThrownException ex)
         {

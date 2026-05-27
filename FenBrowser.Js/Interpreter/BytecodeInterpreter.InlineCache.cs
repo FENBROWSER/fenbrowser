@@ -80,4 +80,85 @@ public sealed partial class BytecodeInterpreter
         { ic = new PolymorphicInlineCache(); fn.StoreICs[offset] = ic; }
         ic.Add(obj.CurrentShape, key, slot);
     }
+
+    // Tier 4 #20 GetElem IC: same shape/key/slot lookup as the LoadIC, but
+    // keyed off the GetElem instruction offset and only consulted when the
+    // key value is a String at runtime (the common `obj["foo"]` case).
+    // Integer-indexed array access remains on the slow path.
+    private bool TryGetElemStringIC(BytecodeFunction fn, int offset, JsValue receiver, string key, out JsValue result)
+    {
+        if (receiver.Tag != JsValueTag.Object || fn.LoadICs is null || !fn.LoadICs.TryGetValue(offset, out var ic))
+        { result = JsValue.Undefined; return false; }
+
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
+        if (obj is ProxyObject) { result = JsValue.Undefined; return false; }
+        if (!ic.TryGet(obj, key, out var slot) || obj.PropertyArray[slot] is not { } desc)
+        { result = JsValue.Undefined; return false; }
+        if (desc.IsAccessor) { ic.InvalidateShape(obj.CurrentShape); result = JsValue.Undefined; return false; }
+
+        result = desc.Value;
+        return true;
+    }
+
+    private void PopulateGetElemStringIC(BytecodeFunction fn, int offset, JsValue receiver, string key)
+        => PopulateLoadIC(fn, offset, receiver, key);
+
+    // Tier 4 #20 Call IC: monomorphic cache of the resolved callee handle at
+    // each call site. On a hit the dispatch path is fixed (NativeFunction,
+    // JsFunction, BoundFunction, Proxy) so the type-discrimination cascade in
+    // CallFunction is skipped. Bound functions still need to merge args, so
+    // they take the slow path; only NativeFunction and ordinary
+    // JsFunction monomorphic call sites benefit.
+    private bool TryDispatchCallIC(BytecodeFunction fn, int offset, JsValue callee, IReadOnlyList<JsValue> args, JsValue thisValue, out JsValue result)
+    {
+        result = JsValue.Undefined;
+        if (callee.Tag != JsValueTag.Object) return false;
+        fn.CallICs ??= new();
+        if (!fn.CallICs.TryGetValue(offset, out var entry)) return false;
+        if (entry.Megamorphic) return false;
+
+        var handle = callee.AsObjectHandle().ToInt64();
+        if (entry.CalleeHandle != handle) return false;
+
+        var obj = _heap.GetObject(callee.AsObjectHandle());
+        switch (entry.Kind)
+        {
+            case CallICKind.Native:
+                if (obj is not NativeFunctionObject nfn) { entry.Megamorphic = true; return false; }
+                entry.Hits++;
+                result = nfn.Call(thisValue, args);
+                return true;
+            case CallICKind.OrdinaryFunction:
+                if (obj is not JsFunctionObject jfn ||
+                    jfn.Kind != Objects.FunctionKind.Ordinary)
+                { entry.Megamorphic = true; return false; }
+                // Fall back to CallFunction for the ordinary case: it owns
+                // arity-binding, strict-this conversion, and frame setup. The
+                // IC still saved the type-discrimination cascade.
+                result = CallFunction(callee, args, thisValue);
+                entry.Hits++;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void PopulateCallIC(BytecodeFunction fn, int offset, JsValue callee)
+    {
+        if (callee.Tag != JsValueTag.Object) return;
+        var obj = _heap.GetObject(callee.AsObjectHandle());
+        CallICKind kind;
+        if (obj is NativeFunctionObject) kind = CallICKind.Native;
+        else if (obj is JsFunctionObject f && f.Kind == Objects.FunctionKind.Ordinary) kind = CallICKind.OrdinaryFunction;
+        else return; // Proxy, bound, async, generator — not cached.
+
+        fn.CallICs ??= new();
+        var handle = callee.AsObjectHandle().ToInt64();
+        if (fn.CallICs.TryGetValue(offset, out var entry))
+        {
+            if (entry.CalleeHandle != handle) entry.Megamorphic = true;
+            return;
+        }
+        fn.CallICs[offset] = new CallICEntry { CalleeHandle = handle, Kind = kind };
+    }
 }
