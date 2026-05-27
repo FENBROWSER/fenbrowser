@@ -4,6 +4,12 @@ public readonly struct JsValue
 {
     private static long _nextStringId;
     private static readonly Dictionary<long, string> StringPool = new();
+    // Reverse map for interning short strings. Identifiers and property names
+    // dominate FromString calls — deduplicating them cuts pool growth from
+    // O(allocations) to O(distinct strings). Capped at 256 chars to keep the
+    // intern table from absorbing arbitrarily large user strings.
+    private const int StringInternMaxLength = 256;
+    private static readonly Dictionary<string, long> StringInternTable = new(StringComparer.Ordinal);
     private static readonly Lock StringPoolLock = new();
 
     // Symbol pool. A Symbol's identity is its monotonically-assigned 64-bit id; the
@@ -50,8 +56,18 @@ public readonly struct JsValue
         ArgumentNullException.ThrowIfNull(value);
         lock (StringPoolLock)
         {
+            if (value.Length <= StringInternMaxLength &&
+                StringInternTable.TryGetValue(value, out var existingId))
+            {
+                return new JsValue(JsValueTag.String, existingId, 0);
+            }
+
             var id = ++_nextStringId;
             StringPool[id] = value;
+            if (value.Length <= StringInternMaxLength)
+            {
+                StringInternTable[value] = id;
+            }
             return new JsValue(JsValueTag.String, id, 0);
         }
     }

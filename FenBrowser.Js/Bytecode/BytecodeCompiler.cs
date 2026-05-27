@@ -60,8 +60,18 @@ public sealed class BytecodeCompiler
 
     public BytecodeFunction CompileScript(SourceText source)
     {
-        var program = JsParser.ParseScript(source);
-        return CompileProgram(program);
+        if (source is not null && BytecodeCache.TryGet(source.Text, strictMode: false, out var cached))
+        {
+            return cached;
+        }
+
+        var program = JsParser.ParseScript(source!);
+        var compiled = CompileProgram(program);
+        if (source is not null)
+        {
+            BytecodeCache.Put(source.Text, strictMode: false, compiled);
+        }
+        return compiled;
     }
 
     public BytecodeFunction CompileProgram(ProgramNode program)

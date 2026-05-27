@@ -956,6 +956,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     }
 
                     var ownerHandle = ResolveObjectHandle(receiverValue);
+                    var icOffsetStore = frame.InstructionPointer - 1;
+                    if (receiverValue.Tag == JsValueTag.Object &&
+                        TryStoreIC(function, icOffsetStore, ownerHandle, receiverValue, prop, value))
+                    {
+                        break;
+                    }
                     var obj = _heap.GetObject(ownerHandle);
                     if (obj is ProxyObject proxySet)
                     {
@@ -966,6 +972,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     try
                     {
                         _ = SetPropertyValue(ownerHandle, obj, prop, value, receiverValue);
+                        if (receiverValue.Tag == JsValueTag.Object)
+                            PopulateStoreIC(function, icOffsetStore, receiverValue, prop);
                     }
                     catch (JsThrownException ex)
                     {
