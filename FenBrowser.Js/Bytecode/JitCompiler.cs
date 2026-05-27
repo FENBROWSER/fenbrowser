@@ -183,6 +183,12 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.NewRegExpForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiThrow = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.ThrowForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiGetPropByName = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.GetPropByNameForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiSetPropByName = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.SetPropByNameForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiDeletePropByName = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.DeletePropByNameForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly PropertyInfo PiRegisters = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Registers))!;
     private static readonly PropertyInfo PiFunction = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Function))!;
     private static readonly PropertyInfo PiConstants = typeof(BytecodeFunction).GetProperty(nameof(BytecodeFunction.Constants))!;
@@ -350,6 +356,29 @@ public static class JitCompiler
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
                 body.Add(Expression.Call(interp, MiThrow, frame,
                     Expression.ArrayAccess(registers, Expression.Constant(ins.A))));
+                return true;
+            case OpCode.GetPropByName:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
+                if (ins.C < 0 || ins.C >= function.PropertyNames.Count) return false;
+                body.Add(Expression.Call(interp, MiGetPropByName, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B),
+                    Expression.Constant(ins.C), Expression.Constant(ip)));
+                return true;
+            case OpCode.SetPropByName:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.PropertyNames.Count) return false;
+                if (ins.C < 0 || ins.C >= function.RegisterCount) return false;
+                body.Add(Expression.Call(interp, MiSetPropByName, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B),
+                    Expression.Constant(ins.C), Expression.Constant(ip)));
+                return true;
+            case OpCode.DeletePropByName:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
+                if (ins.C < 0 || ins.C >= function.PropertyNames.Count) return false;
+                body.Add(Expression.Call(interp, MiDeletePropByName, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C)));
                 return true;
             // Future opcodes added here as the IL-emit work continues.
             default:

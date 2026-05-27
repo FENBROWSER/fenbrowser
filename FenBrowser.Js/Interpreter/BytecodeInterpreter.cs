@@ -12540,6 +12540,88 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     // invoke a single method rather than inline equivalent logic. Keeping
     // the implementation in one place avoids semantic drift between the
     // interpreter and the JIT.
+    // Tier 4 #24: JIT helpers for the property-access opcodes. Each
+    // mirrors the corresponding interpreter case body — including the
+    // inline-cache fast path and the try/catch → ThrowOrHandle fallback.
+    // Safe to call from JIT because TryEmitExpressionTree's pre-pass
+    // bails on any handler opcode, so ThrowOrHandle's no-handler path
+    // (which throws JsThrownException) is always the one taken.
+    internal void GetPropByNameForJit(InterpreterFrame frame, int destReg, int receiverReg, int propNameIndex, int icOffset)
+    {
+        var receiver = frame.Registers[receiverReg];
+        var prop = frame.Function.PropertyNames[propNameIndex];
+        if (TryGetLoadIC(frame.Function, icOffset, receiver, prop, out var icResult))
+        {
+            frame.Registers[destReg] = icResult;
+            return;
+        }
+        try
+        {
+            frame.Registers[destReg] = GetReceiverProperty(receiver, prop);
+            PopulateLoadIC(frame.Function, icOffset, receiver, prop);
+        }
+        catch (JsThrownException ex)
+        {
+            ThrowOrHandle(frame, ex.Value);
+        }
+    }
+
+    internal void SetPropByNameForJit(InterpreterFrame frame, int receiverReg, int propNameIndex, int valueReg, int icOffset)
+    {
+        var receiverValue = frame.Registers[receiverReg];
+        var prop = frame.Function.PropertyNames[propNameIndex];
+        var value = frame.Registers[valueReg];
+
+        if (receiverValue.Tag == JsValueTag.HostObject)
+        {
+            try { SetHostObjectProperty(receiverValue, prop, value); }
+            catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+            return;
+        }
+
+        var ownerHandle = ResolveObjectHandle(receiverValue);
+        if (receiverValue.Tag == JsValueTag.Object &&
+            TryStoreIC(frame.Function, icOffset, ownerHandle, receiverValue, prop, value))
+        {
+            return;
+        }
+        var obj = _heap.GetObject(ownerHandle);
+        if (obj is ProxyObject proxySet)
+        {
+            try { _ = ProxySet(proxySet, receiverValue, prop, value); }
+            catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+            return;
+        }
+        try
+        {
+            _ = SetPropertyValue(ownerHandle, obj, prop, value, receiverValue);
+            if (receiverValue.Tag == JsValueTag.Object)
+                PopulateStoreIC(frame.Function, icOffset, receiverValue, prop);
+        }
+        catch (JsThrownException ex)
+        {
+            ThrowOrHandle(frame, ex.Value);
+        }
+    }
+
+    internal void DeletePropByNameForJit(InterpreterFrame frame, int destReg, int receiverReg, int propNameIndex)
+    {
+        var receiver = frame.Registers[receiverReg];
+        if (receiver.Tag != JsValueTag.Object)
+        {
+            frame.Registers[destReg] = JsValue.FromBoolean(true);
+            return;
+        }
+        var prop = frame.Function.PropertyNames[propNameIndex];
+        var obj = ResolveObject(receiver);
+        if (obj is ProxyObject proxyDel)
+        {
+            frame.Registers[destReg] = JsValue.FromBoolean(ProxyDelete(proxyDel, prop));
+            return;
+        }
+        frame.Registers[destReg] = JsValue.FromBoolean(obj.DeleteProperty(prop));
+    }
+
     internal JsValue CreateFunctionFromNestedForJit(InterpreterFrame frame, int nestedIndex)
     {
         var nested = frame.Function.NestedFunctions[nestedIndex];
