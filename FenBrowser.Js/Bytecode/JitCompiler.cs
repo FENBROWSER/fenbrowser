@@ -167,6 +167,16 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.IsTruthy), BindingFlags.Static | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiLoadThis = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.LoadThisForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiNewObject = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.NewObjectForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiNewArray = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.NewArrayForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiInitThisBinding = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.InitThisBindingForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiEnterScope = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.EnterScopeForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiLeaveScope = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.LeaveScopeForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly PropertyInfo PiRegisters = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Registers))!;
     private static readonly PropertyInfo PiFunction = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Function))!;
     private static readonly PropertyInfo PiConstants = typeof(BytecodeFunction).GetProperty(nameof(BytecodeFunction.Constants))!;
@@ -281,6 +291,28 @@ public static class JitCompiler
                 body.Add(Expression.Assign(
                     Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
                     Expression.Property(frame, PiNewTarget)));
+                return true;
+            case OpCode.NewObject:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                body.Add(Expression.Assign(
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
+                    Expression.Call(interp, MiNewObject)));
+                return true;
+            case OpCode.NewArray:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                body.Add(Expression.Assign(
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
+                    Expression.Call(interp, MiNewArray)));
+                return true;
+            case OpCode.InitThisBinding:
+                body.Add(Expression.Call(interp, MiInitThisBinding, frame));
+                return true;
+            case OpCode.EnterScope:
+                body.Add(Expression.Call(interp, MiEnterScope, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B)));
+                return true;
+            case OpCode.LeaveScope:
+                body.Add(Expression.Call(interp, MiLeaveScope, frame));
                 return true;
             // Future opcodes added here as the IL-emit work continues.
             default:

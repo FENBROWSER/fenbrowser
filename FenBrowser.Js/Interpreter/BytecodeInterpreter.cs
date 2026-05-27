@@ -12535,6 +12535,55 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
+    // Tier 4 #24: JIT helpers — each mirrors one opcode case in
+    // ExecuteInternalCore so the JIT-emitted Expression-tree code can
+    // invoke a single method rather than inline equivalent logic. Keeping
+    // the implementation in one place avoids semantic drift between the
+    // interpreter and the JIT.
+    internal JsValue NewObjectForJit()
+    {
+        var handle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
+        return JsValue.FromObject(handle);
+    }
+
+    internal JsValue NewArrayForJit()
+    {
+        var obj = CreateArrayObject(Array.Empty<JsValue>());
+        var handle = _heap.AllocateObject(obj, AllocationSite.Current());
+        return JsValue.FromObject(handle);
+    }
+
+    internal void InitThisBindingForJit(InterpreterFrame frame)
+    {
+        if (frame.Environment is FunctionEnvironmentRecord fenInit &&
+            fenInit.ThisBindingStatus == ThisBindingStatus.Uninitialized)
+        {
+            fenInit.BindThisValue(frame.ThisValue);
+        }
+    }
+
+    internal void EnterScopeForJit(InterpreterFrame frame, int slotNameIndex, int isConst)
+    {
+        var newScope = new DeclarativeEnvironmentRecord(frame.Environment);
+        if (slotNameIndex != 0)
+        {
+            var scopeName = SlotNameTable.GetName(frame.Function, slotNameIndex);
+            if (scopeName != null)
+            {
+                if (isConst == 1)
+                    _ = newScope.CreateImmutableBinding(scopeName, strict: true);
+                else
+                    _ = newScope.CreateMutableBinding(scopeName, deletable: true);
+            }
+        }
+        frame.Environment = newScope;
+    }
+
+    internal void LeaveScopeForJit(InterpreterFrame frame)
+    {
+        frame.Environment = frame.Environment.OuterEnv ?? frame.Environment;
+    }
+
     // Tier 4 #24: JIT-callable helper that mirrors the LoadThis opcode
     // case. Caller passes the current instruction-pointer position so
     // the derived-constructor receiver-load check has the same context
