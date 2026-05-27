@@ -1,15 +1,15 @@
 {
   "engine": "FenJS",
   "mode": "runtime-subset",
-  "startedAtUtc": "2026-05-27T19:38:26.7614878Z",
-  "durationMs": 58126,
+  "startedAtUtc": "2026-05-27T19:45:06.7448277Z",
+  "durationMs": 38034,
   "test262Commit": "b1f9a0aea3e5d12563680ba3c8eee275774f9316",
   "fenbrowserCommit": "unknown",
   "specTarget": "ECMA-262 pinned snapshot",
   "expectations": null,
   "total": 2000,
-  "passed": 825,
-  "failed": 1151,
+  "passed": 828,
+  "failed": 1148,
   "crashed": 5,
   "timedOut": 2,
   "skipped": 0,
@@ -20,7 +20,7 @@
   "invalidTestConfiguration": 8,
   "categories": {
     "parserMissing": 0,
-    "parserBug": 4,
+    "parserBug": 1,
     "earlyErrorBug": 0,
     "runtimeMissing": 1147,
     "runtimeSemanticBug": 1147,
@@ -38,9 +38,9 @@
   },
   "summary": {
     "total": 2000,
-    "passed": 825,
+    "passed": 828,
     "unsupported": 0,
-    "parserErrors": 4,
+    "parserErrors": 1,
     "runtimeErrors": 1147,
     "crashes": 5,
     "timedOut": 2,
@@ -308,39 +308,6 @@
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
       "details": "thrown=string:assert.sameValue failed",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\Function\\createdynfn-html-close-comment-params.js",
-      "relativePath": "test/annexB/built-ins/Function/createdynfn-html-close-comment-params.js",
-      "classification": "parser-error",
-      "message": "Invalid function parameter \u0027--\u003E\u0027.",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\Function\\createdynfn-html-open-comment-params.js",
-      "relativePath": "test/annexB/built-ins/Function/createdynfn-html-open-comment-params.js",
-      "classification": "parser-error",
-      "message": "Invalid function parameter \u0027\u003C!--\u0027.",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\Function\\createdynfn-no-line-terminator-html-close-comment-params.js",
-      "relativePath": "test/annexB/built-ins/Function/createdynfn-no-line-terminator-html-close-comment-params.js",
-      "classification": "parser-error",
-      "message": "Invalid function parameter \u0027--\u003E\u0027.",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -14499,7 +14466,7 @@
     },
     {
       "path": "test/annexB/built-ins/Function/createdynfn-html-close-comment-params.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -14509,8 +14476,8 @@
       "description": "Create a Function with the function parameters being a html close comment.",
       "info": "19.2.1.1.1 Runtime Semantics: CreateDynamicFunction(constructor, newTarget, kind, args)\n...\n7. If kind is \u0022normal\u0022, then\n...\nb. Let parameterGoal be the grammar symbol FormalParameters[~Yield, ~Await].\n...\n10. Let parameters be the result of parsing P, interpreted as UTF-16 encoded Unicode text\nas described in 6.1.4, using parameterGoal as the goal symbol. Throw a SyntaxError\nexception if the parse fails.\n...",
       "locale": null,
-      "category": "parser-bug",
-      "message": "Invalid function parameter \u0027--\u003E\u0027."
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/Function/createdynfn-html-open-comment-body.js",
@@ -14529,7 +14496,7 @@
     },
     {
       "path": "test/annexB/built-ins/Function/createdynfn-html-open-comment-params.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -14539,8 +14506,8 @@
       "description": "Create a Function with the function parameters being a html open comment.",
       "info": "19.2.1.1.1 Runtime Semantics: CreateDynamicFunction(constructor, newTarget, kind, args)\n...\n7. If kind is \u0022normal\u0022, then\n...\nb. Let parameterGoal be the grammar symbol FormalParameters[~Yield, ~Await].\n...\n10. Let parameters be the result of parsing P, interpreted as UTF-16 encoded Unicode text\nas described in 6.1.4, using parameterGoal as the goal symbol. Throw a SyntaxError\nexception if the parse fails.\n...",
       "locale": null,
-      "category": "parser-bug",
-      "message": "Invalid function parameter \u0027\u003C!--\u0027."
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/Function/createdynfn-no-line-terminator-html-close-comment-body.js",
@@ -14559,7 +14526,7 @@
     },
     {
       "path": "test/annexB/built-ins/Function/createdynfn-no-line-terminator-html-close-comment-params.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -14569,8 +14536,8 @@
       "description": "Function parses the parameters text before forming the sourceText with the proper line feed.",
       "info": "The HTMLCloseComment requires a preceding line terminator.\nRuntime Semantics: CreateDynamicFunction(constructor, newTarget, kind, args)\n...\n16. Set bodyText to ? ToString(bodyText).\n17. Let parameters be the result of parsing P, interpreted as UTF-16 encoded Unicode text as\ndescribed in 6.1.4, using parameterGoal as the goal symbol. Throw a SyntaxError exception if the\nparse fails.\n18. Let body be the result of parsing bodyText, interpreted as UTF-16 encoded Unicode text as\ndescribed in 6.1.4, using goal as the goal symbol. Throw a SyntaxError exception if the parse\nfails.\n...\n41. Let sourceText be the string-concatenation of prefix, \u0022 anonymous(\u0022, P, 0x000A (LINE FEED),\n\u0022) {\u0022, 0x000A (LINE FEED), bodyText, 0x000A (LINE FEED), and \u0022}\u0022.",
       "locale": null,
-      "category": "parser-bug",
-      "message": "Invalid function parameter \u0027--\u003E\u0027."
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/Object/is/emulates-undefined.js",

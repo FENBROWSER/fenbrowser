@@ -7515,15 +7515,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             throw new JsThrownException(CreateError("Refused to compile a Function() because 'unsafe-eval' is not allowed by the policy."));
         }
 
-        var parameters = new List<string>();
-        for (var i = 0; i + 1 < args.Count; i++)
-        {
-            AddFunctionConstructorParameters(parameters, ToStringValue(args[i]));
-        }
-
+        // ECMA-262 20.2.1.1.1 CreateDynamicFunction step 10/11 — parameters
+        // and body are *parsed*; failures must throw SyntaxError, not a raw
+        // host exception. Run parameter validation inside the same try so
+        // its JsParserException is wrapped consistently with the body path.
         var body = args.Count > 0 ? ToStringValue(args[^1]) : string.Empty;
         try
         {
+            var parameters = new List<string>();
+            for (var i = 0; i + 1 < args.Count; i++)
+            {
+                AddFunctionConstructorParameters(parameters, ToStringValue(args[i]));
+            }
+
             var compiled = new BytecodeCompiler().CompileFunctionBody(
                 new SourceText(body, "<Function>"),
                 parameters,
@@ -7540,7 +7544,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private static void AddFunctionConstructorParameters(List<string> parameters, string parameterText)
     {
-        foreach (var rawPart in parameterText.Split(','))
+        // ECMA-262 Annex B.1.3 — non-module source admits SingleLineHTMLOpenComment
+        // (`<!--` to LineTerminator) and SingleLineHTMLCloseComment (`-->` to
+        // LineTerminator, valid only when preceded by a LineTerminator in the
+        // input). The Function constructor parameter goal is non-strict
+        // FormalParameters, so strip these comments before splitting.
+        var stripped = StripAnnexBHtmlComments(parameterText);
+        foreach (var rawPart in stripped.Split(','))
         {
             var parameter = rawPart.Trim();
             if (parameter.Length == 0)
@@ -7557,6 +7567,56 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
     }
 
+    private static string StripAnnexBHtmlComments(string text)
+    {
+        // ECMA-262 Annex B.1.3: elide SingleLineHTMLOpenComment ("<!--" to
+        // LineTerminator) and SingleLineHTMLCloseComment ("-->" to
+        // LineTerminator). The close form is only valid when preceded by
+        // a LineTerminator in the source -- tracked via atLineStart, which
+        // horizontal whitespace does not reset.
+        var sb = new System.Text.StringBuilder(text.Length);
+        var atLineStart = false;
+        var i = 0;
+        while (i < text.Length)
+        {
+            var ch = text[i];
+            if (IsLineTerminator(ch))
+            {
+                sb.Append(ch);
+                atLineStart = true;
+                i++;
+                continue;
+            }
+            if (IsHorizontalWhitespace(ch))
+            {
+                sb.Append(ch);
+                i++;
+                continue;
+            }
+            if (ch == '<' && i + 4 <= text.Length && text[i + 1] == '!' && text[i + 2] == '-' && text[i + 3] == '-')
+            {
+                while (i < text.Length && !IsLineTerminator(text[i])) i++;
+                continue;
+            }
+            if (atLineStart && ch == '-' && i + 3 <= text.Length && text[i + 1] == '-' && text[i + 2] == '>')
+            {
+                while (i < text.Length && !IsLineTerminator(text[i])) i++;
+                continue;
+            }
+            sb.Append(ch);
+            atLineStart = false;
+            i++;
+        }
+        return sb.ToString();
+    }
+
+    // ECMA-262 11.3 LineTerminator: LF, CR, LS (U+2028), PS (U+2029).
+    private static bool IsLineTerminator(char ch) =>
+        ch == '\n' || ch == '\r' || ch == '\u2028' || ch == '\u2029';
+
+    // ECMA-262 12.2 WhiteSpace: TAB, VT, FF, SP, NBSP, ZWNBSP.
+    private static bool IsHorizontalWhitespace(char ch) =>
+        ch == ' ' || ch == '\t' || ch == '\v' || ch == '\f' || ch == '\u00A0' || ch == '\uFEFF';
     private static bool IsIdentifierName(string value)
     {
         if (value.Length == 0)
