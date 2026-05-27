@@ -12604,6 +12604,90 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
     }
 
+    internal void GetElemForJit(InterpreterFrame frame, int destReg, int receiverReg, int keyReg, int icOffset)
+    {
+        var receiver = frame.Registers[receiverReg];
+        var keyValue = frame.Registers[keyReg];
+        try
+        {
+            if (keyValue.Tag == JsValueTag.Symbol)
+            {
+                frame.Registers[destReg] = GetReceiverSymbolProperty(receiver, keyValue.AsSymbolId());
+            }
+            else
+            {
+                if (keyValue.Tag == JsValueTag.String &&
+                    TryGetElemStringIC(frame.Function, icOffset, receiver, keyValue.AsString(), out var elemResult))
+                {
+                    frame.Registers[destReg] = elemResult;
+                }
+                else
+                {
+                    var propKey = ToPropertyKey(keyValue);
+                    frame.Registers[destReg] = GetReceiverProperty(receiver, propKey);
+                    if (keyValue.Tag == JsValueTag.String)
+                    {
+                        PopulateGetElemStringIC(frame.Function, icOffset, receiver, propKey);
+                    }
+                }
+            }
+        }
+        catch (JsThrownException ex)
+        {
+            ThrowOrHandle(frame, ex.Value);
+        }
+    }
+
+    internal void SetElemForJit(InterpreterFrame frame, int ownerReg, int keyReg, int valueReg)
+    {
+        var ownerHandle = ResolveObjectHandle(frame.Registers[ownerReg]);
+        var obj = _heap.GetObject(ownerHandle);
+        var keyValue = frame.Registers[keyReg];
+        var value = frame.Registers[valueReg];
+
+        if (keyValue.Tag == JsValueTag.Symbol)
+        {
+            obj.DefineOwnSymbolProperty(keyValue.AsSymbolId(),
+                new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+            if (value.Tag == JsValueTag.Object)
+                _heap.WriteBarrier(ownerHandle, value.AsObjectHandle());
+            return;
+        }
+
+        var key = ToPropertyKey(keyValue);
+        try
+        {
+            _ = SetPropertyValue(ownerHandle, obj, key, value, frame.Registers[ownerReg]);
+        }
+        catch (JsThrownException ex)
+        {
+            ThrowOrHandle(frame, ex.Value);
+            return;
+        }
+
+        if (double.TryParse(key, out var numericIndex))
+        {
+            var nextLength = numericIndex + 1;
+            if (!obj.TryGetOwnProperty("length", out var lenDesc) || lenDesc.Value.AsNumber() < nextLength)
+            {
+                _ = obj.SetProperty("length", JsValue.FromNumber(nextLength));
+            }
+        }
+    }
+
+    internal void DeleteElemForJit(InterpreterFrame frame, int destReg, int receiverReg, int keyReg)
+    {
+        var receiver = frame.Registers[receiverReg];
+        if (receiver.Tag != JsValueTag.Object)
+        {
+            frame.Registers[destReg] = JsValue.FromBoolean(true);
+            return;
+        }
+        var obj = ResolveObject(receiver);
+        var key = ToPropertyKey(frame.Registers[keyReg]);
+        frame.Registers[destReg] = JsValue.FromBoolean(obj.DeleteProperty(key));
+    }
+
     internal void DeletePropByNameForJit(InterpreterFrame frame, int destReg, int receiverReg, int propNameIndex)
     {
         var receiver = frame.Registers[receiverReg];
