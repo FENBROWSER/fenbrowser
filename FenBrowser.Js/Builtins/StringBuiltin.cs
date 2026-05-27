@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Objects;
@@ -66,6 +67,9 @@ public sealed class StringBuiltin : IBuiltinModule
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "toLowerCase", (ctx, tv, _) => JsValue.FromString(RequireString(ctx, tv).ToLowerInvariant()));
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "toLocaleUpperCase", (ctx, tv, _) => JsValue.FromString(RequireString(ctx, tv).ToUpperInvariant()));
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "toLocaleLowerCase", (ctx, tv, _) => JsValue.FromString(RequireString(ctx, tv).ToLowerInvariant()));
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "match", Match, length: 1);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "matchAll", MatchAll, length: 1);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "search", Search, length: 1);
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "split", Split, length: 2);
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "replace", Replace, length: 2);
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "replaceAll", ReplaceAll, length: 2);
@@ -124,10 +128,23 @@ public sealed class StringBuiltin : IBuiltinModule
 
     private static string RequireString(IBuiltinContext ctx, JsValue thisValue)
     {
-        if (thisValue.Tag == JsValueTag.String) return thisValue.AsString();
-        if (thisValue.Tag == JsValueTag.Object && ctx.Heap.GetObject(thisValue.AsObjectHandle()) is StringObject so)
+        if (thisValue.Tag is JsValueTag.Undefined or JsValueTag.Null)
+        {
+            throw new JsThrownException(ctx.CreateTypeError("String.prototype method called on incompatible receiver."));
+        }
+
+        if (thisValue.Tag == JsValueTag.String)
+        {
+            return thisValue.AsString();
+        }
+
+        if (thisValue.Tag == JsValueTag.Object &&
+            ctx.Heap.GetObject(thisValue.AsObjectHandle()) is StringObject so)
+        {
             return so.Value;
-        throw new JsThrownException(ctx.CreateTypeError("String.prototype method called on incompatible receiver."));
+        }
+
+        return ctx.ToStringValue(thisValue);
     }
 
     private static int ClampIndex(IReadOnlyList<JsValue> args, int idx, int defaultValue, int length)
@@ -148,6 +165,7 @@ public sealed class StringBuiltin : IBuiltinModule
         var fn = new NativeFunctionObject(name, (thisValue, args) => method(captured, thisValue, args), length: length);
         var fnHandle = heap.AllocateObject(fn, AllocationSite.Current());
         var callHandle = ctx.GetFunctionCallMethod();
+        fn.SetPrototype(ctx.GetObjectPrototype());
         fn.SetProperty("call", JsValue.FromObject(callHandle));
         heap.WriteBarrier(fnHandle, callHandle);
         proto.DefineOwnProperty(name, new JsPropertyDescriptor(JsValue.FromObject(fnHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -311,6 +329,10 @@ public sealed class StringBuiltin : IBuiltinModule
         var items = new List<JsValue>();
         if (limit == 0) return CreateArrayResult(ctx, items);
         if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined) { items.Add(JsValue.FromString(s)); return CreateArrayResult(ctx, items); }
+
+        if (TryDispatchToSymbolMethod(ctx, args[0], "split", JsValue.FromString(s), args.Count > 1 ? args[1] : JsValue.Undefined, out var dispatched))
+            return dispatched;
+
         var sep = ctx.ToStringValue(args[0]);
         if (sep.Length == 0)
         {
@@ -335,6 +357,10 @@ public sealed class StringBuiltin : IBuiltinModule
     {
         var s = RequireString(ctx, thisValue);
         if (args.Count < 2) return JsValue.FromString(s);
+
+        if (TryDispatchToSymbolMethod(ctx, args[0], "replace", JsValue.FromString(s), args[1], out var dispatched))
+            return dispatched;
+
         var search = ctx.ToStringValue(args[0]);
         var idx = s.IndexOf(search, StringComparison.Ordinal);
         if (idx < 0) return JsValue.FromString(s);
@@ -346,6 +372,10 @@ public sealed class StringBuiltin : IBuiltinModule
     {
         var s = RequireString(ctx, thisValue);
         if (args.Count < 2) return JsValue.FromString(s);
+
+        if (TryDispatchToSymbolMethod(ctx, args[0], "replace", JsValue.FromString(s), args[1], out var dispatched))
+            return dispatched;
+
         var search = ctx.ToStringValue(args[0]);
         if (search.Length == 0) return JsValue.FromString(s);
         var replacement = args[1];
@@ -361,6 +391,232 @@ public sealed class StringBuiltin : IBuiltinModule
         }
         sb.Append(s[start..]);
         return JsValue.FromString(sb.ToString());
+    }
+
+    private static JsValue Match(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = RequireString(ctx, thisValue);
+        var regexp = args.Count > 0 ? args[0] : JsValue.Undefined;
+        if (TryDispatchToSymbolMethod(ctx, regexp, "match", JsValue.FromString(s), out var dispatched))
+            return dispatched;
+
+        if (regexp.Tag == JsValueTag.Object &&
+            ctx.Heap.GetObject(regexp.AsObjectHandle()) is RegExpObject regExpObject)
+        {
+            return BuildMatchResultArray(ctx, s, regExpObject.Regex.Match(s));
+        }
+
+        var pattern = (args.Count == 0 || regexp.Tag == JsValueTag.Undefined)
+            ? string.Empty
+            : ToStringForRegExpPattern(ctx, regexp);
+        var match = Regex.Match(s, pattern);
+        return BuildMatchResultArray(ctx, s, match);
+    }
+
+    private static JsValue MatchAll(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = RequireString(ctx, thisValue);
+        var regexp = args.Count > 0 ? args[0] : JsValue.Undefined;
+        if (TryDispatchToSymbolMethod(ctx, regexp, "matchAll", JsValue.FromString(s), out var dispatched))
+            return dispatched;
+        return CreateArrayResult(ctx, new List<JsValue>());
+    }
+
+    private static JsValue Search(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = RequireString(ctx, thisValue);
+        var regexp = args.Count > 0 ? args[0] : JsValue.Undefined;
+        if (TryDispatchToSymbolMethod(ctx, regexp, "search", JsValue.FromString(s), out var dispatched))
+            return dispatched;
+
+        var needle = args.Count > 0 ? ctx.ToStringValue(args[0]) : "undefined";
+        var idx = s.IndexOf(needle, StringComparison.Ordinal);
+        return JsValue.FromNumber(idx);
+    }
+
+    private static bool TryDispatchToSymbolMethod(
+        IBuiltinContext ctx,
+        JsValue receiver,
+        string symbolName)
+    {
+        return TryGetSymbolMethod(ctx, receiver, symbolName, out _);
+    }
+
+    private static bool TryDispatchToSymbolMethod(
+        IBuiltinContext ctx,
+        JsValue receiver,
+        string symbolName,
+        JsValue firstArg,
+        out JsValue result)
+    {
+        result = JsValue.Undefined;
+        if (!TryGetSymbolMethod(ctx, receiver, symbolName, out var method))
+            return false;
+        result = ctx.CallFunction(method, new[] { firstArg }, receiver);
+        return true;
+    }
+
+    private static bool TryDispatchToSymbolMethod(
+        IBuiltinContext ctx,
+        JsValue receiver,
+        string symbolName,
+        JsValue firstArg,
+        JsValue secondArg,
+        out JsValue result)
+    {
+        result = JsValue.Undefined;
+        if (!TryGetSymbolMethod(ctx, receiver, symbolName, out var method))
+            return false;
+        result = ctx.CallFunction(method, new[] { firstArg, secondArg }, receiver);
+        return true;
+    }
+
+    private static bool TryGetSymbolMethod(
+        IBuiltinContext ctx,
+        JsValue receiver,
+        string symbolName,
+        out JsValue method)
+    {
+        method = JsValue.Undefined;
+        if (receiver.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var symbol = ctx.CreateWellKnownSymbol(symbolName);
+        if (symbol.Tag != JsValueTag.Symbol)
+        {
+            return false;
+        }
+
+        var obj = ctx.Heap.GetObject(receiver.AsObjectHandle());
+        if (!obj.TryGetSymbolProperty(symbol.AsSymbolId(), h => ctx.Heap.GetObject(h), out var desc))
+        {
+            return false;
+        }
+
+        if (desc.IsAccessor)
+        {
+            if (desc.Get.Tag == JsValueTag.Undefined)
+            {
+                return false;
+            }
+
+            if (!IsCallable(ctx, desc.Get))
+            {
+                throw new JsThrownException(ctx.CreateTypeError("@@ method getter is not callable."));
+            }
+
+            method = ctx.CallFunction(desc.Get, Array.Empty<JsValue>(), receiver);
+        }
+        else
+        {
+            method = desc.Value;
+        }
+
+        if (method.Tag is JsValueTag.Undefined or JsValueTag.Null)
+        {
+            method = JsValue.Undefined;
+            return false;
+        }
+
+        if (!IsCallable(ctx, method))
+        {
+            throw new JsThrownException(ctx.CreateTypeError("@@ method is not callable."));
+        }
+
+        return true;
+    }
+
+    private static bool IsCallable(IBuiltinContext ctx, JsValue value)
+    {
+        return value.Tag == JsValueTag.Object &&
+               ctx.Heap.GetObject(value.AsObjectHandle()) is JsFunctionObject or NativeFunctionObject or BoundFunctionObject;
+    }
+
+    private static JsValue BuildMatchResultArray(IBuiltinContext ctx, string input, Match match)
+    {
+        if (!match.Success)
+        {
+            return JsValue.Null;
+        }
+
+        var values = new List<JsValue>(match.Groups.Count);
+        for (var i = 0; i < match.Groups.Count; i++)
+        {
+            var group = match.Groups[i];
+            values.Add(group.Success ? JsValue.FromString(group.Value) : JsValue.Undefined);
+        }
+
+        var result = new ArrayObject();
+        result.SetPrototype(ctx.GetArrayPrototype());
+        for (var i = 0; i < values.Count; i++)
+        {
+            _ = result.DefineOwnProperty(
+                i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                new JsPropertyDescriptor(values[i], Writable: true, Enumerable: true, Configurable: true));
+        }
+
+        _ = result.DefineOwnProperty(
+            "index",
+            new JsPropertyDescriptor(JsValue.FromNumber(match.Index), Writable: true, Enumerable: true, Configurable: true));
+        _ = result.DefineOwnProperty(
+            "input",
+            new JsPropertyDescriptor(JsValue.FromString(input), Writable: true, Enumerable: true, Configurable: true));
+        _ = result.DefineOwnProperty(
+            "length",
+            new JsPropertyDescriptor(JsValue.FromNumber(values.Count), Writable: true, Enumerable: false, Configurable: false));
+
+        return JsValue.FromObject(ctx.Heap.AllocateObject(result, AllocationSite.Current()));
+    }
+
+    private static string ToStringForRegExpPattern(IBuiltinContext ctx, JsValue value)
+    {
+        if (value.Tag != JsValueTag.Object)
+        {
+            return ctx.ToStringValue(value);
+        }
+
+        var obj = ctx.Heap.GetObject(value.AsObjectHandle());
+        if (TryCallPrimitiveMethod(ctx, obj, value, "toString", out var primitive))
+        {
+            return ctx.ToStringValue(primitive);
+        }
+
+        if (TryCallPrimitiveMethod(ctx, obj, value, "valueOf", out primitive))
+        {
+            return ctx.ToStringValue(primitive);
+        }
+
+        throw new JsThrownException(ctx.CreateTypeError("Cannot convert object to primitive value."));
+    }
+
+    private static bool TryCallPrimitiveMethod(
+        IBuiltinContext ctx,
+        JsObject obj,
+        JsValue thisValue,
+        string methodName,
+        out JsValue primitive)
+    {
+        primitive = JsValue.Undefined;
+        if (!ctx.TryGetPropertyValue(obj, thisValue, methodName, out var method))
+        {
+            return false;
+        }
+
+        if (!IsCallable(ctx, method))
+        {
+            return false;
+        }
+
+        var result = ctx.CallFunction(method, Array.Empty<JsValue>(), thisValue);
+        if (result.Tag == JsValueTag.Object)
+        {
+            return false;
+        }
+
+        primitive = result;
+        return true;
     }
 
     private static string ResolveReplacement(IBuiltinContext ctx, JsValue replacement, string source, int matchStart, string matched)

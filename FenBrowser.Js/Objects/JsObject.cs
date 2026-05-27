@@ -111,6 +111,14 @@ public class JsObject : ITraceable
         return false;
     }
 
+    public IEnumerable<KeyValuePair<long, JsPropertyDescriptor>> EnumerateOwnSymbolProperties()
+    {
+        if (_symbolProperties is null)
+            yield break;
+        foreach (var pair in _symbolProperties)
+            yield return pair;
+    }
+
     public bool TryGetSymbolProperty(long symbolId, Func<ObjectHandle, JsObject> prototypeResolver, out JsPropertyDescriptor descriptor)
     {
         if (TryGetOwnSymbolProperty(symbolId, out descriptor))

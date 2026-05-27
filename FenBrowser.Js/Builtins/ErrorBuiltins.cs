@@ -56,15 +56,28 @@ public sealed class ErrorBuiltins : IBuiltinModule
     {
         var capturedProto = protoHandle;
         var capturedCtx = ctx;
+        var heap = ctx.Heap;
         var constructor = new NativeFunctionObject(
             name,
             (_, args) => BuildError(capturedCtx, capturedProto, name, args),
             args => BuildError(capturedCtx, capturedProto, name, args),
             length: 1);
         constructor.SetProperty("prototype", JsValue.FromObject(protoHandle));
-        var ctorHandle = ctx.Heap.AllocateObject(constructor, AllocationSite.Current());
-        ctx.Heap.PushRoot(ctorHandle);
-        ctx.Heap.WriteBarrier(ctorHandle, protoHandle);
+        var ctorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
+        heap.PushRoot(ctorHandle);
+        heap.WriteBarrier(ctorHandle, protoHandle);
+
+        // Keep Error instances aligned with test262 assert.throws semantics:
+        // thrown.constructor must resolve to the specific native error ctor.
+        var proto = heap.GetObject(protoHandle);
+        _ = proto.DefineOwnProperty(
+            "constructor",
+            new JsPropertyDescriptor(
+                JsValue.FromObject(ctorHandle),
+                Writable: true,
+                Enumerable: false,
+                Configurable: true));
+        heap.WriteBarrier(protoHandle, ctorHandle);
         return ctorHandle;
     }
 
@@ -81,6 +94,7 @@ public sealed class ErrorBuiltins : IBuiltinModule
         err.SetPrototype(protoHandle);
         err.SetProperty("name", JsValue.FromString(name));
         err.SetProperty("message", JsValue.FromString(msg));
+        err.SetProperty("stack", JsValue.FromString(ctx.CaptureCallStack(name, msg)));
         return JsValue.FromObject(ctx.Heap.AllocateObject(err, AllocationSite.Current()));
     }
 
@@ -109,6 +123,7 @@ public sealed class ErrorBuiltins : IBuiltinModule
         var fn = new NativeFunctionObject(name, (thisValue, args) => method(captured, thisValue, args), length: length);
         var fnHandle = heap.AllocateObject(fn, AllocationSite.Current());
         var callHandle = ctx.GetFunctionCallMethod();
+        fn.SetPrototype(ctx.GetObjectPrototype());
         fn.SetProperty("call", JsValue.FromObject(callHandle));
         heap.WriteBarrier(fnHandle, callHandle);
         proto.DefineOwnProperty(name, new JsPropertyDescriptor(JsValue.FromObject(fnHandle), Writable: true, Enumerable: false, Configurable: true));

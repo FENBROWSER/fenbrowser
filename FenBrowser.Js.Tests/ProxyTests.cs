@@ -276,4 +276,92 @@ public sealed class ProxyTests
             handlerThis === handler;
         "));
     }
+
+    [Fact]
+    public void ProxyGetPrototypeOfTrapIntercepts()
+    {
+        Assert.True(RunBool(@"
+            var proto = { marker: 1 };
+            var p = new Proxy({}, {
+                getPrototypeOf: function() { return proto; }
+            });
+            Object.getPrototypeOf(p) === proto && Reflect.getPrototypeOf(p) === proto;
+        "));
+    }
+
+    [Fact]
+    public void ProxySetPrototypeOfTrapIntercepts()
+    {
+        Assert.True(RunBool(@"
+            var hit = 0;
+            var p = new Proxy({}, {
+                setPrototypeOf: function(target, proto) { hit++; return true; }
+            });
+            var ok = Reflect.setPrototypeOf(p, {});
+            ok && hit === 1;
+        "));
+    }
+
+    [Fact]
+    public void ProxyIsExtensibleAndPreventExtensionsTrapsIntercept()
+    {
+        Assert.True(RunBool(@"
+            var isHit = 0;
+            var preventHit = 0;
+            var p = new Proxy({}, {
+                isExtensible: function() { isHit++; return false; },
+                preventExtensions: function() { preventHit++; return true; }
+            });
+            Reflect.isExtensible(p) === false &&
+            Reflect.preventExtensions(p) === true &&
+            Object.isExtensible(p) === false &&
+            (Object.preventExtensions(p), true) &&
+            isHit === 2 && preventHit === 2;
+        "));
+    }
+
+    [Fact]
+    public void ProxyOwnKeysTrapIntercepts()
+    {
+        Assert.True(RunBool(@"
+            var p = new Proxy({}, {
+                ownKeys: function() { return ['b', 'a']; }
+            });
+            var keys = Reflect.ownKeys(p);
+            keys.length === 2 && keys[0] === 'b' && keys[1] === 'a';
+        "));
+    }
+
+    [Fact]
+    public void ProxyGetOwnPropertyDescriptorTrapIntercepts()
+    {
+        Assert.True(RunBool(@"
+            var p = new Proxy({}, {
+                getOwnPropertyDescriptor: function(target, key) {
+                    if (key === 'x') return { value: 7, writable: true, enumerable: true, configurable: true };
+                    return undefined;
+                }
+            });
+            var desc = Object.getOwnPropertyDescriptor(p, 'x');
+            var desc2 = Reflect.getOwnPropertyDescriptor(p, 'x');
+            desc.value === 7 && desc2.value === 7;
+        "));
+    }
+
+    [Fact]
+    public void ProxyDefinePropertyTrapIntercepts()
+    {
+        Assert.True(RunBool(@"
+            var hit = 0;
+            var p = new Proxy({}, {
+                defineProperty: function(target, key, desc) {
+                    hit++;
+                    return key === 'x' && desc.value === 9;
+                }
+            });
+            Reflect.defineProperty(p, 'x', { value: 9, configurable: true, enumerable: true, writable: true }) &&
+            (Object.defineProperty(p, 'x', { value: 9, configurable: true, enumerable: true, writable: true }), true) &&
+            hit === 2;
+        "));
+    }
 }

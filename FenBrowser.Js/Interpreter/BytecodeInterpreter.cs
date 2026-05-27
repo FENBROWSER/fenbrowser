@@ -2972,9 +2972,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             RequireObjectTarget(args, "Reflect.ownKeys");
             var obj = _heap.GetObject(args[0].AsObjectHandle());
             var items = new List<JsValue>();
-            foreach (var p in obj.EnumerateOwnProperties())
+            if (obj is ProxyObject proxyOwnKeys)
             {
-                items.Add(JsValue.FromString(p.Key));
+                items.AddRange(ProxyOwnKeys(proxyOwnKeys));
+            }
+            else
+            {
+                foreach (var p in obj.EnumerateOwnProperties())
+                {
+                    items.Add(JsValue.FromString(p.Key));
+                }
+                foreach (var p in obj.EnumerateOwnSymbolProperties())
+                {
+                    items.Add(JsValue.SymbolFromId(p.Key));
+                }
             }
 
             var arr = CreateArrayFromElements(items);
@@ -3014,6 +3025,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         {
             RequireObjectTarget(args, "Reflect.getPrototypeOf");
             var obj = _heap.GetObject(args[0].AsObjectHandle());
+            if (obj is ProxyObject proxyGetPrototypeOf)
+            {
+                return ProxyGetPrototypeOf(proxyGetPrototypeOf);
+            }
             return obj.PrototypeHandle is { } proto ? JsValue.FromObject(proto) : JsValue.Null;
         }, length: 1);
 
@@ -3030,6 +3045,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
             var ownerHandle = args[0].AsObjectHandle();
             var obj = _heap.GetObject(ownerHandle);
+            if (obj is ProxyObject proxySetPrototypeOf)
+            {
+                return JsValue.FromBoolean(ProxySetPrototypeOf(proxySetPrototypeOf, protoArg));
+            }
             if (protoArg.Tag == JsValueTag.Object)
             {
                 obj.SetPrototype(protoArg.AsObjectHandle());
@@ -3047,14 +3066,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         DefineIntrinsicFunction(handle, reflect, "isExtensible", (_, args) =>
         {
             RequireObjectTarget(args, "Reflect.isExtensible");
-            return JsValue.FromBoolean(_heap.GetObject(args[0].AsObjectHandle()).Extensible);
+            var obj = _heap.GetObject(args[0].AsObjectHandle());
+            if (obj is ProxyObject proxyIsExtensible)
+            {
+                return JsValue.FromBoolean(ProxyIsExtensible(proxyIsExtensible));
+            }
+            return JsValue.FromBoolean(obj.Extensible);
         }, length: 1);
 
         // 28.1.12 preventExtensions
         DefineIntrinsicFunction(handle, reflect, "preventExtensions", (_, args) =>
         {
             RequireObjectTarget(args, "Reflect.preventExtensions");
-            _heap.GetObject(args[0].AsObjectHandle()).PreventExtensions();
+            var obj = _heap.GetObject(args[0].AsObjectHandle());
+            if (obj is ProxyObject proxyPreventExtensions)
+            {
+                return JsValue.FromBoolean(ProxyPreventExtensions(proxyPreventExtensions));
+            }
+            obj.PreventExtensions();
             return JsValue.FromBoolean(true);
         }, length: 1);
 
@@ -3564,6 +3593,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new GlobalFunctionsBuiltin())
             .Register(new BooleanBuiltin())
             .Register(new NumberBuiltin())
+            .Register(new BigIntBuiltin())
             .Register(new StringBuiltin())
             .Register(new SymbolBuiltin())
             .Register(new DateBuiltin())
@@ -3942,6 +3972,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
+        _ = prototype.DefineOwnProperty(
+            "constructor",
+            new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         _typeErrorPrototypeHandle = prototypeHandle;
         _typeErrorConstructorHandle = constructorHandle;
@@ -3974,6 +4008,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
+        _ = prototype.DefineOwnProperty(
+            "constructor",
+            new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         _rangeErrorPrototypeHandle = prototypeHandle;
         _rangeErrorConstructorHandle = constructorHandle;
@@ -4006,6 +4044,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
+        _ = prototype.DefineOwnProperty(
+            "constructor",
+            new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         _syntaxErrorPrototypeHandle = prototypeHandle;
         _syntaxErrorConstructorHandle = constructorHandle;
@@ -4025,7 +4067,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             return existing;
         }
 
-        var prototype = new NumberObject(0d);
+        var prototype = CreateOrdinaryObject();
         prototype.SetPrototype(EnsureObjectPrototype());
         var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
         _heap.PushRoot(prototypeHandle);
@@ -4038,6 +4080,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
+        _ = prototype.DefineOwnProperty(
+            "constructor",
+            new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         // ECMA-262 20.5.3 Error.prototype: must carry the spec-default 'name'
         // ("Error") and 'message' ("") so an Error built without arguments still
@@ -4624,6 +4670,34 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "test", RegExpPrototypeTest, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "exec", RegExpPrototypeExec, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", RegExpPrototypeToString);
+        DefineRegExpSymbolMethod(prototypeHandle, prototype, "match", RegExpPrototypeSymbolMatch);
+        DefineRegExpSymbolMethod(prototypeHandle, prototype, "search", RegExpPrototypeSymbolSearch);
+        DefineRegExpSymbolMethod(prototypeHandle, prototype, "replace", RegExpPrototypeSymbolReplace);
+        DefineRegExpSymbolMethod(prototypeHandle, prototype, "split", RegExpPrototypeSymbolSplit);
+        DefineRegExpSymbolMethod(prototypeHandle, prototype, "matchAll", RegExpPrototypeSymbolMatchAll);
+    }
+
+    private void DefineRegExpSymbolMethod(
+        ObjectHandle prototypeHandle,
+        JsObject prototype,
+        string symbolName,
+        Func<JsValue, IReadOnlyList<JsValue>, JsValue> call)
+    {
+        var symbol = GetWellKnownSymbol(symbolName);
+        if (symbol.Tag != JsValueTag.Symbol)
+        {
+            return;
+        }
+
+        var fn = new NativeFunctionObject($"[Symbol.{symbolName}]", call, length: 1);
+        var fnHandle = _heap.AllocateObject(fn, AllocationSite.Current());
+        var callHandle = EnsureFunctionCallMethod();
+        _ = fn.SetProperty("call", JsValue.FromObject(callHandle));
+        _heap.WriteBarrier(fnHandle, callHandle);
+        _ = prototype.DefineOwnSymbolProperty(
+            symbol.AsSymbolId(),
+            new JsPropertyDescriptor(JsValue.FromObject(fnHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, fnHandle);
     }
 
     // ECMA-262 12.2.8 RegularExpressionLiteral.
@@ -4840,6 +4914,108 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return JsValue.FromString($"/{escapedSource}/{regexp.Flags}");
     }
 
+    private JsValue RegExpPrototypeSymbolMatch(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var regexp = RegExpThisValue(thisValue);
+        var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+        if (!regexp.Flags.Contains('g', StringComparison.Ordinal))
+        {
+            return RegExpPrototypeExec(thisValue, new[] { JsValue.FromString(input) });
+        }
+
+        var values = new List<JsValue>();
+        foreach (Match match in regexp.Regex.Matches(input))
+        {
+            values.Add(JsValue.FromString(match.Value));
+        }
+
+        if (values.Count == 0)
+        {
+            return JsValue.Null;
+        }
+
+        return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(values), AllocationSite.Current()));
+    }
+
+    private JsValue RegExpPrototypeSymbolSearch(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var regexp = RegExpThisValue(thisValue);
+        var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+        var match = regexp.Regex.Match(input);
+        return JsValue.FromNumber(match.Success ? match.Index : -1);
+    }
+
+    private JsValue RegExpPrototypeSymbolReplace(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var regexp = RegExpThisValue(thisValue);
+        var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+        var replacement = args.Count > 1 ? args[1] : JsValue.Undefined;
+
+        if (replacement.Tag == JsValueTag.Object && IsCallable(replacement))
+        {
+            var output = regexp.Regex.Replace(input, m =>
+            {
+                var result = CallFunction(
+                    replacement,
+                    new[] { JsValue.FromString(m.Value), JsValue.FromNumber(m.Index), JsValue.FromString(input) },
+                    JsValue.Undefined);
+                return ToStringValue(result);
+            });
+            return JsValue.FromString(output);
+        }
+
+        return JsValue.FromString(regexp.Regex.Replace(input, ToStringValue(replacement)));
+    }
+
+    private JsValue RegExpPrototypeSymbolSplit(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var regexp = RegExpThisValue(thisValue);
+        var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+        var limit = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
+            ? Math.Max(0, (int)ToNumber(args[1]))
+            : int.MaxValue;
+
+        var partsRaw = regexp.Regex.Split(input);
+        var parts = new List<JsValue>(partsRaw.Length);
+        for (var i = 0; i < partsRaw.Length && i < limit; i++)
+        {
+            parts.Add(JsValue.FromString(partsRaw[i]));
+        }
+
+        return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(parts), AllocationSite.Current()));
+    }
+
+    private JsValue RegExpPrototypeSymbolMatchAll(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var regexp = RegExpThisValue(thisValue);
+        var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+        var results = new List<JsValue>();
+
+        foreach (Match match in regexp.Regex.Matches(input))
+        {
+            var record = CreateArrayObject(Array.Empty<JsValue>());
+            _ = record.DefineOwnProperty("0",
+                new JsPropertyDescriptor(JsValue.FromString(match.Value), Writable: true, Enumerable: true, Configurable: true));
+            for (var i = 1; i < match.Groups.Count; i++)
+            {
+                var g = match.Groups[i];
+                var v = g.Success ? JsValue.FromString(g.Value) : JsValue.Undefined;
+                _ = record.DefineOwnProperty(
+                    i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    new JsPropertyDescriptor(v, Writable: true, Enumerable: true, Configurable: true));
+            }
+            _ = record.DefineOwnProperty("index",
+                new JsPropertyDescriptor(JsValue.FromNumber(match.Index), Writable: true, Enumerable: true, Configurable: true));
+            _ = record.DefineOwnProperty("input",
+                new JsPropertyDescriptor(JsValue.FromString(input), Writable: true, Enumerable: true, Configurable: true));
+            _ = record.DefineOwnProperty("length",
+                new JsPropertyDescriptor(JsValue.FromNumber(match.Groups.Count), Writable: true, Enumerable: false, Configurable: false));
+            results.Add(JsValue.FromObject(_heap.AllocateObject(record, AllocationSite.Current())));
+        }
+
+        return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(results), AllocationSite.Current()));
+    }
+
     private RegExpObject RegExpThisValue(JsValue thisValue)
     {
         if (thisValue.Tag == JsValueTag.Object && _heap.GetObject(thisValue.AsObjectHandle()) is RegExpObject regexp)
@@ -4982,6 +5158,225 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 JsValue.FromObject(proxy.HandlerHandle!.Value));
         }
         return ConstructFunction(JsValue.FromObject(proxy.TargetHandle), args, newTarget);
+    }
+
+    [MayExecuteJs]
+    private JsValue ProxyGetPrototypeOf(ProxyObject proxy)
+    {
+        var trap = TryGetProxyTrap(proxy, "getPrototypeOf");
+        if (trap is not null)
+        {
+            var target = JsValue.FromObject(proxy.TargetHandle);
+            var result = CallFunction(trap.Value, new[] { target }, JsValue.FromObject(proxy.HandlerHandle!.Value));
+            if (result.Tag != JsValueTag.Object && result.Tag != JsValueTag.Null)
+            {
+                throw new JsThrownException(CreateTypeError("Proxy getPrototypeOf trap must return object or null."));
+            }
+            return result;
+        }
+
+        var targetObj = _heap.GetObject(proxy.TargetHandle);
+        return targetObj.PrototypeHandle is { } proto ? JsValue.FromObject(proto) : JsValue.Null;
+    }
+
+    [MayExecuteJs]
+    private bool ProxySetPrototypeOf(ProxyObject proxy, JsValue protoValue)
+    {
+        var trap = TryGetProxyTrap(proxy, "setPrototypeOf");
+        if (trap is not null)
+        {
+            var target = JsValue.FromObject(proxy.TargetHandle);
+            var result = CallFunction(trap.Value, new[] { target, protoValue }, JsValue.FromObject(proxy.HandlerHandle!.Value));
+            return ValueToBooleanProxy(result);
+        }
+
+        var targetObj = _heap.GetObject(proxy.TargetHandle);
+        if (protoValue.Tag == JsValueTag.Object)
+        {
+            targetObj.SetPrototype(protoValue.AsObjectHandle());
+            _heap.WriteBarrier(proxy.TargetHandle, protoValue.AsObjectHandle());
+            return true;
+        }
+
+        if (protoValue.Tag == JsValueTag.Null)
+        {
+            targetObj.SetPrototype(null);
+            return true;
+        }
+
+        return false;
+    }
+
+    [MayExecuteJs]
+    private bool ProxyIsExtensible(ProxyObject proxy)
+    {
+        var trap = TryGetProxyTrap(proxy, "isExtensible");
+        if (trap is not null)
+        {
+            var target = JsValue.FromObject(proxy.TargetHandle);
+            var result = CallFunction(trap.Value, new[] { target }, JsValue.FromObject(proxy.HandlerHandle!.Value));
+            return ValueToBooleanProxy(result);
+        }
+
+        return _heap.GetObject(proxy.TargetHandle).Extensible;
+    }
+
+    [MayExecuteJs]
+    private bool ProxyPreventExtensions(ProxyObject proxy)
+    {
+        var trap = TryGetProxyTrap(proxy, "preventExtensions");
+        if (trap is not null)
+        {
+            var target = JsValue.FromObject(proxy.TargetHandle);
+            var result = CallFunction(trap.Value, new[] { target }, JsValue.FromObject(proxy.HandlerHandle!.Value));
+            return ValueToBooleanProxy(result);
+        }
+
+        _heap.GetObject(proxy.TargetHandle).PreventExtensions();
+        return true;
+    }
+
+    [MayExecuteJs]
+    private List<JsValue> ProxyOwnKeys(ProxyObject proxy)
+    {
+        var trap = TryGetProxyTrap(proxy, "ownKeys");
+        if (trap is not null)
+        {
+            var target = JsValue.FromObject(proxy.TargetHandle);
+            var result = CallFunction(trap.Value, new[] { target }, JsValue.FromObject(proxy.HandlerHandle!.Value));
+            if (result.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Proxy ownKeys trap must return an object."));
+            }
+
+            var listObj = _heap.GetObject(result.AsObjectHandle());
+            var len = GetArrayLength(listObj);
+            var keys = new List<JsValue>(len);
+            for (var i = 0; i < len; i++)
+            {
+                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if (!TryGetPropertyValue(listObj, result, key, out var item))
+                {
+                    continue;
+                }
+
+                if (item.Tag == JsValueTag.String || item.Tag == JsValueTag.Symbol)
+                {
+                    keys.Add(item);
+                }
+                else
+                {
+                    keys.Add(JsValue.FromString(ToPropertyKey(item)));
+                }
+            }
+
+            return keys;
+        }
+
+        var targetObj = _heap.GetObject(proxy.TargetHandle);
+        var fallback = new List<JsValue>();
+        foreach (var p in targetObj.EnumerateOwnProperties())
+        {
+            fallback.Add(JsValue.FromString(p.Key));
+        }
+        foreach (var p in targetObj.EnumerateOwnSymbolProperties())
+        {
+            fallback.Add(JsValue.SymbolFromId(p.Key));
+        }
+        return fallback;
+    }
+
+    [MayExecuteJs]
+    private bool ProxyTryGetOwnPropertyDescriptor(ProxyObject proxy, string prop, out JsPropertyDescriptor descriptor)
+    {
+        var trap = TryGetProxyTrap(proxy, "getOwnPropertyDescriptor");
+        if (trap is not null)
+        {
+            var target = JsValue.FromObject(proxy.TargetHandle);
+            var key = JsValue.FromString(prop);
+            var result = CallFunction(trap.Value, new[] { target, key }, JsValue.FromObject(proxy.HandlerHandle!.Value));
+            if (result.Tag == JsValueTag.Undefined)
+            {
+                descriptor = default;
+                return false;
+            }
+
+            if (result.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Proxy getOwnPropertyDescriptor trap must return object or undefined."));
+            }
+
+            descriptor = ToPropertyDescriptor(result);
+            return true;
+        }
+
+        var targetObj = _heap.GetObject(proxy.TargetHandle);
+        return targetObj.TryGetOwnProperty(prop, out descriptor);
+    }
+
+    [MayExecuteJs]
+    private bool ProxyDefineProperty(ProxyObject proxy, string prop, JsValue descriptorValue)
+    {
+        var trap = TryGetProxyTrap(proxy, "defineProperty");
+        if (trap is not null)
+        {
+            var target = JsValue.FromObject(proxy.TargetHandle);
+            var key = JsValue.FromString(prop);
+            var result = CallFunction(trap.Value, new[] { target, key, descriptorValue }, JsValue.FromObject(proxy.HandlerHandle!.Value));
+            return ValueToBooleanProxy(result);
+        }
+
+        var desc = ToPropertyDescriptor(descriptorValue);
+        var targetObj = _heap.GetObject(proxy.TargetHandle);
+        var ok = targetObj.DefineOwnProperty(prop, desc);
+        if (ok)
+        {
+            WriteDescriptorBarrier(proxy.TargetHandle, desc);
+        }
+        return ok;
+    }
+
+    [MayExecuteJs]
+    private JsPropertyDescriptor ToPropertyDescriptor(JsValue descriptorValue)
+    {
+        if (descriptorValue.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Property descriptor must be an object."));
+        }
+
+        var descriptorObject = _heap.GetObject(descriptorValue.AsObjectHandle());
+        var descriptorReceiver = descriptorValue;
+        var hasValue = TryGetPropertyValue(descriptorObject, descriptorReceiver, "value", out var value);
+        var hasWritable = descriptorObject.TryGetProperty("writable", h => _heap.GetObject(h), out _);
+        var hasGetter = TryGetPropertyValue(descriptorObject, descriptorReceiver, "get", out var getter);
+        var hasSetter = TryGetPropertyValue(descriptorObject, descriptorReceiver, "set", out var setter);
+
+        if ((hasGetter || hasSetter) && (hasValue || hasWritable))
+        {
+            throw new JsThrownException(CreateTypeError("Property descriptor cannot mix accessor and data fields."));
+        }
+
+        if (hasGetter && getter.Tag != JsValueTag.Undefined && !IsCallable(getter))
+        {
+            throw new JsThrownException(CreateTypeError("Property descriptor getter must be callable or undefined."));
+        }
+
+        if (hasSetter && setter.Tag != JsValueTag.Undefined && !IsCallable(setter))
+        {
+            throw new JsThrownException(CreateTypeError("Property descriptor setter must be callable or undefined."));
+        }
+
+        var writable = ReadDescriptorFlag(descriptorObject, descriptorReceiver, "writable");
+        var enumerable = ReadDescriptorFlag(descriptorObject, descriptorReceiver, "enumerable");
+        var configurable = ReadDescriptorFlag(descriptorObject, descriptorReceiver, "configurable");
+
+        return hasGetter || hasSetter
+            ? JsPropertyDescriptor.Accessor(
+                hasGetter ? getter : JsValue.Undefined,
+                hasSetter ? setter : JsValue.Undefined,
+                enumerable,
+                configurable)
+            : new JsPropertyDescriptor(hasValue ? value : JsValue.Undefined, writable, enumerable, configurable);
     }
 
 
@@ -5858,9 +6253,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             if (target.Tag == JsValueTag.Object)
             {
                 var obj = _heap.GetObject(target.AsObjectHandle());
-                foreach (var pair in obj.EnumerateOwnProperties())
+                if (obj is ProxyObject proxyOwnNames)
                 {
-                    items.Add(JsValue.FromString(pair.Key));
+                    foreach (var key in ProxyOwnKeys(proxyOwnNames))
+                    {
+                        if (key.Tag == JsValueTag.String)
+                        {
+                            items.Add(key);
+                        }
+                    }
+                }
+                else
+                {
+                    foreach (var pair in obj.EnumerateOwnProperties())
+                    {
+                        items.Add(JsValue.FromString(pair.Key));
+                    }
                 }
             }
 
@@ -5877,7 +6285,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 return target;
             }
 
-            _heap.GetObject(target.AsObjectHandle()).PreventExtensions();
+            var obj = _heap.GetObject(target.AsObjectHandle());
+            if (obj is ProxyObject proxyPreventExtensions)
+            {
+                ProxyPreventExtensions(proxyPreventExtensions);
+                return target;
+            }
+
+            obj.PreventExtensions();
             return target;
         }, length: 1);
 
@@ -5889,7 +6304,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 return JsValue.FromBoolean(false);
             }
 
-            return JsValue.FromBoolean(_heap.GetObject(target.AsObjectHandle()).Extensible);
+            var obj = _heap.GetObject(target.AsObjectHandle());
+            if (obj is ProxyObject proxyIsExtensible)
+            {
+                return JsValue.FromBoolean(ProxyIsExtensible(proxyIsExtensible));
+            }
+
+            return JsValue.FromBoolean(obj.Extensible);
         }, length: 1);
 
         // ECMA-262 20.1.2.6 / 20.1.2.16 Object.freeze / isFrozen.
@@ -6088,6 +6509,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             }
 
             var target = _heap.GetObject(args[0].AsObjectHandle());
+            if (target is ProxyObject proxyGetPrototypeOf)
+            {
+                return ProxyGetPrototypeOf(proxyGetPrototypeOf);
+            }
             return target.PrototypeHandle is { } proto ? JsValue.FromObject(proto) : JsValue.Null;
         }, length: 1);
 
@@ -6115,6 +6540,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
             var ownerHandle = args[0].AsObjectHandle();
             var target = _heap.GetObject(ownerHandle);
+            if (target is ProxyObject proxySetPrototypeOf)
+            {
+                ProxySetPrototypeOf(proxySetPrototypeOf, protoArg);
+                return args[0];
+            }
             if (protoArg.Tag == JsValueTag.Object)
             {
                 var protoHandle = protoArg.AsObjectHandle();
@@ -6211,12 +6641,45 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             => CollectOwnEnumerable(args, OwnEnumerableKind.Values), length: 1);
         DefineIntrinsicFunction(constructorHandle, constructor, "entries", (_, args)
             => CollectOwnEnumerable(args, OwnEnumerableKind.Entries), length: 1);
+        DefineIntrinsicFunction(constructorHandle, constructor, "getOwnPropertySymbols", (_, args) =>
+        {
+            if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Object.getOwnPropertySymbols called on non-object."));
+            }
+
+            var obj = _heap.GetObject(args[0].AsObjectHandle());
+            var symbols = new List<JsValue>();
+            if (obj is ProxyObject proxyOwnSymbols)
+            {
+                foreach (var key in ProxyOwnKeys(proxyOwnSymbols))
+                {
+                    if (key.Tag == JsValueTag.Symbol)
+                    {
+                        symbols.Add(key);
+                    }
+                }
+            }
+            else
+            {
+                foreach (var pair in obj.EnumerateOwnSymbolProperties())
+                {
+                    symbols.Add(JsValue.SymbolFromId(pair.Key));
+                }
+            }
+
+            var arr = CreateArrayObject(symbols);
+            var arrHandle = _heap.AllocateObject(arr, AllocationSite.Current());
+            return JsValue.FromObject(arrHandle);
+        }, length: 1);
 
         var prototype = _heap.GetObject(prototypeHandle);
         _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", (thisValue, _) => ObjectPrototypeToString(thisValue));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleString", (thisValue, _) => ObjectPrototypeToString(thisValue));
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "valueOf", (thisValue, _) => ObjectPrototypeValueOf(thisValue));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "hasOwnProperty", ObjectPrototypeHasOwnProperty, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "isPrototypeOf", ObjectPrototypeIsPrototypeOf, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "propertyIsEnumerable", ObjectPrototypePropertyIsEnumerable, length: 1);
@@ -6248,28 +6711,65 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         if (target.Tag == JsValueTag.Object)
         {
             var obj = _heap.GetObject(target.AsObjectHandle());
-            foreach (var pair in obj.EnumerateOwnProperties())
+            if (obj is ProxyObject proxyOwnEnumerable)
             {
-                if (!pair.Value.Enumerable)
+                foreach (var key in ProxyOwnKeys(proxyOwnEnumerable))
                 {
-                    continue;
-                }
-
-                switch (kind)
-                {
-                    case OwnEnumerableKind.Keys:
-                        items.Add(JsValue.FromString(pair.Key));
-                        break;
-                    case OwnEnumerableKind.Values:
-                        items.Add(pair.Value.IsAccessor ? JsValue.Undefined : pair.Value.Value);
-                        break;
-                    case OwnEnumerableKind.Entries:
+                    if (key.Tag != JsValueTag.String)
                     {
-                        var value = pair.Value.IsAccessor ? JsValue.Undefined : pair.Value.Value;
-                        var entry = CreateArrayObject(new[] { JsValue.FromString(pair.Key), value });
-                        var entryHandle = _heap.AllocateObject(entry, AllocationSite.Current());
-                        items.Add(JsValue.FromObject(entryHandle));
-                        break;
+                        continue;
+                    }
+
+                    if (!ProxyTryGetOwnPropertyDescriptor(proxyOwnEnumerable, key.AsString(), out var descriptor) ||
+                        !descriptor.Enumerable)
+                    {
+                        continue;
+                    }
+
+                    switch (kind)
+                    {
+                        case OwnEnumerableKind.Keys:
+                            items.Add(key);
+                            break;
+                        case OwnEnumerableKind.Values:
+                            items.Add(descriptor.IsAccessor ? JsValue.Undefined : descriptor.Value);
+                            break;
+                        case OwnEnumerableKind.Entries:
+                        {
+                            var value = descriptor.IsAccessor ? JsValue.Undefined : descriptor.Value;
+                            var entry = CreateArrayObject(new[] { key, value });
+                            var entryHandle = _heap.AllocateObject(entry, AllocationSite.Current());
+                            items.Add(JsValue.FromObject(entryHandle));
+                            break;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                foreach (var pair in obj.EnumerateOwnProperties())
+                {
+                    if (!pair.Value.Enumerable)
+                    {
+                        continue;
+                    }
+
+                    switch (kind)
+                    {
+                        case OwnEnumerableKind.Keys:
+                            items.Add(JsValue.FromString(pair.Key));
+                            break;
+                        case OwnEnumerableKind.Values:
+                            items.Add(pair.Value.IsAccessor ? JsValue.Undefined : pair.Value.Value);
+                            break;
+                        case OwnEnumerableKind.Entries:
+                        {
+                            var value = pair.Value.IsAccessor ? JsValue.Undefined : pair.Value.Value;
+                            var entry = CreateArrayObject(new[] { JsValue.FromString(pair.Key), value });
+                            var entryHandle = _heap.AllocateObject(entry, AllocationSite.Current());
+                            items.Add(JsValue.FromObject(entryHandle));
+                            break;
+                        }
                     }
                 }
             }
@@ -6332,6 +6832,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             AllocationSite.Current());
         _ = prototype.SetProperty("bind", JsValue.FromObject(bindHandle));
         _heap.WriteBarrier(prototypeHandle, bindHandle);
+
+        var toStringHandle = _heap.AllocateObject(
+            new NativeFunctionObject("toString", FunctionPrototypeToString, length: 0),
+            AllocationSite.Current());
+        _ = prototype.SetProperty("toString", JsValue.FromObject(toStringHandle));
+        _heap.WriteBarrier(prototypeHandle, toStringHandle);
+
+        var hasInstanceFnHandle = _heap.AllocateObject(
+            new NativeFunctionObject("[Symbol.hasInstance]", FunctionPrototypeHasInstance, length: 1),
+            AllocationSite.Current());
+        var hasInstanceSymbol = GetWellKnownSymbol("hasInstance");
+        if (hasInstanceSymbol.Tag == JsValueTag.Symbol)
+        {
+            _ = prototype.DefineOwnSymbolProperty(
+                hasInstanceSymbol.AsSymbolId(),
+                new JsPropertyDescriptor(JsValue.FromObject(hasInstanceFnHandle), Writable: false, Enumerable: false, Configurable: false));
+            _heap.WriteBarrier(prototypeHandle, hasInstanceFnHandle);
+        }
 
         _functionPrototypeHandle = prototypeHandle;
         _functionConstructorHandle = constructorHandle;
@@ -6556,6 +7074,64 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return JsValue.FromObject(boundHandle);
     }
 
+    private JsValue FunctionPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        if (thisValue.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Function.prototype.toString called on non-function."));
+        }
+
+        var obj = _heap.GetObject(thisValue.AsObjectHandle());
+        return obj switch
+        {
+            NativeFunctionObject nfo => JsValue.FromString($"function {nfo.Name}() {{ [native code] }}"),
+            JsFunctionObject jfo => JsValue.FromString($"function {(jfo.Function.Name ?? string.Empty)}() {{ [bytecode] }}"),
+            BoundFunctionObject => JsValue.FromString("function bound() { [native code] }"),
+            _ => throw new JsThrownException(CreateTypeError("Function.prototype.toString called on non-function."))
+        };
+    }
+
+    private JsValue FunctionPrototypeHasInstance(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var value = args.Count > 0 ? args[0] : JsValue.Undefined;
+        if (thisValue.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Function.prototype[@@hasInstance] called on non-object."));
+        }
+
+        var obj = _heap.GetObject(thisValue.AsObjectHandle());
+        if (obj is not JsFunctionObject && obj is not NativeFunctionObject && obj is not BoundFunctionObject)
+        {
+            return JsValue.FromBoolean(false);
+        }
+
+        if (value.Tag != JsValueTag.Object)
+        {
+            return JsValue.FromBoolean(false);
+        }
+
+        if (!TryGetPropertyValue(obj, thisValue, "prototype", out var prototypeValue) ||
+            prototypeValue.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Function has non-object prototype in @@hasInstance."));
+        }
+
+        var targetPrototype = prototypeValue.AsObjectHandle();
+        var currentObj = ResolveObject(value);
+        while (currentObj.PrototypeHandle is { } proto)
+        {
+            if (proto.Equals(targetPrototype))
+            {
+                return JsValue.FromBoolean(true);
+            }
+
+            currentObj = _heap.GetObject(proto);
+        }
+
+        return JsValue.FromBoolean(false);
+    }
+
     // Merge bound args + call-site args for BoundFunctionObject [[Call]]/[[Construct]].
     private static JsValue[] MergeBoundArgs(JsValue[] boundArgs, IReadOnlyList<JsValue> callArgs)
     {
@@ -6602,7 +7178,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             JsValueTag.Object => value,
             JsValueTag.Boolean => CreateBooleanObject(value.AsBoolean()),
             JsValueTag.Int32 or JsValueTag.Number => CreateNumberObject(ToNumber(value)),
+            JsValueTag.BigInt => CreateBigIntObject(value.AsBigInt()),
             JsValueTag.String => CreateStringObject(value.AsString()),
+            JsValueTag.Symbol => CreateSymbolObject(value.AsSymbolId()),
             JsValueTag.HostObject => value,
             _ => JsValue.FromObject(_heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current()))
         };
@@ -6623,6 +7201,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         };
 
         return JsValue.FromString($"[object {tag}]");
+    }
+
+    private JsValue ObjectPrototypeValueOf(JsValue thisValue)
+    {
+        if (thisValue.Tag is JsValueTag.Undefined or JsValueTag.Null)
+        {
+            throw new JsThrownException(CreateTypeError("Object.prototype.valueOf called on null or undefined."));
+        }
+
+        return thisValue.Tag == JsValueTag.Object
+            ? thisValue
+            : CreateObjectFromValue(thisValue);
     }
 
     private JsValue ObjectPrototypeHasOwnProperty(JsValue thisValue, IReadOnlyList<JsValue> args)
@@ -6724,7 +7314,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
         var targetHandle = args[0].AsObjectHandle();
         var target = _heap.GetObject(targetHandle);
-        var key = ToPropertyKey(args[1]);
+        var keyArg = args[1];
+        var isSymbolKey = keyArg.Tag == JsValueTag.Symbol;
+        var key = isSymbolKey ? string.Empty : ToPropertyKey(keyArg);
         var descriptorObject = _heap.GetObject(args[2].AsObjectHandle());
         var descriptorReceiver = args[2];
         var hasValue = TryGetPropertyValue(descriptorObject, descriptorReceiver, "value", out var value);
@@ -6762,8 +7354,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 configurable)
             : new JsPropertyDescriptor(hasValue ? value : JsValue.Undefined, writable, enumerable, configurable);
 
-        _ = target.DefineOwnProperty(key, descriptor);
-        WriteDescriptorBarrier(targetHandle, descriptor);
+        if (target is ProxyObject proxyDefineProperty)
+        {
+            if (isSymbolKey)
+            {
+                throw new JsThrownException(CreateTypeError("Proxy.defineProperty with symbol key is not yet supported."));
+            }
+            var ok = ProxyDefineProperty(proxyDefineProperty, key, args[2]);
+            if (!ok)
+            {
+                throw new JsThrownException(CreateTypeError("Cannot define property on proxy target."));
+            }
+        }
+        else
+        {
+            if (isSymbolKey)
+            {
+                _ = target.DefineOwnSymbolProperty(keyArg.AsSymbolId(), descriptor);
+            }
+            else
+            {
+                _ = target.DefineOwnProperty(key, descriptor);
+            }
+            WriteDescriptorBarrier(targetHandle, descriptor);
+        }
 
         return args[0];
     }
@@ -6800,8 +7414,26 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         var target = _heap.GetObject(args[0].AsObjectHandle());
-        var key = ToPropertyKey(args.Count > 1 ? args[1] : JsValue.Undefined);
-        if (!target.TryGetOwnProperty(key, out var descriptor))
+        var keyArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        var isSymbolKey = keyArg.Tag == JsValueTag.Symbol;
+        var key = isSymbolKey ? string.Empty : ToPropertyKey(keyArg);
+        var found = false;
+        JsPropertyDescriptor descriptor;
+        if (target is ProxyObject proxyGetOwnPropertyDescriptor)
+        {
+            if (isSymbolKey)
+            {
+                return JsValue.Undefined;
+            }
+            found = ProxyTryGetOwnPropertyDescriptor(proxyGetOwnPropertyDescriptor, key, out descriptor);
+        }
+        else
+        {
+            found = isSymbolKey
+                ? target.TryGetOwnSymbolProperty(keyArg.AsSymbolId(), out descriptor)
+                : target.TryGetOwnProperty(key, out descriptor);
+        }
+        if (!found)
         {
             return JsValue.Undefined;
         }
@@ -9634,6 +10266,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     }
 
     private BuiltinBinding[]? _typedArrayConstructors;
+    private ObjectHandle? _typedArraySharedPrototypeHandle;
+
+    private ObjectHandle EnsureTypedArraySharedPrototype()
+    {
+        if (_typedArraySharedPrototypeHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var shared = CreateOrdinaryObject();
+        shared.SetPrototype(EnsureObjectPrototype());
+        var sharedHandle = _heap.AllocateObject(shared, AllocationSite.Current());
+        _heap.PushRoot(sharedHandle);
+        _typedArraySharedPrototypeHandle = sharedHandle;
+        return sharedHandle;
+    }
 
     private BuiltinBinding CreateTypedArrayCtor(string name, TypedArrayElementType elementType)
     {
@@ -9647,6 +10295,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         };
 
         var prototype = CreateOrdinaryObject();
+        prototype.SetPrototype(EnsureTypedArraySharedPrototype());
         var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
         _heap.PushRoot(prototypeHandle);
 
@@ -9792,6 +10441,393 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             sliced.SetPrototype(protoHandle);
             return JsValue.FromObject(_heap.AllocateObject(sliced, AllocationSite.Current()));
         }, length: 2);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "at", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var index = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
+            if (index < 0)
+            {
+                index += self.Length;
+            }
+            return self.GetElement(index);
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "copyWithin", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var len = self.Length;
+            var target = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
+            var start = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
+            var end = args.Count > 2 ? (int)ToNumber(args[2]) : len;
+            if (target < 0) target = Math.Max(len + target, 0);
+            if (start < 0) start = Math.Max(len + start, 0);
+            if (end < 0) end = Math.Max(len + end, 0);
+            target = Math.Min(Math.Max(target, 0), len);
+            start = Math.Min(Math.Max(start, 0), len);
+            end = Math.Min(Math.Max(end, 0), len);
+            var count = Math.Min(end - start, len - target);
+            if (count > 0)
+            {
+                var temp = new JsValue[count];
+                for (var i = 0; i < count; i++) temp[i] = self.GetElement(start + i);
+                for (var i = 0; i < count; i++) self.SetElement(target + i, temp[i]);
+            }
+            return thisValue;
+        }, length: 2);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "fill", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var value = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var len = self.Length;
+            var start = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
+            var end = args.Count > 2 ? (int)ToNumber(args[2]) : len;
+            if (start < 0) start = Math.Max(len + start, 0);
+            if (end < 0) end = Math.Max(len + end, 0);
+            start = Math.Min(Math.Max(start, 0), len);
+            end = Math.Min(Math.Max(end, 0), len);
+            for (var i = start; i < end; i++) self.SetElement(i, value);
+            return thisValue;
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "forEach", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.forEach callback is not callable."));
+            var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            for (var i = 0; i < self.Length; i++)
+                _ = CallFunction(callback, new[] { self.GetElement(i), JsValue.FromNumber(i), thisValue }, thisArg);
+            return JsValue.Undefined;
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "map", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.map callback is not callable."));
+            var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            var buf = new ArrayBufferObject(self.Length * elementSize);
+            var mapped = CreateTypedArrayInstance(self.ElementType, buf, 0, self.Length * elementSize);
+            mapped.SetPrototype(protoHandle);
+            for (var i = 0; i < self.Length; i++)
+            {
+                var next = CallFunction(callback, new[] { self.GetElement(i), JsValue.FromNumber(i), thisValue }, thisArg);
+                mapped.SetElement(i, next);
+            }
+            return JsValue.FromObject(_heap.AllocateObject(mapped, AllocationSite.Current()));
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "filter", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.filter callback is not callable."));
+            var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            var selected = new List<JsValue>();
+            for (var i = 0; i < self.Length; i++)
+            {
+                var value = self.GetElement(i);
+                var keep = CallFunction(callback, new[] { value, JsValue.FromNumber(i), thisValue }, thisArg);
+                if (IsTruthy(keep)) selected.Add(value);
+            }
+            var buf = new ArrayBufferObject(selected.Count * elementSize);
+            var filtered = CreateTypedArrayInstance(self.ElementType, buf, 0, selected.Count * elementSize);
+            filtered.SetPrototype(protoHandle);
+            for (var i = 0; i < selected.Count; i++) filtered.SetElement(i, selected[i]);
+            return JsValue.FromObject(_heap.AllocateObject(filtered, AllocationSite.Current()));
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "find", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.find callback is not callable."));
+            var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            for (var i = 0; i < self.Length; i++)
+            {
+                var value = self.GetElement(i);
+                if (IsTruthy(CallFunction(callback, new[] { value, JsValue.FromNumber(i), thisValue }, thisArg)))
+                    return value;
+            }
+            return JsValue.Undefined;
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "findIndex", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.findIndex callback is not callable."));
+            var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            for (var i = 0; i < self.Length; i++)
+            {
+                var value = self.GetElement(i);
+                if (IsTruthy(CallFunction(callback, new[] { value, JsValue.FromNumber(i), thisValue }, thisArg)))
+                    return JsValue.FromNumber(i);
+            }
+            return JsValue.FromNumber(-1);
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "findLast", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.findLast callback is not callable."));
+            var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            for (var i = self.Length - 1; i >= 0; i--)
+            {
+                var value = self.GetElement(i);
+                if (IsTruthy(CallFunction(callback, new[] { value, JsValue.FromNumber(i), thisValue }, thisArg)))
+                    return value;
+            }
+            return JsValue.Undefined;
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "findLastIndex", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.findLastIndex callback is not callable."));
+            var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            for (var i = self.Length - 1; i >= 0; i--)
+            {
+                var value = self.GetElement(i);
+                if (IsTruthy(CallFunction(callback, new[] { value, JsValue.FromNumber(i), thisValue }, thisArg)))
+                    return JsValue.FromNumber(i);
+            }
+            return JsValue.FromNumber(-1);
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "every", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.every callback is not callable."));
+            var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            for (var i = 0; i < self.Length; i++)
+                if (!IsTruthy(CallFunction(callback, new[] { self.GetElement(i), JsValue.FromNumber(i), thisValue }, thisArg)))
+                    return JsValue.FromBoolean(false);
+            return JsValue.FromBoolean(true);
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "some", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.some callback is not callable."));
+            var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            for (var i = 0; i < self.Length; i++)
+                if (IsTruthy(CallFunction(callback, new[] { self.GetElement(i), JsValue.FromNumber(i), thisValue }, thisArg)))
+                    return JsValue.FromBoolean(true);
+            return JsValue.FromBoolean(false);
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "includes", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var search = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var from = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
+            if (from < 0) from = Math.Max(self.Length + from, 0);
+            for (var i = from; i < self.Length; i++)
+                if (SameValueZero(self.GetElement(i), search)) return JsValue.FromBoolean(true);
+            return JsValue.FromBoolean(false);
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "indexOf", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var search = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var from = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
+            if (from < 0) from = Math.Max(self.Length + from, 0);
+            for (var i = from; i < self.Length; i++)
+                if (AreStrictlyEqual(self.GetElement(i), search)) return JsValue.FromNumber(i);
+            return JsValue.FromNumber(-1);
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "lastIndexOf", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var search = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var from = args.Count > 1 ? (int)ToNumber(args[1]) : self.Length - 1;
+            if (from < 0) from = self.Length + from;
+            from = Math.Min(from, self.Length - 1);
+            for (var i = from; i >= 0; i--)
+                if (AreStrictlyEqual(self.GetElement(i), search)) return JsValue.FromNumber(i);
+            return JsValue.FromNumber(-1);
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "join", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var sep = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? ToStringValue(args[0]) : ",";
+            var sb = new System.Text.StringBuilder();
+            for (var i = 0; i < self.Length; i++)
+            {
+                if (i > 0) sb.Append(sep);
+                sb.Append(ToStringValue(self.GetElement(i)));
+            }
+            return JsValue.FromString(sb.ToString());
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "keys", (thisValue, _) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var keys = new List<JsValue>(self.Length);
+            for (var i = 0; i < self.Length; i++) keys.Add(JsValue.FromNumber(i));
+            var arr = CreateArrayObject(keys);
+            var arrHandle = _heap.AllocateObject(arr, AllocationSite.Current());
+            return CreateArrayIterator(JsValue.FromObject(arrHandle), ArrayIteratorKind.Value);
+        }, length: 0);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "values", (thisValue, _) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var values = new List<JsValue>(self.Length);
+            for (var i = 0; i < self.Length; i++) values.Add(self.GetElement(i));
+            var arr = CreateArrayObject(values);
+            var arrHandle = _heap.AllocateObject(arr, AllocationSite.Current());
+            return CreateArrayIterator(JsValue.FromObject(arrHandle), ArrayIteratorKind.Value);
+        }, length: 0);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "entries", (thisValue, _) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var entries = new List<JsValue>(self.Length);
+            for (var i = 0; i < self.Length; i++)
+            {
+                var pair = CreateArrayObject(new[] { JsValue.FromNumber(i), self.GetElement(i) });
+                entries.Add(JsValue.FromObject(_heap.AllocateObject(pair, AllocationSite.Current())));
+            }
+            var arr = CreateArrayObject(entries);
+            var arrHandle = _heap.AllocateObject(arr, AllocationSite.Current());
+            return CreateArrayIterator(JsValue.FromObject(arrHandle), ArrayIteratorKind.Value);
+        }, length: 0);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "toString", (thisValue, _) =>
+            CallFunction(GetReceiverProperty(thisValue, "join"), Array.Empty<JsValue>(), thisValue), length: 0);
+        DefineNativePrototypeMethod(protoHandle, proto, "toLocaleString", (thisValue, _) =>
+            CallFunction(GetReceiverProperty(thisValue, "join"), Array.Empty<JsValue>(), thisValue), length: 0);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "reverse", (thisValue, _) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            for (int i = 0, j = self.Length - 1; i < j; i++, j--)
+            {
+                var a = self.GetElement(i);
+                var b = self.GetElement(j);
+                self.SetElement(i, b);
+                self.SetElement(j, a);
+            }
+            return thisValue;
+        }, length: 0);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "reduce", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.reduce callback is not callable."));
+            var k = 0;
+            JsValue acc;
+            if (args.Count > 1) acc = args[1];
+            else
+            {
+                if (self.Length == 0) throw new JsThrownException(CreateTypeError("Reduce of empty typed array with no initial value."));
+                acc = self.GetElement(0);
+                k = 1;
+            }
+            for (; k < self.Length; k++)
+                acc = CallFunction(callback, new[] { acc, self.GetElement(k), JsValue.FromNumber(k), thisValue }, JsValue.Undefined);
+            return acc;
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "reduceRight", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.reduceRight callback is not callable."));
+            var k = self.Length - 1;
+            JsValue acc;
+            if (args.Count > 1) acc = args[1];
+            else
+            {
+                if (self.Length == 0) throw new JsThrownException(CreateTypeError("Reduce of empty typed array with no initial value."));
+                acc = self.GetElement(k--);
+            }
+            for (; k >= 0; k--)
+                acc = CallFunction(callback, new[] { acc, self.GetElement(k), JsValue.FromNumber(k), thisValue }, JsValue.Undefined);
+            return acc;
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "subarray", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var len = self.Length;
+            var begin = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
+            var end = args.Count > 1 ? (int)ToNumber(args[1]) : len;
+            if (begin < 0) begin = Math.Max(len + begin, 0);
+            if (end < 0) end = Math.Max(len + end, 0);
+            begin = Math.Min(Math.Max(begin, 0), len);
+            end = Math.Min(Math.Max(end, 0), len);
+            if (end < begin) end = begin;
+            var newLen = end - begin;
+            var byteOffset = self.ByteOffset + begin * self.ElementSize;
+            var byteLength = newLen * self.ElementSize;
+            var view = CreateTypedArrayInstance(self.ElementType, self.Buffer, byteOffset, byteLength);
+            view.SetPrototype(protoHandle);
+            return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
+        }, length: 2);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "sort", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var comparer = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var values = new List<JsValue>(self.Length);
+            for (var i = 0; i < self.Length; i++) values.Add(self.GetElement(i));
+            values.Sort((a, b) =>
+            {
+                if (IsCallable(comparer))
+                {
+                    var v = CallFunction(comparer, new[] { a, b }, JsValue.Undefined);
+                    var n = ToNumber(v);
+                    return n < 0 ? -1 : (n > 0 ? 1 : 0);
+                }
+                var na = ToNumber(a);
+                var nb = ToNumber(b);
+                return na.CompareTo(nb);
+            });
+            for (var i = 0; i < values.Count; i++) self.SetElement(i, values[i]);
+            return thisValue;
+        }, length: 1);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "with", (thisValue, args) =>
+        {
+            var self = RequireTypedArray(thisValue);
+            var index = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
+            if (index < 0) index += self.Length;
+            if (index < 0 || index >= self.Length)
+                throw new JsThrownException(CreateRangeError("TypedArray.prototype.with index out of range."));
+            var value = args.Count > 1 ? args[1] : JsValue.Undefined;
+            var buf = new ArrayBufferObject(self.Length * elementSize);
+            var copy = CreateTypedArrayInstance(self.ElementType, buf, 0, self.Length * elementSize);
+            copy.SetPrototype(protoHandle);
+            for (var i = 0; i < self.Length; i++) copy.SetElement(i, self.GetElement(i));
+            copy.SetElement(index, value);
+            return JsValue.FromObject(_heap.AllocateObject(copy, AllocationSite.Current()));
+        }, length: 2);
+
+        var iteratorSymbolId = GetWellKnownSymbolId("iterator");
+        if (iteratorSymbolId != 0)
+        {
+            var valuesMethod = GetReceiverProperty(JsValue.FromObject(protoHandle), "values");
+            if (valuesMethod.Tag == JsValueTag.Object)
+            {
+                _ = proto.DefineOwnSymbolProperty(
+                    iteratorSymbolId,
+                    new JsPropertyDescriptor(valuesMethod, Writable: true, Enumerable: false, Configurable: true));
+                _heap.WriteBarrier(protoHandle, valuesMethod.AsObjectHandle());
+            }
+        }
     }
 
     private TypedArrayObject RequireTypedArray(JsValue value)
@@ -9874,6 +10910,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
+        _ = prototype.DefineOwnProperty(
+            "constructor",
+            new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         protoField = prototypeHandle;
         ctorField = constructorHandle;
@@ -9905,6 +10945,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
+        _ = prototype.DefineOwnProperty(
+            "constructor",
+            new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         _uriErrorPrototypeHandle = prototypeHandle;
         _uriErrorConstructorHandle = constructorHandle;
@@ -10394,6 +11438,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             "Boolean" => EnsureBooleanPrototype(),
             "Number" => EnsureNumberPrototype(),
             "String" => EnsureStringPrototype(),
+            "BigInt" => EnsureObjectPrototype(),
+            "Symbol" => EnsureObjectPrototype(),
             "Date" => EnsureDatePrototype(),
             "RegExp" => EnsureRegExpPrototype(),
             "GeneratorPrototype" => EnsureGeneratorPrototype(),
@@ -11333,6 +12379,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
+    private JsValue CreateBigIntObject(System.Numerics.BigInteger value)
+    {
+        var obj = new BigIntObject(value);
+        obj.SetPrototype(GetGlobalPrototype("BigInt"));
+        return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
+    }
+
+    private JsValue CreateSymbolObject(long symbolId)
+    {
+        var obj = new SymbolObject(symbolId);
+        obj.SetPrototype(GetGlobalPrototype("Symbol"));
+        return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
+    }
+
     private static bool IsTruthy(JsValue value)
     {
         return value.Tag switch
@@ -11426,6 +12486,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     return true;
                 case StringObject stringObject:
                     primitive = JsValue.FromString(stringObject.Value);
+                    return true;
+                case BigIntObject bigIntObject:
+                    primitive = JsValue.FromBigInt(bigIntObject.Value);
+                    return true;
+                case SymbolObject symbolObject:
+                    primitive = JsValue.SymbolFromId(symbolObject.SymbolId);
                     return true;
             }
         }
@@ -11951,6 +13017,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
         if (obj is NativeFunctionObject native)
         {
+            if (!native.IsConstructor)
+            {
+                throw new JsThrownException(CreateTypeError("Function is not a constructor."));
+            }
             return native.Construct(args);
         }
 
@@ -12031,6 +13101,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             return value;
         }
 
+        if (TryCallSymbolToPrimitive(value, hint, out var exoticPrimitive))
+        {
+            return exoticPrimitive;
+        }
+
         if (TryOrdinaryToPrimitive(value, hint, out var primitive))
         {
             return primitive;
@@ -12042,6 +13117,49 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         throw new JsThrownException(CreateTypeError("Cannot convert object to primitive value."));
+    }
+
+    [MayExecuteJs]
+    private bool TryCallSymbolToPrimitive(JsValue value, PrimitiveHint hint, out JsValue primitive)
+    {
+        primitive = JsValue.Undefined;
+        if (value.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var symbolId = GetWellKnownSymbolId("toPrimitive");
+        if (symbolId == 0)
+        {
+            return false;
+        }
+
+        var obj = _heap.GetObject(value.AsObjectHandle());
+        if (!obj.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc))
+        {
+            return false;
+        }
+
+        var method = desc.IsAccessor ? JsValue.Undefined : desc.Value;
+        if (method.Tag == JsValueTag.Undefined)
+        {
+            return false;
+        }
+
+        if (!IsCallable(method))
+        {
+            throw new JsThrownException(CreateTypeError("@@toPrimitive must be callable."));
+        }
+
+        var hintValue = hint == PrimitiveHint.String ? "string" : "number";
+        var result = CallFunction(method, new[] { JsValue.FromString(hintValue) }, value);
+        if (result.Tag == JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("@@toPrimitive must return a primitive value."));
+        }
+
+        primitive = result;
+        return true;
     }
 
     private bool TryOrdinaryToPrimitive(JsValue value, PrimitiveHint hint, out JsValue primitive)
@@ -12145,7 +13263,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             JsValueTag.Number => FormatNumberForString(value.AsNumber()),
             JsValueTag.String => value.AsString(),
             JsValueTag.Symbol => "Symbol(" + (value.AsSymbolDescription() ?? string.Empty) + ")",
-            JsValueTag.BigInt => value.AsBigInt().ToString(System.Globalization.CultureInfo.InvariantCulture) + "n",
+            JsValueTag.BigInt => value.AsBigInt().ToString(System.Globalization.CultureInfo.InvariantCulture),
             JsValueTag.Object => "[object Object]",
             JsValueTag.HostObject => "[object Object]",
             _ => value.Tag.ToString()
@@ -12327,6 +13445,37 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         var ctorObj = ResolveObject(right);
+
+        var hasInstanceSymbolId = GetWellKnownSymbolId("hasInstance");
+        if (hasInstanceSymbolId != 0 &&
+            ctorObj.TryGetSymbolProperty(hasInstanceSymbolId, h => _heap.GetObject(h), out var hasInstanceDesc) &&
+            !hasInstanceDesc.IsAccessor &&
+            hasInstanceDesc.Value.Tag != JsValueTag.Undefined)
+        {
+            if (!IsCallable(hasInstanceDesc.Value))
+            {
+                ThrowTypeError(frame, "@@hasInstance is not callable.");
+                return false;
+            }
+
+            try
+            {
+                var methodResult = CallFunction(hasInstanceDesc.Value, new[] { left }, right);
+                result = IsTruthy(methodResult);
+                return true;
+            }
+            catch (JsThrownException ex)
+            {
+                if (frame.CatchHandlers.Count == 0)
+                {
+                    throw;
+                }
+
+                ThrowOrHandle(frame, ex.Value);
+                return false;
+            }
+        }
+
         if (ctorObj is not JsFunctionObject && ctorObj is not NativeFunctionObject)
         {
             ThrowTypeError(frame, "Right-hand side of 'instanceof' is not callable.");

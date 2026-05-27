@@ -14,6 +14,10 @@ public sealed class SymbolBuiltin : IBuiltinModule
     {
         ArgumentNullException.ThrowIfNull(context);
         var heap = context.Heap;
+        var prototype = new JsObject();
+        prototype.SetPrototype(context.GetObjectPrototype());
+        var prototypeHandle = heap.AllocateObject(prototype, AllocationSite.Current());
+        heap.PushRoot(prototypeHandle);
 
         var capturedCtx = context;
         var constructor = new NativeFunctionObject(
@@ -25,9 +29,15 @@ public sealed class SymbolBuiltin : IBuiltinModule
             },
             _ => throw new JsThrownException(context.CreateTypeError("Symbol is not a constructor.")),
             length: 0);
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
 
         var handle = heap.AllocateObject(constructor, AllocationSite.Current());
         heap.PushRoot(handle);
+        heap.WriteBarrier(handle, prototypeHandle);
+        _ = prototype.DefineOwnProperty(
+            "constructor",
+            new JsPropertyDescriptor(JsValue.FromObject(handle), Writable: true, Enumerable: false, Configurable: true));
+        heap.WriteBarrier(prototypeHandle, handle);
 
         // ECMA-262 20.4.2 well-known symbols
         var wellKnown = new[] { "iterator", "asyncIterator", "hasInstance", "isConcatSpreadable",
@@ -51,6 +61,32 @@ public sealed class SymbolBuiltin : IBuiltinModule
                 throw new JsThrownException(context.CreateTypeError("Symbol.keyFor requires a symbol argument."));
             return context.SymbolKeyFor(args[0].AsSymbolId());
         }, length: 1);
+
+        context.DefineIntrinsicFunction(prototypeHandle, prototype, "valueOf", (thisValue, _) =>
+        {
+            if (thisValue.Tag == JsValueTag.Symbol)
+            {
+                return thisValue;
+            }
+
+            if (thisValue.Tag == JsValueTag.Object &&
+                context.Heap.GetObject(thisValue.AsObjectHandle()) is SymbolObject symbolObject)
+            {
+                return JsValue.SymbolFromId(symbolObject.SymbolId);
+            }
+
+            throw new JsThrownException(context.CreateTypeError("Symbol.prototype.valueOf called on incompatible receiver."));
+        }, length: 0);
+
+        context.DefineIntrinsicFunction(prototypeHandle, prototype, "toString", (thisValue, _) =>
+        {
+            var symbol = thisValue.Tag == JsValueTag.Symbol
+                ? thisValue
+                : thisValue.Tag == JsValueTag.Object && context.Heap.GetObject(thisValue.AsObjectHandle()) is SymbolObject symbolObject
+                    ? JsValue.SymbolFromId(symbolObject.SymbolId)
+                    : throw new JsThrownException(context.CreateTypeError("Symbol.prototype.toString called on incompatible receiver."));
+            return JsValue.FromString("Symbol(" + (symbol.AsSymbolDescription() ?? string.Empty) + ")");
+        }, length: 0);
 
         return new[] { BuiltinBinding.NonEnumerable("Symbol", JsValue.FromObject(handle)) };
     }

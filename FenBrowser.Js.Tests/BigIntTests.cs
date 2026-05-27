@@ -176,4 +176,74 @@ public sealed class BigIntTests
     {
         Assert.True(Run("-1n === -1n;").AsBoolean());
     }
+
+    [Fact]
+    public void BigIntGlobalConstructorExists()
+    {
+        Assert.True(Run("typeof BigInt === 'function';").AsBoolean());
+    }
+
+    [Fact]
+    public void BigIntConstructorConvertsIntegerNumber()
+    {
+        Assert.True(Run("BigInt(123) === 123n;").AsBoolean());
+    }
+
+    [Fact]
+    public void BigIntConstructorConvertsBoolean()
+    {
+        Assert.True(Run("BigInt(true) === 1n && BigInt(false) === 0n;").AsBoolean());
+    }
+
+    [Fact]
+    public void BigIntConstructorParsesPrefixedStrings()
+    {
+        Assert.True(Run("BigInt('0x10') === 16n && BigInt('0o10') === 8n && BigInt('0b10') === 2n;").AsBoolean());
+    }
+
+    [Fact]
+    public void BigIntConstructorRejectsNonIntegerNumber()
+    {
+        var code = @"var ok = false; try { BigInt(1.1); } catch (e) { ok = e instanceof RangeError; } ok;";
+        Assert.True(Run(code).AsBoolean());
+    }
+
+    [Fact]
+    public void BigIntConstructorRejectsInvalidString()
+    {
+        var code = @"var ok = false; try { BigInt('12.5'); } catch (e) { ok = e instanceof SyntaxError; } ok;";
+        Assert.True(Run(code).AsBoolean());
+    }
+
+    [Fact]
+    public void NewBigIntThrowsTypeError()
+    {
+        var code = @"var ok = false; try { new BigInt(1); } catch (e) { ok = e instanceof TypeError; } ok;";
+        Assert.True(Run(code).AsBoolean());
+    }
+
+    [Fact]
+    public void BigIntAsIntNWrapsSigned()
+    {
+        Assert.True(Run("BigInt.asIntN(4, 25n) === -7n;").AsBoolean());
+    }
+
+    [Fact]
+    public void BigIntAsUintNWrapsUnsigned()
+    {
+        Assert.True(Run("BigInt.asUintN(4, -1n) === 15n;").AsBoolean());
+    }
+
+    [Fact]
+    public void BigIntAsIntNRejectsNumberBigIntArgument()
+    {
+        var code = @"var ok = false; try { BigInt.asIntN(4, 1); } catch (e) { ok = e instanceof TypeError; } ok;";
+        Assert.True(Run(code).AsBoolean());
+    }
+
+    [Fact]
+    public void BigIntAsIntNAllowsStringBigIntArgument()
+    {
+        Assert.True(Run("BigInt.asIntN(8, '257') === 1n;").AsBoolean());
+    }
 }

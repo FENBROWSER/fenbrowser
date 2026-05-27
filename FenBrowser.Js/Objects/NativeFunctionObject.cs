@@ -41,6 +41,7 @@ public sealed class NativeFunctionObject : JsObject
     }
 
     public string Name { get; }
+    public bool IsConstructor => _construct is not null;
 
     public JsValue Call(JsValue thisValue, IReadOnlyList<JsValue> args) => _call(thisValue, args);
 

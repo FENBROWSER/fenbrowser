@@ -131,4 +131,61 @@ public sealed class TypedArrayRuntimeTests
             Assert.Equal("function", result.AsString());
         }
     }
+
+    [Fact]
+    public void TypedArrayPrototypesShareCommonParent()
+    {
+        Assert.True(Run(@"
+            var a = Object.getPrototypeOf(Uint8Array.prototype);
+            var b = Object.getPrototypeOf(Int16Array.prototype);
+            a === b;
+        ").AsBoolean());
+    }
+
+    [Fact]
+    public void TypedArrayCommonMethodsExist()
+    {
+        Assert.True(Run(@"
+            var p = Uint8Array.prototype;
+            typeof p.at === 'function' &&
+            typeof p.copyWithin === 'function' &&
+            typeof p.entries === 'function' &&
+            typeof p.every === 'function' &&
+            typeof p.fill === 'function' &&
+            typeof p.filter === 'function' &&
+            typeof p.find === 'function' &&
+            typeof p.findIndex === 'function' &&
+            typeof p.findLast === 'function' &&
+            typeof p.findLastIndex === 'function' &&
+            typeof p.forEach === 'function' &&
+            typeof p.includes === 'function' &&
+            typeof p.indexOf === 'function' &&
+            typeof p.join === 'function' &&
+            typeof p.keys === 'function' &&
+            typeof p.lastIndexOf === 'function' &&
+            typeof p.map === 'function' &&
+            typeof p.reduce === 'function' &&
+            typeof p.reduceRight === 'function' &&
+            typeof p.reverse === 'function' &&
+            typeof p.some === 'function' &&
+            typeof p.sort === 'function' &&
+            typeof p.subarray === 'function' &&
+            typeof p.values === 'function' &&
+            typeof p.with === 'function';
+        ").AsBoolean());
+    }
+
+    [Fact]
+    public void TypedArrayMapReduceAndIteratorsWork()
+    {
+        Assert.Equal(11d, Run(@"
+            var a = new Uint8Array(4);
+            a.fill(1);
+            var b = a.map(function(x, i) { return x + i; });
+            var sum = b.reduce(function(acc, x) { return acc + x; }, 0);
+            var it = a.values();
+            var first = it.next().value;
+            sum + first;
+        ").AsNumber());
+    }
 }
