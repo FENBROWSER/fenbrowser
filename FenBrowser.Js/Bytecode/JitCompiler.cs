@@ -213,6 +213,18 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.Construct1ForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiConstructN = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.ConstructNForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiApplyBinop = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.ApplyBinopForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiApplyUnaryOp = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.ApplyUnaryOpForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiInOp = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.InForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiInstanceOfOp = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.InstanceOfForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiDeleteOp = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.DeleteForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiSetPrototypeOp = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.SetPrototypeForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly PropertyInfo PiRegisters = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Registers))!;
     private static readonly PropertyInfo PiFunction = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Function))!;
     private static readonly PropertyInfo PiConstants = typeof(BytecodeFunction).GetProperty(nameof(BytecodeFunction.Constants))!;
@@ -471,6 +483,72 @@ public static class JitCompiler
                 body.Add(Expression.Call(interp, MiConstructN, frame,
                     Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C),
                     Expression.Constant(ins.D)));
+                return true;
+            case OpCode.Add:
+            case OpCode.Sub:
+            case OpCode.Mul:
+            case OpCode.Mod:
+            case OpCode.Div:
+            case OpCode.Exp:
+            case OpCode.Eq:
+            case OpCode.Neq:
+            case OpCode.StrictEq:
+            case OpCode.StrictNeq:
+            case OpCode.Lt:
+            case OpCode.Gt:
+            case OpCode.Le:
+            case OpCode.Ge:
+            case OpCode.And:
+            case OpCode.Or:
+            case OpCode.BitAnd:
+            case OpCode.BitOr:
+            case OpCode.BitXor:
+            case OpCode.ShiftLeft:
+            case OpCode.ShiftRight:
+            case OpCode.UnsignedShiftRight:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
+                if (ins.C < 0 || ins.C >= function.RegisterCount) return false;
+                body.Add(Expression.Call(interp, MiApplyBinop, frame,
+                    Expression.Constant((int)ins.OpCode),
+                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C)));
+                return true;
+            case OpCode.Not:
+            case OpCode.Pos:
+            case OpCode.Neg:
+            case OpCode.Void:
+            case OpCode.TypeOf:
+            case OpCode.BitNot:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
+                body.Add(Expression.Call(interp, MiApplyUnaryOp, frame,
+                    Expression.Constant((int)ins.OpCode),
+                    Expression.Constant(ins.A), Expression.Constant(ins.B)));
+                return true;
+            case OpCode.In:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
+                if (ins.C < 0 || ins.C >= function.RegisterCount) return false;
+                body.Add(Expression.Call(interp, MiInOp, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C)));
+                return true;
+            case OpCode.InstanceOf:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
+                if (ins.C < 0 || ins.C >= function.RegisterCount) return false;
+                body.Add(Expression.Call(interp, MiInstanceOfOp, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B), Expression.Constant(ins.C)));
+                return true;
+            case OpCode.Delete:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                body.Add(Expression.Call(interp, MiDeleteOp, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B)));
+                return true;
+            case OpCode.SetPrototype:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
+                body.Add(Expression.Call(interp, MiSetPrototypeOp, frame,
+                    Expression.Constant(ins.A), Expression.Constant(ins.B)));
                 return true;
             // Future opcodes added here as the IL-emit work continues.
             default:

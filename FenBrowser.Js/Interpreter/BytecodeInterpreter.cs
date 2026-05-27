@@ -12862,6 +12862,212 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return frame.ThisValue;
     }
 
+    // Binary-op multiplexer for the JIT — mirrors the interpreter's
+    // arithmetic / comparison / bitwise / shift / logical case bodies
+    // one-for-one. Bodies catch JsThrownException and route through
+    // ThrowOrHandle, which in JIT context (no PushHandler exists in the
+    // pre-pass-validated function) lets the exception propagate out as
+    // a JsThrownException.
+    internal void ApplyBinopForJit(InterpreterFrame frame, int opCodeByte, int a, int b, int c)
+    {
+        var op = (OpCode)opCodeByte;
+        switch (op)
+        {
+            case OpCode.Add:
+                try { frame.Registers[a] = Add(frame.Registers[b], frame.Registers[c]); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            case OpCode.Sub:
+                try { frame.Registers[a] = BigIntArith(frame.Registers[b], frame.Registers[c], "subtraction", (x, y) => x - y, (x, y) => x - y); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            case OpCode.Mul:
+                try { frame.Registers[a] = BigIntArith(frame.Registers[b], frame.Registers[c], "multiplication", (x, y) => x * y, (x, y) => x * y); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            case OpCode.Mod:
+                try { frame.Registers[a] = BigIntArith(frame.Registers[b], frame.Registers[c], "modulo", (x, y) => x % y, (x, y) => x % y); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            case OpCode.Div:
+                try { frame.Registers[a] = BigIntArith(frame.Registers[b], frame.Registers[c], "division", (x, y) => x / y, (x, y) => x / y); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            case OpCode.Exp:
+                try
+                {
+                    var left = frame.Registers[b];
+                    var right = frame.Registers[c];
+                    if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
+                    {
+                        var baseVal = left.AsBigInt();
+                        var expVal = right.AsBigInt();
+                        if (expVal < System.Numerics.BigInteger.Zero)
+                            throw new JsThrownException(CreateRangeError("BigInt exponent must be non-negative."));
+                        if (expVal > int.MaxValue)
+                            throw new JsThrownException(CreateRangeError("BigInt exponent is too large."));
+                        frame.Registers[a] = JsValue.FromBigInt(System.Numerics.BigInteger.Pow(baseVal, (int)expVal));
+                    }
+                    else
+                    {
+                        frame.Registers[a] = JsValue.FromNumber(Math.Pow(ToNumber(left), ToNumber(right)));
+                    }
+                }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            case OpCode.Eq:
+                frame.Registers[a] = JsValue.FromBoolean(AreEqual(frame.Registers[b], frame.Registers[c]));
+                break;
+            case OpCode.Neq:
+                frame.Registers[a] = JsValue.FromBoolean(!AreEqual(frame.Registers[b], frame.Registers[c]));
+                break;
+            case OpCode.StrictEq:
+                frame.Registers[a] = JsValue.FromBoolean(AreStrictlyEqual(frame.Registers[b], frame.Registers[c]));
+                break;
+            case OpCode.StrictNeq:
+                frame.Registers[a] = JsValue.FromBoolean(!AreStrictlyEqual(frame.Registers[b], frame.Registers[c]));
+                break;
+            case OpCode.Lt:
+                frame.Registers[a] = JsValue.FromBoolean(IsLessThan(frame.Registers[b], frame.Registers[c]));
+                break;
+            case OpCode.Gt:
+                frame.Registers[a] = JsValue.FromBoolean(IsGreaterThan(frame.Registers[b], frame.Registers[c]));
+                break;
+            case OpCode.Le:
+                frame.Registers[a] = JsValue.FromBoolean(IsLessThanOrEqual(frame.Registers[b], frame.Registers[c]));
+                break;
+            case OpCode.Ge:
+                frame.Registers[a] = JsValue.FromBoolean(IsGreaterThanOrEqual(frame.Registers[b], frame.Registers[c]));
+                break;
+            case OpCode.And:
+                frame.Registers[a] = IsTruthy(frame.Registers[b]) ? frame.Registers[c] : frame.Registers[b];
+                break;
+            case OpCode.Or:
+                frame.Registers[a] = IsTruthy(frame.Registers[b]) ? frame.Registers[b] : frame.Registers[c];
+                break;
+            case OpCode.BitAnd:
+                try { frame.Registers[a] = JsValue.FromNumber((double)((int)ToNumber(frame.Registers[b]) & (int)ToNumber(frame.Registers[c]))); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            case OpCode.BitOr:
+                try { frame.Registers[a] = JsValue.FromNumber((double)((int)ToNumber(frame.Registers[b]) | (int)ToNumber(frame.Registers[c]))); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            case OpCode.BitXor:
+                try { frame.Registers[a] = JsValue.FromNumber((double)((int)ToNumber(frame.Registers[b]) ^ (int)ToNumber(frame.Registers[c]))); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            case OpCode.ShiftLeft:
+                try { var sl = (int)ToNumber(frame.Registers[b]); var sc = (int)ToNumber(frame.Registers[c]) & 0x1F; frame.Registers[a] = JsValue.FromNumber((double)(sl << sc)); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            case OpCode.ShiftRight:
+                try { var sr = (int)ToNumber(frame.Registers[b]); var sc2 = (int)ToNumber(frame.Registers[c]) & 0x1F; frame.Registers[a] = JsValue.FromNumber((double)(sr >> sc2)); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            case OpCode.UnsignedShiftRight:
+                try { var u32 = (uint)(int)ToNumber(frame.Registers[b]); var sc3 = (int)ToNumber(frame.Registers[c]) & 0x1F; frame.Registers[a] = JsValue.FromNumber((double)(u32 >> sc3)); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            default:
+                throw new InvalidOperationException($"ApplyBinopForJit: unsupported opcode {op}.");
+        }
+    }
+
+    internal void ApplyUnaryOpForJit(InterpreterFrame frame, int opCodeByte, int a, int b)
+    {
+        var op = (OpCode)opCodeByte;
+        switch (op)
+        {
+            case OpCode.Not:
+                frame.Registers[a] = JsValue.FromBoolean(!IsTruthy(frame.Registers[b]));
+                break;
+            case OpCode.Pos:
+                frame.Registers[a] = JsValue.FromNumber(ToNumber(frame.Registers[b]));
+                break;
+            case OpCode.Neg:
+                try
+                {
+                    if (frame.Registers[b].Tag == JsValueTag.BigInt)
+                        frame.Registers[a] = JsValue.FromBigInt(-frame.Registers[b].AsBigInt());
+                    else
+                        frame.Registers[a] = JsValue.FromNumber(-ToNumber(frame.Registers[b]));
+                }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            case OpCode.Void:
+                frame.Registers[a] = JsValue.Undefined;
+                break;
+            case OpCode.TypeOf:
+                frame.Registers[a] = JsValue.FromString(TypeOfValue(frame.Registers[b]));
+                break;
+            case OpCode.BitNot:
+                try { frame.Registers[a] = JsValue.FromNumber((double)(~(int)ToNumber(frame.Registers[b]))); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            default:
+                throw new InvalidOperationException($"ApplyUnaryOpForJit: unsupported opcode {op}.");
+        }
+    }
+
+    internal void InForJit(InterpreterFrame frame, int destReg, int keyReg, int objReg)
+    {
+        var key = ToPropertyKey(frame.Registers[keyReg]);
+        var rhs = frame.Registers[objReg];
+        if (rhs.Tag != JsValueTag.Object)
+        {
+            ThrowTypeError(frame, "Right-hand side of 'in' must be an object.");
+            return;
+        }
+
+        var obj = ResolveObject(rhs);
+        var has = obj is ProxyObject proxyIn ? ProxyHas(proxyIn, key)
+            : obj.TryGetProperty(key, h => _heap.GetObject(h), out _);
+        frame.Registers[destReg] = JsValue.FromBoolean(has);
+    }
+
+    internal void InstanceOfForJit(InterpreterFrame frame, int destReg, int lhsReg, int rhsReg)
+    {
+        if (TryInstanceOf(frame, frame.Registers[lhsReg], frame.Registers[rhsReg], out var result))
+        {
+            frame.Registers[destReg] = JsValue.FromBoolean(result);
+        }
+    }
+
+    internal void DeleteForJit(InterpreterFrame frame, int destReg, int nameSlot)
+    {
+        frame.Registers[destReg] = DeleteName(frame, nameSlot);
+    }
+
+    internal void SetPrototypeForJit(InterpreterFrame frame, int childReg, int parentReg)
+    {
+        var childValue = frame.Registers[childReg];
+        var parentValue = frame.Registers[parentReg];
+        if (childValue.Tag != JsValueTag.Object)
+        {
+            ThrowOrHandle(frame, CreateTypeError("SetPrototype requires an object target."));
+            return;
+        }
+
+        var childHandle = childValue.AsObjectHandle();
+        var childObj = _heap.GetObject(childHandle);
+
+        if (parentValue.Tag == JsValueTag.Null)
+        {
+            childObj.SetPrototype(null);
+        }
+        else if (parentValue.Tag == JsValueTag.Object)
+        {
+            var parentHandle = parentValue.AsObjectHandle();
+            childObj.SetPrototype(parentHandle);
+            _heap.WriteBarrier(childHandle, parentHandle);
+        }
+        else
+        {
+            ThrowOrHandle(frame, CreateTypeError("SetPrototype value must be Object or null."));
+        }
+    }
+
     internal static bool IsTruthy(JsValue value)
     {
         return value.Tag switch
