@@ -163,9 +163,15 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.StoreName), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiInitializeName = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.InitializeName), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiIsTruthy = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.IsTruthy), BindingFlags.Static | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiLoadThis = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.LoadThisForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly PropertyInfo PiRegisters = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Registers))!;
     private static readonly PropertyInfo PiFunction = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Function))!;
     private static readonly PropertyInfo PiConstants = typeof(BytecodeFunction).GetProperty(nameof(BytecodeFunction.Constants))!;
+    private static readonly PropertyInfo PiThisValue = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.ThisValue))!;
+    private static readonly PropertyInfo PiNewTarget = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.NewTarget))!;
 
     private static JitDelegate? TryEmitExpressionTree(BytecodeFunction function)
     {
@@ -251,6 +257,30 @@ public static class JitCompiler
             case OpCode.Jump:
                 if (ins.A < 0 || ins.A >= function.Instructions.Count) return false;
                 body.Add(Expression.Goto(labels[ins.A]));
+                return true;
+            case OpCode.JumpIfFalse:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.Instructions.Count) return false;
+                body.Add(Expression.IfThen(
+                    Expression.Not(Expression.Call(MiIsTruthy,
+                        Expression.ArrayAccess(registers, Expression.Constant(ins.A)))),
+                    Expression.Goto(labels[ins.B])));
+                return true;
+            case OpCode.LoadThis:
+                // Defer to the interpreter helper to keep the derived-
+                // constructor and FunctionEnvironmentRecord this-binding
+                // logic in one place. The JIT just emits the call and the
+                // register store.
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                body.Add(Expression.Assign(
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
+                    Expression.Call(interp, MiLoadThis, frame, Expression.Constant(ip))));
+                return true;
+            case OpCode.LoadNewTarget:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                body.Add(Expression.Assign(
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
+                    Expression.Property(frame, PiNewTarget)));
                 return true;
             // Future opcodes added here as the IL-emit work continues.
             default:

@@ -12535,7 +12535,35 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
-    private static bool IsTruthy(JsValue value)
+    // Tier 4 #24: JIT-callable helper that mirrors the LoadThis opcode
+    // case. Caller passes the current instruction-pointer position so
+    // the derived-constructor receiver-load check has the same context
+    // as in the interpreter switch.
+    internal JsValue LoadThisForJit(InterpreterFrame frame, int currentIp)
+    {
+        var function = frame.Function;
+        if (function.IsDerivedConstructor &&
+            frame.Environment is FunctionEnvironmentRecord fenDerived &&
+            fenDerived.ThisBindingStatus == ThisBindingStatus.Uninitialized)
+        {
+            var isSuperReceiverLoad = currentIp > 0 &&
+                                      function.Instructions[currentIp - 1].OpCode == OpCode.LoadSuperConstructor;
+            if (!isSuperReceiverLoad)
+            {
+                ThrowReferenceError(frame, "Must call super constructor in derived class before accessing 'this'.");
+                return JsValue.Undefined;
+            }
+        }
+
+        if (frame.Environment is FunctionEnvironmentRecord fenThis &&
+            fenThis.GetThisBinding(out var boundThis) == BindingOpResult.Ok)
+        {
+            return boundThis;
+        }
+        return frame.ThisValue;
+    }
+
+    internal static bool IsTruthy(JsValue value)
     {
         return value.Tag switch
         {
