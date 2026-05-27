@@ -1,17 +1,17 @@
 {
   "engine": "FenJS",
   "mode": "runtime-subset",
-  "startedAtUtc": "2026-05-27T19:45:06.7448277Z",
-  "durationMs": 38034,
+  "startedAtUtc": "2026-05-27T19:52:21.8945499Z",
+  "durationMs": 5480,
   "test262Commit": "b1f9a0aea3e5d12563680ba3c8eee275774f9316",
   "fenbrowserCommit": "unknown",
   "specTarget": "ECMA-262 pinned snapshot",
   "expectations": null,
   "total": 2000,
-  "passed": 828,
-  "failed": 1148,
+  "passed": 829,
+  "failed": 1149,
   "crashed": 5,
-  "timedOut": 2,
+  "timedOut": 0,
   "skipped": 0,
   "unsupported": 0,
   "expectedFailures": 0,
@@ -22,8 +22,8 @@
     "parserMissing": 0,
     "parserBug": 1,
     "earlyErrorBug": 0,
-    "runtimeMissing": 1147,
-    "runtimeSemanticBug": 1147,
+    "runtimeMissing": 1148,
+    "runtimeSemanticBug": 1148,
     "builtinMissing": 0,
     "builtinSemanticBug": 0,
     "moduleMissing": 0,
@@ -34,16 +34,16 @@
     "typedArrayMissing": 0,
     "hostNotApplicable": 17,
     "crash": 5,
-    "timeout": 2
+    "timeout": 0
   },
   "summary": {
     "total": 2000,
-    "passed": 828,
+    "passed": 829,
     "unsupported": 0,
     "parserErrors": 1,
-    "runtimeErrors": 1147,
+    "runtimeErrors": 1148,
     "crashes": 5,
-    "timedOut": 2,
+    "timedOut": 0,
     "harnessUnsupported": 9,
     "invalidTestConfiguration": 8,
     "expectedFailures": 0,
@@ -12900,18 +12900,6 @@
       "expiresAtMilestone": null
     },
     {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\Array.prototype.concat_length-throws.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/Array.prototype.concat_length-throws.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
       "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\Array.prototype.concat_non-array.js",
       "relativePath": "test/built-ins/Array/prototype/concat/Array.prototype.concat_non-array.js",
       "classification": "runtime-error",
@@ -12974,8 +12962,9 @@
     {
       "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\arg-length-exceeding-integer-limit.js",
       "relativePath": "test/built-ins/Array/prototype/concat/arg-length-exceeding-integer-limit.js",
-      "classification": "timeout",
-      "message": "Runtime execution exceeded timeout of 15000 ms.",
+      "classification": "runtime-error",
+      "message": "Unhandled runtime throw.",
+      "details": "thrown=object",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -12985,8 +12974,9 @@
     {
       "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\arg-length-near-integer-limit.js",
       "relativePath": "test/built-ins/Array/prototype/concat/arg-length-near-integer-limit.js",
-      "classification": "timeout",
-      "message": "Runtime execution exceeded timeout of 15000 ms.",
+      "classification": "runtime-error",
+      "message": "Unhandled runtime throw.",
+      "details": "thrown=object",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -44927,7 +44917,7 @@
     },
     {
       "path": "test/built-ins/Array/prototype/concat/Array.prototype.concat_length-throws.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Symbol.isConcatSpreadable"
@@ -44939,9 +44929,8 @@
       "description": "Array.prototype.concat length throws",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/Array.prototype.concat_no-prototype.js",
@@ -45343,8 +45332,8 @@
     },
     {
       "path": "test/built-ins/Array/prototype/concat/arg-length-exceeding-integer-limit.js",
-      "status": "TimedOut",
-      "durationMs": 15000,
+      "status": "Failed",
+      "durationMs": 0,
       "features": [
         "Symbol.isConcatSpreadable",
         "Proxy"
@@ -45356,13 +45345,14 @@
       "description": "TypeError is thrown if \u0022length\u0022 of result array exceeds 2^53 - 1.",
       "info": "Array.prototype.concat ( ...arguments )\n[...]\n5. Repeat, while items is not empty\n[...]\nc. If spreadable is true, then\n[...]\nii. Let len be ? LengthOfArrayLike(E).\niii. If n \u002B len \u003E 2^53 - 1, throw a TypeError exception.\n[...]",
       "locale": null,
-      "category": "timeout",
-      "message": "Runtime execution exceeded timeout of 15000 ms."
+      "category": "runtime-semantic-bug",
+      "message": "Unhandled runtime throw.",
+      "details": "thrown=object"
     },
     {
       "path": "test/built-ins/Array/prototype/concat/arg-length-near-integer-limit.js",
-      "status": "TimedOut",
-      "durationMs": 15000,
+      "status": "Failed",
+      "durationMs": 0,
       "features": [
         "Symbol.isConcatSpreadable"
       ],
@@ -45373,8 +45363,9 @@
       "description": "Elements are copied from a spreadable array-like object\nwhose \u0022length\u0022 property is near the integer limit.",
       "info": "Array.prototype.concat ( ...arguments )\n[...]\n5. Repeat, while items is not empty\n[...]\nc. If spreadable is true, then\n[...]\nii. Let len be ? LengthOfArrayLike(E).\niii. If n \u002B len \u003E 2^53 - 1, throw a TypeError exception.\niv. Repeat, while k \u003C len\n[...]\n3. If exists is true, then\na. Let subElement be ? Get(E, P).\n[...]",
       "locale": null,
-      "category": "timeout",
-      "message": "Runtime execution exceeded timeout of 15000 ms."
+      "category": "runtime-semantic-bug",
+      "message": "Unhandled runtime throw.",
+      "details": "thrown=object"
     },
     {
       "path": "test/built-ins/Array/prototype/concat/call-with-boolean.js",

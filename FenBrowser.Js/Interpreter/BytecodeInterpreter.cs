@@ -9799,7 +9799,28 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             var obj = _heap.GetObject(value.AsObjectHandle());
             if (IsConcatSpreadable(obj, value))
             {
-                var length = GetArrayLength(obj);
+                // ECMA-262 23.1.3.2 step 5.c — LengthOfArrayLike returns
+                // ToLength(Get(O, "length")), a 53-bit non-negative integer.
+                // Step 5.c.iii: if `n + len > 2^53 - 1`, throw a TypeError.
+                // The spreadable source's length can come from any object
+                // (incl. a Proxy returning Number.MAX_SAFE_INTEGER), so the
+                // overflow check must run BEFORE we touch the copy loop —
+                // otherwise we burn CPU iterating up to int.MaxValue.
+                //
+                // We additionally enforce an implementation-defined cap of
+                // int.MaxValue total result length (List<JsValue> can't hold
+                // more anyway). The spec allows implementation-defined
+                // tighter caps; same exception type (TypeError) is thrown.
+                var rawLength = LengthOfArrayLikeAsDouble(obj, value);
+                const double MaxSafeInteger = 9007199254740991.0; // 2^53 - 1
+                var prospective = (double)items.Count + rawLength;
+                if (prospective > MaxSafeInteger || prospective > int.MaxValue)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Array.prototype.concat result length exceeds the implementation-defined limit."));
+                }
+
+                var length = (int)rawLength;
                 for (var i = 0; i < length; i++)
                 {
                     var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -9811,6 +9832,26 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         items.Add(value);
+    }
+
+    // ECMA-262 7.3.19 LengthOfArrayLike: ToLength(Get(O, "length")).
+    // Returns a non-negative integer in [0, 2^53 - 1] as a double.
+    // Walks the prototype chain via [[Get]] semantics (matching
+    // GetArrayLength) so subclasses inherit array-length lookup.
+    private double LengthOfArrayLikeAsDouble(JsObject obj, JsValue receiver)
+    {
+        if (!TryGetPropertyValue(obj, receiver, "length", out var raw))
+        {
+            return 0;
+        }
+        var n = ToNumber(raw);
+        if (double.IsNaN(n) || n <= 0)
+        {
+            return 0;
+        }
+        var truncated = Math.Truncate(n);
+        const double MaxSafeInteger = 9007199254740991.0; // 2^53 - 1
+        return Math.Min(truncated, MaxSafeInteger);
     }
 
     // ECMA-262 23.1.3.2.2 ArraySpeciesCreate(originalArray, length).
