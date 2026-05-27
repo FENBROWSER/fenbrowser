@@ -88,6 +88,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private ObjectHandle? _functionConstructorHandle;
     private ObjectHandle? _generatorFunctionConstructorHandle;
     private ObjectHandle? _functionPrototypeHandle;
+    private ObjectHandle? _generatorFunctionPrototypeHandle;
     private ObjectHandle? _functionCallMethodHandle;
     private ObjectHandle? _evalFunctionHandle;
     private EnvironmentRecord? _directEvalEnv;
@@ -1017,7 +1018,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     }
                     try
                     {
-                        _ = SetPropertyValue(ownerHandle, obj, prop, value, receiverValue);
+                        var ok = SetPropertyValue(ownerHandle, obj, prop, value, receiverValue);
+                        if (!ok && function.IsStrictMode)
+                        {
+                            // ECMA-262 6.2.5.4 PutValue: strict-mode writes that
+                            // return false (non-writable data, missing setter,
+                            // non-extensible) throw TypeError.
+                            ThrowOrHandle(frame, CreateTypeError($"Cannot assign to read-only property '{prop}'."));
+                            break;
+                        }
                         if (receiverValue.Tag == JsValueTag.Object)
                             PopulateStoreIC(function, icOffsetStore, receiverValue, prop);
                     }
@@ -1091,7 +1100,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     var key = ToPropertyKey(keyValue);
                     try
                     {
-                        _ = SetPropertyValue(ownerHandle, obj, key, value, frame.Registers[ins.A]);
+                        var ok = SetPropertyValue(ownerHandle, obj, key, value, frame.Registers[ins.A]);
+                        if (!ok && function.IsStrictMode)
+                        {
+                            ThrowOrHandle(frame, CreateTypeError($"Cannot assign to read-only property '{key}'."));
+                            break;
+                        }
                     }
                     catch (JsThrownException ex)
                     {
@@ -1393,6 +1407,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 case OpCode.TypeOf:
                     frame.Registers[ins.A] = JsValue.FromString(TypeOfValue(frame.Registers[ins.B]));
                     break;
+                case OpCode.TypeOfName:
+                    frame.Registers[ins.A] = JsValue.FromString(TypeOfName(frame, ins.B));
+                    break;
                 case OpCode.Add:
                     try { frame.Registers[ins.A] = Add(frame.Registers[ins.B], frame.Registers[ins.C]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
@@ -1460,8 +1477,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     }
 
                     var obj = ResolveObject(rhs);
-                    var has = obj is ProxyObject proxyIn ? ProxyHas(proxyIn, key)
-                        : obj.TryGetProperty(key, h => _heap.GetObject(h), out _);
+                    var has = HasPropertyIncludingProxy(obj, key);
                     frame.Registers[ins.A] = JsValue.FromBoolean(has);
                     break;
                 }
@@ -3175,8 +3191,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 throw new JsThrownException(CreateTypeError("Reflect.apply target must be a function."));
             }
 
-            var targetObj = _heap.GetObject(args[0].AsObjectHandle());
-            if (targetObj is not JsFunctionObject && targetObj is not NativeFunctionObject)
+            if (!IsCallable(args[0]))
             {
                 throw new JsThrownException(CreateTypeError("Reflect.apply target is not callable."));
             }
@@ -3700,6 +3715,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             .Register(new IntlBuiltin());
         foreach (var b in registry.Materialize(this))
             InstallBinding(global, globalHandle, b);
+
+        // Post-install fixup: during Materialize(), GeneratorFunction may be
+        // constructed before GeneratorPrototype is installed on global. Patch
+        // GeneratorPrototype.constructor once both bindings exist.
+        FixupGeneratorPrototypeConstructor(global, globalHandle);
     }
 
     private void InstallBinding(JsObject global, ObjectHandle globalHandle, BuiltinBinding binding)
@@ -3738,6 +3758,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         {
             _heap.WriteBarrier(globalHandle, value.AsObjectHandle());
         }
+    }
+
+    private void FixupGeneratorPrototypeConstructor(JsObject global, ObjectHandle globalHandle)
+    {
+        if (!global.TryGetOwnProperty("GeneratorPrototype", out var gpDesc) ||
+            gpDesc.Value.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        if (!global.TryGetOwnProperty("GeneratorFunction", out var gfDesc) ||
+            gfDesc.Value.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var protoHandle = gpDesc.Value.AsObjectHandle();
+        var proto = _heap.GetObject(protoHandle);
+        _ = proto.DefineOwnProperty(
+            "constructor",
+            new JsPropertyDescriptor(
+                gfDesc.Value,
+                Writable: true,
+                Enumerable: false,
+                Configurable: true));
+        _heap.WriteBarrier(protoHandle, gfDesc.Value.AsObjectHandle());
+        _heap.WriteBarrier(globalHandle, gfDesc.Value.AsObjectHandle());
     }
 
     // LoadName/StoreName funnel slot-based LoadVar/StoreVar opcodes through the
@@ -5129,11 +5176,176 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 "Cannot perform '" + trapName + "' on a revoked proxy."));
         var handlerHandle = proxy.HandlerHandle!.Value;
         var handler = _heap.GetObject(handlerHandle);
-        return handler.TryGetProperty(trapName, h => _heap.GetObject(h), out var desc) &&
-               desc.Value.Tag == JsValueTag.Object &&
-               IsCallable(desc.Value)
-            ? desc.Value
-            : null;
+        var handlerValue = JsValue.FromObject(handlerHandle);
+        if (!TryGetPropertyValue(handler, handlerValue, trapName, out var trapValue))
+        {
+            return null;
+        }
+
+        if (trapValue.Tag is JsValueTag.Undefined or JsValueTag.Null)
+        {
+            return null;
+        }
+
+        if (!IsCallable(trapValue))
+        {
+            throw new JsThrownException(CreateTypeError("Proxy trap '" + trapName + "' is not callable."));
+        }
+
+        return trapValue;
+    }
+
+    private bool IsCallableTarget(ObjectHandle targetHandle)
+        => IsCallableTarget(targetHandle, new HashSet<ObjectHandle>());
+
+    private bool IsCallableTarget(ObjectHandle targetHandle, HashSet<ObjectHandle> visited)
+    {
+        if (!visited.Add(targetHandle))
+        {
+            return false;
+        }
+
+        var targetObj = _heap.GetObject(targetHandle);
+        return targetObj switch
+        {
+            JsFunctionObject => true,
+            NativeFunctionObject => true,
+            BoundFunctionObject bound when bound.TargetFunction.Tag == JsValueTag.Object =>
+                IsCallableTarget(bound.TargetFunction.AsObjectHandle(), visited),
+            ProxyObject nestedProxy => IsCallableTarget(nestedProxy.TargetHandle, visited),
+            _ => false
+        };
+    }
+
+    private bool IsConstructableTarget(ObjectHandle targetHandle)
+        => IsConstructableTarget(targetHandle, new HashSet<ObjectHandle>());
+
+    private bool IsConstructableTarget(ObjectHandle targetHandle, HashSet<ObjectHandle> visited)
+    {
+        if (!visited.Add(targetHandle))
+        {
+            return false;
+        }
+
+        var targetObj = _heap.GetObject(targetHandle);
+        return targetObj switch
+        {
+            JsFunctionObject jsFn => jsFn.Kind is not (FunctionKind.Generator or FunctionKind.AsyncGenerator),
+            NativeFunctionObject nativeFn => nativeFn.IsConstructor,
+            BoundFunctionObject bound when bound.TargetFunction.Tag == JsValueTag.Object =>
+                IsConstructableTarget(bound.TargetFunction.AsObjectHandle(), visited),
+            ProxyObject nestedProxy => IsConstructableTarget(nestedProxy.TargetHandle, visited),
+            _ => false
+        };
+    }
+
+    private bool IsTargetExtensible(ObjectHandle targetHandle)
+    {
+        var targetObj = _heap.GetObject(targetHandle);
+        if (targetObj is ProxyObject nestedProxy)
+        {
+            return IsTargetExtensible(nestedProxy.TargetHandle);
+        }
+
+        return targetObj.Extensible;
+    }
+
+    private bool TryGetOwnPropertyDescriptorForTarget(ObjectHandle targetHandle, string prop, out JsPropertyDescriptor descriptor)
+    {
+        var targetObj = _heap.GetObject(targetHandle);
+        if (targetObj is ProxyObject nestedProxy)
+        {
+            return ProxyTryGetOwnPropertyDescriptor(nestedProxy, prop, out descriptor);
+        }
+
+        return targetObj.TryGetOwnProperty(prop, out descriptor);
+    }
+
+    private bool DescriptorCompatibleWithTarget(bool targetExtensible, bool hasTargetDesc, JsPropertyDescriptor targetDesc, JsPropertyDescriptor resultDesc)
+    {
+        if (!hasTargetDesc)
+        {
+            if (!targetExtensible)
+            {
+                return false;
+            }
+
+            return resultDesc.Configurable;
+        }
+
+        if (!targetDesc.Configurable)
+        {
+            if (resultDesc.Configurable)
+            {
+                return false;
+            }
+
+            if (targetDesc.IsAccessor != resultDesc.IsAccessor)
+            {
+                return false;
+            }
+
+            if (!targetDesc.IsAccessor)
+            {
+                if (!targetDesc.Writable && resultDesc.Writable)
+                {
+                    return false;
+                }
+
+                if (!targetDesc.Writable && !AreStrictlyEqual(resultDesc.Value, targetDesc.Value))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                if (!AreStrictlyEqual(resultDesc.Get, targetDesc.Get) ||
+                    !AreStrictlyEqual(resultDesc.Set, targetDesc.Set))
+                {
+                    return false;
+                }
+            }
+        }
+
+        if (!targetDesc.Configurable && resultDesc.Configurable)
+        {
+            return false;
+        }
+
+        if (!targetExtensible && !hasTargetDesc)
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    internal string TypeOfName(InterpreterFrame frame, int slot)
+    {
+        var name = SlotNameTable.GetName(frame.Function, slot);
+        if (name is null)
+        {
+            return "undefined";
+        }
+
+        for (var env = (EnvironmentRecord?)frame.Environment; env is not null; env = env.OuterEnv)
+        {
+            if (!env.HasBinding(name))
+            {
+                continue;
+            }
+
+            var status = env.GetBindingValue(name, strict: frame.Function.IsStrictMode, out var envValue);
+            if (status == BindingOpResult.Ok)
+            {
+                return TypeOfValue(envValue);
+            }
+
+            ThrowBindingFailure(frame, status, name, assignment: false);
+            return "undefined";
+        }
+
+        return "undefined";
     }
 
     private static bool ValueToBooleanProxy(JsValue value)
@@ -5161,10 +5373,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         {
             var target = JsValue.FromObject(proxy.TargetHandle);
             var propVal = JsValue.FromString(prop);
-            return CallFunction(trap.Value, new[] { target, propVal, receiver },
+            var trapResult = CallFunction(trap.Value, new[] { target, propVal, receiver },
                 JsValue.FromObject(proxy.HandlerHandle!.Value));
+            if (TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out var targetDesc) &&
+                !targetDesc.Configurable)
+            {
+                if (!targetDesc.IsAccessor && !targetDesc.Writable &&
+                    !AreStrictlyEqual(trapResult, targetDesc.Value))
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Proxy get trap must return the target value for non-writable, non-configurable data properties."));
+                }
+
+                if (targetDesc.IsAccessor && targetDesc.Get.Tag == JsValueTag.Undefined &&
+                    trapResult.Tag != JsValueTag.Undefined)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Proxy get trap must return undefined for non-configurable accessor properties without a getter."));
+                }
+            }
+
+            return trapResult;
         }
         var targetObj = _heap.GetObject(proxy.TargetHandle);
+        if (targetObj is ProxyObject nestedProxy)
+        {
+            return ProxyGet(nestedProxy, receiver, prop);
+        }
         return TryGetPropertyValue(targetObj, receiver, prop, out var value)
             ? value : JsValue.Undefined;
     }
@@ -5183,6 +5418,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             return ValueToBooleanProxy(result);
         }
         var targetObj = _heap.GetObject(proxy.TargetHandle);
+        if (targetObj is ProxyObject nestedProxy)
+        {
+            return ProxySet(nestedProxy, receiver, prop, value);
+        }
         return targetObj.SetProperty(prop, value);
     }
 
@@ -5196,9 +5435,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             var propVal = JsValue.FromString(prop);
             var result = CallFunction(trap.Value, new[] { target, propVal },
                 JsValue.FromObject(proxy.HandlerHandle!.Value));
-            return ValueToBooleanProxy(result);
+            var trapResult = ValueToBooleanProxy(result);
+            if (!trapResult &&
+                TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out var targetDesc) &&
+                (!targetDesc.Configurable || !IsTargetExtensible(proxy.TargetHandle)))
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Proxy has trap cannot report a non-configurable or non-extensible own property as absent."));
+            }
+
+            return trapResult;
         }
         var targetObj = _heap.GetObject(proxy.TargetHandle);
+        if (targetObj is ProxyObject nestedProxy)
+        {
+            return ProxyHas(nestedProxy, prop);
+        }
         return targetObj.TryGetProperty(prop, h => _heap.GetObject(h), out _);
     }
 
@@ -5212,10 +5464,36 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             var propVal = JsValue.FromString(prop);
             var result = CallFunction(trap.Value, new[] { target, propVal },
                 JsValue.FromObject(proxy.HandlerHandle!.Value));
-            return ValueToBooleanProxy(result);
+            var trapResult = ValueToBooleanProxy(result);
+            if (trapResult &&
+                TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out var targetDesc) &&
+                !targetDesc.Configurable)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Proxy deleteProperty trap cannot report deletion of a non-configurable own property."));
+            }
+
+            if (trapResult &&
+                TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out _) &&
+                !IsTargetExtensible(proxy.TargetHandle))
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Proxy deleteProperty trap cannot report deletion of an existing property on a non-extensible target."));
+            }
+
+            return trapResult;
         }
         var targetObj = _heap.GetObject(proxy.TargetHandle);
-        return targetObj.DeleteProperty(prop);
+        if (targetObj is ProxyObject nestedProxy)
+        {
+            return ProxyDelete(nestedProxy, prop);
+        }
+        if (targetObj.TryGetOwnProperty(prop, out _))
+        {
+            return targetObj.DeleteProperty(prop);
+        }
+
+        return true;
     }
 
     [MayExecuteJs]
@@ -5243,9 +5521,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             var target = JsValue.FromObject(proxy.TargetHandle);
             var argsArray = CreateArrayFromElements(args);
             var argsHandle = _heap.AllocateObject(argsArray, AllocationSite.Current());
-            return CallFunction(trap.Value,
+            var result = CallFunction(trap.Value,
                 new[] { target, JsValue.FromObject(argsHandle), newTarget },
                 JsValue.FromObject(proxy.HandlerHandle!.Value));
+            if (result.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Proxy construct trap must return an object."));
+            }
+
+            return result;
         }
         return ConstructFunction(JsValue.FromObject(proxy.TargetHandle), args, newTarget);
     }
@@ -5262,10 +5546,28 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             {
                 throw new JsThrownException(CreateTypeError("Proxy getPrototypeOf trap must return object or null."));
             }
+
+            if (!IsTargetExtensible(proxy.TargetHandle))
+            {
+                var targetObject = _heap.GetObject(proxy.TargetHandle);
+                var targetProto = targetObject.PrototypeHandle is { } protoHandle
+                    ? JsValue.FromObject(protoHandle)
+                    : JsValue.Null;
+                if (!AreStrictlyEqual(result, targetProto))
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Proxy getPrototypeOf trap must return the same prototype for non-extensible targets."));
+                }
+            }
+
             return result;
         }
 
         var targetObj = _heap.GetObject(proxy.TargetHandle);
+        if (targetObj is ProxyObject nestedProxy)
+        {
+            return ProxyGetPrototypeOf(nestedProxy);
+        }
         return targetObj.PrototypeHandle is { } proto ? JsValue.FromObject(proto) : JsValue.Null;
     }
 
@@ -5281,6 +5583,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         var targetObj = _heap.GetObject(proxy.TargetHandle);
+        if (targetObj is ProxyObject nestedProxy)
+        {
+            return ProxySetPrototypeOf(nestedProxy, protoValue);
+        }
         if (protoValue.Tag == JsValueTag.Object)
         {
             targetObj.SetPrototype(protoValue.AsObjectHandle());
@@ -5305,10 +5611,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         {
             var target = JsValue.FromObject(proxy.TargetHandle);
             var result = CallFunction(trap.Value, new[] { target }, JsValue.FromObject(proxy.HandlerHandle!.Value));
-            return ValueToBooleanProxy(result);
+            var trapResult = ValueToBooleanProxy(result);
+            var targetExtensible = IsTargetExtensible(proxy.TargetHandle);
+            if (trapResult != targetExtensible)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Proxy isExtensible trap result must match the target extensibility."));
+            }
+
+            return trapResult;
         }
 
-        return _heap.GetObject(proxy.TargetHandle).Extensible;
+        var targetObj = _heap.GetObject(proxy.TargetHandle);
+        if (targetObj is ProxyObject nestedProxy)
+        {
+            return ProxyIsExtensible(nestedProxy);
+        }
+
+        return targetObj.Extensible;
     }
 
     [MayExecuteJs]
@@ -5322,7 +5642,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             return ValueToBooleanProxy(result);
         }
 
-        _heap.GetObject(proxy.TargetHandle).PreventExtensions();
+        var targetObj = _heap.GetObject(proxy.TargetHandle);
+        if (targetObj is ProxyObject nestedProxy)
+        {
+            return ProxyPreventExtensions(nestedProxy);
+        }
+
+        targetObj.PreventExtensions();
         return true;
     }
 
@@ -5364,6 +5690,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         var targetObj = _heap.GetObject(proxy.TargetHandle);
+        if (targetObj is ProxyObject nestedProxy)
+        {
+            return ProxyOwnKeys(nestedProxy);
+        }
         var fallback = new List<JsValue>();
         foreach (var p in targetObj.EnumerateOwnProperties())
         {
@@ -5385,8 +5715,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             var target = JsValue.FromObject(proxy.TargetHandle);
             var key = JsValue.FromString(prop);
             var result = CallFunction(trap.Value, new[] { target, key }, JsValue.FromObject(proxy.HandlerHandle!.Value));
+            var targetHasDesc = TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out var targetDesc);
+            var targetExtensible = IsTargetExtensible(proxy.TargetHandle);
             if (result.Tag == JsValueTag.Undefined)
             {
+                if (targetHasDesc && (!targetDesc.Configurable || !targetExtensible))
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Proxy getOwnPropertyDescriptor trap cannot report an existing non-configurable or non-extensible own property as absent."));
+                }
+
                 descriptor = default;
                 return false;
             }
@@ -5396,11 +5734,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 throw new JsThrownException(CreateTypeError("Proxy getOwnPropertyDescriptor trap must return object or undefined."));
             }
 
-            descriptor = ToPropertyDescriptor(result);
+            var resultDesc = ToPropertyDescriptor(result);
+            if (!DescriptorCompatibleWithTarget(targetExtensible, targetHasDesc, targetDesc, resultDesc))
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Proxy getOwnPropertyDescriptor trap returned a descriptor incompatible with the target."));
+            }
+
+            descriptor = resultDesc;
             return true;
         }
 
         var targetObj = _heap.GetObject(proxy.TargetHandle);
+        if (targetObj is ProxyObject nestedProxy)
+        {
+            return ProxyTryGetOwnPropertyDescriptor(nestedProxy, prop, out descriptor);
+        }
         return targetObj.TryGetOwnProperty(prop, out descriptor);
     }
 
@@ -5413,11 +5762,111 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             var target = JsValue.FromObject(proxy.TargetHandle);
             var key = JsValue.FromString(prop);
             var result = CallFunction(trap.Value, new[] { target, key, descriptorValue }, JsValue.FromObject(proxy.HandlerHandle!.Value));
-            return ValueToBooleanProxy(result);
+            var trapResult = ValueToBooleanProxy(result);
+            if (!trapResult)
+            {
+                return false;
+            }
+
+            if (!IsTargetExtensible(proxy.TargetHandle) &&
+                !TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out _))
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Proxy defineProperty trap cannot create a new property on a non-extensible target."));
+            }
+
+            var hasTargetDesc = TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out var targetDesc);
+            var descriptorObj = descriptorValue.Tag == JsValueTag.Object
+                ? _heap.GetObject(descriptorValue.AsObjectHandle())
+                : null;
+            var configurableValue = JsValue.Undefined;
+            var hasConfigurable = descriptorObj is not null &&
+                                  TryGetPropertyValue(descriptorObj, descriptorValue, "configurable", out configurableValue);
+            var setsConfigurableFalse = hasConfigurable && !ValueToBooleanProxy(configurableValue);
+            var writableValue = JsValue.Undefined;
+            var hasWritable = descriptorObj is not null &&
+                              TryGetPropertyValue(descriptorObj, descriptorValue, "writable", out writableValue);
+            var setsWritableFalse = hasWritable && !ValueToBooleanProxy(writableValue);
+            var valueValue = JsValue.Undefined;
+            var hasValue = descriptorObj is not null &&
+                           TryGetPropertyValue(descriptorObj, descriptorValue, "value", out valueValue);
+            var getValue = JsValue.Undefined;
+            var hasGet = descriptorObj is not null &&
+                         TryGetPropertyValue(descriptorObj, descriptorValue, "get", out getValue);
+            var setValue = JsValue.Undefined;
+            var hasSet = descriptorObj is not null &&
+                         TryGetPropertyValue(descriptorObj, descriptorValue, "set", out setValue);
+
+            if (!hasTargetDesc)
+            {
+                if (setsConfigurableFalse)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Proxy defineProperty trap cannot define a new non-configurable property."));
+                }
+
+                return true;
+            }
+
+            if (setsConfigurableFalse && targetDesc.Configurable)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Proxy defineProperty trap cannot make a configurable target property non-configurable."));
+            }
+
+            if (!targetDesc.Configurable)
+            {
+                if (!targetDesc.IsAccessor)
+                {
+                    if (hasGet || hasSet)
+                    {
+                        throw new JsThrownException(CreateTypeError(
+                            "Proxy defineProperty trap cannot convert a non-configurable data property to an accessor property."));
+                    }
+
+                    if (targetDesc.Writable && setsWritableFalse)
+                    {
+                        throw new JsThrownException(CreateTypeError(
+                            "Proxy defineProperty trap cannot report writable=false for a non-configurable writable data property."));
+                    }
+
+                    if (!targetDesc.Writable && hasValue && !AreStrictlyEqual(valueValue, targetDesc.Value))
+                    {
+                        throw new JsThrownException(CreateTypeError(
+                            "Proxy defineProperty trap cannot change value of a non-configurable, non-writable data property."));
+                    }
+                }
+                else
+                {
+                    if (hasValue || hasWritable)
+                    {
+                        throw new JsThrownException(CreateTypeError(
+                            "Proxy defineProperty trap cannot convert a non-configurable accessor property to a data property."));
+                    }
+
+                    if (hasGet && !AreStrictlyEqual(getValue, targetDesc.Get))
+                    {
+                        throw new JsThrownException(CreateTypeError(
+                            "Proxy defineProperty trap cannot change getter of a non-configurable accessor property."));
+                    }
+
+                    if (hasSet && !AreStrictlyEqual(setValue, targetDesc.Set))
+                    {
+                        throw new JsThrownException(CreateTypeError(
+                            "Proxy defineProperty trap cannot change setter of a non-configurable accessor property."));
+                    }
+                }
+            }
+
+            return true;
         }
 
         var desc = ToPropertyDescriptor(descriptorValue);
         var targetObj = _heap.GetObject(proxy.TargetHandle);
+        if (targetObj is ProxyObject nestedProxy)
+        {
+            return ProxyDefineProperty(nestedProxy, prop, descriptorValue);
+        }
         var ok = targetObj.DefineOwnProperty(prop, desc);
         if (ok)
         {
@@ -6890,8 +7339,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
         var constructor = new NativeFunctionObject(
             "Function",
-            (_, args) => CreateDynamicFunction(args),
-            args => CreateDynamicFunction(args),
+            (_, args) => CreateDynamicFunction(args, FunctionKind.Ordinary),
+            args => CreateDynamicFunction(args, FunctionKind.Ordinary),
             length: 1);
         constructor.SetPrototype(prototypeHandle);
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
@@ -6950,8 +7399,55 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     {
         if (_generatorFunctionConstructorHandle is { } existing)
             return existing;
-        var handle = EnsureFunctionConstructor();
-        _generatorFunctionConstructorHandle = handle;
+
+        var prototypeHandle = EnsureGeneratorFunctionPrototype();
+        var constructor = new NativeFunctionObject(
+            "GeneratorFunction",
+            (_, args) => CreateDynamicFunction(args, FunctionKind.Generator),
+            args => CreateDynamicFunction(args, FunctionKind.Generator),
+            length: 1);
+        constructor.SetPrototype(EnsureFunctionPrototype());
+        _ = constructor.DefineOwnProperty(
+            "prototype",
+            new JsPropertyDescriptor(
+                JsValue.FromObject(prototypeHandle),
+                Writable: false,
+                Enumerable: false,
+                Configurable: false));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        var protoObj = _heap.GetObject(prototypeHandle);
+        _ = protoObj.DefineOwnProperty(
+            "constructor",
+            new JsPropertyDescriptor(
+                JsValue.FromObject(constructorHandle),
+                Writable: true,
+                Enumerable: false,
+                Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        _generatorFunctionConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
+
+    private ObjectHandle EnsureGeneratorFunctionPrototype()
+    {
+        if (_generatorFunctionPrototypeHandle is { } existing)
+            return existing;
+
+        var prototype = CreateOrdinaryObject();
+        prototype.SetPrototype(EnsureFunctionPrototype());
+        _ = prototype.DefineOwnProperty(
+            "prototype",
+            new JsPropertyDescriptor(
+                JsValue.FromObject(EnsureGeneratorPrototype()),
+                Writable: true,
+                Enumerable: false,
+                Configurable: false));
+        var handle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(handle);
+        _generatorFunctionPrototypeHandle = handle;
         return handle;
     }
 
@@ -6965,7 +7461,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         EnvironmentRecord? outerEnvironment = null)
     {
         var fnObj = new JsFunctionObject(function, outerEnvironment, function.Kind);
-        fnObj.SetPrototype(EnsureFunctionPrototype());
+        var functionPrototype = function.Kind switch
+        {
+            FunctionKind.Generator => EnsureGeneratorFunctionPrototype(),
+            _ => EnsureFunctionPrototype()
+        };
+        fnObj.SetPrototype(functionPrototype);
         _ = fnObj.DefineOwnProperty(
             "name",
             new JsPropertyDescriptor(
@@ -6980,14 +7481,32 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 Writable: false,
                 Enumerable: false,
                 Configurable: true));
-        var prototypeHandle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
+        var functionInstancePrototype = CreateOrdinaryObject();
+        if (function.Kind == FunctionKind.Generator)
+        {
+            functionInstancePrototype.SetPrototype(EnsureGeneratorPrototype());
+        }
+        else if (function.Kind == FunctionKind.AsyncGenerator)
+        {
+            functionInstancePrototype.SetPrototype(EnsureAsyncGeneratorPrototype());
+        }
+
+        var prototypeHandle = _heap.AllocateObject(functionInstancePrototype, AllocationSite.Current());
         _ = fnObj.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var handle = _heap.AllocateObject(fnObj, AllocationSite.Current());
+        _ = functionInstancePrototype.DefineOwnProperty(
+            "constructor",
+            new JsPropertyDescriptor(
+                JsValue.FromObject(handle),
+                Writable: true,
+                Enumerable: false,
+                Configurable: true));
         _heap.WriteBarrier(handle, prototypeHandle);
+        _heap.WriteBarrier(prototypeHandle, handle);
         return JsValue.FromObject(handle);
     }
 
-    private JsValue CreateDynamicFunction(IReadOnlyList<JsValue> args)
+    private JsValue CreateDynamicFunction(IReadOnlyList<JsValue> args, FunctionKind kind)
     {
         // Tier 5 #25: same CSP eval gate applies to the Function constructor
         // family (Function, AsyncFunction, GeneratorFunction).
@@ -7008,7 +7527,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             var compiled = new BytecodeCompiler().CompileFunctionBody(
                 new SourceText(body, "<Function>"),
                 parameters,
-                "anonymous");
+                "anonymous",
+                kind);
             new BytecodeVerifier().Verify(compiled);
             return CreateFunctionObject(compiled);
         }
@@ -7197,8 +7717,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             throw new JsThrownException(CreateTypeError("Function.prototype[@@hasInstance] called on non-object."));
         }
 
-        var obj = _heap.GetObject(thisValue.AsObjectHandle());
-        if (obj is not JsFunctionObject && obj is not NativeFunctionObject && obj is not BoundFunctionObject)
+        if (!IsCallable(thisValue))
         {
             return JsValue.FromBoolean(false);
         }
@@ -7208,25 +7727,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             return JsValue.FromBoolean(false);
         }
 
-        if (!TryGetPropertyValue(obj, thisValue, "prototype", out var prototypeValue) ||
-            prototypeValue.Tag != JsValueTag.Object)
+        var prototypeValue = GetReceiverProperty(thisValue, "prototype");
+        if (prototypeValue.Tag != JsValueTag.Object)
         {
             throw new JsThrownException(CreateTypeError("Function has non-object prototype in @@hasInstance."));
         }
 
         var targetPrototype = prototypeValue.AsObjectHandle();
-        var currentObj = ResolveObject(value);
-        while (currentObj.PrototypeHandle is { } proto)
-        {
-            if (proto.Equals(targetPrototype))
-            {
-                return JsValue.FromBoolean(true);
-            }
-
-            currentObj = _heap.GetObject(proto);
-        }
-
-        return JsValue.FromBoolean(false);
+        return JsValue.FromBoolean(OrdinaryHasInstancePrototype(value, targetPrototype));
     }
 
     // Merge bound args + call-site args for BoundFunctionObject [[Call]]/[[Construct]].
@@ -7719,14 +8227,46 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     [MayExecuteJs]
     private bool TryGetPropertyValue(JsObject obj, JsValue receiver, string key, out JsValue value)
     {
-        if (!obj.TryGetProperty(key, h => _heap.GetObject(h), out var descriptor))
+        if (obj is ProxyObject proxyGet)
         {
-            value = JsValue.Undefined;
-            return false;
+            value = ProxyGet(proxyGet, receiver, key);
+            return true;
         }
 
-        value = GetDescriptorValue(descriptor, receiver);
-        return true;
+        if (obj.TryGetOwnProperty(key, out var descriptor))
+        {
+            value = GetDescriptorValue(descriptor, receiver);
+            return true;
+        }
+
+        if (obj.PrototypeHandle is { } prototypeHandle)
+        {
+            return TryGetPropertyValue(_heap.GetObject(prototypeHandle), receiver, key, out value);
+        }
+
+        value = JsValue.Undefined;
+        return false;
+    }
+
+    [MayExecuteJs]
+    private bool HasPropertyIncludingProxy(JsObject obj, string key)
+    {
+        if (obj is ProxyObject proxyHas)
+        {
+            return ProxyHas(proxyHas, key);
+        }
+
+        if (obj.TryGetOwnProperty(key, out _))
+        {
+            return true;
+        }
+
+        if (obj.PrototypeHandle is { } prototypeHandle)
+        {
+            return HasPropertyIncludingProxy(_heap.GetObject(prototypeHandle), key);
+        }
+
+        return false;
     }
 
     [MayExecuteJs]
@@ -10434,25 +10974,84 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         if (_typedArrayConstructors is not null)
             return _typedArrayConstructors;
 
-        var results = new List<BuiltinBinding>(11);
-        results.Add(CreateTypedArrayCtor("Int8Array", TypedArrayElementType.Int8));
-        results.Add(CreateTypedArrayCtor("Uint8Array", TypedArrayElementType.Uint8));
-        results.Add(CreateTypedArrayCtor("Uint8ClampedArray", TypedArrayElementType.Uint8Clamped));
-        results.Add(CreateTypedArrayCtor("Int16Array", TypedArrayElementType.Int16));
-        results.Add(CreateTypedArrayCtor("Uint16Array", TypedArrayElementType.Uint16));
-        results.Add(CreateTypedArrayCtor("Int32Array", TypedArrayElementType.Int32));
-        results.Add(CreateTypedArrayCtor("Uint32Array", TypedArrayElementType.Uint32));
-        results.Add(CreateTypedArrayCtor("Float32Array", TypedArrayElementType.Float32));
-        results.Add(CreateTypedArrayCtor("Float64Array", TypedArrayElementType.Float64));
-        results.Add(CreateTypedArrayCtor("BigInt64Array", TypedArrayElementType.BigInt64));
-        results.Add(CreateTypedArrayCtor("BigUint64Array", TypedArrayElementType.BigUint64));
+        var results = new List<BuiltinBinding>(12);
+        var typedArrayCtorHandle = EnsureTypedArrayConstructor();
+        results.Add(BuiltinBinding.NonEnumerable("TypedArray", JsValue.FromObject(typedArrayCtorHandle)));
+        results.Add(CreateTypedArrayCtor("Int8Array", TypedArrayElementType.Int8, typedArrayCtorHandle));
+        results.Add(CreateTypedArrayCtor("Uint8Array", TypedArrayElementType.Uint8, typedArrayCtorHandle));
+        results.Add(CreateTypedArrayCtor("Uint8ClampedArray", TypedArrayElementType.Uint8Clamped, typedArrayCtorHandle));
+        results.Add(CreateTypedArrayCtor("Int16Array", TypedArrayElementType.Int16, typedArrayCtorHandle));
+        results.Add(CreateTypedArrayCtor("Uint16Array", TypedArrayElementType.Uint16, typedArrayCtorHandle));
+        results.Add(CreateTypedArrayCtor("Int32Array", TypedArrayElementType.Int32, typedArrayCtorHandle));
+        results.Add(CreateTypedArrayCtor("Uint32Array", TypedArrayElementType.Uint32, typedArrayCtorHandle));
+        results.Add(CreateTypedArrayCtor("Float32Array", TypedArrayElementType.Float32, typedArrayCtorHandle));
+        results.Add(CreateTypedArrayCtor("Float64Array", TypedArrayElementType.Float64, typedArrayCtorHandle));
+        results.Add(CreateTypedArrayCtor("BigInt64Array", TypedArrayElementType.BigInt64, typedArrayCtorHandle));
+        results.Add(CreateTypedArrayCtor("BigUint64Array", TypedArrayElementType.BigUint64, typedArrayCtorHandle));
 
         _typedArrayConstructors = results.ToArray();
         return _typedArrayConstructors;
     }
 
     private BuiltinBinding[]? _typedArrayConstructors;
+    private ObjectHandle? _typedArrayConstructorHandle;
     private ObjectHandle? _typedArraySharedPrototypeHandle;
+
+    private ObjectHandle EnsureTypedArrayConstructor()
+    {
+        if (_typedArrayConstructorHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var sharedPrototype = EnsureTypedArraySharedPrototype();
+        var constructor = new NativeFunctionObject(
+            "TypedArray",
+            (_, _2) => throw new JsThrownException(CreateTypeError("TypedArray constructor is not callable.")),
+            _ => throw new JsThrownException(CreateTypeError("TypedArray constructor is abstract and cannot be constructed directly.")),
+            length: 0);
+        constructor.SetPrototype(EnsureFunctionPrototype());
+        _ = constructor.DefineOwnProperty(
+            "prototype",
+            new JsPropertyDescriptor(
+                JsValue.FromObject(sharedPrototype),
+                Writable: false,
+                Enumerable: false,
+                Configurable: false));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+
+        var shared = _heap.GetObject(sharedPrototype);
+        _ = shared.DefineOwnProperty(
+            "constructor",
+            new JsPropertyDescriptor(
+                JsValue.FromObject(constructorHandle),
+                Writable: true,
+                Enumerable: false,
+                Configurable: true));
+        _heap.WriteBarrier(sharedPrototype, constructorHandle);
+
+        DefineIntrinsicFunction(constructorHandle, constructor, "from", TypedArrayFrom, length: 1);
+        DefineIntrinsicFunction(constructorHandle, constructor, "of", TypedArrayOf, length: 0);
+
+        var speciesId = GetWellKnownSymbolId("species");
+        if (speciesId != 0)
+        {
+            var getter = new NativeFunctionObject("get [Symbol.species]", (thisValue, _args) => thisValue, length: 0);
+            var getterHandle = _heap.AllocateObject(getter, AllocationSite.Current());
+            _ = constructor.DefineOwnSymbolProperty(
+                speciesId,
+                JsPropertyDescriptor.Accessor(
+                    JsValue.FromObject(getterHandle),
+                    JsValue.Undefined,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(constructorHandle, getterHandle);
+        }
+
+        _typedArrayConstructorHandle = constructorHandle;
+        return constructorHandle;
+    }
 
     private ObjectHandle EnsureTypedArraySharedPrototype()
     {
@@ -10465,11 +11064,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         shared.SetPrototype(EnsureObjectPrototype());
         var sharedHandle = _heap.AllocateObject(shared, AllocationSite.Current());
         _heap.PushRoot(sharedHandle);
+        InstallTypedArrayPrototypeMethods(sharedHandle, shared, "TypedArray", TypedArrayElementType.Int8, 1);
         _typedArraySharedPrototypeHandle = sharedHandle;
         return sharedHandle;
     }
 
-    private BuiltinBinding CreateTypedArrayCtor(string name, TypedArrayElementType elementType)
+    private BuiltinBinding CreateTypedArrayCtor(string name, TypedArrayElementType elementType, ObjectHandle typedArrayCtorHandle)
     {
         var elementSize = elementType switch
         {
@@ -10490,16 +11090,106 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             (_, _2) => throw new JsThrownException(CreateTypeError($"{name} constructor must be invoked with 'new'.")),
             args => ConstructTypedArray(elementType, elementSize, prototypeHandle, args),
             length: 1);
+        constructor.SetPrototype(typedArrayCtorHandle);
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         _ = constructor.SetProperty("BYTES_PER_ELEMENT", JsValue.FromNumber(elementSize));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
+        _heap.WriteBarrier(constructorHandle, typedArrayCtorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         InstallTypedArrayPrototypeMethods(prototypeHandle, prototype, name, elementType, elementSize);
 
         return BuiltinBinding.NonEnumerable(name, JsValue.FromObject(constructorHandle));
+    }
+
+    private JsValue TypedArrayFrom(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined || args[0].Tag == JsValueTag.Null)
+        {
+            throw new JsThrownException(CreateTypeError("TypedArray.from requires a source object."));
+        }
+
+        var source = args[0];
+        var mapFn = args.Count > 1 && args[1].Tag != JsValueTag.Undefined ? args[1] : (JsValue?)null;
+        var thisArg = args.Count > 2 ? args[2] : JsValue.Undefined;
+        if (mapFn.HasValue && !IsCallable(mapFn.Value))
+        {
+            throw new JsThrownException(CreateTypeError("TypedArray.from map function must be callable."));
+        }
+
+        var items = new List<JsValue>();
+        bool useIterator = source.Tag == JsValueTag.String;
+        if (!useIterator && source.Tag == JsValueTag.Object)
+        {
+            var obj0 = _heap.GetObject(source.AsObjectHandle());
+            var iterId = GetWellKnownSymbolId("iterator");
+            useIterator = iterId != 0 &&
+                          obj0.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) &&
+                          iterDesc.Value.Tag == JsValueTag.Object;
+        }
+
+        if (useIterator)
+        {
+            var iter = CreateForOfIterator(source);
+            if (iter.Tag == JsValueTag.Object && _heap.GetObject(iter.AsObjectHandle()) is ForOfIteratorObject forOf)
+            {
+                var idx = 0;
+                while (forOf.TryMoveNext(out var v))
+                {
+                    if (mapFn.HasValue)
+                    {
+                        v = CallFunction(mapFn.Value, new[] { v, JsValue.FromNumber(idx) }, thisArg);
+                    }
+                    items.Add(v);
+                    idx++;
+                }
+            }
+        }
+        else if (source.Tag == JsValueTag.Object)
+        {
+            var obj = _heap.GetObject(source.AsObjectHandle());
+            var length = GetArrayLength(obj);
+            for (var i = 0; i < length; i++)
+            {
+                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                TryGetPropertyValue(obj, source, key, out var v);
+                if (mapFn.HasValue)
+                {
+                    v = CallFunction(mapFn.Value, new[] { v, JsValue.FromNumber(i) }, thisArg);
+                }
+                items.Add(v);
+            }
+        }
+
+        return ConstructTypedArrayFromItems(thisValue, items);
+    }
+
+    private JsValue TypedArrayOf(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        return ConstructTypedArrayFromItems(thisValue, args);
+    }
+
+    private JsValue ConstructTypedArrayFromItems(JsValue thisValue, IReadOnlyList<JsValue> items)
+    {
+        if (thisValue.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("TypedArray operation requires a constructor receiver."));
+        }
+
+        var result = ConstructFunction(thisValue, new[] { JsValue.FromNumber(items.Count) });
+        if (result.Tag != JsValueTag.Object || _heap.GetObject(result.AsObjectHandle()) is not TypedArrayObject typed)
+        {
+            throw new JsThrownException(CreateTypeError("TypedArray constructor did not produce a typed array instance."));
+        }
+
+        for (var i = 0; i < items.Count; i++)
+        {
+            typed.SetElement(i, items[i]);
+        }
+
+        return result;
     }
 
     private JsValue ConstructTypedArray(TypedArrayElementType elementType, int elementSize, ObjectHandle protoHandle, IReadOnlyList<JsValue> args)
@@ -10571,6 +11261,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private void InstallTypedArrayPrototypeMethods(ObjectHandle protoHandle, JsObject proto, string name, TypedArrayElementType elementType, int elementSize)
     {
+        _ = name;
+        _ = elementType;
+        _ = elementSize;
+
         // 23.2.3 getters: buffer, byteLength, byteOffset, length
         proto.DefineOwnProperty("buffer", JsPropertyDescriptor.Accessor(
             JsValue.FromObject(_heap.AllocateObject(new NativeFunctionObject("get buffer",
@@ -10620,8 +11314,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             var end = args.Count > 1 ? (int)Math.Min(Math.Max(args[1].AsNumber(), 0), len) : len;
             if (end < begin) end = begin;
             var newLen = end - begin;
-            var buf = new ArrayBufferObject(newLen * elementSize);
-            var sliced = CreateTypedArrayInstance(elementType, buf, 0, newLen * elementSize);
+            var buf = new ArrayBufferObject(newLen * self.ElementSize);
+            var sliced = CreateTypedArrayInstance(self.ElementType, buf, 0, newLen * self.ElementSize);
             for (var i = 0; i < newLen; i++)
                 sliced.SetElement(i, self.GetElement(begin + i));
             sliced.SetPrototype(protoHandle);
@@ -10694,8 +11388,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
             if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.map callback is not callable."));
             var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
-            var buf = new ArrayBufferObject(self.Length * elementSize);
-            var mapped = CreateTypedArrayInstance(self.ElementType, buf, 0, self.Length * elementSize);
+            var buf = new ArrayBufferObject(self.Length * self.ElementSize);
+            var mapped = CreateTypedArrayInstance(self.ElementType, buf, 0, self.Length * self.ElementSize);
             mapped.SetPrototype(protoHandle);
             for (var i = 0; i < self.Length; i++)
             {
@@ -10718,8 +11412,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 var keep = CallFunction(callback, new[] { value, JsValue.FromNumber(i), thisValue }, thisArg);
                 if (IsTruthy(keep)) selected.Add(value);
             }
-            var buf = new ArrayBufferObject(selected.Count * elementSize);
-            var filtered = CreateTypedArrayInstance(self.ElementType, buf, 0, selected.Count * elementSize);
+            var buf = new ArrayBufferObject(selected.Count * self.ElementSize);
+            var filtered = CreateTypedArrayInstance(self.ElementType, buf, 0, selected.Count * self.ElementSize);
             filtered.SetPrototype(protoHandle);
             for (var i = 0; i < selected.Count; i++) filtered.SetElement(i, selected[i]);
             return JsValue.FromObject(_heap.AllocateObject(filtered, AllocationSite.Current()));
@@ -10994,8 +11688,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             if (index < 0 || index >= self.Length)
                 throw new JsThrownException(CreateRangeError("TypedArray.prototype.with index out of range."));
             var value = args.Count > 1 ? args[1] : JsValue.Undefined;
-            var buf = new ArrayBufferObject(self.Length * elementSize);
-            var copy = CreateTypedArrayInstance(self.ElementType, buf, 0, self.Length * elementSize);
+            var buf = new ArrayBufferObject(self.Length * self.ElementSize);
+            var copy = CreateTypedArrayInstance(self.ElementType, buf, 0, self.Length * self.ElementSize);
             copy.SetPrototype(protoHandle);
             for (var i = 0; i < self.Length; i++) copy.SetElement(i, self.GetElement(i));
             copy.SetElement(index, value);
@@ -11013,6 +11707,48 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     new JsPropertyDescriptor(valuesMethod, Writable: true, Enumerable: false, Configurable: true));
                 _heap.WriteBarrier(protoHandle, valuesMethod.AsObjectHandle());
             }
+        }
+
+        var toStringTagSymbolId = GetWellKnownSymbolId("toStringTag");
+        if (toStringTagSymbolId != 0)
+        {
+            var getter = new NativeFunctionObject("get [Symbol.toStringTag]", (thisValue, _args) =>
+            {
+                if (thisValue.Tag != JsValueTag.Object)
+                {
+                    return JsValue.Undefined;
+                }
+
+                if (_heap.GetObject(thisValue.AsObjectHandle()) is not TypedArrayObject typed)
+                {
+                    return JsValue.Undefined;
+                }
+
+                return JsValue.FromString(typed.ElementType switch
+                {
+                    TypedArrayElementType.Int8 => "Int8Array",
+                    TypedArrayElementType.Uint8 => "Uint8Array",
+                    TypedArrayElementType.Uint8Clamped => "Uint8ClampedArray",
+                    TypedArrayElementType.Int16 => "Int16Array",
+                    TypedArrayElementType.Uint16 => "Uint16Array",
+                    TypedArrayElementType.Int32 => "Int32Array",
+                    TypedArrayElementType.Uint32 => "Uint32Array",
+                    TypedArrayElementType.Float32 => "Float32Array",
+                    TypedArrayElementType.Float64 => "Float64Array",
+                    TypedArrayElementType.BigInt64 => "BigInt64Array",
+                    TypedArrayElementType.BigUint64 => "BigUint64Array",
+                    _ => "TypedArray"
+                });
+            }, length: 0);
+            var getterHandle = _heap.AllocateObject(getter, AllocationSite.Current());
+            _ = proto.DefineOwnSymbolProperty(
+                toStringTagSymbolId,
+                JsPropertyDescriptor.Accessor(
+                    JsValue.FromObject(getterHandle),
+                    JsValue.Undefined,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(protoHandle, getterHandle);
         }
     }
 
@@ -13062,8 +13798,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         var obj = ResolveObject(rhs);
-        var has = obj is ProxyObject proxyIn ? ProxyHas(proxyIn, key)
-            : obj.TryGetProperty(key, h => _heap.GetObject(h), out _);
+        var has = HasPropertyIncludingProxy(obj, key);
         frame.Registers[destReg] = JsValue.FromBoolean(has);
     }
 
@@ -13691,7 +14426,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
         // ECMA-262 9.5.12 Proxy [[Call]].
         if (obj is ProxyObject proxyCall)
+        {
+            if (!IsCallableTarget(proxyCall.TargetHandle))
+            {
+                throw new JsThrownException(CreateTypeError("Proxy target is not callable."));
+            }
             return ProxyCall(proxyCall, args, thisValue);
+        }
 
         // ECMA-262 10.4.1.3 [[Call]] â€” merge bound args + call-site args,
         // then delegate to [[BoundTargetFunction]] with [[BoundThis]].
@@ -13817,7 +14558,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             return native.Call(thisValue, args);
         }
 
-        throw new InvalidOperationException("Value is not callable.");
+        throw new JsThrownException(CreateTypeError("Value is not callable."));
     }
 
     private JsValue ConstructFunction(JsValue value, IReadOnlyList<JsValue> args)
@@ -13832,7 +14573,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
         // ECMA-262 9.5.13 Proxy [[Construct]].
         if (obj is ProxyObject proxyCons)
+        {
+            if (!IsConstructableTarget(proxyCons.TargetHandle))
+            {
+                throw new JsThrownException(CreateTypeError("Proxy target is not a constructor."));
+            }
             return ProxyConstruct(proxyCons, args, newTarget);
+        }
 
         // ECMA-262 10.4.1.4 [[Construct]] â€” merge bound args + call-site args,
         // then construct [[BoundTargetFunction]].
@@ -13864,10 +14611,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             {
                 throw new JsThrownException(CreateTypeError("Function is not a constructor."));
             }
-            return native.Construct(args);
+
+            var constructed = native.Construct(args);
+            if (constructed.Tag == JsValueTag.Object &&
+                newTarget.Tag == JsValueTag.Object &&
+                value.Tag == JsValueTag.Object &&
+                newTarget.AsObjectHandle() != value.AsObjectHandle())
+            {
+                var protoValue = GetReceiverProperty(newTarget, "prototype");
+                if (protoValue.Tag == JsValueTag.Object)
+                {
+                    _heap.GetObject(constructed.AsObjectHandle()).SetPrototype(protoValue.AsObjectHandle());
+                    _heap.WriteBarrier(constructed.AsObjectHandle(), protoValue.AsObjectHandle());
+                }
+            }
+
+            return constructed;
         }
 
-        throw new InvalidOperationException("Value is not constructible.");
+        throw new JsThrownException(CreateTypeError("Value is not constructible."));
     }
 
     private void StoreCallResult(
@@ -14046,8 +14808,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private bool IsCallable(JsValue value)
     {
-        return value.Tag == JsValueTag.Object &&
-               _heap.GetObject(value.AsObjectHandle()) is JsFunctionObject or NativeFunctionObject;
+        if (value.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        return IsCallableTarget(value.AsObjectHandle());
     }
 
     private JsValue BigIntArith(JsValue left, JsValue right, string opName,
@@ -14300,39 +15066,38 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             return false;
         }
 
-        var ctorObj = ResolveObject(right);
-
         var hasInstanceSymbolId = GetWellKnownSymbolId("hasInstance");
-        if (hasInstanceSymbolId != 0 &&
-            ctorObj.TryGetSymbolProperty(hasInstanceSymbolId, h => _heap.GetObject(h), out var hasInstanceDesc) &&
-            !hasInstanceDesc.IsAccessor &&
-            hasInstanceDesc.Value.Tag != JsValueTag.Undefined)
+        if (hasInstanceSymbolId != 0)
         {
-            if (!IsCallable(hasInstanceDesc.Value))
+            var hasInstance = GetReceiverSymbolProperty(right, hasInstanceSymbolId);
+            if (hasInstance.Tag != JsValueTag.Undefined)
             {
-                ThrowTypeError(frame, "@@hasInstance is not callable.");
-                return false;
-            }
-
-            try
-            {
-                var methodResult = CallFunction(hasInstanceDesc.Value, new[] { left }, right);
-                result = IsTruthy(methodResult);
-                return true;
-            }
-            catch (JsThrownException ex)
-            {
-                if (frame.CatchHandlers.Count == 0)
+                if (!IsCallable(hasInstance))
                 {
-                    throw;
+                    ThrowTypeError(frame, "@@hasInstance is not callable.");
+                    return false;
                 }
 
-                ThrowOrHandle(frame, ex.Value);
-                return false;
+                try
+                {
+                    var methodResult = CallFunction(hasInstance, new[] { left }, right);
+                    result = IsTruthy(methodResult);
+                    return true;
+                }
+                catch (JsThrownException ex)
+                {
+                    if (frame.CatchHandlers.Count == 0)
+                    {
+                        throw;
+                    }
+
+                    ThrowOrHandle(frame, ex.Value);
+                    return false;
+                }
             }
         }
 
-        if (ctorObj is not JsFunctionObject && ctorObj is not NativeFunctionObject)
+        if (!IsCallable(right))
         {
             ThrowTypeError(frame, "Right-hand side of 'instanceof' is not callable.");
             return false;
@@ -14344,36 +15109,74 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             return true;
         }
 
-        if (!TryGetPropertyValue(ctorObj, right, "prototype", out var prototypeValue) ||
-            prototypeValue.Tag != JsValueTag.Object)
+        var prototypeValue = GetReceiverProperty(right, "prototype");
+        if (prototypeValue.Tag != JsValueTag.Object)
         {
             ThrowTypeError(frame, "Function has non-object prototype in 'instanceof'.");
             return false;
         }
 
         var targetPrototype = prototypeValue.AsObjectHandle();
-        var currentObj = ResolveObject(left);
-        while (currentObj.PrototypeHandle is { } proto)
+        try
         {
+            result = OrdinaryHasInstancePrototype(left, targetPrototype);
+            return true;
+        }
+        catch (JsThrownException ex)
+        {
+            if (frame.CatchHandlers.Count == 0)
+            {
+                throw;
+            }
+
+            ThrowOrHandle(frame, ex.Value);
+            return false;
+        }
+    }
+
+    [MayExecuteJs]
+    private bool OrdinaryHasInstancePrototype(JsValue value, ObjectHandle targetPrototype)
+    {
+        var currentObj = ResolveObject(value);
+        while (true)
+        {
+            JsValue nextProtoValue;
+            if (currentObj is ProxyObject proxyCurrent)
+            {
+                nextProtoValue = ProxyGetPrototypeOf(proxyCurrent);
+            }
+            else
+            {
+                nextProtoValue = currentObj.PrototypeHandle is { } protoHandle
+                    ? JsValue.FromObject(protoHandle)
+                    : JsValue.Null;
+            }
+
+            if (nextProtoValue.Tag == JsValueTag.Null)
+            {
+                return false;
+            }
+
+            if (nextProtoValue.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Object prototype is not an object or null."));
+            }
+
+            var proto = nextProtoValue.AsObjectHandle();
             if (proto.Equals(targetPrototype))
             {
-                result = true;
                 return true;
             }
 
             currentObj = _heap.GetObject(proto);
         }
-
-        result = false;
-        return true;
     }
 
     private string TypeOfValue(JsValue value)
     {
         if (value.Tag == JsValueTag.Object)
         {
-            var obj = _heap.GetObject(value.AsObjectHandle());
-            if (obj is JsFunctionObject or NativeFunctionObject)
+            if (IsCallable(value))
             {
                 return "function";
             }
@@ -14404,13 +15207,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private JsValue ExecuteConstruct(JsFunctionObject callee, IReadOnlyList<JsValue> args, JsValue newTarget = default)
     {
         var instanceObject = CreateOrdinaryObject();
-        var protoSource = newTarget.Tag == JsValueTag.Object
-            ? ResolveObject(newTarget)
-            : callee;
-        if (protoSource.TryGetProperty("prototype", h => _heap.GetObject(h), out var prototypeDescriptor) &&
-            prototypeDescriptor.Value.Tag == JsValueTag.Object)
+        var protoReceiver = newTarget.Tag == JsValueTag.Object
+            ? newTarget
+            : (callee.OwnerHandle is { } calleeHandle ? JsValue.FromObject(calleeHandle) : JsValue.Undefined);
+        var prototypeValue = protoReceiver.Tag == JsValueTag.Object
+            ? GetReceiverProperty(protoReceiver, "prototype")
+            : JsValue.Undefined;
+        if (prototypeValue.Tag == JsValueTag.Object)
         {
-            instanceObject.SetPrototype(prototypeDescriptor.Value.AsObjectHandle());
+            instanceObject.SetPrototype(prototypeValue.AsObjectHandle());
         }
 
         var defaultInstance = JsValue.FromObject(_heap.AllocateObject(instanceObject, AllocationSite.Current()));

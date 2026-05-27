@@ -3,6 +3,7 @@ using FenBrowser.Js.Source;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Heap;
+using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Test262;
 
@@ -717,6 +718,8 @@ public sealed class Test262Runner
             "testTypedArray.js",
             "proxyTrapsHelper.js",
             "regExpUtils.js",
+            "detachArrayBuffer.js",
+            "resizableArrayBufferUtils.js",
         };
 
         foreach (var file in subset)
@@ -820,9 +823,14 @@ public sealed class Test262Runner
 
             try
             {
-                var runtimeInput = frontmatter.Includes.Count > 0 || RequiresRuntimeHarnessSupport(sourceText)
-                    ? BuildRuntimeHarnessPrelude() + "\n" + parserInput
-                    : parserInput;
+                var runtimeInput = parserInput;
+                if (frontmatter.Includes.Count > 0 || RequiresRuntimeHarnessSupport(sourceText))
+                {
+                    var includePrelude = BuildRuntimeHarnessIncludePrelude(rootPath, frontmatter.Includes);
+                    runtimeInput = string.IsNullOrWhiteSpace(includePrelude)
+                        ? BuildRuntimeHarnessPrelude() + "\n" + parserInput
+                        : BuildRuntimeHarnessPrelude() + "\n" + includePrelude + "\n" + parserInput;
+                }
 
                 var executeTask = Task.Run(() =>
                 {
@@ -1091,7 +1099,7 @@ public sealed class Test262Runner
                     message = ex.Message
                 });
             }
-            catch (JsThrownException)
+            catch (JsThrownException ex)
             {
                 if (expectsRuntimeThrow)
                 {
@@ -1128,6 +1136,7 @@ public sealed class Test262Runner
                     relativePath,
                     classification = "runtime-error",
                     message = "Unhandled runtime throw.",
+                    details = FormatThrownValue(ex.Value),
                     expected = expected is not null,
                     expectedReason = expected?.Reason,
                     expectedOwner = expected?.Owner,
@@ -1148,7 +1157,8 @@ public sealed class Test262Runner
                     info = frontmatter.Info,
                     locale = frontmatter.Locale,
                     category = "runtime-semantic-bug",
-                    message = "Unhandled runtime throw."
+                    message = "Unhandled runtime throw.",
+                    details = FormatThrownValue(ex.Value)
                 });
             }
             catch (InvalidOperationException ex)
@@ -1319,7 +1329,7 @@ public sealed class Test262Runner
 
     private static string BuildRuntimeHarnessPrelude()
     {
-        return """
+        var prelude = """
 
                function Test262Error(message) { this.message = message; }
                var assert = function (condition, message) {
@@ -1328,6 +1338,9 @@ public sealed class Test262Runner
                assert.sameValue = function (actual, expected, message) {
                  if (actual !== expected && !(actual !== actual && expected !== expected)) { throw (message || "assert.sameValue failed"); }
                };
+               function isPrimitive(value) {
+                 return value === null || (typeof value !== "object" && typeof value !== "function");
+               }
                assert.notSameValue = function (actual, expected, message) {
                  if (actual === expected) { throw (message || "assert.notSameValue failed"); }
                };
@@ -1353,10 +1366,36 @@ public sealed class Test262Runner
                function verifyProperty(obj, name, desc) {
                  var originalDesc = Object.getOwnPropertyDescriptor(obj, name);
                  assert(originalDesc !== undefined, "descriptor should exist");
-                 if (desc.value !== undefined) { assert.sameValue(originalDesc.value, desc.value, "descriptor value"); }
-                 if (desc.writable !== undefined) { assert.sameValue(originalDesc.writable, desc.writable, "descriptor writable"); }
-                 if (desc.enumerable !== undefined) { assert.sameValue(originalDesc.enumerable, desc.enumerable, "descriptor enumerable"); }
-                 if (desc.configurable !== undefined) { assert.sameValue(originalDesc.configurable, desc.configurable, "descriptor configurable"); }
+                 if ("value" in desc) { assert.sameValue(originalDesc.value, desc.value, "descriptor value"); }
+                 if ("writable" in desc) { assert.sameValue(originalDesc.writable, desc.writable, "descriptor writable"); }
+                 if ("enumerable" in desc) { assert.sameValue(originalDesc.enumerable, desc.enumerable, "descriptor enumerable"); }
+                 if ("configurable" in desc) { assert.sameValue(originalDesc.configurable, desc.configurable, "descriptor configurable"); }
+                 if ("get" in desc) { assert.sameValue(originalDesc.get, desc.get, "descriptor get"); }
+                 if ("set" in desc) { assert.sameValue(originalDesc.set, desc.set, "descriptor set"); }
+                 return true;
+               }
+               function verifyEqualTo(obj, name, value) {
+                 assert.sameValue(obj[name], value, "property should equal expected value");
+                 return true;
+               }
+               function verifyNotEnumerable(obj, name) {
+                 assert.sameValue(Object.prototype.propertyIsEnumerable.call(obj, name), false, "property should not be enumerable");
+                 return true;
+               }
+               function verifyEnumerable(obj, name) {
+                 assert.sameValue(Object.prototype.propertyIsEnumerable.call(obj, name), true, "property should be enumerable");
+                 return true;
+               }
+               function verifyConfigurable(obj, name) {
+                 var desc = Object.getOwnPropertyDescriptor(obj, name);
+                 assert(desc !== undefined, "descriptor should exist");
+                 assert.sameValue(desc.configurable, true, "property should be configurable");
+                 return true;
+               }
+               function verifyNotConfigurable(obj, name) {
+                 var desc = Object.getOwnPropertyDescriptor(obj, name);
+                 assert(desc !== undefined, "descriptor should exist");
+                 assert.sameValue(desc.configurable, false, "property should not be configurable");
                  return true;
                }
                function verifyWritable(obj, name, verifyProp, value) {
@@ -1377,12 +1416,56 @@ public sealed class Test262Runner
                function $DONE(error) { if (error !== undefined) { throw error; } }
                var $262 = {
                  evalScript: function (sourceText) { return eval(sourceText); },
-                 global: Function('return this;')(),
-                 createRealm: function () { return { global: Function('return this;')() }; },
-                 detachArrayBuffer: function () { throw new Error('detachArrayBuffer is not supported'); }
+                 global: globalThis,
+                 createRealm: function () { return { global: globalThis }; },
+                 detachArrayBuffer: function (buffer) {
+                   if (buffer && typeof buffer.detach === "function") { buffer.detach(); return; }
+                   if (typeof structuredClone === "function") {
+                     try { structuredClone(buffer, { transfer: [buffer] }); return; } catch (_e) {}
+                   }
+                   throw new Error('detachArrayBuffer is not supported');
+                 }
                };
+               function $DETACHBUFFER(buffer) { return $262.detachArrayBuffer(buffer); }
+               var typedArrayConstructors = [
+                 Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array,
+                 Int32Array, Uint32Array, Float32Array, Float64Array
+               ];
+               if (typeof BigInt64Array === "function") { typedArrayConstructors.push(BigInt64Array); }
+               if (typeof BigUint64Array === "function") { typedArrayConstructors.push(BigUint64Array); }
+               var floatArrayConstructors = [Float32Array, Float64Array];
+               var intArrayConstructors = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array];
+               var bigIntArrayConstructors = [];
+               if (typeof BigInt64Array === "function") { bigIntArrayConstructors.push(BigInt64Array); }
+               if (typeof BigUint64Array === "function") { bigIntArrayConstructors.push(BigUint64Array); }
+               var ctors = typedArrayConstructors.slice();
+               var floatCtors = floatArrayConstructors.slice();
+               var intCtors = intArrayConstructors.slice();
+               var bigIntCtors = bigIntArrayConstructors.slice();
+               function makeTypedArrayCtorArg(input) { return input; }
+               function testWithTypedArrayConstructors(fn, selected) {
+                 var list = Array.isArray(selected) ? selected : typedArrayConstructors;
+                 for (var i = 0; i < list.length; i++) { fn(list[i], makeTypedArrayCtorArg); }
+               }
+               function testWithBigIntTypedArrayConstructors(fn) {
+                 for (var i = 0; i < bigIntArrayConstructors.length; i++) { fn(bigIntArrayConstructors[i], makeTypedArrayCtorArg); }
+               }
+               function testWithNonAtomicsFriendlyTypedArrayConstructors(fn) {
+                 for (var i = 0; i < floatArrayConstructors.length; i++) { fn(floatArrayConstructors[i], makeTypedArrayCtorArg); }
+               }
+               function testWithAtomicsFriendlyTypedArrayConstructors(fn) {
+                 for (var i = 0; i < intArrayConstructors.length; i++) { fn(intArrayConstructors[i], makeTypedArrayCtorArg); }
+               }
+               function testWithResizableArrayBufferConstructors(fn) {
+                 for (var i = 0; i < typedArrayConstructors.length; i++) { fn(typedArrayConstructors[i], makeTypedArrayCtorArg); }
+               }
+               function CreateResizableArrayBuffer(byteLength, maxByteLength) {
+                 if (typeof ArrayBuffer !== "function") { throw new Test262Error("ArrayBuffer is not available"); }
+                 try { return new ArrayBuffer(byteLength, { maxByteLength: maxByteLength }); }
+                 catch (_e) { return new ArrayBuffer(byteLength); }
+               }
                function isConstructor(fn) { try { new fn(); return true; } catch (_e) { return false; } }
-               var fnGlobalObject = Function('return this;');
+               var fnGlobalObject = globalThis;
                var helpers = {
                  promiseHelper: function (promise) {
                    var result = { value: undefined, resolved: false, rejected: false };
@@ -1406,6 +1489,35 @@ public sealed class Test262Runner
                    function (e) { if (!(e instanceof expectedError)) throw new Test262Error(message || 'Wrong error type'); });
                };
                """;
+
+        return prelude;
+    }
+
+    private static string BuildRuntimeHarnessIncludePrelude(string rootPath, IReadOnlyList<string> includes)
+    {
+        if (includes.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var snippets = new List<string>();
+        foreach (var include in includes)
+        {
+            if (!string.Equals(include, "proxyTrapsHelper.js", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var includePath = Path.Combine(rootPath, "harness", include);
+            if (!File.Exists(includePath))
+            {
+                continue;
+            }
+
+            snippets.Add(File.ReadAllText(includePath));
+        }
+
+        return snippets.Count == 0 ? string.Empty : string.Join("\n", snippets);
     }
 
     private static bool ExpectsSyntaxErrorParseFailure(Test262FrontmatterMetadata frontmatter)
@@ -1507,5 +1619,23 @@ public sealed class Test262Runner
         }
 
         return expectations.Entries.FirstOrDefault(entry => entry.Matches(relativePath, entry.Status));
+    }
+
+    private static string FormatThrownValue(JsValue value)
+    {
+        return value.Tag switch
+        {
+            JsValueTag.Undefined => "thrown=undefined",
+            JsValueTag.Null => "thrown=null",
+            JsValueTag.Boolean => $"thrown=boolean:{value.AsBoolean()}",
+            JsValueTag.Int32 => $"thrown=int32:{value.AsInt32()}",
+            JsValueTag.Number => $"thrown=number:{value.AsNumber()}",
+            JsValueTag.String => $"thrown=string:{value.AsString()}",
+            JsValueTag.Symbol => "thrown=symbol",
+            JsValueTag.BigInt => $"thrown=bigint:{value.AsBigInt()}",
+            JsValueTag.Object => "thrown=object",
+            JsValueTag.HostObject => "thrown=host-object",
+            _ => $"thrown={value.Tag}"
+        };
     }
 }

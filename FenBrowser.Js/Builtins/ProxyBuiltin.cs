@@ -23,10 +23,16 @@ public sealed class ProxyBuiltin : IBuiltinModule
                 throw new JsThrownException(context.CreateTypeError("Proxy: handler must be an object."));
             var targetHandle = args[0].AsObjectHandle();
             var handlerHandle = args[1].AsObjectHandle();
+            var target = heap.GetObject(targetHandle);
             var proxy = new ProxyObject(targetHandle, handlerHandle);
+            proxy.SetPrototype(target.PrototypeHandle);
             var proxyHandle = heap.AllocateObject(proxy, AllocationSite.Current());
             heap.WriteBarrier(proxyHandle, targetHandle);
             heap.WriteBarrier(proxyHandle, handlerHandle);
+            if (target.PrototypeHandle is { } targetProto)
+            {
+                heap.WriteBarrier(proxyHandle, targetProto);
+            }
             return JsValue.FromObject(proxyHandle);
         }
 
@@ -35,6 +41,13 @@ public sealed class ProxyBuiltin : IBuiltinModule
             call: (_, args) => CreateProxy(args),
             construct: args => CreateProxy(args),
             length: 2);
+        var functionCtorHandle = context.MaterializeFunctionConstructor();
+        var functionCtor = heap.GetObject(functionCtorHandle);
+        if (context.TryGetPropertyValue(functionCtor, JsValue.FromObject(functionCtorHandle), "prototype", out var functionPrototypeValue) &&
+            functionPrototypeValue.Tag == JsValueTag.Object)
+        {
+            constructor.SetPrototype(functionPrototypeValue.AsObjectHandle());
+        }
         var constructorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
         heap.PushRoot(constructorHandle);
 

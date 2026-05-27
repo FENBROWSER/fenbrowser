@@ -2848,6 +2848,12 @@ public sealed class JsParser
             return new NullLiteralExpressionNode(token.Text, token.Span);
         }
 
+        if (token.Kind == TokenKind.Keyword && IsIdentifierLike(token))
+        {
+            Advance();
+            return new IdentifierExpressionNode(token.Text, token.Span);
+        }
+
         if (token.Kind == TokenKind.Identifier)
         {
             if (!IsIdentifierLike(token))
@@ -4146,6 +4152,12 @@ public sealed class JsParser
     {
         if (token.Kind == TokenKind.Keyword)
         {
+            if (token.Text == "of")
+            {
+                // Contextual keyword in for-of; valid IdentifierName elsewhere.
+                return true;
+            }
+
             if (token.Text == "async")
             {
                 return true;

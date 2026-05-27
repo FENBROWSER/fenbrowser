@@ -47,6 +47,7 @@ public enum OpCode : byte
     Void,
     Delete,
     TypeOf,
+    TypeOfName,
     Eq,
     Neq,
     StrictEq,

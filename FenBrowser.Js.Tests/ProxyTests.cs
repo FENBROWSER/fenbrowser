@@ -197,6 +197,54 @@ public sealed class ProxyTests
     }
 
     [Fact]
+    public void ProxyConstructorPrototypeIsFunctionPrototype()
+    {
+        Assert.True(RunBool(@"
+            Object.getPrototypeOf(Proxy) === Function.prototype;
+        "));
+    }
+
+    [Fact]
+    public void ProxyApplyForwardsWhenTrapMissingOnNestedProxy()
+    {
+        Assert.True(RunBool(@"
+            var hasOwn = Object.prototype.hasOwnProperty;
+            var hasOwnTarget = new Proxy(hasOwn, {});
+            var hasOwnProxy = new Proxy(hasOwnTarget, {});
+            var obj = { foo: 1 };
+            hasOwnProxy.call(obj, 'foo') && !Reflect.apply(hasOwnProxy, obj, ['bar']);
+        "));
+    }
+
+    [Fact]
+    public void ProxyConstructForwardsWhenTrapMissingOnNestedProxy()
+    {
+        Assert.Equal(0, RunNum(@"
+            var ArrayTarget = new Proxy(Array, {});
+            var ArrayProxy = new Proxy(ArrayTarget, {});
+
+            var array = new ArrayProxy(1, 2, 3);
+            var ok1 = Array.isArray(array);
+            var ok2 = array.length === 3 && array[0] === 1 && array[1] === 2 && array[2] === 3;
+
+            class MyArray extends Array {
+              get isMyArray() { return true; }
+            }
+            var myArray = Reflect.construct(ArrayProxy, [], MyArray);
+            var ok3 = Array.isArray(myArray);
+            var ok4 = myArray instanceof MyArray;
+            var ok5 = myArray.isMyArray === true;
+
+            if (!ok1) 1;
+            else if (!ok2) 2;
+            else if (!ok3) 3;
+            else if (!ok4) 4;
+            else if (!ok5) 5;
+            else 0;
+        "));
+    }
+
+    [Fact]
     public void ProxyRevocableReturnsObjectWithProxyAndRevoke()
     {
         Assert.True(RunBool(@"
@@ -308,7 +356,9 @@ public sealed class ProxyTests
         Assert.True(RunBool(@"
             var isHit = 0;
             var preventHit = 0;
-            var p = new Proxy({}, {
+            var target = {};
+            Object.preventExtensions(target);
+            var p = new Proxy(target, {
                 isExtensible: function() { isHit++; return false; },
                 preventExtensions: function() { preventHit++; return true; }
             });

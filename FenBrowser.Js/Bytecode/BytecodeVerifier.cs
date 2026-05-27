@@ -388,6 +388,10 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 break;
+            case OpCode.TypeOfName:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateVariableSlot(function, ip, ins.B);
+                break;
             case OpCode.Delete:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateVariableSlot(function, ip, ins.B);

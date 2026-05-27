@@ -101,6 +101,13 @@ public sealed class BytecodeCompiler
     }
 
     public BytecodeFunction CompileFunctionBody(SourceText body, IReadOnlyList<string> parameters, string? name)
+        => CompileFunctionBody(body, parameters, name, FunctionKind.Ordinary);
+
+    public BytecodeFunction CompileFunctionBody(
+        SourceText body,
+        IReadOnlyList<string> parameters,
+        string? name,
+        FunctionKind functionKind)
     {
         var program = JsParser.ParseScript(body);
         return CompileProgramCore(
@@ -109,7 +116,7 @@ public sealed class BytecodeCompiler
             restParameterIndex: -1,
             name,
             hasOwnArgumentsObject: true,
-            functionKind: FunctionKind.Ordinary,
+            functionKind: functionKind,
             inheritedStrictMode: false);
     }
 
@@ -1913,6 +1920,14 @@ public sealed class BytecodeCompiler
                     return defaultDeleteResult;
                 }
 
+                if (unary.Operator == "typeof" && unary.Operand is IdentifierExpressionNode typeofIdentifier)
+                {
+                    var destTypeOf = AllocateRegister();
+                    var slotTypeOf = GetOrCreateVariableSlot(typeofIdentifier.Name);
+                    _instructions.Add(new Instruction(OpCode.TypeOfName, destTypeOf, slotTypeOf, 0));
+                    return destTypeOf;
+                }
+
                 var operandReg = CompileExpression(unary.Operand);
                 var dest = AllocateRegister();
                 var op = unary.Operator switch
@@ -2876,4 +2891,3 @@ public sealed class BytecodeCompiler
         return result;
     }
 }
-
