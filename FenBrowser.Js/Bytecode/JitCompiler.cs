@@ -185,8 +185,12 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.ThrowForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiGetPropByName = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.GetPropByNameForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiGetPropByNameDirect = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.GetPropByNameForJit_Direct), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiSetPropByName = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.SetPropByNameForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiSetPropByNameDirect = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.SetPropByNameForJit_Direct), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiDeletePropByName = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.DeletePropByNameForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiGetElem = typeof(BytecodeInterpreter)
@@ -428,17 +432,29 @@ public static class JitCompiler
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
                 if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
                 if (ins.C < 0 || ins.C >= function.PropertyNames.Count) return false;
-                body.Add(Expression.Call(interp, MiGetPropByName, frame,
-                    Expression.Constant(ins.A), Expression.Constant(ins.B),
-                    Expression.Constant(ins.C), Expression.Constant(ip)));
+                // Audit §3.1: pre-resolve property name + pre-allocate IC at
+                // compile time so each call avoids one dictionary lookup and
+                // one list indexing. The IC reference is stable for the
+                // function's lifetime; embedding it as a Constant is safe.
+                {
+                    var propConst = function.PropertyNames[ins.C];
+                    var icConst = EnsureLoadIC(function, ip);
+                    body.Add(Expression.Call(interp, MiGetPropByNameDirect, frame,
+                        Expression.Constant(ins.A), Expression.Constant(ins.B),
+                        Expression.Constant(propConst), Expression.Constant(icConst)));
+                }
                 return true;
             case OpCode.SetPropByName:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
                 if (ins.B < 0 || ins.B >= function.PropertyNames.Count) return false;
                 if (ins.C < 0 || ins.C >= function.RegisterCount) return false;
-                body.Add(Expression.Call(interp, MiSetPropByName, frame,
-                    Expression.Constant(ins.A), Expression.Constant(ins.B),
-                    Expression.Constant(ins.C), Expression.Constant(ip)));
+                {
+                    var propConst = function.PropertyNames[ins.B];
+                    var icConst = EnsureStoreIC(function, ip);
+                    body.Add(Expression.Call(interp, MiSetPropByNameDirect, frame,
+                        Expression.Constant(ins.A), Expression.Constant(propConst),
+                        Expression.Constant(ins.C), Expression.Constant(icConst)));
+                }
                 return true;
             case OpCode.DeletePropByName:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
@@ -854,5 +870,30 @@ public static class JitCompiler
             case JsValueTag.Null: n = 0; return true;
             default: n = 0; return false;
         }
+    }
+
+    // Pre-allocate a Load IC for the given instruction offset so the JIT
+    // can embed the reference as a Constant. Returns the existing IC if
+    // one was populated by prior interpreted runs.
+    private static PolymorphicInlineCache EnsureLoadIC(BytecodeFunction function, int icOffset)
+    {
+        function.LoadICs ??= new();
+        if (!function.LoadICs.TryGetValue(icOffset, out var ic))
+        {
+            ic = new PolymorphicInlineCache();
+            function.LoadICs[icOffset] = ic;
+        }
+        return ic;
+    }
+
+    private static PolymorphicInlineCache EnsureStoreIC(BytecodeFunction function, int icOffset)
+    {
+        function.StoreICs ??= new();
+        if (!function.StoreICs.TryGetValue(icOffset, out var ic))
+        {
+            ic = new PolymorphicInlineCache();
+            function.StoreICs[icOffset] = ic;
+        }
+        return ic;
     }
 }

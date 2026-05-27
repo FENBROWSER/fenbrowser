@@ -13481,6 +13481,118 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
     }
 
+    // Audit doc §3.1 first slice. Same contract as GetPropByNameForJit but
+    // the IC reference and the property name are pre-resolved by the JIT
+    // codegen and threaded in directly. Avoids one Dictionary lookup and
+    // one IReadOnlyList<string> indexing per call site. The IC instance
+    // is stable for the lifetime of the function (the dispatch dictionary
+    // entry is allocated at JIT compile time), so the JIT can safely
+    // embed the reference as a closed-over constant.
+    internal void GetPropByNameForJit_Direct(
+        InterpreterFrame frame, int destReg, int receiverReg, string prop, PolymorphicInlineCache ic)
+    {
+        var receiver = frame.Registers[receiverReg];
+        if (receiver.Tag == JsValueTag.Object)
+        {
+            var obj = _heap.GetObject(receiver.AsObjectHandle());
+            if (ic.TryGet(obj, prop, out var slot) && obj.PropertyArray[slot] is { } desc)
+            {
+                if (desc.IsAccessor)
+                {
+                    ic.InvalidateShape(obj.CurrentShape);
+                }
+                else
+                {
+                    frame.Registers[destReg] = desc.Value;
+                    return;
+                }
+            }
+        }
+        try
+        {
+            frame.Registers[destReg] = GetReceiverProperty(receiver, prop);
+            if (receiver.Tag == JsValueTag.Object)
+            {
+                var obj = _heap.GetObject(receiver.AsObjectHandle());
+                if (obj.CurrentShape.TryGetSlot(prop, out var freshSlot) &&
+                    obj.PropertyArray[freshSlot] is { } freshDesc &&
+                    !freshDesc.IsAccessor)
+                {
+                    ic.Add(obj.CurrentShape, prop, freshSlot);
+                }
+            }
+        }
+        catch (JsThrownException ex)
+        {
+            ThrowOrHandle(frame, ex.Value);
+        }
+    }
+
+    // Audit doc §3.1 first slice — direct-IC variant. See
+    // GetPropByNameForJit_Direct for the contract.
+    internal void SetPropByNameForJit_Direct(
+        InterpreterFrame frame, int receiverReg, string prop, int valueReg, PolymorphicInlineCache ic)
+    {
+        var receiverValue = frame.Registers[receiverReg];
+        var value = frame.Registers[valueReg];
+
+        if (receiverValue.Tag == JsValueTag.HostObject)
+        {
+            try { SetHostObjectProperty(receiverValue, prop, value); }
+            catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+            return;
+        }
+
+        var ownerHandle = ResolveObjectHandle(receiverValue);
+        if (receiverValue.Tag == JsValueTag.Object)
+        {
+            var obj = _heap.GetObject(receiverValue.AsObjectHandle());
+            if (obj is not ProxyObject && ic.TryGet(obj, prop, out var slot) &&
+                obj.PropertyArray[slot] is { } desc)
+            {
+                if (desc.IsAccessor || !desc.Writable)
+                {
+                    ic.InvalidateShape(obj.CurrentShape);
+                }
+                else
+                {
+                    var updated = desc with { Value = value };
+                    obj.PropertyArray[slot] = updated;
+                    WriteDescriptorBarrier(ownerHandle, updated);
+                    return;
+                }
+            }
+        }
+
+        var ownerObj = _heap.GetObject(ownerHandle);
+        if (ownerObj is ProxyObject proxySet)
+        {
+            try { _ = ProxySet(proxySet, receiverValue, prop, value); }
+            catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+            return;
+        }
+        try
+        {
+            _ = SetPropertyValue(ownerHandle, ownerObj, prop, value, receiverValue);
+            if (receiverValue.Tag == JsValueTag.Object)
+            {
+                var obj = _heap.GetObject(receiverValue.AsObjectHandle());
+                if (obj is not ProxyObject &&
+                    obj.CurrentShape.TryGetSlot(prop, out var freshSlot) &&
+                    obj.PropertyArray[freshSlot] is { } freshDesc &&
+                    !freshDesc.IsAccessor &&
+                    freshDesc.Writable)
+                {
+                    ic.Add(obj.CurrentShape, prop, freshSlot);
+                }
+            }
+        }
+        catch (JsThrownException ex)
+        {
+            ThrowOrHandle(frame, ex.Value);
+        }
+    }
+
     internal void SetPropByNameForJit(InterpreterFrame frame, int receiverReg, int propNameIndex, int valueReg, int icOffset)
     {
         var receiverValue = frame.Registers[receiverReg];
