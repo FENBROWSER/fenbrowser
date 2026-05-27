@@ -585,6 +585,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             InstantiateLexicalDeclarations(function, frame);
         }
 
+        // Tier 4 #24: if a JIT delegate is available, run it instead of
+        // the dispatch loop. The delegate executes the entire function
+        // body and returns the function's return value. Exceptions
+        // propagate via JsThrownException same as the interpreter.
+        if (function.JitDelegate is { } jitFn)
+        {
+            return jitFn(this, frame);
+        }
+
         while (frame.InstructionPointer < function.Instructions.Count)
         {
             // Plan §14.2: instruction budget and interrupt check.
@@ -3729,7 +3738,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     // LoadName/StoreName funnel slot-based LoadVar/StoreVar opcodes through the
     // active EnvironmentRecord chain. Unresolvable reads become ReferenceError, and
     // non-strict unresolvable writes create/update a property on the global object.
-    private JsValue LoadName(InterpreterFrame frame, int slot)
+    // Tier 4 #24: internal so the JIT-emitted Expression-tree code (in
+    // JitCompiler) can invoke it from inside the same assembly.
+    internal JsValue LoadName(InterpreterFrame frame, int slot)
     {
         var name = SlotNameTable.GetName(frame.Function, slot);
         if (name is not null)
@@ -3760,7 +3771,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return JsValue.Undefined;
     }
 
-    private void StoreName(InterpreterFrame frame, int slot, JsValue value)
+    internal void StoreName(InterpreterFrame frame, int slot, JsValue value)
     {
         var name = SlotNameTable.GetName(frame.Function, slot);
         if (name is not null)
@@ -3795,7 +3806,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         ThrowReferenceError(frame, $"Invalid variable slot {slot}.");
     }
 
-    private void InitializeName(InterpreterFrame frame, int slot, JsValue value)
+    internal void InitializeName(InterpreterFrame frame, int slot, JsValue value)
     {
         var name = SlotNameTable.GetName(frame.Function, slot);
         if (name is not null)
@@ -13097,22 +13108,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 return JsValue.FromObject(_heap.AllocateObject(genObj, AllocationSite.Current()));
             }
 
-            // Tier 4 #24: try the JIT-compiled body first if one was
-            // produced; otherwise tier-up after enough invocations.
+            // Tier 4 #24: tier-up counter. The JIT delegate is invoked
+            // from inside ExecuteInternalCore (after frame setup) so it
+            // can access frame.Registers, frame.Environment, and the
+            // interpreter's helper methods.
             var bcFn = fn.Function;
-            if (bcFn.JitDelegate is { } compiled)
-            {
-                return compiled(thisValue, args);
-            }
             bcFn.Invocations++;
             if (!bcFn.JitCompileAttempted && bcFn.Invocations >= JitCompiler.TierUpThreshold)
             {
                 bcFn.JitCompileAttempted = true;
                 bcFn.JitDelegate = JitCompiler.TryCompile(bcFn);
-                if (bcFn.JitDelegate is { } justCompiled)
-                {
-                    return justCompiled(thisValue, args);
-                }
             }
             return ExecuteInternal(fn.Function, args, thisValue, fn.OuterEnvironment, callee: fn);
         }

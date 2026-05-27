@@ -1,66 +1,78 @@
+using System.Linq.Expressions;
+using System.Reflection;
+using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Bytecode;
 
-// Tier 4 #24 baseline JIT — first cut.
+// Tier 4 #24 baseline JIT.
 //
-// This is intentionally a narrow template JIT: it compiles a small whitelist
-// of "leaf" functions (currently those whose body is a single LoadConst +
-// Return or a Return of a constant register established by trivial Moves)
-// into a C# delegate. Anything outside the whitelist falls back to the
-// interpreter — which is the entire point of having a tiered design: the
-// JIT exists to skip dispatch overhead for the hottest, simplest call
-// sites without risking divergence from the interpreter on the long tail
-// of opcodes (Yield, Await, Throw, Generators, Proxy traps, etc.).
+// Two compilation paths share one JitDelegate slot:
 //
-// A more capable JIT (full opcode coverage, type feedback, deopt) is a
-// dedicated multi-week effort flagged in the production-gap roadmap.
-// This file is the scaffold: a real compile path that handles a real
-// subset, plus the integration hooks (tier-up counter, delegate cache,
-// fallback) that a fuller JIT would expand into.
+//   1. Constant-fold (abstract interpretation): for functions whose body
+//      is a closed-form sequence of arithmetic/logic/control-flow on
+//      compile-time-known values, TryCompile returns a delegate that
+//      simply yields the folded result. Built on the existing abstract
+//      interpreter — extended over multiple commits.
+//
+//   2. Expression-tree codegen: for functions touching runtime state
+//      (LoadVar, StoreVar, InitVar so far), TryCompile builds a
+//      System.Linq.Expressions tree mirroring the interpreter's switch
+//      case-by-case, then Expression.Compile() turns it into a delegate.
+//      Each compiled call into the interpreter's helper methods is the
+//      same code the switch dispatch would execute, just bound at
+//      JIT-compile time rather than resolved per-instruction.
+//
+// Either path can return null to fall back to the interpreter switch.
+// The IL-emit path is the multi-commit effort opened by this commit; new
+// opcodes are added by extending TryEmitOpcode below.
 public static class JitCompiler
 {
-    // Function-level invocation count at which TryCompile is invoked.
-    // Low for unit tests; production tuning would push this higher.
     public const int TierUpThreshold = 100;
 
-    public delegate JsValue JitDelegate(JsValue thisValue, IReadOnlyList<JsValue> args);
+    // JIT-compiled body. Runs to completion inside the caller-set-up
+    // InterpreterFrame and returns the function's return value. Throws
+    // JsThrownException for uncaught exceptions, same as ExecuteInternal.
+    public delegate JsValue JitDelegate(BytecodeInterpreter interp, InterpreterFrame frame);
 
     public static long CompileAttempts;
     public static long CompileSuccesses;
+    public static long CompileExpressionTreeSuccesses;
 
-    // Attempt to compile `function` into a delegate equivalent to one full
-    // ExecuteInternal pass over its instruction stream. Returns null when
-    // the function uses any opcode outside the whitelist or has any
-    // structural feature (handlers, generators, async, multiple constants)
-    // that the JIT does not yet model.
     public static JitDelegate? TryCompile(BytecodeFunction function)
     {
         Interlocked.Increment(ref CompileAttempts);
         if (function is null || function.Instructions.Count == 0) return null;
 
-        // Whitelist: straight-line bodies composed of LoadConst and Move
-        // followed by a single Return. The JIT abstract-interprets the
-        // sequence to compute the final value of the returned register
-        // and bakes it into the returned delegate. Anything outside this
-        // shape (calls, jumps, arithmetic, side effects, handlers) bails
-        // to the interpreter.
-        //
-        // Why this is sound: every selected opcode is purely intra-frame
-        // register manipulation with deterministic semantics — LoadConst
-        // copies a constant table entry, Move copies a register, Return
-        // yields the register. No environment lookups, no allocation, no
-        // observable side effect. The compiled delegate produces the
-        // same result as the interpreter for every call.
-        if (function.Instructions.Count < 1) return null;
+        // Path 1: try the cheap constant-fold first. If every register's
+        // value at Return is statically known, we emit a delegate that
+        // returns it directly.
+        if (TryConstantFold(function) is { } folded)
+        {
+            Interlocked.Increment(ref CompileSuccesses);
+            return folded;
+        }
 
-        // Abstract-interpret the function following control flow. Each
-        // register holds a statically-known JsValue or null (unknown).
-        // Unconditional Jump follows the target; JumpIfFalse follows the
-        // statically-resolved branch if the condition is known. An unknown
-        // condition causes the whole compile to bail. Bounded iteration
-        // cap protects against statically-true loops that would otherwise
-        // spin forever in the abstract interpreter.
+        // Path 2: Expression-tree codegen. Compiles a per-function
+        // delegate that runs the same dispatch as ExecuteInternal but
+        // with each opcode bound at JIT-compile time. Bails to null if
+        // any opcode in the function lacks an emitter — the interpreter
+        // takes over.
+        var emitted = TryEmitExpressionTree(function);
+        if (emitted is not null)
+        {
+            Interlocked.Increment(ref CompileSuccesses);
+            Interlocked.Increment(ref CompileExpressionTreeSuccesses);
+            return emitted;
+        }
+
+        return null;
+    }
+
+    // ---- Path 1: constant-fold abstract interpreter -----------------
+
+    private static JitDelegate? TryConstantFold(BytecodeFunction function)
+    {
         var registerValues = new JsValue?[function.RegisterCount];
         var ip = 0;
         var stepsRemaining = function.Instructions.Count * 4;
@@ -135,36 +147,119 @@ public static class JitCompiler
                 case OpCode.Return:
                     if (ins.A < 0 || ins.A >= function.RegisterCount) return null;
                     if (registerValues[ins.A] is not { } returnValue) return null;
-                    Interlocked.Increment(ref CompileSuccesses);
                     return (_, _) => returnValue;
                 default:
                     return null;
             }
         }
-
-        // Iteration cap exhausted — likely a runtime-dependent loop.
         return null;
     }
 
-    // ECMA-262 7.1.2 ToBoolean used only for JumpIfFalse condition
-    // resolution against compile-time-known values.
-    private static bool IsTruthy(JsValue v) => v.Tag switch
-    {
-        JsValueTag.Undefined => false,
-        JsValueTag.Null => false,
-        JsValueTag.Boolean => v.AsBoolean(),
-        JsValueTag.Int32 => v.AsInt32() != 0,
-        JsValueTag.Number => v.AsNumber() != 0 && !double.IsNaN(v.AsNumber()),
-        JsValueTag.String => v.AsString().Length > 0,
-        _ => true,
-    };
+    // ---- Path 2: Expression-tree codegen ---------------------------
 
-    // Tier 4 #24 (binary opcode coverage): constant-fold a binary opcode
-    // when both operands have known compile-time values. Numeric ops use
-    // double-precision IEEE-754 semantics (matching the interpreter);
-    // Add additionally folds string-string concatenation; the equality
-    // family handles primitive operand pairs only. Anything that depends
-    // on runtime values bails to the interpreter.
+    private static readonly MethodInfo MiLoadName = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.LoadName), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiStoreName = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.StoreName), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiInitializeName = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.InitializeName), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly PropertyInfo PiRegisters = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Registers))!;
+    private static readonly PropertyInfo PiFunction = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Function))!;
+    private static readonly PropertyInfo PiConstants = typeof(BytecodeFunction).GetProperty(nameof(BytecodeFunction.Constants))!;
+
+    private static JitDelegate? TryEmitExpressionTree(BytecodeFunction function)
+    {
+        var interpParam = Expression.Parameter(typeof(BytecodeInterpreter), "interp");
+        var frameParam = Expression.Parameter(typeof(InterpreterFrame), "frame");
+        var registersLocal = Expression.Variable(typeof(JsValue[]), "registers");
+        var constantsLocal = Expression.Variable(typeof(IReadOnlyList<JsValue>), "constants");
+        var returnLabel = Expression.Label(typeof(JsValue), "return");
+
+        var instructionLabels = new LabelTarget[function.Instructions.Count];
+        for (var i = 0; i < instructionLabels.Length; i++)
+            instructionLabels[i] = Expression.Label("ip_" + i);
+
+        var body = new List<Expression>
+        {
+            Expression.Assign(registersLocal, Expression.Property(frameParam, PiRegisters)),
+            Expression.Assign(constantsLocal, Expression.Property(Expression.Property(frameParam, PiFunction), PiConstants)),
+        };
+
+        for (var i = 0; i < function.Instructions.Count; i++)
+        {
+            body.Add(Expression.Label(instructionLabels[i]));
+            var ins = function.Instructions[i];
+            if (!TryEmitOpcode(function, ins, i, interpParam, frameParam, registersLocal, constantsLocal, instructionLabels, returnLabel, body))
+            {
+                return null;
+            }
+        }
+
+        // If control flow falls off the end without hitting Return, the
+        // function returns undefined — matches interpreter behavior.
+        body.Add(Expression.Label(returnLabel, Expression.Constant(JsValue.Undefined)));
+
+        var block = Expression.Block(typeof(JsValue), new[] { registersLocal, constantsLocal }, body);
+        var lambda = Expression.Lambda<JitDelegate>(block, interpParam, frameParam);
+        try { return lambda.Compile(); }
+        catch { return null; }
+    }
+
+    private static bool TryEmitOpcode(
+        BytecodeFunction function, Instruction ins, int ip,
+        ParameterExpression interp, ParameterExpression frame,
+        ParameterExpression registers, ParameterExpression constants,
+        LabelTarget[] labels, LabelTarget returnLabel, List<Expression> body)
+    {
+        switch (ins.OpCode)
+        {
+            case OpCode.LoadConst:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.Constants.Count) return false;
+                body.Add(Expression.Assign(
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
+                    Expression.Property(constants, "Item", Expression.Constant(ins.B))));
+                return true;
+            case OpCode.Move:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
+                body.Add(Expression.Assign(
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.B))));
+                return true;
+            case OpCode.LoadVar:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                body.Add(Expression.Assign(
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A)),
+                    Expression.Call(interp, MiLoadName, frame, Expression.Constant(ins.B))));
+                return true;
+            case OpCode.StoreVar:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                body.Add(Expression.Call(interp, MiStoreName, frame, Expression.Constant(ins.B),
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A))));
+                return true;
+            case OpCode.InitVar:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                body.Add(Expression.Call(interp, MiInitializeName, frame, Expression.Constant(ins.B),
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A))));
+                return true;
+            case OpCode.Return:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                body.Add(Expression.Return(returnLabel,
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A))));
+                return true;
+            case OpCode.Jump:
+                if (ins.A < 0 || ins.A >= function.Instructions.Count) return false;
+                body.Add(Expression.Goto(labels[ins.A]));
+                return true;
+            // Future opcodes added here as the IL-emit work continues.
+            default:
+                return false;
+        }
+    }
+
+    // ---- shared helpers for the constant-fold path -----------------
+
     private static bool TryFoldBinop(BytecodeFunction function, Instruction ins, JsValue?[] regs, out JsValue result)
     {
         result = default;
@@ -225,9 +320,6 @@ public static class JitCompiler
                 result = JsValue.FromBoolean(!StrictEquals(lhs, rhs)); return true;
             case OpCode.Eq:
             case OpCode.Neq:
-                // Loose equality across distinct types needs ToPrimitive
-                // and string→number coercion paths that we don't model
-                // here. Same-type loose equality reduces to strict.
                 if (lhs.Tag != rhs.Tag) return false;
                 var eqResult = StrictEquals(lhs, rhs);
                 result = JsValue.FromBoolean(ins.OpCode == OpCode.Eq ? eqResult : !eqResult);
@@ -249,8 +341,6 @@ public static class JitCompiler
                 });
                 return true;
             case OpCode.And:
-                // ECMA-262 short-circuit: returns the left value if falsy,
-                // otherwise the right value. Both must be known.
                 result = IsTruthy(lhs) ? rhs : lhs; return true;
             case OpCode.Or:
                 result = IsTruthy(lhs) ? lhs : rhs; return true;
@@ -301,7 +391,6 @@ public static class JitCompiler
     {
         if (a.Tag != b.Tag)
         {
-            // Numeric tags compare across Int32/Number per ECMA-262 7.2.15.
             if ((a.Tag == JsValueTag.Int32 || a.Tag == JsValueTag.Number) &&
                 (b.Tag == JsValueTag.Int32 || b.Tag == JsValueTag.Number))
             {
@@ -318,9 +407,20 @@ public static class JitCompiler
             JsValueTag.Int32 => a.AsInt32() == b.AsInt32(),
             JsValueTag.Number => a.AsNumber() == b.AsNumber(),
             JsValueTag.String => string.Equals(a.AsString(), b.AsString(), StringComparison.Ordinal),
-            _ => false, // objects/symbols/bigints require identity that we don't track here
+            _ => false,
         };
     }
+
+    private static bool IsTruthy(JsValue v) => v.Tag switch
+    {
+        JsValueTag.Undefined => false,
+        JsValueTag.Null => false,
+        JsValueTag.Boolean => v.AsBoolean(),
+        JsValueTag.Int32 => v.AsInt32() != 0,
+        JsValueTag.Number => v.AsNumber() != 0 && !double.IsNaN(v.AsNumber()),
+        JsValueTag.String => v.AsString().Length > 0,
+        _ => true,
+    };
 
     private static bool TryGetNumber(JsValue v, out double n)
     {
