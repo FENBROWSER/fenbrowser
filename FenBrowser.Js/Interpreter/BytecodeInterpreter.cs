@@ -187,6 +187,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     public Func<bool>? InterruptCallback { get; set; }
     private int _instructionCount;
 
+    // Tier 5 #27: wall-clock execution deadline in milliseconds. Zero = no
+    // limit. Checked every WallClockCheckInterval instructions to keep the
+    // hot path cheap; a small over-shoot beyond the deadline is acceptable
+    // because the budget exists to bound runaway scripts, not to provide
+    // sub-millisecond precision.
+    public long WallClockTimeoutMs { get; set; }
+    private const int WallClockCheckInterval = 1024;
+    private long _wallClockDeadlineTicks;
+    private int _wallClockCheckCountdown;
+
+    // Tier 5 #25: per-realm CSP eval policy. When false, eval() and the
+    // Function/AsyncFunction/GeneratorFunction constructors throw EvalError,
+    // mirroring the effect of a `script-src` directive without `'unsafe-eval'`.
+    public bool EvalAllowed { get; set; } = true;
+
     public BytecodeInterpreter(JsHeap? heap = null)
     {
         _heap = heap ?? new JsHeap();
@@ -196,6 +211,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     public JsValue Execute(BytecodeFunction function)
     {
         _instructionCount = 0;
+        if (WallClockTimeoutMs > 0)
+        {
+            _wallClockDeadlineTicks = System.Environment.TickCount64 + WallClockTimeoutMs;
+            _wallClockCheckCountdown = WallClockCheckInterval;
+        }
+        else
+        {
+            _wallClockDeadlineTicks = 0;
+        }
         var globalHandle = EnsureGlobalObject();
         var result = ExecuteInternal(
             function,
@@ -568,6 +592,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded."));
             if (InterruptCallback is { } cb && !cb())
                 throw new JsThrownException(CreateRangeError("Execution interrupted."));
+            // Tier 5 #27: wall-clock deadline. Sampled every N instructions to
+            // amortize the TickCount64 read.
+            if (_wallClockDeadlineTicks != 0 && --_wallClockCheckCountdown <= 0)
+            {
+                _wallClockCheckCountdown = WallClockCheckInterval;
+                if (System.Environment.TickCount64 >= _wallClockDeadlineTicks)
+                    throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded."));
+            }
 
             // ECMA-262 27.5.1.5 GeneratorResumeAbrupt — inject a throw-mode
             // completion into the resumed generator body. ThrowOrHandle routes
@@ -3924,6 +3956,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             return args[0];
         }
 
+        // Tier 5 #25: enforce the realm's CSP eval gate. Non-string inputs
+        // are returned unchanged above (no eval actually runs), matching the
+        // ECMA-262 19.2.1 step that skips parsing for non-strings.
+        if (!EvalAllowed)
+        {
+            throw new JsThrownException(CreateError("Refused to evaluate a string as JavaScript because 'unsafe-eval' is not allowed by the policy."));
+        }
+
         var program = JsParser.ParseScript(new SourceText(args[0].AsString(), "<eval>"));
         var directEvalEnvironment = _directEvalEnv;
         var directEvalStrictMode = _directEvalStrictMode;
@@ -6907,6 +6947,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private JsValue CreateDynamicFunction(IReadOnlyList<JsValue> args)
     {
+        // Tier 5 #25: same CSP eval gate applies to the Function constructor
+        // family (Function, AsyncFunction, GeneratorFunction).
+        if (!EvalAllowed)
+        {
+            throw new JsThrownException(CreateError("Refused to compile a Function() because 'unsafe-eval' is not allowed by the policy."));
+        }
+
         var parameters = new List<string>();
         for (var i = 0; i + 1 < args.Count; i++)
         {

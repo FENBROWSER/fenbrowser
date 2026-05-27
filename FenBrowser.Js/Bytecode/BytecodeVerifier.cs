@@ -14,6 +14,9 @@ public sealed class BytecodeVerifier
             throw new InvalidOperationException("Function must contain instructions.");
         }
 
+        var pushHandlerCount = 0;
+        var popHandlerCount = 0;
+
         for (var ip = 0; ip < function.Instructions.Count; ip++)
         {
             var ins = function.Instructions[ip];
@@ -23,12 +26,78 @@ public sealed class BytecodeVerifier
             {
                 throw new InvalidOperationException($"Invalid constant index {ins.B} at ip {ip}.");
             }
+
+            // Tier 5 #26: handler balance. Across the linear instruction
+            // stream, PushHandler and PopHandler must occur in matched
+            // counts. Per-path balance would require full CFG analysis;
+            // counting catches the common compiler bugs (forgotten Pop,
+            // duplicated Push) without false positives.
+            if (ins.OpCode == OpCode.PushHandler) pushHandlerCount++;
+            if (ins.OpCode == OpCode.PopHandler) popHandlerCount++;
+        }
+
+        if (pushHandlerCount != popHandlerCount)
+        {
+            throw new InvalidOperationException(
+                $"Handler stack unbalanced: {pushHandlerCount} PushHandler, {popHandlerCount} PopHandler.");
         }
 
         if (function.Instructions[^1].OpCode != OpCode.Return)
         {
             throw new InvalidOperationException("Function must end with Return.");
         }
+    }
+
+    // Tier 5 #26: reachability analysis. Returns the count of unreachable
+    // instructions from the function entry, following all jump and exception
+    // handler targets. Provided for diagnostics and fuzz harnesses; not
+    // currently invoked by Verify() because legitimate compiler output may
+    // emit dead instructions after a Return as a structural anchor for the
+    // exception handler tables.
+    public int CountUnreachableInstructions(BytecodeFunction function)
+    {
+        if (function.Instructions.Count == 0) return 0;
+
+        var reachable = new bool[function.Instructions.Count];
+        var work = new Stack<int>();
+        work.Push(0);
+
+        while (work.Count > 0)
+        {
+            var ip = work.Pop();
+            if (ip < 0 || ip >= reachable.Length || reachable[ip]) continue;
+            reachable[ip] = true;
+            var ins = function.Instructions[ip];
+
+            switch (ins.OpCode)
+            {
+                case OpCode.Return:
+                case OpCode.Throw:
+                    break;
+                case OpCode.Jump:
+                    work.Push(ins.A);
+                    break;
+                case OpCode.JumpIfFalse:
+                    work.Push(ins.B);
+                    work.Push(ip + 1);
+                    break;
+                case OpCode.PushHandler:
+                    if (ins.A >= 0) work.Push(ins.A);
+                    if (ins.D >= 0) work.Push(ins.D);
+                    work.Push(ip + 1);
+                    break;
+                default:
+                    work.Push(ip + 1);
+                    break;
+            }
+        }
+
+        var count = 0;
+        for (var i = 0; i < reachable.Length; i++)
+        {
+            if (!reachable[i]) count++;
+        }
+        return count;
     }
 
     private static void ValidateRegister(int reg, int regCount, int ip, string field)
