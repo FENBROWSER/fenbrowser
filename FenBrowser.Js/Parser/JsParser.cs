@@ -2670,6 +2670,16 @@ public sealed class JsParser
 
             if (IsAssignmentOperator(Current()) && minBindingPower <= 9)
             {
+                // ECMA-262 13.15.1 Static Semantics: AssignmentTargetType.
+                // The LHS of an assignment must be "simple" (Identifier or
+                // MemberExpression) or — for `=` only — an array/object
+                // literal that's destructuring-compatible. Anything else is
+                // an early SyntaxError.
+                if (!IsValidAssignmentTarget(left))
+                {
+                    throw new JsParserException("Invalid assignment target.");
+                }
+
                 var op = Advance().Text;
                 var assignmentRight = ParseExpression(10);
                 var rhs = BuildAssignmentRight(left, op, assignmentRight);
@@ -4225,6 +4235,34 @@ public sealed class JsParser
 
     private static bool IsUpdateTarget(ExpressionNode node) =>
         node is IdentifierExpressionNode or MemberExpressionNode or CallExpressionNode;
+
+    // ECMA-262 13.15.1 — Simple AssignmentTargetType. Returns true for
+    // anything that can sit on the LHS of `=` (or compound assignments).
+    // Destructuring patterns are wrapped in ArrayExpressionNode /
+    // ObjectExpressionNode until the assignment-time conversion runs,
+    // so we accept those too — the conversion step rejects shapes that
+    // aren't valid patterns.
+    private static bool IsValidAssignmentTarget(ExpressionNode node)
+    {
+        return node switch
+        {
+            IdentifierExpressionNode => true,
+            MemberExpressionNode => true,
+            // CallExpression = X is a runtime ReferenceError (after LHS
+            // side effects), not a parse error, in our existing behavior.
+            CallExpressionNode => true,
+            // Destructuring patterns parsed as array/object literals.
+            ArrayLiteralExpressionNode => true,
+            ObjectLiteralExpressionNode => true,
+            // Optional chaining is not a valid assignment target per spec
+            // but conservative — allow for now to avoid breaking compound
+            // shapes we may use as patterns.
+            OptionalMemberExpressionNode => true,
+            // Tolerate parenthesised wrappers around valid targets.
+            ParenthesizedExpressionNode pe => IsValidAssignmentTarget(pe.Expression),
+            _ => false,
+        };
+    }
 
     private static AssignmentExpressionNode BuildUpdateAssignment(ExpressionNode target, string updateOp, SourceSpan opSpan, bool isPostfix)
     {
