@@ -8519,6 +8519,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        RequireCallable(callback, "Array.prototype.findLast");
         for (var i = length - 1; i >= 0; i--)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -8539,6 +8540,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        RequireCallable(callback, "Array.prototype.findLastIndex");
         for (var i = length - 1; i >= 0; i--)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
@@ -8818,6 +8820,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        RequireCallable(callback, "Array.prototype.flatMap");
         var items = new List<JsValue>();
         for (var i = 0; i < length; i++)
         {
@@ -8848,19 +8851,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     // satisfied).
     private JsValue ArrayPrototypeEvery(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ResolveObject(thisValue);
+        var receiver = ToObjectValue(thisValue);
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        RequireCallable(callback, "Array.prototype.every");
         for (var i = 0; i < length; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            if (!TryGetPropertyValue(obj, thisValue, key, out var v))
+            if (!TryGetPropertyValue(obj, receiver, key, out var v))
             {
                 continue;
             }
 
-            if (!IsTruthy(InvokeArrayCallback(callback, v, i, thisValue, thisArg)))
+            if (!IsTruthy(InvokeArrayCallback(callback, v, i, receiver, thisArg)))
             {
                 return JsValue.FromBoolean(false);
             }
@@ -8873,19 +8878,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     // one present element. Short-circuits on first truthy.
     private JsValue ArrayPrototypeSome(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ResolveObject(thisValue);
+        var receiver = ToObjectValue(thisValue);
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        RequireCallable(callback, "Array.prototype.some");
         for (var i = 0; i < length; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            if (!TryGetPropertyValue(obj, thisValue, key, out var v))
+            if (!TryGetPropertyValue(obj, receiver, key, out var v))
             {
                 continue;
             }
 
-            if (IsTruthy(InvokeArrayCallback(callback, v, i, thisValue, thisArg)))
+            if (IsTruthy(InvokeArrayCallback(callback, v, i, receiver, thisArg)))
             {
                 return JsValue.FromBoolean(true);
             }
@@ -8899,15 +8906,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     // spec treats them as undefined-valued slots that the callback can match).
     private JsValue ArrayPrototypeFind(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ResolveObject(thisValue);
+        var receiver = ToObjectValue(thisValue);
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        RequireCallable(callback, "Array.prototype.find");
         for (var i = 0; i < length; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            TryGetPropertyValue(obj, thisValue, key, out var v);
-            if (IsTruthy(InvokeArrayCallback(callback, v, i, thisValue, thisArg)))
+            TryGetPropertyValue(obj, receiver, key, out var v);
+            if (IsTruthy(InvokeArrayCallback(callback, v, i, receiver, thisArg)))
             {
                 return v;
             }
@@ -8920,15 +8929,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     // holes for the same reason find does.
     private JsValue ArrayPrototypeFindIndex(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ResolveObject(thisValue);
+        var receiver = ToObjectValue(thisValue);
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        RequireCallable(callback, "Array.prototype.findIndex");
         for (var i = 0; i < length; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            TryGetPropertyValue(obj, thisValue, key, out var v);
-            if (IsTruthy(InvokeArrayCallback(callback, v, i, thisValue, thisArg)))
+            TryGetPropertyValue(obj, receiver, key, out var v);
+            if (IsTruthy(InvokeArrayCallback(callback, v, i, receiver, thisArg)))
             {
                 return JsValue.FromNumber(i);
             }
@@ -8947,10 +8958,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         var obj = ResolveObject(thisValue);
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
-        if (callback.Tag != JsValueTag.Object)
-        {
-            throw new JsThrownException(CreateTypeError("Array reduce callback is not a function."));
-        }
+        RequireCallable(callback, reverse ? "Array.prototype.reduceRight" : "Array.prototype.reduce");
 
         var hasInitial = args.Count > 1;
         var accumulator = hasInitial ? args[1] : JsValue.Undefined;
@@ -9016,6 +9024,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         return accumulator;
     }
 
+    // ECMA-262 7.2.3 IsCallable — front-loaded check for Array.prototype
+    // callback methods (every/some/forEach/map/filter/find/findIndex/
+    // findLast/findLastIndex/reduce/reduceRight/flatMap). Spec requires
+    // these to throw TypeError before any iteration starts when the
+    // callbackfn is not callable. Without this guard, sparse arrays
+    // (e.g. `new Array(10).every()`) never reach InvokeArrayCallback's
+    // own check because there are no own properties to iterate.
+    private void RequireCallable(JsValue value, string methodName)
+    {
+        if (value.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError($"{methodName} callback is not a function."));
+        var obj = _heap.GetObject(value.AsObjectHandle());
+        if (obj is not JsFunctionObject && obj is not NativeFunctionObject && obj is not BoundFunctionObject)
+            throw new JsThrownException(CreateTypeError($"{methodName} callback is not a function."));
+    }
+
     // Shared callback-invoker for forEach/map/filter/find/etc. Calls
     // callback(value, index, receiverArray) with the given thisArg, sparing each
     // caller from repeating the args allocation and CallFunction routing.
@@ -9043,19 +9067,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private JsValue ArrayPrototypeForEach(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ResolveObject(thisValue);
+        var receiver = ToObjectValue(thisValue);
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        RequireCallable(callback, "Array.prototype.forEach");
         for (var i = 0; i < length; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            if (!TryGetPropertyValue(obj, thisValue, key, out var v))
+            if (!TryGetPropertyValue(obj, receiver, key, out var v))
             {
                 continue;   // skip holes per spec
             }
 
-            InvokeArrayCallback(callback, v, i, thisValue, thisArg);
+            InvokeArrayCallback(callback, v, i, receiver, thisArg);
         }
 
         return JsValue.Undefined;
@@ -9063,42 +9089,46 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
     private JsValue ArrayPrototypeMap(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ResolveObject(thisValue);
+        var receiver = ToObjectValue(thisValue);
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        RequireCallable(callback, "Array.prototype.map");
         var items = new List<JsValue>(length);
         for (var i = 0; i < length; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            if (!TryGetPropertyValue(obj, thisValue, key, out var v))
+            if (!TryGetPropertyValue(obj, receiver, key, out var v))
             {
                 items.Add(JsValue.Undefined);   // spec: preserves length, holes become undefined-ish
                 continue;
             }
 
-            items.Add(InvokeArrayCallback(callback, v, i, thisValue, thisArg));
+            items.Add(InvokeArrayCallback(callback, v, i, receiver, thisArg));
         }
 
-        return ArraySpeciesCreate(thisValue, items);
+        return ArraySpeciesCreate(receiver, items);
     }
 
     private JsValue ArrayPrototypeFilter(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ResolveObject(thisValue);
+        var receiver = ToObjectValue(thisValue);
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        RequireCallable(callback, "Array.prototype.filter");
         var items = new List<JsValue>();
         for (var i = 0; i < length; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            if (!TryGetPropertyValue(obj, thisValue, key, out var v))
+            if (!TryGetPropertyValue(obj, receiver, key, out var v))
             {
                 continue;   // skip holes
             }
 
-            var keep = InvokeArrayCallback(callback, v, i, thisValue, thisArg);
+            var keep = InvokeArrayCallback(callback, v, i, receiver, thisArg);
             if (IsTruthy(keep))
             {
                 items.Add(v);
@@ -13375,6 +13405,28 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     private JsObject ResolveObject(JsValue value)
     {
         return _heap.GetObject(ResolveObjectHandle(value));
+    }
+
+    // ECMA-262 7.1.18 ToObject(V). Unlike ResolveObjectHandle (which throws
+    // for any non-Object), this boxes primitives — boolean/number/string/
+    // symbol/bigint get wrapped in their object form. undefined/null still
+    // throw TypeError. Used by Array.prototype.* and other spec algorithms
+    // whose first step is "let O be ? ToObject(this value)".
+    private JsObject ToObject(JsValue value)
+    {
+        return _heap.GetObject(ToObjectValue(value).AsObjectHandle());
+    }
+
+    private JsValue ToObjectValue(JsValue value)
+    {
+        if (value.Tag == JsValueTag.Undefined || value.Tag == JsValueTag.Null)
+            throw new JsThrownException(CreateTypeError(
+                value.Tag == JsValueTag.Undefined
+                    ? "Cannot convert undefined to object."
+                    : "Cannot convert null to object."));
+        return value.Tag == JsValueTag.Object || value.Tag == JsValueTag.HostObject
+            ? value
+            : CreateObjectFromValue(value);
     }
 
     internal void HandleDefineAccessor(InterpreterFrame frame, BytecodeFunction function, Instruction ins)
