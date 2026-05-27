@@ -2681,7 +2681,16 @@ public sealed class JsParser
                 }
 
                 var op = Advance().Text;
-                var assignmentRight = ParseExpression(10);
+                // ECMA-262 13.15 AssignmentExpression : LeftHandSideExpression
+                // AssignmentOperator AssignmentExpression — the RHS is itself
+                // an AssignmentExpression, which is right-associative and
+                // includes every operator tighter than the comma operator
+                // (which has leftBp=1 in this table). Parse the RHS at
+                // binding power 2 so we accept right-side `=` (right-assoc
+                // chained assignment) AND any binary operator with
+                // leftBp >= 2 (||, ??, &&, |, ^ — bp 5..9 — would otherwise
+                // be wrongly left-associated as `(a = b) op c`).
+                var assignmentRight = ParseExpression(2);
                 var rhs = BuildAssignmentRight(left, op, assignmentRight);
                 left = new AssignmentExpressionNode(left, rhs, MergeSpan(left.Span, assignmentRight.Span));
                 continue;

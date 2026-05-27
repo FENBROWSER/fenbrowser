@@ -1,15 +1,15 @@
 {
   "engine": "FenJS",
   "mode": "runtime-subset",
-  "startedAtUtc": "2026-05-27T19:13:47.8015441Z",
-  "durationMs": 37398,
+  "startedAtUtc": "2026-05-27T19:38:26.7614878Z",
+  "durationMs": 58126,
   "test262Commit": "b1f9a0aea3e5d12563680ba3c8eee275774f9316",
   "fenbrowserCommit": "unknown",
   "specTarget": "ECMA-262 pinned snapshot",
   "expectations": null,
   "total": 2000,
-  "passed": 824,
-  "failed": 1152,
+  "passed": 825,
+  "failed": 1151,
   "crashed": 5,
   "timedOut": 2,
   "skipped": 0,
@@ -20,10 +20,10 @@
   "invalidTestConfiguration": 8,
   "categories": {
     "parserMissing": 0,
-    "parserBug": 7,
+    "parserBug": 4,
     "earlyErrorBug": 0,
-    "runtimeMissing": 1145,
-    "runtimeSemanticBug": 1145,
+    "runtimeMissing": 1147,
+    "runtimeSemanticBug": 1147,
     "builtinMissing": 0,
     "builtinSemanticBug": 0,
     "moduleMissing": 0,
@@ -38,10 +38,10 @@
   },
   "summary": {
     "total": 2000,
-    "passed": 824,
+    "passed": 825,
     "unsupported": 0,
-    "parserErrors": 7,
-    "runtimeErrors": 1145,
+    "parserErrors": 4,
+    "runtimeErrors": 1147,
     "crashes": 5,
     "timedOut": 2,
     "harnessUnsupported": 9,
@@ -12369,17 +12369,6 @@
       "expiresAtMilestone": null
     },
     {
-      "path": "external/test262\\test\\built-ins\\Array\\from\\iter-set-length.js",
-      "relativePath": "test/built-ins/Array/from/iter-set-length.js",
-      "classification": "parser-error",
-      "message": "Invalid assignment target.",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
       "path": "external/test262\\test\\built-ins\\Array\\from\\mapfn-is-not-callable-typeerror.js",
       "relativePath": "test/built-ins/Array/from/mapfn-is-not-callable-typeerror.js",
       "classification": "runtime-error",
@@ -12934,8 +12923,9 @@
     {
       "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\Array.prototype.concat_large-typed-array.js",
       "relativePath": "test/built-ins/Array/prototype/concat/Array.prototype.concat_large-typed-array.js",
-      "classification": "parser-error",
-      "message": "Invalid assignment target.",
+      "classification": "runtime-error",
+      "message": "Unhandled runtime throw.",
+      "details": "thrown=string:assert.compareArray length",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -12969,8 +12959,9 @@
     {
       "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\Array.prototype.concat_small-typed-array.js",
       "relativePath": "test/built-ins/Array/prototype/concat/Array.prototype.concat_small-typed-array.js",
-      "classification": "parser-error",
-      "message": "Invalid assignment target.",
+      "classification": "runtime-error",
+      "message": "Unhandled runtime throw.",
+      "details": "thrown=string:assert.compareArray length",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -42763,7 +42754,7 @@
     },
     {
       "path": "test/built-ins/Array/from/iter-set-length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Symbol.iterator"
@@ -42775,8 +42766,8 @@
       "description": "Setting length of object (traversed via iterator)",
       "info": "[...]\n6. If usingIterator is not undefined, then\n[...]\ng. Repeat\n[...]\niv. If next is false, then\n1. Let setStatus be Set(A, \u0022length\u0022, k, true).\n2. ReturnIfAbrupt(setStatus).\n3. Return A.",
       "locale": null,
-      "category": "parser-bug",
-      "message": "Invalid assignment target."
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/from/mapfn-is-not-callable-typeerror.js",
@@ -44963,8 +44954,9 @@
       "description": "Array.prototype.concat large typed array",
       "info": null,
       "locale": null,
-      "category": "parser-bug",
-      "message": "Invalid assignment target."
+      "category": "runtime-semantic-bug",
+      "message": "Unhandled runtime throw.",
+      "details": "thrown=string:assert.compareArray length"
     },
     {
       "path": "test/built-ins/Array/prototype/concat/Array.prototype.concat_length-throws.js",
@@ -45090,8 +45082,9 @@
       "description": "Array.prototype.concat small typed array",
       "info": null,
       "locale": null,
-      "category": "parser-bug",
-      "message": "Invalid assignment target."
+      "category": "runtime-semantic-bug",
+      "message": "Unhandled runtime throw.",
+      "details": "thrown=string:assert.compareArray length"
     },
     {
       "path": "test/built-ins/Array/prototype/concat/Array.prototype.concat_spreadable-boolean-wrapper.js",
