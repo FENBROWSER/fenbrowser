@@ -49,8 +49,23 @@ public sealed class BytecodeFunction
     // compiled body, or null when the JIT bailed out (which is the
     // default path for almost every function today).
     internal int Invocations;
+    // Back-edge counter for JIT tier-up. Incremented in the dispatch loop
+    // whenever a Jump/JumpIfFalse targets an earlier instruction (i.e. a
+    // loop iteration). Combined with Invocations in the tier-up trigger:
+    // a function with one invocation but a million loop iterations still
+    // gets JIT-compiled on the next call. See audit doc §3.2.
+    internal int BackEdges;
     internal JitCompiler.JitDelegate? JitDelegate;
     internal bool JitCompileAttempted;
+
+    // Read-only accessors for test/diagnostic use. The setters are
+    // internal so only the interpreter mutates them; the getters expose
+    // counters for tier-up assertion in tests and for runtime
+    // introspection by tooling.
+    public int InvocationsObserved => Invocations;
+    public int BackEdgesObserved => BackEdges;
+    public bool JitCompiled => JitDelegate is not null;
+    public bool JitCompileWasAttempted => JitCompileAttempted;
 
     // Brand tokens for private fields/methods. Each class with private members
     // gets a unique long token. The D field on DefinePrivateField/GetPrivateField/
