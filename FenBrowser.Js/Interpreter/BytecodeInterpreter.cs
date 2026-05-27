@@ -8069,6 +8069,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     {
         var obj = new ArrayObject();
         obj.SetPrototype(EnsureArrayPrototype());
+        // ECMA-262 23.1.4.2: Array's 'length' must be {Writable: true,
+        // Enumerable: false, Configurable: false}. Install via DefineOwn
+        // up front so later SetProperty calls preserve those attrs.
+        _ = obj.DefineOwnProperty("length", new JsPropertyDescriptor(
+            JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
 
         if (elements.Count == 1 && (elements[0].Tag == JsValueTag.Int32 || elements[0].Tag == JsValueTag.Number))
         {
@@ -8093,6 +8098,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     {
         var obj = new ArrayObject();
         obj.SetPrototype(EnsureArrayPrototype());
+        _ = obj.DefineOwnProperty("length", new JsPropertyDescriptor(
+            JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
         return PopulateArrayWithElements(obj, elements);
     }
 
