@@ -8988,8 +8988,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             items.Add(InvokeArrayCallback(callback, v, i, thisValue, thisArg));
         }
 
-        var arr = CreateArrayObject(items);
-        return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+        return ArraySpeciesCreate(thisValue, items);
     }
 
     private JsValue ArrayPrototypeFilter(JsValue thisValue, IReadOnlyList<JsValue> args)
@@ -9014,8 +9013,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             }
         }
 
-        var arr = CreateArrayObject(items);
-        return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+        return ArraySpeciesCreate(thisValue, items);
     }
 
     // ECMA-262 23.1.3.28 Array.prototype.slice(start, end). Returns a fresh
@@ -9035,9 +9033,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             items.Add(TryGetPropertyValue(obj, thisValue, key, out var v) ? v : JsValue.Undefined);
         }
 
-        var arr = CreateArrayObject(items);
-        var arrHandle = _heap.AllocateObject(arr, AllocationSite.Current());
-        return JsValue.FromObject(arrHandle);
+        return ArraySpeciesCreate(thisValue, items);
     }
 
     // ECMA-262 23.1.3.2 Array.prototype.concat(...items). Returns a fresh
@@ -9052,9 +9048,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             AppendConcatSource(items, args[i]);
         }
 
-        var arr = CreateArrayObject(items);
-        var arrHandle = _heap.AllocateObject(arr, AllocationSite.Current());
-        return JsValue.FromObject(arrHandle);
+        return ArraySpeciesCreate(thisValue, items);
     }
 
     private void AppendConcatSource(List<JsValue> items, JsValue value)
@@ -9062,7 +9056,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         if (value.Tag == JsValueTag.Object)
         {
             var obj = _heap.GetObject(value.AsObjectHandle());
-            if (obj is ArrayObject)
+            if (IsConcatSpreadable(obj, value))
             {
                 var length = GetArrayLength(obj);
                 for (var i = 0; i < length; i++)
@@ -9076,6 +9070,62 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         }
 
         items.Add(value);
+    }
+
+    // ECMA-262 23.1.3.2.2 ArraySpeciesCreate(originalArray, length).
+    // If the receiver has a constructor[@@species] that is a callable other than
+    // the default Array constructor, use it; otherwise return a plain Array.
+    private JsValue ArraySpeciesCreate(JsValue originalArray, IReadOnlyList<JsValue> items)
+    {
+        if (originalArray.Tag == JsValueTag.Object)
+        {
+            var obj = _heap.GetObject(originalArray.AsObjectHandle());
+            if (obj is ArrayObject &&
+                TryGetPropertyValue(obj, originalArray, "constructor", out var ctor) &&
+                ctor.Tag == JsValueTag.Object)
+            {
+                var ctorObj = _heap.GetObject(ctor.AsObjectHandle());
+                var speciesSymbolId = GetWellKnownSymbolId("species");
+                if (speciesSymbolId != 0 &&
+                    ctorObj.TryGetSymbolProperty(speciesSymbolId, h => _heap.GetObject(h), out var speciesDesc) &&
+                    !speciesDesc.IsAccessor &&
+                    speciesDesc.Value.Tag == JsValueTag.Object &&
+                    IsCallable(speciesDesc.Value))
+                {
+                    var species = speciesDesc.Value;
+                    var result = ConstructFunction(species, new[] { JsValue.FromNumber(items.Count) });
+                    if (result.Tag == JsValueTag.Object)
+                    {
+                        var resultObj = _heap.GetObject(result.AsObjectHandle());
+                        for (var i = 0; i < items.Count; i++)
+                        {
+                            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                            resultObj.SetProperty(key, items[i]);
+                        }
+                        if (resultObj is ArrayObject) resultObj.SetProperty("length", JsValue.FromNumber(items.Count));
+                        return result;
+                    }
+                }
+            }
+        }
+
+        var arr = CreateArrayObject(items);
+        return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+    }
+
+    // ECMA-262 23.1.3.2.1 IsConcatSpreadable(O).
+    private bool IsConcatSpreadable(JsObject obj, JsValue receiver)
+    {
+        var spreadableSymbolId = GetWellKnownSymbolId("isConcatSpreadable");
+        if (spreadableSymbolId != 0 &&
+            obj.TryGetSymbolProperty(spreadableSymbolId, h => _heap.GetObject(h), out var spreadDesc) &&
+            !spreadDesc.IsAccessor &&
+            spreadDesc.Value.Tag != JsValueTag.Undefined)
+        {
+            return IsTruthy(spreadDesc.Value);
+        }
+
+        return obj is ArrayObject;
     }
 
     private JsValue ArrayPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)

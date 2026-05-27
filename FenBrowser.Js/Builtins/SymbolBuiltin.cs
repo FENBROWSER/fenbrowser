@@ -88,6 +88,22 @@ public sealed class SymbolBuiltin : IBuiltinModule
             return JsValue.FromString("Symbol(" + (symbol.AsSymbolDescription() ?? string.Empty) + ")");
         }, length: 0);
 
+        // ECMA-262 20.4.3.2 get Symbol.prototype.description
+        var descriptionGetter = new NativeFunctionObject("get description", (thisValue, _) =>
+        {
+            var symbol = thisValue.Tag == JsValueTag.Symbol
+                ? thisValue
+                : thisValue.Tag == JsValueTag.Object && context.Heap.GetObject(thisValue.AsObjectHandle()) is SymbolObject symbolObject
+                    ? JsValue.SymbolFromId(symbolObject.SymbolId)
+                    : throw new JsThrownException(context.CreateTypeError("Symbol.prototype.description called on incompatible receiver."));
+            var desc = symbol.AsSymbolDescription();
+            return desc is null ? JsValue.Undefined : JsValue.FromString(desc);
+        }, length: 0);
+        var descriptionGetterHandle = heap.AllocateObject(descriptionGetter, AllocationSite.Current());
+        prototype.DefineOwnProperty("description", JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(descriptionGetterHandle), JsValue.Undefined, Enumerable: false, Configurable: true));
+        heap.WriteBarrier(prototypeHandle, descriptionGetterHandle);
+
         return new[] { BuiltinBinding.NonEnumerable("Symbol", JsValue.FromObject(handle)) };
     }
 }
