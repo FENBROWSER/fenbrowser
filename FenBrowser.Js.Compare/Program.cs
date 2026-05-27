@@ -243,6 +243,10 @@ internal static class FenJsRunner
             var result = realm.Execute(fn);
             return ValueToString(result);
         }
+        catch (FenBrowser.Js.Interpreter.JsThrownException jte)
+        {
+            return "THROW: " + jte.Value.Tag;
+        }
         catch (Exception ex)
         {
             return "ERROR: " + ex.GetType().Name + ": " + ex.Message;

@@ -899,18 +899,23 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 case OpCode.EnterScope:
                 {
                     var newScope = new DeclarativeEnvironmentRecord(frame.Environment);
-                    if (ins.A != 0)
+                    // ECMA-262 14.2 — every block creates a fresh lexical
+                    // env-record. ins.A is the variable-slot index for the
+                    // let/const name this EnterScope owns; SlotNameTable
+                    // resolves it. Slot 0 is a perfectly valid name slot
+                    // when the bound name is the function's first variable
+                    // (e.g. `function f(x){ {let x=...} }`), so we use the
+                    // slot-name presence rather than `slot != 0` as the
+                    // "has a binding to install" predicate.
+                    var scopeName = SlotNameTable.GetName(function, ins.A);
+                    if (scopeName != null)
                     {
-                        var scopeName = SlotNameTable.GetName(function, ins.A);
-                        if (scopeName != null)
-                        {
-                            // B=0 â†’ mutable (let), B=1 â†’ immutable (const)
-                            if (ins.B == 1)
-                                _ = newScope.CreateImmutableBinding(scopeName, strict: true);
-                            else
-                                _ = newScope.CreateMutableBinding(scopeName, deletable: true);
-                            // Do NOT initialize â€” leave the binding in TDZ state.
-                        }
+                        // B=0 -> mutable (let), B=1 -> immutable (const)
+                        if (ins.B == 1)
+                            _ = newScope.CreateImmutableBinding(scopeName, strict: true);
+                        else
+                            _ = newScope.CreateMutableBinding(scopeName, deletable: true);
+                        // Do NOT initialize - leave the binding in TDZ state.
                     }
                     frame.Environment = newScope;
                     break;
@@ -12854,16 +12859,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     internal void EnterScopeForJit(InterpreterFrame frame, int slotNameIndex, int isConst)
     {
         var newScope = new DeclarativeEnvironmentRecord(frame.Environment);
-        if (slotNameIndex != 0)
+        var scopeName = SlotNameTable.GetName(frame.Function, slotNameIndex);
+        if (scopeName != null)
         {
-            var scopeName = SlotNameTable.GetName(frame.Function, slotNameIndex);
-            if (scopeName != null)
-            {
-                if (isConst == 1)
-                    _ = newScope.CreateImmutableBinding(scopeName, strict: true);
-                else
-                    _ = newScope.CreateMutableBinding(scopeName, deletable: true);
-            }
+            if (isConst == 1)
+                _ = newScope.CreateImmutableBinding(scopeName, strict: true);
+            else
+                _ = newScope.CreateMutableBinding(scopeName, deletable: true);
         }
         frame.Environment = newScope;
     }

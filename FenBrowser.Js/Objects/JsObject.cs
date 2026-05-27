@@ -98,7 +98,9 @@ public class JsObject : ITraceable
     }
 
     // Own property lookup via Shape → slot → array. Null slot = deleted.
-    public bool TryGetOwnProperty(string key, out JsPropertyDescriptor descriptor)
+    // Virtual so exotic objects (String) can synthesise computed properties
+    // (indexed character access) on demand.
+    public virtual bool TryGetOwnProperty(string key, out JsPropertyDescriptor descriptor)
     {
         if (_shape.TryGetSlot(key, out var slot) && _properties[slot] is { } desc)
         {
@@ -109,8 +111,9 @@ public class JsObject : ITraceable
         return false;
     }
 
-    // Enumerate own string-keyed properties in insertion order.
-    public IEnumerable<KeyValuePair<string, JsPropertyDescriptor>> EnumerateOwnProperties()
+    // Enumerate own string-keyed properties in insertion order. Virtual so
+    // exotic objects (String) can yield their synthesised indexed properties.
+    public virtual IEnumerable<KeyValuePair<string, JsPropertyDescriptor>> EnumerateOwnProperties()
     {
         var chain = new List<(string key, int slot)>();
         for (Shape? s = _shape; s != null && s != Shape.Root; s = s.Parent)

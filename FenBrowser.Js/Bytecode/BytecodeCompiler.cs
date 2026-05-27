@@ -1,4 +1,4 @@
-using FenBrowser.Js.Ast;
+﻿using FenBrowser.Js.Ast;
 using FenBrowser.Js.AstValidation;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Parser;
@@ -16,6 +16,10 @@ public sealed class BytecodeCompiler
         public required List<int> ContinueJumpIndices { get; init; }
         public string? Label { get; set; }
         public bool IsSwitch { get; set; }
+        // Open-scope depth captured at loop entry; break/continue
+        // emits this-many LeaveScope ops before jumping so nested
+        // let/const block scopes are torn down per spec 13.7/13.8.
+        public int ScopeDepthAtEntry { get; init; }
     }
 
     private sealed class LabelTarget
@@ -39,6 +43,11 @@ public sealed class BytecodeCompiler
     private readonly List<JsValue> _constants = new();
     private readonly Dictionary<string, int> _variables = new(StringComparer.Ordinal);
     private readonly HashSet<string> _varDeclarationNames = new(StringComparer.Ordinal);
+    // Running count of EnterScope ops emitted minus LeaveScope ops emitted.
+    // Loop contexts snapshot this at entry so break/continue can emit
+    // matching LeaveScope ops before jumping (ECMA-262 14.7 abrupt
+    // completion handling â€” scopes opened inside the body must close).
+    private int _openScopeDepth;
     private readonly HashSet<string> _lexicalDeclarationNames = new(StringComparer.Ordinal);
     private readonly HashSet<string> _constDeclarationNames = new(StringComparer.Ordinal);
     private readonly List<string> _propertyNames = new();
@@ -172,7 +181,7 @@ public sealed class BytecodeCompiler
         {
             case BlockStatementNode block:
                 // ECMA-262 14.2 - every block creates a new lexical scope.
-                // Map name → isConst so EnterScope creates the right binding kind.
+                // Map name â†’ isConst so EnterScope creates the right binding kind.
                 var blockDecls = new Dictionary<string, bool>(StringComparer.Ordinal);
                 foreach (var s in block.Statements)
                 {
@@ -197,9 +206,10 @@ public sealed class BytecodeCompiler
                     foreach (var kvp in blockDecls)
                     {
                         var bSlot = GetOrCreateVariableSlot(kvp.Key);
-                        // B=0 → mutable (let), B=1 → immutable (const)
+                        // B=0 â†’ mutable (let), B=1 â†’ immutable (const)
                         int bImmutable = kvp.Value ? 1 : 0;
                         _instructions.Add(new Instruction(OpCode.EnterScope, bSlot, bImmutable, 0));
+                        _openScopeDepth++;
                     }
                 }
                 foreach (var nested in block.Statements)
@@ -211,6 +221,7 @@ public sealed class BytecodeCompiler
                     foreach (var _ in blockDecls)
                     {
                         _instructions.Add(new Instruction(OpCode.LeaveScope));
+                        _openScopeDepth--;
                     }
                     _blockScopedNameStack.Pop();
                 }
@@ -822,9 +833,7 @@ public sealed class BytecodeCompiler
         var ctx = new LoopContext
         {
             ContinueTarget = loopStart,
-            BreakJumpIndices = new List<int>(),
-            ContinueJumpIndices = new List<int>()
-        };
+            BreakJumpIndices = new List<int>(),ContinueJumpIndices = new List<int>(),ScopeDepthAtEntry = _openScopeDepth};
         _loopStack.Push(ctx);
         if (_pendingLabel != null)
         {
@@ -862,6 +871,7 @@ public sealed class BytecodeCompiler
             ContinueTarget = -1,
             BreakJumpIndices = new List<int>(),
             ContinueJumpIndices = new List<int>(),
+            ScopeDepthAtEntry = _openScopeDepth,
         };
         _loopStack.Push(ctx);
         if (_pendingLabel != null)
@@ -924,7 +934,8 @@ public sealed class BytecodeCompiler
         {
             ContinueTarget = -1,
             BreakJumpIndices = new List<int>(),
-            ContinueJumpIndices = new List<int>()
+            ContinueJumpIndices = new List<int>(),
+            ScopeDepthAtEntry = _openScopeDepth
         };
         _loopStack.Push(ctx);
         if (_pendingLabel != null)
@@ -992,9 +1003,7 @@ public sealed class BytecodeCompiler
         var ctx = new LoopContext
         {
             ContinueTarget = loopStart,
-            BreakJumpIndices = new List<int>(),
-            ContinueJumpIndices = new List<int>()
-        };
+            BreakJumpIndices = new List<int>(),ContinueJumpIndices = new List<int>(),ScopeDepthAtEntry = _openScopeDepth};
         _loopStack.Push(ctx);
         if (_pendingLabel != null)
         {
@@ -1054,9 +1063,7 @@ public sealed class BytecodeCompiler
         var ctx = new LoopContext
         {
             ContinueTarget = loopStart,
-            BreakJumpIndices = new List<int>(),
-            ContinueJumpIndices = new List<int>()
-        };
+            BreakJumpIndices = new List<int>(),ContinueJumpIndices = new List<int>(),ScopeDepthAtEntry = _openScopeDepth};
         _loopStack.Push(ctx);
         if (_pendingLabel != null)
         {
@@ -1121,9 +1128,7 @@ public sealed class BytecodeCompiler
         var ctx = new LoopContext
         {
             ContinueTarget = loopStart,
-            BreakJumpIndices = new List<int>(),
-            ContinueJumpIndices = new List<int>()
-        };
+            BreakJumpIndices = new List<int>(),ContinueJumpIndices = new List<int>(),ScopeDepthAtEntry = _openScopeDepth};
         _loopStack.Push(ctx);
         if (_pendingLabel != null)
         {
@@ -1223,7 +1228,7 @@ public sealed class BytecodeCompiler
         var catchEntry = _instructions.Count;
         PatchJump(pushHandlerIndex, catchEntry);
 
-        // ECMA-262 14.3 — catch creates a new EnvironmentRecord for the catch
+        // ECMA-262 14.3 â€” catch creates a new EnvironmentRecord for the catch
         // parameter. We add it as a var declaration so InstantiateVarDeclarations
         // creates the binding in the function env (initialized to undefined,
         // surviving generator save/restore). StoreVar then writes the actual
@@ -1320,7 +1325,8 @@ public sealed class BytecodeCompiler
             ContinueTarget = -1,
             BreakJumpIndices = new List<int>(),
             ContinueJumpIndices = new List<int>(),
-            IsSwitch = true
+            IsSwitch = true,
+            ScopeDepthAtEntry = _openScopeDepth,
         };
         _loopStack.Push(ctx);
         if (_pendingLabel != null)
@@ -1724,7 +1730,7 @@ public sealed class BytecodeCompiler
                 var isSuperCall = call.Callee is SuperExpressionNode;
                 var dest = AllocateRegister();
 
-                // ECMA-262 13.3.7.1 — handle spread arguments (...args) via CallSpread.
+                // ECMA-262 13.3.7.1 â€” handle spread arguments (...args) via CallSpread.
                 var hasSpread = call.Arguments.Count == 1 && call.Arguments[0] is SpreadElementExpressionNode;
                 if (hasSpread)
                 {
@@ -1849,7 +1855,7 @@ public sealed class BytecodeCompiler
             }
             case UnaryExpressionNode unary:
             {
-                // ECMA-262 15.5 — yield / yield*.
+                // ECMA-262 15.5 â€” yield / yield*.
                 if (unary.Operator == "yield" || unary.Operator == "yield*")
                 {
                     var yieldDest = AllocateRegister();
@@ -2124,7 +2130,7 @@ public sealed class BytecodeCompiler
 
                 if (bin.Operator == "??")
                 {
-                    // ECMA-262 13.14 — nullish coalescing: both null and undefined are nullish
+                    // ECMA-262 13.14 â€” nullish coalescing: both null and undefined are nullish
                     var nullishLeftReg = CompileExpression(bin.Left);
                     var nullishDest = AllocateRegister();
                     _instructions.Add(new Instruction(OpCode.Move, nullishDest, nullishLeftReg, 0));
@@ -2191,7 +2197,7 @@ public sealed class BytecodeCompiler
             case ParenthesizedExpressionNode paren:
                 return CompileExpression(paren.Expression);
             case SpreadElementExpressionNode spread:
-                // ECMA-262 13.3.7.1 — compile the spread argument; the containing
+                // ECMA-262 13.3.7.1 â€” compile the spread argument; the containing
                 // CallExpressionNode emits CallSpread to unpack it.
                 return CompileExpression(spread.Argument);
             default:
@@ -2702,7 +2708,7 @@ public sealed class BytecodeCompiler
         return idx;
     }
 
-    // H.5 — private names are mangled to __priv<N>__<name>. Detect so we can
+    // H.5 â€” private names are mangled to __priv<N>__<name>. Detect so we can
     // emit the brand-checked GetPrivateField/SetPrivateField opcodes.
     private static bool IsPrivateMangled(string name) => name.StartsWith("__priv", StringComparison.Ordinal);
 
@@ -2728,8 +2734,10 @@ public sealed class BytecodeCompiler
                 throw new InvalidOperationException("'break' is only valid inside loops or switch statements.");
             }
 
+            var target = _loopStack.Peek();
+            EmitLeaveScopesForJump(target.ScopeDepthAtEntry);
             var jump = EmitPlaceholder(OpCode.Jump);
-            _loopStack.Peek().BreakJumpIndices.Add(jump);
+            target.BreakJumpIndices.Add(jump);
             return;
         }
 
@@ -2747,6 +2755,7 @@ public sealed class BytecodeCompiler
         {
             if (ctx.Label == label)
             {
+                EmitLeaveScopesForJump(ctx.ScopeDepthAtEntry);
                 var jump = EmitPlaceholder(OpCode.Jump);
                 ctx.BreakJumpIndices.Add(jump);
                 return;
@@ -2754,6 +2763,20 @@ public sealed class BytecodeCompiler
         }
 
         throw new InvalidOperationException($"Undefined label '{label}'.");
+    }
+
+    // Emit enough LeaveScope ops to bring the open-scope depth down to
+    // `targetDepth`. Does NOT update _openScopeDepth because this is an
+    // abrupt completion path — the surrounding block-statement compiler
+    // is still tracking the depth and will emit its own LeaveScopes if
+    // control flows through normally.
+    private void EmitLeaveScopesForJump(int targetDepth)
+    {
+        var n = _openScopeDepth - targetDepth;
+        for (var i = 0; i < n; i++)
+        {
+            _instructions.Add(new Instruction(OpCode.LeaveScope));
+        }
     }
 
     private void CompileContinueStatement(string? label)
@@ -2765,7 +2788,9 @@ public sealed class BytecodeCompiler
                 throw new InvalidOperationException("'continue' is only valid inside loops.");
             }
 
-            var target = _loopStack.Peek().ContinueTarget;
+            var topCtx = _loopStack.Peek();
+            EmitLeaveScopesForJump(topCtx.ScopeDepthAtEntry);
+            var target = topCtx.ContinueTarget;
             if (target >= 0)
             {
                 _instructions.Add(new Instruction(OpCode.Jump, target, 0, 0));
@@ -2773,7 +2798,7 @@ public sealed class BytecodeCompiler
             }
 
             var jump = EmitPlaceholder(OpCode.Jump);
-            _loopStack.Peek().ContinueJumpIndices.Add(jump);
+            topCtx.ContinueJumpIndices.Add(jump);
             return;
         }
 
@@ -2786,6 +2811,7 @@ public sealed class BytecodeCompiler
                     throw new InvalidOperationException($"Label '{label}' does not mark a loop.");
                 }
 
+                EmitLeaveScopesForJump(ctx.ScopeDepthAtEntry);
                 var target = ctx.ContinueTarget;
                 if (target >= 0)
                 {
@@ -2850,3 +2876,4 @@ public sealed class BytecodeCompiler
         return result;
     }
 }
+
