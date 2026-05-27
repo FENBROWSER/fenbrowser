@@ -8405,7 +8405,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     // start/end wrap from length; out-of-range values clamp into [0, length].
     private JsValue ArrayPrototypeFill(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var ownerHandle = ResolveObjectHandle(thisValue);
+        var receiver = ToObjectValue(thisValue);
+        var ownerHandle = receiver.AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
         var value = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -8422,7 +8423,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             }
         }
 
-        return thisValue;
+        return receiver;
     }
 
     // Shared helper for fill / slice. Reads args[argIndex] as a number (default
@@ -8449,7 +8450,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     // backward pass to avoid clobbering data not yet copied.
     private JsValue ArrayPrototypeCopyWithin(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var ownerHandle = ResolveObjectHandle(thisValue);
+        var receiver = ToObjectValue(thisValue);
+        var ownerHandle = receiver.AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
         var target = NormaliseSliceIndex(args, 0, 0, length);
@@ -8459,7 +8461,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         var count = Math.Min(end - start, length - target);
         if (count <= 0)
         {
-            return thisValue;
+            return receiver;
         }
 
         // Direction: when target < start, forward copy is safe; otherwise walk
@@ -8473,7 +8475,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         {
             var fromKey = from.ToString(System.Globalization.CultureInfo.InvariantCulture);
             var toKey = to.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            if (TryGetPropertyValue(obj, thisValue, fromKey, out var v))
+            if (TryGetPropertyValue(obj, receiver, fromKey, out var v))
             {
                 _ = obj.SetProperty(toKey, v);
                 if (v.Tag == JsValueTag.Object)
@@ -8490,14 +8492,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             to += direction;
         }
 
-        return thisValue;
+        return receiver;
     }
 
     // ECMA-262 23.1.3.1 Array.prototype.at(index). Negative indices wrap from
     // length; out-of-range returns undefined.
     private JsValue ArrayPrototypeAt(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ResolveObject(thisValue);
+        var obj = ToObject(thisValue);
         var length = GetArrayLength(obj);
         var raw = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
         var idx = raw < 0 ? length + raw : raw;
