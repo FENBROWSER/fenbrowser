@@ -13097,6 +13097,23 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 return JsValue.FromObject(_heap.AllocateObject(genObj, AllocationSite.Current()));
             }
 
+            // Tier 4 #24: try the JIT-compiled body first if one was
+            // produced; otherwise tier-up after enough invocations.
+            var bcFn = fn.Function;
+            if (bcFn.JitDelegate is { } compiled)
+            {
+                return compiled(thisValue, args);
+            }
+            bcFn.Invocations++;
+            if (!bcFn.JitCompileAttempted && bcFn.Invocations >= JitCompiler.TierUpThreshold)
+            {
+                bcFn.JitCompileAttempted = true;
+                bcFn.JitDelegate = JitCompiler.TryCompile(bcFn);
+                if (bcFn.JitDelegate is { } justCompiled)
+                {
+                    return justCompiled(thisValue, args);
+                }
+            }
             return ExecuteInternal(fn.Function, args, thisValue, fn.OuterEnvironment, callee: fn);
         }
 

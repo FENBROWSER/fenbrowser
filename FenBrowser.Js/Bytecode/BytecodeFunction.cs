@@ -43,6 +43,15 @@ public sealed class BytecodeFunction
     internal Dictionary<int, PolymorphicInlineCache>? StoreICs { get; set; }
     internal Dictionary<int, CallICEntry>? CallICs { get; set; }
 
+    // Tier 4 #24 JIT bookkeeping. Invocations is incremented on every call
+    // through CallFunction; once it crosses JitCompiler.TierUpThreshold the
+    // interpreter calls TryCompile once. JitDelegate is the produced
+    // compiled body, or null when the JIT bailed out (which is the
+    // default path for almost every function today).
+    internal int Invocations;
+    internal JitCompiler.JitDelegate? JitDelegate;
+    internal bool JitCompileAttempted;
+
     // Brand tokens for private fields/methods. Each class with private members
     // gets a unique long token. The D field on DefinePrivateField/GetPrivateField/
     // SetPrivateField instructions indexes into this list. The interpreter checks
