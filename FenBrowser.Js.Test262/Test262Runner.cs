@@ -827,9 +827,28 @@ public sealed class Test262Runner
                 if (frontmatter.Includes.Count > 0 || RequiresRuntimeHarnessSupport(sourceText))
                 {
                     var includePrelude = BuildRuntimeHarnessIncludePrelude(rootPath, frontmatter.Includes);
+                    var prelude = BuildRuntimeHarnessPrelude();
+                    // onlyStrict: "use strict" must be the first statement in the
+                    // script to enable strict mode globally. parserInput already has
+                    // it prepended via PrepareParserInput, but that puts it AFTER
+                    // the harness prelude. Move it to the top.
+                    var onlyStrict = frontmatter.Flags.Any(f => string.Equals(f, "onlyStrict", StringComparison.OrdinalIgnoreCase));
+                    var strictPrefix = onlyStrict ? "\"use strict\";\n" : "";
+                    var body = parserInput;
+                    if (onlyStrict)
+                    {
+                        var t = parserInput.TrimStart();
+                        if (t.StartsWith("\"use strict\"", StringComparison.Ordinal) ||
+                            t.StartsWith("'use strict'", StringComparison.Ordinal))
+                        {
+                            var idx = parserInput.IndexOf(t, StringComparison.Ordinal);
+                            var semiEnd = t.IndexOf(';');
+                            body = parserInput.Substring(0, idx) + t.Substring(semiEnd + 1).TrimStart();
+                        }
+                    }
                     runtimeInput = string.IsNullOrWhiteSpace(includePrelude)
-                        ? BuildRuntimeHarnessPrelude() + "\n" + parserInput
-                        : BuildRuntimeHarnessPrelude() + "\n" + includePrelude + "\n" + parserInput;
+                        ? strictPrefix + prelude + "\n" + body
+                        : strictPrefix + prelude + "\n" + includePrelude + "\n" + body;
                 }
 
                 var executeTask = Task.Run(() =>
