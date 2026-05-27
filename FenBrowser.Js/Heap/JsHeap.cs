@@ -14,8 +14,21 @@ public sealed class JsHeap
     private readonly List<(ObjectHandle Owner, ObjectHandle Child)> _writeBarrierEdges = new();
     private int _writeBarrierCount;
     private int _gcCollectionCount;
+    private int _minorGcCount;
     private int _lastGcMarkedCells;
     private int _lastGcSweptCells;
+    private int _lastMinorMarked;
+    private int _lastMinorSwept;
+    private int _lastMinorPromoted;
+    // Tier 4 #22 remembered set: Old → Young edges discovered via
+    // WriteBarrier. Indexed by Old cell index for dedup. Cleared and
+    // rebuilt on each major collection; entries become stale (filtered
+    // out by IsYoung/IsLiveObject) when the Young child is collected
+    // or promoted.
+    private readonly Dictionary<int, List<int>> _rememberedSet = new();
+    // Tier 4 #22: after this many minor collections, a surviving Young cell
+    // is promoted to Old. Default mirrors common nursery survival heuristics.
+    public byte PromotionThreshold { get; set; } = 2;
     private readonly bool _verifyHeapBeforeGc;
     private readonly bool _verifyHeapAfterGc;
     private readonly HeapVerifier _verifier = new();
@@ -33,8 +46,21 @@ public sealed class JsHeap
     public int RootCount => _roots.Count;
     public int WriteBarrierCount => _writeBarrierCount;
     public int GcCollectionCount => _gcCollectionCount;
+    public int MinorCollectionCount => _minorGcCount;
     public int LastGcMarkedCells => _lastGcMarkedCells;
     public int LastGcSweptCells => _lastGcSweptCells;
+    public int LastMinorMarked => _lastMinorMarked;
+    public int LastMinorSwept => _lastMinorSwept;
+    public int LastMinorPromoted => _lastMinorPromoted;
+    public int RememberedSetEdgeCount
+    {
+        get
+        {
+            var n = 0;
+            foreach (var list in _rememberedSet.Values) n += list.Count;
+            return n;
+        }
+    }
     public int LiveCellCount => _cells.Count(c => c is not null);
 
     public ObjectHandle AllocateObject(JsObject obj, AllocationSite site)
@@ -158,11 +184,119 @@ public sealed class JsHeap
 
     public void WriteBarrier(ObjectHandle owner, ObjectHandle child)
     {
-        _ = Validate(owner);
-        _ = Validate(child);
+        var ownerCell = Validate(owner);
+        var childCell = Validate(child);
         _writeBarrierCount++;
         _writeBarrierEdges.Add((owner, child));
-        // No-op in v1. Required seam for future GC evolution.
+        // Tier 4 #22: remembered-set update. Only Old → Young pointers need
+        // to be remembered; Young → anything and Old → Old are already
+        // covered by the normal mark traversal.
+        if (ownerCell.Tier == GenerationTier.Old && childCell.Tier == GenerationTier.Young)
+        {
+            if (!_rememberedSet.TryGetValue(owner.Index, out var list))
+            {
+                list = new List<int>();
+                _rememberedSet[owner.Index] = list;
+            }
+            if (!list.Contains(child.Index)) list.Add(child.Index);
+        }
+    }
+
+    // Tier 4 #22: minor (nursery) collection. Marks reachable Young cells
+    // starting from all real roots plus the remembered set, then sweeps
+    // unreachable Young cells. Cells that survive PromotionThreshold minor
+    // collections are promoted to Old.
+    //
+    // Correctness note: the mark traversal walks through Old cells as well,
+    // because an Old object's children may include Young objects that
+    // weren't covered by the remembered set (e.g., recently written but
+    // missed by a slow path). This makes MinorCollect a conservative
+    // superset of "scan only Young" — it costs more than the platonic
+    // ideal but cannot miss a live pointer. Future work: prune Old
+    // re-traversal once every write site goes through WriteBarrier.
+    public void MinorCollect()
+    {
+        if (_verifyHeapBeforeGc) _verifier.Verify(this);
+
+        _minorGcCount++;
+        _lastMinorMarked = 0;
+        _lastMinorSwept = 0;
+        _lastMinorPromoted = 0;
+
+        for (var i = 0; i < _cells.Count; i++)
+        {
+            var cell = _cells[i];
+            if (cell is not null) cell.Marked = false;
+        }
+
+        var marker = new MarkingTracer(this);
+        foreach (var root in _roots.Snapshot()) marker.Trace(root);
+        foreach (var root in _roots.StringSnapshot()) marker.Trace(root);
+        foreach (var root in _roots.SymbolSnapshot()) marker.Trace(root);
+
+        // Remembered set: every recorded Old→Young edge is treated as a root
+        // for the Young cell.
+        foreach (var (ownerIdx, children) in _rememberedSet)
+        {
+            if ((uint)ownerIdx >= (uint)_cells.Count || _cells[ownerIdx] is null) continue;
+            foreach (var childIdx in children)
+            {
+                if ((uint)childIdx >= (uint)_cells.Count) continue;
+                var childCell = _cells[childIdx];
+                if (childCell is null || childCell.Tier != GenerationTier.Young) continue;
+                marker.Trace(new ObjectHandle(childIdx, childCell.Generation));
+            }
+        }
+
+        for (var i = 0; i < _cells.Count; i++)
+        {
+            var cell = _cells[i];
+            if (cell is null) continue;
+            if (cell.Tier != GenerationTier.Young) continue;
+
+            if (cell.Marked)
+            {
+                if (cell.MinorSurvivedCount < byte.MaxValue) cell.MinorSurvivedCount++;
+                if (cell.MinorSurvivedCount >= PromotionThreshold)
+                {
+                    cell.Tier = GenerationTier.Old;
+                    _lastMinorPromoted++;
+                }
+            }
+            else
+            {
+                _cells[i] = null;
+                _lastMinorSwept++;
+                if (!_isFree[i])
+                {
+                    _isFree[i] = true;
+                    _freeList.Push(i);
+                }
+            }
+        }
+
+        _lastMinorMarked = _cells.Count(c => c is not null && c.Marked);
+        PruneStaleRememberedSetEntries();
+
+        if (_verifyHeapAfterGc) _verifier.Verify(this);
+    }
+
+    private void PruneStaleRememberedSetEntries()
+    {
+        var staleOwners = new List<int>();
+        foreach (var (ownerIdx, children) in _rememberedSet)
+        {
+            if ((uint)ownerIdx >= (uint)_cells.Count || _cells[ownerIdx] is null)
+            {
+                staleOwners.Add(ownerIdx);
+                continue;
+            }
+            children.RemoveAll(childIdx =>
+                (uint)childIdx >= (uint)_cells.Count ||
+                _cells[childIdx] is not { Tier: GenerationTier.Young });
+            if (children.Count == 0) staleOwners.Add(ownerIdx);
+        }
+        foreach (var o in staleOwners) _rememberedSet.Remove(o);
     }
 
     public void CollectGarbage()
@@ -220,6 +354,11 @@ public sealed class JsHeap
         }
 
         PruneWriteBarrierEdges();
+        // Tier 4 #22: a major collection invalidates remembered-set
+        // membership for swept-away children. PruneStaleRememberedSetEntries
+        // handles partial invalidation; for a full major collection it's
+        // simpler to clear and let WriteBarrier repopulate.
+        _rememberedSet.Clear();
 
         if (_verifyHeapAfterGc)
         {
@@ -331,7 +470,9 @@ public sealed class JsHeap
             {
                 Generation = generation,
                 Kind = kind,
-                Payload = payload
+                Payload = payload,
+                Tier = GenerationTier.Young,
+                MinorSurvivedCount = 0,
             };
         }
         else
@@ -344,7 +485,9 @@ public sealed class JsHeap
             {
                 Generation = generation,
                 Kind = kind,
-                Payload = payload
+                Payload = payload,
+                Tier = GenerationTier.Young,
+                MinorSurvivedCount = 0,
             });
         }
 
