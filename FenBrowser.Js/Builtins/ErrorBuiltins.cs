@@ -89,12 +89,22 @@ public sealed class ErrorBuiltins : IBuiltinModule
 
     private static JsValue BuildError(IBuiltinContext ctx, ObjectHandle protoHandle, string name, IReadOnlyList<JsValue> args)
     {
-        var msg = args.Count > 0 ? ctx.ToStringValue(args[0]) : string.Empty;
         var err = new JsObject();
         err.SetPrototype(protoHandle);
-        err.SetProperty("name", JsValue.FromString(name));
-        err.SetProperty("message", JsValue.FromString(msg));
-        err.SetProperty("stack", JsValue.FromString(ctx.CaptureCallStack(name, msg)));
+        // ECMA-262 20.5.1.1 Error ( message ): only define `message` when the
+        // argument is not undefined, with attributes { w:t, e:f, c:t }. `name`
+        // is inherited from the prototype, not installed on each instance.
+        // `stack` is a host extension; keep it non-enumerable to match Chromium/SM.
+        string msg = string.Empty;
+        bool hasMessage = args.Count > 0 && args[0].Tag != JsValueTag.Undefined;
+        if (hasMessage)
+        {
+            msg = ctx.ToStringValue(args[0]);
+            _ = err.DefineOwnProperty("message",
+                new Objects.JsPropertyDescriptor(JsValue.FromString(msg), Writable: true, Enumerable: false, Configurable: true));
+        }
+        _ = err.DefineOwnProperty("stack",
+            new Objects.JsPropertyDescriptor(JsValue.FromString(ctx.CaptureCallStack(name, msg)), Writable: true, Enumerable: false, Configurable: true));
         return JsValue.FromObject(ctx.Heap.AllocateObject(err, AllocationSite.Current()));
     }
 
