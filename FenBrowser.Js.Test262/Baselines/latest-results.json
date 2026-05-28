@@ -1,15 +1,15 @@
 {
   "engine": "FenJS",
   "mode": "runtime-subset",
-  "startedAtUtc": "2026-05-28T06:23:17.2324322Z",
-  "durationMs": 40500,
+  "startedAtUtc": "2026-05-28T08:07:17.1798166Z",
+  "durationMs": 43155,
   "test262Commit": "b1f9a0aea3e5d12563680ba3c8eee275774f9316",
   "fenbrowserCommit": "unknown",
   "specTarget": "ECMA-262 pinned snapshot",
   "expectations": null,
   "total": 2000,
-  "passed": 858,
-  "failed": 1123,
+  "passed": 976,
+  "failed": 1005,
   "crashed": 0,
   "timedOut": 2,
   "skipped": 0,
@@ -20,10 +20,10 @@
   "invalidTestConfiguration": 8,
   "categories": {
     "parserMissing": 0,
-    "parserBug": 1,
+    "parserBug": 0,
     "earlyErrorBug": 0,
-    "runtimeMissing": 1122,
-    "runtimeSemanticBug": 1122,
+    "runtimeMissing": 1005,
+    "runtimeSemanticBug": 1005,
     "builtinMissing": 0,
     "builtinSemanticBug": 0,
     "moduleMissing": 0,
@@ -38,10 +38,10 @@
   },
   "summary": {
     "total": 2000,
-    "passed": 858,
+    "passed": 976,
     "unsupported": 0,
-    "parserErrors": 1,
-    "runtimeErrors": 1122,
+    "parserErrors": 0,
+    "runtimeErrors": 1005,
     "crashes": 0,
     "timedOut": 2,
     "harnessUnsupported": 9,
@@ -63,83 +63,11 @@
       "expiresAtMilestone": null
     },
     {
-      "path": "external/test262\\test\\annexB\\built-ins\\Date\\prototype\\getYear\\B.2.4.js",
-      "relativePath": "test/annexB/built-ins/Date/prototype/getYear/B.2.4.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\Date\\prototype\\getYear\\length.js",
-      "relativePath": "test/annexB/built-ins/Date/prototype/getYear/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\Date\\prototype\\getYear\\name.js",
-      "relativePath": "test/annexB/built-ins/Date/prototype/getYear/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\Date\\prototype\\getYear\\nan.js",
-      "relativePath": "test/annexB/built-ins/Date/prototype/getYear/nan.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
       "path": "external/test262\\test\\annexB\\built-ins\\Date\\prototype\\getYear\\return-value.js",
       "relativePath": "test/annexB/built-ins/Date/prototype/getYear/return-value.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\Date\\prototype\\getYear\\this-not-date.js",
-      "relativePath": "test/annexB/built-ins/Date/prototype/getYear/this-not-date.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:assert.sameValue failed",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\Date\\prototype\\setYear\\B.2.5.js",
-      "relativePath": "test/annexB/built-ins/Date/prototype/setYear/B.2.5.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
+      "details": "thrown=string:1899: first millisecond",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -151,7 +79,7 @@
       "relativePath": "test/annexB/built-ins/Date/prototype/setYear/date-value-read-before-tonumber-when-date-is-invalid.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
+      "details": "thrown=string:valueOf called exactly once",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -163,43 +91,7 @@
       "relativePath": "test/annexB/built-ins/Date/prototype/setYear/date-value-read-before-tonumber-when-date-is-valid.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\Date\\prototype\\setYear\\length.js",
-      "relativePath": "test/annexB/built-ins/Date/prototype/setYear/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\Date\\prototype\\setYear\\name.js",
-      "relativePath": "test/annexB/built-ins/Date/prototype/setYear/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\Date\\prototype\\setYear\\this-not-date.js",
-      "relativePath": "test/annexB/built-ins/Date/prototype/setYear/this-not-date.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:assert.sameValue failed",
+      "details": "thrown=string:valueOf called exactly once",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -211,7 +103,7 @@
       "relativePath": "test/annexB/built-ins/Date/prototype/setYear/this-time-nan.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
+      "details": "thrown=string:method return value",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -223,31 +115,7 @@
       "relativePath": "test/annexB/built-ins/Date/prototype/setYear/this-time-valid.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\Date\\prototype\\setYear\\time-clip.js",
-      "relativePath": "test/annexB/built-ins/Date/prototype/setYear/time-clip.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\Date\\prototype\\setYear\\year-nan.js",
-      "relativePath": "test/annexB/built-ins/Date/prototype/setYear/year-nan.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
+      "details": "thrown=string:method return value",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -259,19 +127,7 @@
       "relativePath": "test/annexB/built-ins/Date/prototype/setYear/year-number-absolute.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\Date\\prototype\\setYear\\year-number-relative.js",
-      "relativePath": "test/annexB/built-ins/Date/prototype/setYear/year-number-relative.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
+      "details": "thrown=string:assert.sameValue failed",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -284,18 +140,6 @@
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
       "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\Date\\prototype\\toGMTString\\prop-desc.js",
-      "relativePath": "test/annexB/built-ins/Date/prototype/toGMTString/prop-desc.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -699,18 +543,6 @@
       "expiresAtMilestone": null
     },
     {
-      "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\compile\\B.RegExp.prototype.compile.js",
-      "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/B.RegExp.prototype.compile.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
       "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\compile\\duplicate-named-capturing-groups-syntax.js",
       "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/duplicate-named-capturing-groups-syntax.js",
       "classification": "runtime-error",
@@ -727,7 +559,7 @@
       "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/flags-string-invalid.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
+      "details": "thrown=string:[[OriginalSource]] internal slot",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -747,104 +579,8 @@
       "expiresAtMilestone": null
     },
     {
-      "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\compile\\flags-to-string.js",
-      "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/flags-to-string.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\compile\\flags-undefined.js",
-      "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/flags-undefined.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\compile\\length.js",
-      "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\compile\\name.js",
-      "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\compile\\pattern-regexp-distinct.js",
-      "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/pattern-regexp-distinct.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\compile\\pattern-regexp-flags-defined.js",
-      "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/pattern-regexp-flags-defined.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:assert.sameValue failed",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
       "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\compile\\pattern-regexp-immutable-lastindex.js",
       "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/pattern-regexp-immutable-lastindex.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:[[OriginalSource]] internal slot",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\compile\\pattern-regexp-props.js",
-      "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/pattern-regexp-props.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\compile\\pattern-regexp-same.js",
-      "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/pattern-regexp-same.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
       "details": "thrown=object",
@@ -871,7 +607,7 @@
       "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/pattern-string-invalid.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
+      "details": "thrown=string:[[OriginalSource]] internal slot",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -883,19 +619,7 @@
       "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/pattern-string-u.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\compile\\pattern-string.js",
-      "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/pattern-string.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
+      "details": "thrown=string:[[RegExpMatcher]] internal slot (flags #1)",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -915,644 +639,8 @@
       "expiresAtMilestone": null
     },
     {
-      "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\compile\\pattern-undefined.js",
-      "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/pattern-undefined.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
       "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\compile\\this-cross-realm-instance.js",
       "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/this-cross-realm-instance.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\compile\\this-not-object.js",
-      "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/this-not-object.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:assert.sameValue failed",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\compile\\this-obj-not-regexp.js",
-      "relativePath": "test/annexB/built-ins/RegExp/prototype/compile/this-obj-not-regexp.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:assert.sameValue failed",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\RegExp\\prototype\\flags\\order-after-compile.js",
-      "relativePath": "test/annexB/built-ins/RegExp/prototype/flags/order-after-compile.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\anchor\\B.2.3.2.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/anchor/B.2.3.2.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\anchor\\attr-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/anchor/attr-tostring-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\anchor\\length.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/anchor/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\anchor\\name.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/anchor/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\anchor\\prop-desc.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/anchor/prop-desc.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\anchor\\this-val-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/anchor/this-val-tostring-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\big\\B.2.3.3.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/big/B.2.3.3.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\big\\length.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/big/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\big\\name.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/big/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\big\\prop-desc.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/big/prop-desc.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\big\\this-val-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/big/this-val-tostring-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\blink\\B.2.3.4.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/blink/B.2.3.4.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\blink\\length.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/blink/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\blink\\name.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/blink/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\blink\\prop-desc.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/blink/prop-desc.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\blink\\this-val-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/blink/this-val-tostring-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\bold\\B.2.3.5.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/bold/B.2.3.5.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\bold\\length.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/bold/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\bold\\name.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/bold/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\bold\\prop-desc.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/bold/prop-desc.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\bold\\this-val-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/bold/this-val-tostring-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fixed\\B.2.3.6.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fixed/B.2.3.6.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fixed\\length.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fixed/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fixed\\name.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fixed/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fixed\\prop-desc.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fixed/prop-desc.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fixed\\this-val-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fixed/this-val-tostring-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fontcolor\\B.2.3.7.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fontcolor/B.2.3.7.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fontcolor\\attr-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fontcolor/attr-tostring-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fontcolor\\length.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fontcolor/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fontcolor\\name.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fontcolor/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fontcolor\\prop-desc.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fontcolor/prop-desc.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fontcolor\\this-val-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fontcolor/this-val-tostring-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fontsize\\B.2.3.8.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fontsize/B.2.3.8.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fontsize\\attr-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fontsize/attr-tostring-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fontsize\\length.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fontsize/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fontsize\\name.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fontsize/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fontsize\\prop-desc.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fontsize/prop-desc.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\fontsize\\this-val-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/fontsize/this-val-tostring-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\italics\\B.2.3.9.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/italics/B.2.3.9.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\italics\\length.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/italics/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\italics\\name.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/italics/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\italics\\prop-desc.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/italics/prop-desc.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\italics\\this-val-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/italics/this-val-tostring-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\link\\B.2.3.10.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/link/B.2.3.10.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\link\\attr-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/link/attr-tostring-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\link\\length.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/link/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\link\\name.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/link/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\link\\prop-desc.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/link/prop-desc.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\link\\this-val-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/link/this-val-tostring-err.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
       "details": "thrown=object",
@@ -1623,188 +711,8 @@
       "expiresAtMilestone": null
     },
     {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\small\\B.2.3.11.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/small/B.2.3.11.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\small\\length.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/small/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\small\\name.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/small/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\small\\prop-desc.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/small/prop-desc.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\small\\this-val-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/small/this-val-tostring-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
       "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\split\\custom-splitter-emulates-undefined.js",
       "relativePath": "test/annexB/built-ins/String/prototype/split/custom-splitter-emulates-undefined.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\strike\\B.2.3.12.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/strike/B.2.3.12.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\strike\\length.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/strike/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\strike\\name.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/strike/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\strike\\prop-desc.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/strike/prop-desc.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\strike\\this-val-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/strike/this-val-tostring-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\sub\\B.2.3.13.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/sub/B.2.3.13.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\sub\\length.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/sub/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\sub\\name.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/sub/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\sub\\prop-desc.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/sub/prop-desc.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\sub\\this-val-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/sub/this-val-tostring-err.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
       "details": "thrown=object",
@@ -1841,66 +749,6 @@
     {
       "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\substr\\start-to-int-err.js",
       "relativePath": "test/annexB/built-ins/String/prototype/substr/start-to-int-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\sup\\B.2.3.14.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/sup/B.2.3.14.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\sup\\length.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/sup/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\sup\\name.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/sup/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\sup\\prop-desc.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/sup/prop-desc.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\String\\prototype\\sup\\this-val-tostring-err.js",
-      "relativePath": "test/annexB/built-ins/String/prototype/sup/this-val-tostring-err.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
       "details": "thrown=object",
@@ -9099,17 +7947,6 @@
       "expiresAtMilestone": null
     },
     {
-      "path": "external/test262\\test\\annexB\\language\\statements\\for-in\\nonstrict-initializer.js",
-      "relativePath": "test/annexB/language/statements/for-in/nonstrict-initializer.js",
-      "classification": "parser-error",
-      "message": "Invalid assignment target.",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
       "path": "external/test262\\test\\annexB\\language\\statements\\for-of\\iterator-close-return-emulates-undefined-throws-when-called.js",
       "relativePath": "test/annexB/language/statements/for-of/iterator-close-return-emulates-undefined-throws-when-called.js",
       "classification": "timeout",
@@ -12495,18 +11332,6 @@
       "expiresAtMilestone": null
     },
     {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\15.4.4.4-5-c-i-1.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/15.4.4.4-5-c-i-1.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:The result of evaluating (newArrayFromConcat[0] instanceof Number) is expected to be true",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
       "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\Array.prototype.concat_array-like-length-to-string-throws.js",
       "relativePath": "test/built-ins/Array/prototype/concat/Array.prototype.concat_array-like-length-to-string-throws.js",
       "classification": "runtime-error",
@@ -12579,251 +11404,11 @@
       "expiresAtMilestone": null
     },
     {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\Array.prototype.concat_spreadable-getter-throws.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/Array.prototype.concat_spreadable-getter-throws.js",
+      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\create-proto-from-ctor-realm-array.js",
+      "relativePath": "test/built-ins/Array/prototype/concat/create-proto-from-ctor-realm-array.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\S15.4.4.4_A3_T2.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/S15.4.4.4_A3_T2.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:b.hasOwnProperty(\u00221\u0022) must return false",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\S15.4.4.4_A3_T3.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/S15.4.4.4_A3_T3.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:b.hasOwnProperty(\u00221\u0022) must return false",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\arg-length-exceeding-integer-limit.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/arg-length-exceeding-integer-limit.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\arg-length-near-integer-limit.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/arg-length-near-integer-limit.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\call-with-boolean.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/call-with-boolean.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:The result of evaluating (Array.prototype.concat.call(true)[0] instanceof Boolean) is expected to be true",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\create-ctor-non-object.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/create-ctor-non-object.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\create-proxy.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/create-proxy.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:Object.getPrototypeOf(Array.prototype.concat.call(proxy)) returns Ctor.prototype",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\create-revoked-proxy.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/create-revoked-proxy.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\create-species-non-extensible-spreadable.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/create-species-non-extensible-spreadable.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\create-species-non-extensible.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/create-species-non-extensible.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\create-species-poisoned.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/create-species-poisoned.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\create-species-with-non-configurable-property-spreadable.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/create-species-with-non-configurable-property-spreadable.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\create-species-with-non-configurable-property.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/create-species-with-non-configurable-property.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\create-species-with-non-writable-property-spreadable.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/create-species-with-non-writable-property-spreadable.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor value",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\create-species-with-non-writable-property.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/create-species-with-non-writable-property.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor value",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\is-concat-spreadable-get-err.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/is-concat-spreadable-get-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\is-concat-spreadable-get-order.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/is-concat-spreadable-get-order.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:The value of calls is expected to be [\u0022constructor\u0022, \u0022isConcatSpreadable\u0022]",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\is-concat-spreadable-is-array-proxy-revoked.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/is-concat-spreadable-is-array-proxy-revoked.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\is-concat-spreadable-proxy-revoked.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/is-concat-spreadable-proxy-revoked.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\Array\\prototype\\concat\\is-concat-spreadable-proxy.js",
-      "relativePath": "test/built-ins/Array/prototype/concat/is-concat-spreadable-proxy.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:The value of [].concat(arrayProxy).length is expected to be 0",
+      "details": "thrown=string:The value of callCount is expected to be 0",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -13682,7 +12267,7 @@
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/getYear/B.2.4.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -13694,13 +12279,12 @@
       "description": "Object.getOwnPropertyDescriptor returns data desc for functions on\nbuilt-ins (Date.prototype.getYear)",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/getYear/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -13712,13 +12296,12 @@
       "description": "Date.prototype.getYear.length is 0.",
       "info": "Date.prototype.getYear ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/getYear/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -13730,13 +12313,12 @@
       "description": "Date.prototype.getYear.name is \u0022getYear\u0022.",
       "info": "Date.prototype.getYear ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/getYear/nan.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -13746,9 +12328,8 @@
       "description": "NaN time value",
       "info": "1. Let t be ? thisTimeValue(this value).\n2. If t is NaN, return NaN.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/getYear/not-a-constructor.js",
@@ -13784,11 +12365,11 @@
       "locale": null,
       "category": "runtime-semantic-bug",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "details": "thrown=string:1899: first millisecond"
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/getYear/this-not-date.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -13798,13 +12379,12 @@
       "description": "Behavior when \u0060this\u0060 value has no [[DateValue]] internal slot",
       "info": "1. Let t be ? thisTimeValue(this value).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:assert.sameValue failed"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/setYear/B.2.5.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -13816,9 +12396,8 @@
       "description": "Object.getOwnPropertyDescriptor returns data desc for functions on\nbuilt-ins (Date.prototype.setYear)",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/setYear/date-value-read-before-tonumber-when-date-is-invalid.js",
@@ -13834,7 +12413,7 @@
       "locale": null,
       "category": "runtime-semantic-bug",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "details": "thrown=string:valueOf called exactly once"
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/setYear/date-value-read-before-tonumber-when-date-is-valid.js",
@@ -13850,11 +12429,11 @@
       "locale": null,
       "category": "runtime-semantic-bug",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "details": "thrown=string:valueOf called exactly once"
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/setYear/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -13866,13 +12445,12 @@
       "description": "Date.prototype.setYear.length is 1.",
       "info": "Date.prototype.setYear ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/setYear/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -13884,9 +12462,8 @@
       "description": "Date.prototype.setYear.name is \u0022setYear\u0022.",
       "info": "Date.prototype.setYear ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/setYear/not-a-constructor.js",
@@ -13910,7 +12487,7 @@
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/setYear/this-not-date.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -13920,9 +12497,8 @@
       "description": "Behavior when \u0022this\u0022 value has no [[DateValue]] internal slot",
       "info": "1. Let t be ? thisTimeValue(this value).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:assert.sameValue failed"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/setYear/this-time-nan.js",
@@ -13938,7 +12514,7 @@
       "locale": null,
       "category": "runtime-semantic-bug",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "details": "thrown=string:method return value"
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/setYear/this-time-valid.js",
@@ -13954,11 +12530,11 @@
       "locale": null,
       "category": "runtime-semantic-bug",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "details": "thrown=string:method return value"
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/setYear/time-clip.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -13968,13 +12544,12 @@
       "description": "Clipping of new time value",
       "info": "[...]\n9. Set the [[DateValue]] internal slot of this Date object to\nTimeClip(date).\n10. Return the value of the [[DateValue]] internal slot of this Date\nobject.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/setYear/year-nan.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Symbol"
@@ -13986,9 +12561,8 @@
       "description": "Behavior when year value coerces to NaN",
       "info": "[...]\n3. Let y be ? ToNumber(year).\n4. If y is NaN, set the [[DateValue]] internal slot of this Date object to\nNaN and return NaN.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/setYear/year-number-absolute.js",
@@ -14004,11 +12578,11 @@
       "locale": null,
       "category": "runtime-semantic-bug",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "details": "thrown=string:assert.sameValue failed"
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/setYear/year-number-relative.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -14018,9 +12592,8 @@
       "description": "Behavior when the integer representation of the specified \u0060year\u0060 is\nrelative to 1900",
       "info": "[...]\n5. If y is not NaN and 0 \u2264 ToInteger(y) \u2264 99, let yyyy be ToInteger(y) \u002B\n1900.\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/setYear/year-to-number-err.js",
@@ -14062,7 +12635,7 @@
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/toGMTString/prop-desc.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -14074,9 +12647,8 @@
       "description": "Object.getOwnPropertyDescriptor returns data desc for functions on\nbuilt-ins (Date.prototype.toGMTString)",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/Date/prototype/toGMTString/value.js",
@@ -14900,7 +13472,7 @@
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/B.RegExp.prototype.compile.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -14912,9 +13484,8 @@
       "description": "Object.getOwnPropertyDescriptor returns data desc for functions on\nbuilt-ins (RegExp.prototype.compile)",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/duplicate-named-capturing-groups-syntax.js",
@@ -14948,7 +13519,7 @@
       "locale": null,
       "category": "runtime-semantic-bug",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "details": "thrown=string:[[OriginalSource]] internal slot"
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/flags-to-string-err.js",
@@ -14970,7 +13541,7 @@
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/flags-to-string.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -14980,13 +13551,12 @@
       "description": "Behavior when flags is a string describing a valid flag set",
       "info": "[...]\n5. Return ? RegExpInitialize(O, P, F).\n21.2.3.2.2 Runtime Semantics: RegExpInitialize\n[...]\n3. If flags is undefined, let F be the empty String.\n4. Else, let F be ? ToString(flags).\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/flags-undefined.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -14996,13 +13566,12 @@
       "description": "Behavior when flags is undefined",
       "info": "[...]\n3. If Type(pattern) is Object and pattern has a [[RegExpMatcher]] internal\nslot, then\n[...]\n4. Else,\na. Let P be pattern.\nb. Let F be flags.\n5. Return ? RegExpInitialize(O, P, F).\n21.2.3.2.2 Runtime Semantics: RegExpInitialize\n[...]\n3. If flags is undefined, let F be the empty String.\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15014,13 +13583,12 @@
       "description": "RegExp.prototype.compile.length is 2.",
       "info": "RegExp.prototype.compile (pattern, flags )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15032,13 +13600,12 @@
       "description": "RegExp.prototype.compile.name is \u0022compile\u0022.",
       "info": "RegExp.prototype.compile (pattern, flags )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/pattern-regexp-distinct.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15048,13 +13615,12 @@
       "description": "RegExp is re-initialized when invoked with a distinct instance",
       "info": "[...]\n3. If Type(pattern) is Object and pattern has a [[RegExpMatcher]] internal\nslot, then\na. If flags is not undefined, throw a TypeError exception.\nb. Let P be the value of pattern\u0027s [[OriginalSource]] internal slot.\nc. Let F be the value of pattern\u0027s [[OriginalFlags]] internal slot.\n4. Else,\n[...]\n5. Return ? RegExpInitialize(O, P, F).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/pattern-regexp-flags-defined.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15064,9 +13630,8 @@
       "description": "Behavior when provided pattern is a RegExp instance and flags are specified",
       "info": "[...]\n3. If Type(pattern) is Object and pattern has a [[RegExpMatcher]] internal\nslot, then\na. If flags is not undefined, throw a TypeError exception.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:assert.sameValue failed"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/pattern-regexp-immutable-lastindex.js",
@@ -15082,11 +13647,11 @@
       "locale": null,
       "category": "runtime-semantic-bug",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=string:[[OriginalSource]] internal slot"
+      "details": "thrown=object"
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/pattern-regexp-props.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15096,13 +13661,12 @@
       "description": "Properties are not referenced when provided pattern is a RegExp instance",
       "info": "[...]\n3. If Type(pattern) is Object and pattern has a [[RegExpMatcher]] internal\nslot, then\na. If flags is not undefined, throw a TypeError exception.\nb. Let P be the value of pattern\u0027s [[OriginalSource]] internal slot.\nc. Let F be the value of pattern\u0027s [[OriginalFlags]] internal slot.\n4. Else,\n[...]\n5. Return ? RegExpInitialize(O, P, F).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/pattern-regexp-same.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15112,9 +13676,8 @@
       "description": "RegExp is re-initialized when invoked with the same instance",
       "info": "[...]\n3. If Type(pattern) is Object and pattern has a [[RegExpMatcher]] internal\nslot, then\na. If flags is not undefined, throw a TypeError exception.\nb. Let P be the value of pattern\u0027s [[OriginalSource]] internal slot.\nc. Let F be the value of pattern\u0027s [[OriginalFlags]] internal slot.\n4. Else,\n[...]\n5. Return ? RegExpInitialize(O, P, F).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/pattern-string-invalid-u.js",
@@ -15146,7 +13709,7 @@
       "locale": null,
       "category": "runtime-semantic-bug",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "details": "thrown=string:[[OriginalSource]] internal slot"
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/pattern-string-u.js",
@@ -15162,11 +13725,11 @@
       "locale": null,
       "category": "runtime-semantic-bug",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "details": "thrown=string:[[RegExpMatcher]] internal slot (flags #1)"
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/pattern-string.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15176,9 +13739,8 @@
       "description": "Behavior when pattern is a string describing a valid pattern (non-unicode)",
       "info": "[...]\n5. Return ? RegExpInitialize(O, P, F).\n21.2.3.2.2 Runtime Semantics: RegExpInitialize\n6. If F contains \u0022u\u0022, let BMP be false; else let BMP be true.\n7. If BMP is true, then\n[...]\n8. Else,\na. Parse P using the grammars in 21.2.1 and interpreting P as UTF-16\nencoded Unicode code points (6.1.4). The goal symbol for the parse is\nPattern[U]. Throw a SyntaxError exception if P did not conform to the\ngrammar, if any elements of P were not matched by the parse, or if\nany Early Error conditions exist.\nb. Let patternCharacters be a List whose elements are the code points\nresulting from applying UTF-16 decoding to P\u0027s sequence of elements.\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/pattern-to-string-err.js",
@@ -15200,7 +13762,7 @@
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/pattern-undefined.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15210,9 +13772,8 @@
       "description": "Behavior when pattern is undefined",
       "info": "[...]\n3. If Type(pattern) is Object and pattern has a [[RegExpMatcher]] internal\nslot, then\n[...]\n4. Else,\na. Let P be pattern.\nb. Let F be flags.\n5. Return ? RegExpInitialize(O, P, F).\n21.2.3.2.2 Runtime Semantics: RegExpInitialize\n1. If pattern is undefined, let P be the empty String.\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/this-cross-realm-instance.js",
@@ -15235,7 +13796,7 @@
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/this-not-object.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Symbol"
@@ -15247,13 +13808,12 @@
       "description": "Behavior when \u0022this\u0022 value is not an Object",
       "info": "1. Let O be the this value.\n2. If Type(O) is not Object or Type(O) is Object and O does not have a\n[[RegExpMatcher]] internal slot, then\na. Throw a TypeError exception.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:assert.sameValue failed"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/this-obj-not-regexp.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15263,9 +13823,8 @@
       "description": "Behavior when \u0022this\u0022 value is an Object without a [[RegExpMatcher]]\ninternal slot",
       "info": "1. Let O be the this value.\n2. If Type(O) is not Object or Type(O) is Object and O does not have a\n[[RegExpMatcher]] internal slot, then\na. Throw a TypeError exception.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:assert.sameValue failed"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/compile/this-subclass-instance.js",
@@ -15287,7 +13846,7 @@
     },
     {
       "path": "test/annexB/built-ins/RegExp/prototype/flags/order-after-compile.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "regexp-dotall"
@@ -15299,13 +13858,12 @@
       "description": "The flags come in the same order in a new instance produced by RegExp.prototype.compile",
       "info": "B.2.5.1 RegExp.prototype.compile ( pattern, flags )\n...\n5. Return ? RegExpInitialize(O, P, F).\n21.2.5.3 get RegExp.prototype.flags\n...\n4. Let global be ToBoolean(? Get(R, \u0022global\u0022)).\n5. If global is true, append \u0022g\u0022 as the last code unit of result.\n6. Let ignoreCase be ToBoolean(? Get(R, \u0022ignoreCase\u0022)).\n7. If ignoreCase is true, append \u0022i\u0022 as the last code unit of result.\n8. Let multiline be ToBoolean(? Get(R, \u0022multiline\u0022)).\n9. If multiline is true, append \u0022m\u0022 as the last code unit of result.\n10. Let dotAll be ToBoolean(? Get(R, \u0022dotAll\u0022)).\n11. If dotAll is true, append \u0022s\u0022 as the last code unit of result.\n12. Let unicode be ToBoolean(? Get(R, \u0022unicode\u0022)).\n13. If unicode is true, append \u0022u\u0022 as the last code unit of result.\n14. Let sticky be ToBoolean(? Get(R, \u0022sticky\u0022)).\n15. If sticky is true, append \u0022y\u0022 as the last code unit of result.\n14. Return result.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/anchor/B.2.3.2.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15315,13 +13873,12 @@
       "description": "String.prototype.anchor returns a string of HTML describing a single HTML\nanchor element. The element\u0027s content is the \u0060this\u0060 value of the function\ninvocation, coerced to a string. If specified, the first argument will be\ncoerced to a string, escaped, and set as the element\u0027s \u0060name\u0060 attribute.",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/anchor/attr-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15331,13 +13888,12 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n[...]\n4. If attribute is not the empty String, then\na. Let V be ? ToString(value).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/anchor/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15349,13 +13905,12 @@
       "description": "String.prototype.anchor.length is 1.",
       "info": "String.prototype.anchor ( name )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/anchor/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15367,9 +13922,8 @@
       "description": "String.prototype.anchor.name is \u0022anchor\u0022.",
       "info": "String.prototype.anchor ( name )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/anchor/not-a-constructor.js",
@@ -15393,7 +13947,7 @@
     },
     {
       "path": "test/annexB/built-ins/String/prototype/anchor/prop-desc.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15405,13 +13959,12 @@
       "description": "Property descriptor for String.prototype.anchor",
       "info": "Every other data property described in clauses 18 through 26 and in Annex\nB.2 has the attributes { [[Writable]]: true, [[Enumerable]]: false,\n[[Configurable]]: true } unless otherwise specified.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/anchor/this-val-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15421,13 +13974,12 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n1. Let str be ? RequireObjectCoercible(string).\n2. Let S be ? ToString(str).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/big/B.2.3.3.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15437,13 +13989,12 @@
       "description": "String.prototype.big returns a string of HTML describing a single HTML\nbig element. The element\u0027s content is the \u0060this\u0060 value of the function\ninvocation, coerced to a string.",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/big/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15455,13 +14006,12 @@
       "description": "String.prototype.big.length is 0.",
       "info": "String.prototype.big ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/big/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15473,9 +14023,8 @@
       "description": "String.prototype.big.name is \u0022big\u0022.",
       "info": "String.prototype.big ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/big/not-a-constructor.js",
@@ -15499,7 +14048,7 @@
     },
     {
       "path": "test/annexB/built-ins/String/prototype/big/prop-desc.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15511,13 +14060,12 @@
       "description": "Property descriptor for String.prototype.big",
       "info": "Every other data property described in clauses 18 through 26 and in Annex\nB.2 has the attributes { [[Writable]]: true, [[Enumerable]]: false,\n[[Configurable]]: true } unless otherwise specified.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/big/this-val-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15527,13 +14075,12 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n1. Let str be ? RequireObjectCoercible(string).\n2. Let S be ? ToString(str).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/blink/B.2.3.4.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15543,13 +14090,12 @@
       "description": "String.prototype.blink returns a string of HTML describing a single HTML\nblink element. The element\u0027s content is the \u0060this\u0060 value of the function\ninvocation, coerced to a string.",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/blink/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15561,13 +14107,12 @@
       "description": "String.prototype.blink.length is 0.",
       "info": "String.prototype.blink ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/blink/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15579,9 +14124,8 @@
       "description": "String.prototype.blink.name is \u0022blink\u0022.",
       "info": "String.prototype.blink ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/blink/not-a-constructor.js",
@@ -15605,7 +14149,7 @@
     },
     {
       "path": "test/annexB/built-ins/String/prototype/blink/prop-desc.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15617,13 +14161,12 @@
       "description": "Property descriptor for String.prototype.blink",
       "info": "Every other data property described in clauses 18 through 26 and in Annex\nB.2 has the attributes { [[Writable]]: true, [[Enumerable]]: false,\n[[Configurable]]: true } unless otherwise specified.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/blink/this-val-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15633,13 +14176,12 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n1. Let str be ? RequireObjectCoercible(string).\n2. Let S be ? ToString(str).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/bold/B.2.3.5.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15649,13 +14191,12 @@
       "description": "String.prototype.bold returns a string of HTML describing a single HTML\nbold element. The element\u0027s content is the \u0060this\u0060 value of the function\ninvocation, coerced to a string.",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/bold/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15667,13 +14208,12 @@
       "description": "String.prototype.bold.length is 0.",
       "info": "String.prototype.bold ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/bold/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15685,9 +14225,8 @@
       "description": "String.prototype.bold.name is \u0022bold\u0022.",
       "info": "String.prototype.bold ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/bold/not-a-constructor.js",
@@ -15711,7 +14250,7 @@
     },
     {
       "path": "test/annexB/built-ins/String/prototype/bold/prop-desc.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15723,13 +14262,12 @@
       "description": "Property descriptor for String.prototype.bold",
       "info": "Every other data property described in clauses 18 through 26 and in Annex\nB.2 has the attributes { [[Writable]]: true, [[Enumerable]]: false,\n[[Configurable]]: true } unless otherwise specified.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/bold/this-val-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15739,13 +14277,12 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n1. Let str be ? RequireObjectCoercible(string).\n2. Let S be ? ToString(str).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fixed/B.2.3.6.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15755,13 +14292,12 @@
       "description": "String.prototype.fixed returns a string of HTML describing a single HTML\nteletype text element. The element\u0027s content is the \u0060this\u0060 value of the\nfunction invocation, coerced to a string.",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fixed/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15773,13 +14309,12 @@
       "description": "String.prototype.fixed.length is 0.",
       "info": "String.prototype.fixed ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fixed/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15791,9 +14326,8 @@
       "description": "String.prototype.fixed.name is \u0022fixed\u0022.",
       "info": "String.prototype.fixed ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fixed/not-a-constructor.js",
@@ -15817,7 +14351,7 @@
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fixed/prop-desc.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15829,13 +14363,12 @@
       "description": "Property descriptor for String.prototype.fixed",
       "info": "Every other data property described in clauses 18 through 26 and in Annex\nB.2 has the attributes { [[Writable]]: true, [[Enumerable]]: false,\n[[Configurable]]: true } unless otherwise specified.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fixed/this-val-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15845,13 +14378,12 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n1. Let str be ? RequireObjectCoercible(string).\n2. Let S be ? ToString(str).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fontcolor/B.2.3.7.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15861,13 +14393,12 @@
       "description": "String.prototype.fontcolor returns a string of HTML describing a single\nHTML font element. The element\u0027s content is the \u0060this\u0060 value of the\nfunction invocation, coerced to a string. If specified, the first argument\nwill be coerced to a string, escaped, and set as the element\u0027s \u0060color\u0060\nattribute.",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fontcolor/attr-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15877,13 +14408,12 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n[...]\n4. If attribute is not the empty String, then\na. Let V be ? ToString(value).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fontcolor/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15895,13 +14425,12 @@
       "description": "String.prototype.fontcolor.length is 1.",
       "info": "String.prototype.fontcolor ( color )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fontcolor/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15913,9 +14442,8 @@
       "description": "String.prototype.fontcolor.name is \u0022fontcolor\u0022.",
       "info": "String.prototype.fontcolor ( color )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fontcolor/not-a-constructor.js",
@@ -15939,7 +14467,7 @@
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fontcolor/prop-desc.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15951,13 +14479,12 @@
       "description": "Property descriptor for String.prototype.fontcolor",
       "info": "Every other data property described in clauses 18 through 26 and in Annex\nB.2 has the attributes { [[Writable]]: true, [[Enumerable]]: false,\n[[Configurable]]: true } unless otherwise specified.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fontcolor/this-val-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15967,13 +14494,12 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n1. Let str be ? RequireObjectCoercible(string).\n2. Let S be ? ToString(str).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fontsize/B.2.3.8.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15983,13 +14509,12 @@
       "description": "String.prototype.fontsize returns a string of HTML describing a single\nHTML font element. The element\u0027s content is the \u0060this\u0060 value of the\nfunction invocation, coerced to a string. If specified, the first argument\nwill be coerced to a string, escaped, and set as the element\u0027s \u0060size\u0060\nattribute.",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fontsize/attr-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -15999,13 +14524,12 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n[...]\n4. If attribute is not the empty String, then\na. Let V be ? ToString(value).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fontsize/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16017,13 +14541,12 @@
       "description": "String.prototype.fontsize.length is 1.",
       "info": "String.prototype.fontsize ( size )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fontsize/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16035,9 +14558,8 @@
       "description": "String.prototype.fontsize.name is \u0022fontsize\u0022.",
       "info": "String.prototype.fontsize ( color )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fontsize/not-a-constructor.js",
@@ -16061,7 +14583,7 @@
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fontsize/prop-desc.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16073,13 +14595,12 @@
       "description": "Property descriptor for String.prototype.fontsize",
       "info": "Every other data property described in clauses 18 through 26 and in Annex\nB.2 has the attributes { [[Writable]]: true, [[Enumerable]]: false,\n[[Configurable]]: true } unless otherwise specified.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/fontsize/this-val-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16089,13 +14610,12 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n1. Let str be ? RequireObjectCoercible(string).\n2. Let S be ? ToString(str).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/italics/B.2.3.9.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16105,13 +14625,12 @@
       "description": "String.prototype.italics returns a string of HTML describing a single HTML\nitalic element. The element\u0027s content is the \u0060this\u0060 value of the function\ninvocation, coerced to a string.",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/italics/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16123,13 +14642,12 @@
       "description": "String.prototype.italics.length is 0.",
       "info": "String.prototype.italics ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/italics/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16141,9 +14659,8 @@
       "description": "String.prototype.italics.name is \u0022italics\u0022.",
       "info": "String.prototype.italics ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/italics/not-a-constructor.js",
@@ -16167,7 +14684,7 @@
     },
     {
       "path": "test/annexB/built-ins/String/prototype/italics/prop-desc.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16179,13 +14696,12 @@
       "description": "Property descriptor for String.prototype.italics",
       "info": "Every other data property described in clauses 18 through 26 and in Annex\nB.2 has the attributes { [[Writable]]: true, [[Enumerable]]: false,\n[[Configurable]]: true } unless otherwise specified.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/italics/this-val-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16195,13 +14711,12 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n1. Let str be ? RequireObjectCoercible(string).\n2. Let S be ? ToString(str).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/link/B.2.3.10.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16211,13 +14726,12 @@
       "description": "String.prototype.link returns a string of HTML describing a single HTML\nlink element. The element\u0027s content is the \u0060this\u0060 value of the function\ninvocation, coerced to a string. If specified, the first argument will be\ncoerced to a string, escaped, and set as the element\u0027s \u0060href\u0060 attribute.",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/link/attr-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16227,13 +14741,12 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n[...]\n4. If attribute is not the empty String, then\na. Let V be ? ToString(value).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/link/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16245,13 +14758,12 @@
       "description": "String.prototype.link.length is 1.",
       "info": "String.prototype.link ( url )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/link/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16263,9 +14775,8 @@
       "description": "String.prototype.link.name is \u0022link\u0022.",
       "info": "String.prototype.link ( url )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/link/not-a-constructor.js",
@@ -16289,7 +14800,7 @@
     },
     {
       "path": "test/annexB/built-ins/String/prototype/link/prop-desc.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16301,13 +14812,12 @@
       "description": "Property descriptor for String.prototype.link",
       "info": "Every other data property described in clauses 18 through 26 and in Annex\nB.2 has the attributes { [[Writable]]: true, [[Enumerable]]: false,\n[[Configurable]]: true } unless otherwise specified.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/link/this-val-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16317,9 +14827,8 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n1. Let str be ? RequireObjectCoercible(string).\n2. Let S be ? ToString(str).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/matchAll/custom-matcher-emulates-undefined.js",
@@ -16420,7 +14929,7 @@
     },
     {
       "path": "test/annexB/built-ins/String/prototype/small/B.2.3.11.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16430,13 +14939,12 @@
       "description": "String.prototype.small returns a string of HTML describing a single HTML\nsmall print element. The element\u0027s content is the \u0060this\u0060 value of the\nfunction invocation, coerced to a string.",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/small/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16448,13 +14956,12 @@
       "description": "String.prototype.small.length is 0.",
       "info": "String.prototype.small ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/small/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16466,9 +14973,8 @@
       "description": "String.prototype.small.name is \u0022small\u0022.",
       "info": "String.prototype.small ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/small/not-a-constructor.js",
@@ -16492,7 +14998,7 @@
     },
     {
       "path": "test/annexB/built-ins/String/prototype/small/prop-desc.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16504,13 +15010,12 @@
       "description": "Property descriptor for String.prototype.small",
       "info": "Every other data property described in clauses 18 through 26 and in Annex\nB.2 has the attributes { [[Writable]]: true, [[Enumerable]]: false,\n[[Configurable]]: true } unless otherwise specified.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/small/this-val-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16520,9 +15025,8 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n1. Let str be ? RequireObjectCoercible(string).\n2. Let S be ? ToString(str).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/split/custom-splitter-emulates-undefined.js",
@@ -16545,7 +15049,7 @@
     },
     {
       "path": "test/annexB/built-ins/String/prototype/strike/B.2.3.12.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16555,13 +15059,12 @@
       "description": "String.prototype.strike returns a string of HTML describing a single HTML\nstrikethrough element. The element\u0027s content is the \u0060this\u0060 value of the\nfunction invocation, coerced to a string.",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/strike/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16573,13 +15076,12 @@
       "description": "String.prototype.strike.length is 0.",
       "info": "String.prototype.strike ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/strike/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16591,9 +15093,8 @@
       "description": "String.prototype.strike.name is \u0022strike\u0022.",
       "info": "String.prototype.strike ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/strike/not-a-constructor.js",
@@ -16617,7 +15118,7 @@
     },
     {
       "path": "test/annexB/built-ins/String/prototype/strike/prop-desc.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16629,13 +15130,12 @@
       "description": "Property descriptor for String.prototype.strike",
       "info": "Every other data property described in clauses 18 through 26 and in Annex\nB.2 has the attributes { [[Writable]]: true, [[Enumerable]]: false,\n[[Configurable]]: true } unless otherwise specified.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/strike/this-val-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16645,13 +15145,12 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n1. Let str be ? RequireObjectCoercible(string).\n2. Let S be ? ToString(str).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/sub/B.2.3.13.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16661,13 +15160,12 @@
       "description": "String.prototype.sub returns a string of HTML describing a single HTML\nsubscript element. The element\u0027s content is the \u0060this\u0060 value of the\nfunction invocation, coerced to a string.",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/sub/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16679,13 +15177,12 @@
       "description": "String.prototype.sub.length is 0.",
       "info": "String.prototype.sub ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/sub/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16697,9 +15194,8 @@
       "description": "String.prototype.sub.name is \u0022sub\u0022.",
       "info": "String.prototype.sub ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/sub/not-a-constructor.js",
@@ -16723,7 +15219,7 @@
     },
     {
       "path": "test/annexB/built-ins/String/prototype/sub/prop-desc.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16735,13 +15231,12 @@
       "description": "Property descriptor for String.prototype.sub",
       "info": "Every other data property described in clauses 18 through 26 and in Annex\nB.2 has the attributes { [[Writable]]: true, [[Enumerable]]: false,\n[[Configurable]]: true } unless otherwise specified.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/sub/this-val-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -16751,9 +15246,8 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n1. Let str be ? RequireObjectCoercible(string).\n2. Let S be ? ToString(str).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/substr/B.2.3.js",
@@ -17000,7 +15494,7 @@
     },
     {
       "path": "test/annexB/built-ins/String/prototype/sup/B.2.3.14.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17010,13 +15504,12 @@
       "description": "String.prototype.sup returns a string of HTML describing a single HTML\nsuperscript element. The element\u0027s content is the \u0060this\u0060 value of the\nfunction invocation, coerced to a string.",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/sup/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17028,13 +15521,12 @@
       "description": "String.prototype.sup.length is 0.",
       "info": "String.prototype.sup ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/sup/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17046,9 +15538,8 @@
       "description": "String.prototype.sup.name is \u0022sup\u0022.",
       "info": "String.prototype.sup ( )\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/sup/not-a-constructor.js",
@@ -17072,7 +15563,7 @@
     },
     {
       "path": "test/annexB/built-ins/String/prototype/sup/prop-desc.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17084,13 +15575,12 @@
       "description": "Property descriptor for String.prototype.sup",
       "info": "Every other data property described in clauses 18 through 26 and in Annex\nB.2 has the attributes { [[Writable]]: true, [[Enumerable]]: false,\n[[Configurable]]: true } unless otherwise specified.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor should exist"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/sup/this-val-tostring-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17100,9 +15590,8 @@
       "description": "Abrupt completion when coercing \u0022this\u0022 value to string",
       "info": "B.2.3.2.1 Runtime Semantics: CreateHTML\n1. Let str be ? RequireObjectCoercible(string).\n2. Let S be ? ToString(str).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/String/prototype/trimLeft/length.js",
@@ -33595,7 +32084,7 @@
     },
     {
       "path": "test/annexB/language/statements/for-in/nonstrict-initializer.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [
@@ -33607,8 +32096,8 @@
       "description": "for-in initializers in nonstrict mode",
       "info": null,
       "locale": null,
-      "category": "parser-bug",
-      "message": "Invalid assignment target."
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/language/statements/for-in/strict-initializer.js",
@@ -44359,7 +42848,7 @@
     },
     {
       "path": "test/built-ins/Array/prototype/concat/15.4.4.4-5-c-i-1.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -44371,9 +42860,8 @@
       "description": "Array.prototype.concat will concat an Array when index property\n(read-only) exists in Array.prototype (Step 5.c.i)",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:The result of evaluating (newArrayFromConcat[0] instanceof Number) is expected to be true"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/Array.prototype.concat_array-like-length-to-string-throws.js",
@@ -44711,7 +43199,7 @@
     },
     {
       "path": "test/built-ins/Array/prototype/concat/Array.prototype.concat_spreadable-getter-throws.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Symbol.isConcatSpreadable"
@@ -44723,9 +43211,8 @@
       "description": "Array.prototype.concat Symbol.isConcatSpreadable getter throws",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/Array.prototype.concat_spreadable-number-wrapper.js",
@@ -44929,7 +43416,7 @@
     },
     {
       "path": "test/built-ins/Array/prototype/concat/S15.4.4.4_A3_T2.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -44939,13 +43426,12 @@
       "description": "checking whether non-ownProperties are seen, copied by Array.prototype.concat: Array.prototype[1]",
       "info": "Array.prototype.concat uses [[Get]] on \u0027length\u0027 to determine array length",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:b.hasOwnProperty(\u00221\u0022) must return false"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/S15.4.4.4_A3_T3.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -44955,13 +43441,12 @@
       "description": "checking whether non-ownProperties are seen, copied by Array.prototype.concat: Object.prototype[1]",
       "info": "Array.prototype.concat uses [[Get]] on \u0027length\u0027 to determine array length",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:b.hasOwnProperty(\u00221\u0022) must return false"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/arg-length-exceeding-integer-limit.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Symbol.isConcatSpreadable",
@@ -44974,13 +43459,12 @@
       "description": "TypeError is thrown if \u0022length\u0022 of result array exceeds 2^53 - 1.",
       "info": "Array.prototype.concat ( ...arguments )\n[...]\n5. Repeat, while items is not empty\n[...]\nc. If spreadable is true, then\n[...]\nii. Let len be ? LengthOfArrayLike(E).\niii. If n \u002B len \u003E 2^53 - 1, throw a TypeError exception.\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/arg-length-near-integer-limit.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Symbol.isConcatSpreadable"
@@ -44992,13 +43476,12 @@
       "description": "Elements are copied from a spreadable array-like object\nwhose \u0022length\u0022 property is near the integer limit.",
       "info": "Array.prototype.concat ( ...arguments )\n[...]\n5. Repeat, while items is not empty\n[...]\nc. If spreadable is true, then\n[...]\nii. Let len be ? LengthOfArrayLike(E).\niii. If n \u002B len \u003E 2^53 - 1, throw a TypeError exception.\niv. Repeat, while k \u003C len\n[...]\n3. If exists is true, then\na. Let subElement be ? Get(E, P).\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/call-with-boolean.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -45008,13 +43491,12 @@
       "description": "Array.prototype.concat applied to boolean primitive",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:The result of evaluating (Array.prototype.concat.call(true)[0] instanceof Boolean) is expected to be true"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-ctor-non-object.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -45024,9 +43506,8 @@
       "description": "Behavior when \u0060constructor\u0060 property is neither an Object nor undefined",
       "info": "1. Let O be ? ToObject(this value).\n2. Let A be ? ArraySpeciesCreate(O, 0).\n9.4.2.3 ArraySpeciesCreate\n[...]\n5. Let C be ? Get(originalArray, \u0022constructor\u0022).\n[...]\n9. If IsConstructor(C) is false, throw a TypeError exception.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-ctor-poisoned.js",
@@ -45060,7 +43541,7 @@
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-proto-from-ctor-realm-array.js",
-      "status": "Passed",
+      "status": "Failed",
       "durationMs": 0,
       "features": [
         "cross-realm",
@@ -45073,8 +43554,9 @@
       "description": "Prefer Array constructor of current realm record",
       "info": "1. Let O be ? ToObject(this value).\n2. Let A be ? ArraySpeciesCreate(O, 0).\n[...]\n9.4.2.3 ArraySpeciesCreate\n[...]\n5. Let C be ? Get(originalArray, \u0022constructor\u0022).\n6. If IsConstructor(C) is true, then\na. Let thisRealm be the current Realm Record.\nb. Let realmC be ? GetFunctionRealm(C).\nc. If thisRealm and realmC are not the same Realm Record, then\ni. If SameValue(C, realmC.[[Intrinsics]].[[%Array%]]) is true, let C\nbe undefined.\n[...]",
       "locale": null,
-      "category": null,
-      "message": null
+      "category": "runtime-semantic-bug",
+      "message": "Unhandled runtime throw.",
+      "details": "thrown=string:The value of callCount is expected to be 0"
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-proto-from-ctor-realm-non-array.js",
@@ -45096,7 +43578,7 @@
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-proxy.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Proxy",
@@ -45109,13 +43591,12 @@
       "description": "Species constructor of a Proxy object whose target is an array",
       "info": "[...]\n2. Let A be ? ArraySpeciesCreate(O, 0).\n[...]\n7. Return A.\n9.4.2.3 ArraySpeciesCreate\n[...]\n3. Let isArray be ? IsArray(originalArray).\n7.2.2 IsArray\n[...]\n3. If argument is a Proxy exotic object, then\na. If the value of the [[ProxyHandler]] internal slot of argument is\nnull, throw a TypeError exception.\nb. Let target be the value of the [[ProxyTarget]] internal slot of\nargument.\nc. Return ? IsArray(target).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:Object.getPrototypeOf(Array.prototype.concat.call(proxy)) returns Ctor.prototype"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-revoked-proxy.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Proxy"
@@ -45127,9 +43608,8 @@
       "description": "Abrupt completion from constructor that is a revoked Proxy object",
       "info": "1. Let O be ? ToObject(this value).\n2. Let A be ? ArraySpeciesCreate(O, 0).\n9.4.2.3 ArraySpeciesCreate\n[...]\n3. Let isArray be ? IsArray(originalArray).\n7.2.2 IsArray\n[...]\n3. If argument is a Proxy exotic object, then\na. If the value of the [[ProxyHandler]] internal slot of argument is\nnull, throw a TypeError exception.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-species-abrupt.js",
@@ -45170,7 +43650,7 @@
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-species-non-extensible-spreadable.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Symbol.species"
@@ -45182,13 +43662,12 @@
       "description": "TypeError is thrown if CreateDataProperty fails.\n(result object is non-extensible, argument is spreadable)",
       "info": "Array.prototype.concat ( ...arguments )\n[...]\n5. Repeat, while items is not empty\n[...]\nc. If spreadable is true, then\n[...]\niv. Repeat, while k \u003C len\n[...]\n3. If exists is true, then\n[...]\nb. Perform ? CreateDataPropertyOrThrow(A, ! ToString(n), subElement).\n[...]\nCreateDataPropertyOrThrow ( O, P, V )\n[...]\n3. Let success be ? CreateDataProperty(O, P, V).\n4. If success is false, throw a TypeError exception.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-species-non-extensible.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Symbol.species"
@@ -45200,9 +43679,8 @@
       "description": "TypeError is thrown if CreateDataProperty fails.\n(result object is non-extensible, argument is not spreadable)",
       "info": "Array.prototype.concat ( ...arguments )\n[...]\n5. Repeat, while items is not empty\n[...]\nc. If spreadable is true, then\n[...]\nd. Else,\n[...]\niii. Perform ? CreateDataPropertyOrThrow(A, ! ToString(n), E).\n[...]\nCreateDataPropertyOrThrow ( O, P, V )\n[...]\n3. Let success be ? CreateDataProperty(O, P, V).\n4. If success is false, throw a TypeError exception.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-species-null.js",
@@ -45223,7 +43701,7 @@
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-species-poisoned.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Symbol.species"
@@ -45235,9 +43713,8 @@
       "description": "Abrupt completion from \u0060@@species\u0060 property access",
       "info": "1. Let O be ? ToObject(this value).\n2. Let A be ? ArraySpeciesCreate(O, 0).\n9.4.2.3 ArraySpeciesCreate\n[...]\n5. Let C be ? Get(originalArray, \u0022constructor\u0022).\n[...]\n7. If Type(C) is Object, then\na. Let C be ? Get(C, @@species).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-species-undef.js",
@@ -45258,7 +43735,7 @@
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-species-with-non-configurable-property-spreadable.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Symbol.species"
@@ -45270,13 +43747,12 @@
       "description": "TypeError is thrown if CreateDataProperty fails.\n(result object\u0027s \u00220\u0022 is non-configurable, argument is spreadable)",
       "info": "Array.prototype.concat ( ...arguments )\n[...]\n5. Repeat, while items is not empty\n[...]\nc. If spreadable is true, then\n[...]\niv. Repeat, while k \u003C len\n[...]\n3. If exists is true, then\n[...]\nb. Perform ? CreateDataPropertyOrThrow(A, ! ToString(n), subElement).\n[...]\nCreateDataPropertyOrThrow ( O, P, V )\n[...]\n3. Let success be ? CreateDataProperty(O, P, V).\n4. If success is false, throw a TypeError exception.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-species-with-non-configurable-property.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Symbol.species"
@@ -45288,13 +43764,12 @@
       "description": "TypeError is thrown if CreateDataProperty fails.\n(result object\u0027s \u00220\u0022 is non-configurable, argument is non-spreadable)",
       "info": "Array.prototype.concat ( ...arguments )\n[...]\n5. Repeat, while items is not empty\n[...]\nc. If spreadable is true, then\n[...]\nd. Else,\n[...]\niii. Perform ? CreateDataPropertyOrThrow(A, ! ToString(n), E).\n[...]\nCreateDataPropertyOrThrow ( O, P, V )\n[...]\n3. Let success be ? CreateDataProperty(O, P, V).\n4. If success is false, throw a TypeError exception.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-species-with-non-writable-property-spreadable.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Symbol.species"
@@ -45308,13 +43783,12 @@
       "description": "Non-writable properties are overwritten by CreateDataProperty.\n(result object\u0027s \u00220\u0022 is non-writable, argument is spreadable)",
       "info": "Array.prototype.concat ( ...arguments )\n[...]\n5. Repeat, while items is not empty\n[...]\nc. If spreadable is true, then\n[...]\niv. Repeat, while k \u003C len\n[...]\n3. If exists is true, then\n[...]\nb. Perform ? CreateDataPropertyOrThrow(A, ! ToString(n), subElement).\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor value"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-species-with-non-writable-property.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Symbol.species"
@@ -45328,9 +43802,8 @@
       "description": "Non-writable properties are overwritten by CreateDataProperty.\n(result object\u0027s \u00220\u0022 is non-writable, argument is not spreadable)",
       "info": "Array.prototype.concat ( ...arguments )\n[...]\n5. Repeat, while items is not empty\n[...]\nc. If spreadable is true, then\n[...]\niv. Repeat, while k \u003C len\n[...]\n3. If exists is true, then\n[...]\nb. Perform ? CreateDataPropertyOrThrow(A, ! ToString(n), subElement).\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:descriptor value"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/create-species.js",
@@ -45351,7 +43824,7 @@
     },
     {
       "path": "test/built-ins/Array/prototype/concat/is-concat-spreadable-get-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Symbol.isConcatSpreadable"
@@ -45363,13 +43836,12 @@
       "description": "Error thrown when accessing \u0060Symbol.isConcatSpreadable\u0060 property",
       "info": "1. Let O be ToObject(this value).\n2. ReturnIfAbrupt(O).\n3. Let A be ArraySpeciesCreate(O, 0).\n4. ReturnIfAbrupt(A).\n5. Let n be 0.\n6. Let items be a List whose first element is O and whose subsequent\nelements are, in left to right order, the arguments that were passed to\nthis function invocation.\n7. Repeat, while items is not empty\na. Remove the first element from items and let E be the value of the element.\nb. Let spreadable be IsConcatSpreadable(E).\nc. ReturnIfAbrupt(spreadable).\nES6 22.1.3.1.1: Runtime Semantics: IsConcatSpreadable ( O )\n1. If Type(O) is not Object, return false.\n2. Let spreadable be Get(O, @@isConcatSpreadable).\n3. ReturnIfAbrupt(spreadable).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/is-concat-spreadable-get-order.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Symbol.isConcatSpreadable"
@@ -45383,13 +43855,12 @@
       "description": "Symbol.isConcatSpreadable should be looked up once for \u0060this value\u0060 and\nonce for each argument, after ArraySpeciesCreate routine.",
       "info": "Array.prototype.concat ( ...arguments )\n1. Let O be ? ToObject(this value).\n2. Let A be ? ArraySpeciesCreate(O, 0).\n[...]\n5. Repeat, while items is not empty\na. Remove the first element from items and let E be the value of the element.\nb. Let spreadable be ? IsConcatSpreadable(E).\n[...]\nArraySpeciesCreate ( originalArray, length )\n[...]\n5. Let C be ? Get(originalArray, \u0022constructor\u0022).\n[...]\nRuntime Semantics: IsConcatSpreadable ( O )\n1. If Type(O) is not Object, return false.\n2. Let spreadable be ? Get(O, @@isConcatSpreadable).\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:The value of calls is expected to be [\u0022constructor\u0022, \u0022isConcatSpreadable\u0022]"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/is-concat-spreadable-is-array-proxy-revoked.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Proxy",
@@ -45402,13 +43873,12 @@
       "description": "Revoked proxy value produces a TypeError when supplied to IsArray",
       "info": "[...]\n5. Repeat, while items is not empty\na. Remove the first element from items and let E be the value of the\nelement.\nb. Let spreadable be ? IsConcatSpreadable(E).\nc. If spreadable is true, then\n[...]\ne. Else E is added as a single item rather than spread,\n[...]\nES6 22.1.3.1.1: Runtime Semantics: IsConcatSpreadable ( O )\n1. If Type(O) is not Object, return false.\n2. Let spreadable be ? Get(O, @@isConcatSpreadable).\n3. If spreadable is not undefined, return ToBoolean(spreadable).\n4. Return ? IsArray(O).\n7.2.2 IsArray\n[...]\n3. If argument is a Proxy exotic object, then\na. If the value of the [[ProxyHandler]] internal slot of argument is null,\nthrow a TypeError exception.\nb. Let target be the value of the [[ProxyTarget]] internal slot of\nargument.\nc. Return ? IsArray(target).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/is-concat-spreadable-proxy-revoked.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Proxy"
@@ -45420,13 +43890,12 @@
       "description": "Revoked proxy value produces a TypeError during access of\n\u0060Symbol.isConcatSpreadable\u0060 property",
       "info": "[...]\n5. Repeat, while items is not empty\na. Remove the first element from items and let E be the value of the\nelement.\nb. Let spreadable be ? IsConcatSpreadable(E).\nc. If spreadable is true, then\n[...]\ne. Else E is added as a single item rather than spread,\n[...]\nES6 22.1.3.1.1: Runtime Semantics: IsConcatSpreadable ( O )\n1. If Type(O) is not Object, return false.\n2. Let spreadable be ? Get(O, @@isConcatSpreadable).\n7.3.1 Get\n[...]\n3. Return ? O.[[Get]](P, O).\n9.5.8 [[Get]]\n[...]\n2. Let handler be O.[[ProxyHandler]].\n3. If handler is null, throw a TypeError exception.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/is-concat-spreadable-proxy.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Proxy",
@@ -45439,9 +43908,8 @@
       "description": "Proxies who final targets are arrays are considered spreadable",
       "info": "[...]\n5. Repeat, while items is not empty\na. Remove the first element from items and let E be the value of the\nelement.\nb. Let spreadable be ? IsConcatSpreadable(E).\nc. If spreadable is true, then\n[...]\ne. Else E is added as a single item rather than spread,\n[...]\nES6 22.1.3.1.1: Runtime Semantics: IsConcatSpreadable ( O )\n1. If Type(O) is not Object, return false.\n2. Let spreadable be ? Get(O, @@isConcatSpreadable).\n3. If spreadable is not undefined, return ToBoolean(spreadable).\n4. Return ? IsArray(O).\n7.2.2 IsArray\n[...]\n3. If argument is a Proxy exotic object, then\na. If the value of the [[ProxyHandler]] internal slot of argument is null,\nthrow a TypeError exception.\nb. Let target be the value of the [[ProxyTarget]] internal slot of\nargument.\nc. Return ? IsArray(target).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:The value of [].concat(arrayProxy).length is expected to be 0"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/Array/prototype/concat/is-concat-spreadable-val-falsey.js",
