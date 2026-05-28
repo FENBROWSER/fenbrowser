@@ -3187,7 +3187,8 @@ public sealed class JsParser
                     rejectSuperCallInBody: true);
                 var accessorFnName = accessorKey ?? accessorKind.Text;
                 var accessorFn = new FunctionExpressionNode(accessorFnName, parameters, body, MergeSpan(accessorKind.Span, body.Span), RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings);
-                properties.Add(new ObjectPropertyNode(accessorKey, accessorComputedKey, accessorIsComputed, accessorFn, accessorFn.Span));
+                var accessorPropKind = accessorKind.Text == "get" ? ObjectPropertyKind.Getter : ObjectPropertyKind.Setter;
+                properties.Add(new ObjectPropertyNode(accessorKey, accessorComputedKey, accessorIsComputed, accessorFn, accessorFn.Span, accessorPropKind));
                 if (IsPunctuator(","))
                 {
                     Advance();

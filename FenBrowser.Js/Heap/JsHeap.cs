@@ -10,6 +10,7 @@ public sealed class JsHeap
     private readonly List<bool> _isFree = new();
     private readonly Stack<int> _freeList = new();
     private readonly RootSet _roots = new();
+    private readonly List<IHeapRootSource> _rootSources = new();
     private readonly GcStressMode _stressMode;
     private readonly List<(ObjectHandle Owner, ObjectHandle Child)> _writeBarrierEdges = new();
     private int _writeBarrierCount;
@@ -52,6 +53,12 @@ public sealed class JsHeap
     }
 
     public int RootCount => _roots.Count;
+
+    // Audit §1: subsystems whose live JsValue Objects aren't visible through
+    // the heap's RootSet (e.g. BytecodeInterpreter's active InterpreterFrame
+    // Registers) register here so GC honours those references too.
+    public void AddRootSource(IHeapRootSource source) => _rootSources.Add(source);
+    public bool RemoveRootSource(IHeapRootSource source) => _rootSources.Remove(source);
     public int WriteBarrierCount => _writeBarrierCount;
     public int GcCollectionCount => _gcCollectionCount;
     public int MinorCollectionCount => _minorGcCount;
@@ -258,6 +265,12 @@ public sealed class JsHeap
         foreach (var root in _roots.StringSnapshot()) marker.Trace(root);
         foreach (var root in _roots.SymbolSnapshot()) marker.Trace(root);
 
+        // Audit §1: external root sources (interpreter frame registers).
+        for (var i = 0; i < _rootSources.Count; i++)
+        {
+            _rootSources[i].TraceRoots(marker);
+        }
+
         // Remembered set: every recorded Old→Young edge is treated as a root
         // for the Young cell.
         foreach (var (ownerIdx, children) in _rememberedSet)
@@ -371,6 +384,12 @@ public sealed class JsHeap
         foreach (var root in _roots.SymbolSnapshot())
         {
             marker.Trace(root);
+        }
+
+        // Audit §1: roots held by external subsystems (interpreter frames).
+        for (var i = 0; i < _rootSources.Count; i++)
+        {
+            _rootSources[i].TraceRoots(marker);
         }
 
         // Sweep unreachable cells.

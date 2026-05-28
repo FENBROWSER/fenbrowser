@@ -2078,7 +2078,16 @@ public sealed class BytecodeCompiler
                         }
 
                         var keyReg = CompileExpression(prop.ComputedKey);
-                        _instructions.Add(new Instruction(OpCode.SetElem, dest, keyReg, valueReg));
+                        // Audit §1: object-literal accessors with computed keys
+                        // emit DefineGetter/SetterByReg so the result installs
+                        // as a real accessor descriptor, not a data property.
+                        var computedOp = prop.Kind switch
+                        {
+                            ObjectPropertyKind.Getter => OpCode.DefineGetterByReg,
+                            ObjectPropertyKind.Setter => OpCode.DefineSetterByReg,
+                            _ => OpCode.SetElem,
+                        };
+                        _instructions.Add(new Instruction(computedOp, dest, keyReg, valueReg));
                     }
                     else
                     {
@@ -2088,7 +2097,17 @@ public sealed class BytecodeCompiler
                         }
 
                         var nameIndex = GetOrCreatePropertyName(prop.Key);
-                        _instructions.Add(new Instruction(OpCode.SetPropByName, dest, nameIndex, valueReg));
+                        // Audit §1: object-literal accessors install via
+                        // DefineGetter/DefineSetter rather than SetPropByName so
+                        // `iter.next` (a getter) invokes the function instead of
+                        // returning it raw.
+                        var namedOp = prop.Kind switch
+                        {
+                            ObjectPropertyKind.Getter => OpCode.DefineGetter,
+                            ObjectPropertyKind.Setter => OpCode.DefineSetter,
+                            _ => OpCode.SetPropByName,
+                        };
+                        _instructions.Add(new Instruction(namedOp, dest, nameIndex, valueReg));
                     }
                 }
 

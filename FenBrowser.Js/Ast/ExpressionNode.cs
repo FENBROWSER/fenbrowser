@@ -47,7 +47,9 @@ public sealed record ArrowFunctionExpressionNode(
     int RestParameterIndex = -1,
     IReadOnlyList<BindingPatternNode?>? ParameterBindings = null) : ExpressionNode(Span);
 
-public sealed record ObjectPropertyNode(string? Key, ExpressionNode? ComputedKey, bool IsComputed, ExpressionNode Value, SourceSpan Span);
+public enum ObjectPropertyKind { Data, Getter, Setter }
+
+public sealed record ObjectPropertyNode(string? Key, ExpressionNode? ComputedKey, bool IsComputed, ExpressionNode Value, SourceSpan Span, ObjectPropertyKind Kind = ObjectPropertyKind.Data);
 
 public sealed record ObjectLiteralExpressionNode(IReadOnlyList<ObjectPropertyNode> Properties, SourceSpan Span) : ExpressionNode(Span);
 

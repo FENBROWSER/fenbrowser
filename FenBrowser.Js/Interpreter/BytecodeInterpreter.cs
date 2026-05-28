@@ -12,10 +12,43 @@ using System.Text.RegularExpressions;
 
 namespace FenBrowser.Js.Interpreter;
 
-public sealed partial class BytecodeInterpreter : IBuiltinContext
+public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSource
 {
     private readonly JsHeap _heap;
     public JsHeap Heap => _heap;
+    // Audit §1: every active InterpreterFrame is registered here so the GC
+    // sees its register/this/newtarget/env references as roots. Without this,
+    // a cell only reachable through a frame register can be reclaimed by an
+    // auto-MinorCollect inside user code and surface as "Stale heap handle.".
+    private readonly Stack<InterpreterFrame> _activeFrames = new();
+
+    private readonly struct ActiveFrameScope : IDisposable
+    {
+        private readonly Stack<InterpreterFrame> _stack;
+        public ActiveFrameScope(Stack<InterpreterFrame> stack, InterpreterFrame frame)
+        {
+            _stack = stack;
+            stack.Push(frame);
+        }
+        public void Dispose() => _stack.Pop();
+    }
+
+    void IHeapRootSource.TraceRoots(IHeapTracer tracer)
+    {
+        foreach (var frame in _activeFrames)
+        {
+            for (var i = 0; i < frame.Registers.Length; i++)
+            {
+                var v = frame.Registers[i];
+                if (v.Tag == JsValueTag.Object) tracer.Trace(v.AsObjectHandle());
+            }
+            if (frame.ThisValue.Tag == JsValueTag.Object) tracer.Trace(frame.ThisValue.AsObjectHandle());
+            if (frame.NewTarget.Tag == JsValueTag.Object) tracer.Trace(frame.NewTarget.AsObjectHandle());
+            if (frame.PendingException is { } pe && pe.Tag == JsValueTag.Object)
+                tracer.Trace(pe.AsObjectHandle());
+            frame.Environment?.Trace(tracer);
+        }
+    }
     double IBuiltinContext.ToNumber(JsValue value) => ToNumber(value);
     string IBuiltinContext.ToStringValue(JsValue value) => ToStringValue(value);
     JsValue IBuiltinContext.CallFunction(JsValue fn, IReadOnlyList<JsValue> args, JsValue thisValue) => CallFunction(fn, args, thisValue);
@@ -206,6 +239,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
     public BytecodeInterpreter(JsHeap? heap = null)
     {
         _heap = heap ?? new JsHeap();
+        _heap.AddRootSource(this);
     }
 
     [MayExecuteJs]
@@ -484,6 +518,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                 ? new FunctionEnvironmentRecord(ThisBindingStatus.Uninitialized, JsValue.Undefined, JsValue.Undefined, callee?.HomeObject, outerEnvironment)
                 : new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment));
         var frame = new InterpreterFrame(function, thisValue, frameEnv) { CalleeFunctionObject = callee, OwnerGenerator = ownerGenerator, AsyncContext = asyncContext };
+        // Audit §1: pin this frame's registers/env into the GC root set for
+        // its execution lifetime. Dispose pops on every return path (normal
+        // return, exception, generator yield) via using-scope semantics.
+        using var _frameScope = new ActiveFrameScope(_activeFrames, frame);
         // H.5 - new.target: consume the one-shot pending slot set by
         // ExecuteConstruct. Ordinary calls leave it Undefined.
         if (_pendingNewTarget.Tag != JsValueTag.Undefined)
@@ -1891,7 +1929,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         //   annexB/.../for-of/iterator-close-return-emulates-undefined-throws-when-called.js
         //   built-ins/AggregateError/errors-iterabletolist-failures.js
         //   built-ins/Array/from/iter-map-fn-err.js
+        // Plus: suspend auto-MinorCollect for the duration. CallFunction returns
+        // a JsValue that briefly lives only in a C# local while the callee
+        // frame is being popped — between those two beats an auto-trigger
+        // would reclaim an object-tag result whose cell isn't yet rooted.
         var rootMark = _heap.RootCount;
+        var savedYoungThreshold = _heap.YoungAllocationsPerMinorGc;
+        _heap.YoungAllocationsPerMinorGc = -1;
         try
         {
             _heap.PushRoot(iter.AsObjectHandle());
@@ -1910,6 +1954,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
                     throw new JsThrownException(CreateTypeError("Iterator result is not an object."));
                 }
 
+                // Pin the freshly allocated IteratorResult — a follow-on
+                // allocation (e.g. CreateTypeError, another .next() call) can
+                // tick the auto-MinorCollect counter and reclaim it otherwise.
+                _heap.PushRoot(result.AsObjectHandle());
                 var resultObj = _heap.GetObject(result.AsObjectHandle());
                 TryGetPropertyValue(resultObj, result, "done", out var doneVal);
                 if (IsTruthy(doneVal))
@@ -1926,6 +1974,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
         finally
         {
             _heap.PopRootsTo(rootMark);
+            _heap.YoungAllocationsPerMinorGc = savedYoungThreshold;
         }
     }
 
