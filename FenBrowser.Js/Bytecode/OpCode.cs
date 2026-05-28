@@ -109,6 +109,18 @@ public enum OpCode : byte
     // MakeSuperPropertyReference + 9.1.2 GetSuperBase.
     LoadSuperElement,
 
+    // ECMA-262 13.3.10 ImportCall — `import(specifier)`. A=dest, B=spec reg.
+    // FenJS has no host module resolver yet, so the runtime returns a rejected
+    // Promise carrying a TypeError. Replaces the prior parser-level rejection
+    // so the test262 syntax cohort parses and the async-test path observes a
+    // rejection rather than a SyntaxError.
+    DynamicImport,
+
+    // ECMA-262 13.3.12 ImportMeta — `import.meta`. A=dest. Returns a fresh
+    // empty object (the host metadata hook is not wired). Enough to satisfy
+    // the syntax tests that parse `import.meta` references.
+    ImportMeta,
+
     // H.3.2 - LoadSuperConstructor(A=dest reg). Reads the parent class from
     // the executing constructor's HomeObject prototype slot. ECMA-262
     // 13.3.7.4 GetSuperConstructor. Used by `super(...)` to obtain the

@@ -1687,6 +1687,19 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.LoadNewTarget, reg, 0, 0));
                 return reg;
             }
+            case ImportCallExpressionNode importCall:
+            {
+                var specReg = CompileExpression(importCall.Specifier);
+                var dest = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.DynamicImport, dest, specReg, 0));
+                return dest;
+            }
+            case ImportMetaExpressionNode:
+            {
+                var dest = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.ImportMeta, dest, 0, 0));
+                return dest;
+            }
             case AssignmentExpressionNode assign when assign.Left is IdentifierExpressionNode id:
             {
                 var rightReg = CompileExpression(assign.Right);

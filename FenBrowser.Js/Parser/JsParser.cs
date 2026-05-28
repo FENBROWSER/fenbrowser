@@ -739,6 +739,13 @@ public sealed class JsParser
             switch (Current().Text)
             {
                 case "import":
+                    // ECMA-262 13.3.10 / 13.3.12 — `import(...)` ImportCall and
+                    // `import.meta` ImportMeta are expressions, not declarations.
+                    // Fall through to ParseExpressionStatement in those positions.
+                    if (PeekIsPunctuator(1, "(") || PeekIsPunctuator(1, "."))
+                    {
+                        break;
+                    }
                     return ParseImportDeclaration();
                 case "export":
                     return ParseExportDeclaration();
@@ -2902,6 +2909,41 @@ public sealed class JsParser
         if (token.Kind == TokenKind.Keyword && token.Text == "new")
         {
             return ParseNewExpression();
+        }
+
+        if (token.Kind == TokenKind.Keyword && token.Text == "import")
+        {
+            // ECMA-262 13.3.10 ImportCall + 13.3.12 ImportMeta.
+            var importToken = Advance();
+            if (IsPunctuator("("))
+            {
+                Advance();
+                var specifier = ParseExpression(2);
+                // ECMA-262 13.3.10.1: optional trailing comma + assertion arg.
+                // We parse and discard a second argument so import(spec, {}) still
+                // parses; the host loader currently ignores it.
+                if (IsPunctuator(","))
+                {
+                    Advance();
+                    if (!IsPunctuator(")"))
+                    {
+                        _ = ParseExpression(2);
+                    }
+                }
+                ExpectPunctuator(")");
+                return new ImportCallExpressionNode(specifier, MergeSpan(importToken.Span, Previous().Span));
+            }
+            if (IsPunctuator("."))
+            {
+                Advance();
+                var prop = ExpectPropertyNameAfterDot();
+                if (!string.Equals(prop.Text, "meta", StringComparison.Ordinal))
+                {
+                    throw new JsParserException($"Expected 'meta' after 'import.', found '{prop.Text}'.");
+                }
+                return new ImportMetaExpressionNode(MergeSpan(importToken.Span, prop.Span));
+            }
+            throw new JsParserException($"Unexpected token '{Current().Text}' ({Current().Kind}) after 'import'.");
         }
 
         if (token.Kind == TokenKind.Keyword && token.Text == "async")

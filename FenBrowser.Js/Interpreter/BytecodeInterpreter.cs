@@ -811,6 +811,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.LoadSuperElement:
                     HandleLoadSuperElement(frame, ins);
                     break;
+                case OpCode.DynamicImport:
+                    frame.Registers[ins.A] = HandleDynamicImport(frame.Registers[ins.B]);
+                    break;
+                case OpCode.ImportMeta:
+                    frame.Registers[ins.A] = HandleImportMeta();
+                    break;
                 case OpCode.LoadSuperConstructor:
                     HandleLoadSuperConstructor(frame, ins);
                     break;
