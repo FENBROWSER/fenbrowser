@@ -1883,30 +1883,49 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             throw new JsThrownException(CreateTypeError("Iterator @@iterator did not return an object."));
         }
 
-        var iterObj = _heap.GetObject(iter.AsObjectHandle());
-        while (true)
+        // Audit gap §1 #1/#2/#5: pin the iterator handle and every object-tag
+        // value that lands in the sink for the duration of the drain. Without
+        // these roots, a GC triggered inside user-code .next()/abrupt
+        // completion reclaims cells we are about to read back, surfacing as
+        // "Stale heap handle." crashes in
+        //   annexB/.../for-of/iterator-close-return-emulates-undefined-throws-when-called.js
+        //   built-ins/AggregateError/errors-iterabletolist-failures.js
+        //   built-ins/Array/from/iter-map-fn-err.js
+        var rootMark = _heap.RootCount;
+        try
         {
-            if (!TryGetPropertyValue(iterObj, iter, "next", out var nextFn) ||
-                nextFn.Tag != JsValueTag.Object)
+            _heap.PushRoot(iter.AsObjectHandle());
+            var iterObj = _heap.GetObject(iter.AsObjectHandle());
+            while (true)
             {
-                throw new JsThrownException(CreateTypeError("Iterator result missing callable 'next'."));
-            }
+                if (!TryGetPropertyValue(iterObj, iter, "next", out var nextFn) ||
+                    nextFn.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError("Iterator result missing callable 'next'."));
+                }
 
-            var result = CallFunction(nextFn, Array.Empty<JsValue>(), iter);
-            if (result.Tag != JsValueTag.Object)
-            {
-                throw new JsThrownException(CreateTypeError("Iterator result is not an object."));
-            }
+                var result = CallFunction(nextFn, Array.Empty<JsValue>(), iter);
+                if (result.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError("Iterator result is not an object."));
+                }
 
-            var resultObj = _heap.GetObject(result.AsObjectHandle());
-            TryGetPropertyValue(resultObj, result, "done", out var doneVal);
-            if (IsTruthy(doneVal))
-            {
-                return;
-            }
+                var resultObj = _heap.GetObject(result.AsObjectHandle());
+                TryGetPropertyValue(resultObj, result, "done", out var doneVal);
+                if (IsTruthy(doneVal))
+                {
+                    return;
+                }
 
-            TryGetPropertyValue(resultObj, result, "value", out var value);
-            sink.Add(value);
+                TryGetPropertyValue(resultObj, result, "value", out var value);
+                if (value.Tag == JsValueTag.Object)
+                    _heap.PushRoot(value.AsObjectHandle());
+                sink.Add(value);
+            }
+        }
+        finally
+        {
+            _heap.PopRootsTo(rootMark);
         }
     }
 
@@ -15511,6 +15530,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
 
             value = _values[_index++];
             return true;
+        }
+
+        // Audit gap §1 #1/#2/#5: buffered iterator values must survive GC while
+        // the iterator is reachable. Without this, GC during user code that
+        // ran *after* this iterator was allocated (e.g. an inner abrupt
+        // completion) could reclaim object cells referenced by _values and
+        // surface "Stale heap handle." on the next consumer access.
+        public override void Trace(IHeapTracer tracer)
+        {
+            base.Trace(tracer);
+            for (var i = _index; i < _values.Count; i++)
+            {
+                var v = _values[i];
+                if (v.Tag == JsValueTag.Object)
+                    tracer.Trace(v.AsObjectHandle());
+            }
         }
     }
 
