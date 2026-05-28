@@ -1,5 +1,8 @@
+using FenBrowser.Js.Bytecode;
+using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
+using FenBrowser.Js.Source;
 using Xunit;
 
 namespace FenBrowser.Js.Tests;
@@ -35,6 +38,36 @@ public sealed class ArrayBufferRuntimeTests
         clone.Data[0] = 0x99;
         Assert.Equal(0x42, buf.Data[0]);
     }
+
+    // ECMA-262 25.1.3.1 step 4 + 6.2.6.1 CreateByteDataBlock: byteLength must be
+    // a non-negative integer ≤ the implementation-defined limit; otherwise RangeError.
+    // Backing store is a managed byte[] so the limit is int.MaxValue.
+    // Audit gap §1 crashes #3 (allocation-limit.js) and #4 (data-allocation-after-object-creation.js).
+    private static bool CaughtRangeError(string src)
+    {
+        var fn = new BytecodeCompiler().CompileScript(new SourceText(@"
+            var caught = '';
+            try { " + src + @" }
+            catch (e) { caught = (e && e.constructor && e.constructor.name) || ''; }
+            caught;"));
+        return new BytecodeInterpreter().Execute(fn).AsString() == "RangeError";
+    }
+
+    [Fact]
+    public void Constructor_SevenPiB_ThrowsRangeError()
+        => Assert.True(CaughtRangeError("new ArrayBuffer(7 * 1125899906842624);"));
+
+    [Fact]
+    public void Constructor_Pow2_53Minus1_ThrowsRangeError()
+        => Assert.True(CaughtRangeError("new ArrayBuffer(9007199254740991);"));
+
+    [Fact]
+    public void Constructor_JustOverInt32Max_ThrowsRangeError()
+        => Assert.True(CaughtRangeError("new ArrayBuffer(2147483648);"));
+
+    [Fact]
+    public void Constructor_NegativeLength_ThrowsRangeError()
+        => Assert.True(CaughtRangeError("new ArrayBuffer(-1);"));
 }
 
 public sealed class TypedArrayObjectTests

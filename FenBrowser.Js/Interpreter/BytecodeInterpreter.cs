@@ -10918,7 +10918,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext
             args =>
             {
                 var length = args.Count > 0 ? args[0].AsNumber() : 0;
-                if (double.IsNaN(length) || length < 0 || length > 9007199254740991d) // 2^53-1
+                // ECMA-262 25.1.3.1 step 4 + 6.2.6.1 CreateByteDataBlock: byteLength must be
+                // a non-negative integer ≤ the implementation-defined maximum, else RangeError.
+                // Our backing store is a managed byte[], so the limit is int.MaxValue.
+                if (double.IsNaN(length) || length < 0 || length > int.MaxValue)
                     throw new JsThrownException(CreateRangeError("Invalid ArrayBuffer length."));
                 var buf = new ArrayBufferObject((int)length);
                 buf.SetPrototype(prototypeHandle);
