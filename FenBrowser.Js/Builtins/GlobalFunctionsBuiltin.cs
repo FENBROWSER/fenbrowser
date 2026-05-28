@@ -67,7 +67,95 @@ public sealed class GlobalFunctionsBuiltin : IBuiltinModule
             JsValue.FromString(DecodeUri(ctx, args.Count > 0 ? ctx.ToStringValue(args[0]) : "undefined", preserveReserved: false)),
             length: 1);
 
+        // Annex B B.2.1.1 escape(string) — legacy URI-ish encoder. Distinct from
+        // encodeURIComponent: it uses %uXXXX for code points ≥ 256 and leaves
+        // a smaller unreserved set untouched.
+        AddFunction(context, bindings, "escape", (ctx, _, args) =>
+            JsValue.FromString(LegacyEscape(args.Count > 0 ? ctx.ToStringValue(args[0]) : "undefined")),
+            length: 1);
+
+        // Annex B B.2.1.2 unescape(string) — inverse of escape; recognises both
+        // %XX and %uXXXX. Unknown trailing % sequences pass through literally
+        // per the spec.
+        AddFunction(context, bindings, "unescape", (ctx, _, args) =>
+            JsValue.FromString(LegacyUnescape(args.Count > 0 ? ctx.ToStringValue(args[0]) : "undefined")),
+            length: 1);
+
         return bindings;
+    }
+
+    // Annex B B.2.1.1 escape. Unreserved set = ASCII letters, digits, and
+    // `@`, `*`, `_`, `+`, `-`, `.`, `/`. UTF-16 code units are emitted as
+    // %XX when ≤ 0xFF, else %uXXXX.
+    internal static string LegacyEscape(string text)
+    {
+        var sb = new System.Text.StringBuilder(text.Length);
+        foreach (var ch in text)
+        {
+            var c = (int)ch;
+            var unreserved =
+                (c >= 'A' && c <= 'Z') ||
+                (c >= 'a' && c <= 'z') ||
+                (c >= '0' && c <= '9') ||
+                c == '@' || c == '*' || c == '_' || c == '+' ||
+                c == '-' || c == '.' || c == '/';
+            if (unreserved)
+            {
+                _ = sb.Append(ch);
+            }
+            else if (c <= 0xFF)
+            {
+                _ = sb.Append('%').Append(c.ToString("X2", System.Globalization.CultureInfo.InvariantCulture));
+            }
+            else
+            {
+                _ = sb.Append("%u").Append(c.ToString("X4", System.Globalization.CultureInfo.InvariantCulture));
+            }
+        }
+        return sb.ToString();
+    }
+
+    // Annex B B.2.1.2 unescape. Walks each code unit; `%uXXXX` and `%XX` are
+    // decoded when the trailing characters form valid hex, otherwise the `%`
+    // and following characters are emitted unchanged.
+    internal static string LegacyUnescape(string text)
+    {
+        var sb = new System.Text.StringBuilder(text.Length);
+        var i = 0;
+        while (i < text.Length)
+        {
+            var ch = text[i];
+            if (ch == '%')
+            {
+                if (i + 5 < text.Length && text[i + 1] == 'u' &&
+                    TryHex(text[i + 2], out var h1) && TryHex(text[i + 3], out var h2) &&
+                    TryHex(text[i + 4], out var h3) && TryHex(text[i + 5], out var h4))
+                {
+                    _ = sb.Append((char)((h1 << 12) | (h2 << 8) | (h3 << 4) | h4));
+                    i += 6;
+                    continue;
+                }
+                if (i + 2 < text.Length &&
+                    TryHex(text[i + 1], out var b1) && TryHex(text[i + 2], out var b2))
+                {
+                    _ = sb.Append((char)((b1 << 4) | b2));
+                    i += 3;
+                    continue;
+                }
+            }
+            _ = sb.Append(ch);
+            i++;
+        }
+        return sb.ToString();
+    }
+
+    private static bool TryHex(char ch, out int value)
+    {
+        if (ch >= '0' && ch <= '9') { value = ch - '0'; return true; }
+        if (ch >= 'A' && ch <= 'F') { value = ch - 'A' + 10; return true; }
+        if (ch >= 'a' && ch <= 'f') { value = ch - 'a' + 10; return true; }
+        value = 0;
+        return false;
     }
 
     private static void AddFunction(
