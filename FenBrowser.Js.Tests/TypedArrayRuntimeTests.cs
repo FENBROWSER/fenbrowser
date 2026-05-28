@@ -84,6 +84,32 @@ public sealed class TypedArrayRuntimeTests
     }
 
     [Fact]
+    public void DataViewGetOutOfRangeThrowsRangeError()
+    {
+        var result = Run(@"
+            var ok = false;
+            var view = new DataView(new ArrayBuffer(4));
+            try { view.getInt32(2, true); }
+            catch (e) { ok = e instanceof RangeError; }
+            ok;
+        ");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void DataViewSetOutOfRangeThrowsRangeError()
+    {
+        var result = Run(@"
+            var ok = false;
+            var view = new DataView(new ArrayBuffer(4));
+            try { view.setUint32(2, 1, true); }
+            catch (e) { ok = e instanceof RangeError; }
+            ok;
+        ");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void Uint8ArrayConstructorExists()
     {
         Assert.Equal("function", Run("typeof Uint8Array;").AsString());

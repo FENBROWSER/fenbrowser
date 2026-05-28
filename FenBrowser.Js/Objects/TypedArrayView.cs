@@ -32,7 +32,12 @@ public abstract class TypedArrayView : JsObject
     {
         if (Buffer.IsDetached)
             throw new InvalidOperationException("Underlying ArrayBuffer is detached.");
-        if (byteOffset < 0 || byteOffset + size > ByteLength)
+        if (byteOffset < 0 || size < 0)
+            throw new ArgumentOutOfRangeException(nameof(byteOffset));
+
+        // Use widened arithmetic so large offsets cannot wrap the signed
+        // 32-bit add and sneak past bounds checks before indexing.
+        if ((long)byteOffset + size > ByteLength)
             throw new ArgumentOutOfRangeException(nameof(byteOffset));
     }
 
