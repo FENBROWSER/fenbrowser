@@ -9784,11 +9784,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // the default Array constructor, use it; otherwise return a plain Array.
     private JsValue ArraySpeciesCreate(JsValue originalArray, IReadOnlyList<JsValue> items)
     {
-        if (originalArray.Tag == JsValueTag.Object)
+        if (originalArray.Tag == JsValueTag.Object && IsArrayValue(originalArray))
         {
             var obj = _heap.GetObject(originalArray.AsObjectHandle());
-            if (IsArrayValue(originalArray) &&
-                TryGetPropertyValue(obj, originalArray, "constructor", out var ctor) &&
+            if (TryGetPropertyValue(obj, originalArray, "constructor", out var ctor) &&
                 ctor.Tag != JsValueTag.Undefined)
             {
                 if (ctor.Tag != JsValueTag.Object)
@@ -9796,13 +9795,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     throw new JsThrownException(CreateTypeError("Array constructor must be a constructor function."));
                 }
 
-                var ctorObj = _heap.GetObject(ctor.AsObjectHandle());
+                var speciesCtor = ctor;
                 var speciesSymbolId = GetWellKnownSymbolId("species");
-                if (speciesSymbolId != 0 &&
-                    ctorObj.TryGetSymbolProperty(speciesSymbolId, h => _heap.GetObject(h), out var speciesDesc) &&
-                    !speciesDesc.IsAccessor)
+                if (speciesSymbolId != 0)
                 {
-                    var species = speciesDesc.Value;
+                    var species = GetReceiverSymbolProperty(ctor, speciesSymbolId);
                     if (species.Tag == JsValueTag.Null || species.Tag == JsValueTag.Undefined)
                     {
                         goto fallbackArraySpecies;
@@ -9813,18 +9810,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         throw new JsThrownException(CreateTypeError("Array @@species is not a constructor."));
                     }
 
-                    var result = ConstructFunction(species, new[] { JsValue.FromNumber(items.Count) });
-                    if (result.Tag == JsValueTag.Object)
+                    speciesCtor = species;
+                }
+
+                if (speciesCtor.Tag != JsValueTag.Object || !IsCallable(speciesCtor))
+                {
+                    throw new JsThrownException(CreateTypeError("Array @@species is not a constructor."));
+                }
+
+                var result = ConstructFunction(speciesCtor, new[] { JsValue.FromNumber(items.Count) });
+                if (result.Tag == JsValueTag.Object)
+                {
+                    var resultObj = _heap.GetObject(result.AsObjectHandle());
+                    for (var i = 0; i < items.Count; i++)
                     {
-                        var resultObj = _heap.GetObject(result.AsObjectHandle());
-                        for (var i = 0; i < items.Count; i++)
-                        {
-                            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                            resultObj.SetProperty(key, items[i]);
-                        }
-                        if (resultObj is ArrayObject) resultObj.SetProperty("length", JsValue.FromNumber(items.Count));
-                        return result;
+                        var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        resultObj.SetProperty(key, items[i]);
                     }
+                    if (resultObj is ArrayObject) resultObj.SetProperty("length", JsValue.FromNumber(items.Count));
+                    return result;
                 }
             }
         }

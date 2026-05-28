@@ -64,6 +64,7 @@ public sealed class BytecodeCompiler
     private int _nextRegister = 1;
     private FunctionKind _currentFunctionKind = FunctionKind.Ordinary;
     private bool _isStrictMode;
+    private bool _captureCompletionValue;
     // When non-null, the next LoopContext pushed should take this label.
     private string? _pendingLabel;
 
@@ -97,7 +98,8 @@ public sealed class BytecodeCompiler
             name: null,
             hasOwnArgumentsObject: false,
             functionKind: FunctionKind.Ordinary,
-            inheritedStrictMode: inheritedStrictMode);
+            inheritedStrictMode: inheritedStrictMode,
+            captureCompletionValue: true);
     }
 
     public BytecodeFunction CompileFunctionBody(SourceText body, IReadOnlyList<string> parameters, string? name)
@@ -117,7 +119,8 @@ public sealed class BytecodeCompiler
             name,
             hasOwnArgumentsObject: true,
             functionKind: functionKind,
-            inheritedStrictMode: false);
+            inheritedStrictMode: false,
+            captureCompletionValue: false);
     }
 
     private BytecodeFunction CompileProgramCore(
@@ -127,7 +130,8 @@ public sealed class BytecodeCompiler
         string? name,
         bool hasOwnArgumentsObject,
         FunctionKind functionKind,
-        bool inheritedStrictMode)
+        bool inheritedStrictMode,
+        bool captureCompletionValue)
     {
         _instructions.Clear();
         _constants.Clear();
@@ -145,6 +149,7 @@ public sealed class BytecodeCompiler
         _nextRegister = 1;
         _currentFunctionKind = functionKind;
         _isStrictMode = inheritedStrictMode || program.Kind == ProgramKind.Module || HasUseStrictDirective(program.Body);
+        _captureCompletionValue = captureCompletionValue;
         foreach (var p in parameters)
         {
             _parameterNames.Add(p);
@@ -158,7 +163,17 @@ public sealed class BytecodeCompiler
             CompileStatement(stmt);
         }
 
-        _instructions.Add(new Instruction(OpCode.Return, 0, 0, 0));
+        if (_captureCompletionValue)
+        {
+            _instructions.Add(new Instruction(OpCode.Return, 0, 0, 0));
+        }
+        else
+        {
+            var undefReg = AllocateRegister();
+            var undefConst = AddConstant(JsValue.Undefined);
+            _instructions.Add(new Instruction(OpCode.LoadConst, undefReg, undefConst, 0));
+            _instructions.Add(new Instruction(OpCode.Return, undefReg, 0, 0));
+        }
 
         return new BytecodeFunction
         {
@@ -290,7 +305,10 @@ public sealed class BytecodeCompiler
                 break;
             case ExpressionStatementNode exprStmt:
                 var exprReg = CompileExpression(exprStmt.Expression);
-                _instructions.Add(new Instruction(OpCode.Move, 0, exprReg, 0));
+                if (_captureCompletionValue)
+                {
+                    _instructions.Add(new Instruction(OpCode.Move, 0, exprReg, 0));
+                }
                 break;
             case IfStatementNode ifStmt:
                 CompileIfStatement(ifStmt);
@@ -389,7 +407,8 @@ public sealed class BytecodeCompiler
             functionDecl.Name,
             hasOwnArgumentsObject: true,
             functionKind: SelectFunctionKind(functionDecl.IsAsync, functionDecl.IsGenerator, isArrow: false),
-            inheritedStrictMode: _isStrictMode);
+            inheritedStrictMode: _isStrictMode,
+            captureCompletionValue: false);
         var nestedIndex = _nestedFunctions.Count;
         _nestedFunctions.Add(nestedFunction);
 
@@ -779,7 +798,8 @@ public sealed class BytecodeCompiler
             fnExpr.Name,
             hasOwnArgumentsObject: true,
             functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false),
-            inheritedStrictMode: _isStrictMode);
+            inheritedStrictMode: _isStrictMode,
+            captureCompletionValue: false);
         var nestedIndex = _nestedFunctions.Count;
         _nestedFunctions.Add(nestedFunction);
         var dest = AllocateRegister();
@@ -1974,7 +1994,8 @@ public sealed class BytecodeCompiler
                     fnExpr.Name,
                     hasOwnArgumentsObject: true,
                     functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false),
-                    inheritedStrictMode: _isStrictMode);
+                    inheritedStrictMode: _isStrictMode,
+                    captureCompletionValue: false);
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();
@@ -2016,7 +2037,8 @@ public sealed class BytecodeCompiler
                     "<arrow>",
                     hasOwnArgumentsObject: false,
                     functionKind: SelectFunctionKind(arrow.IsAsync, isGenerator: false, isArrow: true),
-                    inheritedStrictMode: _isStrictMode);
+                    inheritedStrictMode: _isStrictMode,
+                    captureCompletionValue: false);
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();
