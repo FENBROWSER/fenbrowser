@@ -1,4 +1,4 @@
-﻿using FenBrowser.Js.Builtins;
+using FenBrowser.Js.Builtins;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
@@ -16,7 +16,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 {
     private readonly JsHeap _heap;
     public JsHeap Heap => _heap;
-    // Audit §1: every active InterpreterFrame is registered here so the GC
+    // Audit �1: every active InterpreterFrame is registered here so the GC
     // sees its register/this/newtarget/env references as roots. Without this,
     // a cell only reachable through a frame register can be reclaimed by an
     // auto-MinorCollect inside user code and surface as "Stale heap handle.".
@@ -216,7 +216,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private readonly Dictionary<string, long> _symbolRegistryByKey = new(StringComparer.Ordinal);
     private readonly Dictionary<long, string> _symbolRegistryById = new();
 
-    // Plan Â§14.2: instruction budget. Zero = no limit.
+    // Plan §14.2: instruction budget. Zero = no limit.
     public int InstructionBudget { get; set; }
     public Func<bool>? InterruptCallback { get; set; }
     private int _instructionCount;
@@ -265,7 +265,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return result;
     }
 
-    // ECMA-262 27.5.1.3 GeneratorYield â€” save frame execution state into the
+    // ECMA-262 27.5.1.3 GeneratorYield — save frame execution state into the
     // owner generator so a subsequent .next()/resume can continue from this point.
     private static void SaveGeneratorState(InterpreterFrame frame, int yieldDestReg)
     {
@@ -284,7 +284,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 		gen.PendingException = frame.PendingException;
     }
 
-    // ECMA-262 27.5.1.2 â€” execute (or resume) a generator function body.
+    // ECMA-262 27.5.1.2 — execute (or resume) a generator function body.
     public JsValue ExecuteGenerator(GeneratorObject gen, JsValue sentValue)
     {
         _instructionCount = 0;
@@ -296,7 +296,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var isResume = gen.InstructionPointer > 0;
         // First call: pass the initial parameters that were bound when the
         // generator function was called (stored in gen.Registers[1..n]).
-        // Resume: pass no args â€” the saved registers and env already hold
+        // Resume: pass no args — the saved registers and env already hold
         // all local state.
         var initialArgs = isResume ? Array.Empty<JsValue>() : gen.GetInitialParameters();
         var result = ExecuteInternal(
@@ -322,7 +322,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return result;
     }
 
-    // ECMA-262 27.7.5.2 Await â€” save frame execution state into the async
+    // ECMA-262 27.7.5.2 Await — save frame execution state into the async
     // context so the promise reaction callback can resume from this point.
     private static void SaveAsyncState(InterpreterFrame frame, int awaitDestReg)
     {
@@ -339,7 +339,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 		ctx.PendingException = frame.PendingException;
     }
 
-    // ECMA-262 27.7.5.3 â€” resume an async function after the awaited promise
+    // ECMA-262 27.7.5.3 — resume an async function after the awaited promise
     // settles. Restores the saved frame state and continues execution from
     // the instruction pointer where Await suspended.
     private JsValue ResumeAsyncFunction(AsyncContext ctx, JsValue value, bool isReject)
@@ -364,7 +364,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
             if (ctx.IsSuspended)
             {
-                // Another await suspended â€” resume callbacks already attached.
+                // Another await suspended — resume callbacks already attached.
                 return JsValue.Undefined;
             }
 
@@ -507,7 +507,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         GeneratorObject? ownerGenerator = null,
         AsyncContext? asyncContext = null)
     {
-        // B.6.4 â€” when the callee carries an outer EnvironmentRecord (set at
+        // B.6.4 — when the callee carries an outer EnvironmentRecord (set at
         // CreateFunction time on JsFunctionObject), the new frame's env is a fresh
         // declarative record chained to it so free identifier references walk the
         // lexical scope chain through env records. Otherwise, fall back to the
@@ -518,7 +518,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 ? new FunctionEnvironmentRecord(ThisBindingStatus.Uninitialized, JsValue.Undefined, JsValue.Undefined, callee?.HomeObject, outerEnvironment)
                 : new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment));
         var frame = new InterpreterFrame(function, thisValue, frameEnv) { CalleeFunctionObject = callee, OwnerGenerator = ownerGenerator, AsyncContext = asyncContext };
-        // Audit §1: pin this frame's registers/env into the GC root set for
+        // Audit �1: pin this frame's registers/env into the GC root set for
         // its execution lifetime. Dispose pops on every return path (normal
         // return, exception, generator yield) via using-scope semantics.
         using var _frameScope = new ActiveFrameScope(_activeFrames, frame);
@@ -531,7 +531,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         // Generator resume: restore saved execution state instead of fresh init.
-        // ECMA-262 27.5.1.2 Resume â€” the [[GeneratorContext]] holds IP, registers,
+        // ECMA-262 27.5.1.2 Resume — the [[GeneratorContext]] holds IP, registers,
         // and environment; we skip parameter binding and declaration instantiation
         // because those were already done on the first .next() call.
         if (ownerGenerator != null && ownerGenerator.InstructionPointer > 0)
@@ -635,7 +635,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         while (frame.InstructionPointer < function.Instructions.Count)
         {
-            // Plan Â§14.2: instruction budget and interrupt check.
+            // Plan §14.2: instruction budget and interrupt check.
             if (InstructionBudget > 0 && ++_instructionCount > InstructionBudget)
                 throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded."));
             if (InterruptCallback is { } cb && !cb())
@@ -649,7 +649,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded."));
             }
 
-            // ECMA-262 27.5.1.5 GeneratorResumeAbrupt â€” inject a throw-mode
+            // ECMA-262 27.5.1.5 GeneratorResumeAbrupt — inject a throw-mode
             // completion into the resumed generator body. ThrowOrHandle routes
             // through the frame's exception handler stack so try/catch blocks
             // inside the generator can intercept the injected exception.
@@ -665,7 +665,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
             }
 
-            // ECMA-262 27.7.5.3 AwaitRejected â€” when an awaited promise rejects,
+            // ECMA-262 27.7.5.3 AwaitRejected — when an awaited promise rejects,
             // inject the rejection reason as a throw completion into the resumed
             // async function body so `await rejectedPromise` throws.
             if (frame.AsyncContext is { } acFrame && acFrame.IsRejectResume)
@@ -721,7 +721,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     frame.Registers[ins.A] = frame.Registers[ins.B];
                     break;
                 case OpCode.Jump:
-                    // Tier-4 #24 (audit §3.2): a back-edge is a Jump
+                    // Tier-4 #24 (audit �3.2): a back-edge is a Jump
                     // whose target precedes the source IP. Saturating add
                     // so a tight inner loop in a runaway script can't
                     // overflow into negative territory and reset
@@ -783,6 +783,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.DefineSetterByReg:
                     HandleDefineAccessorByReg(frame, ins);
                     break;
+                case OpCode.PrologueEnd:
+                    // ECMA-262 FunctionDeclarationInstantiation runs synchronously
+                    // before generator/async-generator construction returns to the
+                    // caller. When this frame is owned by a generator, treat the
+                    // marker like a value-less yield: persist the frame state and
+                    // hand control back to the call-site path so it can return the
+                    // newly-paused generator. For ordinary frames it is a Nop.
+                    if (frame.OwnerGenerator is not null)
+                    {
+                        SaveGeneratorState(frame, 0);
+                        return JsValue.Undefined;
+                    }
+                    break;
+                case OpCode.DefineMethod:
+                    HandleDefineMethod(frame, function, ins);
+                    break;
+                case OpCode.DefineMethodByReg:
+                    HandleDefineMethodByReg(frame, ins);
+                    break;
                 case OpCode.SetHomeObject:
                     HandleSetHomeObject(frame, ins);
                     break;
@@ -801,7 +820,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     break;
                 case OpCode.Yield:
                 {
-                    // ECMA-262 27.5.1.3 GeneratorYield â€” save frame state to the
+                    // ECMA-262 27.5.1.3 GeneratorYield — save frame state to the
                     // owner generator so the next .next()/resume continues here.
                     SaveGeneratorState(frame, ins.A);
 
@@ -812,7 +831,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.YieldStar:
                 {
-                    // ECMA-262 15.5.5 â€” yield* delegation.
+                    // ECMA-262 15.5.5 — yield* delegation.
                     // The operand expression is already evaluated in register B.
                     // This handler runs on every resume while yield* is active.
                     var gen = frame.OwnerGenerator!;
@@ -825,7 +844,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
                     else
                     {
-                        // GetIterator(operand) â€” ECMA-262 7.4.1.
+                        // GetIterator(operand) — ECMA-262 7.4.1.
                         var operand = frame.Registers[ins.B];
                         if (operand.Tag != JsValueTag.Object)
                             throw new JsThrownException(CreateTypeError("yield* operand is not iterable."));
@@ -884,7 +903,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             // Method missing.
                             if (methodName == "throw")
                             {
-                                // ECMA-262 15.5.5 step 5.c.ii â€” .throw() missing:
+                                // ECMA-262 15.5.5 step 5.c.ii — .throw() missing:
                                 // clear delegation state and propagate the exception.
                                 gen.YieldStarIterator = null;
                                 ThrowOrHandle(frame, methodArg);
@@ -901,7 +920,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
                     catch (JsThrownException)
                     {
-                        // ECMA-262 15.5.5 step 5.c.iii â€” if .throw() throws,
+                        // ECMA-262 15.5.5 step 5.c.iii — if .throw() throws,
                         // clear delegation and propagate.
                         if (methodName == "throw")
                         {
@@ -951,7 +970,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.EnterScope:
                 {
                     var newScope = new DeclarativeEnvironmentRecord(frame.Environment);
-                    // ECMA-262 14.2 — every block creates a fresh lexical
+                    // ECMA-262 14.2 � every block creates a fresh lexical
                     // env-record. ins.A is the variable-slot index for the
                     // let/const name this EnterScope owns; SlotNameTable
                     // resolves it. Slot 0 is a perfectly valid name slot
@@ -1135,6 +1154,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var keyValue = frame.Registers[ins.B];
                     var value = frame.Registers[ins.C];
 
+                    // ECMA-262 23.2.4.3 IntegerIndexedElementSet: TypedArray integer
+                    // indices write through to the underlying buffer; out-of-bounds
+                    // writes are silently dropped and the property table is untouched.
+                    if (obj is TypedArrayObject taSet)
+                    {
+                        string? taKey = keyValue.Tag switch
+                        {
+                            JsValueTag.String => keyValue.AsString(),
+                            JsValueTag.Int32 or JsValueTag.Number => ToPropertyKey(keyValue),
+                            _ => null
+                        };
+                        if (taKey != null && IsCanonicalIntegerIndex(taKey, out var taSetIdx))
+                        {
+                            taSet.SetElement(taSetIdx, value);
+                            break;
+                        }
+                    }
+
                     if (keyValue.Tag == JsValueTag.Symbol)
                     {
                         // Symbol-keyed [[Set]] - install on the parallel symbol table.
@@ -1185,7 +1222,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
 
                     var obj = ResolveObject(receiver);
-                    var key = ToPropertyKey(frame.Registers[ins.C]);
+                    var keyValueDel = frame.Registers[ins.C];
+                    if (keyValueDel.Tag == JsValueTag.Symbol)
+                    {
+                        frame.Registers[ins.A] = JsValue.FromBoolean(obj.DeleteSymbolProperty(keyValueDel.AsSymbolId()));
+                        break;
+                    }
+                    var key = ToPropertyKey(keyValueDel);
                     frame.Registers[ins.A] = JsValue.FromBoolean(obj.DeleteProperty(key));
                     break;
                 }
@@ -1225,7 +1268,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     frame.Registers[ins.A] = JsValue.FromString(key);
                     break;
                 }
-                // H.5 â€” private field ops with brand validation.
+                // H.5 — private field ops with brand validation.
                 // ECMA-262 9.1.10 PrivateFieldAdd / PrivateFieldGet / PrivateFieldFind.
                 // Brand is a class-unique token stored in function.BrandTokens[ins.D].
                 case OpCode.DefinePrivateField:
@@ -1383,7 +1426,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.CallSpread:
                 {
-                    // ECMA-262 13.3.7.1 â€” unpack a spread array into individual args.
+                    // ECMA-262 13.3.7.1 — unpack a spread array into individual args.
                     var spreadArray = frame.Registers[ins.C];
                     var unpackedArgs = Array.Empty<JsValue>();
                     if (spreadArray.Tag == JsValueTag.Object)
@@ -1597,66 +1640,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return JsValue.Undefined;
     }
 
-    private void InstantiateVarDeclarations(BytecodeFunction function, InterpreterFrame frame)
-    {
-        foreach (var name in function.VarDeclarationNames)
-        {
-            if (frame.Environment is GlobalEnvironmentRecord global)
-            {
-                var result = global.CreateGlobalVarBinding(name, deletable: false);
-                if (result != BindingOpResult.Ok)
-                {
-                    ThrowTypeError(frame, $"Cannot declare global var binding '{name}'.");
-                    return;
-                }
-
-                continue;
-            }
-
-            if (frame.Environment.HasBinding(name))
-            {
-                continue;
-            }
-
-            var create = frame.Environment.CreateMutableBinding(name, deletable: false);
-            if (create != BindingOpResult.Ok)
-            {
-                ThrowTypeError(frame, $"Cannot declare var binding '{name}'.");
-                return;
-            }
-
-            var init = frame.Environment.InitializeBinding(name, JsValue.Undefined);
-            if (init != BindingOpResult.Ok)
-            {
-                ThrowTypeError(frame, $"Cannot initialize var binding '{name}'.");
-                return;
-            }
-        }
-    }
-
-    private void InstantiateLexicalDeclarations(BytecodeFunction function, InterpreterFrame frame)
-    {
-        foreach (var name in function.LexicalDeclarationNames)
-        {
-            var create = frame.Environment.CreateMutableBinding(name, deletable: false);
-            if (create != BindingOpResult.Ok)
-            {
-                ThrowTypeError(frame, $"Cannot declare lexical binding '{name}'.");
-                return;
-            }
-        }
-
-        foreach (var name in function.ConstDeclarationNames)
-        {
-            var create = frame.Environment.CreateImmutableBinding(name, strict: true);
-            if (create != BindingOpResult.Ok)
-            {
-                ThrowTypeError(frame, $"Cannot declare const binding '{name}'.");
-                return;
-            }
-        }
-    }
-
     private JsObject CreateOrdinaryObject()
     {
         var obj = new JsObject();
@@ -1842,7 +1825,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     // CreateForOfIterator / DrainIteratorIntoList / CreateForInIterator /
     // CollectEnumerableKeys / ForOfIteratorObject / ForInIteratorObject moved
-    // to BytecodeInterpreter.Iterators.cs (audit §2 slice 3).
+    // to BytecodeInterpreter.Iterators.cs (audit �2 slice 3).
 
     // ECMA-262 20.4 Symbol. Minimal surface: callable as Symbol([description])
     // returning a fresh Symbol primitive; well-known symbols (Symbol.iterator etc.)
@@ -3560,21 +3543,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return _heap.AllocateObject(wrap, AllocationSite.Current());
     }
 
-    private ObjectHandle EnsureGlobalObject()
-    {
-        if (_globalObjectHandle is { } existing)
-        {
-            return existing;
-        }
-
-        var global = CreateOrdinaryObject();
-        var handle = _heap.AllocateObject(global, AllocationSite.Current());
-        _heap.PushRoot(handle);
-        _globalObjectHandle = handle;
-        InstallGlobalObjectProperties(global, handle);
-        return handle;
-    }
-
     private GlobalEnvironmentRecord EnsureGlobalEnvironment()
     {
         if (_globalEnvironment is { } existing)
@@ -3824,30 +3792,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return JsValue.FromBoolean(true);
     }
 
-    private void ThrowBindingFailure(InterpreterFrame frame, BindingOpResult status, string name, bool assignment)
-    {
-        switch (status)
-        {
-            case BindingOpResult.TdzAccess:
-                ThrowReferenceError(frame, $"Cannot access '{name}' before initialization.");
-                return;
-            case BindingOpResult.ConstAssignment:
-                ThrowTypeError(frame, assignment
-                    ? $"Assignment to constant variable '{name}'."
-                    : $"Cannot read immutable binding '{name}'.");
-                return;
-            case BindingOpResult.NotInitializable:
-            case BindingOpResult.AlreadyDeclared:
-                ThrowTypeError(frame, $"Cannot initialize binding '{name}'.");
-                return;
-            case BindingOpResult.NotFound:
-                ThrowReferenceError(frame, $"{name} is not defined.");
-                return;
-            default:
-                return;
-        }
-    }
-
     private void SetImplicitGlobalProperty(string name, JsValue value)
     {
         var globalHandle = EnsureGlobalObject();
@@ -3857,76 +3801,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             _heap.WriteBarrier(globalHandle, value.AsObjectHandle());
         }
-    }
-
-    private void ThrowTypeError(InterpreterFrame frame, string message)
-    {
-        ThrowOrHandle(frame, CreateTypeError(message));
-    }
-
-    private void ThrowReferenceError(InterpreterFrame frame, string message)
-    {
-        ThrowOrHandle(frame, CreateReferenceError(message));
-    }
-
-    private void ThrowOrHandle(InterpreterFrame frame, JsValue value)
-    {
-        if (frame.CatchHandlers.Count > 0)
-        {
-            
-    var catchIp = frame.CatchHandlers.Pop();
-            var finallyIp = frame.FinallyHandlers.Pop();
-            frame.Registers[0] = value;
-
-            if (catchIp >= 0)
-            {
-                frame.InstructionPointer = catchIp;
-                return;
-            }
-
-            if (finallyIp >= 0)
-            {
-                frame.PendingException = value;
-                frame.InstructionPointer = finallyIp;
-                return;
-            }
-        }
-
-        throw new JsThrownException(value);
-    }
-
-    private JsValue CreateError(string message)
-    {
-        return CreateErrorObject("Error", GetGlobalPrototype("Error"), message);
-    }
-
-    private JsValue CreateTypeError(string message)
-    {
-        return CreateErrorObject("TypeError", GetGlobalPrototype("TypeError"), message);
-    }
-
-    private JsValue CreateReferenceError(string message)
-    {
-        return CreateErrorObject("ReferenceError", GetGlobalPrototype("ReferenceError"), message);
-    }
-
-    private JsValue CreateRangeError(string message)
-    {
-        return CreateErrorObject("RangeError", GetGlobalPrototype("RangeError"), message);
-    }
-
-    private JsValue CreateSyntaxError(string message)
-    {
-        return CreateErrorObject("SyntaxError", GetGlobalPrototype("SyntaxError"), message);
-    }
-
-    private JsValue CreateErrorObject(string name, ObjectHandle prototypeHandle, string message)
-    {
-        var error = new JsObject();
-        error.SetPrototype(prototypeHandle);
-        _ = error.SetProperty("name", JsValue.FromString(name));
-        _ = error.SetProperty("message", JsValue.FromString(message));
-        return JsValue.FromObject(_heap.AllocateObject(error, AllocationSite.Current()));
     }
 
     private static string GetOptionalMessage(IReadOnlyList<JsValue> args)
@@ -4493,7 +4367,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toTimeString", DatePrototypeToTimeString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toUTCString", DatePrototypeToUtcString);
 
-        // Annex B B.2.3 legacy aliases (audit §4.1).
+        // Annex B B.2.3 legacy aliases (audit �4.1).
         // B.2.3.1 Date.prototype.getYear: return year - 1900, NaN if invalid.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getYear",
             (t, _) => GetDateComponent(t, "getYear", d => d.Year - 1900));
@@ -4517,7 +4391,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var argsList = new List<JsValue> { JsValue.FromNumber(year) };
                 return SetDateField(t, "setYear", argsList, hasYear: true, hasMonth: false, hasDay: false);
             }, length: 1);
-        // B.2.3.3 Date.prototype.toGMTString — alias of toUTCString.
+        // B.2.3.3 Date.prototype.toGMTString � alias of toUTCString.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toGMTString", DatePrototypeToUtcString);
     }
 
@@ -4746,14 +4620,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private void InstallPrototypeMethodsOnRegExpPrototype(ObjectHandle prototypeHandle, JsObject prototype)
     {
-        // Cache the first prototype handle seen â€” this comes from the builtin
+        // Cache the first prototype handle seen — this comes from the builtin
         // during InstallGlobalObjectProperties, before any bytecode executes.
         _regexpPrototypeHandle ??= prototypeHandle;
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "test", RegExpPrototypeTest, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "exec", RegExpPrototypeExec, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", RegExpPrototypeToString);
-        // Annex B B.2.4.1 RegExp.prototype.compile(pattern, flags) — mutate
-        // this instance to act like a freshly constructed RegExp. Audit §4.1.
+        // Annex B B.2.4.1 RegExp.prototype.compile(pattern, flags) � mutate
+        // this instance to act like a freshly constructed RegExp. Audit �4.1.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "compile", RegExpPrototypeCompile, length: 2);
         DefineRegExpSymbolMethod(prototypeHandle, prototype, "match", RegExpPrototypeSymbolMatch);
         DefineRegExpSymbolMethod(prototypeHandle, prototype, "search", RegExpPrototypeSymbolSearch);
@@ -4789,7 +4663,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // Parses raw text "/pattern/flags" into a RegExpObject with compiled .NET Regex.
     internal JsValue NewRegExpLiteral(string rawText)
     {
-        // rawText is "/pattern/flags" â€” find the last '/' to separate flags.
+        // rawText is "/pattern/flags" — find the last '/' to separate flags.
         var lastSlash = rawText.LastIndexOf('/');
         // Pattern: rawText[1..lastSlash], Flags: rawText[(lastSlash+1)..]
         var pattern = rawText.Substring(1, lastSlash - 1);
@@ -4850,7 +4724,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             ? ToStringValue(args[1])
             : string.Empty;
         var normalizedFlags = NormalizeRegExpFlags(flags);
-        // ECMA-262 22.2.4 flags â†’ RegexOptions mapping.
+        // ECMA-262 22.2.4 flags → RegexOptions mapping.
         // ECMAScript mode is the default; dotAll (s) conflicts with it and
         // Unicode (u) restricts \w/\d to ASCII in ECMAScript mode, so both
         // remove the ECMAScript option to get fuller Unicode behaviour.
@@ -4999,10 +4873,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return JsValue.FromString($"/{escapedSource}/{regexp.Flags}");
     }
 
-    // Annex B B.2.4.1 RegExp.prototype.compile(pattern, flags) — re-initializes
+    // Annex B B.2.4.1 RegExp.prototype.compile(pattern, flags) � re-initializes
     // this RegExp instance. If pattern is itself a RegExp and flags is undefined,
     // copy its pattern + flags; otherwise treat as new pattern+flags. Mutates
-    // `this` in place and returns it. Audit §4.1.
+    // `this` in place and returns it. Audit �4.1.
     private JsValue RegExpPrototypeCompile(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var target = RegExpThisValue(thisValue);
@@ -5170,7 +5044,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         throw new JsThrownException(CreateTypeError("RegExp.prototype method called on incompatible receiver."));
     }
 
-    // Proxy intercept helpers â€” ECMA-262 28.2 internal method dispatch.
+    // Proxy intercept helpers — ECMA-262 28.2 internal method dispatch.
     // Each method checks for a handler trap; when present the trap is called
     // with the proper arguments. When absent the operation falls through to
     // the target object.
@@ -6035,7 +5909,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var handle = _heap.AllocateObject(intl, AllocationSite.Current());
         _heap.PushRoot(handle);
 
-        // ECMA-402 Â§11 DateTimeFormat constructor.
+        // ECMA-402 §11 DateTimeFormat constructor.
         {
             var ctor = new NativeFunctionObject(
                 "DateTimeFormat",
@@ -6054,7 +5928,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _heap.WriteBarrier(handle, ctorHandle);
         }
 
-        // ECMA-402 Â§13 NumberFormat constructor.
+        // ECMA-402 §13 NumberFormat constructor.
         {
             var ctor = new NativeFunctionObject(
                 "NumberFormat",
@@ -6073,7 +5947,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _heap.WriteBarrier(handle, ctorHandle);
         }
 
-        // ECMA-402 Â§10 Collator constructor.
+        // ECMA-402 §10 Collator constructor.
         {
             var ctor = new NativeFunctionObject(
                 "Collator",
@@ -6092,7 +5966,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _heap.WriteBarrier(handle, ctorHandle);
         }
 
-        // ECMA-402 Â§9.2.1 getCanonicalLocales(locales).
+        // ECMA-402 §9.2.1 getCanonicalLocales(locales).
         {
             var fn = new NativeFunctionObject(
                 "getCanonicalLocales",
@@ -6115,7 +5989,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue GetCanonicalLocales(IReadOnlyList<JsValue> args)
     {
-        // ECMA-402 Â§9.2.1 CanonicalizeLocaleList.
+        // ECMA-402 §9.2.1 CanonicalizeLocaleList.
         // For now, just return the input locales as an array.
         // Real implementation in Commit 5.
         if (args.Count == 0)
@@ -6841,7 +6715,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
             }
 
-            var arr = CreateArrayObject(items);
+            var arr = CreateArrayFromElements(items);
             return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
         }, length: 1);
 
@@ -7545,7 +7419,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateError("Refused to compile a Function() because 'unsafe-eval' is not allowed by the policy."));
         }
 
-        // ECMA-262 20.2.1.1.1 CreateDynamicFunction step 10/11 — parameters
+        // ECMA-262 20.2.1.1.1 CreateDynamicFunction step 10/11 � parameters
         // and body are *parsed*; failures must throw SyntaxError, not a raw
         // host exception. Run parameter validation inside the same try so
         // its JsParserException is wrapped consistently with the body path.
@@ -7574,7 +7448,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private static void AddFunctionConstructorParameters(List<string> parameters, string parameterText)
     {
-        // ECMA-262 Annex B.1.3 — non-module source admits SingleLineHTMLOpenComment
+        // ECMA-262 Annex B.1.3 � non-module source admits SingleLineHTMLOpenComment
         // (`<!--` to LineTerminator) and SingleLineHTMLCloseComment (`-->` to
         // LineTerminator, valid only when preceded by a LineTerminator in the
         // input). The Function constructor parameter goal is non-strict
@@ -7922,12 +7796,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromBoolean(false);
         }
 
-        var key = ToPropertyKey(args.Count > 0 ? args[0] : JsValue.Undefined);
+        var keyArg = args.Count > 0 ? args[0] : JsValue.Undefined;
         var objectValue = thisValue.Tag == JsValueTag.Object
             ? thisValue
             : CreateObjectFromValue(thisValue);
         var obj = _heap.GetObject(objectValue.AsObjectHandle());
-        return JsValue.FromBoolean(obj.TryGetOwnProperty(key, out _));
+        if (keyArg.Tag == JsValueTag.Symbol)
+        {
+            return JsValue.FromBoolean(obj.TryGetOwnSymbolProperty(keyArg.AsSymbolId(), out _));
+        }
+        return JsValue.FromBoolean(obj.TryGetOwnProperty(ToPropertyKey(keyArg), out _));
     }
 
     private JsValue ObjectPrototypePropertyIsEnumerable(JsValue thisValue, IReadOnlyList<JsValue> args)
@@ -7942,12 +7820,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromBoolean(false);
         }
 
-        var key = ToPropertyKey(args.Count > 0 ? args[0] : JsValue.Undefined);
+        var keyArg = args.Count > 0 ? args[0] : JsValue.Undefined;
         var objectValue = thisValue.Tag == JsValueTag.Object
             ? thisValue
             : CreateObjectFromValue(thisValue);
         var obj = _heap.GetObject(objectValue.AsObjectHandle());
-        return JsValue.FromBoolean(obj.TryGetOwnProperty(key, out var descriptor) && descriptor.Enumerable);
+        if (keyArg.Tag == JsValueTag.Symbol)
+        {
+            return JsValue.FromBoolean(obj.TryGetOwnSymbolProperty(keyArg.AsSymbolId(), out var symDesc) && symDesc.Enumerable);
+        }
+        return JsValue.FromBoolean(obj.TryGetOwnProperty(ToPropertyKey(keyArg), out var descriptor) && descriptor.Enumerable);
     }
 
     private string GetObjectToStringTag(ObjectHandle handle)
@@ -8037,17 +7919,77 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateTypeError("Property descriptor setter must be callable or undefined."));
         }
 
-        var writable = ReadDescriptorFlag(descriptorObject, descriptorReceiver, "writable");
-        var enumerable = ReadDescriptorFlag(descriptorObject, descriptorReceiver, "enumerable");
-        var configurable = ReadDescriptorFlag(descriptorObject, descriptorReceiver, "configurable");
+        var hasWritableFlag = descriptorObject.TryGetProperty("writable", h => _heap.GetObject(h), out _);
+        var hasEnumerable = descriptorObject.TryGetProperty("enumerable", h => _heap.GetObject(h), out _);
+        var hasConfigurable = descriptorObject.TryGetProperty("configurable", h => _heap.GetObject(h), out _);
+        var writable = hasWritableFlag && ReadDescriptorFlag(descriptorObject, descriptorReceiver, "writable");
+        var enumerable = hasEnumerable && ReadDescriptorFlag(descriptorObject, descriptorReceiver, "enumerable");
+        var configurable = hasConfigurable && ReadDescriptorFlag(descriptorObject, descriptorReceiver, "configurable");
 
-        var descriptor = hasGetter || hasSetter
-            ? JsPropertyDescriptor.Accessor(
-                hasGetter ? getter : JsValue.Undefined,
-                hasSetter ? setter : JsValue.Undefined,
-                enumerable,
-                configurable)
-            : new JsPropertyDescriptor(hasValue ? value : JsValue.Undefined, writable, enumerable, configurable);
+        // ECMA-262 10.1.6.3 ValidateAndApplyPropertyDescriptor: when an existing
+        // property is being updated, fields the input descriptor leaves out are
+        // taken from the existing descriptor instead of defaulting to false /
+        // undefined. This is what lets `defineProperty(o,k,{get:g2})` preserve
+        // the prior `set` and the prior `configurable`/`enumerable` flags.
+        JsPropertyDescriptor existingDescriptor = default;
+        bool hasExisting = false;
+        if (target is not ProxyObject)
+        {
+            hasExisting = isSymbolKey
+                ? target.TryGetOwnSymbolProperty(keyArg.AsSymbolId(), out existingDescriptor)
+                : target.TryGetOwnProperty(key, out existingDescriptor);
+        }
+
+        var newIsAccessor = hasGetter || hasSetter;
+        JsPropertyDescriptor descriptor;
+        if (hasExisting)
+        {
+            var existingIsAccessor = existingDescriptor.IsAccessor;
+            // Same-kind merge keeps unchanged attributes from `existing`.
+            if (newIsAccessor && existingIsAccessor)
+            {
+                descriptor = JsPropertyDescriptor.Accessor(
+                    hasGetter ? getter : existingDescriptor.Get,
+                    hasSetter ? setter : existingDescriptor.Set,
+                    hasEnumerable ? enumerable : existingDescriptor.Enumerable,
+                    hasConfigurable ? configurable : existingDescriptor.Configurable);
+            }
+            else if (!newIsAccessor && !existingIsAccessor)
+            {
+                descriptor = new JsPropertyDescriptor(
+                    hasValue ? value : existingDescriptor.Value,
+                    hasWritableFlag ? writable : existingDescriptor.Writable,
+                    hasEnumerable ? enumerable : existingDescriptor.Enumerable,
+                    hasConfigurable ? configurable : existingDescriptor.Configurable);
+            }
+            else
+            {
+                // Cross-kind transition (data <-> accessor). Missing fields on the
+                // new descriptor default to "false"/undefined per spec step 4.
+                descriptor = newIsAccessor
+                    ? JsPropertyDescriptor.Accessor(
+                        hasGetter ? getter : JsValue.Undefined,
+                        hasSetter ? setter : JsValue.Undefined,
+                        hasEnumerable ? enumerable : existingDescriptor.Enumerable,
+                        hasConfigurable ? configurable : existingDescriptor.Configurable)
+                    : new JsPropertyDescriptor(
+                        hasValue ? value : JsValue.Undefined,
+                        hasWritableFlag ? writable : false,
+                        hasEnumerable ? enumerable : existingDescriptor.Enumerable,
+                        hasConfigurable ? configurable : existingDescriptor.Configurable);
+            }
+        }
+        else
+        {
+            // Fresh property: missing fields default to false/undefined per spec.
+            descriptor = newIsAccessor
+                ? JsPropertyDescriptor.Accessor(
+                    hasGetter ? getter : JsValue.Undefined,
+                    hasSetter ? setter : JsValue.Undefined,
+                    enumerable,
+                    configurable)
+                : new JsPropertyDescriptor(hasValue ? value : JsValue.Undefined, writable, enumerable, configurable);
+        }
 
         if (target is ProxyObject proxyDefineProperty)
         {
@@ -8163,7 +8105,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     }
 
     // GetReceiverProperty / GetReceiverSymbolProperty / IsCanonicalIntegerIndex /
-    // TryGetPropertyValue moved to BytecodeInterpreter.Properties.cs (audit §2 slice 1).
+    // TryGetPropertyValue moved to BytecodeInterpreter.Properties.cs (audit �2 slice 1).
 
     [MayExecuteJs]
     private bool HasPropertyIncludingProxy(JsObject obj, string key)
@@ -8505,7 +8447,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
             }
 
-            var arr = CreateArrayObject(items);
+            var arr = CreateArrayFromElements(items);
             return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
         }, length: 1);
 
@@ -9500,7 +9442,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return accumulator;
     }
 
-    // ECMA-262 7.2.3 IsCallable — front-loaded check for Array.prototype
+    // ECMA-262 7.2.3 IsCallable � front-loaded check for Array.prototype
     // callback methods (every/some/forEach/map/filter/find/findIndex/
     // findLast/findLastIndex/reduce/reduceRight/flatMap). Spec requires
     // these to throw TypeError before any iteration starts when the
@@ -10017,7 +9959,7 @@ fallbackArraySpecies:
     {
         if (!obj.TryGetOwnProperty("length", out var descriptor))
         {
-            // ECMA-262 Â§23.1.3: Array.prototype methods use [[Get]](O, "length")
+            // ECMA-262 §23.1.3: Array.prototype methods use [[Get]](O, "length")
             // which walks the prototype chain, not [[GetOwnProperty]].
             if (obj.PrototypeHandle is { } proto)
                 return GetArrayLength(_heap.GetObject(proto));
@@ -10502,11 +10444,6 @@ fallbackArraySpecies:
         }
     }
 
-    private JsValue CreateUriError(string message)
-    {
-        return CreateErrorObject("URIError", GetGlobalPrototype("URIError"), message);
-    }
-
     private ObjectHandle EnsureUriErrorPrototype()
     {
         _ = EnsureUriErrorConstructor();
@@ -10586,9 +10523,17 @@ fallbackArraySpecies:
 
             var err = new JsObject();
             err.SetPrototype(EnsureAggregateErrorPrototype());
-            _ = err.SetProperty("name", JsValue.FromString("AggregateError"));
-            _ = err.SetProperty("message", JsValue.FromString(msg));
-            _ = err.SetProperty("errors", JsValue.FromObject(errorsArrHandle));
+            // ECMA-262 20.5.7.1.1 AggregateError ( errors, message ):
+            //   message via CreateMethodProperty -> { w:t, e:f, c:t }
+            //   errors via DefinePropertyOrThrow with { w:t, e:f, c:t }
+            // (name is inherited from the prototype.)
+            if (args.Count > 1 && args[1].Tag != JsValueTag.Undefined)
+            {
+                _ = err.DefineOwnProperty("message",
+                    new JsPropertyDescriptor(JsValue.FromString(msg), Writable: true, Enumerable: false, Configurable: true));
+            }
+            _ = err.DefineOwnProperty("errors",
+                new JsPropertyDescriptor(JsValue.FromObject(errorsArrHandle), Writable: true, Enumerable: false, Configurable: true));
             var handle = _heap.AllocateObject(err, AllocationSite.Current());
             _heap.WriteBarrier(handle, errorsArrHandle);
             return JsValue.FromObject(handle);
@@ -10869,7 +10814,7 @@ fallbackArraySpecies:
         }
     }
 
-    // ECMA-262 25.1.3 â€” the %ArrayBuffer% constructor.
+    // ECMA-262 25.1.3 — the %ArrayBuffer% constructor.
     private ObjectHandle EnsureArrayBufferConstructor()
     {
         if (_arrayBufferConstructorHandle is { } existing)
@@ -10886,7 +10831,7 @@ fallbackArraySpecies:
             {
                 var length = args.Count > 0 ? args[0].AsNumber() : 0;
                 // ECMA-262 25.1.3.1 step 4 + 6.2.6.1 CreateByteDataBlock: byteLength must be
-                // a non-negative integer ≤ the implementation-defined maximum, else RangeError.
+                // a non-negative integer = the implementation-defined maximum, else RangeError.
                 // Our backing store is a managed byte[], so the limit is int.MaxValue.
                 if (double.IsNaN(length) || length < 0 || length > int.MaxValue)
                     throw new JsThrownException(CreateRangeError("Invalid ArrayBuffer length."));
@@ -10965,7 +10910,7 @@ fallbackArraySpecies:
         return _arrayBufferPrototypeHandle!.Value;
     }
 
-    // ECMA-262 25.3 â€” the %DataView% constructor.
+    // ECMA-262 25.3 — the %DataView% constructor.
     private ObjectHandle EnsureDataViewConstructor()
     {
         if (_dataViewConstructorHandle is { } existing)
@@ -11036,44 +10981,87 @@ fallbackArraySpecies:
 
     private void InstallDataViewPrototypeMethods(ObjectHandle protoHandle, JsObject proto)
     {
-        // 25.3.1.1 GetViewValue â€” all getters
-        DefineNativePrototypeMethod(protoHandle, proto, "getInt8", (thisValue, args) =>
-            JsValue.FromNumber(RequireDataView(thisValue).GetInt8(args.Count > 0 ? (int)args[0].AsNumber() : 0)), length: 1);
-        DefineNativePrototypeMethod(protoHandle, proto, "getUint8", (thisValue, args) =>
-            JsValue.FromNumber(RequireDataView(thisValue).GetUint8(args.Count > 0 ? (int)args[0].AsNumber() : 0)), length: 1);
-        DefineNativePrototypeMethod(protoHandle, proto, "getInt16", (thisValue, args) =>
-            JsValue.FromNumber(RequireDataView(thisValue).GetInt16(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean())), length: 2);
-        DefineNativePrototypeMethod(protoHandle, proto, "getUint16", (thisValue, args) =>
-            JsValue.FromNumber(RequireDataView(thisValue).GetUint16(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean())), length: 2);
-        DefineNativePrototypeMethod(protoHandle, proto, "getInt32", (thisValue, args) =>
-            JsValue.FromNumber(RequireDataView(thisValue).GetInt32(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean())), length: 2);
-        DefineNativePrototypeMethod(protoHandle, proto, "getUint32", (thisValue, args) =>
-            JsValue.FromNumber(RequireDataView(thisValue).GetUint32(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean())), length: 2);
-        DefineNativePrototypeMethod(protoHandle, proto, "getFloat32", (thisValue, args) =>
-            JsValue.FromNumber(RequireDataView(thisValue).GetFloat32(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean())), length: 2);
-        DefineNativePrototypeMethod(protoHandle, proto, "getFloat64", (thisValue, args) =>
-            JsValue.FromNumber(RequireDataView(thisValue).GetFloat64(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean())), length: 2);
+        JsValue GuardDataViewOp(JsValue thisValue, Func<DataViewObject, JsValue> op)
+        {
+            var view = RequireDataView(thisValue);
+            try
+            {
+                return op(view);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                throw new JsThrownException(CreateRangeError("Offset is outside the bounds of the DataView."));
+            }
+            catch (OverflowException)
+            {
+                throw new JsThrownException(CreateRangeError("Offset is outside the bounds of the DataView."));
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("detached", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new JsThrownException(CreateTypeError("DataView operation on detached ArrayBuffer."));
+            }
+        }
 
-        // 25.3.1.2 SetViewValue â€” all setters
+        JsValue GuardDataViewOpVoid(JsValue thisValue, Action<DataViewObject> op)
+        {
+            var view = RequireDataView(thisValue);
+            try
+            {
+                op(view);
+                return JsValue.Undefined;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                throw new JsThrownException(CreateRangeError("Offset is outside the bounds of the DataView."));
+            }
+            catch (OverflowException)
+            {
+                throw new JsThrownException(CreateRangeError("Offset is outside the bounds of the DataView."));
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("detached", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new JsThrownException(CreateTypeError("DataView operation on detached ArrayBuffer."));
+            }
+        }
+
+        // 25.3.1.1 GetViewValue - all getters
+        DefineNativePrototypeMethod(protoHandle, proto, "getInt8", (thisValue, args) =>
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetInt8(args.Count > 0 ? (int)args[0].AsNumber() : 0))), length: 1);
+        DefineNativePrototypeMethod(protoHandle, proto, "getUint8", (thisValue, args) =>
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetUint8(args.Count > 0 ? (int)args[0].AsNumber() : 0))), length: 1);
+        DefineNativePrototypeMethod(protoHandle, proto, "getInt16", (thisValue, args) =>
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetInt16(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean()))), length: 2);
+        DefineNativePrototypeMethod(protoHandle, proto, "getUint16", (thisValue, args) =>
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetUint16(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean()))), length: 2);
+        DefineNativePrototypeMethod(protoHandle, proto, "getInt32", (thisValue, args) =>
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetInt32(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean()))), length: 2);
+        DefineNativePrototypeMethod(protoHandle, proto, "getUint32", (thisValue, args) =>
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetUint32(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean()))), length: 2);
+        DefineNativePrototypeMethod(protoHandle, proto, "getFloat32", (thisValue, args) =>
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetFloat32(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean()))), length: 2);
+        DefineNativePrototypeMethod(protoHandle, proto, "getFloat64", (thisValue, args) =>
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetFloat64(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean()))), length: 2);
+
+        // 25.3.1.2 SetViewValue - all setters
         DefineNativePrototypeMethod(protoHandle, proto, "setInt8", (thisValue, args) =>
-        { RequireDataView(thisValue).SetInt8(args.Count > 0 ? (int)args[0].AsNumber() : 0, (sbyte)(args.Count > 1 ? args[1].AsNumber() : 0)); return JsValue.Undefined; }, length: 2);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetInt8(args.Count > 0 ? (int)args[0].AsNumber() : 0, (sbyte)(args.Count > 1 ? args[1].AsNumber() : 0))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setUint8", (thisValue, args) =>
-        { RequireDataView(thisValue).SetUint8(args.Count > 0 ? (int)args[0].AsNumber() : 0, (byte)(args.Count > 1 ? args[1].AsNumber() : 0)); return JsValue.Undefined; }, length: 2);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetUint8(args.Count > 0 ? (int)args[0].AsNumber() : 0, (byte)(args.Count > 1 ? args[1].AsNumber() : 0))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setInt16", (thisValue, args) =>
-        { RequireDataView(thisValue).SetInt16(args.Count > 0 ? (int)args[0].AsNumber() : 0, (short)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean()); return JsValue.Undefined; }, length: 3);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetInt16(args.Count > 0 ? (int)args[0].AsNumber() : 0, (short)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean())), length: 3);
         DefineNativePrototypeMethod(protoHandle, proto, "setUint16", (thisValue, args) =>
-        { RequireDataView(thisValue).SetUint16(args.Count > 0 ? (int)args[0].AsNumber() : 0, (ushort)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean()); return JsValue.Undefined; }, length: 3);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetUint16(args.Count > 0 ? (int)args[0].AsNumber() : 0, (ushort)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean())), length: 3);
         DefineNativePrototypeMethod(protoHandle, proto, "setInt32", (thisValue, args) =>
-        { RequireDataView(thisValue).SetInt32(args.Count > 0 ? (int)args[0].AsNumber() : 0, (int)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean()); return JsValue.Undefined; }, length: 3);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetInt32(args.Count > 0 ? (int)args[0].AsNumber() : 0, (int)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean())), length: 3);
         DefineNativePrototypeMethod(protoHandle, proto, "setUint32", (thisValue, args) =>
-        { RequireDataView(thisValue).SetUint32(args.Count > 0 ? (int)args[0].AsNumber() : 0, (uint)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean()); return JsValue.Undefined; }, length: 3);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetUint32(args.Count > 0 ? (int)args[0].AsNumber() : 0, (uint)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean())), length: 3);
         DefineNativePrototypeMethod(protoHandle, proto, "setFloat32", (thisValue, args) =>
-        { RequireDataView(thisValue).SetFloat32(args.Count > 0 ? (int)args[0].AsNumber() : 0, (float)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean()); return JsValue.Undefined; }, length: 3);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetFloat32(args.Count > 0 ? (int)args[0].AsNumber() : 0, (float)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean())), length: 3);
         DefineNativePrototypeMethod(protoHandle, proto, "setFloat64", (thisValue, args) =>
-        { RequireDataView(thisValue).SetFloat64(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 ? args[1].AsNumber() : 0, args.Count > 2 && args[2].AsBoolean()); return JsValue.Undefined; }, length: 3);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetFloat64(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 ? args[1].AsNumber() : 0, args.Count > 2 && args[2].AsBoolean())), length: 3);
     }
 
-    // ECMA-262 23.2 â€” all 11 %TypedArray% constructors.
+    // ECMA-262 23.2 — all 11 %TypedArray% constructors.
     private BuiltinBinding[] EnsureTypedArrayConstructors()
     {
         if (_typedArrayConstructors is not null)
@@ -11309,7 +11297,7 @@ fallbackArraySpecies:
 
         var arg0 = args[0];
 
-        // new X(TypedArray) â€” copy elements from existing
+        // new X(TypedArray) — copy elements from existing
         if (arg0.Tag == JsValueTag.Object && _heap.GetObject(arg0.AsObjectHandle()) is TypedArrayObject src)
         {
             var len = src.Length;
@@ -11335,7 +11323,52 @@ fallbackArraySpecies:
             return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
         }
 
-        // new X(length) â€” allocate new buffer
+        // ECMA-262 23.2.5.1 step 4-5: when arg0 is an Object that is not a
+        // TypedArray and not an ArrayBuffer, treat it as either an iterable
+        // (if Symbol.iterator is defined) or an array-like (read length + indices).
+        if (arg0.Tag == JsValueTag.Object)
+        {
+            var srcObj = _heap.GetObject(arg0.AsObjectHandle());
+            var iterSymId = GetWellKnownSymbolId("iterator");
+            bool hasIterator = iterSymId != 0 &&
+                               srcObj.TryGetSymbolProperty(iterSymId, h => _heap.GetObject(h), out var iterDesc) &&
+                               iterDesc.Value.Tag != JsValueTag.Undefined;
+
+            if (hasIterator)
+            {
+                // InitializeTypedArrayFromList: iterate to collect values, then allocate.
+                var collected = new List<JsValue>();
+                var iter = CreateForOfIterator(arg0);
+                if (iter.Tag == JsValueTag.Object &&
+                    _heap.GetObject(iter.AsObjectHandle()) is ForOfIteratorObject forOf)
+                {
+                    while (forOf.TryMoveNext(out var v)) collected.Add(v);
+                }
+                var len = collected.Count;
+                var buf = new ArrayBufferObject(len * elementSize);
+                var view = CreateTypedArrayInstance(elementType, buf, 0, len * elementSize);
+                for (var i = 0; i < len; i++) view.SetElement(i, collected[i]);
+                view.SetPrototype(protoHandle);
+                return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
+            }
+            else
+            {
+                // InitializeTypedArrayFromArrayLike: read length, then indices 0..len-1.
+                var len = GetArrayLength(srcObj);
+                var buf = new ArrayBufferObject(len * elementSize);
+                var view = CreateTypedArrayInstance(elementType, buf, 0, len * elementSize);
+                for (var i = 0; i < len; i++)
+                {
+                    var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    var element = srcObj.TryGetProperty(key, h => _heap.GetObject(h), out var d) ? d.Value : JsValue.Undefined;
+                    view.SetElement(i, element);
+                }
+                view.SetPrototype(protoHandle);
+                return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
+            }
+        }
+
+        // new X(length) — allocate new buffer
         {
             var length = (int)Math.Max(arg0.AsNumber(), 0);
             var buf = new ArrayBufferObject(length * elementSize);
@@ -11886,15 +11919,6 @@ fallbackArraySpecies:
         _queueMicrotaskHandle = _heap.AllocateObject(fn, AllocationSite.Current());
         _heap.PushRoot(_queueMicrotaskHandle.Value);
         return _queueMicrotaskHandle.Value;
-    }
-
-    private JsValue CreateDataCloneError(string message)
-    {
-        var err = new JsObject();
-        err.SetPrototype(EnsureErrorPrototype());
-        err.SetProperty("name", JsValue.FromString("DataCloneError"));
-        err.SetProperty("message", JsValue.FromString(message));
-        return JsValue.FromObject(_heap.AllocateObject(err, AllocationSite.Current()));
     }
 
     private FinalizationRegistryObject RequireFinalizationRegistry(JsValue thisValue)
@@ -12459,7 +12483,7 @@ fallbackArraySpecies:
         {
             return protoVal.AsObjectHandle();
         }
-        // Fallback during bootstrap â€” the global property hasn't been set up yet.
+        // Fallback during bootstrap — the global property hasn't been set up yet.
         return constructorName switch
         {
             "Boolean" => EnsureBooleanPrototype(),
@@ -12499,7 +12523,7 @@ fallbackArraySpecies:
             var protoHandle = desc.Value.AsObjectHandle();
             var protoObj = _heap.GetObject(protoHandle);
 
-            // ECMA-262 27.5.1 â€” Generator objects are iterable. @@iterator returns
+            // ECMA-262 27.5.1 — Generator objects are iterable. @@iterator returns
             // the generator object itself so yield* can delegate to generators.
             if (_generatorIteratorHandle is null)
             {
@@ -13420,14 +13444,14 @@ fallbackArraySpecies:
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
-    // Tier 4 #24: JIT helpers â€” each mirrors one opcode case in
+    // Tier 4 #24: JIT helpers — each mirrors one opcode case in
     // ExecuteInternalCore so the JIT-emitted Expression-tree code can
     // invoke a single method rather than inline equivalent logic. Keeping
     // the implementation in one place avoids semantic drift between the
     // interpreter and the JIT.
     // Tier 4 #24: JIT helpers for the property-access opcodes. Each
-    // mirrors the corresponding interpreter case body â€” including the
-    // inline-cache fast path and the try/catch â†’ ThrowOrHandle fallback.
+    // mirrors the corresponding interpreter case body — including the
+    // inline-cache fast path and the try/catch → ThrowOrHandle fallback.
     // Safe to call from JIT because TryEmitExpressionTree's pre-pass
     // bails on any handler opcode, so ThrowOrHandle's no-handler path
     // (which throws JsThrownException) is always the one taken.
@@ -13451,7 +13475,7 @@ fallbackArraySpecies:
         }
     }
 
-    // Audit doc §3.1 first slice. Same contract as GetPropByNameForJit but
+    // Audit doc �3.1 first slice. Same contract as GetPropByNameForJit but
     // the IC reference and the property name are pre-resolved by the JIT
     // codegen and threaded in directly. Avoids one Dictionary lookup and
     // one IReadOnlyList<string> indexing per call site. The IC instance
@@ -13498,7 +13522,7 @@ fallbackArraySpecies:
         }
     }
 
-    // Audit doc §3.1 first slice — direct-IC variant. See
+    // Audit doc �3.1 first slice � direct-IC variant. See
     // GetPropByNameForJit_Direct for the contract.
     internal void SetPropByNameForJit_Direct(
         InterpreterFrame frame, int receiverReg, string prop, int valueReg, PolymorphicInlineCache ic)
@@ -13672,69 +13696,6 @@ fallbackArraySpecies:
         }
     }
 
-    // Tier 4 #24: JIT helpers for the call/construct opcode family.
-    // Each builds the args array on the heap (matching how the
-    // interpreter does it) and dispatches through StoreCallResult /
-    // StoreConstructResult. icOffset is the call-site offset for the
-    // Call IC; passed as a JIT-compile-time constant.
-    internal void Call0ForJit(InterpreterFrame frame, int destReg, int calleeReg, int directEvalFlag, int icOffset)
-    {
-        StoreCallResult(frame, destReg, frame.Registers[calleeReg],
-            Array.Empty<JsValue>(), JsValue.Undefined,
-            allowDirectEval: directEvalFlag == DirectEvalCallFlag, icOffset: icOffset);
-    }
-
-    internal void Call1ForJit(InterpreterFrame frame, int destReg, int calleeReg, int argReg, int directEvalFlag, int icOffset)
-    {
-        StoreCallResult(frame, destReg, frame.Registers[calleeReg],
-            new[] { frame.Registers[argReg] }, JsValue.Undefined,
-            allowDirectEval: directEvalFlag == DirectEvalCallFlag, icOffset: icOffset);
-    }
-
-    internal void CallNForJit(InterpreterFrame frame, int destReg, int calleeReg, int argStartReg, int argCount, int directEvalFlag, int icOffset)
-    {
-        var callArgs = new JsValue[argCount];
-        for (var i = 0; i < argCount; i++) callArgs[i] = frame.Registers[argStartReg + i];
-        StoreCallResult(frame, destReg, frame.Registers[calleeReg], callArgs, JsValue.Undefined,
-            allowDirectEval: directEvalFlag == DirectEvalCallFlag, icOffset: icOffset);
-    }
-
-    internal void CallMethod0ForJit(InterpreterFrame frame, int destReg, int calleeReg, int thisReg, int icOffset)
-    {
-        StoreCallResult(frame, destReg, frame.Registers[calleeReg],
-            Array.Empty<JsValue>(), frame.Registers[thisReg], icOffset: icOffset);
-    }
-
-    internal void CallMethod1ForJit(InterpreterFrame frame, int destReg, int calleeReg, int thisReg, int argReg, int icOffset)
-    {
-        StoreCallResult(frame, destReg, frame.Registers[calleeReg],
-            new[] { frame.Registers[argReg] }, frame.Registers[thisReg], icOffset: icOffset);
-    }
-
-    internal void CallMethodNForJit(InterpreterFrame frame, int destReg, int calleeReg, int thisReg, int argStartReg, int argCount, int icOffset)
-    {
-        var callArgs = new JsValue[argCount];
-        for (var i = 0; i < argCount; i++) callArgs[i] = frame.Registers[argStartReg + i];
-        StoreCallResult(frame, destReg, frame.Registers[calleeReg], callArgs, frame.Registers[thisReg], icOffset: icOffset);
-    }
-
-    internal void Construct0ForJit(InterpreterFrame frame, int destReg, int ctorReg)
-    {
-        StoreConstructResult(frame, destReg, frame.Registers[ctorReg], Array.Empty<JsValue>());
-    }
-
-    internal void Construct1ForJit(InterpreterFrame frame, int destReg, int ctorReg, int argReg)
-    {
-        StoreConstructResult(frame, destReg, frame.Registers[ctorReg], new[] { frame.Registers[argReg] });
-    }
-
-    internal void ConstructNForJit(InterpreterFrame frame, int destReg, int ctorReg, int argStartReg, int argCount)
-    {
-        var args = new JsValue[argCount];
-        for (var i = 0; i < argCount; i++) args[i] = frame.Registers[argStartReg + i];
-        StoreConstructResult(frame, destReg, frame.Registers[ctorReg], args);
-    }
-
     internal void DeleteElemForJit(InterpreterFrame frame, int destReg, int receiverReg, int keyReg)
     {
         var receiver = frame.Registers[receiverReg];
@@ -13809,25 +13770,6 @@ fallbackArraySpecies:
         }
     }
 
-    internal void EnterScopeForJit(InterpreterFrame frame, int slotNameIndex, int isConst)
-    {
-        var newScope = new DeclarativeEnvironmentRecord(frame.Environment);
-        var scopeName = SlotNameTable.GetName(frame.Function, slotNameIndex);
-        if (scopeName != null)
-        {
-            if (isConst == 1)
-                _ = newScope.CreateImmutableBinding(scopeName, strict: true);
-            else
-                _ = newScope.CreateMutableBinding(scopeName, deletable: true);
-        }
-        frame.Environment = newScope;
-    }
-
-    internal void LeaveScopeForJit(InterpreterFrame frame)
-    {
-        frame.Environment = frame.Environment.OuterEnv ?? frame.Environment;
-    }
-
     // Tier 4 #24: JIT-callable helper that mirrors the LoadThis opcode
     // case. Caller passes the current instruction-pointer position so
     // the derived-constructor receiver-load check has the same context
@@ -13856,7 +13798,7 @@ fallbackArraySpecies:
         return frame.ThisValue;
     }
 
-    // Binary-op multiplexer for the JIT â€” mirrors the interpreter's
+    // Binary-op multiplexer for the JIT — mirrors the interpreter's
     // arithmetic / comparison / bitwise / shift / logical case bodies
     // one-for-one. Bodies catch JsThrownException and route through
     // ThrowOrHandle, which in JIT context (no PushHandler exists in the
@@ -14057,75 +13999,6 @@ fallbackArraySpecies:
         return false;
     }
 
-    internal void DefinePrivateFieldForJit(InterpreterFrame frame, int targetReg, int nameIndex, int valueReg)
-    {
-        var function = frame.Function;
-        var target = frame.Registers[targetReg];
-        var name = function.PropertyNames[nameIndex];
-        var value = frame.Registers[valueReg];
-        if (target.Tag != JsValueTag.Object)
-            throw new JsThrownException(CreateTypeError("Cannot define private field on non-object."));
-        var targetObj = _heap.GetObject(target.AsObjectHandle());
-        var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
-        targetObj.PrivateBrand = targetObj.PrivateBrand != 0 ? targetObj.PrivateBrand : brand;
-        targetObj.DefineOwnProperty(name, new JsPropertyDescriptor(value, Writable: true, Enumerable: false, Configurable: false));
-    }
-
-    internal void GetPrivateFieldForJit(InterpreterFrame frame, int destReg, int objReg, int nameIndex)
-    {
-        var function = frame.Function;
-        var objVal = frame.Registers[objReg];
-        var name = function.PropertyNames[nameIndex];
-        if (objVal.Tag != JsValueTag.Object)
-            throw new JsThrownException(CreateTypeError("Cannot read private field from non-object."));
-        var obj = _heap.GetObject(objVal.AsObjectHandle());
-        var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
-        if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand)
-            throw new JsThrownException(CreateTypeError("Cannot read private field from an object whose class did not declare it."));
-        if (!obj.TryGetOwnProperty(name, out var desc))
-            throw new JsThrownException(CreateTypeError("Cannot read private field from an object whose class did not declare it."));
-        frame.Registers[destReg] = desc.Value;
-    }
-
-    internal void SetPrivateFieldForJit(InterpreterFrame frame, int objReg, int nameIndex, int valueReg)
-    {
-        var function = frame.Function;
-        var objVal = frame.Registers[objReg];
-        var name = function.PropertyNames[nameIndex];
-        var value = frame.Registers[valueReg];
-        if (objVal.Tag != JsValueTag.Object)
-            throw new JsThrownException(CreateTypeError("Cannot write private field to non-object."));
-        var obj = _heap.GetObject(objVal.AsObjectHandle());
-        var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
-        if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand || !obj.TryGetOwnProperty(name, out var existing))
-            throw new JsThrownException(CreateTypeError("Cannot write private field to an object whose class did not declare it."));
-        obj.DefineOwnProperty(name, existing with { Value = value });
-    }
-
-    internal void CallSpreadForJit(InterpreterFrame frame, int destReg, int calleeReg, int spreadReg, int thisReg)
-    {
-        var spreadArray = frame.Registers[spreadReg];
-        var unpackedArgs = Array.Empty<JsValue>();
-        if (spreadArray.Tag == JsValueTag.Object)
-        {
-            var arrObj = _heap.GetObject(spreadArray.AsObjectHandle());
-            if (arrObj.TryGetOwnProperty("length", out var lenDesc))
-            {
-                var len = (int)lenDesc.Value.AsNumber();
-                unpackedArgs = new JsValue[len];
-                for (var i = 0; i < len; i++)
-                {
-                    unpackedArgs[i] = arrObj.TryGetOwnProperty(i.ToString(), out var elemDesc)
-                        ? elemDesc.Value
-                        : JsValue.Undefined;
-                }
-            }
-        }
-
-        var thisValue = thisReg == 0 ? JsValue.Undefined : frame.Registers[thisReg];
-        StoreCallResult(frame, destReg, frame.Registers[calleeReg], unpackedArgs, thisValue, icOffset: -1);
-    }
-
     internal void SetPrototypeForJit(InterpreterFrame frame, int childReg, int parentReg)
     {
         var childValue = frame.Registers[childReg];
@@ -14256,10 +14129,48 @@ fallbackArraySpecies:
                     primitive = JsValue.SymbolFromId(symbolObject.SymbolId);
                     return true;
             }
+
+            // ECMA-262 7.1.1.1 OrdinaryToPrimitive(O, hint="number"):
+            // try valueOf, then toString; first call returning a non-Object wins.
+            if (TryInvokeConversionMethod(obj, value, "valueOf", out var vResult) && vResult.Tag != JsValueTag.Object)
+            {
+                primitive = vResult;
+                return true;
+            }
+            if (TryInvokeConversionMethod(obj, value, "toString", out var sResult) && sResult.Tag != JsValueTag.Object)
+            {
+                primitive = sResult;
+                return true;
+            }
         }
 
         primitive = JsValue.Undefined;
         return false;
+    }
+
+    private bool TryInvokeConversionMethod(JsObject obj, JsValue receiver, string methodName, out JsValue result)
+    {
+        result = JsValue.Undefined;
+        if (!TryGetPropertyValue(obj, receiver, methodName, out var method))
+        {
+            return false;
+        }
+        if (!IsCallable(method))
+        {
+            return false;
+        }
+        try
+        {
+            result = CallFunction(method, Array.Empty<JsValue>(), receiver);
+            return true;
+        }
+        catch (JsThrownException)
+        {
+            // Caller (ToNumber/etc.) prefers NaN over re-throwing here so
+            // string-coercion that falls back can still complete.
+            result = JsValue.Undefined;
+            return false;
+        }
     }
 
     // ECMA-262 7.2.10 SameValue. Distinguishes from AreStrictlyEqual on exactly two
@@ -14350,6 +14261,29 @@ fallbackArraySpecies:
                 return double.NaN;
             }
 
+            // ECMA-262 7.1.4.1.1 StringToNumber: leading/trailing whitespace is
+            // ignored; NonDecimalIntegerLiteral handles 0x/0X (hex), 0o/0O (octal),
+            // 0b/0B (binary) prefixes. Signs are not allowed before the prefix.
+            if (trimmed.Length >= 2 && trimmed[0] == '0')
+            {
+                int radix = trimmed[1] switch
+                {
+                    'x' or 'X' => 16,
+                    'o' or 'O' => 8,
+                    'b' or 'B' => 2,
+                    _ => 0
+                };
+                if (radix != 0)
+                {
+                    var digits = trimmed.Substring(2);
+                    if (digits.Length > 0 && TryParseRadixDigits(digits, radix, out var radixValue))
+                    {
+                        return radixValue;
+                    }
+                    return double.NaN;
+                }
+            }
+
             if (double.TryParse(
                     text,
                     System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowLeadingWhite | System.Globalization.NumberStyles.AllowTrailingWhite,
@@ -14365,13 +14299,36 @@ fallbackArraySpecies:
         return double.NaN;
     }
 
+    private static bool TryParseRadixDigits(string digits, int radix, out double value)
+    {
+        value = 0;
+        for (var i = 0; i < digits.Length; i++)
+        {
+            var c = digits[i];
+            int d = c switch
+            {
+                >= '0' and <= '9' => c - '0',
+                >= 'a' and <= 'f' => 10 + (c - 'a'),
+                >= 'A' and <= 'F' => 10 + (c - 'A'),
+                _ => -1
+            };
+            if (d < 0 || d >= radix)
+            {
+                value = double.NaN;
+                return false;
+            }
+            value = value * radix + d;
+        }
+        return true;
+    }
+
     private JsObject ResolveObject(JsValue value)
     {
         return _heap.GetObject(ResolveObjectHandle(value));
     }
 
     // ECMA-262 7.1.18 ToObject(V). Unlike ResolveObjectHandle (which throws
-    // for any non-Object), this boxes primitives — boolean/number/string/
+    // for any non-Object), this boxes primitives � boolean/number/string/
     // symbol/bigint get wrapped in their object form. undefined/null still
     // throw TypeError. Used by Array.prototype.* and other spec algorithms
     // whose first step is "let O be ? ToObject(this value)".
@@ -14392,150 +14349,6 @@ fallbackArraySpecies:
             : CreateObjectFromValue(value);
     }
 
-    internal void HandleDefineAccessor(InterpreterFrame frame, BytecodeFunction function, Instruction ins)
-    {
-        // H.4 - install or update an accessor descriptor on the target object
-        // under the given property name. Preserves the companion half (get/set)
-        // if an accessor descriptor already exists for the key, per ECMA-262
-        // 6.2.5.6 CompletePropertyDescriptor.
-        var targetValue = frame.Registers[ins.A];
-        if (targetValue.Tag != JsValueTag.Object)
-        {
-            ThrowOrHandle(frame, CreateTypeError("DefineGetter/Setter target must be an object."));
-            return;
-        }
-
-        var targetHandle = targetValue.AsObjectHandle();
-        var targetObj = _heap.GetObject(targetHandle);
-        var accessorName = function.PropertyNames[ins.B];
-        var accessorFnValue = frame.Registers[ins.C];
-
-        JsValue getValue = JsValue.Undefined;
-        JsValue setValue = JsValue.Undefined;
-        if (targetObj.TryGetOwnProperty(accessorName, out var existing) && existing.IsAccessor)
-        {
-            getValue = existing.Get;
-            setValue = existing.Set;
-        }
-
-        if (ins.OpCode == OpCode.DefineGetter)
-        {
-            getValue = accessorFnValue;
-        }
-        else
-        {
-            setValue = accessorFnValue;
-        }
-
-        _ = targetObj.DefineOwnProperty(accessorName,
-            Objects.JsPropertyDescriptor.Accessor(getValue, setValue, Enumerable: false, Configurable: true));
-        if (accessorFnValue.Tag == JsValueTag.Object)
-        {
-            _heap.WriteBarrier(targetHandle, accessorFnValue.AsObjectHandle());
-        }
-    }
-
-    // H.5 - HandleDefineAccessorByReg: Like HandleDefineAccessor but the property
-    // key is a JsValue in a register (for computed property names) instead of an
-    // index into the constant pool.
-    internal void HandleDefineAccessorByReg(InterpreterFrame frame, Instruction ins)
-    {
-        var targetValue = frame.Registers[ins.A];
-        if (targetValue.Tag != JsValueTag.Object)
-        {
-            ThrowOrHandle(frame, CreateTypeError("DefineGetter/Setter target must be an object."));
-            return;
-        }
-
-        var targetHandle = targetValue.AsObjectHandle();
-        var targetObj = _heap.GetObject(targetHandle);
-        var keyValue = frame.Registers[ins.B];
-        var accessorFnValue = frame.Registers[ins.C];
-
-        // Convert the key value to a property key string
-        var accessorName = ToPropertyKey(keyValue);
-
-        JsValue getValue = JsValue.Undefined;
-        JsValue setValue = JsValue.Undefined;
-        if (targetObj.TryGetOwnProperty(accessorName, out var existing) && existing.IsAccessor)
-        {
-            getValue = existing.Get;
-            setValue = existing.Set;
-        }
-
-        if (ins.OpCode == OpCode.DefineGetterByReg)
-        {
-            getValue = accessorFnValue;
-        }
-        else
-        {
-            setValue = accessorFnValue;
-        }
-
-        _ = targetObj.DefineOwnProperty(accessorName,
-            Objects.JsPropertyDescriptor.Accessor(getValue, setValue, Enumerable: false, Configurable: true));
-        if (accessorFnValue.Tag == JsValueTag.Object)
-        {
-            _heap.WriteBarrier(targetHandle, accessorFnValue.AsObjectHandle());
-        }
-    }
-
-    internal void HandleSetHomeObject(InterpreterFrame frame, Instruction ins)
-    {
-        var fnValue = frame.Registers[ins.A];
-        var homeValue = frame.Registers[ins.B];
-        if (fnValue.Tag != JsValueTag.Object || homeValue.Tag != JsValueTag.Object) return;
-        if (_heap.GetObject(fnValue.AsObjectHandle()) is JsFunctionObject fn)
-        {
-            fn.HomeObject = homeValue.AsObjectHandle();
-            _heap.WriteBarrier(fnValue.AsObjectHandle(), homeValue.AsObjectHandle());
-        }
-    }
-
-    internal void HandleLoadSuperProperty(InterpreterFrame frame, BytecodeFunction function, Instruction ins)
-    {
-        // ECMA-262 13.3.7.3 MakeSuperPropertyReference + 9.1.2 GetSuperBase.
-        var name = function.PropertyNames[ins.B];
-        if (frame.CalleeFunctionObject is not { } calleeFn || calleeFn.HomeObject is not { } home)
-        {
-            ThrowOrHandle(frame, CreateReferenceError("super reference requires a class method context."));
-            return;
-        }
-
-        var homeObj = _heap.GetObject(home);
-        if (homeObj.PrototypeHandle is not { } baseProtoHandle)
-        {
-            frame.Registers[ins.A] = JsValue.Undefined;
-            return;
-        }
-
-        var baseProto = _heap.GetObject(baseProtoHandle);
-        frame.Registers[ins.A] = TryGetPropertyValue(baseProto, JsValue.FromObject(baseProtoHandle), name, out var v)
-            ? v
-            : JsValue.Undefined;
-    }
-
-    internal void HandleLoadSuperConstructor(InterpreterFrame frame, Instruction ins)
-    {
-        // ECMA-262 13.3.7.4 GetSuperConstructor: read the active function's
-        // HomeObject (which the class compiler sets to the class itself for the
-        // constructor), then return HomeObject.[[Prototype]] - the base class.
-        if (frame.CalleeFunctionObject is not { } callee || callee.HomeObject is not { } home)
-        {
-            ThrowOrHandle(frame, CreateReferenceError("super constructor call requires a class constructor context."));
-            return;
-        }
-
-        var homeObj = _heap.GetObject(home);
-        if (homeObj.PrototypeHandle is not { } baseHandle)
-        {
-            ThrowOrHandle(frame, CreateTypeError("super constructor is not callable (no base class)."));
-            return;
-        }
-
-        frame.Registers[ins.A] = JsValue.FromObject(baseHandle);
-    }
-
     private ObjectHandle ResolveObjectHandle(JsValue value)
     {
         if (value.Tag != JsValueTag.Object)
@@ -14549,71 +14362,6 @@ fallbackArraySpecies:
         }
 
         return value.AsObjectHandle();
-    }
-
-    // ECMA-262 27.7.5.2 Await(value).
-    // If the awaited value is a settled promise, return (or throw) its result
-    // immediately so the interpreter can continue without suspension. If the
-    // promise is pending, save the frame state to the AsyncContext and attach
-    // fulfill/reject handlers that will resume execution when the promise settles.
-    private JsValue AwaitValue(InterpreterFrame frame, JsValue value, int destReg)
-    {
-        var awaitedPromise = PromiseResolveStatic(value);
-        if (awaitedPromise.Tag != JsValueTag.Object ||
-            _heap.GetObject(awaitedPromise.AsObjectHandle()) is not PromiseInstance instance)
-        {
-            return value;
-        }
-
-        if (instance.Promise.State == PromiseState.Fulfilled)
-            return instance.Promise.GetResultUnchecked();
-
-        if (instance.Promise.State == PromiseState.Rejected)
-            throw new JsThrownException(instance.Promise.GetResultUnchecked());
-
-        if (frame.AsyncContext is null)
-        {
-            throw new JsThrownException(CreateTypeError("Pending await is not supported in this execution context."));
-        }
-
-        // Pending â€” suspend the async frame.
-        SaveAsyncState(frame, destReg);
-
-        var ctx = frame.AsyncContext!;
-        var onFulfilled = GetOrCreateAsyncResumeCallback(isReject: false, ctx);
-        var onRejected = GetOrCreateAsyncResumeCallback(isReject: true, ctx);
-        var onFulfilledHandle = _heap.AllocateObject(onFulfilled, AllocationSite.Current());
-        var onRejectedHandle = _heap.AllocateObject(onRejected, AllocationSite.Current());
-
-        // Attach handlers to the awaited promise.
-        PerformPromiseThen(
-            awaitedPromise.AsObjectHandle(),
-            instance.Promise,
-            JsValue.FromObject(onFulfilledHandle),
-            JsValue.FromObject(onRejectedHandle),
-            GetDummyCapability());
-
-        instance.Promise.IsHandled = true;
-        return JsValue.Undefined;
-    }
-
-    // Creates (or reuses) a NativeFunctionObject that resumes the given
-    // AsyncContext when the awaited promise settles. The callback captures
-    // the async context by its ObjectHandle so GC can trace it.
-    private NativeFunctionObject GetOrCreateAsyncResumeCallback(bool isReject, AsyncContext ctx)
-    {
-        // We always create a fresh callback, capturing the specific context.
-        // Reuse of prototype patterns could be added as an optimization.
-        return new NativeFunctionObject(
-            isReject ? "asyncReject" : "asyncResolve",
-            (_, args) =>
-            {
-                var arg = args.Count > 0 ? args[0] : JsValue.Undefined;
-                // If this callback is called it means the Context is still alive,
-                // so we can safely resume.
-                return ResumeAsyncFunction(ctx, arg, isReject);
-            },
-            length: 1);
     }
 
     // A reusable no-op PromiseCapability for PerformPromiseThen when the caller
@@ -14636,289 +14384,6 @@ fallbackArraySpecies:
         return _dummyCapability.Value;
     }
     private PromiseCapability? _dummyCapability;
-
-    private JsValue CallFunction(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
-    {
-        var obj = ResolveObject(value);
-
-        // ECMA-262 9.5.12 Proxy [[Call]].
-        if (obj is ProxyObject proxyCall)
-        {
-            if (!IsCallableTarget(proxyCall.TargetHandle))
-            {
-                throw new JsThrownException(CreateTypeError("Proxy target is not callable."));
-            }
-            return ProxyCall(proxyCall, args, thisValue);
-        }
-
-        // ECMA-262 10.4.1.3 [[Call]] â€” merge bound args + call-site args,
-        // then delegate to [[BoundTargetFunction]] with [[BoundThis]].
-        if (obj is BoundFunctionObject bound)
-        {
-            var merged = MergeBoundArgs(bound.BoundArgs, args);
-            return CallFunction(bound.TargetFunction, merged, bound.BoundThis);
-        }
-
-        if (obj is JsFunctionObject fn)
-        {
-            if (fn.Kind == FunctionKind.Async)
-            {
-                var capability = NewPromiseCapability();
-
-                // Create an AsyncContext to hold suspended state. If the body
-                // never awaits, the context is unused and the fast path applies.
-                var registers = new JsValue[fn.Function.RegisterCount];
-                for (var i = 0; i < registers.Length; i++)
-                    registers[i] = JsValue.Undefined;
-                var asyncCtx = new AsyncContext(fn.Function, registers, fn.OuterEnvironment)
-                {
-                    ThisValue = thisValue
-                };
-                var ctxHandle = _heap.AllocateObject(asyncCtx, AllocationSite.Current());
-
-                // Store capability handles so ResumeAsyncFunction can settle
-                // the outer promise when the body eventually completes.
-                asyncCtx.CapabilityPromise = capability.Promise.Tag == JsValueTag.Object
-                    ? capability.Promise.AsObjectHandle()
-                    : null;
-                asyncCtx.CapabilityResolve = capability.Resolve.Tag == JsValueTag.Object
-                    ? capability.Resolve.AsObjectHandle()
-                    : null;
-                asyncCtx.CapabilityReject = capability.Reject.Tag == JsValueTag.Object
-                    ? capability.Reject.AsObjectHandle()
-                    : null;
-
-                try
-                {
-                    var result = ExecuteInternal(fn.Function, args, thisValue, fn.OuterEnvironment, callee: fn, asyncContext: asyncCtx);
-
-                    if (asyncCtx.IsSuspended)
-                    {
-                        // Body suspended at an await â€” resume callbacks already
-                        // attached. Root the context so GC doesn't collect it.
-                        _heap.PushRoot(ctxHandle);
-                        return capability.Promise;
-                    }
-
-                    // Body completed without suspension (no await encountered,
-                    // or all awaited promises were already settled).
-                    _ = CallFunction(capability.Resolve, new[] { result }, JsValue.Undefined);
-                }
-                catch (JsThrownException ex)
-                {
-                    if (asyncCtx.IsSuspended)
-                    {
-                        _heap.PushRoot(ctxHandle);
-                        _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
-                        return capability.Promise;
-                    }
-
-                    _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
-                }
-
-                return capability.Promise;
-            }
-
-            if (fn.Kind == FunctionKind.Generator)
-            {
-                // ECMA-262 27.5.1.1 â€” calling a generator function returns a
-                // GeneratorObject without executing the body. Execution starts
-                // on the first .next() call.
-                var registers = new JsValue[fn.Function.RegisterCount];
-                for (var i = 0; i < registers.Length; i++)
-                    registers[i] = JsValue.Undefined;
-                // Bind parameters into registers
-                var paramCount = Math.Min(args.Count, fn.Function.ParameterNames.Count);
-                for (var i = 0; i < paramCount; i++)
-                    registers[i + 1] = args[i]; // register 0 is return slot, params start at 1
-
-                var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment);
-                genObj.ThisValue = thisValue;
-                genObj.SetPrototype(GetGlobalPrototype("GeneratorPrototype"));
-                return JsValue.FromObject(_heap.AllocateObject(genObj, AllocationSite.Current()));
-            }
-
-            if (fn.Kind == FunctionKind.AsyncGenerator)
-            {
-                var registers = new JsValue[fn.Function.RegisterCount];
-                for (var i = 0; i < registers.Length; i++)
-                    registers[i] = JsValue.Undefined;
-                var paramCount = Math.Min(args.Count, fn.Function.ParameterNames.Count);
-                for (var i = 0; i < paramCount; i++)
-                    registers[i + 1] = args[i];
-
-                var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment)
-                {
-                    ThisValue = thisValue,
-                    IsAsyncGenerator = true
-                };
-                genObj.SetPrototype(EnsureAsyncGeneratorPrototype());
-                return JsValue.FromObject(_heap.AllocateObject(genObj, AllocationSite.Current()));
-            }
-
-            // Tier 4 #24: tier-up counter. The JIT delegate is invoked
-            // from inside ExecuteInternalCore (after frame setup) so it
-            // can access frame.Registers, frame.Environment, and the
-            // interpreter's helper methods.
-            var bcFn = fn.Function;
-            bcFn.Invocations++;
-            // Tier-4 #24 (audit §3.2): combined invocation + back-edge
-            // trigger. Either 100 calls OR 10,000 cross-call loop
-            // iterations OR a balanced mix gets the function JIT-compiled.
-            // BackEdgeScale=100 keeps the legacy "100 invocations" cliff
-            // intact while letting one-call loop-heavy functions tier up.
-            const int BackEdgeScale = 100;
-            if (!bcFn.JitCompileAttempted &&
-                (long)bcFn.Invocations * BackEdgeScale + bcFn.BackEdges
-                    >= (long)JitCompiler.TierUpThreshold * BackEdgeScale)
-            {
-                bcFn.JitCompileAttempted = true;
-                bcFn.JitDelegate = JitCompiler.TryCompile(bcFn);
-            }
-            return ExecuteInternal(fn.Function, args, thisValue, fn.OuterEnvironment, callee: fn);
-        }
-
-        if (obj is NativeFunctionObject native)
-        {
-            return native.Call(thisValue, args);
-        }
-
-        throw new JsThrownException(CreateTypeError("Value is not callable."));
-    }
-
-    private JsValue ConstructFunction(JsValue value, IReadOnlyList<JsValue> args)
-        => ConstructFunction(value, args, newTarget: value);
-
-    // ECMA-262 7.3.15 Construct(F, argumentsList, newTarget) â€”
-    // separate newTarget parameter so Reflect.construct can wire a different
-    // newTarget.prototype for the created object.
-    private JsValue ConstructFunction(JsValue value, IReadOnlyList<JsValue> args, JsValue newTarget)
-    {
-        var obj = ResolveObject(value);
-
-        // ECMA-262 9.5.13 Proxy [[Construct]].
-        if (obj is ProxyObject proxyCons)
-        {
-            if (!IsConstructableTarget(proxyCons.TargetHandle))
-            {
-                throw new JsThrownException(CreateTypeError("Proxy target is not a constructor."));
-            }
-            return ProxyConstruct(proxyCons, args, newTarget);
-        }
-
-        // ECMA-262 10.4.1.4 [[Construct]] â€” merge bound args + call-site args,
-        // then construct [[BoundTargetFunction]].
-        if (obj is BoundFunctionObject bound)
-        {
-            var merged = MergeBoundArgs(bound.BoundArgs, args);
-            // ECMA-262 10.4.1.4 step 5: if newTarget === the bound function,
-            // replace it with [[BoundTargetFunction]] so the unbound target
-            // supplies the prototype for the created instance.
-            if (newTarget.Tag == JsValueTag.Object &&
-                value.Tag == JsValueTag.Object &&
-                newTarget.AsObjectHandle() == value.AsObjectHandle())
-            {
-                newTarget = bound.TargetFunction;
-            }
-            return ConstructFunction(bound.TargetFunction, merged, newTarget);
-        }
-
-        if (obj is JsFunctionObject fn)
-        {
-            if (fn.Kind is FunctionKind.Generator or FunctionKind.AsyncGenerator)
-                throw new JsThrownException(CreateTypeError("Generator functions cannot be used as constructors."));
-            return ExecuteConstruct(fn, args, newTarget);
-        }
-
-        if (obj is NativeFunctionObject native)
-        {
-            if (!native.IsConstructor)
-            {
-                throw new JsThrownException(CreateTypeError("Function is not a constructor."));
-            }
-
-            var constructed = native.Construct(args);
-            if (constructed.Tag == JsValueTag.Object &&
-                newTarget.Tag == JsValueTag.Object &&
-                value.Tag == JsValueTag.Object &&
-                newTarget.AsObjectHandle() != value.AsObjectHandle())
-            {
-                var protoValue = GetReceiverProperty(newTarget, "prototype");
-                if (protoValue.Tag == JsValueTag.Object)
-                {
-                    _heap.GetObject(constructed.AsObjectHandle()).SetPrototype(protoValue.AsObjectHandle());
-                    _heap.WriteBarrier(constructed.AsObjectHandle(), protoValue.AsObjectHandle());
-                }
-            }
-
-            return constructed;
-        }
-
-        throw new JsThrownException(CreateTypeError("Value is not constructible."));
-    }
-
-    private void StoreCallResult(
-        InterpreterFrame frame,
-        int destinationRegister,
-        JsValue callee,
-        IReadOnlyList<JsValue> args,
-        JsValue thisValue,
-        bool allowDirectEval = false,
-        int icOffset = -1)
-    {
-        // ECMA-262 19.2.1.1 â€” direct eval uses the calling frame's lexical environment.
-        if (allowDirectEval &&
-            callee.Tag == JsValueTag.Object &&
-            _heap.GetObject(callee.AsObjectHandle()) is NativeFunctionObject native &&
-            string.Equals(native.Name, "eval", StringComparison.Ordinal))
-        {
-            _directEvalEnv = frame.Environment;
-            _directEvalStrictMode = frame.Function.IsStrictMode;
-        }
-
-        try
-        {
-            // Tier 4 #20: try the Call IC fast path before the generic dispatch.
-            if (icOffset >= 0 &&
-                TryDispatchCallIC(frame.Function, icOffset, callee, args, thisValue, out var icResult))
-            {
-                frame.Registers[destinationRegister] = icResult;
-                return;
-            }
-
-            frame.Registers[destinationRegister] = CallFunction(callee, args, thisValue);
-            if (icOffset >= 0)
-            {
-                PopulateCallIC(frame.Function, icOffset, callee);
-            }
-        }
-        catch (JsThrownException ex)
-        {
-            if (frame.CatchHandlers.Count == 0)
-            {
-                throw;
-            }
-
-            ThrowOrHandle(frame, ex.Value);
-        }
-    }
-
-    private void StoreConstructResult(InterpreterFrame frame, int destinationRegister, JsValue constructor, IReadOnlyList<JsValue> args)
-    {
-        try
-        {
-            frame.Registers[destinationRegister] = ConstructFunction(constructor, args);
-        }
-        catch (JsThrownException ex)
-        {
-            if (frame.CatchHandlers.Count == 0)
-            {
-                throw;
-            }
-
-            ThrowOrHandle(frame, ex.Value);
-        }
-    }
 
     [MayExecuteJs]
     private string ToPropertyKey(JsValue value)
@@ -14977,14 +14442,8 @@ fallbackArraySpecies:
             return false;
         }
 
-        var obj = _heap.GetObject(value.AsObjectHandle());
-        if (!obj.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc))
-        {
-            return false;
-        }
-
-        var method = desc.IsAccessor ? JsValue.Undefined : desc.Value;
-        if (method.Tag == JsValueTag.Undefined)
+        var method = GetReceiverSymbolProperty(value, symbolId);
+        if (method.Tag == JsValueTag.Undefined || method.Tag == JsValueTag.Null)
         {
             return false;
         }
@@ -14994,7 +14453,12 @@ fallbackArraySpecies:
             throw new JsThrownException(CreateTypeError("@@toPrimitive must be callable."));
         }
 
-        var hintValue = hint == PrimitiveHint.String ? "string" : "number";
+        var hintValue = hint switch
+        {
+            PrimitiveHint.String => "string",
+            PrimitiveHint.Default => "default",
+            _ => "number"
+        };
         var result = CallFunction(method, new[] { JsValue.FromString(hintValue) }, value);
         if (result.Tag == JsValueTag.Object)
         {
@@ -15008,8 +14472,10 @@ fallbackArraySpecies:
     private bool TryOrdinaryToPrimitive(JsValue value, PrimitiveHint hint, out JsValue primitive)
     {
         var obj = _heap.GetObject(value.AsObjectHandle());
-        var first = hint == PrimitiveHint.String ? "toString" : "valueOf";
-        var second = hint == PrimitiveHint.String ? "valueOf" : "toString";
+        var prefersString = hint == PrimitiveHint.String ||
+            (hint == PrimitiveHint.Default && obj is DateObject);
+        var first = prefersString ? "toString" : "valueOf";
+        var second = prefersString ? "valueOf" : "toString";
         return TryCallPrimitiveMethod(obj, value, first, out primitive) ||
                TryCallPrimitiveMethod(obj, value, second, out primitive);
     }
@@ -15031,7 +14497,7 @@ fallbackArraySpecies:
         return false;
     }
 
-    // IsCallable / BigIntArith / Add moved to BytecodeInterpreter.Operators.cs (audit §2 slice 2).
+    // IsCallable / BigIntArith / Add moved to BytecodeInterpreter.Operators.cs (audit �2 slice 2).
 
     private string ToStringValue(JsValue value)
     {
@@ -15079,7 +14545,7 @@ fallbackArraySpecies:
     }
 
     // FormatNumberForString / ExpandExponentialNumber / NormalizeExponentialNumber /
-    // TrimDecimalZeros moved to BytecodeInterpreter.Operators.cs (audit §2 slice 2).
+    // TrimDecimalZeros moved to BytecodeInterpreter.Operators.cs (audit �2 slice 2).
 
     private double ToNumber(JsValue value)
     {
@@ -15090,6 +14556,8 @@ fallbackArraySpecies:
 
         if (value.Tag == JsValueTag.BigInt)
             throw new JsThrownException(CreateTypeError("Cannot convert a BigInt value to a number."));
+        if (value.Tag == JsValueTag.Symbol)
+            throw new JsThrownException(CreateTypeError("Cannot convert a Symbol value to a number."));
 
         return value.Tag switch
         {
@@ -15282,43 +14750,18 @@ fallbackArraySpecies:
         };
     }
 
-    [MayExecuteJs]
-    // ECMA-262 10.2.2 [[Construct]] â€” the prototype of the created object
-    // comes from newTarget.prototype (not callee.prototype) when they differ.
-    // OrdinaryCreateFromConstructor(newTarget, ...) calls GetPrototypeFromConstructor
-    // which reads newTarget.prototype.
-    private JsValue ExecuteConstruct(JsFunctionObject callee, IReadOnlyList<JsValue> args, JsValue newTarget = default)
-    {
-        var instanceObject = CreateOrdinaryObject();
-        var protoReceiver = newTarget.Tag == JsValueTag.Object
-            ? newTarget
-            : (callee.OwnerHandle is { } calleeHandle ? JsValue.FromObject(calleeHandle) : JsValue.Undefined);
-        var prototypeValue = protoReceiver.Tag == JsValueTag.Object
-            ? GetReceiverProperty(protoReceiver, "prototype")
-            : JsValue.Undefined;
-        if (prototypeValue.Tag == JsValueTag.Object)
-        {
-            instanceObject.SetPrototype(prototypeValue.AsObjectHandle());
-        }
-
-        var defaultInstance = JsValue.FromObject(_heap.AllocateObject(instanceObject, AllocationSite.Current()));
-        _pendingNewTarget = newTarget.Tag == JsValueTag.Undefined
-            ? JsValue.Undefined
-            : newTarget;
-        var result = ExecuteInternal(callee.Function, args, defaultInstance, callee.OuterEnvironment, callee: callee);
-        return result.Tag == JsValueTag.Object ? result : defaultInstance;
-    }
-
     private enum PrimitiveHint
     {
+        Default,
         String,
         Number
     }
 
 
     // ForOfIteratorObject / ForInIteratorObject moved to
-    // BytecodeInterpreter.Iterators.cs (audit §2 slice 3).
+    // BytecodeInterpreter.Iterators.cs (audit �2 slice 3).
 }
+
 
 
 

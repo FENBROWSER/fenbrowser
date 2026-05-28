@@ -30,22 +30,35 @@ public sealed partial class BytecodeInterpreter
 
     private JsValue Add(JsValue left, JsValue right)
     {
-        if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
+        var leftPrimitive = ToPrimitive(left, PrimitiveHint.Default);
+        var rightPrimitive = ToPrimitive(right, PrimitiveHint.Default);
+
+        if (leftPrimitive.Tag == JsValueTag.String || rightPrimitive.Tag == JsValueTag.String)
         {
-            return JsValue.FromBigInt(left.AsBigInt() + right.AsBigInt());
+            return JsValue.FromString(ToStringForAddition(leftPrimitive) + ToStringForAddition(rightPrimitive));
         }
 
-        if (left.Tag == JsValueTag.BigInt || right.Tag == JsValueTag.BigInt)
+        if (leftPrimitive.Tag == JsValueTag.BigInt && rightPrimitive.Tag == JsValueTag.BigInt)
+        {
+            return JsValue.FromBigInt(leftPrimitive.AsBigInt() + rightPrimitive.AsBigInt());
+        }
+
+        if (leftPrimitive.Tag == JsValueTag.BigInt || rightPrimitive.Tag == JsValueTag.BigInt)
         {
             throw new JsThrownException(CreateTypeError("Cannot mix BigInt and other types in addition."));
         }
 
-        if (left.Tag is JsValueTag.String or JsValueTag.Object || right.Tag is JsValueTag.String or JsValueTag.Object)
+        return JsValue.FromNumber(ToNumber(leftPrimitive) + ToNumber(rightPrimitive));
+    }
+
+    private string ToStringForAddition(JsValue value)
+    {
+        if (value.Tag == JsValueTag.Symbol)
         {
-            return JsValue.FromString(ToStringValue(left) + ToStringValue(right));
+            throw new JsThrownException(CreateTypeError("Cannot convert a Symbol value to a string."));
         }
 
-        return JsValue.FromNumber(ToNumber(left) + ToNumber(right));
+        return ToStringValue(value);
     }
 
     private static string FormatNumberForString(double value)

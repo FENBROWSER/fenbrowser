@@ -974,6 +974,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
+    public void AdditionUsesDefaultToPrimitiveSemantics()
+    {
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("let valueOfCalls = 0; let toStringCalls = 0; let left = { valueOf: function(){ valueOfCalls++; return 1; }, toString: function(){ toStringCalls++; return 99; } }; let objectHintWorks = (left + 1) === 2 && valueOfCalls === 1 && toStringCalls === 0; let dateHintWorks = typeof (new Date(0) + 1) === \"string\"; let primitiveFailureIsTypeError = false; try { 1 + { valueOf: function(){ return {}; }, toString: function(){ return {}; } }; } catch (e) { primitiveFailureIsTypeError = e instanceof TypeError; } let symbolNumberThrow = false; try { 0 + { [Symbol.toPrimitive]: function(){ return Symbol(\"s\"); } }; } catch (e) { symbolNumberThrow = e instanceof TypeError; } let symbolStringThrow = false; try { \"\" + { [Symbol.toPrimitive]: function(){ return Symbol(\"s\"); } }; } catch (e) { symbolStringThrow = e instanceof TypeError; } let bigintStringConcatWorks = (1n + \"\") === \"1\" && (\"\" + 1n) === \"1\"; objectHintWorks && dateHintWorks && primitiveFailureIsTypeError && symbolNumberThrow && symbolStringThrow && bigintStringConcatWorks;"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ObjectDefinePropertyFallsBackToValueOfForObjectKeys()
     {
         var compiler = new BytecodeCompiler();

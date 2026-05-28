@@ -35,6 +35,12 @@ public sealed class BytecodeFunction
 
     public int RegisterCount { get; init; }
 
+    // Instruction index of the first opcode AFTER parameter-binding statements.
+    // Used by generator / async-generator call paths to execute parameter
+    // destructuring synchronously before suspending the new generator.
+    // 0 means "no separate prologue" (run the whole body lazily as before).
+    public int PrologueEndIp { get; init; }
+
     // H.5: true if this function is the constructor of a class with `extends`.
     // Derived constructors must call super() before accessing `this`.
     public bool IsDerivedConstructor { get; init; }

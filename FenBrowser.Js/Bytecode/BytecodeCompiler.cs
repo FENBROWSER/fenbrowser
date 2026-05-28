@@ -131,7 +131,8 @@ public sealed class BytecodeCompiler
         bool hasOwnArgumentsObject,
         FunctionKind functionKind,
         bool inheritedStrictMode,
-        bool captureCompletionValue)
+        bool captureCompletionValue,
+        int prologueStatementCount = 0)
     {
         _instructions.Clear();
         _constants.Clear();
@@ -158,9 +159,17 @@ public sealed class BytecodeCompiler
 
         HoistFunctionDeclarations(program.Body);
 
+        int prologueEndIp = 0;
+        var stmtIndex = 0;
         foreach (var stmt in program.Body)
         {
             CompileStatement(stmt);
+            stmtIndex++;
+            if (stmtIndex == prologueStatementCount && prologueStatementCount > 0)
+            {
+                prologueEndIp = _instructions.Count;
+                _instructions.Add(new Instruction(OpCode.PrologueEnd, 0, 0, 0));
+            }
         }
 
         if (_captureCompletionValue)
@@ -193,7 +202,8 @@ public sealed class BytecodeCompiler
             HasOwnArgumentsObject = hasOwnArgumentsObject,
             NestedFunctions = _nestedFunctions.ToArray(),
             RegisterCount = Math.Max(2, _nextRegister),
-            BrandTokens = _brandTokens.ToArray()
+            BrandTokens = _brandTokens.ToArray(),
+            PrologueEndIp = prologueEndIp,
         };
     }
 
@@ -398,7 +408,8 @@ public sealed class BytecodeCompiler
             functionDecl.Body.Statements,
             functionDecl.Body.Span,
             functionDecl.Parameters,
-            functionDecl.ParameterBindings);
+            functionDecl.ParameterBindings,
+            out var prologueCount);
         var childCompiler = new BytecodeCompiler();
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
@@ -408,7 +419,8 @@ public sealed class BytecodeCompiler
             hasOwnArgumentsObject: true,
             functionKind: SelectFunctionKind(functionDecl.IsAsync, functionDecl.IsGenerator, isArrow: false),
             inheritedStrictMode: _isStrictMode,
-            captureCompletionValue: false);
+            captureCompletionValue: false,
+            prologueStatementCount: prologueCount);
         var nestedIndex = _nestedFunctions.Count;
         _nestedFunctions.Add(nestedFunction);
 
@@ -423,8 +435,10 @@ public sealed class BytecodeCompiler
         IReadOnlyList<StatementNode> bodyStatements,
         SourceSpan bodySpan,
         IReadOnlyList<string> parameterNames,
-        IReadOnlyList<BindingPatternNode?>? parameterBindings)
+        IReadOnlyList<BindingPatternNode?>? parameterBindings,
+        out int prologueStatementCount)
     {
+        prologueStatementCount = 0;
         if (parameterBindings is null || parameterBindings.Count == 0)
         {
             return new ProgramNode(ProgramKind.Script, bodyStatements, bodySpan);
@@ -454,6 +468,7 @@ public sealed class BytecodeCompiler
         var statements = new List<StatementNode>(prelude.Count + bodyStatements.Count);
         statements.AddRange(prelude);
         statements.AddRange(bodyStatements);
+        prologueStatementCount = prelude.Count;
         return new ProgramNode(ProgramKind.Script, statements, bodySpan);
     }
 
@@ -714,8 +729,9 @@ public sealed class BytecodeCompiler
                         _instructions.Add(new Instruction(OpCode.DefineSetterByReg, targetReg, keyReg, methodReg));
                         break;
                     default:
-                        // Methods use SetElem for computed names
-                        _instructions.Add(new Instruction(OpCode.SetElem, targetReg, keyReg, methodReg));
+                        // ECMA-262 15.7.13 PropertyDefinitionEvaluation: methods install
+                        // with { writable, !enumerable, configurable } via CreateMethodProperty.
+                        _instructions.Add(new Instruction(OpCode.DefineMethodByReg, targetReg, keyReg, methodReg));
                         break;
                 }
             }
@@ -731,15 +747,19 @@ public sealed class BytecodeCompiler
                         _instructions.Add(new Instruction(OpCode.DefineSetter, targetReg, nameIndex, methodReg));
                         break;
                     default:
-                        _instructions.Add(new Instruction(OpCode.SetPropByName, targetReg, nameIndex, methodReg));
+                        // ECMA-262 15.7.13: CreateMethodProperty -> { w:t, e:f, c:t }.
+                        _instructions.Add(new Instruction(OpCode.DefineMethod, targetReg, nameIndex, methodReg));
                         break;
                 }
             }
         }
 
-        // proto.constructor = classCtor; classCtor.prototype = proto.
+        // ECMA-262 15.7.14 step 16: proto.constructor uses CreateMethodProperty
+        // -> { writable: true, enumerable: false, configurable: true }. classCtor.prototype
+        // is set non-enumerably here too (MakeConstructor will already have created
+        // the slot during function creation; this overwrites with the class's proto).
         var ctorNameIdx = GetOrCreatePropertyName("constructor");
-        _instructions.Add(new Instruction(OpCode.SetPropByName, protoReg, ctorNameIdx, classReg));
+        _instructions.Add(new Instruction(OpCode.DefineMethod, protoReg, ctorNameIdx, classReg));
         var protoNameIdx = GetOrCreatePropertyName("prototype");
         _instructions.Add(new Instruction(OpCode.SetPropByName, classReg, protoNameIdx, protoReg));
 
@@ -789,7 +809,8 @@ public sealed class BytecodeCompiler
             fnExpr.Body.Statements,
             fnExpr.Body.Span,
             fnExpr.Parameters,
-            fnExpr.ParameterBindings);
+            fnExpr.ParameterBindings,
+            out var prologueCount);
         var childCompiler = new BytecodeCompiler { _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _brandTokens = this._brandTokens };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
@@ -799,7 +820,8 @@ public sealed class BytecodeCompiler
             hasOwnArgumentsObject: true,
             functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false),
             inheritedStrictMode: _isStrictMode,
-            captureCompletionValue: false);
+            captureCompletionValue: false,
+            prologueStatementCount: prologueCount);
         var nestedIndex = _nestedFunctions.Count;
         _nestedFunctions.Add(nestedFunction);
         var dest = AllocateRegister();
@@ -1205,8 +1227,162 @@ public sealed class BytecodeCompiler
                 slot = GetOrCreateVariableSlot(identifier.Name);
                 pattern = null;
                 return true;
+            case ExpressionStatementNode expressionInitializer when
+                TryConvertForAssignmentPattern(expressionInitializer.Expression, out var assignmentPattern):
+                slot = -1;
+                pattern = assignmentPattern;
+                return true;
             default:
                 slot = 0;
+                pattern = null;
+                return false;
+        }
+    }
+
+    private bool TryConvertForAssignmentPattern(ExpressionNode expression, out BindingPatternNode? pattern)
+    {
+        switch (expression)
+        {
+            case ParenthesizedExpressionNode parenthesized:
+                return TryConvertForAssignmentPattern(parenthesized.Expression, out pattern);
+            case IdentifierExpressionNode identifier:
+                pattern = new IdentifierBindingPatternNode(identifier.Name, identifier.Span);
+                return true;
+            case ArrayLiteralExpressionNode array:
+            {
+                var elements = new List<ArrayBindingElementNode>(array.Elements.Count);
+                for (var i = 0; i < array.Elements.Count; i++)
+                {
+                    var element = array.Elements[i];
+                    if (element is SpreadElementExpressionNode spread)
+                    {
+                        if (i != array.Elements.Count - 1 ||
+                            !TryConvertForAssignmentPattern(spread.Argument, out var restPattern) ||
+                            restPattern is null)
+                        {
+                            pattern = null;
+                            return false;
+                        }
+
+                        elements.Add(new ArrayBindingElementNode(restPattern, null, IsRest: true, spread.Span));
+                        continue;
+                    }
+
+                    // ParseArrayLiteral materializes elisions as an `undefined` identifier
+                    // with comma span; treat those sentinels as omitted elements.
+                    if (element is IdentifierExpressionNode { Name: "undefined" } sentinel &&
+                        sentinel.Span.Length == 1)
+                    {
+                        elements.Add(new ArrayBindingElementNode(null, null, IsRest: false, sentinel.Span));
+                        continue;
+                    }
+
+                    ExpressionNode targetExpression = element;
+                    ExpressionNode? initializer = null;
+                    if (element is AssignmentExpressionNode assignment)
+                    {
+                        targetExpression = assignment.Left;
+                        initializer = assignment.Right;
+                    }
+
+                    if (!TryConvertForAssignmentPattern(targetExpression, out var elementPattern) ||
+                        elementPattern is null)
+                    {
+                        pattern = null;
+                        return false;
+                    }
+
+                    elements.Add(new ArrayBindingElementNode(elementPattern, initializer, IsRest: false, element.Span));
+                }
+
+                pattern = new ArrayBindingPatternNode(elements, array.Span);
+                return true;
+            }
+            case ObjectLiteralExpressionNode obj:
+            {
+                var properties = new List<ObjectBindingPropertyNode>(obj.Properties.Count);
+                BindingPatternNode? rest = null;
+                for (var i = 0; i < obj.Properties.Count; i++)
+                {
+                    var property = obj.Properties[i];
+                    if (property.Kind != ObjectPropertyKind.Data)
+                    {
+                        pattern = null;
+                        return false;
+                    }
+
+                    if (property.Value is SpreadElementExpressionNode spread)
+                    {
+                        if (i != obj.Properties.Count - 1 ||
+                            rest is not null ||
+                            !TryConvertForAssignmentPattern(spread.Argument, out var restPattern) ||
+                            restPattern is null)
+                        {
+                            pattern = null;
+                            return false;
+                        }
+
+                        rest = restPattern;
+                        continue;
+                    }
+
+                    BindingPatternNode? targetPattern = null;
+                    ExpressionNode? initializer = null;
+
+                    if (!property.IsComputed && property.Key is not null)
+                    {
+                        if (property.Value is IdentifierExpressionNode identifier && identifier.Name == property.Key)
+                        {
+                            targetPattern = new IdentifierBindingPatternNode(identifier.Name, identifier.Span);
+                        }
+                        else if (property.Value is IdentifierExpressionNode shorthandDefaultIdentifier)
+                        {
+                            // `{ x = y }` and `{ x: y }` both parse to an IdentifierExpression
+                            // value. Favor the explicit property-target interpretation first.
+                            targetPattern = new IdentifierBindingPatternNode(shorthandDefaultIdentifier.Name, shorthandDefaultIdentifier.Span);
+                        }
+                        else if (TryConvertForAssignmentPattern(property.Value, out var valuePattern) &&
+                                 valuePattern is not null)
+                        {
+                            targetPattern = valuePattern;
+                        }
+                        else
+                        {
+                            // Fallback for shorthand default initializers like `{ x = 1 }`.
+                            targetPattern = new IdentifierBindingPatternNode(property.Key, property.Span);
+                            initializer = property.Value;
+                        }
+                    }
+                    else if (property.Value is AssignmentExpressionNode assignment)
+                    {
+                        if (!TryConvertForAssignmentPattern(assignment.Left, out targetPattern) || targetPattern is null)
+                        {
+                            pattern = null;
+                            return false;
+                        }
+
+                        initializer = assignment.Right;
+                    }
+                    else if (!TryConvertForAssignmentPattern(property.Value, out targetPattern) ||
+                             targetPattern is null)
+                    {
+                        pattern = null;
+                        return false;
+                    }
+
+                    properties.Add(new ObjectBindingPropertyNode(
+                        property.Key,
+                        property.ComputedKey,
+                        property.IsComputed,
+                        targetPattern,
+                        initializer,
+                        property.Span));
+                }
+
+                pattern = new ObjectBindingPatternNode(properties, rest, obj.Span);
+                return true;
+            }
+            default:
                 pattern = null;
                 return false;
         }
@@ -1994,7 +2170,8 @@ public sealed class BytecodeCompiler
                     fnExpr.Body.Statements,
                     fnExpr.Body.Span,
                     fnExpr.Parameters,
-                    fnExpr.ParameterBindings);
+                    fnExpr.ParameterBindings,
+                    out var fnExprPrologueCount);
                 var childCompiler = new BytecodeCompiler();
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
@@ -2004,7 +2181,8 @@ public sealed class BytecodeCompiler
                     hasOwnArgumentsObject: true,
                     functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false),
                     inheritedStrictMode: _isStrictMode,
-                    captureCompletionValue: false);
+                    captureCompletionValue: false,
+                    prologueStatementCount: fnExprPrologueCount);
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();
@@ -2037,7 +2215,8 @@ public sealed class BytecodeCompiler
                     statements,
                     bodySpan,
                     arrow.Parameters,
-                    arrow.ParameterBindings);
+                    arrow.ParameterBindings,
+                    out var arrowPrologueCount);
                 var childCompiler = new BytecodeCompiler();
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
@@ -2047,7 +2226,8 @@ public sealed class BytecodeCompiler
                     hasOwnArgumentsObject: false,
                     functionKind: SelectFunctionKind(arrow.IsAsync, isGenerator: false, isArrow: true),
                     inheritedStrictMode: _isStrictMode,
-                    captureCompletionValue: false);
+                    captureCompletionValue: false,
+                    prologueStatementCount: arrowPrologueCount);
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();
@@ -2328,6 +2508,7 @@ public sealed class BytecodeCompiler
             }
             case ArrayBindingPatternNode array:
             {
+                var arraySourceReg = MaterializeArrayBindingSource(sourceReg);
                 var index = 0;
                 foreach (var element in array.Elements)
                 {
@@ -2339,12 +2520,12 @@ public sealed class BytecodeCompiler
 
                     if (element.IsRest)
                     {
-                        var restReg = BuildArrayRest(sourceReg, index);
+                        var restReg = BuildArrayRest(arraySourceReg, index);
                         EmitBindingPatternAssignment(element.Target, restReg, storeOp);
                         continue;
                     }
 
-                    var valueReg = LoadArrayElement(sourceReg, index);
+                    var valueReg = LoadArrayElement(arraySourceReg, index);
                     if (element.Initializer is not null)
                     {
                         valueReg = ApplyDefaultInitializerIfUndefined(valueReg, element.Initializer);
@@ -2458,6 +2639,24 @@ public sealed class BytecodeCompiler
             default:
                 throw new InvalidOperationException($"Unsupported binding pattern type {pattern.GetType().Name}.");
         }
+    }
+
+    private int MaterializeArrayBindingSource(int sourceReg)
+    {
+        // Assignment/Binding patterns over arrays are iterator-based in spec terms.
+        // Materialize through Array.from so array-destructuring consumes iterable
+        // values rather than treating the RHS as an index-only array-like object.
+        var arrayReg = AllocateRegister();
+        var arraySlot = GetOrCreateVariableSlot("Array");
+        _instructions.Add(new Instruction(OpCode.LoadVar, arrayReg, arraySlot, 0));
+
+        var fromReg = AllocateRegister();
+        var fromNameIndex = GetOrCreatePropertyName("from");
+        _instructions.Add(new Instruction(OpCode.GetPropByName, fromReg, arrayReg, fromNameIndex));
+
+        var materializedReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.CallMethod1, materializedReg, fromReg, arrayReg, sourceReg));
+        return materializedReg;
     }
 
     private int LoadArrayElement(int arrayReg, int index)
@@ -2907,6 +3106,11 @@ public sealed class BytecodeCompiler
 
     private static System.Numerics.BigInteger ParseBigIntLiteral(string text)
     {
+        if (string.IsNullOrEmpty(text))
+        {
+            throw new JsParserException("Invalid BigInt literal.");
+        }
+
         if (text.Length >= 2 && text[0] == '0')
         {
             switch (text[1])
@@ -2920,12 +3124,23 @@ public sealed class BytecodeCompiler
             }
         }
 
-        return System.Numerics.BigInteger.Parse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture);
+        var normalized = text.Replace("_", string.Empty, StringComparison.Ordinal);
+        if (!System.Numerics.BigInteger.TryParse(
+                normalized,
+                System.Globalization.NumberStyles.AllowLeadingSign,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var value))
+        {
+            throw new JsParserException("Invalid BigInt literal.");
+        }
+
+        return value;
     }
 
     private static System.Numerics.BigInteger ParseBigIntWithRadix(string digits, int radix)
     {
         var result = System.Numerics.BigInteger.Zero;
+        var sawDigit = false;
         foreach (var ch in digits)
         {
             if (ch == '_') continue;
@@ -2934,10 +3149,23 @@ public sealed class BytecodeCompiler
                 >= '0' and <= '9' => ch - '0',
                 >= 'a' and <= 'z' => ch - 'a' + 10,
                 >= 'A' and <= 'Z' => ch - 'A' + 10,
-                _ => 0
+                _ => -1
             };
+
+            if (digit < 0 || digit >= radix)
+            {
+                throw new JsParserException("Invalid BigInt literal.");
+            }
+
             result = result * radix + digit;
+            sawDigit = true;
         }
+
+        if (!sawDigit)
+        {
+            throw new JsParserException("Invalid BigInt literal.");
+        }
+
         return result;
     }
 }

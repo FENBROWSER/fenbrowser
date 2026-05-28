@@ -67,6 +67,13 @@ public enum OpCode : byte
     Div,
     Return,
 
+    // Marker opcode placed by the compiler after parameter-binding statements and
+    // before the body. ECMA-262 evaluates FunctionDeclarationInstantiation BEFORE
+    // creating a Generator/AsyncGenerator object, so callers of generator-flavored
+    // functions execute the bytecode up to this marker synchronously and only
+    // then suspend. For non-generator functions this is effectively a Nop.
+    PrologueEnd,
+
     // H.2 - SetPrototype(A, B): set the [[Prototype]] of the object in register A
     // to either the object in register B (when B holds a JsValueTag.Object) or
     // to null (when B holds JsValueTag.Null). Any other type is a TypeError -
@@ -114,6 +121,17 @@ public enum OpCode : byte
     // instead of an index into the constant pool. Used for computed property
     // names on class setters.
     DefineSetterByReg,
+
+    // ECMA-262 15.7.13 PropertyDefinitionEvaluation / 7.3.6 CreateMethodProperty.
+    // DefineMethod(A=target reg, B=name idx, C=fn reg) installs a data property
+    // with attributes { [[Writable]]: true, [[Enumerable]]: false, [[Configurable]]: true }.
+    // Used for class instance/static methods, the class prototype's `constructor`
+    // back-reference, and any other built-in method-property installation.
+    DefineMethod,
+
+    // ECMA-262 15.7.13 with ComputedPropertyName: same as DefineMethod but the
+    // property key is in register B (a JsValue, coerced via ToPropertyKey).
+    DefineMethodByReg,
 
     // H.5 - DefinePrivateField(A=target reg, B=field name string index, C=value reg).
     // Defines a private field (identified by the string at constant pool index B)

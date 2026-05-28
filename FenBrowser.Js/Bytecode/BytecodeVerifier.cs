@@ -199,6 +199,19 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 ValidateRegister(ins.C, function.RegisterCount, ip, "C");
                 break;
+            case OpCode.DefineMethod:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidatePropertyName(function, ip, ins.B);
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
+                break;
+            case OpCode.PrologueEnd:
+                // No operands.
+                break;
+            case OpCode.DefineMethodByReg:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
+                break;
             case OpCode.CallSpread:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");

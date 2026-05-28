@@ -23,9 +23,33 @@ public sealed partial class BytecodeInterpreter
             case JsValueTag.Object:
             {
                 var obj = ResolveObject(receiver);
+                // ECMA-262 23.2.4.2 IntegerIndexedElementGet: TypedArray integer
+                // indices route to the underlying buffer, not the property table.
+                if (obj is TypedArrayObject ta && IsCanonicalIntegerIndex(key, out var taIdx))
+                {
+                    return ta.GetElement(taIdx);
+                }
                 if (obj is ProxyObject proxyGet)
                     return ProxyGet(proxyGet, receiver, key);
-                return TryGetPropertyValue(obj, receiver, key, out var value) ? value : JsValue.Undefined;
+                if (TryGetPropertyValue(obj, receiver, key, out var value))
+                {
+                    return value;
+                }
+                // ECMA-262 10.3.3: callable native objects whose [[Prototype]] was
+                // never wired up still need Function.prototype methods (`call`,
+                // `apply`, `bind`, `toString`) to be reachable. Fall back through
+                // Function.prototype only for functions that have no explicit chain.
+                if (obj.PrototypeHandle is null
+                    && (obj is NativeFunctionObject || obj is JsFunctionObject || obj is BoundFunctionObject)
+                    && _functionPrototypeHandle is { } fnProto)
+                {
+                    var fpObj = _heap.GetObject(fnProto);
+                    if (TryGetPropertyValue(fpObj, receiver, key, out var fpValue))
+                    {
+                        return fpValue;
+                    }
+                }
+                return JsValue.Undefined;
             }
             case JsValueTag.HostObject:
                 // F.5 - route through HostObjectTable validation, then IHostHooks.
