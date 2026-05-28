@@ -1017,6 +1017,15 @@ public sealed class BytecodeCompiler
             throw new InvalidOperationException("Unsupported for-in initializer target.");
         }
 
+        // Annex B B.3.5: sloppy-mode `for (var x = init in obj)` executes `init`
+        // once before evaluating the RHS expression, then rebinds `x` per key.
+        if (forInStmt.Initializer is VariableDeclarationStatementNode { Kind: "var", Declarators.Count: 1 } declaration &&
+            declaration.Declarators[0].Initializer is { } initializerExpression)
+        {
+            var initReg = CompileExpression(initializerExpression);
+            EmitForBindingAssignment(targetSlot, targetPattern, initReg);
+        }
+
         var sourceReg = CompileExpression(forInStmt.Iterable);
         var iteratorReg = AllocateRegister();
         _instructions.Add(new Instruction(OpCode.EnumerateKeys, iteratorReg, sourceReg, 0));

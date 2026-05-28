@@ -90,4 +90,18 @@ public sealed class AssignmentTargetRuntimeTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void AnnexBForInVarInitializerRunsOnceAndBindsBeforeRhs()
+    {
+        var result = Run("""
+            var effects = 0;
+            var stored;
+            for (var a = ++effects in { a: 0, b: 1, c: 2 }) {}
+            for (var b = 0 in (stored = b, { k: 1 })) {}
+            effects === 1 && stored === 0;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }

@@ -42,6 +42,7 @@ public sealed class JsParser
     private bool _inDirectivePrologue = true;
     private bool _allowYieldExpression;
     private bool _allowAwaitExpression;
+    private bool _allowAnnexBForInInitializerTail;
 
     private JsParser(IReadOnlyList<Token> tokens)
     {
@@ -825,7 +826,18 @@ public sealed class JsParser
             if (IsPunctuator("="))
             {
                 Advance();
-                initializer = ParseExpression(2);
+                var priorAnnexBFlag = _allowAnnexBForInInitializerTail;
+                _allowAnnexBForInInitializerTail =
+                    priorAnnexBFlag ||
+                    (inForHead && string.Equals(start.Text, "var", StringComparison.Ordinal));
+                try
+                {
+                    initializer = ParseExpression(2);
+                }
+                finally
+                {
+                    _allowAnnexBForInInitializerTail = priorAnnexBFlag;
+                }
             }
 
             if (binding.Pattern is not null && initializer is null && !inForHead)
@@ -1341,14 +1353,69 @@ public sealed class JsParser
 
         if (initializerIsDeclaration &&
             initializer is VariableDeclarationStatementNode declarationWithInitializer &&
-            IsPunctuator(")") &&
-            DeclarationContainsInInitializer(declarationWithInitializer))
+            declarationWithInitializer.Declarators.Count == 1 &&
+            declarationWithInitializer.Declarators[0].Initializer is { } declarationInitializer &&
+            TryGetTopLevelInBinary(declarationInitializer, out var forInInitLeft, out var forInIterable))
         {
-            var hasPattern = declarationWithInitializer.Declarators.Any(d => d.Identifier.StartsWith("__pattern", StringComparison.Ordinal));
-            if (!string.Equals(declarationWithInitializer.Kind, "var", StringComparison.Ordinal) || _strictMode || hasPattern)
+            var declarator = declarationWithInitializer.Declarators[0];
+            var hasPattern = declarator.BindingPattern is not null ||
+                             declarator.Identifier.StartsWith("__pattern", StringComparison.Ordinal);
+            var allowAnnexBVarInitializer =
+                !_strictMode &&
+                string.Equals(declarationWithInitializer.Kind, "var", StringComparison.Ordinal) &&
+                !hasPattern;
+
+            if (!allowAnnexBVarInitializer)
             {
                 throw new JsParserException("for-in declaration initializers are not allowed.");
             }
+
+            var rewrittenDeclarator = declarator with
+            {
+                Initializer = forInInitLeft,
+                Span = MergeSpan(declarator.Span, forInInitLeft.Span)
+            };
+            var rewrittenDeclaration = declarationWithInitializer with
+            {
+                Declarators = new[] { rewrittenDeclarator },
+                Span = MergeSpan(declarationWithInitializer.Span, rewrittenDeclarator.Span)
+            };
+
+            // In `for (var a = 0 in stored = a, {})`, declaration parsing stops
+            // before the comma to avoid consuming declarator separators. Treat any
+            // trailing comma sequence as part of the for-in RHS expression.
+            var iterable = forInIterable;
+            if (IsAssignmentOperator(Current()))
+            {
+                if (!IsValidAssignmentTarget(iterable))
+                {
+                    throw new JsParserException("Invalid assignment target.");
+                }
+
+                var op = Advance().Text;
+                var right = ParseExpression(2);
+                var rhs = BuildAssignmentRight(iterable, op, right);
+                iterable = new AssignmentExpressionNode(iterable, rhs, MergeSpan(iterable.Span, right.Span));
+            }
+
+            while (IsPunctuator(","))
+            {
+                Advance(); // ,
+                var nextSegment = ParseExpression(2);
+                iterable = new BinaryExpressionNode(
+                    ",",
+                    iterable,
+                    nextSegment,
+                    MergeSpan(iterable.Span, nextSegment.Span));
+            }
+
+            ExpectPunctuator(")");
+            var forInBody = ParseStatement();
+            return new ForInStatementNode(
+                rewrittenDeclaration,
+                iterable,
+                forInBody,
+                MergeSpan(start.Span, forInBody.Span));
         }
 
         if (IsPunctuator(")"))
@@ -1377,15 +1444,24 @@ public sealed class JsParser
         return new ForStatementNode(initializer, test, update, body, MergeSpan(start.Span, body.Span));
     }
 
-    private static void ValidateForInInitializer(StatementNode initializer)
+    private void ValidateForInInitializer(StatementNode initializer)
     {
         if (initializer is VariableDeclarationStatementNode declaration)
         {
+            var allowAnnexBVarInitializer =
+                !_strictMode &&
+                string.Equals(declaration.Kind, "var", StringComparison.Ordinal);
+
             foreach (var declarator in declaration.Declarators)
             {
                 if (declarator.Initializer is not null)
                 {
-                    throw new JsParserException("for-in declaration initializers are not allowed.");
+                    // Annex B B.3.5: sloppy-mode `for-in` permits var initializers.
+                    // Keep the relaxation narrow: only plain var bindings.
+                    if (!allowAnnexBVarInitializer || declarator.BindingPattern is not null)
+                    {
+                        throw new JsParserException("for-in declaration initializers are not allowed.");
+                    }
                 }
             }
 
@@ -2677,6 +2753,12 @@ public sealed class JsParser
                 // an early SyntaxError.
                 if (!IsValidAssignmentTarget(left))
                 {
+                    if (_allowAnnexBForInInitializerTail &&
+                        left is BinaryExpressionNode { Operator: "in" })
+                    {
+                        break;
+                    }
+
                     throw new JsParserException("Invalid assignment target.");
                 }
 

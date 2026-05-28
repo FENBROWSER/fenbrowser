@@ -297,6 +297,71 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void AllowsForInVarDeclarationInitializerInSloppyMode()
+    {
+        var program = JsParser.ParseScript(new SourceText("for (var a = 0 in {});"));
+        Assert.IsType<ForInStatementNode>(Assert.Single(program.Body));
+    }
+
+    [Fact]
+    public void RejectsForInVarDeclarationInitializerInStrictMode()
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("\"use strict\"; for (var a = 0 in {});")));
+    }
+
+    [Fact]
+    public void ParsesAnnexBForInVarInitializerForms()
+    {
+        var source = """
+            (function() {
+              var effects = 0;
+              for (var a = ++effects in {});
+            })();
+
+            (function() {
+              var stored;
+              for (var a = 0 in stored = a, {});
+            })();
+
+            (function() {
+              for (var a = 0 in {});
+            })();
+
+            (function() {
+              var effects = 0;
+              var stored;
+              for (var a = (++effects, -1) in stored = a, {a: 0, b: 1, c: 2}) {
+              }
+            })();
+            """;
+
+        var program = JsParser.ParseScript(new SourceText(source));
+        Assert.Equal(4, program.Body.Count);
+    }
+
+    [Fact]
+    public void ParsesAnnexBForInVarInitializer_WithSimpleRhs()
+    {
+        var program = JsParser.ParseScript(new SourceText("for (var a = ++effects in {});"));
+        Assert.IsType<ForInStatementNode>(Assert.Single(program.Body));
+    }
+
+    [Fact]
+    public void ParsesAnnexBForInVarInitializer_WithAssignmentAndCommaRhs()
+    {
+        var program = JsParser.ParseScript(new SourceText("for (var a = 0 in stored = a, {});"));
+        Assert.IsType<ForInStatementNode>(Assert.Single(program.Body));
+    }
+
+    [Fact]
+    public void ParsesAnnexBForInVarInitializer_WithComplexLeftAndRhs()
+    {
+        var source = "for (var a = (++effects, -1) in stored = a, {a: 0, b: 1, c: 2}) {}";
+        var program = JsParser.ParseScript(new SourceText(source));
+        Assert.IsType<ForInStatementNode>(Assert.Single(program.Body));
+    }
+
+    [Fact]
     public void RejectsStringLiteralWithUnescapedLineTerminator()
     {
         Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText("\"str\ning\";")));
