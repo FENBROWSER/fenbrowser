@@ -1,5 +1,6 @@
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
+using FenBrowser.Js.Parser;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
 using Xunit;
@@ -181,6 +182,19 @@ public sealed class BigIntTests
     public void BigIntGlobalConstructorExists()
     {
         Assert.True(Run("typeof BigInt === 'function';").AsBoolean());
+    }
+
+    [Fact]
+    public void BigIntDecimalLiteralSupportsNumericSeparators()
+    {
+        Assert.True(Run("1_234_567n === 1234567n;").AsBoolean());
+    }
+
+    [Fact]
+    public void InvalidBigIntLiteralThrowsParserException()
+    {
+        var compiler = new BytecodeCompiler();
+        Assert.Throws<JsParserException>(() => compiler.CompileScript(new SourceText("0x_ggn;")));
     }
 
     [Fact]
