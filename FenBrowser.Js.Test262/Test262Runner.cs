@@ -1586,6 +1586,16 @@ public sealed class Test262Runner
         return prelude;
     }
 
+    // Harness files we know are safe to load directly from disk on top of the
+    // hand-rolled prelude. Every other include is either covered by the prelude
+    // or has been observed to cause regressions when re-loaded.
+    private static readonly HashSet<string> _loadableHarnessIncludes = new(StringComparer.Ordinal)
+    {
+        "proxyTrapsHelper.js",
+        "testTypedArray.js",
+        "propertyHelper.js",
+    };
+
     private static string BuildRuntimeHarnessIncludePrelude(string rootPath, IReadOnlyList<string> includes)
     {
         if (includes.Count == 0)
@@ -1596,7 +1606,7 @@ public sealed class Test262Runner
         var snippets = new List<string>();
         foreach (var include in includes)
         {
-            if (!string.Equals(include, "proxyTrapsHelper.js", StringComparison.Ordinal))
+            if (!_loadableHarnessIncludes.Contains(include))
             {
                 continue;
             }
