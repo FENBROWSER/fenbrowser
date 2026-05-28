@@ -103,6 +103,12 @@ public enum OpCode : byte
     // Throws ReferenceError when called from a function with no HomeObject.
     LoadSuperProperty,
 
+    // Computed super[key] read. A=dest reg, B=key reg. Resolves the key via
+    // ToPropertyKey (Symbol passes through), then reads from the prototype of
+    // the current frame function's HomeObject. ECMA-262 13.3.7.3
+    // MakeSuperPropertyReference + 9.1.2 GetSuperBase.
+    LoadSuperElement,
+
     // H.3.2 - LoadSuperConstructor(A=dest reg). Reads the parent class from
     // the executing constructor's HomeObject prototype slot. ECMA-262
     // 13.3.7.4 GetSuperConstructor. Used by `super(...)` to obtain the

@@ -1739,6 +1739,14 @@ public sealed class BytecodeCompiler
                     return dest2;
                 }
 
+                if (member.Object is SuperExpressionNode && member.Computed)
+                {
+                    var keyReg = CompileExpression(member.PropertyExpression!);
+                    var dest2 = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.LoadSuperElement, dest2, keyReg, 0));
+                    return dest2;
+                }
+
                 var objectReg = CompileExpression(member.Object);
                 var dest = AllocateRegister();
                 if (member.Computed)
@@ -1831,6 +1839,15 @@ public sealed class BytecodeCompiler
                         calleeReg = AllocateRegister();
                         var superName = GetOrCreatePropertyName(memberCallee.Property);
                         _instructions.Add(new Instruction(OpCode.LoadSuperProperty, calleeReg, superName, 0));
+                        isMethodCall = true;
+                    }
+                    else if (memberCallee.Object is SuperExpressionNode && memberCallee.Computed)
+                    {
+                        var keyReg = CompileExpression(memberCallee.PropertyExpression!);
+                        thisReg = AllocateRegister();
+                        _instructions.Add(new Instruction(OpCode.LoadThis, thisReg, 0, 0));
+                        calleeReg = AllocateRegister();
+                        _instructions.Add(new Instruction(OpCode.LoadSuperElement, calleeReg, keyReg, 0));
                         isMethodCall = true;
                     }
                     else

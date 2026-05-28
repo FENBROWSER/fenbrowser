@@ -253,6 +253,8 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.HandleSetHomeObject), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiHandleLoadSuperProperty = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.HandleLoadSuperProperty), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiHandleLoadSuperElement = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.HandleLoadSuperElement), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiHandleLoadSuperConstructor = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.HandleLoadSuperConstructor), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly PropertyInfo PiRegisters = typeof(InterpreterFrame).GetProperty(nameof(InterpreterFrame.Registers))!;
@@ -670,6 +672,9 @@ public static class JitCompiler
             case OpCode.LoadSuperProperty:
                 body.Add(Expression.Call(interp, MiHandleLoadSuperProperty, frame,
                     Expression.Property(frame, PiFunction), Expression.Constant(ins)));
+                return true;
+            case OpCode.LoadSuperElement:
+                body.Add(Expression.Call(interp, MiHandleLoadSuperElement, frame, Expression.Constant(ins)));
                 return true;
             case OpCode.LoadSuperConstructor:
                 body.Add(Expression.Call(interp, MiHandleLoadSuperConstructor, frame, Expression.Constant(ins)));

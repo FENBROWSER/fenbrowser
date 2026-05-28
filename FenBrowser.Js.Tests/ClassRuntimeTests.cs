@@ -868,4 +868,45 @@ public sealed class ClassRuntimeTests
             typeof C;
         ").AsString());
     }
+
+    [Fact]
+    public void SuperComputedMemberReadStringKey()
+    {
+        // ECMA-262 13.3.7.3 MakeSuperPropertyReference with computed key.
+        Assert.Equal(7d, Run(@"
+            class A { m() { return 7; } }
+            class B extends A {
+                use() { return super['m'](); }
+            }
+            (new B()).use();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void SuperComputedMemberReadSymbolKey()
+    {
+        // The original failing pattern from String.prototype.replaceAll
+        // searchValue tests: super[Symbol.replace](...args).
+        Assert.Equal(42d, Run(@"
+            const SYM = Symbol('m');
+            class A { }
+            A.prototype[SYM] = function() { return 42; };
+            class B extends A {
+                use() { return super[SYM](); }
+            }
+            (new B()).use();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void SuperComputedMemberReadDynamicKey()
+    {
+        Assert.Equal("xy", Run(@"
+            class A { x() { return 'x'; } y() { return 'y'; } }
+            class B extends A {
+                go(k1, k2) { return super[k1]() + super[k2](); }
+            }
+            (new B()).go('x','y');
+        ").AsString());
+    }
 }

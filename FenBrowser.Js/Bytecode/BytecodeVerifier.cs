@@ -232,6 +232,10 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidatePropertyName(function, ip, ins.B);
                 break;
+            case OpCode.LoadSuperElement:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                break;
             case OpCode.LoadSuperConstructor:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 break;

@@ -808,6 +808,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.LoadSuperProperty:
                     HandleLoadSuperProperty(frame, function, ins);
                     break;
+                case OpCode.LoadSuperElement:
+                    HandleLoadSuperElement(frame, ins);
+                    break;
                 case OpCode.LoadSuperConstructor:
                     HandleLoadSuperConstructor(frame, ins);
                     break;

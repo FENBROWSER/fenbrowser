@@ -232,6 +232,39 @@ public sealed partial class BytecodeInterpreter
     }
 
 
+    internal void HandleLoadSuperElement(InterpreterFrame frame, Instruction ins)
+    {
+        // Computed super[key]. ECMA-262 13.3.7.3 MakeSuperPropertyReference +
+        // 9.1.2 GetSuperBase. Same as LoadSuperProperty but the key comes from
+        // a register and may be a Symbol or coercible to a string property key.
+        if (frame.CalleeFunctionObject is not { } calleeFn || calleeFn.HomeObject is not { } home)
+        {
+            ThrowOrHandle(frame, CreateReferenceError("super reference requires a class method context."));
+            return;
+        }
+
+        var homeObj = _heap.GetObject(home);
+        if (homeObj.PrototypeHandle is not { } baseProtoHandle)
+        {
+            frame.Registers[ins.A] = JsValue.Undefined;
+            return;
+        }
+
+        var baseProto = _heap.GetObject(baseProtoHandle);
+        var keyValue = frame.Registers[ins.B];
+        if (keyValue.Tag == JsValueTag.Symbol)
+        {
+            frame.Registers[ins.A] = GetReceiverSymbolProperty(JsValue.FromObject(baseProtoHandle), keyValue.AsSymbolId());
+            return;
+        }
+
+        var name = ToPropertyKey(keyValue);
+        frame.Registers[ins.A] = TryGetPropertyValue(baseProto, JsValue.FromObject(baseProtoHandle), name, out var v)
+            ? v
+            : JsValue.Undefined;
+    }
+
+
     internal void HandleLoadSuperConstructor(InterpreterFrame frame, Instruction ins)
     {
         // ECMA-262 13.3.7.4 GetSuperConstructor: read the active function's
