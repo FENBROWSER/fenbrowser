@@ -261,7 +261,25 @@ public sealed partial class BytecodeInterpreter
 
         if (obj is NativeFunctionObject native)
         {
-            return native.Call(thisValue, args);
+            // ECMA-262 native function calls execute in C# without a bytecode
+            // InterpreterFrame on top of the call stack, so the JS heap's GC
+            // root walk (which traverses _activeFrames) cannot see the JsValue
+            // arguments and `thisValue` we are about to hand the native body.
+            // If the native callback triggers an auto-MinorCollect (e.g. via
+            // CreateTypeError, AllocateObject), object-tagged values on the
+            // C# stack could be reclaimed and resurface as "Stale heap handle"
+            // on the next access. Pin them for the duration of the call.
+            var rootMark = _heap.RootCount;
+            try
+            {
+                PinIfObject(thisValue);
+                for (var i = 0; i < args.Count; i++) PinIfObject(args[i]);
+                return native.Call(thisValue, args);
+            }
+            finally
+            {
+                _heap.PopRootsTo(rootMark);
+            }
         }
 
         throw new JsThrownException(CreateTypeError("Value is not callable."));

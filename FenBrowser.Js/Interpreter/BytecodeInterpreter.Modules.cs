@@ -43,6 +43,14 @@ public sealed partial class BytecodeInterpreter
         return JsValue.FromObject(handle);
     }
 
+    internal void PinIfObject(JsValue value)
+    {
+        if (value.Tag == JsValueTag.Object)
+        {
+            _heap.PushRoot(value.AsObjectHandle());
+        }
+    }
+
     private JsValue BuildRejectedPromise(JsValue reason)
     {
         var promise = new PromiseObject();

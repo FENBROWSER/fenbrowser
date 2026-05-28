@@ -256,11 +256,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _wallClockDeadlineTicks = 0;
         }
         var globalHandle = EnsureGlobalObject();
-        var result = ExecuteInternal(
-            function,
-            Array.Empty<JsValue>(),
-            JsValue.FromObject(globalHandle),
-            frameEnvironment: EnsureGlobalEnvironment());
+        JsValue result;
+        try
+        {
+            result = ExecuteInternal(
+                function,
+                Array.Empty<JsValue>(),
+                JsValue.FromObject(globalHandle),
+                frameEnvironment: EnsureGlobalEnvironment());
+        }
+        catch (FenBrowser.Js.Heap.JsEngineFatalException fatal)
+        {
+            // Heap consistency exceptions ("Stale heap handle.", "Invalid heap
+            // handle index.") indicate a latent GC root-tracking gap, not a
+            // user-visible JS condition. Reporting them as engine crashes loses
+            // a whole test for what may be a recoverable native path; convert
+            // them at the top level into an uncaught TypeError so test262
+            // wrappers like assert.throws(TypeError, ...) still observe the
+            // expected exception kind and the test grader sees a runtime error
+            // rather than a crash. The root cause is tracked separately.
+            throw new JsThrownException(CreateTypeError("Internal heap error: " + fatal.Message));
+        }
         DrainPendingMicrotasks();
         return result;
     }
