@@ -1,8 +1,8 @@
 {
   "engine": "FenJS",
   "mode": "parser-subset",
-  "startedAtUtc": "2026-05-27T19:14:35.8600606Z",
-  "durationMs": 129,
+  "startedAtUtc": "2026-05-28T05:35:06.8851764Z",
+  "durationMs": 140,
   "test262Commit": "b1f9a0aea3e5d12563680ba3c8eee275774f9316",
   "fenbrowserCommit": "unknown",
   "specTarget": "ECMA-262 pinned snapshot",

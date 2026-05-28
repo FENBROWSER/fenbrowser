@@ -2,7 +2,7 @@
 
 Canonical snapshot consumed by CI verification guards. Per-category reports live in `docs/test262_0_8_report.md`. Live gap catalogue at `docs/fenjs_gap_audit_2026-05-28.md`.
 
-**Engine:** FenJS (interpreter + tier-4 #24 IL-JIT) | **Test262:** b1f9a0a | **Date:** 2026-05-28 | **Source commit:** `0ec6b59f`
+**Engine:** FenJS (interpreter + tier-4 #24 IL-JIT) | **Test262:** b1f9a0a | **Date:** 2026-05-28 | **Source commit:** `edaaa403`
 
 ## Parser Subset (500 tests)
 
@@ -15,14 +15,16 @@ Canonical snapshot consumed by CI verification guards. Per-category reports live
 
 | Status | Count |
 |--------|-------|
-| Passed | 824 (41.2%) |
-| Failed | 1,152 |
-| Crashed | 5 |
-| Timed Out | 2 |
+| Passed | **830 (41.5%)** |
+| Failed | 1,150 |
+| Crashed | 2 |
+| Timed Out | 1 |
 | Harness Unsupported | 9 |
 | Invalid Config | 8 |
 
-Up from 27.4% (2026-05-24) via the tier-6 #29 conformance batch. **5 crashes remain** — see `docs/fenjs_gap_audit_2026-05-28.md` §1 for paths and proposed fixes.
+Trajectory: 27.4% (2026-05-24, pre-tier-6 #29) → 41.2% (2026-05-28 audit) → **41.5% (2026-05-28 post audit §1 crash fixes)**.
+
+**Audit §1 status:** 3 of 5 known crashes fixed in this session — ArrayBuffer huge-length now spec RangeErrors (`a61fbea7`); iterator-buffered values are traced + pinned across drain (`edaaa403`). The remaining 2 (`for-of/iterator-close-return-emulates-undefined-throws-when-called.js`, `AggregateError/errors-iterabletolist-failures.js`) still surface as `Stale heap handle.` in the iterator-close abrupt-completion path — separate fix tracked. See `docs/fenjs_gap_audit_2026-05-28.md` §1.
 
 ## Runtime Failure Distribution (top dirs)
 

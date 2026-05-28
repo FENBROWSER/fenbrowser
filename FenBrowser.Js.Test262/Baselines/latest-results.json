@@ -1,17 +1,17 @@
 {
   "engine": "FenJS",
   "mode": "runtime-subset",
-  "startedAtUtc": "2026-05-27T19:52:21.8945499Z",
-  "durationMs": 5480,
+  "startedAtUtc": "2026-05-28T05:31:31.5994796Z",
+  "durationMs": 158389,
   "test262Commit": "b1f9a0aea3e5d12563680ba3c8eee275774f9316",
   "fenbrowserCommit": "unknown",
   "specTarget": "ECMA-262 pinned snapshot",
   "expectations": null,
   "total": 2000,
-  "passed": 829,
-  "failed": 1149,
-  "crashed": 5,
-  "timedOut": 0,
+  "passed": 830,
+  "failed": 1150,
+  "crashed": 2,
+  "timedOut": 1,
   "skipped": 0,
   "unsupported": 0,
   "expectedFailures": 0,
@@ -22,8 +22,8 @@
     "parserMissing": 0,
     "parserBug": 1,
     "earlyErrorBug": 0,
-    "runtimeMissing": 1148,
-    "runtimeSemanticBug": 1148,
+    "runtimeMissing": 1149,
+    "runtimeSemanticBug": 1149,
     "builtinMissing": 0,
     "builtinSemanticBug": 0,
     "moduleMissing": 0,
@@ -33,17 +33,17 @@
     "proxyMissing": 0,
     "typedArrayMissing": 0,
     "hostNotApplicable": 17,
-    "crash": 5,
-    "timeout": 0
+    "crash": 2,
+    "timeout": 1
   },
   "summary": {
     "total": 2000,
-    "passed": 829,
+    "passed": 830,
     "unsupported": 0,
     "parserErrors": 1,
-    "runtimeErrors": 1148,
-    "crashes": 5,
-    "timedOut": 0,
+    "runtimeErrors": 1149,
+    "crashes": 2,
+    "timedOut": 1,
     "harnessUnsupported": 9,
     "invalidTestConfiguration": 8,
     "expectedFailures": 0,
@@ -9780,21 +9780,11 @@
       "expiresAtMilestone": null
     },
     {
-      "path": "external/test262\\test\\built-ins\\ArrayBuffer\\allocation-limit.js",
-      "relativePath": "test/built-ins/ArrayBuffer/allocation-limit.js",
-      "classification": "crash",
-      "message": "Array dimensions exceeded supported range.",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
       "path": "external/test262\\test\\built-ins\\ArrayBuffer\\data-allocation-after-object-creation.js",
       "relativePath": "test/built-ins/ArrayBuffer/data-allocation-after-object-creation.js",
-      "classification": "crash",
-      "message": "Array dimensions exceeded supported range.",
+      "classification": "runtime-error",
+      "message": "Unhandled runtime throw.",
+      "details": "thrown=object",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -12291,8 +12281,8 @@
     {
       "path": "external/test262\\test\\built-ins\\Array\\from\\iter-map-fn-err.js",
       "relativePath": "test/built-ins/Array/from/iter-map-fn-err.js",
-      "classification": "crash",
-      "message": "Stale heap handle.",
+      "classification": "timeout",
+      "message": "Runtime execution exceeded timeout of 15000 ms.",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -34930,7 +34920,7 @@
     },
     {
       "path": "test/built-ins/ArrayBuffer/allocation-limit.js",
-      "status": "Crashed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -34940,12 +34930,12 @@
       "description": "Throws a RangeError if requested Data Block is too large.",
       "info": "ArrayBuffer( length )\n...\n6. Return AllocateArrayBuffer(NewTarget, byteLength).\n6.2.6.1 CreateByteDataBlock(size)\n...\n2. Let db be a new Data Block value consisting of size bytes. If it is\nimpossible to create such a Data Block, throw a RangeError exception.\n...",
       "locale": null,
-      "category": "crash",
-      "message": "Array dimensions exceeded supported range."
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/ArrayBuffer/data-allocation-after-object-creation.js",
-      "status": "Crashed",
+      "status": "Failed",
       "durationMs": 0,
       "features": [
         "Reflect.construct"
@@ -34957,8 +34947,9 @@
       "description": "The new ArrayBuffer instance is created prior to allocating the Data Block.",
       "info": "ArrayBuffer( length )\n...\n6. Return AllocateArrayBuffer(NewTarget, byteLength).\nAllocateArrayBuffer( constructor, byteLength )\n1. Let obj be OrdinaryCreateFromConstructor(constructor, \u0022%ArrayBufferPrototype%\u0022,\n\u00AB[[ArrayBufferData]], [[ArrayBufferByteLength]]\u00BB ).\n2. ReturnIfAbrupt(obj).\n...\n4. Let block be CreateByteDataBlock(byteLength).\n5. ReturnIfAbrupt(block).\n...",
       "locale": null,
-      "category": "crash",
-      "message": "Array dimensions exceeded supported range."
+      "category": "runtime-semantic-bug",
+      "message": "Unhandled runtime throw.",
+      "details": "thrown=object"
     },
     {
       "path": "test/built-ins/ArrayBuffer/init-zero.js",
@@ -42549,8 +42540,8 @@
     },
     {
       "path": "test/built-ins/Array/from/iter-map-fn-err.js",
-      "status": "Crashed",
-      "durationMs": 0,
+      "status": "TimedOut",
+      "durationMs": 15000,
       "features": [
         "Symbol.iterator"
       ],
@@ -42561,8 +42552,8 @@
       "description": "Error invoking map function (traversed via iterator)",
       "info": "[...]\n6. If usingIterator is not undefined, then\n[...]\ng. Repeat\n[...]\nvii. If mapping is true, then\n1. Let mappedValue be Call(mapfn, T, \u00ABnextValue, k\u00BB).\n2. If mappedValue is an abrupt completion, return\nIteratorClose(iterator, mappedValue).",
       "locale": null,
-      "category": "crash",
-      "message": "Stale heap handle."
+      "category": "timeout",
+      "message": "Runtime execution exceeded timeout of 15000 ms."
     },
     {
       "path": "test/built-ins/Array/from/iter-map-fn-return.js",
