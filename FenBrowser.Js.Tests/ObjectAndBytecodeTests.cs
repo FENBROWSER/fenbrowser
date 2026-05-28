@@ -1671,4 +1671,17 @@ public sealed class ObjectAndBytecodeTests
 
         Assert.True(heap.WriteBarrierCount - before >= 2);
     }
+
+    [Fact]
+    public void ObjectLiteralAllowsEmptyStringPropertyKey()
+    {
+        // ECMA-262 6.1.7 — the empty string is a valid String property key.
+        // Previously the compiler rejected this at compile time with
+        // 'Object property key is required.'
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("var o = { '': 1 }; o[''];"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(1d, result.AsNumber());
+    }
 }

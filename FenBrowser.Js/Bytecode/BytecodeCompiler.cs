@@ -2319,7 +2319,8 @@ public sealed class BytecodeCompiler
                     }
                     else
                     {
-                        if (string.IsNullOrEmpty(prop.Key))
+                        // Empty string is a valid property key per ECMA-262 6.1.7.
+                        if (prop.Key is null)
                         {
                             throw new InvalidOperationException("Object property key is required.");
                         }
