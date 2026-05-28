@@ -9614,19 +9614,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // ECMA-262 23.1.3.2 Array.prototype.concat(...items). Returns a fresh
     // ArrayObject; Array arguments are spread (their elements appended one by one),
     // other values are appended as a single element.
+    private readonly struct ConcatElement
+    {
+        public ConcatElement(bool present, JsValue value)
+        {
+            Present = present;
+            Value = value;
+        }
+
+        public bool Present { get; }
+        public JsValue Value { get; }
+    }
+
     private JsValue ArrayPrototypeConcat(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var items = new List<JsValue>();
-        AppendConcatSource(items, thisValue);
+        var items = new List<ConcatElement>();
+        // 23.1.3.2 step 2: this value is first converted via ToObject.
+        var receiver = ToObjectValue(thisValue);
+        AppendConcatSource(items, receiver);
         for (var i = 0; i < args.Count; i++)
         {
             AppendConcatSource(items, args[i]);
         }
 
-        return ArraySpeciesCreate(thisValue, items);
+        return ArraySpeciesCreateForConcat(thisValue, items);
     }
 
-    private void AppendConcatSource(List<JsValue> items, JsValue value)
+    private void AppendConcatSource(List<ConcatElement> items, JsValue value)
     {
         if (value.Tag == JsValueTag.Object)
         {
@@ -9641,15 +9655,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 // overflow check must run BEFORE we touch the copy loop —
                 // otherwise we burn CPU iterating up to int.MaxValue.
                 //
-                // We additionally enforce an implementation-defined cap of
-                // int.MaxValue total result length (List<JsValue> can't hold
-                // more anyway). The spec allows implementation-defined
-                // tighter caps; same exception type (TypeError) is thrown.
                 var rawLength = LengthOfArrayLikeAsDouble(obj, value);
                 const double MaxSafeInteger = 9007199254740991.0; // 2^53 - 1
                 var prospective = (double)items.Count + rawLength;
-                if (prospective > MaxSafeInteger || prospective > int.MaxValue)
+                if (prospective > MaxSafeInteger)
                 {
+                    throw new JsThrownException(CreateTypeError(
+                        "Array.prototype.concat result length exceeds the implementation-defined limit."));
+                }
+
+                // The engine currently stores concat elements in a materialized
+                // list. If the spreadable length cannot fit in an int-sized walk,
+                // probe index 0 first (to preserve abrupt completion order) and
+                // then fail with an implementation-defined TypeError.
+                if (rawLength > int.MaxValue)
+                {
+                    if (rawLength > 0)
+                    {
+                        const string key0 = "0";
+                        if (HasPropertyIncludingProxy(obj, key0))
+                        {
+                            _ = TryGetPropertyValue(obj, value, key0, out _);
+                        }
+                    }
+
                     throw new JsThrownException(CreateTypeError(
                         "Array.prototype.concat result length exceeds the implementation-defined limit."));
                 }
@@ -9658,14 +9687,100 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 for (var i = 0; i < length; i++)
                 {
                     var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                    items.Add(TryGetPropertyValue(obj, value, key, out var v) ? v : JsValue.Undefined);
+                    if (!HasPropertyIncludingProxy(obj, key))
+                    {
+                        items.Add(default);
+                        continue;
+                    }
+
+                    _ = TryGetPropertyValue(obj, value, key, out var v);
+                    items.Add(new ConcatElement(true, v));
                 }
 
                 return;
             }
         }
 
-        items.Add(value);
+        items.Add(new ConcatElement(true, value));
+    }
+
+    private JsValue ArraySpeciesCreateForConcat(JsValue originalArray, IReadOnlyList<ConcatElement> items)
+    {
+        if (originalArray.Tag == JsValueTag.Object)
+        {
+            var obj = _heap.GetObject(originalArray.AsObjectHandle());
+            if (obj is ArrayObject &&
+                TryGetPropertyValue(obj, originalArray, "constructor", out var ctor) &&
+                ctor.Tag != JsValueTag.Undefined)
+            {
+                if (ctor.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError("Array constructor must be a constructor function."));
+                }
+
+                var ctorObj = _heap.GetObject(ctor.AsObjectHandle());
+                var speciesSymbolId = GetWellKnownSymbolId("species");
+                if (speciesSymbolId != 0 &&
+                    ctorObj.TryGetSymbolProperty(speciesSymbolId, h => _heap.GetObject(h), out var speciesDesc) &&
+                    !speciesDesc.IsAccessor)
+                {
+                    var species = speciesDesc.Value;
+                    if (species.Tag == JsValueTag.Null || species.Tag == JsValueTag.Undefined)
+                    {
+                        goto fallbackArray;
+                    }
+
+                    if (species.Tag != JsValueTag.Object || !IsCallable(species))
+                    {
+                        throw new JsThrownException(CreateTypeError("Array @@species is not a constructor."));
+                    }
+
+                    var result = ConstructFunction(species, new[] { JsValue.FromNumber(items.Count) });
+                    if (result.Tag == JsValueTag.Object)
+                    {
+                        var resultObj = _heap.GetObject(result.AsObjectHandle());
+                        for (var i = 0; i < items.Count; i++)
+                        {
+                            var element = items[i];
+                            if (!element.Present)
+                            {
+                                continue;
+                            }
+
+                            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                            _ = resultObj.SetProperty(key, element.Value);
+                        }
+
+                        if (resultObj is ArrayObject)
+                        {
+                            _ = resultObj.SetProperty("length", JsValue.FromNumber(items.Count));
+                        }
+
+                        return result;
+                    }
+                }
+            }
+        }
+
+fallbackArray:
+        var arr = new ArrayObject();
+        arr.SetPrototype(EnsureArrayPrototype());
+        _ = arr.DefineOwnProperty("length", new JsPropertyDescriptor(
+            JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
+        for (var i = 0; i < items.Count; i++)
+        {
+            var element = items[i];
+            if (!element.Present)
+            {
+                continue;
+            }
+
+            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            _ = arr.SetProperty(key, element.Value);
+        }
+
+        _ = arr.SetProperty("length", JsValue.FromNumber(items.Count));
+        return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
     }
 
     // ECMA-262 7.3.19 LengthOfArrayLike: ToLength(Get(O, "length")).
@@ -9698,17 +9813,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var obj = _heap.GetObject(originalArray.AsObjectHandle());
             if (obj is ArrayObject &&
                 TryGetPropertyValue(obj, originalArray, "constructor", out var ctor) &&
-                ctor.Tag == JsValueTag.Object)
+                ctor.Tag != JsValueTag.Undefined)
             {
+                if (ctor.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError("Array constructor must be a constructor function."));
+                }
+
                 var ctorObj = _heap.GetObject(ctor.AsObjectHandle());
                 var speciesSymbolId = GetWellKnownSymbolId("species");
                 if (speciesSymbolId != 0 &&
                     ctorObj.TryGetSymbolProperty(speciesSymbolId, h => _heap.GetObject(h), out var speciesDesc) &&
-                    !speciesDesc.IsAccessor &&
-                    speciesDesc.Value.Tag == JsValueTag.Object &&
-                    IsCallable(speciesDesc.Value))
+                    !speciesDesc.IsAccessor)
                 {
                     var species = speciesDesc.Value;
+                    if (species.Tag == JsValueTag.Null || species.Tag == JsValueTag.Undefined)
+                    {
+                        goto fallbackArraySpecies;
+                    }
+
+                    if (species.Tag != JsValueTag.Object || !IsCallable(species))
+                    {
+                        throw new JsThrownException(CreateTypeError("Array @@species is not a constructor."));
+                    }
+
                     var result = ConstructFunction(species, new[] { JsValue.FromNumber(items.Count) });
                     if (result.Tag == JsValueTag.Object)
                     {
@@ -9725,6 +9853,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
         }
 
+fallbackArraySpecies:
         var arr = CreateArrayFromElements(items);
         return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
     }
@@ -9741,7 +9870,23 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return IsTruthy(spreadDesc.Value);
         }
 
-        return obj is ArrayObject;
+        return IsArrayLikeForConcatSpreadability(obj);
+    }
+
+    private bool IsArrayLikeForConcatSpreadability(JsObject obj)
+    {
+        if (obj is ArrayObject)
+        {
+            return true;
+        }
+
+        if (obj is not ProxyObject proxy)
+        {
+            return false;
+        }
+
+        var target = _heap.GetObject(proxy.TargetHandle);
+        return target is ArrayObject || IsArrayLikeForConcatSpreadability(target);
     }
 
     private JsValue ArrayPrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
