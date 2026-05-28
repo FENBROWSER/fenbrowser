@@ -4655,6 +4655,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toDateString", DatePrototypeToDateString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toTimeString", DatePrototypeToTimeString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toUTCString", DatePrototypeToUtcString);
+
+        // Annex B B.2.3 legacy aliases (audit §4.1).
+        // B.2.3.1 Date.prototype.getYear: return year - 1900, NaN if invalid.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getYear",
+            (t, _) => GetDateComponent(t, "getYear", d => d.Year - 1900));
+        // B.2.3.2 Date.prototype.setYear(year): treat 0..99 as offset from 1900,
+        // any other number assigned directly; NaN clears to NaN time value.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setYear",
+            (t, a) =>
+            {
+                var date = RequireDate(t, "setYear");
+                var arg = a.Count > 0 ? ToNumber(a[0]) : double.NaN;
+                if (double.IsNaN(arg))
+                {
+                    date.TimeValue = double.NaN;
+                    return JsValue.FromNumber(double.NaN);
+                }
+                var year = (int)arg;
+                if (year >= 0 && year <= 99) year += 1900;
+                // Preserve existing month / day; reconstruct from current value
+                // (or epoch if NaN). Reuse SetDateField with hasYear semantics.
+                if (double.IsNaN(date.TimeValue)) date.TimeValue = 0;
+                var argsList = new List<JsValue> { JsValue.FromNumber(year) };
+                return SetDateField(t, "setYear", argsList, hasYear: true, hasMonth: false, hasDay: false);
+            }, length: 1);
+        // B.2.3.3 Date.prototype.toGMTString — alias of toUTCString.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toGMTString", DatePrototypeToUtcString);
     }
 
     private DateObject RequireDate(JsValue thisValue, string method)
@@ -4888,6 +4915,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "test", RegExpPrototypeTest, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "exec", RegExpPrototypeExec, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", RegExpPrototypeToString);
+        // Annex B B.2.4.1 RegExp.prototype.compile(pattern, flags) — mutate
+        // this instance to act like a freshly constructed RegExp. Audit §4.1.
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "compile", RegExpPrototypeCompile, length: 2);
         DefineRegExpSymbolMethod(prototypeHandle, prototype, "match", RegExpPrototypeSymbolMatch);
         DefineRegExpSymbolMethod(prototypeHandle, prototype, "search", RegExpPrototypeSymbolSearch);
         DefineRegExpSymbolMethod(prototypeHandle, prototype, "replace", RegExpPrototypeSymbolReplace);
@@ -5130,6 +5160,65 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var regexp = RegExpThisValue(thisValue);
         var escapedSource = regexp.Pattern.Replace("/", "\\/", StringComparison.Ordinal);
         return JsValue.FromString($"/{escapedSource}/{regexp.Flags}");
+    }
+
+    // Annex B B.2.4.1 RegExp.prototype.compile(pattern, flags) — re-initializes
+    // this RegExp instance. If pattern is itself a RegExp and flags is undefined,
+    // copy its pattern + flags; otherwise treat as new pattern+flags. Mutates
+    // `this` in place and returns it. Audit §4.1.
+    private JsValue RegExpPrototypeCompile(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var target = RegExpThisValue(thisValue);
+        string newPattern;
+        string newFlags;
+        var patternArg = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var flagsArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        if (patternArg.Tag == JsValueTag.Object &&
+            _heap.GetObject(patternArg.AsObjectHandle()) is RegExpObject src)
+        {
+            if (flagsArg.Tag != JsValueTag.Undefined)
+                throw new JsThrownException(CreateTypeError("Cannot supply flags when constructing one RegExp from another."));
+            newPattern = src.Pattern;
+            newFlags = src.Flags;
+        }
+        else
+        {
+            newPattern = patternArg.Tag == JsValueTag.Undefined ? string.Empty : ToStringValue(patternArg);
+            newFlags = flagsArg.Tag == JsValueTag.Undefined ? string.Empty : ToStringValue(flagsArg);
+        }
+        var normalizedFlags = NormalizeRegExpFlags(newFlags);
+        var hasS = normalizedFlags.Contains('s', StringComparison.Ordinal);
+        var hasU = normalizedFlags.Contains('u', StringComparison.Ordinal);
+        var options = (hasS || hasU)
+            ? RegexOptions.CultureInvariant
+            : RegexOptions.ECMAScript | RegexOptions.CultureInvariant;
+        if (normalizedFlags.Contains('i', StringComparison.Ordinal)) options |= RegexOptions.IgnoreCase;
+        if (normalizedFlags.Contains('m', StringComparison.Ordinal)) options |= RegexOptions.Multiline;
+        if (hasS) options |= RegexOptions.Singleline;
+        Regex regex;
+        try
+        {
+            regex = new Regex(newPattern, options, TimeSpan.FromMilliseconds(250));
+        }
+        catch (ArgumentException ex)
+        {
+            throw new JsThrownException(CreateSyntaxError(ex.Message));
+        }
+        target.Recompile(newPattern, normalizedFlags, regex);
+        // Refresh externally observable own properties to mirror constructor init.
+        _ = target.DefineOwnProperty("source",
+            new JsPropertyDescriptor(JsValue.FromString(newPattern), Writable: false, Enumerable: false, Configurable: true));
+        _ = target.DefineOwnProperty("global",
+            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('g', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        _ = target.DefineOwnProperty("ignoreCase",
+            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('i', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        _ = target.DefineOwnProperty("multiline",
+            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('m', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        _ = target.DefineOwnProperty("flags",
+            new JsPropertyDescriptor(JsValue.FromString(normalizedFlags), Writable: false, Enumerable: false, Configurable: true));
+        _ = target.DefineOwnProperty("lastIndex",
+            new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
+        return thisValue;
     }
 
     private JsValue RegExpPrototypeSymbolMatch(JsValue thisValue, IReadOnlyList<JsValue> args)

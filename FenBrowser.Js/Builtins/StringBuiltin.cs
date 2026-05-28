@@ -75,6 +75,36 @@ public sealed class StringBuiltin : IBuiltinModule
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "replaceAll", ReplaceAll, length: 2);
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "normalize", Normalize, length: 0);
 
+        // Annex B B.2.2 — legacy HTML wrappers. Spec is purely lexical:
+        // each wraps `this` in an HTML tag, escaping any " in the attribute.
+        // Audit gap §4.1.
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "anchor",
+            (ctx, tv, args) => JsValue.FromString(HtmlTagWithAttr(ctx, tv, "a", "name", args)), length: 1);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "link",
+            (ctx, tv, args) => JsValue.FromString(HtmlTagWithAttr(ctx, tv, "a", "href", args)), length: 1);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "fontcolor",
+            (ctx, tv, args) => JsValue.FromString(HtmlTagWithAttr(ctx, tv, "font", "color", args)), length: 1);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "fontsize",
+            (ctx, tv, args) => JsValue.FromString(HtmlTagWithAttr(ctx, tv, "font", "size", args)), length: 1);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "big",
+            (ctx, tv, _) => JsValue.FromString(HtmlTag(ctx, tv, "big")), length: 0);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "blink",
+            (ctx, tv, _) => JsValue.FromString(HtmlTag(ctx, tv, "blink")), length: 0);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "bold",
+            (ctx, tv, _) => JsValue.FromString(HtmlTag(ctx, tv, "b")), length: 0);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "fixed",
+            (ctx, tv, _) => JsValue.FromString(HtmlTag(ctx, tv, "tt")), length: 0);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "italics",
+            (ctx, tv, _) => JsValue.FromString(HtmlTag(ctx, tv, "i")), length: 0);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "small",
+            (ctx, tv, _) => JsValue.FromString(HtmlTag(ctx, tv, "small")), length: 0);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "strike",
+            (ctx, tv, _) => JsValue.FromString(HtmlTag(ctx, tv, "strike")), length: 0);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "sub",
+            (ctx, tv, _) => JsValue.FromString(HtmlTag(ctx, tv, "sub")), length: 0);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "sup",
+            (ctx, tv, _) => JsValue.FromString(HtmlTag(ctx, tv, "sup")), length: 0);
+
         // String.fromCharCode
         context.DefineIntrinsicFunction(constructorHandle, constructor, "fromCharCode", (_, args) =>
         {
@@ -124,6 +154,23 @@ public sealed class StringBuiltin : IBuiltinModule
         }, length: 1);
 
         return new[] { BuiltinBinding.NonEnumerable("String", JsValue.FromObject(constructorHandle)) };
+    }
+
+    // Annex B B.2.2.2.1 CreateHTML(string, tag, attribute, value). Per spec
+    // the attribute value has any `"` replaced by `&quot;` and is wrapped in
+    // double quotes; tag and attribute names are emitted lowercase.
+    private static string HtmlTag(IBuiltinContext ctx, JsValue thisValue, string tag)
+    {
+        var s = RequireString(ctx, thisValue);
+        return "<" + tag + ">" + s + "</" + tag + ">";
+    }
+
+    private static string HtmlTagWithAttr(IBuiltinContext ctx, JsValue thisValue, string tag, string attr, IReadOnlyList<JsValue> args)
+    {
+        var s = RequireString(ctx, thisValue);
+        var val = args.Count > 0 ? ctx.ToStringValue(args[0]) : "undefined";
+        val = val.Replace("\"", "&quot;");
+        return "<" + tag + " " + attr + "=\"" + val + "\">" + s + "</" + tag + ">";
     }
 
     private static string RequireString(IBuiltinContext ctx, JsValue thisValue)
