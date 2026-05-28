@@ -1,17 +1,17 @@
 {
   "engine": "FenJS",
   "mode": "runtime-subset",
-  "startedAtUtc": "2026-05-28T05:31:31.5994796Z",
-  "durationMs": 158389,
+  "startedAtUtc": "2026-05-28T06:23:17.2324322Z",
+  "durationMs": 40500,
   "test262Commit": "b1f9a0aea3e5d12563680ba3c8eee275774f9316",
   "fenbrowserCommit": "unknown",
   "specTarget": "ECMA-262 pinned snapshot",
   "expectations": null,
   "total": 2000,
-  "passed": 830,
-  "failed": 1150,
-  "crashed": 2,
-  "timedOut": 1,
+  "passed": 858,
+  "failed": 1123,
+  "crashed": 0,
+  "timedOut": 2,
   "skipped": 0,
   "unsupported": 0,
   "expectedFailures": 0,
@@ -22,8 +22,8 @@
     "parserMissing": 0,
     "parserBug": 1,
     "earlyErrorBug": 0,
-    "runtimeMissing": 1149,
-    "runtimeSemanticBug": 1149,
+    "runtimeMissing": 1122,
+    "runtimeSemanticBug": 1122,
     "builtinMissing": 0,
     "builtinSemanticBug": 0,
     "moduleMissing": 0,
@@ -33,17 +33,17 @@
     "proxyMissing": 0,
     "typedArrayMissing": 0,
     "hostNotApplicable": 17,
-    "crash": 2,
-    "timeout": 1
+    "crash": 0,
+    "timeout": 2
   },
   "summary": {
     "total": 2000,
-    "passed": 830,
+    "passed": 858,
     "unsupported": 0,
     "parserErrors": 1,
-    "runtimeErrors": 1149,
-    "crashes": 2,
-    "timedOut": 1,
+    "runtimeErrors": 1122,
+    "crashes": 0,
+    "timedOut": 2,
     "harnessUnsupported": 9,
     "invalidTestConfiguration": 8,
     "expectedFailures": 0,
@@ -2019,126 +2019,6 @@
       "expiresAtMilestone": null
     },
     {
-      "path": "external/test262\\test\\annexB\\built-ins\\escape\\argument_bigint.js",
-      "relativePath": "test/annexB/built-ins/escape/argument_bigint.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\escape\\argument_types.js",
-      "relativePath": "test/annexB/built-ins/escape/argument_types.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\escape\\empty-string.js",
-      "relativePath": "test/annexB/built-ins/escape/empty-string.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\escape\\escape-above-astral.js",
-      "relativePath": "test/annexB/built-ins/escape/escape-above-astral.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\escape\\escape-above.js",
-      "relativePath": "test/annexB/built-ins/escape/escape-above.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\escape\\escape-below.js",
-      "relativePath": "test/annexB/built-ins/escape/escape-below.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\escape\\length.js",
-      "relativePath": "test/annexB/built-ins/escape/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\escape\\name.js",
-      "relativePath": "test/annexB/built-ins/escape/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\escape\\not-a-constructor.js",
-      "relativePath": "test/annexB/built-ins/escape/not-a-constructor.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\escape\\prop-desc.js",
-      "relativePath": "test/annexB/built-ins/escape/prop-desc.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:assert.sameValue failed",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
       "path": "external/test262\\test\\annexB\\built-ins\\escape\\to-primitive-err.js",
       "relativePath": "test/annexB/built-ins/escape/to-primitive-err.js",
       "classification": "runtime-error",
@@ -2175,164 +2055,8 @@
       "expiresAtMilestone": null
     },
     {
-      "path": "external/test262\\test\\annexB\\built-ins\\escape\\to-string-err.js",
-      "relativePath": "test/annexB/built-ins/escape/to-string-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
       "path": "external/test262\\test\\annexB\\built-ins\\escape\\to-string-observe.js",
       "relativePath": "test/annexB/built-ins/escape/to-string-observe.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\escape\\unmodified.js",
-      "relativePath": "test/annexB/built-ins/escape/unmodified.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\unescape\\argument_bigint.js",
-      "relativePath": "test/annexB/built-ins/unescape/argument_bigint.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\unescape\\argument_types.js",
-      "relativePath": "test/annexB/built-ins/unescape/argument_types.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\unescape\\empty-string.js",
-      "relativePath": "test/annexB/built-ins/unescape/empty-string.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\unescape\\four-ignore-bad-u.js",
-      "relativePath": "test/annexB/built-ins/unescape/four-ignore-bad-u.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\unescape\\four-ignore-end-str.js",
-      "relativePath": "test/annexB/built-ins/unescape/four-ignore-end-str.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\unescape\\four-ignore-non-hex.js",
-      "relativePath": "test/annexB/built-ins/unescape/four-ignore-non-hex.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\unescape\\four.js",
-      "relativePath": "test/annexB/built-ins/unescape/four.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\unescape\\length.js",
-      "relativePath": "test/annexB/built-ins/unescape/length.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\unescape\\name.js",
-      "relativePath": "test/annexB/built-ins/unescape/name.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\unescape\\not-a-constructor.js",
-      "relativePath": "test/annexB/built-ins/unescape/not-a-constructor.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\unescape\\prop-desc.js",
-      "relativePath": "test/annexB/built-ins/unescape/prop-desc.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
       "details": "thrown=string:assert.sameValue failed",
@@ -2379,59 +2103,11 @@
       "expiresAtMilestone": null
     },
     {
-      "path": "external/test262\\test\\annexB\\built-ins\\unescape\\to-string-err.js",
-      "relativePath": "test/annexB/built-ins/unescape/to-string-err.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
       "path": "external/test262\\test\\annexB\\built-ins\\unescape\\to-string-observe.js",
       "relativePath": "test/annexB/built-ins/unescape/to-string-observe.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\unescape\\two-ignore-end-str.js",
-      "relativePath": "test/annexB/built-ins/unescape/two-ignore-end-str.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\unescape\\two-ignore-non-hex.js",
-      "relativePath": "test/annexB/built-ins/unescape/two-ignore-non-hex.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\annexB\\built-ins\\unescape\\two.js",
-      "relativePath": "test/annexB/built-ins/unescape/two.js",
-      "classification": "runtime-error",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object",
+      "details": "thrown=string:assert.sameValue failed",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -9436,8 +9112,8 @@
     {
       "path": "external/test262\\test\\annexB\\language\\statements\\for-of\\iterator-close-return-emulates-undefined-throws-when-called.js",
       "relativePath": "test/annexB/language/statements/for-of/iterator-close-return-emulates-undefined-throws-when-called.js",
-      "classification": "crash",
-      "message": "Stale heap handle.",
+      "classification": "timeout",
+      "message": "Runtime execution exceeded timeout of 15000 ms.",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -9591,20 +9267,9 @@
     {
       "path": "external/test262\\test\\built-ins\\AggregateError\\errors-iterabletolist-failures.js",
       "relativePath": "test/built-ins/AggregateError/errors-iterabletolist-failures.js",
-      "classification": "crash",
-      "message": "Stale heap handle.",
-      "expected": false,
-      "expectedReason": null,
-      "expectedOwner": null,
-      "expectedArea": null,
-      "expiresAtMilestone": null
-    },
-    {
-      "path": "external/test262\\test\\built-ins\\AggregateError\\errors-iterabletolist.js",
-      "relativePath": "test/built-ins/AggregateError/errors-iterabletolist.js",
       "classification": "runtime-error",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=string:assert.compareArray length",
+      "details": "thrown=object",
       "expected": false,
       "expectedReason": null,
       "expectedOwner": null,
@@ -17621,7 +17286,7 @@
     },
     {
       "path": "test/annexB/built-ins/escape/argument_bigint.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "BigInt"
@@ -17633,13 +17298,12 @@
       "description": "Input is a BigInt",
       "info": "B.2.1.1 escape ( string )\n1. Let string be ? ToString(string).\n...",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/escape/argument_types.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17649,13 +17313,12 @@
       "description": "Input is a null, undefined, boolean or Number",
       "info": "B.2.1.1 escape ( string )\n1. Let string be ? ToString(string).\n...",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/escape/empty-string.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17665,13 +17328,12 @@
       "description": "Input is the empty string",
       "info": "1. Let string be ? ToString(string).\n2. Let length be the number of code units in string.\n3. Let R be the empty string.\n4. Let k be 0.\n5. Repeat, while k \u003C length,\n[...]\n6. Return R.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/escape/escape-above-astral.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17681,13 +17343,12 @@
       "description": "Escaping of code units above 255 from string with extended Unicode escape sequence",
       "info": "[...]\n5. Repeat, while k \u003C length,\na. Let char be the code unit (represented as a 16-bit unsigned integer)\nat index k within string.\n[...]\nc. Else if char \u2265 256, then\ni. Let S be a String containing six code units \u0022%uwxyz\u0022 where wxyz\nare the code units of the four uppercase hexadecimal digits\nencoding the value of char.\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/escape/escape-above.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17697,13 +17358,12 @@
       "description": "Escaping of code units above 255",
       "info": "[...]\n5. Repeat, while k \u003C length,\na. Let char be the code unit (represented as a 16-bit unsigned integer)\nat index k within string.\n[...]\nc. Else if char \u2265 256, then\ni. Let S be a String containing six code units \u0022%uwxyz\u0022 where wxyz\nare the code units of the four uppercase hexadecimal digits\nencoding the value of char.\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/escape/escape-below.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17713,13 +17373,12 @@
       "description": "Escaping of code units below 255",
       "info": "[...]\n5. Repeat, while k \u003C length,\na. Let char be the code unit (represented as a 16-bit unsigned integer)\nat index k within string.\n[...]\nd. Else char \u003C 256,\ni. Let S be a String containing three code units \u0022%xy\u0022 where xy are\nthe code units of two uppercase hexadecimal digits encoding the\nvalue of char.\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/escape/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17731,13 +17390,12 @@
       "description": "escape.length is 1.",
       "info": "escape (string)\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/escape/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17749,13 +17407,12 @@
       "description": "escape.name is \u0022escape\u0022.",
       "info": "escape (string)\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/escape/not-a-constructor.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Reflect.construct",
@@ -17770,13 +17427,12 @@
       "description": "escape does not implement [[Construct]], is not new-able",
       "info": "ECMAScript Function Objects\nBuilt-in function objects that are not identified as constructors do not\nimplement the [[Construct]] internal method unless otherwise specified in\nthe description of a particular function.\nsec-evaluatenew\n...\n7. If IsConstructor(constructor) is false, throw a TypeError exception.\n...",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/escape/prop-desc.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17788,9 +17444,8 @@
       "description": "Object.getOwnPropertyDescriptor returns data desc for functions on\nbuilt-ins (Global.escape)",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:assert.sameValue failed"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/escape/to-primitive-err.js",
@@ -17848,7 +17503,7 @@
     },
     {
       "path": "test/annexB/built-ins/escape/to-string-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17858,9 +17513,8 @@
       "description": "Abrupt completion from \u0060ToString\u0060 operation",
       "info": "1. Let string be ? ToString(string).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/escape/to-string-observe.js",
@@ -17876,11 +17530,11 @@
       "locale": null,
       "category": "runtime-semantic-bug",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "details": "thrown=string:assert.sameValue failed"
     },
     {
       "path": "test/annexB/built-ins/escape/unmodified.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17890,13 +17544,12 @@
       "description": "Do not escape a specific set of characters",
       "info": "[...]\n5. Repeat, while k \u003C length,\na. Let char be the code unit (represented as a 16-bit unsigned integer)\nat index k within string.\nb. If char is one of the code units in\n\u0022ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@*_\u002B-./\u0022,\nthen\ni. Let S be a String containing the single code unit char.\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/unescape/argument_bigint.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "BigInt"
@@ -17908,13 +17561,12 @@
       "description": "Input is a BigInt",
       "info": "B.2.1.2 unescape ( string )\n1. Set string to ? ToString(string).\n....",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/unescape/argument_types.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17924,13 +17576,12 @@
       "description": "Input is a null, undefined, boolean or Number",
       "info": "B.2.1.2 unescape ( string )\n1. Set string to ? ToString(string).\n...",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/unescape/empty-string.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17940,13 +17591,12 @@
       "description": "Input is the empty string",
       "info": "1. Let string be ? ToString(string).\n2. Let length be the number of code units in string.\n3. Let R be the empty string.\n4. Let k be 0.\n5. Repeat, while k \u2260 length,\n[...]\n6. Return R.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/unescape/four-ignore-bad-u.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17956,13 +17606,12 @@
       "description": "Does not transform four-character patterns that are not prefixed with the\ncharacter \u0022u\u0022",
       "info": "[...]\n5. Repeat, while k \u2260 length,\n[...]\na. Let c be the code unit at index k within string.\nb. If c is %, then\ni. If k \u2264 length-6 and the code unit at index k\u002B1 within string is u\nand the four code units at indices k\u002B2, k\u002B3, k\u002B4, and k\u002B5 within\nstring are all hexadecimal digits, then\n1. Let c be the code unit whose value is the integer represented\nby the four hexadecimal digits at indices k\u002B2, k\u002B3, k\u002B4, and\nk\u002B5 within string.\n2. Increase k by 5.\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/unescape/four-ignore-end-str.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17972,13 +17621,12 @@
       "description": "Does not transform four-character patterns that are interrupted by the end\nof the string",
       "info": "[...]\n5. Repeat, while k \u2260 length,\n[...]\na. Let c be the code unit at index k within string.\nb. If c is %, then\ni. If k \u2264 length-6 and the code unit at index k\u002B1 within string is u\nand the four code units at indices k\u002B2, k\u002B3, k\u002B4, and k\u002B5 within\nstring are all hexadecimal digits, then\n1. Let c be the code unit whose value is the integer represented\nby the four hexadecimal digits at indices k\u002B2, k\u002B3, k\u002B4, and\nk\u002B5 within string.\n2. Increase k by 5.\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/unescape/four-ignore-non-hex.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -17988,13 +17636,12 @@
       "description": "Does not transform four-character patterns that contain non-hexadecimal\ndigits",
       "info": "[...]\n5. Repeat, while k \u2260 length,\n[...]\na. Let c be the code unit at index k within string.\nb. If c is %, then\ni. If k \u2264 length-6 and the code unit at index k\u002B1 within string is u\nand the four code units at indices k\u002B2, k\u002B3, k\u002B4, and k\u002B5 within\nstring are all hexadecimal digits, then\n1. Let c be the code unit whose value is the integer represented\nby the four hexadecimal digits at indices k\u002B2, k\u002B3, k\u002B4, and\nk\u002B5 within string.\n2. Increase k by 5.\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/unescape/four.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -18004,13 +17651,12 @@
       "description": "Translation of patterns with four digits",
       "info": "[...]\n5. Repeat, while k \u2260 length,\n[...]\na. Let c be the code unit at index k within string.\nb. If c is %, then\ni. If k \u2264 length-6 and the code unit at index k\u002B1 within string is u\nand the four code units at indices k\u002B2, k\u002B3, k\u002B4, and k\u002B5 within\nstring are all hexadecimal digits, then\n1. Let c be the code unit whose value is the integer represented\nby the four hexadecimal digits at indices k\u002B2, k\u002B3, k\u002B4, and\nk\u002B5 within string.\n2. Increase k by 5.\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/unescape/length.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -18022,13 +17668,12 @@
       "description": "unescape.length is 1.",
       "info": "unescape (string)\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, has a length\nproperty whose value is an integer. Unless otherwise specified, this\nvalue is equal to the largest number of named arguments shown in the\nsubclause headings for the function description, including optional\nparameters. However, rest parameters shown using the form \u201C...name\u201D\nare not included in the default argument count.\nUnless otherwise specified, the length property of a built-in Function\nobject has the attributes { [[Writable]]: false, [[Enumerable]]: false,\n[[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/unescape/name.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -18040,13 +17685,12 @@
       "description": "unescape.name is \u0022unescape\u0022.",
       "info": "unescape (string)\n17 ECMAScript Standard Built-in Objects:\nEvery built-in Function object, including constructors, that is not\nidentified as an anonymous function has a name property whose value\nis a String.\nUnless otherwise specified, the name property of a built-in Function\nobject, if it exists, has the attributes { [[Writable]]: false,\n[[Enumerable]]: false, [[Configurable]]: true }.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/unescape/not-a-constructor.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "Reflect.construct",
@@ -18061,13 +17705,12 @@
       "description": "unescape does not implement [[Construct]], is not new-able",
       "info": "ECMAScript Function Objects\nBuilt-in function objects that are not identified as constructors do not\nimplement the [[Construct]] internal method unless otherwise specified in\nthe description of a particular function.\nsec-evaluatenew\n...\n7. If IsConstructor(constructor) is false, throw a TypeError exception.\n...",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/unescape/prop-desc.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -18079,9 +17722,8 @@
       "description": "Object.getOwnPropertyDescriptor returns data desc for functions on\nbuilt-ins (Global.unescape)",
       "info": null,
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:assert.sameValue failed"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/unescape/to-primitive-err.js",
@@ -18139,7 +17781,7 @@
     },
     {
       "path": "test/annexB/built-ins/unescape/to-string-err.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -18149,9 +17791,8 @@
       "description": "Abrupt completion from \u0060ToString\u0060 operation",
       "info": "1. Let string be ? ToString(string).",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/unescape/to-string-observe.js",
@@ -18167,11 +17808,11 @@
       "locale": null,
       "category": "runtime-semantic-bug",
       "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "details": "thrown=string:assert.sameValue failed"
     },
     {
       "path": "test/annexB/built-ins/unescape/two-ignore-end-str.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -18181,13 +17822,12 @@
       "description": "Does not transform two-character patterns that are interrupted by the end\nof the string",
       "info": "[...]\n5. Repeat, while k \u2260 length,\n[...]\na. Let c be the code unit at index k within string.\nb. If c is %, then\n[...]\nii. Else if k \u2264 length-3 and the two code units at indices k\u002B1 and\nk\u002B2 within string are both hexadecimal digits, then\n1. Let c be the code unit whose value is the integer represented\nby two zeroes plus the two hexadecimal digits at indices k\u002B1\nand k\u002B2 within string.\n2. Increase k by 2.\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/unescape/two-ignore-non-hex.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -18197,13 +17837,12 @@
       "description": "Does not transform two-character patterns that contain non-hexadecimal\ndigits",
       "info": "[...]\n5. Repeat, while k \u2260 length,\n[...]\na. Let c be the code unit at index k within string.\nb. If c is %, then\n[...]\nii. Else if k \u2264 length-3 and the two code units at indices k\u002B1 and\nk\u002B2 within string are both hexadecimal digits, then\n1. Let c be the code unit whose value is the integer represented\nby two zeroes plus the two hexadecimal digits at indices k\u002B1\nand k\u002B2 within string.\n2. Increase k by 2.\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/built-ins/unescape/two.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [],
       "flags": [],
@@ -18213,9 +17852,8 @@
       "description": "Translation of patterns with two digits",
       "info": "[...]\n5. Repeat, while k \u2260 length,\n[...]\na. Let c be the code unit at index k within string.\nb. If c is %, then\n[...]\nii. Else if k \u2264 length-3 and the two code units at indices k\u002B1 and\nk\u002B2 within string are both hexadecimal digits, then\n1. Let c be the code unit whose value is the integer represented\nby two zeroes plus the two hexadecimal digits at indices k\u002B1\nand k\u002B2 within string.\n2. Increase k by 2.\n[...]",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=object"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/annexB/language/comments/multi-line-html-close.js",
@@ -34030,8 +33668,8 @@
     },
     {
       "path": "test/annexB/language/statements/for-of/iterator-close-return-emulates-undefined-throws-when-called.js",
-      "status": "Crashed",
-      "durationMs": 0,
+      "status": "TimedOut",
+      "durationMs": 15000,
       "features": [
         "generators",
         "IsHTMLDDA"
@@ -34043,8 +33681,8 @@
       "description": "If \u003Citerator\u003E.return is an object emulating \u0060undefined\u0060 (e.g. \u0060document.all\u0060\nin browsers), it shouldn\u0027t be treated as if it were actually \u0060undefined\u0060.",
       "info": null,
       "locale": null,
-      "category": "crash",
-      "message": "Stale heap handle."
+      "category": "timeout",
+      "message": "Runtime execution exceeded timeout of 15000 ms."
     },
     {
       "path": "test/annexB/language/statements/function/default-parameters-emulates-undefined.js",
@@ -34386,7 +34024,7 @@
     },
     {
       "path": "test/built-ins/AggregateError/errors-iterabletolist-failures.js",
-      "status": "Crashed",
+      "status": "Failed",
       "durationMs": 0,
       "features": [
         "AggregateError",
@@ -34399,12 +34037,13 @@
       "description": "Return abrupt completion from IterableToList(errors)",
       "info": "AggregateError ( errors, message )\n...\n3. Let errorsList be ? IterableToList(errors).\n4. Set O.[[AggregateErrors]] to errorsList.\n...\n6. Return O.\nRuntime Semantics: IterableToList ( items [ , method ] )\n1. If method is present, then\n...\n2. Else,\nb. Let iteratorRecord be ? GetIterator(items, sync).\n3. Let values be a new empty List.\n4. Let next be true.\n5. Repeat, while next is not false\na. Set next to ? IteratorStep(iteratorRecord).\nb. If next is not false, then\ni. Let nextValue be ? IteratorValue(next).\nii. Append nextValue to the end of the List values.\n6. Return values.\nGetIterator ( obj [ , hint [ , method ] ] )\n...\n3. If method is not present, then\na. If hint is async, then\n...\nb. Otherwise, set method to ? GetMethod(obj, @@iterator).\n4. Let iterator be ? Call(method, obj).\n5. If Type(iterator) is not Object, throw a TypeError exception.\n6. Let nextMethod be ? GetV(iterator, \u0022next\u0022).\n...\n8. Return iteratorRecord.",
       "locale": null,
-      "category": "crash",
-      "message": "Stale heap handle."
+      "category": "runtime-semantic-bug",
+      "message": "Unhandled runtime throw.",
+      "details": "thrown=object"
     },
     {
       "path": "test/built-ins/AggregateError/errors-iterabletolist.js",
-      "status": "Failed",
+      "status": "Passed",
       "durationMs": 0,
       "features": [
         "AggregateError",
@@ -34419,9 +34058,8 @@
       "description": "Iteration of errors",
       "info": "AggregateError ( errors, message )\n...\n3. Let errorsList be ? IterableToList(errors).\n4. Set O.[[AggregateErrors]] to errorsList.\n...\n6. Return O.\nRuntime Semantics: IterableToList ( items [ , method ] )\n1. If method is present, then\n...\n2. Else,\nb. Let iteratorRecord be ? GetIterator(items, sync).\n3. Let values be a new empty List.\n4. Let next be true.\n5. Repeat, while next is not false\na. Set next to ? IteratorStep(iteratorRecord).\nb. If next is not false, then\ni. Let nextValue be ? IteratorValue(next).\nii. Append nextValue to the end of the List values.\n6. Return values.\nGetIterator ( obj [ , hint [ , method ] ] )\n...\n3. If method is not present, then\na. If hint is async, then\n...\nb. Otherwise, set method to ? GetMethod(obj, @@iterator).\n4. Let iterator be ? Call(method, obj).\n5. If Type(iterator) is not Object, throw a TypeError exception.\n6. Let nextMethod be ? GetV(iterator, \u0022next\u0022).\n...\n8. Return iteratorRecord.",
       "locale": null,
-      "category": "runtime-semantic-bug",
-      "message": "Unhandled runtime throw.",
-      "details": "thrown=string:assert.compareArray length"
+      "category": null,
+      "message": null
     },
     {
       "path": "test/built-ins/AggregateError/is-a-constructor.js",
