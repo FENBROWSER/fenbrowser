@@ -87,6 +87,11 @@ public sealed partial class BytecodeInterpreter
             case JsValueTag.Object:
             {
                 var obj = ResolveObject(receiver);
+                if (obj is ProxyObject proxyGet)
+                {
+                    return ProxyGetSymbol(proxyGet, receiver, symbolId);
+                }
+
                 return obj.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
                     ? GetDescriptorValue(desc, receiver)
                     : JsValue.Undefined;
