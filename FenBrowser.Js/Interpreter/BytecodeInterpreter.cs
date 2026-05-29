@@ -10115,16 +10115,34 @@ fallbackArraySpecies:
 
     private int GetArrayLength(JsObject obj)
     {
-        if (!obj.TryGetOwnProperty("length", out var descriptor))
+        // ECMA-262 7.1.20 LengthOfArrayLike: Return ToLength(? Get(O, "length")).
+        // [[Get]] walks the prototype chain AND invokes accessor getters, so a
+        // `length` defined as a getter (its side effects observable per spec) and
+        // inherited `length` data properties both resolve correctly. The old
+        // path read the own-property descriptor's Value directly, which is
+        // undefined for an accessor and skips inherited lengths' [[Get]].
+        JsValue lengthValue;
+        if (obj.OwnerHandle is { } handle)
         {
-            // ECMA-262 §23.1.3: Array.prototype methods use [[Get]](O, "length")
-            // which walks the prototype chain, not [[GetOwnProperty]].
-            if (obj.PrototypeHandle is { } proto)
-                return GetArrayLength(_heap.GetObject(proto));
+            if (!TryGetPropertyValue(obj, JsValue.FromObject(handle), "length", out lengthValue))
+            {
+                lengthValue = JsValue.Undefined;
+            }
+        }
+        else if (obj.TryGetOwnProperty("length", out var ownDescriptor))
+        {
+            lengthValue = ownDescriptor.Value;
+        }
+        else if (obj.PrototypeHandle is { } proto)
+        {
+            return GetArrayLength(_heap.GetObject(proto));
+        }
+        else
+        {
             return 0;
         }
 
-        var number = ToNumber(descriptor.Value);
+        var number = ToNumber(lengthValue);
         if (double.IsNaN(number) || number <= 0)
         {
             return 0;
