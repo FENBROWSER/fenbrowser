@@ -8187,6 +8187,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         else
         {
+            // ECMA-262 10.1.6.3 ValidateAndApplyPropertyDescriptor: reject (TypeError)
+            // adding to a non-extensible object, or any disallowed change to a
+            // non-configurable property, before mutating.
+            if (!IsCompatiblePropertyDescriptor(
+                    target.Extensible, hasExisting, existingDescriptor,
+                    newIsAccessor, hasValue, value, hasWritableFlag, writable,
+                    hasEnumerable, enumerable, hasConfigurable, configurable,
+                    hasGetter, getter, hasSetter, setter))
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Cannot redefine property: " + (isSymbolKey ? "(symbol)" : key)));
+            }
+
             if (isSymbolKey)
             {
                 _ = target.DefineOwnSymbolProperty(keyArg.AsSymbolId(), descriptor);
@@ -8199,6 +8212,81 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         return args[0];
+    }
+
+    // ECMA-262 10.1.6.3 ValidateAndApplyPropertyDescriptor (validation half): whether
+    // defining/redefining a property is permitted. Returns false (→ TypeError at the
+    // call site) for: a new property on a non-extensible object, or a forbidden change
+    // to a non-configurable property (turning it configurable, flipping enumerable,
+    // changing data<->accessor kind, un-freezing a non-writable data value/writable,
+    // or changing a non-configurable accessor's get/set).
+    private static bool IsCompatiblePropertyDescriptor(
+        bool extensible, bool hasExisting, JsPropertyDescriptor current,
+        bool newIsAccessor, bool hasValue, JsValue value, bool hasWritable, bool writable,
+        bool hasEnumerable, bool enumerable, bool hasConfigurable, bool configurable,
+        bool hasGetter, JsValue getter, bool hasSetter, JsValue setter)
+    {
+        if (!hasExisting)
+        {
+            return extensible;
+        }
+
+        if (current.Configurable)
+        {
+            return true;
+        }
+
+        if (hasConfigurable && configurable)
+        {
+            return false;
+        }
+
+        if (hasEnumerable && enumerable != current.Enumerable)
+        {
+            return false;
+        }
+
+        var descHasKind = newIsAccessor || hasValue || hasWritable;
+        if (!descHasKind)
+        {
+            return true;
+        }
+
+        var currentIsAccessor = current.IsAccessor;
+        if (newIsAccessor != currentIsAccessor)
+        {
+            return false;
+        }
+
+        if (!currentIsAccessor)
+        {
+            if (!current.Writable)
+            {
+                if (hasWritable && writable)
+                {
+                    return false;
+                }
+
+                if (hasValue && !SameValue(value, current.Value))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        if (hasGetter && !SameValue(getter, current.Get))
+        {
+            return false;
+        }
+
+        if (hasSetter && !SameValue(setter, current.Set))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private void WriteDescriptorBarrier(ObjectHandle ownerHandle, JsPropertyDescriptor descriptor)
