@@ -9354,7 +9354,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // as undefined-valued slots per spec.
     private JsValue ArrayPrototypeFindLast(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var receiver = ToObjectValue(thisValue);
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
@@ -9362,8 +9363,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         for (var i = length - 1; i >= 0; i--)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            TryGetPropertyValue(obj, thisValue, key, out var v);
-            if (IsTruthy(InvokeArrayCallback(callback, v, i, thisValue, thisArg)))
+            TryGetPropertyValue(obj, receiver, key, out var v);
+            if (IsTruthy(InvokeArrayCallback(callback, v, i, receiver, thisArg)))
             {
                 return v;
             }
@@ -9375,7 +9376,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // ECMA-262 23.1.3.13 findLastIndex.
     private JsValue ArrayPrototypeFindLastIndex(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var receiver = ToObjectValue(thisValue);
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
@@ -9383,8 +9385,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         for (var i = length - 1; i >= 0; i--)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            TryGetPropertyValue(obj, thisValue, key, out var v);
-            if (IsTruthy(InvokeArrayCallback(callback, v, i, thisValue, thisArg)))
+            TryGetPropertyValue(obj, receiver, key, out var v);
+            if (IsTruthy(InvokeArrayCallback(callback, v, i, receiver, thisArg)))
             {
                 return JsValue.FromNumber(i);
             }
@@ -9660,7 +9662,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // array allocation that the spec also avoids.
     private JsValue ArrayPrototypeFlatMap(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
+        var receiver = ToObjectValue(thisValue);
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
@@ -9669,12 +9672,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         for (var i = 0; i < length; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            if (!TryGetPropertyValue(obj, thisValue, key, out var v))
+            if (!TryGetPropertyValue(obj, receiver, key, out var v))
             {
                 continue;
             }
 
-            var mapped = InvokeArrayCallback(callback, v, i, thisValue, thisArg);
+            var mapped = InvokeArrayCallback(callback, v, i, receiver, thisArg);
             if (mapped.Tag == JsValueTag.Object &&
                 _heap.GetObject(mapped.AsObjectHandle()) is ArrayObject inner)
             {
@@ -9799,7 +9802,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // reduceRight. Callback receives (accumulator, value, index, receiver).
     private JsValue ArrayPrototypeReduce(JsValue thisValue, IReadOnlyList<JsValue> args, bool reverse)
     {
-        var obj = ToObject(thisValue);
+        var receiver = ToObjectValue(thisValue);
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
         var length = GetArrayLength(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         RequireCallable(callback, reverse ? "Array.prototype.reduceRight" : "Array.prototype.reduce");
@@ -9827,7 +9831,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             while (i != end)
             {
                 var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                if (TryGetPropertyValue(obj, thisValue, key, out var v))
+                if (TryGetPropertyValue(obj, receiver, key, out var v))
                 {
                     accumulator = v;
                     i += step;
@@ -9850,14 +9854,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         while (i != end)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            if (TryGetPropertyValue(obj, thisValue, key, out var v))
+            if (TryGetPropertyValue(obj, receiver, key, out var v))
             {
                 var callArgs = new[]
                 {
                     accumulator,
                     v,
                     JsValue.FromNumber(i),
-                    thisValue,
+                    receiver,
                 };
                 accumulator = CallFunction(callback, callArgs, JsValue.Undefined);
             }
