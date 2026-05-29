@@ -14679,24 +14679,12 @@ fallbackArraySpecies:
     {
         if (value.Tag == JsValueTag.Object)
         {
-            if (TryGetObjectPrimitiveValue(value, out var primitive))
-            {
-                return ToStringValue(primitive);
-            }
-
-            var obj = _heap.GetObject(value.AsObjectHandle());
-            if (TryGetPropertyValue(obj, value, "toString", out var toString) &&
-                toString.Tag == JsValueTag.Object &&
-                _heap.GetObject(toString.AsObjectHandle()) is JsFunctionObject or NativeFunctionObject)
-            {
-                var result = CallFunction(toString, Array.Empty<JsValue>(), value);
-                if (result.Tag != JsValueTag.Object)
-                {
-                    return ToStringValue(result);
-                }
-            }
-
-            return "[object Object]";
+            // ECMA-262 7.1.17 ToString step 2: an object is first coerced with
+            // ToPrimitive(argument, string), which honors @@toPrimitive and the
+            // toString/valueOf ordering (and skips non-callable hooks); the
+            // resulting primitive is then formatted.
+            var primitive = ToPrimitive(value, PrimitiveHint.String);
+            return FormatPrimitiveForString(primitive);
         }
 
         return FormatPrimitiveForString(value);
@@ -14725,9 +14713,14 @@ fallbackArraySpecies:
 
     private double ToNumber(JsValue value)
     {
-        if (value.Tag == JsValueTag.Object && TryGetObjectPrimitiveValue(value, out var primitive))
+        if (value.Tag == JsValueTag.Object)
         {
-            return ToNumber(primitive);
+            // ECMA-262 7.1.4 ToNumber step: an object is coerced with
+            // ToPrimitive(argument, number) (honoring @@toPrimitive then
+            // valueOf/toString) before numeric conversion. The old shortcut
+            // only unwrapped wrapper internal slots, so Number({valueOf(){...}})
+            // wrongly returned NaN.
+            return ToNumber(ToPrimitive(value, PrimitiveHint.Number));
         }
 
         if (value.Tag == JsValueTag.BigInt)
