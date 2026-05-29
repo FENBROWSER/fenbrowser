@@ -1132,13 +1132,31 @@ public sealed class BytecodeCompiler
         {
             CompileStatement(forOfStmt.Body);
             _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
-            var loopEnd = _instructions.Count;
-            _instructions[nextIndex] = _instructions[nextIndex] with { C = loopEnd };
 
-            foreach (var breakJump in ctx.BreakJumpIndices)
+            // ECMA-262 13.7.5.13 step 5.b: a normal-completion break out of a
+            // for-of runs IteratorClose, but exhaustion (the ForOfNext done jump)
+            // and continue do not. Route break jumps through an IteratorClose
+            // instruction that then falls through to the normal exit; the done
+            // jump targets the normal exit directly. Only emit the close when
+            // some break actually targets this loop so we don't leave a dead
+            // instruction behind for break-free loops.
+            int normalExit;
+            if (ctx.BreakJumpIndices.Count > 0)
             {
-                PatchJump(breakJump, loopEnd);
+                var breakTarget = _instructions.Count;
+                _instructions.Add(new Instruction(OpCode.IteratorClose, 0, iteratorReg, 0));
+                normalExit = _instructions.Count;
+                foreach (var breakJump in ctx.BreakJumpIndices)
+                {
+                    PatchJump(breakJump, breakTarget);
+                }
             }
+            else
+            {
+                normalExit = _instructions.Count;
+            }
+
+            _instructions[nextIndex] = _instructions[nextIndex] with { C = normalExit };
 
             foreach (var continueJump in ctx.ContinueJumpIndices)
             {

@@ -31,6 +31,11 @@ public enum OpCode : byte
     // advances it, writing the next value into a register or jumping to the loop end.
     EnumerateValues,
     ForOfNext,
+    // ECMA-262 7.4.11 IteratorClose. Emitted by the for-of compiler on the
+    // break exit path (not on normal exhaustion, not on continue): calls the
+    // iterator's "return" method and throws a TypeError if its result is not an
+    // object. Operand B holds the for-of iterator-state register.
+    IteratorClose,
     CreateFunction,
     Call0,
     Call1,

@@ -1264,20 +1264,48 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.EnumerateValues:
                 {
-                    frame.Registers[ins.A] = CreateForOfIterator(frame.Registers[ins.B]);
+                    // GetIterator runs the user @@iterator method, which can throw;
+                    // route it through the frame's handler stack like other
+                    // user-code-invoking opcodes.
+                    try
+                    {
+                        frame.Registers[ins.A] = CreateForOfIteratorState(frame.Registers[ins.B]);
+                    }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 }
                 case OpCode.ForOfNext:
                 {
-                    var iter = ResolveObject(frame.Registers[ins.B]) as ForOfIteratorObject
-                        ?? throw new InvalidOperationException("Invalid for-of iterator object.");
-                    if (!iter.TryMoveNext(out var value))
+                    // Lazy mode calls the user .next(), which can throw.
+                    try
                     {
-                        frame.InstructionPointer = ins.C;
-                        break;
+                        var iter = ResolveObject(frame.Registers[ins.B]) as ForOfIteratorObject
+                            ?? throw new InvalidOperationException("Invalid for-of iterator object.");
+                        if (ForOfStepDone(iter, out var value))
+                        {
+                            frame.InstructionPointer = ins.C;
+                        }
+                        else
+                        {
+                            frame.Registers[ins.A] = value;
+                        }
                     }
-
-                    frame.Registers[ins.A] = value;
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    break;
+                }
+                case OpCode.IteratorClose:
+                {
+                    // ECMA-262 7.4.11 — emitted on the for-of break exit path. The
+                    // iterator's return() method (and the not-an-object TypeError)
+                    // must be observable by an enclosing try.
+                    try
+                    {
+                        if (ResolveObject(frame.Registers[ins.B]) is ForOfIteratorObject closing)
+                        {
+                            CloseForOfIteratorState(closing);
+                        }
+                    }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 }
                 case OpCode.ForInNext:
@@ -14092,16 +14120,24 @@ fallbackArraySpecies:
         CreateForInIterator(frame.Registers[srcReg]);
 
     internal JsValue EnumerateValuesForJit(InterpreterFrame frame, int srcReg) =>
-        CreateForOfIterator(frame.Registers[srcReg]);
+        CreateForOfIteratorState(frame.Registers[srcReg]);
 
     // Returns true when the iterator is exhausted (JIT must goto end label).
     internal bool ForOfNextForJit(InterpreterFrame frame, int destReg, int iterReg)
     {
         var iter = ResolveObject(frame.Registers[iterReg]) as ForOfIteratorObject
             ?? throw new InvalidOperationException("Invalid for-of iterator object.");
-        if (!iter.TryMoveNext(out var value)) return true;
+        if (ForOfStepDone(iter, out var value)) return true;
         frame.Registers[destReg] = value;
         return false;
+    }
+
+    internal void IteratorCloseForJit(InterpreterFrame frame, int iterReg)
+    {
+        if (ResolveObject(frame.Registers[iterReg]) is ForOfIteratorObject closing)
+        {
+            CloseForOfIteratorState(closing);
+        }
     }
 
     internal bool ForInNextForJit(InterpreterFrame frame, int destReg, int iterReg)

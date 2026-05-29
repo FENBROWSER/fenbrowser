@@ -235,6 +235,8 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.EnumerateValuesForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiForOfNext = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.ForOfNextForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiIteratorClose = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.IteratorCloseForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiForInNext = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.ForInNextForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiDefinePrivateField = typeof(BytecodeInterpreter)
@@ -630,6 +632,10 @@ public static class JitCompiler
                     Expression.Call(interp, MiForInNext, frame,
                         Expression.Constant(ins.A), Expression.Constant(ins.B)),
                     Expression.Goto(labels[ins.C])));
+                return true;
+            case OpCode.IteratorClose:
+                if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
+                body.Add(Expression.Call(interp, MiIteratorClose, frame, Expression.Constant(ins.B)));
                 return true;
             case OpCode.DefinePrivateField:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;

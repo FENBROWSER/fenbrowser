@@ -79,6 +79,134 @@ public sealed partial class BytecodeInterpreter
         return JsValue.FromObject(_heap.AllocateObject(fallbackIter, AllocationSite.Current()));
     }
 
+    // ECMA-262 13.7.5.12 ForIn/OfHeadEvaluation (iterate hint) + 7.4.1 GetIterator.
+    // The for-of bytecode head uses this instead of the eager CreateForOfIterator
+    // so that user iterators are pulled lazily: a user object with @@iterator
+    // yields a live (lazy) ForOfIteratorObject; arrays / strings / array-likes
+    // keep the bounded eager buffering (their length is finite and known, and
+    // many direct callers still rely on TryMoveNext). Pulling lazily is what
+    // makes `for (x of infiniteIterator) break;` terminate and lets the loop run
+    // IteratorClose on the break.
+    private JsValue CreateForOfIteratorState(JsValue source)
+    {
+        if (source.Tag == JsValueTag.Object)
+        {
+            var obj = _heap.GetObject(source.AsObjectHandle());
+            var iterId = GetWellKnownSymbolId("iterator");
+            if (iterId != 0 &&
+                obj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) &&
+                iterDesc.Value.Tag == JsValueTag.Object)
+            {
+                var iterator = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), source);
+                if (iterator.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Result of the Symbol.iterator method is not an object."));
+                }
+
+                var iterObj = _heap.GetObject(iterator.AsObjectHandle());
+                if (!TryGetPropertyValue(iterObj, iterator, "next", out var nextFn) ||
+                    nextFn.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Iterator has no callable 'next' method."));
+                }
+
+                var lazy = new ForOfIteratorObject(iterator, nextFn);
+                return JsValue.FromObject(_heap.AllocateObject(lazy, AllocationSite.Current()));
+            }
+        }
+
+        // Arrays, strings, array-likes, and the not-iterable error paths keep the
+        // existing eager buffering semantics.
+        return CreateForOfIterator(source);
+    }
+
+    // Advances a for-of iterator state by one step. Returns true when the
+    // iterator is exhausted (the caller jumps to the loop end). In lazy mode the
+    // user .next() is invoked, the IteratorResult is read, and Done latches so a
+    // subsequent IteratorClose becomes a no-op (the iterator already completed).
+    private bool ForOfStepDone(ForOfIteratorObject iter, out JsValue value)
+    {
+        if (!iter.IsLazy)
+        {
+            return !iter.TryMoveNext(out value);
+        }
+
+        if (iter.Done)
+        {
+            value = JsValue.Undefined;
+            return true;
+        }
+
+        var result = CallFunction(iter.NextMethod, Array.Empty<JsValue>(), iter.IteratorObject);
+        if (result.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Iterator result is not an object."));
+        }
+
+        // Pin the freshly allocated IteratorResult while its done/value are read:
+        // a done/value getter running user code could trigger an auto-MinorCollect
+        // that reclaims the result otherwise.
+        var rootMark = _heap.RootCount;
+        try
+        {
+            _heap.PushRoot(result.AsObjectHandle());
+            var resultObj = _heap.GetObject(result.AsObjectHandle());
+            TryGetPropertyValue(resultObj, result, "done", out var doneVal);
+            if (IsTruthy(doneVal))
+            {
+                iter.Done = true;
+                value = JsValue.Undefined;
+                return true;
+            }
+
+            TryGetPropertyValue(resultObj, result, "value", out value);
+            return false;
+        }
+        finally
+        {
+            _heap.PopRootsTo(rootMark);
+        }
+    }
+
+    // ECMA-262 7.4.11 IteratorClose for a normal (non-throw) completion such as a
+    // for-of break. Calls the iterator's "return" method if present and throws a
+    // TypeError when its result is not an object. No-op for eager (finite) states
+    // and for already-completed lazy iterators.
+    private void CloseForOfIteratorState(ForOfIteratorObject iter)
+    {
+        if (!iter.IsLazy || iter.Done)
+        {
+            return;
+        }
+
+        iter.Done = true;
+        var iterator = iter.IteratorObject;
+        if (iterator.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var iterObj = _heap.GetObject(iterator.AsObjectHandle());
+        // 7.4.6 GetMethod: an absent or null/undefined "return" means there is
+        // nothing to close.
+        if (!TryGetPropertyValue(iterObj, iterator, "return", out var ret) ||
+            ret.Tag == JsValueTag.Undefined ||
+            ret.Tag == JsValueTag.Null)
+        {
+            return;
+        }
+
+        // A non-callable "return" surfaces as the TypeError thrown by CallFunction.
+        var result = CallFunction(ret, Array.Empty<JsValue>(), iterator);
+        if (result.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Iterator 'return' method did not return an object."));
+        }
+    }
+
     // Drains a user iterator into a value list by calling .next() repeatedly until
     // the returned IteratorResult.done is true. Bounded by MaxCallDepth-friendly
     // semantics: each .next() goes through CallFunction so the recursion guard
@@ -209,6 +337,14 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
+    // ECMA-262 13.7.5 for-of iteration state. Two modes:
+    //  - Eager (list-backed): used for arrays, strings and array-likes whose
+    //    element count is finite and known. The values are buffered up front.
+    //  - Lazy (live-iterator-backed): used for user objects with @@iterator.
+    //    The state holds the live iterator object and its cached "next" method;
+    //    the interpreter pulls one step at a time (ForOfStepDone). This is what
+    //    lets for-of terminate on an infinite iterator when the body breaks and
+    //    run IteratorClose correctly (7.4.11).
     private sealed class ForOfIteratorObject : JsObject
     {
         private readonly IReadOnlyList<JsValue> _values;
@@ -218,6 +354,24 @@ public sealed partial class BytecodeInterpreter
         {
             _values = values;
         }
+
+        public ForOfIteratorObject(JsValue iteratorObject, JsValue nextMethod)
+        {
+            _values = System.Array.Empty<JsValue>();
+            IsLazy = true;
+            IteratorObject = iteratorObject;
+            NextMethod = nextMethod;
+        }
+
+        public bool IsLazy { get; }
+
+        // Lazy mode only. The live iterator object and its "next" method
+        // (read once at GetIterator time per 7.4.1). Done flips true once the
+        // iterator reports done or has been closed, so neither ForOfStepDone
+        // nor IteratorClose touches it again.
+        public JsValue IteratorObject { get; }
+        public JsValue NextMethod { get; }
+        public bool Done { get; set; }
 
         public bool TryMoveNext(out JsValue value)
         {
@@ -235,7 +389,8 @@ public sealed partial class BytecodeInterpreter
         // the iterator is reachable. Without this, GC during user code that
         // ran *after* this iterator was allocated (e.g. an inner abrupt
         // completion) could reclaim object cells referenced by _values and
-        // surface "Stale heap handle." on the next consumer access.
+        // surface "Stale heap handle." on the next consumer access. In lazy
+        // mode the live iterator object and next method must likewise survive.
         public override void Trace(IHeapTracer tracer)
         {
             base.Trace(tracer);
@@ -244,6 +399,14 @@ public sealed partial class BytecodeInterpreter
                 var v = _values[i];
                 if (v.Tag == JsValueTag.Object)
                     tracer.Trace(v.AsObjectHandle());
+            }
+
+            if (IsLazy)
+            {
+                if (IteratorObject.Tag == JsValueTag.Object)
+                    tracer.Trace(IteratorObject.AsObjectHandle());
+                if (NextMethod.Tag == JsValueTag.Object)
+                    tracer.Trace(NextMethod.AsObjectHandle());
             }
         }
     }
