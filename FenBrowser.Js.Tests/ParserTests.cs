@@ -505,14 +505,15 @@ public sealed class ParserTests
     }
 
     [Fact]
-    public void ParsesArrayLiteralWithElisionAsUndefinedSubset()
+    public void ParsesArrayLiteralWithElisionAsHole()
     {
+        // An elision is a distinct hole node (not an `undefined` identifier) so the
+        // compiler leaves the index absent — a true hole per ECMA-262 13.2.4.
         var program = JsParser.ParseScript(new SourceText("let arr = [0, 1, , 3];"));
         var decl = Assert.IsType<VariableDeclarationStatementNode>(program.Body[0]);
         var arr = Assert.IsType<ArrayLiteralExpressionNode>(decl.Declarators[0].Initializer);
         Assert.Equal(4, arr.Elements.Count);
-        var hole = Assert.IsType<IdentifierExpressionNode>(arr.Elements[2]);
-        Assert.Equal("undefined", hole.Name);
+        Assert.IsType<ElisionExpressionNode>(arr.Elements[2]);
     }
 
     [Fact]

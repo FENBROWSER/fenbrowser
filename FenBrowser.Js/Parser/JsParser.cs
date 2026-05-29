@@ -3669,7 +3669,7 @@ public sealed class JsParser
             if (IsPunctuator(","))
             {
                 var comma = Advance();
-                elements.Add(new IdentifierExpressionNode("undefined", comma.Span));
+                elements.Add(new ElisionExpressionNode(comma.Span));
                 continue;
             }
 

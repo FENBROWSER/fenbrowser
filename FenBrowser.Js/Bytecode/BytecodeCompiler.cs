@@ -1380,12 +1380,11 @@ public sealed class BytecodeCompiler
                         continue;
                     }
 
-                    // ParseArrayLiteral materializes elisions as an `undefined` identifier
-                    // with comma span; treat those sentinels as omitted elements.
-                    if (element is IdentifierExpressionNode { Name: "undefined" } sentinel &&
-                        sentinel.Span.Length == 1)
+                    // Elisions in the array-destructuring cover grammar are omitted
+                    // target slots (e.g. `[, a] = x` skips index 0).
+                    if (element is ElisionExpressionNode elision)
                     {
-                        elements.Add(new ArrayBindingElementNode(null, null, IsRest: false, sentinel.Span));
+                        elements.Add(new ArrayBindingElementNode(null, null, IsRest: false, elision.Span));
                         continue;
                     }
 
@@ -2487,13 +2486,39 @@ public sealed class BytecodeCompiler
             {
                 var dest = AllocateRegister();
                 _instructions.Add(new Instruction(OpCode.NewArray, dest, 0, 0));
+                var hasSpread = false;
                 for (var i = 0; i < arr.Elements.Count; i++)
                 {
+                    // Elisions are true holes: skip the store so the index stays absent
+                    // (HasProperty false; iteration methods skip it). The final length is
+                    // fixed up below so trailing holes still count.
+                    if (arr.Elements[i] is ElisionExpressionNode)
+                    {
+                        continue;
+                    }
+
+                    if (arr.Elements[i] is SpreadElementExpressionNode)
+                    {
+                        hasSpread = true;
+                    }
+
                     var valueReg = CompileExpression(arr.Elements[i]);
                     var indexReg = AllocateRegister();
                     var ci = AddConstant(JsValue.FromNumber(i));
                     _instructions.Add(new Instruction(OpCode.LoadConst, indexReg, ci, 0));
                     _instructions.Add(new Instruction(OpCode.SetElem, dest, indexReg, valueReg));
+                }
+
+                // Fix the length to the element count so trailing holes (e.g. `[1, , ]`)
+                // are reflected. Skipped when the literal contains a spread, whose
+                // element count is only known at runtime.
+                if (!hasSpread && arr.Elements.Count > 0)
+                {
+                    var lenReg = AllocateRegister();
+                    var lenConst = AddConstant(JsValue.FromNumber(arr.Elements.Count));
+                    _instructions.Add(new Instruction(OpCode.LoadConst, lenReg, lenConst, 0));
+                    var lenNameIdx = GetOrCreatePropertyName("length");
+                    _instructions.Add(new Instruction(OpCode.SetPropByName, dest, lenNameIdx, lenReg));
                 }
 
                 return dest;

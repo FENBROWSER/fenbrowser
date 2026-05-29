@@ -66,6 +66,11 @@ public sealed record ObjectLiteralExpressionNode(IReadOnlyList<ObjectPropertyNod
 
 public sealed record ArrayLiteralExpressionNode(IReadOnlyList<ExpressionNode> Elements, SourceSpan Span) : ExpressionNode(Span);
 
+// An array-literal elision (hole), e.g. the missing element in `[1, , 3]`. Distinct
+// from an explicit `undefined` so the compiler can leave the index absent (a true
+// hole that HasProperty/iteration methods skip) rather than storing undefined.
+public sealed record ElisionExpressionNode(SourceSpan Span) : ExpressionNode(Span);
+
 public sealed record SpreadElementExpressionNode(ExpressionNode Argument, SourceSpan Span) : ExpressionNode(Span);
 
 public sealed record MemberExpressionNode(ExpressionNode Object, string Property, bool Computed, ExpressionNode? PropertyExpression, SourceSpan Span) : ExpressionNode(Span);
