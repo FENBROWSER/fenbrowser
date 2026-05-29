@@ -7258,6 +7258,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "isPrototypeOf", ObjectPrototypeIsPrototypeOf, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "propertyIsEnumerable", ObjectPrototypePropertyIsEnumerable, length: 1);
 
+        // ECMA-262 Annex B B.2.2 legacy accessors (__proto__, __defineGetter__, etc.).
+        InstallAnnexBObjectPrototype(prototypeHandle, prototype);
+
         _objectPrototypeHandle = prototypeHandle;
         _objectConstructorHandle = constructorHandle;
         return constructorHandle;
