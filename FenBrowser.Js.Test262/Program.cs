@@ -22,6 +22,7 @@ string? inputPath = null;
 string? previousPath = null;
 string? test262Path = null;
 string? test262File = null;
+var test262Shallow = false;
 string? featuresCsv = null;
 string? supportedFeaturesCsv = null;
 
@@ -55,6 +56,9 @@ for (var i = 0; i < args.Length; i++)
             break;
         case "--test262-file" when i + 1 < args.Length:
             test262File = args[++i];
+            break;
+        case "--test262-shallow":
+            test262Shallow = true;
             break;
         case "--features" when i + 1 < args.Length:
             featuresCsv = args[++i];
@@ -102,4 +106,4 @@ if ((list || dryRun || parserSubset || runtimeSubset) && !Directory.Exists(root)
 }
 
 var runner = new Test262Runner();
-return runner.Run(root, list, dryRun, parserSubset, runtimeSubset, dashboard, verifyGates, outPath, max, timeoutMs, engine, expectationsPath, inputPath, previousPath, test262Path, test262File, featuresCsv, supportedFeaturesCsv);
+return runner.Run(root, list, dryRun, parserSubset, runtimeSubset, dashboard, verifyGates, outPath, max, timeoutMs, engine, expectationsPath, inputPath, previousPath, test262Path, test262File, featuresCsv, supportedFeaturesCsv, test262Shallow);

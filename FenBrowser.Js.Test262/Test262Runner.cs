@@ -31,11 +31,12 @@ public sealed class Test262Runner
         string? test262Path,
         string? test262File,
         string? featuresCsv,
-        string? supportedFeaturesCsv)
+        string? supportedFeaturesCsv,
+        bool test262Shallow = false)
     {
         var manifest = new Test262Manifest { RootPath = rootPath };
         var files = manifest.EnumerateTestFiles().OrderBy(p => p, StringComparer.Ordinal).ToList();
-        files = ApplyScopeFilter(rootPath, files, test262Path, test262File);
+        files = ApplyScopeFilter(rootPath, files, test262Path, test262File, test262Shallow);
         files = ApplyFeatureFilter(files, featuresCsv);
         Test262Expectations? expectations = null;
         if (!string.IsNullOrWhiteSpace(expectationsPath) && (parserSubset || runtimeSubset))
@@ -110,7 +111,7 @@ public sealed class Test262Runner
         return 0;
     }
 
-    private static List<string> ApplyScopeFilter(string rootPath, List<string> files, string? test262Path, string? test262File)
+    private static List<string> ApplyScopeFilter(string rootPath, List<string> files, string? test262Path, string? test262File, bool shallow = false)
     {
         if (!string.IsNullOrWhiteSpace(test262File))
         {
@@ -123,6 +124,16 @@ public sealed class Test262Runner
             return files;
         }
 
+        // shallow: match only files whose immediate parent directory IS the scope dir
+        // (the loose tests sitting directly in a directory, excluding its subdirs).
+        static List<string> ShallowMatch(List<string> all, string dir)
+        {
+            var norm = dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return all.Where(f => string.Equals(
+                Path.GetDirectoryName(Path.GetFullPath(f))?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                norm, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
         var candidate = Path.GetFullPath(test262Path);
         if (File.Exists(candidate))
         {
@@ -131,6 +142,7 @@ public sealed class Test262Runner
 
         if (Directory.Exists(candidate))
         {
+            if (shallow) { return ShallowMatch(files, candidate); }
             var prefix = candidate.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
             return files.Where(f => Path.GetFullPath(f).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
         }
@@ -140,6 +152,7 @@ public sealed class Test262Runner
         var relativeCandidate = Path.GetFullPath(Path.Combine(testRoot, test262Path));
         if (Directory.Exists(relativeCandidate))
         {
+            if (shallow) { return ShallowMatch(files, relativeCandidate); }
             var prefix = relativeCandidate.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
             return files.Where(f => Path.GetFullPath(f).StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
         }
