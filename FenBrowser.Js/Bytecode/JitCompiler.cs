@@ -570,6 +570,9 @@ public static class JitCompiler
             case OpCode.Void:
             case OpCode.TypeOf:
             case OpCode.BitNot:
+            case OpCode.ToNumeric:
+            case OpCode.Increment:
+            case OpCode.Decrement:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
                 if (ins.B < 0 || ins.B >= function.RegisterCount) return false;
                 body.Add(Expression.Call(interp, MiApplyUnaryOp, frame,

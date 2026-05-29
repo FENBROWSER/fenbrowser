@@ -412,6 +412,9 @@ public sealed class BytecodeVerifier
             case OpCode.Void:
             case OpCode.TypeOf:
             case OpCode.Await:
+            case OpCode.ToNumeric:
+            case OpCode.Increment:
+            case OpCode.Decrement:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 break;

@@ -1169,6 +1169,63 @@ public sealed class BytecodeCompiler
         }
     }
 
+    // ECMA-262 13.4 Update Expressions. Reads the old value, coerces it with
+    // ToNumeric, applies ±1, and stores the new value back to the same
+    // reference (evaluated once). Returns the new value for prefix forms and
+    // the old (coerced) value for postfix forms. Only Identifier and non-super
+    // member targets reach here; the parser keeps the legacy desugar otherwise.
+    private int CompileUpdateExpression(UnaryExpressionNode unary)
+    {
+        var isIncrement = unary.Operator is "preIncrement" or "postIncrement";
+        var isPrefix = unary.Operator is "preIncrement" or "preDecrement";
+        var stepOp = isIncrement ? OpCode.Increment : OpCode.Decrement;
+
+        if (unary.Operand is IdentifierExpressionNode id)
+        {
+            var slot = GetOrCreateVariableSlot(id.Name);
+            var curReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.LoadVar, curReg, slot, 0));
+            var oldReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.ToNumeric, oldReg, curReg, 0));
+            var newReg = AllocateRegister();
+            _instructions.Add(new Instruction(stepOp, newReg, oldReg, 0));
+            _instructions.Add(new Instruction(OpCode.StoreVar, newReg, slot, 0));
+            return isPrefix ? newReg : oldReg;
+        }
+
+        var member = (MemberExpressionNode)unary.Operand;
+        ThrowIfPrivateMemberAccess(member);
+        var objReg = CompileExpression(member.Object);
+
+        if (member.Computed)
+        {
+            var keyReg = CompileExpression(member.PropertyExpression!);
+            var curReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.GetElem, curReg, objReg, keyReg));
+            var oldReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.ToNumeric, oldReg, curReg, 0));
+            var newReg = AllocateRegister();
+            _instructions.Add(new Instruction(stepOp, newReg, oldReg, 0));
+            _instructions.Add(new Instruction(OpCode.SetElem, objReg, keyReg, newReg));
+            return isPrefix ? newReg : oldReg;
+        }
+
+        var nameIndex = GetOrCreatePropertyName(member.Property);
+        var isPrivate = IsPrivateMangled(member.Property);
+        var getOp = isPrivate ? OpCode.GetPrivateField : OpCode.GetPropByName;
+        var curMemberReg = AllocateRegister();
+        _instructions.Add(new Instruction(getOp, curMemberReg, objReg, nameIndex));
+        var oldMemberReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.ToNumeric, oldMemberReg, curMemberReg, 0));
+        var newMemberReg = AllocateRegister();
+        _instructions.Add(new Instruction(stepOp, newMemberReg, oldMemberReg, 0));
+        var setOp = isPrivate
+            ? (_compilingClassConstructor ? OpCode.DefinePrivateField : OpCode.SetPrivateField)
+            : OpCode.SetPropByName;
+        _instructions.Add(new Instruction(setOp, objReg, nameIndex, newMemberReg));
+        return isPrefix ? newMemberReg : oldMemberReg;
+    }
+
     private void CompileForAwaitOfStatement(ForAwaitOfStatementNode forAwaitOfStmt)
     {
         if (_currentFunctionKind is not FunctionKind.Async and not FunctionKind.AsyncGenerator)
@@ -2179,6 +2236,11 @@ public sealed class BytecodeCompiler
                     var slotTypeOf = GetOrCreateVariableSlot(typeofIdentifier.Name);
                     _instructions.Add(new Instruction(OpCode.TypeOfName, destTypeOf, slotTypeOf, 0));
                     return destTypeOf;
+                }
+
+                if (unary.Operator is "preIncrement" or "postIncrement" or "preDecrement" or "postDecrement")
+                {
+                    return CompileUpdateExpression(unary);
                 }
 
                 var operandReg = CompileExpression(unary.Operand);

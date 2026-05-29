@@ -50,6 +50,15 @@ public enum OpCode : byte
     Pos,
     Neg,
     Void,
+    // ECMA-262 13.4 Update Expressions support. ToNumeric coerces an operand to
+    // Number (or leaves a BigInt as-is) per 7.1.4-style ToNumeric so `x++` on a
+    // string yields a number, not a concatenation. Increment / Decrement add or
+    // subtract one from an already-numeric/BigInt value of matching type. The
+    // compiler sequences ToNumeric → Increment/Decrement → store, yielding the
+    // old value for postfix and the new value for prefix.
+    ToNumeric,
+    Increment,
+    Decrement,
     Delete,
     TypeOf,
     TypeOfName,

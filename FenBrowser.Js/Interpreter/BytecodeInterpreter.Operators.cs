@@ -28,6 +28,32 @@ public sealed partial class BytecodeInterpreter
         return JsValue.FromNumber(numOp(ToNumber(left), ToNumber(right)));
     }
 
+    // ECMA-262 7.1.4-style ToNumeric: a BigInt stays a BigInt; everything else
+    // is coerced to Number (ToNumber, which runs ToPrimitive and may throw, e.g.
+    // for Symbol). Used by the update operators so `x++` produces a numeric old
+    // value rather than a `x + 1` string concatenation.
+    private JsValue ToNumericValue(JsValue value)
+    {
+        if (value.Tag == JsValueTag.BigInt)
+        {
+            return value;
+        }
+
+        return JsValue.FromNumber(ToNumber(value));
+    }
+
+    // Adds delta (+1 / -1) to an already-ToNumeric value, preserving BigInt vs
+    // Number. ECMA-262 13.4.x step "Let newValue be ... ::add/subtract".
+    private static JsValue StepNumeric(JsValue numeric, int delta)
+    {
+        if (numeric.Tag == JsValueTag.BigInt)
+        {
+            return JsValue.FromBigInt(numeric.AsBigInt() + delta);
+        }
+
+        return JsValue.FromNumber(numeric.AsNumber() + delta);
+    }
+
     private JsValue Add(JsValue left, JsValue right)
     {
         var leftPrimitive = ToPrimitive(left, PrimitiveHint.Default);

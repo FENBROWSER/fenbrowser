@@ -4410,12 +4410,36 @@ public sealed class JsParser
         };
     }
 
-    private static AssignmentExpressionNode BuildUpdateAssignment(ExpressionNode target, string updateOp, SourceSpan opSpan, bool isPostfix)
+    private static ExpressionNode BuildUpdateAssignment(ExpressionNode target, string updateOp, SourceSpan opSpan, bool isPostfix)
     {
+        var span = isPostfix ? MergeSpan(target.Span, opSpan) : MergeSpan(opSpan, target.Span);
+
+        // ECMA-262 13.4 Update Expressions. For simple Identifier / non-super
+        // member targets, carry the real update semantics (ToNumeric of the old
+        // value, ±1, store, then yield the old value for postfix or the new
+        // value for prefix) through a sentinel unary operator that the compiler
+        // lowers. The legacy `target = target + 1` desugar evaluated to the new
+        // value for both forms and string-concatenated non-numeric operands, so
+        // it is wrong for postfix and for non-number operands; keep it only for
+        // the exotic targets (CallExpression, super member) that the dedicated
+        // lowering does not model.
+        var simpleTarget = target is IdentifierExpressionNode ||
+            (target is MemberExpressionNode m && m.Object is not SuperExpressionNode);
+        if (simpleTarget)
+        {
+            var op = (updateOp, isPostfix) switch
+            {
+                ("++", true) => "postIncrement",
+                ("++", false) => "preIncrement",
+                ("--", true) => "postDecrement",
+                _ => "preDecrement",
+            };
+            return new UnaryExpressionNode(op, target, span);
+        }
+
         var numeric = new NumericLiteralExpressionNode(1, "1", opSpan);
         var binaryOp = updateOp == "++" ? "+" : "-";
         var right = new BinaryExpressionNode(binaryOp, target, numeric, MergeSpan(target.Span, numeric.Span));
-        var span = isPostfix ? MergeSpan(target.Span, opSpan) : MergeSpan(opSpan, target.Span);
         return new AssignmentExpressionNode(target, right, span);
     }
 

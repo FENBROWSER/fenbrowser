@@ -1548,6 +1548,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.Void:
                     frame.Registers[ins.A] = JsValue.Undefined;
                     break;
+                case OpCode.ToNumeric:
+                    // ToNumeric can run user code (valueOf/toString via ToPrimitive)
+                    // and a Symbol/BigInt mismatch throws — route through the
+                    // frame handler stack.
+                    try
+                    {
+                        frame.Registers[ins.A] = ToNumericValue(frame.Registers[ins.B]);
+                    }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    break;
+                case OpCode.Increment:
+                    frame.Registers[ins.A] = StepNumeric(frame.Registers[ins.B], +1);
+                    break;
+                case OpCode.Decrement:
+                    frame.Registers[ins.A] = StepNumeric(frame.Registers[ins.B], -1);
+                    break;
                 case OpCode.Delete:
                     frame.Registers[ins.A] = DeleteName(frame, ins.B);
                     break;
@@ -14082,6 +14098,16 @@ fallbackArraySpecies:
             case OpCode.BitNot:
                 try { frame.Registers[a] = JsValue.FromNumber((double)(~(int)ToNumber(frame.Registers[b]))); }
                 catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            case OpCode.ToNumeric:
+                try { frame.Registers[a] = ToNumericValue(frame.Registers[b]); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            case OpCode.Increment:
+                frame.Registers[a] = StepNumeric(frame.Registers[b], +1);
+                break;
+            case OpCode.Decrement:
+                frame.Registers[a] = StepNumeric(frame.Registers[b], -1);
                 break;
             default:
                 throw new InvalidOperationException($"ApplyUnaryOpForJit: unsupported opcode {op}.");
