@@ -27,6 +27,9 @@ public sealed partial class BytecodeInterpreter
         _heap.PushRoot(prototypeHandle);
         _promisePrototypeHandle = prototypeHandle;
 
+        // ECMA-262 27.2.5.5 Promise.prototype [ @@toStringTag ] = "Promise".
+        DefineBuiltinToStringTag(prototype, "Promise");
+
         var constructor = new NativeFunctionObject(
             "Promise",
             (_, _) => throw new JsThrownException(CreateTypeError("Promise constructor must be invoked with 'new'.")),

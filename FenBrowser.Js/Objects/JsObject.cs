@@ -13,6 +13,15 @@ namespace FenBrowser.Js.Objects;
 // The older Dictionary<string, JsPropertyDescriptor> storage is replaced by
 // Shape + array. For enumeration and legacy paths, EnumerateOwnProperties
 // walks the array and Shape lineage simultaneously.
+// Marks an object as carrying a spec internal slot that Object.prototype.toString
+// (20.1.3.6) maps to a builtin tag: [[ParameterMap]] → "Arguments", [[ErrorData]] → "Error".
+internal enum BuiltinTagSlot
+{
+    None,
+    Arguments,
+    Error,
+}
+
 public class JsObject : ITraceable
 {
     // Current shape describing the property layout. Starts at the root shape
@@ -32,6 +41,11 @@ public class JsObject : ITraceable
     internal long PrivateBrand { get; set; }
 
     internal bool HasPrivateBrand(long brand) => PrivateBrand == brand;
+
+    // ECMA-262 20.1.3.6 Object.prototype.toString uses internal-slot presence
+    // ([[ParameterMap]], [[ErrorData]]) to pick the builtin tag. We model those
+    // slots as a marker here; ordinary objects leave it None.
+    internal BuiltinTagSlot ToStringTagSlot { get; set; } = BuiltinTagSlot.None;
 
     public ObjectHandle? PrototypeHandle { get; private set; }
 

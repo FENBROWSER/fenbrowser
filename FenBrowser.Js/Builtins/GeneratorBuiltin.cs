@@ -121,6 +121,13 @@ public sealed class GeneratorBuiltin : IBuiltinModule
 
         proto.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(ph), Writable: true, Enumerable: false, Configurable: true));
 
+        // ECMA-262 27.5.1.5 %GeneratorPrototype% [ @@toStringTag ] = "Generator"
+        // { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true }.
+        var toStringTag = context.CreateWellKnownSymbol("toStringTag");
+        proto.DefineOwnSymbolProperty(
+            toStringTag.AsSymbolId(),
+            new JsPropertyDescriptor(JsValue.FromString("Generator"), Writable: false, Enumerable: false, Configurable: true));
+
         return new[] { BuiltinBinding.NonEnumerable("GeneratorPrototype", JsValue.FromObject(ph)) };
     }
 

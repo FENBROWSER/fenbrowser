@@ -53,6 +53,13 @@ public sealed class BigIntBuiltin : IBuiltinModule
             new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         heap.WriteBarrier(prototypeHandle, constructorHandle);
 
+        // ECMA-262 21.2.3.5 BigInt.prototype [ @@toStringTag ] = "BigInt"
+        // { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true }.
+        var toStringTag = context.CreateWellKnownSymbol("toStringTag");
+        _ = prototype.DefineOwnSymbolProperty(
+            toStringTag.AsSymbolId(),
+            new JsPropertyDescriptor(JsValue.FromString("BigInt"), Writable: false, Enumerable: false, Configurable: true));
+
         context.DefineIntrinsicFunction(prototypeHandle, prototype, "valueOf", (thisValue, _) =>
             JsValue.FromBigInt(ThisBigIntValue(captured, thisValue)), length: 0);
         context.DefineIntrinsicFunction(prototypeHandle, prototype, "toString", (thisValue, _) =>

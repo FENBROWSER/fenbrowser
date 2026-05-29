@@ -1760,6 +1760,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue CreateArgumentsObject(IReadOnlyList<JsValue> args)
     {
         var obj = CreateOrdinaryObject();
+        obj.ToStringTagSlot = BuiltinTagSlot.Arguments;
         var handle = _heap.AllocateObject(obj, AllocationSite.Current());
 
         _ = obj.DefineOwnProperty(
@@ -1899,6 +1900,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             new JsPropertyDescriptor(JsValue.FromObject(selfIterHandle),
                 Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(protoHandle, selfIterHandle);
+
+        // ECMA-262 23.1.5.2.2 %ArrayIteratorPrototype% [ @@toStringTag ] = "Array Iterator".
+        DefineBuiltinToStringTag(proto, "Array Iterator");
 
         _arrayIteratorPrototypeHandle = protoHandle;
         return protoHandle;
@@ -2327,6 +2331,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromBoolean(true);
         }, length: 1);
 
+        // ECMA-262 24.2.3.12 Set.prototype [ @@toStringTag ] = "Set".
+        DefineBuiltinToStringTag(prototype, "Set");
+
         _setPrototypeHandle = prototypeHandle;
         _setConstructorHandle = constructorHandle;
         return constructorHandle;
@@ -2531,6 +2538,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
             return JsValue.FromObject(mapHandle);
         }, length: 2);
+
+        // ECMA-262 24.1.3.10 Map.prototype [ @@toStringTag ] = "Map".
+        DefineBuiltinToStringTag(prototype, "Map");
 
         _mapPrototypeHandle = prototypeHandle;
         _mapConstructorHandle = constructorHandle;
@@ -3510,6 +3520,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
             return WrapListAsIterator(flat);
         }, length: 1);
+
+        // ECMA-262 27.1.2.1 %Iterator.prototype% [ @@toStringTag ]. The accessor form
+        // is observable, but a configurable string value matches engines and the
+        // delete-then-inherit chain that test262 exercises.
+        DefineBuiltinToStringTag(prototype, "Iterator");
 
         _iteratorPrototypeHandle = prototypeHandle;
         _iteratorConstructorHandle = constructorHandle;
@@ -7871,21 +7886,113 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         };
     }
 
+    // Installs a builtin prototype's @@toStringTag per the spec (e.g. 24.1.3.10
+    // Map.prototype [ @@toStringTag ] = "Map"): a String value with attributes
+    // { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true }.
+    private void DefineBuiltinToStringTag(JsObject prototype, string tag)
+    {
+        var tagId = GetWellKnownSymbolId("toStringTag");
+        if (tagId == 0)
+        {
+            return;
+        }
+
+        _ = prototype.DefineOwnSymbolProperty(
+            tagId,
+            new JsPropertyDescriptor(JsValue.FromString(tag), Writable: false, Enumerable: false, Configurable: true));
+    }
+
     private JsValue ObjectPrototypeToString(JsValue thisValue)
     {
-        var tag = thisValue.Tag switch
+        // ECMA-262 20.1.3.6 Object.prototype.toString ( )
+        if (thisValue.Tag == JsValueTag.Undefined)
         {
-            JsValueTag.Undefined => "Undefined",
-            JsValueTag.Null => "Null",
-            JsValueTag.Boolean => "Boolean",
-            JsValueTag.Int32 or JsValueTag.Number => "Number",
-            JsValueTag.String => "String",
-            JsValueTag.HostObject => "Object",
-            JsValueTag.Object => GetObjectToStringTag(thisValue.AsObjectHandle()),
+            return JsValue.FromString("[object Undefined]");
+        }
+
+        if (thisValue.Tag == JsValueTag.Null)
+        {
+            return JsValue.FromString("[object Null]");
+        }
+
+        // Steps 3-14: O = ToObject(this); pick the builtin tag from its internal slots.
+        var builtinTag = DetermineToStringBuiltinTag(thisValue);
+
+        // Step 15: tag = ? Get(O, @@toStringTag). The real [[Get]] invokes accessors,
+        // dispatches proxy traps, and propagates abrupt completions.
+        var tagId = GetWellKnownSymbolId("toStringTag");
+        var tag = tagId != 0 ? GetReceiverSymbolProperty(thisValue, tagId) : JsValue.Undefined;
+
+        // Step 16: a non-string @@toStringTag is ignored in favour of the builtin tag.
+        var resolved = tag.Tag == JsValueTag.String ? tag.AsString() : builtinTag;
+
+        return JsValue.FromString($"[object {resolved}]");
+    }
+
+    // ECMA-262 20.1.3.6 steps 4-14: derive the builtin tag from O's internal slots.
+    // IsArray and [[Call]] look through Proxy/bound wrappers; IsArray throws on a
+    // revoked proxy (step 4 is observable before @@toStringTag is read).
+    private string DetermineToStringBuiltinTag(JsValue thisValue)
+    {
+        switch (thisValue.Tag)
+        {
+            case JsValueTag.Boolean:
+                return "Boolean";
+            case JsValueTag.Int32:
+            case JsValueTag.Number:
+                return "Number";
+            case JsValueTag.String:
+                return "String";
+            case JsValueTag.Symbol:
+            case JsValueTag.BigInt:
+            case JsValueTag.HostObject:
+                // Boxed wrappers without a dedicated builtin tag; their prototype's
+                // @@toStringTag ("Symbol"/"BigInt") supplies the visible tag.
+                return "Object";
+        }
+
+        if (thisValue.Tag != JsValueTag.Object)
+        {
+            return "Object";
+        }
+
+        // Step 4: IsArray (recurses through proxy targets, throws on a revoked proxy).
+        if (IsArrayValue(thisValue))
+        {
+            return "Array";
+        }
+
+        var handle = thisValue.AsObjectHandle();
+        var obj = _heap.GetObject(handle);
+
+        // Step 6: [[ParameterMap]].
+        if (obj.ToStringTagSlot == BuiltinTagSlot.Arguments)
+        {
+            return "Arguments";
+        }
+
+        // Step 7: [[Call]] (ordinary functions, bound functions, callable proxies).
+        if (IsCallableTarget(handle))
+        {
+            return "Function";
+        }
+
+        // Step 8: [[ErrorData]].
+        if (obj.ToStringTagSlot == BuiltinTagSlot.Error)
+        {
+            return "Error";
+        }
+
+        // Steps 9-13: primitive-wrapper / Date / RegExp internal slots.
+        return obj switch
+        {
+            BooleanObject => "Boolean",
+            NumberObject => "Number",
+            StringObject => "String",
+            DateObject => "Date",
+            RegExpObject => "RegExp",
             _ => "Object"
         };
-
-        return JsValue.FromString($"[object {tag}]");
     }
 
     private JsValue ObjectPrototypeValueOf(JsValue thisValue)
@@ -7946,33 +8053,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromBoolean(obj.TryGetOwnSymbolProperty(keyArg.AsSymbolId(), out var symDesc) && symDesc.Enumerable);
         }
         return JsValue.FromBoolean(obj.TryGetOwnProperty(ToPropertyKey(keyArg), out var descriptor) && descriptor.Enumerable);
-    }
-
-    private string GetObjectToStringTag(ObjectHandle handle)
-    {
-        // ECMA-262 20.1.3.6 step 14: if the object has a Symbol.toStringTag
-        // own or inherited string property, that string overrides the default
-        // builtin tag. Module namespace objects use this hook to return
-        // "[object Module]"; user code can override via Symbol.toStringTag.
-        var obj = _heap.GetObject(handle);
-        var tagId = GetWellKnownSymbolId("toStringTag");
-        if (tagId != 0 && obj.TryGetSymbolProperty(tagId, h => _heap.GetObject(h), out var tagDesc)
-            && !tagDesc.IsAccessor && tagDesc.Value.Tag == JsValueTag.String)
-        {
-            return tagDesc.Value.AsString();
-        }
-
-        return obj switch
-        {
-            ArrayObject => "Array",
-            BooleanObject => "Boolean",
-            DateObject => "Date",
-            NumberObject => "Number",
-            RegExpObject => "RegExp",
-            StringObject => "String",
-            JsFunctionObject or NativeFunctionObject => "Function",
-            _ => "Object"
-        };
     }
 
     private JsValue ObjectPrototypeIsPrototypeOf(JsValue thisValue, IReadOnlyList<JsValue> args)

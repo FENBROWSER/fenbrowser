@@ -160,6 +160,15 @@ public sealed partial class BytecodeInterpreter
                     ? GetDescriptorValue(desc, receiver)
                     : JsValue.Undefined;
             }
+            case JsValueTag.BigInt:
+            {
+                // ToObject(bigint) → %BigInt.prototype% for symbol-keyed reads
+                // such as the @@toStringTag used by Object.prototype.toString.
+                var bigIntProto = _heap.GetObject(GetGlobalPrototype("BigInt"));
+                return bigIntProto.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
+                    ? GetDescriptorValue(desc, receiver)
+                    : JsValue.Undefined;
+            }
             case JsValueTag.Undefined:
                 throw new JsThrownException(CreateTypeError(
                     "Cannot read properties of undefined (reading symbol key)."));

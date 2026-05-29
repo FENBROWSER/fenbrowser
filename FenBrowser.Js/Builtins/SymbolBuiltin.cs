@@ -50,6 +50,13 @@ public sealed class SymbolBuiltin : IBuiltinModule
                 new JsPropertyDescriptor(sym, Writable: false, Enumerable: false, Configurable: false));
         }
 
+        // ECMA-262 20.4.3.5 Symbol.prototype [ @@toStringTag ] = "Symbol"
+        // { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true }.
+        var toStringTagSym = context.CreateWellKnownSymbol("toStringTag");
+        _ = prototype.DefineOwnSymbolProperty(
+            toStringTagSym.AsSymbolId(),
+            new JsPropertyDescriptor(JsValue.FromString("Symbol"), Writable: false, Enumerable: false, Configurable: true));
+
         // Symbol.for
         context.DefineIntrinsicFunction(handle, constructor, "for", (_, args) =>
             context.SymbolFor(args.Count > 0 ? context.ToStringValue(args[0]) : "undefined"), length: 1);

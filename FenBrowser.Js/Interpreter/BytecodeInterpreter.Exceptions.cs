@@ -110,6 +110,7 @@ public sealed partial class BytecodeInterpreter
         // ECMA-262 20.5.1.1: only `message` lands on the instance (non-enumerable),
         // and only when a message was provided. `name` is inherited from the prototype.
         var error = new JsObject();
+        error.ToStringTagSlot = BuiltinTagSlot.Error;
         error.SetPrototype(prototypeHandle);
         if (!string.IsNullOrEmpty(message))
         {

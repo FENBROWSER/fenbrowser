@@ -90,6 +90,7 @@ public sealed class ErrorBuiltins : IBuiltinModule
     private static JsValue BuildError(IBuiltinContext ctx, ObjectHandle protoHandle, string name, IReadOnlyList<JsValue> args)
     {
         var err = new JsObject();
+        err.ToStringTagSlot = BuiltinTagSlot.Error;
         err.SetPrototype(protoHandle);
         // ECMA-262 20.5.1.1 Error ( message ): only define `message` when the
         // argument is not undefined, with attributes { w:t, e:f, c:t }. `name`
