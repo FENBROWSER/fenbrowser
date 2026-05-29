@@ -4236,28 +4236,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 return JsValue.FromNumber(double.NaN);
             }
 
-            var year = (int)ToNumber(args[0]);
-            if (year >= 0 && year <= 99)
+            var year = ToNumber(args[0]);
+            if (double.IsFinite(year) && year >= 0 && year <= 99)
             {
                 year += 1900;
             }
 
-            var month = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
-            var day = args.Count > 2 ? (int)ToNumber(args[2]) : 1;
-            var hours = args.Count > 3 ? (int)ToNumber(args[3]) : 0;
-            var minutes = args.Count > 4 ? (int)ToNumber(args[4]) : 0;
-            var seconds = args.Count > 5 ? (int)ToNumber(args[5]) : 0;
-            var ms = args.Count > 6 ? (int)ToNumber(args[6]) : 0;
+            var month = args.Count > 1 ? ToNumber(args[1]) : 0;
+            var day = args.Count > 2 ? ToNumber(args[2]) : 1;
+            var hours = args.Count > 3 ? ToNumber(args[3]) : 0;
+            var minutes = args.Count > 4 ? ToNumber(args[4]) : 0;
+            var seconds = args.Count > 5 ? ToNumber(args[5]) : 0;
+            var ms = args.Count > 6 ? ToNumber(args[6]) : 0;
 
-            try
-            {
-                var dt = new DateTimeOffset(year, month + 1, day, hours, minutes, seconds, ms, TimeSpan.Zero);
-                return JsValue.FromNumber(dt.ToUnixTimeMilliseconds());
-            }
-            catch (ArgumentOutOfRangeException)
-            {
-                return JsValue.FromNumber(double.NaN);
-            }
+            var v = DateMath.MakeDate(DateMath.MakeDay(year, month, day), DateMath.MakeTime(hours, minutes, seconds, ms));
+            return JsValue.FromNumber(DateMath.TimeClip(v));
         }, length: 7);
 
         // ECMA-262 21.4.3.2 Date.parse(string). Returns the time value of a parsed
@@ -4295,16 +4288,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         int yearArgIndex = 0, int monthArgIndex = 1, int dayArgIndex = 2)
     {
         var date = RequireDate(thisValue, method);
-        DateTimeOffset baseDate;
+        double baseT;
         if (double.IsFinite(date.TimeValue))
         {
-            baseDate = DateTimeOffset.FromUnixTimeMilliseconds((long)date.TimeValue);
+            baseT = date.TimeValue;
         }
         else if (hasYear)
         {
             // setFullYear is allowed to resurrect a NaN-valued Date per spec 21.4.4.21
             // step 2: "If t is NaN, set t to +0".
-            baseDate = DateTimeOffset.FromUnixTimeMilliseconds(0);
+            baseT = 0;
         }
         else
         {
@@ -4312,39 +4305,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromNumber(double.NaN);
         }
 
-        int year = baseDate.Year, month = baseDate.Month, day = baseDate.Day;
-        if (hasYear)
-        {
-            var n = ToNumber(args[yearArgIndex]);
-            if (!double.IsFinite(n)) { date.TimeValue = double.NaN; return JsValue.FromNumber(double.NaN); }
-            year = (int)n;
-        }
-        if (hasMonth)
-        {
-            var n = ToNumber(args[monthArgIndex]);
-            if (!double.IsFinite(n)) { date.TimeValue = double.NaN; return JsValue.FromNumber(double.NaN); }
-            month = (int)n + 1; // JS months are 0-based, DateTimeOffset is 1-based.
-        }
-        if (hasDay)
-        {
-            var n = ToNumber(args[dayArgIndex]);
-            if (!double.IsFinite(n)) { date.TimeValue = double.NaN; return JsValue.FromNumber(double.NaN); }
-            day = (int)n;
-        }
+        // ECMA-262 21.4.4.21/.20/.19: read the untouched portions from the current
+        // time, overwrite the requested ones from args (ToNumber in argument order),
+        // then recompose via MakeDay/MakeDate. MakeDay overflow handles Feb 30 etc.
+        double year = DateMath.YearFromTime(baseT);
+        double month = DateMath.MonthFromTime(baseT);
+        double day = DateMath.DateFromTime(baseT);
+        if (hasYear) { year = ToNumber(args[yearArgIndex]); }
+        if (hasMonth) { month = ToNumber(args[monthArgIndex]); }
+        if (hasDay) { day = ToNumber(args[dayArgIndex]); }
 
-        try
-        {
-            // Build via per-component AddXxx so out-of-range month/day overflow
-            // naturally per spec MakeDay (Feb 30 -> Mar 2, etc.).
-            var dt = new DateTimeOffset(year, 1, 1, baseDate.Hour, baseDate.Minute, baseDate.Second, baseDate.Millisecond, TimeSpan.Zero)
-                .AddMonths(month - 1)
-                .AddDays(day - 1);
-            date.TimeValue = TimeClip(dt.ToUnixTimeMilliseconds());
-        }
-        catch (ArgumentOutOfRangeException)
-        {
-            date.TimeValue = double.NaN;
-        }
+        var newDay = DateMath.MakeDay(year, month, day);
+        date.TimeValue = DateMath.TimeClip(DateMath.MakeDate(newDay, DateMath.TimeWithinDay(baseT)));
         return JsValue.FromNumber(date.TimeValue);
     }
 
@@ -4359,31 +4331,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             return JsValue.FromNumber(double.NaN);
         }
-        var baseDate = DateTimeOffset.FromUnixTimeMilliseconds((long)date.TimeValue);
-        int hour = baseDate.Hour, minute = baseDate.Minute, second = baseDate.Second, ms = baseDate.Millisecond;
-        var components = new[] { hour, minute, second, ms };
+        var t0 = date.TimeValue;
+        // Untouched portions keep their current value; provided args overwrite from
+        // startIndex (0=hour..3=ms), ToNumber in argument order (21.4.4.34/.33/.32/.31).
+        var components = new double[]
+        {
+            DateMath.HoursFromTime(t0), DateMath.MinFromTime(t0),
+            DateMath.SecFromTime(t0), DateMath.MsFromTime(t0)
+        };
         for (var i = 0; i < args.Count && startIndex + i < 4; i++)
         {
-            var n = ToNumber(args[i]);
-            if (!double.IsFinite(n)) { date.TimeValue = double.NaN; return JsValue.FromNumber(double.NaN); }
-            components[startIndex + i] = (int)n;
+            components[startIndex + i] = ToNumber(args[i]);
         }
-        try
-        {
-            // Use a millisecond-precise sum so out-of-range portions (e.g. minute=70)
-            // ripple per MakeTime semantics.
-            var midnight = new DateTimeOffset(baseDate.Year, baseDate.Month, baseDate.Day, 0, 0, 0, TimeSpan.Zero);
-            var t = midnight
-                .AddHours(components[0])
-                .AddMinutes(components[1])
-                .AddSeconds(components[2])
-                .AddMilliseconds(components[3]);
-            date.TimeValue = TimeClip(t.ToUnixTimeMilliseconds());
-        }
-        catch (ArgumentOutOfRangeException)
-        {
-            date.TimeValue = double.NaN;
-        }
+        var time = DateMath.MakeTime(components[0], components[1], components[2], components[3]);
+        date.TimeValue = DateMath.TimeClip(DateMath.MakeDate(DateMath.Day(t0), time));
         return JsValue.FromNumber(date.TimeValue);
     }
 
@@ -4441,38 +4402,39 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toJSON", DatePrototypeToJson, length: 1);
 
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getFullYear",
-            (t, _) => GetDateComponent(t, "getFullYear", d => d.Year));
+            (t, _) => GetDateComponent(t, "getFullYear", DateMath.YearFromTime));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getMonth",
-            (t, _) => GetDateComponent(t, "getMonth", d => d.Month - 1));
+            (t, _) => GetDateComponent(t, "getMonth", DateMath.MonthFromTime));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getDate",
-            (t, _) => GetDateComponent(t, "getDate", d => d.Day));
+            (t, _) => GetDateComponent(t, "getDate", DateMath.DateFromTime));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getDay",
-            (t, _) => GetDateComponent(t, "getDay", d => (int)d.DayOfWeek));
+            (t, _) => GetDateComponent(t, "getDay", DateMath.WeekDay));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getHours",
-            (t, _) => GetDateComponent(t, "getHours", d => d.Hour));
+            (t, _) => GetDateComponent(t, "getHours", DateMath.HoursFromTime));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getMinutes",
-            (t, _) => GetDateComponent(t, "getMinutes", d => d.Minute));
+            (t, _) => GetDateComponent(t, "getMinutes", DateMath.MinFromTime));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getSeconds",
-            (t, _) => GetDateComponent(t, "getSeconds", d => d.Second));
+            (t, _) => GetDateComponent(t, "getSeconds", DateMath.SecFromTime));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getMilliseconds",
-            (t, _) => GetDateComponent(t, "getMilliseconds", d => d.Millisecond));
+            (t, _) => GetDateComponent(t, "getMilliseconds", DateMath.MsFromTime));
 
+        // LocalTZA is 0, so the UTC accessors share the same extractors as the local ones.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCFullYear",
-            (t, _) => GetDateComponent(t, "getUTCFullYear", d => d.Year));
+            (t, _) => GetDateComponent(t, "getUTCFullYear", DateMath.YearFromTime));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCMonth",
-            (t, _) => GetDateComponent(t, "getUTCMonth", d => d.Month - 1));
+            (t, _) => GetDateComponent(t, "getUTCMonth", DateMath.MonthFromTime));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCDate",
-            (t, _) => GetDateComponent(t, "getUTCDate", d => d.Day));
+            (t, _) => GetDateComponent(t, "getUTCDate", DateMath.DateFromTime));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCDay",
-            (t, _) => GetDateComponent(t, "getUTCDay", d => (int)d.DayOfWeek));
+            (t, _) => GetDateComponent(t, "getUTCDay", DateMath.WeekDay));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCHours",
-            (t, _) => GetDateComponent(t, "getUTCHours", d => d.Hour));
+            (t, _) => GetDateComponent(t, "getUTCHours", DateMath.HoursFromTime));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCMinutes",
-            (t, _) => GetDateComponent(t, "getUTCMinutes", d => d.Minute));
+            (t, _) => GetDateComponent(t, "getUTCMinutes", DateMath.MinFromTime));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCSeconds",
-            (t, _) => GetDateComponent(t, "getUTCSeconds", d => d.Second));
+            (t, _) => GetDateComponent(t, "getUTCSeconds", DateMath.SecFromTime));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getUTCMilliseconds",
-            (t, _) => GetDateComponent(t, "getUTCMilliseconds", d => d.Millisecond));
+            (t, _) => GetDateComponent(t, "getUTCMilliseconds", DateMath.MsFromTime));
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getTimezoneOffset",
             (t, _) => GetDateComponent(t, "getTimezoneOffset", _ => 0));
 
@@ -4484,7 +4446,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // Annex B B.2.3 legacy aliases (audit �4.1).
         // B.2.3.1 Date.prototype.getYear: return year - 1900, NaN if invalid.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getYear",
-            (t, _) => GetDateComponent(t, "getYear", d => d.Year - 1900));
+            (t, _) => GetDateComponent(t, "getYear", tv => DateMath.YearFromTime(tv) - 1900));
         // B.2.3.2 Date.prototype.setYear(year): treat 0..99 as offset from 1900,
         // any other number assigned directly; NaN clears to NaN time value.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "setYear",
@@ -4533,23 +4495,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private static readonly string[] DayNames = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
     private static readonly string[] MonthNames = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
 
-    private string FormatDatePart(DateTimeOffset d) =>
-        string.Format(System.Globalization.CultureInfo.InvariantCulture,
-            "{0} {1} {2:D2} {3:D4}",
-            DayNames[(int)d.DayOfWeek], MonthNames[d.Month - 1], d.Day, d.Year);
+    private static string FormatYear4(double t)
+    {
+        var y = DateMath.YearFromTime(t);
+        return y >= 0
+            ? y.ToString("D4", System.Globalization.CultureInfo.InvariantCulture)
+            : "-" + Math.Abs(y).ToString("D4", System.Globalization.CultureInfo.InvariantCulture);
+    }
 
-    private string FormatTimePart(DateTimeOffset d) =>
+    private string FormatDatePart(double t) =>
+        string.Format(System.Globalization.CultureInfo.InvariantCulture,
+            "{0} {1} {2:D2} {3}",
+            DayNames[DateMath.WeekDay(t)], MonthNames[DateMath.MonthFromTime(t)], DateMath.DateFromTime(t), FormatYear4(t));
+
+    private string FormatTimePart(double t) =>
         string.Format(System.Globalization.CultureInfo.InvariantCulture,
             "{0:D2}:{1:D2}:{2:D2} GMT+0000 (Coordinated Universal Time)",
-            d.Hour, d.Minute, d.Second);
+            DateMath.HoursFromTime(t), DateMath.MinFromTime(t), DateMath.SecFromTime(t));
 
     private JsValue DatePrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
         var t = GetDateTimeValue(thisValue, "toString");
         if (!double.IsFinite(t)) return JsValue.FromString("Invalid Date");
-        var d = DateTimeOffset.FromUnixTimeMilliseconds((long)t);
-        return JsValue.FromString(FormatDatePart(d) + " " + FormatTimePart(d));
+        return JsValue.FromString(FormatDatePart(t) + " " + FormatTimePart(t));
     }
 
     private JsValue DatePrototypeToDateString(JsValue thisValue, IReadOnlyList<JsValue> args)
@@ -4557,7 +4526,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = args;
         var t = GetDateTimeValue(thisValue, "toDateString");
         if (!double.IsFinite(t)) return JsValue.FromString("Invalid Date");
-        return JsValue.FromString(FormatDatePart(DateTimeOffset.FromUnixTimeMilliseconds((long)t)));
+        return JsValue.FromString(FormatDatePart(t));
     }
 
     private JsValue DatePrototypeToTimeString(JsValue thisValue, IReadOnlyList<JsValue> args)
@@ -4565,7 +4534,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = args;
         var t = GetDateTimeValue(thisValue, "toTimeString");
         if (!double.IsFinite(t)) return JsValue.FromString("Invalid Date");
-        return JsValue.FromString(FormatTimePart(DateTimeOffset.FromUnixTimeMilliseconds((long)t)));
+        return JsValue.FromString(FormatTimePart(t));
     }
 
     // ECMA-262 21.4.4.43 Date.prototype.toUTCString. Format: "Day, DD Mon YYYY HH:MM:SS GMT".
@@ -4574,22 +4543,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = args;
         var t = GetDateTimeValue(thisValue, "toUTCString");
         if (!double.IsFinite(t)) return JsValue.FromString("Invalid Date");
-        var d = DateTimeOffset.FromUnixTimeMilliseconds((long)t);
         return JsValue.FromString(string.Format(System.Globalization.CultureInfo.InvariantCulture,
-            "{0}, {1:D2} {2} {3:D4} {4:D2}:{5:D2}:{6:D2} GMT",
-            DayNames[(int)d.DayOfWeek], d.Day, MonthNames[d.Month - 1], d.Year,
-            d.Hour, d.Minute, d.Second));
+            "{0}, {1:D2} {2} {3} {4:D2}:{5:D2}:{6:D2} GMT",
+            DayNames[DateMath.WeekDay(t)], DateMath.DateFromTime(t), MonthNames[DateMath.MonthFromTime(t)], FormatYear4(t),
+            DateMath.HoursFromTime(t), DateMath.MinFromTime(t), DateMath.SecFromTime(t)));
     }
 
-    private JsValue GetDateComponent(JsValue thisValue, string method, Func<DateTimeOffset, int> extract)
+    private JsValue GetDateComponent(JsValue thisValue, string method, Func<double, int> extract)
     {
         var t = GetDateTimeValue(thisValue, method);
         if (!double.IsFinite(t))
         {
             return JsValue.FromNumber(double.NaN);
         }
-        var dto = DateTimeOffset.FromUnixTimeMilliseconds((long)t);
-        return JsValue.FromNumber(extract(dto));
+        return JsValue.FromNumber(extract(t));
     }
 
     private JsValue DatePrototypeGetTime(JsValue thisValue, IReadOnlyList<JsValue> args)
@@ -4629,16 +4596,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             throw new JsThrownException(CreateRangeError("Invalid time value."));
         }
-        var dto = DateTimeOffset.FromUnixTimeMilliseconds((long)t);
         // Extended year form (+YYYYYY/-YYYYYY) when outside [0, 9999] per 21.4.1.18.
-        var year = dto.Year;
+        var year = DateMath.YearFromTime(t);
         var yearStr = (year >= 0 && year <= 9999)
             ? year.ToString("D4", System.Globalization.CultureInfo.InvariantCulture)
             : (year >= 0 ? "+" : "-") + Math.Abs(year).ToString("D6", System.Globalization.CultureInfo.InvariantCulture);
         return JsValue.FromString(string.Format(
             System.Globalization.CultureInfo.InvariantCulture,
             "{0}-{1:D2}-{2:D2}T{3:D2}:{4:D2}:{5:D2}.{6:D3}Z",
-            yearStr, dto.Month, dto.Day, dto.Hour, dto.Minute, dto.Second, dto.Millisecond));
+            yearStr, DateMath.MonthFromTime(t) + 1, DateMath.DateFromTime(t),
+            DateMath.HoursFromTime(t), DateMath.MinFromTime(t), DateMath.SecFromTime(t), DateMath.MsFromTime(t)));
     }
 
     private JsValue CreateDateObject(double timeValue)
