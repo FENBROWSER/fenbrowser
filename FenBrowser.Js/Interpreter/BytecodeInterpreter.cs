@@ -6992,20 +6992,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // the (possibly coerced) target.
         DefineIntrinsicFunction(constructorHandle, constructor, "assign", (_, args) =>
         {
-            if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined || args[0].Tag == JsValueTag.Null)
-            {
-                throw new JsThrownException(CreateTypeError(
-                    "Object.assign target must not be undefined or null."));
-            }
-
-            var targetValue = args[0];
-            if (targetValue.Tag != JsValueTag.Object)
-            {
-                return targetValue;
-            }
-
-            var targetHandle = targetValue.AsObjectHandle();
-            var target = _heap.GetObject(targetHandle);
+            // ECMA-262 20.1.2.1 Object.assign(target, ...sources).
+            // 1. Let to be ? ToObject(target).
+            var toValue = ToObjectValue(args.Count > 0 ? args[0] : JsValue.Undefined);
+            var toHandle = toValue.AsObjectHandle();
+            var to = _heap.GetObject(toHandle);
 
             for (var i = 1; i < args.Count; i++)
             {
@@ -7015,36 +7006,51 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     continue;
                 }
 
-                if (source.Tag != JsValueTag.Object)
-                {
-                    continue;
-                }
+                // 4.b.i Let from be ! ToObject(nextSource). Strings expose their
+                // indexed code units (enumerable) plus a non-enumerable length.
+                var fromValue = ToObjectValue(source);
+                var fromObj = _heap.GetObject(fromValue.AsObjectHandle());
 
-                var sourceObj = _heap.GetObject(source.AsObjectHandle());
-                foreach (var pair in sourceObj.EnumerateOwnProperties())
+                // String-keyed own enumerable properties, in own-key order. Read
+                // each value through [[Get]] (so getters run and their throws
+                // propagate) and write through [[Set]] (so setters/extensibility/
+                // writability are honored); a false result is a TypeError.
+                foreach (var pair in fromObj.EnumerateOwnProperties())
                 {
                     if (!pair.Value.Enumerable)
                     {
                         continue;
                     }
 
-                    var value = pair.Value.IsAccessor ? JsValue.Undefined : pair.Value.Value;
-                    if (!target.SetProperty(pair.Key, value))
+                    var value = TryGetPropertyValue(fromObj, fromValue, pair.Key, out var v)
+                        ? v
+                        : JsValue.Undefined;
+                    if (!SetPropertyValue(toHandle, to, pair.Key, value, toValue))
                     {
-                        // Property was non-writable; per spec [[Set]] returning false
-                        // in strict mode is a TypeError. We surface that consistently.
                         throw new JsThrownException(CreateTypeError(
                             $"Cannot assign to read-only property '{pair.Key}'."));
                     }
+                }
 
+                // Symbol-keyed own enumerable properties follow the string keys.
+                foreach (var pair in fromObj.EnumerateOwnSymbolProperties())
+                {
+                    if (!pair.Value.Enumerable)
+                    {
+                        continue;
+                    }
+
+                    var value = GetReceiverSymbolProperty(fromValue, pair.Key);
+                    to.DefineOwnSymbolProperty(pair.Key,
+                        new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
                     if (value.Tag == JsValueTag.Object)
                     {
-                        _heap.WriteBarrier(targetHandle, value.AsObjectHandle());
+                        _heap.WriteBarrier(toHandle, value.AsObjectHandle());
                     }
                 }
             }
 
-            return targetValue;
+            return toValue;
         }, length: 2);
 
         // ECMA-262 20.1.2.12 Object.getPrototypeOf(O).
@@ -8278,6 +8284,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 return false;
             }
+        }
+
+        // ECMA-262 10.1.9.2 OrdinarySetWithOwnDescriptor → CreateDataProperty:
+        // creating a brand-new own property on a non-extensible object fails
+        // ([[Set]] returns false; strict callers turn that into a TypeError).
+        if (!obj.Extensible)
+        {
+            return false;
         }
 
         var descriptor = new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true);

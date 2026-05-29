@@ -59,10 +59,11 @@ public sealed class ObjectAssignTests
     [Fact]
     public void PrimitiveTargetCoerces()
     {
-        // 20.1.2.1 step 1: ToObject(target). Primitives box - but the box is
-        // discarded, so callers cannot observe the assigned properties on the original
-        // primitive. The function still returns the (coerced) target rather than
-        // throwing.
-        Assert.Equal(JsValueTag.Number, Run("Object.assign(42, {a:1});").Tag);
+        // 20.1.2.1 step 1: Let to be ? ToObject(target). A primitive target is
+        // boxed and that wrapper object is returned (typeof is "object"), with
+        // the source's own enumerable properties copied onto it.
+        Assert.Equal(JsValueTag.Object, Run("Object.assign(42, {a:1});").Tag);
+        Assert.Equal(1d, Run("Object.assign(42, {a:1}).a;").AsNumber());
+        Assert.Equal(42d, Run("Object.assign(42, {a:1}).valueOf();").AsNumber());
     }
 }
