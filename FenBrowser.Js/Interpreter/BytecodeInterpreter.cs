@@ -528,11 +528,40 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // declarative record chained to it so free identifier references walk the
         // lexical scope chain through env records. Otherwise, fall back to the
         // detached fresh env that InterpreterFrame would have allocated on its own.
-        var frameEnv = frameEnvironment ?? (outerEnvironment is null
-            ? null
-            : function.IsDerivedConstructor
-                ? new FunctionEnvironmentRecord(ThisBindingStatus.Uninitialized, JsValue.Undefined, JsValue.Undefined, callee?.HomeObject, outerEnvironment)
-                : new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment));
+        EnvironmentRecord? frameEnv;
+        if (frameEnvironment is not null)
+        {
+            frameEnv = frameEnvironment;
+        }
+        else if (outerEnvironment is null)
+        {
+            frameEnv = null;
+        }
+        else if (function.IsDerivedConstructor)
+        {
+            // `this` stays uninitialized until super(...) runs InitThisBinding.
+            frameEnv = new FunctionEnvironmentRecord(
+                ThisBindingStatus.Uninitialized, JsValue.Undefined, JsValue.Undefined, callee?.HomeObject, outerEnvironment);
+        }
+        else if (function.Kind == FunctionKind.Arrow)
+        {
+            // ECMA-262 9.1.1.3: arrow functions have no `this` binding of their
+            // own; a plain declarative record lets `this` resolve through the
+            // outer (enclosing function/global) environment.
+            frameEnv = new DeclarativeEnvironmentRecord(outerEnv: outerEnvironment);
+        }
+        else
+        {
+            // Ordinary functions / methods bind `this` into a function
+            // environment record (10.2.1.2 OrdinaryCallBindThis) so that nested
+            // arrow functions — which read `this` via GetThisEnvironment — can
+            // observe it. Previously this lived only in frame.ThisValue, which
+            // is invisible to an inner arrow's own frame.
+            var functionEnv = new FunctionEnvironmentRecord(
+                ThisBindingStatus.Uninitialized, JsValue.Undefined, JsValue.Undefined, callee?.HomeObject, outerEnvironment);
+            _ = functionEnv.BindThisValue(thisValue);
+            frameEnv = functionEnv;
+        }
         var frame = new InterpreterFrame(function, thisValue, frameEnv) { CalleeFunctionObject = callee, OwnerGenerator = ownerGenerator, AsyncContext = asyncContext };
         // Audit �1: pin this frame's registers/env into the GC root set for
         // its execution lifetime. Dispose pops on every return path (normal
@@ -717,8 +746,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         }
                     }
 
-                    if (frame.Environment is FunctionEnvironmentRecord fenThis &&
-                        fenThis.GetThisBinding(out var boundThis) == BindingOpResult.Ok)
+                    // ECMA-262 9.1.2.5 GetThisEnvironment: walk the lexical
+                    // environment chain to the nearest record that provides a
+                    // `this` binding (a function or the global record). Arrow
+                    // functions create a declarative record with no own `this`,
+                    // so resolution must climb to the enclosing function's
+                    // FunctionEnvironmentRecord (or globalThis) rather than read
+                    // the call-site receiver, which is undefined for `arrow()`.
+                    if (TryResolveThisBinding(frame.Environment, out var boundThis))
                     {
                         frame.Registers[ins.A] = boundThis;
                     }
@@ -10158,6 +10193,24 @@ fallbackArraySpecies:
         return AreStrictlyEqual(a, b);
     }
 
+    // ECMA-262 9.1.2.5 GetThisEnvironment: return the value of the nearest
+    // lexical environment record (this frame's environment or an outer one)
+    // that has a `this` binding. Returns false only if no record in the chain
+    // provides one (so the caller can fall back to the frame receiver).
+    private static bool TryResolveThisBinding(Environments.EnvironmentRecord? environment, out JsValue value)
+    {
+        for (var env = environment; env is not null; env = env.OuterEnv)
+        {
+            if (env.HasThisBinding)
+            {
+                return env.GetThisBinding(out value) == Environments.BindingOpResult.Ok;
+            }
+        }
+
+        value = JsValue.Undefined;
+        return false;
+    }
+
     private int GetArrayLength(JsObject obj)
     {
         // ECMA-262 7.1.20 LengthOfArrayLike: Return ToLength(? Get(O, "length")).
@@ -14011,8 +14064,9 @@ fallbackArraySpecies:
             }
         }
 
-        if (frame.Environment is FunctionEnvironmentRecord fenThis &&
-            fenThis.GetThisBinding(out var boundThis) == BindingOpResult.Ok)
+        // 9.1.2.5 GetThisEnvironment — walk to the nearest this-providing record
+        // so arrow functions resolve the enclosing function/global `this`.
+        if (TryResolveThisBinding(frame.Environment, out var boundThis))
         {
             return boundThis;
         }
