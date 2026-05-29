@@ -147,6 +147,39 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
+    // ECMA-262 7.4.11 IteratorClose ( iteratorRecord, completion ) used on the
+    // abrupt-completion path: call the iterator's "return" method (if present)
+    // so the producer can release resources, but never let a throw from
+    // "return" mask the original completion that triggered the close — the
+    // caller re-throws the original after this returns. This is the lazy
+    // counterpart to the eager DrainIteratorIntoList path and is what lets
+    // Array.from / for-of abort an infinite iterator when user code throws.
+    private void IteratorCloseOnAbrupt(JsValue iterator)
+    {
+        if (iterator.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var iterObj = _heap.GetObject(iterator.AsObjectHandle());
+        if (!TryGetPropertyValue(iterObj, iterator, "return", out var ret) ||
+            ret.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = CallFunction(ret, Array.Empty<JsValue>(), iterator);
+        }
+        catch (JsThrownException)
+        {
+            // 7.4.11 step 6: an inner throw is discarded when the original
+            // completion is itself a throw, which is the only path that calls
+            // this helper. The original exception propagates from the caller.
+        }
+    }
+
     private JsValue CreateForInIterator(JsValue value)
     {
         var keys = new List<string>();

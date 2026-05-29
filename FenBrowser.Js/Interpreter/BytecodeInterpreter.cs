@@ -8436,10 +8436,99 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     iterDesc.Value.Tag == JsValueTag.Object;
             }
 
-            if (useIterator)
+            if (useIterator && source.Tag == JsValueTag.Object)
             {
-                // CreateForOfIterator handles Symbol.iterator dispatch for objects
-                // and per-character iteration for strings.
+                // ECMA-262 23.1.2.1 Array.from, iterator path. Pull the iterator
+                // lazily one step at a time so that (a) an abrupt completion from
+                // the map function closes the iterator via IteratorClose instead
+                // of being unreachable, and (b) infinite iterators don't hang the
+                // engine before user code can throw. The eager CreateForOfIterator
+                // path buffers every value up front and loops forever on an
+                // iterator whose next() never reports done (see
+                // built-ins/Array/from/iter-map-fn-err.js).
+                var srcObj = _heap.GetObject(source.AsObjectHandle());
+                var iterId = GetWellKnownSymbolId("iterator");
+                srcObj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc);
+                var iterator = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), source);
+                if (iterator.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Array.from: @@iterator method did not return an object."));
+                }
+
+                var iterObj = _heap.GetObject(iterator.AsObjectHandle());
+                // 7.4.1 GetIterator reads "next" once and reuses it each step.
+                if (!TryGetPropertyValue(iterObj, iterator, "next", out var nextFn) ||
+                    nextFn.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Array.from: iterator has no callable 'next' method."));
+                }
+
+                // Pin the iterator and suspend auto-MinorCollect for the duration
+                // of the pull, mirroring DrainIteratorIntoList: CallFunction can
+                // tick the young-GC counter while results live only on the C#
+                // stack.
+                var rootMark = _heap.RootCount;
+                var savedYoungThreshold = _heap.YoungAllocationsPerMinorGc;
+                _heap.YoungAllocationsPerMinorGc = -1;
+                try
+                {
+                    _heap.PushRoot(iterator.AsObjectHandle());
+                    var k = 0;
+                    while (true)
+                    {
+                        var result = CallFunction(nextFn, Array.Empty<JsValue>(), iterator);
+                        if (result.Tag != JsValueTag.Object)
+                        {
+                            throw new JsThrownException(CreateTypeError(
+                                "Array.from: iterator result is not an object."));
+                        }
+
+                        _heap.PushRoot(result.AsObjectHandle());
+                        var resultObj = _heap.GetObject(result.AsObjectHandle());
+                        TryGetPropertyValue(resultObj, result, "done", out var doneVal);
+                        if (IsTruthy(doneVal))
+                        {
+                            break;
+                        }
+
+                        TryGetPropertyValue(resultObj, result, "value", out var v);
+                        if (mapFn.HasValue)
+                        {
+                            try
+                            {
+                                v = CallFunction(mapFn.Value, new[] { v, JsValue.FromNumber(k) }, thisArg);
+                            }
+                            catch (JsThrownException)
+                            {
+                                // 23.1.2.1 step 6.g.vii.2: abrupt mapped value
+                                // closes the iterator, then the original throw
+                                // propagates.
+                                IteratorCloseOnAbrupt(iterator);
+                                throw;
+                            }
+                        }
+
+                        if (v.Tag == JsValueTag.Object)
+                        {
+                            _heap.PushRoot(v.AsObjectHandle());
+                        }
+
+                        items.Add(v);
+                        k++;
+                    }
+                }
+                finally
+                {
+                    _heap.PopRootsTo(rootMark);
+                    _heap.YoungAllocationsPerMinorGc = savedYoungThreshold;
+                }
+            }
+            else if (useIterator)
+            {
+                // String source: finite per-code-unit iteration. The eager
+                // CreateForOfIterator path is safe (bounded by string length).
                 var iter = CreateForOfIterator(source);
                 if (iter.Tag == JsValueTag.Object &&
                     _heap.GetObject(iter.AsObjectHandle()) is ForOfIteratorObject forOf)
