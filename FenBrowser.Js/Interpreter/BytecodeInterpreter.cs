@@ -1226,9 +1226,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         break;
                     }
 
-                    if (double.TryParse(key, out var numericIndex))
+                    // ECMA-262 10.4.2.1 ArraySetLength coupling: writing a canonical
+                    // array index that is >= the current length grows "length".
+                    // This is an Array exotic-object behavior ONLY — plain objects
+                    // that merely happen to carry a "length" property (array-likes,
+                    // `Math`, instances inheriting length) must not have their
+                    // length mutated by an indexed assignment.
+                    if (obj is ArrayObject && IsCanonicalIntegerIndex(key, out var arrayIndex))
                     {
-                        var nextLength = numericIndex + 1;
+                        var nextLength = (double)arrayIndex + 1;
                         if (!obj.TryGetOwnProperty("length", out var lenDesc) || lenDesc.Value.AsNumber() < nextLength)
                         {
                             _ = obj.SetProperty("length", JsValue.FromNumber(nextLength));
