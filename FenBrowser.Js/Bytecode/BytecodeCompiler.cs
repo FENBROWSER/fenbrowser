@@ -67,6 +67,10 @@ public sealed class BytecodeCompiler
     private bool _captureCompletionValue;
     // When non-null, the next LoopContext pushed should take this label.
     private string? _pendingLabel;
+    // ECMA-262 NamedEvaluation: when the next compiled expression is an anonymous
+    // function/arrow/class definition, it adopts this name. Set immediately before
+    // compiling the initializer and consumed by the function/arrow/class case.
+    private string? _pendingNameHint;
 
     public BytecodeFunction CompileScript(SourceText source)
     {
@@ -289,14 +293,16 @@ public sealed class BytecodeCompiler
                         : OpCode.InitVar;
                     if (d.Initializer is not null)
                     {
-                        var reg = CompileExpression(d.Initializer);
                         if (d.BindingPattern is null)
                         {
+                            // NamedEvaluation: `var f = function(){}` names the function "f".
+                            var reg = CompileNamedInitializer(d.Initializer, d.Identifier);
                             var slot = GetOrCreateVariableSlot(d.Identifier);
                             _instructions.Add(new Instruction(op, reg, slot, 0));
                         }
                         else
                         {
+                            var reg = CompileExpression(d.Initializer);
                             EmitBindingPatternAssignment(d.BindingPattern, reg, op);
                         }
                     }
@@ -498,6 +504,37 @@ public sealed class BytecodeCompiler
     // register holding the constructor function. Extends/super are not handled
     // here yet - a base-class expression is currently ignored, which is enough
     // for the H.1 surface (constructor + methods + static methods).
+    // ECMA-262 IsAnonymousFunctionDefinition: an anonymous function expression,
+    // arrow function, or anonymous class expression — the forms that adopt a name
+    // via NamedEvaluation when they appear on the RHS of a binding/assignment.
+    private static bool IsAnonymousFunctionDefinition(ExpressionNode expr) => expr switch
+    {
+        FunctionExpressionNode f => f.Name is null,
+        ArrowFunctionExpressionNode => true,
+        ClassExpressionNode c => c.Name is null,
+        _ => false,
+    };
+
+    // Compile an initializer expression, threading `name` into it via NamedEvaluation
+    // when the expression is an anonymous function definition. Other expressions are
+    // compiled normally.
+    private int CompileNamedInitializer(ExpressionNode expr, string name)
+    {
+        if (IsAnonymousFunctionDefinition(expr))
+        {
+            _pendingNameHint = name;
+        }
+
+        return CompileExpression(expr);
+    }
+
+    private string? ConsumeNameHint()
+    {
+        var hint = _pendingNameHint;
+        _pendingNameHint = null;
+        return hint;
+    }
+
     private int CompileClassExpressionToRegister(
         string? className,
         ExpressionNode? baseClass,
@@ -1777,7 +1814,8 @@ public sealed class BytecodeCompiler
             }
             case AssignmentExpressionNode assign when assign.Left is IdentifierExpressionNode id:
             {
-                var rightReg = CompileExpression(assign.Right);
+                // NamedEvaluation: `f = function(){}` names the function "f".
+                var rightReg = CompileNamedInitializer(assign.Right, id.Name);
                 var slot = GetOrCreateVariableSlot(id.Name);
                 _instructions.Add(new Instruction(OpCode.StoreVar, rightReg, slot, 0));
                 return rightReg;
@@ -2282,12 +2320,15 @@ public sealed class BytecodeCompiler
                     fnExpr.Parameters,
                     fnExpr.ParameterBindings,
                     out var fnExprPrologueCount);
+                // ECMA-262 NamedEvaluation: an anonymous function expression adopts
+                // the binding/assignment name; a named expression keeps its own name.
+                var fnExprName = fnExpr.Name ?? ConsumeNameHint();
                 var childCompiler = new BytecodeCompiler();
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
                     fnExpr.Parameters,
                     fnExpr.RestParameterIndex,
-                    fnExpr.Name,
+                    fnExprName,
                     hasOwnArgumentsObject: true,
                     functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false),
                     inheritedStrictMode: _isStrictMode,
@@ -2327,12 +2368,15 @@ public sealed class BytecodeCompiler
                     arrow.Parameters,
                     arrow.ParameterBindings,
                     out var arrowPrologueCount);
+                // ECMA-262 NamedEvaluation: arrows are always anonymous, so they take
+                // the binding/assignment name when one is in scope, else the empty name.
+                var arrowName = ConsumeNameHint() ?? string.Empty;
                 var childCompiler = new BytecodeCompiler();
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
                     arrow.Parameters,
                     arrow.RestParameterIndex,
-                    "<arrow>",
+                    arrowName,
                     hasOwnArgumentsObject: false,
                     functionKind: SelectFunctionKind(arrow.IsAsync, isGenerator: false, isArrow: true),
                     inheritedStrictMode: _isStrictMode,
@@ -2390,7 +2434,11 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.NewObject, dest, 0, 0));
                 foreach (var prop in obj.Properties)
                 {
-                    var valueReg = CompileExpression(prop.Value);
+                    // NamedEvaluation: a static-key data property `{ f: function(){} }`
+                    // (and method shorthand `{ f(){} }`) names the function "f".
+                    var valueReg = (!prop.IsComputed && prop.Kind == ObjectPropertyKind.Data && prop.Key is not null)
+                        ? CompileNamedInitializer(prop.Value, prop.Key)
+                        : CompileExpression(prop.Value);
                     if (prop.IsComputed)
                     {
                         if (prop.ComputedKey is null)
@@ -2639,7 +2687,8 @@ public sealed class BytecodeCompiler
                     var valueReg = LoadArrayElement(arraySourceReg, index);
                     if (element.Initializer is not null)
                     {
-                        valueReg = ApplyDefaultInitializerIfUndefined(valueReg, element.Initializer);
+                        var elemName = element.Target is IdentifierBindingPatternNode elemId ? elemId.Name : null;
+                        valueReg = ApplyDefaultInitializerIfUndefined(valueReg, element.Initializer, elemName);
                     }
 
                     EmitBindingPatternAssignment(element.Target, valueReg, storeOp);
@@ -2699,7 +2748,8 @@ public sealed class BytecodeCompiler
 
                     if (property.Initializer is not null)
                     {
-                        valueReg = ApplyDefaultInitializerIfUndefined(valueReg, property.Initializer);
+                        var propName = property.Target is IdentifierBindingPatternNode propId ? propId.Name : null;
+                        valueReg = ApplyDefaultInitializerIfUndefined(valueReg, property.Initializer, propName);
                     }
 
                     EmitBindingPatternAssignment(property.Target, valueReg, storeOp);
@@ -2818,14 +2868,18 @@ public sealed class BytecodeCompiler
         return restReg;
     }
 
-    private int ApplyDefaultInitializerIfUndefined(int valueReg, ExpressionNode initializer)
+    private int ApplyDefaultInitializerIfUndefined(int valueReg, ExpressionNode initializer, string? nameHint = null)
     {
         var undefinedReg = LoadUndefinedConstant();
         var isUndefinedReg = AllocateRegister();
         _instructions.Add(new Instruction(OpCode.StrictEq, isUndefinedReg, valueReg, undefinedReg));
         var jumpIfNotUndefined = EmitPlaceholder(OpCode.JumpIfFalse, isUndefinedReg);
 
-        var initializerReg = CompileExpression(initializer);
+        // ECMA-262 NamedEvaluation: `[ f = function(){} ]` / `{ f = function(){} }`
+        // names the default-valued anonymous function with the binding identifier.
+        var initializerReg = nameHint is not null
+            ? CompileNamedInitializer(initializer, nameHint)
+            : CompileExpression(initializer);
         _instructions.Add(new Instruction(OpCode.Move, valueReg, initializerReg, 0));
         PatchJump(jumpIfNotUndefined, _instructions.Count);
         return valueReg;
