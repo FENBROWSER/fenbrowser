@@ -9009,18 +9009,57 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // Shared helper for fill / slice. Reads args[argIndex] as a number (default
     // when missing or undefined), then converts to an integer clamped into
     // [0, length] using the spec's "negative-from-length" rule.
-    private static int NormaliseSliceIndex(IReadOnlyList<JsValue> args, int argIndex, int defaultValue, int length)
+    // ECMA-262 relative-index clamping shared by slice / copyWithin / fill /
+    // lastIndexOf etc. The argument is coerced with ToIntegerOrInfinity (which
+    // runs ToNumber → @@toPrimitive/valueOf, and throws a TypeError for Symbol
+    // or BigInt), not read as a raw number. Negative values count from the end;
+    // ±Infinity clamps to the ends.
+    private int NormaliseSliceIndex(IReadOnlyList<JsValue> args, int argIndex, int defaultValue, int length)
     {
         if (argIndex >= args.Count || args[argIndex].Tag == JsValueTag.Undefined)
         {
             return Math.Clamp(defaultValue, 0, length);
         }
 
-        var raw = args[argIndex].Tag == JsValueTag.Int32
-            ? args[argIndex].AsInt32()
-            : (int)args[argIndex].AsNumber();
-        var idx = raw < 0 ? length + raw : raw;
+        var relative = ToIntegerOrInfinity(args[argIndex]);
+        int idx;
+        if (double.IsNegativeInfinity(relative))
+        {
+            idx = 0;
+        }
+        else if (relative < 0)
+        {
+            idx = (int)Math.Max(length + relative, 0);
+        }
+        else if (double.IsPositiveInfinity(relative) || relative > length)
+        {
+            idx = length;
+        }
+        else
+        {
+            idx = (int)relative;
+        }
+
         return Math.Clamp(idx, 0, length);
+    }
+
+    // ECMA-262 7.1.5 ToIntegerOrInfinity: ToNumber, then NaN → +0, ±Infinity
+    // preserved, otherwise truncate toward zero. ToNumber honors @@toPrimitive /
+    // valueOf and throws for Symbol / BigInt operands.
+    private double ToIntegerOrInfinity(JsValue value)
+    {
+        var number = ToNumber(value);
+        if (double.IsNaN(number))
+        {
+            return 0;
+        }
+
+        if (double.IsInfinity(number))
+        {
+            return number;
+        }
+
+        return Math.Truncate(number);
     }
 
     // ECMA-262 23.1.3.4 Array.prototype.copyWithin(target, start[, end]).
