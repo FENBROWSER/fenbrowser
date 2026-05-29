@@ -53,9 +53,11 @@ public sealed class ReflectTests
         Assert.True(RunBool("var o = {}, p = {x:5}; Reflect.setPrototypeOf(o, p); o.x === 5;"));
     }
 
-    [Fact] public void ReflectSetPrototypeOfReturnsFalseForBadProto()
+    [Fact] public void ReflectSetPrototypeOfThrowsForBadProto()
     {
-        Assert.False(RunBool("Reflect.setPrototypeOf({}, 42);"));
+        // ECMA-262 28.1.13 step 2: a proto that is neither Object nor null is a TypeError
+        // (not a false return), matching test262 Reflect/setPrototypeOf/proto-is-*-throws.
+        Assert.Throws<JsThrownException>(() => RunBool("Reflect.setPrototypeOf({}, 42);"));
     }
 
     [Fact] public void ReflectIsExtensibleDefaultTrue() => Assert.True(RunBool("Reflect.isExtensible({});"));

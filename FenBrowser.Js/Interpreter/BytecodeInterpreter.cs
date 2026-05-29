@@ -3155,28 +3155,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             RequireObjectTarget(args, "Reflect.setPrototypeOf");
             var protoArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            // ECMA-262 28.1.13 step 2: a proto that is neither Object nor null is a TypeError.
             if (protoArg.Tag != JsValueTag.Object && protoArg.Tag != JsValueTag.Null)
             {
-                return JsValue.FromBoolean(false);
+                throw new JsThrownException(CreateTypeError(
+                    "Reflect.setPrototypeOf: prototype must be an Object or null."));
             }
 
             var ownerHandle = args[0].AsObjectHandle();
-            var obj = _heap.GetObject(ownerHandle);
-            if (obj is ProxyObject proxySetPrototypeOf)
-            {
-                return JsValue.FromBoolean(ProxySetPrototypeOf(proxySetPrototypeOf, protoArg));
-            }
-            if (protoArg.Tag == JsValueTag.Object)
-            {
-                obj.SetPrototype(protoArg.AsObjectHandle());
-                _heap.WriteBarrier(ownerHandle, protoArg.AsObjectHandle());
-            }
-            else
-            {
-                obj.SetPrototype(null);
-            }
-
-            return JsValue.FromBoolean(true);
+            // ECMA-262 28.1.13 Reflect.setPrototypeOf: return the [[SetPrototypeOf]]
+            // status as a Boolean (no throw on a disallowed change).
+            return JsValue.FromBoolean(OrdinarySetPrototypeOf(ownerHandle, protoArg));
         }, length: 2);
 
         // 28.1.10 isExtensible
@@ -6577,7 +6566,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return existing;
         }
 
-        var prototypeHandle = _heap.AllocateObject(new JsObject(), AllocationSite.Current());
+        var objectPrototype = new JsObject();
+        // ECMA-262 10.4.7 / 20.1.3: %Object.prototype% is an immutable prototype
+        // exotic object — [[SetPrototypeOf]] only succeeds for the same value.
+        objectPrototype.ImmutablePrototype = true;
+        var prototypeHandle = _heap.AllocateObject(objectPrototype, AllocationSite.Current());
         _heap.PushRoot(prototypeHandle);
 
         var constructor = new NativeFunctionObject(
@@ -7113,21 +7106,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
 
             var ownerHandle = args[0].AsObjectHandle();
-            var target = _heap.GetObject(ownerHandle);
-            if (target is ProxyObject proxySetPrototypeOf)
+            // ECMA-262 20.1.2.21 step 4-5: ? O.[[SetPrototypeOf]](proto); throw if false.
+            if (!OrdinarySetPrototypeOf(ownerHandle, protoArg))
             {
-                ProxySetPrototypeOf(proxySetPrototypeOf, protoArg);
-                return args[0];
-            }
-            if (protoArg.Tag == JsValueTag.Object)
-            {
-                var protoHandle = protoArg.AsObjectHandle();
-                target.SetPrototype(protoHandle);
-                _heap.WriteBarrier(ownerHandle, protoHandle);
-            }
-            else
-            {
-                target.SetPrototype(null);
+                throw new JsThrownException(CreateTypeError(
+                    "Object.setPrototypeOf: cannot set prototype (cycle, non-extensible, or immutable)."));
             }
 
             return args[0];

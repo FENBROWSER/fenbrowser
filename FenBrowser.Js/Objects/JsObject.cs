@@ -47,6 +47,10 @@ public class JsObject : ITraceable
     // slots as a marker here; ordinary objects leave it None.
     internal BuiltinTagSlot ToStringTagSlot { get; set; } = BuiltinTagSlot.None;
 
+    // ECMA-262 immutable prototype exotic object (e.g. %Object.prototype%): its
+    // [[SetPrototypeOf]] succeeds only when the new value equals the current one.
+    internal bool ImmutablePrototype { get; set; }
+
     public ObjectHandle? PrototypeHandle { get; private set; }
 
     public bool Extensible { get; private set; } = true;

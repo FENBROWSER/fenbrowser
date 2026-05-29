@@ -76,22 +76,11 @@ public sealed partial class BytecodeInterpreter
             return JsValue.Undefined;
         }
 
-        var ownerHandle = thisValue.AsObjectHandle();
-        var target = _heap.GetObject(ownerHandle);
-        if (target is ProxyObject proxy)
+        // Steps 4-5: ? O.[[SetPrototypeOf]](proto); throw TypeError if it returns false.
+        if (!OrdinarySetPrototypeOf(thisValue.AsObjectHandle(), proto))
         {
-            ProxySetPrototypeOf(proxy, proto);
-            return JsValue.Undefined;
-        }
-
-        if (proto.Tag == JsValueTag.Object)
-        {
-            target.SetPrototype(proto.AsObjectHandle());
-            _heap.WriteBarrier(ownerHandle, proto.AsObjectHandle());
-        }
-        else
-        {
-            target.SetPrototype(null);
+            throw new JsThrownException(CreateTypeError(
+                "Object.prototype.__proto__: cannot set prototype (cycle, non-extensible, or immutable)."));
         }
 
         return JsValue.Undefined;
@@ -192,4 +181,82 @@ public sealed partial class BytecodeInterpreter
 
     private bool IsCallableValue(JsValue value)
         => value.Tag == JsValueTag.Object && IsCallableTarget(value.AsObjectHandle());
+
+    // ECMA-262 10.1.2 [[SetPrototypeOf]] for ordinary objects (10.1.2.1) plus the
+    // immutable-prototype (10.4.7.1) and Proxy (10.5.2) variants. Returns whether the
+    // change succeeded WITHOUT throwing for the disallowed-but-not-abrupt cases
+    // (non-extensible with a different prototype, cycle, immutable mismatch); the
+    // caller decides whether a false result becomes a TypeError. Proxy trap aborts
+    // propagate as thrown exceptions.
+    private bool OrdinarySetPrototypeOf(ObjectHandle handle, JsValue protoValue)
+    {
+        var obj = _heap.GetObject(handle);
+        if (obj is ProxyObject proxy)
+        {
+            return ProxySetPrototypeOf(proxy, protoValue);
+        }
+
+        var current = obj.PrototypeHandle;
+        // Step 2: SameValue(V, current) → no-op success.
+        var sameValue = protoValue.Tag == JsValueTag.Null
+            ? current is null
+            : protoValue.Tag == JsValueTag.Object && current is { } c && c.Equals(protoValue.AsObjectHandle());
+        if (sameValue)
+        {
+            return true;
+        }
+
+        // 10.4.7.1: immutable prototype exotic objects reject any real change.
+        if (obj.ImmutablePrototype)
+        {
+            return false;
+        }
+
+        // Steps 3-4: a non-extensible object cannot change its prototype.
+        if (!obj.Extensible)
+        {
+            return false;
+        }
+
+        // Steps 5-7: walk the proposed chain; reject a cycle. Stop at a non-ordinary
+        // [[GetPrototypeOf]] (e.g. a Proxy) — its chain is not statically analysable.
+        if (protoValue.Tag == JsValueTag.Object)
+        {
+            var p = protoValue.AsObjectHandle();
+            while (true)
+            {
+                if (p.Equals(handle))
+                {
+                    return false;
+                }
+
+                var pObj = _heap.GetObject(p);
+                if (pObj is ProxyObject)
+                {
+                    break;
+                }
+
+                if (pObj.PrototypeHandle is { } next)
+                {
+                    p = next;
+                }
+                else
+                {
+                    break;
+                }
+            }
+        }
+
+        if (protoValue.Tag == JsValueTag.Object)
+        {
+            obj.SetPrototype(protoValue.AsObjectHandle());
+            _heap.WriteBarrier(handle, protoValue.AsObjectHandle());
+        }
+        else
+        {
+            obj.SetPrototype(null);
+        }
+
+        return true;
+    }
 }
