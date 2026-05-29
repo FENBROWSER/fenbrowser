@@ -23,6 +23,24 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void DeeplyNestedParensFailFastInsteadOfStackOverflow()
+    {
+        // Excessive nesting must surface a structured JsParserException rather
+        // than exhausting the native stack (an uncatchable crash / DoS hazard).
+        var source = new SourceText(new string('(', 5000) + "1" + new string(')', 5000));
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(source));
+    }
+
+    [Fact]
+    public void ModeratelyNestedParensStillParse()
+    {
+        // The guard must not reject realistic nesting depths.
+        var source = new SourceText(new string('(', 64) + "1" + new string(')', 64));
+        var program = JsParser.ParseScript(source);
+        Assert.Single(program.Body);
+    }
+
+    [Fact]
     public void ParseModuleBuildsModuleProgramNode()
     {
         var program = JsParser.ParseModule(new SourceText("a + b"));

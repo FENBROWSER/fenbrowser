@@ -44,6 +44,30 @@ public sealed class JsParser
     private bool _allowAwaitExpression;
     private bool _allowAnnexBForInInitializerTail;
 
+    // Recursive-descent depth guard. Deeply nested source (e.g. thousands of
+    // open parens or nested blocks) would otherwise exhaust the native call
+    // stack and crash the process with an uncatchable StackOverflowException —
+    // a denial-of-service hazard on untrusted input. Throw a structured
+    // JsParserException once nesting passes a conservative bound that trips
+    // well before the native stack is exhausted on the smallest stack we run
+    // on (xUnit worker threads overflow around ~200 nested parens). 128 levels
+    // is far deeper than any realistic hand-written or generated program nests.
+    private const int MaxRecursionDepth = 128;
+    private int _recursionDepth;
+
+    private void EnterRecursion()
+    {
+        if (++_recursionDepth > MaxRecursionDepth)
+        {
+            throw new JsParserException("Maximum parser nesting depth exceeded.");
+        }
+    }
+
+    private void ExitRecursion()
+    {
+        _recursionDepth--;
+    }
+
     private JsParser(IReadOnlyList<Token> tokens)
     {
         _tokens = tokens;
@@ -703,6 +727,19 @@ public sealed class JsParser
     }
 
     private StatementNode ParseStatement()
+    {
+        EnterRecursion();
+        try
+        {
+            return ParseStatementCore();
+        }
+        finally
+        {
+            ExitRecursion();
+        }
+    }
+
+    private StatementNode ParseStatementCore()
     {
         if (IsPunctuator("@"))
         {
@@ -2654,6 +2691,19 @@ public sealed class JsParser
     }
 
     private ExpressionNode ParseExpression(int minBindingPower)
+    {
+        EnterRecursion();
+        try
+        {
+            return ParseExpressionCore(minBindingPower);
+        }
+        finally
+        {
+            ExitRecursion();
+        }
+    }
+
+    private ExpressionNode ParseExpressionCore(int minBindingPower)
     {
         if (TryParseArrowFunction(out var arrow))
         {
