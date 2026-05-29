@@ -69,8 +69,30 @@ public sealed class SymbolPrimitiveTests
     }
 
     [Fact]
-    public void StringConcatProducesSymbolDescriptionForm()
+    public void StringConcatWithSymbolThrowsTypeError()
     {
-        Assert.Equal("Symbol(hi)", RunStr("'' + Symbol('hi');"));
+        // ECMA-262 13.4 (+ operator) applies ToString to a Symbol operand, and
+        // 13.3.3 ToString of a Symbol throws a TypeError. Implicit string
+        // coercion of a Symbol is therefore an error; the description form is
+        // only reachable through Symbol.prototype.toString / String(sym).
+        Assert.Throws<JsThrownException>(() => Run("'' + Symbol('hi');"));
+    }
+
+    [Fact]
+    public void SymbolPrototypeToStringProducesDescriptionForm()
+    {
+        Assert.Equal("Symbol(hi)", RunStr("Symbol('hi').toString();"));
+    }
+
+    [Fact]
+    public void SymbolWithoutDescriptionToStringHasEmptyParens()
+    {
+        Assert.Equal("Symbol()", RunStr("Symbol().toString();"));
+    }
+
+    [Fact]
+    public void SymbolDescriptionGetterReturnsDescription()
+    {
+        Assert.Equal("hi", RunStr("Symbol('hi').description;"));
     }
 }

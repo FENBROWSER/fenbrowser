@@ -89,6 +89,15 @@ public sealed partial class BytecodeInterpreter
                 var boolProto = _heap.GetObject(GetGlobalPrototype("Boolean"));
                 return TryGetPropertyValue(boolProto, receiver, key, out var bv) ? bv : JsValue.Undefined;
             }
+            case JsValueTag.Symbol:
+            {
+                // ECMA-262 7.1.18 ToObject(symbol) yields a Symbol wrapper whose
+                // [[Prototype]] is %Symbol.prototype%; reads (toString, valueOf,
+                // description) resolve there while the primitive symbol remains
+                // the receiver/thisValue handed to the called method.
+                var symbolProto = _heap.GetObject(GetGlobalPrototype("Symbol"));
+                return TryGetPropertyValue(symbolProto, receiver, key, out var symv) ? symv : JsValue.Undefined;
+            }
             case JsValueTag.Undefined:
                 throw new JsThrownException(CreateTypeError(
                     "Cannot read properties of undefined (reading '" + key + "')."));
@@ -139,6 +148,15 @@ public sealed partial class BytecodeInterpreter
             {
                 var boolProto = _heap.GetObject(GetGlobalPrototype("Boolean"));
                 return boolProto.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
+                    ? GetDescriptorValue(desc, receiver)
+                    : JsValue.Undefined;
+            }
+            case JsValueTag.Symbol:
+            {
+                // ToObject(symbol) → %Symbol.prototype% for symbol-keyed reads
+                // such as sym[Symbol.toPrimitive].
+                var symbolProto = _heap.GetObject(GetGlobalPrototype("Symbol"));
+                return symbolProto.TryGetSymbolProperty(symbolId, h => _heap.GetObject(h), out var desc)
                     ? GetDescriptorValue(desc, receiver)
                     : JsValue.Undefined;
             }
