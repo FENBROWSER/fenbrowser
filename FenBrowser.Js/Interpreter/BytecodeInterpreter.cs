@@ -8948,14 +8948,26 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue ArrayPrototypeToSpliced(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var obj = ToObject(thisValue);
-        var length = GetArrayLength(obj);
+        var lengthD = GetArrayLengthDouble(obj);
+        var length = (int)Math.Min(lengthD, int.MaxValue);
         var start = NormaliseSliceIndex(args, 0, 0, length);
         // skipCount: missing or undefined => 0 (ES2023 step 7 actualSkipCount default).
         var skipRaw = args.Count > 1 && args[1].Tag != JsValueTag.Undefined ? (int)ToNumber(args[1]) : 0;
         var skip = Math.Clamp(skipRaw, 0, length - start);
         var insertCount = args.Count > 2 ? args.Count - 2 : 0;
-        var newLen = length - skip + insertCount;
 
+        // ECMA-262 23.1.3.34 steps 8-10: newLen = len - actualSkipCount + insertCount;
+        // TypeError if it exceeds 2^53-1, then ArrayCreate(newLen) RangeError if it
+        // exceeds the 2^32-1 array-length limit — both before allocating storage.
+        var newLenD = lengthD - skip + insertCount;
+        if (newLenD > 9007199254740991.0)
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Array.prototype.toSpliced result length exceeds the maximum safe integer."));
+        }
+
+        ThrowIfArrayLengthExceedsLimit(newLenD);
+        var newLen = (int)newLenD;
         var result = new JsValue[newLen];
         var w = 0;
         for (var i = 0; i < start; i++)
@@ -8980,6 +8992,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue ArrayPrototypeWith(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var obj = ToObject(thisValue);
+        ThrowIfArrayLengthExceedsLimit(GetArrayLengthDouble(obj));
         var length = GetArrayLength(obj);
         var rawIndex = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
         var actual = rawIndex < 0 ? length + rawIndex : rawIndex;
@@ -9009,6 +9022,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue ArrayPrototypeToSorted(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var obj = ToObject(thisValue);
+        ThrowIfArrayLengthExceedsLimit(GetArrayLengthDouble(obj));
         var length = GetArrayLength(obj);
         var comparator = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? args[0] : (JsValue?)null;
         if (comparator.HasValue && comparator.Value.Tag != JsValueTag.Object)
@@ -9063,6 +9077,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = args;
         var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
+        ThrowIfArrayLengthExceedsLimit(GetArrayLengthDouble(obj));
         var length = GetArrayLength(obj);
         var elements = new JsValue[length];
         for (var i = 0; i < length; i++)
@@ -9316,24 +9331,29 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
-        var length = GetArrayLength(obj);
+        var lengthD = GetArrayLengthDouble(obj);
+        var length = (int)Math.Min(lengthD, int.MaxValue);
         var start = NormaliseSliceIndex(args, 0, 0, length);
 
-        int deleteCount;
+        // The removed array is ArraySpeciesCreate(O, actualDeleteCount) (23.1.3.31
+        // step 11). Compute that count with the true (double) length so a huge
+        // count surfaces as a RangeError before any allocation, matching ArrayCreate.
+        double actualDeleteCountD;
         if (args.Count < 1)
         {
-            deleteCount = 0;
+            actualDeleteCountD = 0;
         }
         else if (args.Count < 2)
         {
-            // Single-arg form: delete from start to end (spec step 5.b).
-            deleteCount = length - start;
+            actualDeleteCountD = lengthD - start;
         }
         else
         {
-            deleteCount = Math.Clamp((int)ToNumber(args[1]), 0, length - start);
+            actualDeleteCountD = Math.Clamp(Math.Truncate(ToNumber(args[1])), 0, lengthD - start);
         }
 
+        ThrowIfArrayLengthExceedsLimit(actualDeleteCountD);
+        var deleteCount = (int)Math.Min(actualDeleteCountD, int.MaxValue);
         var insertCount = Math.Max(0, args.Count - 2);
 
         // Collect the removed slice.
@@ -9844,10 +9864,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         var receiver = ToObjectValue(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
-        var length = GetArrayLength(obj);
+        var lengthD = GetArrayLengthDouble(obj);
+        var length = (int)Math.Min(lengthD, int.MaxValue);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
         RequireCallable(callback, "Array.prototype.map");
+        // ECMA-262 23.1.3.21 step 5: A = ArraySpeciesCreate(O, len) — RangeError for
+        // a length beyond the array-length limit, before the callback runs.
+        ThrowIfArrayLengthExceedsLimit(lengthD);
         var items = new List<JsValue>(length);
         for (var i = 0; i < length; i++)
         {
@@ -10309,6 +10333,25 @@ fallbackArraySpecies:
     }
 
     private int GetArrayLength(JsObject obj)
+        => checked((int)Math.Min(GetArrayLengthDouble(obj), int.MaxValue));
+
+    // The largest value a JS array's `length` may hold (ECMA-262 10.4.2.2 ArraySetLength
+    // / ArrayCreate). ArrayCreate throws RangeError when asked for more than this.
+    private const double MaxArrayLength = 4294967295.0; // 2^32 - 1
+
+    // ECMA-262 ArrayCreate(length): throw RangeError if the requested length exceeds
+    // 2^32-1. Methods that allocate a fresh result array sized by a source length call
+    // this before allocating any storage so a huge/invalid `length` surfaces as a spec
+    // RangeError instead of a host out-of-range allocation crash.
+    private void ThrowIfArrayLengthExceedsLimit(double length)
+    {
+        if (length > MaxArrayLength)
+        {
+            throw new JsThrownException(CreateRangeError("Invalid array length."));
+        }
+    }
+
+    private double GetArrayLengthDouble(JsObject obj)
     {
         // ECMA-262 7.1.20 LengthOfArrayLike: Return ToLength(? Get(O, "length")).
         // [[Get]] walks the prototype chain AND invokes accessor getters, so a
@@ -10330,7 +10373,7 @@ fallbackArraySpecies:
         }
         else if (obj.PrototypeHandle is { } proto)
         {
-            return GetArrayLength(_heap.GetObject(proto));
+            return GetArrayLengthDouble(_heap.GetObject(proto));
         }
         else
         {
@@ -10343,7 +10386,9 @@ fallbackArraySpecies:
             return 0;
         }
 
-        return checked((int)Math.Min(Math.Truncate(number), int.MaxValue));
+        // ToLength clamps to [0, 2^53-1]; callers needing the int form go through
+        // GetArrayLength which further clamps to int.MaxValue.
+        return Math.Min(Math.Truncate(number), 9007199254740991.0);
     }
 
     private ObjectHandle EnsureBooleanPrototype()
