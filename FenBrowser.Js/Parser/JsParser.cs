@@ -12,6 +12,7 @@ public sealed class JsParser
     private readonly record struct ParameterListInfo(
         IReadOnlyList<string> Parameters,
         IReadOnlyList<BindingPatternNode?> ParameterBindings,
+        IReadOnlyList<ExpressionNode?> ParameterDefaults,
         bool IsSimple,
         bool HasDuplicateNames,
         bool RestHasInitializer,
@@ -1617,7 +1618,7 @@ public sealed class JsParser
             IsAsync: isAsync,
             IsGenerator: isGenerator,
             RestParameterIndex: parameterInfo.RestParameterIndex,
-            ParameterBindings: parameterInfo.ParameterBindings);
+            ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
     }
 
     private ThrowStatementNode ParseThrowStatement()
@@ -2168,7 +2169,7 @@ public sealed class JsParser
                 IsAsync: isAsync,
                 IsGenerator: isGenerator,
                 RestParameterIndex: parameterInfo.RestParameterIndex,
-                ParameterBindings: parameterInfo.ParameterBindings);
+                ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
             members.Add(new ClassMemberNode(
                 memberName,
                 kind,
@@ -2579,6 +2580,7 @@ public sealed class JsParser
     {
         var parameters = new List<string>();
         var parameterBindings = new List<BindingPatternNode?>();
+        var parameterDefaults = new List<ExpressionNode?>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var isSimple = true;
         var hasDuplicateNames = false;
@@ -2609,6 +2611,7 @@ public sealed class JsParser
             var bindingName = binding.Identifier;
             parameters.Add(bindingName);
             parameterBindings.Add(binding.Pattern);
+            parameterDefaults.Add(null);
             if (bindingName.StartsWith("__pattern", StringComparison.Ordinal))
             {
                 isSimple = false;
@@ -2628,6 +2631,11 @@ public sealed class JsParser
                 isSimple = false;
                 Advance();
                 var initializer = ParseExpression(2);
+                if (!rest)
+                {
+                    parameterDefaults[parameterDefaults.Count - 1] = initializer;
+                }
+
                 if (ContainsSuperCallInExpression(initializer))
                 {
                     hasSuperCallInInitializers = true;
@@ -2662,6 +2670,7 @@ public sealed class JsParser
         return new ParameterListInfo(
             parameters,
             parameterBindings,
+            parameterDefaults,
             IsSimple: isSimple,
             HasDuplicateNames: hasDuplicateNames,
             RestHasInitializer: restHasInitializer,
@@ -3277,7 +3286,7 @@ public sealed class JsParser
             IsAsync: isAsync,
             IsGenerator: isGenerator,
             RestParameterIndex: parameterInfo.RestParameterIndex,
-            ParameterBindings: parameterInfo.ParameterBindings);
+            ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
     }
 
     private ExpressionNode ParseNewExpression()
@@ -3360,7 +3369,7 @@ public sealed class JsParser
                     strictMode: strictObjectMethod,
                     rejectSuperCallInBody: true);
                 var accessorFnName = accessorKey ?? accessorKind.Text;
-                var accessorFn = new FunctionExpressionNode(accessorFnName, parameters, body, MergeSpan(accessorKind.Span, body.Span), RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings);
+                var accessorFn = new FunctionExpressionNode(accessorFnName, parameters, body, MergeSpan(accessorKind.Span, body.Span), RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
                 var accessorPropKind = accessorKind.Text == "get" ? ObjectPropertyKind.Getter : ObjectPropertyKind.Setter;
                 properties.Add(new ObjectPropertyNode(accessorKey, accessorComputedKey, accessorIsComputed, accessorFn, accessorFn.Span, accessorPropKind));
                 if (IsPunctuator(","))
@@ -3426,7 +3435,7 @@ public sealed class JsParser
                     MergeSpan(asyncStart.Span, body.Span),
                     IsAsync: true,
                     RestParameterIndex: parameterInfo.RestParameterIndex,
-                    ParameterBindings: parameterInfo.ParameterBindings);
+                    ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
                 properties.Add(new ObjectPropertyNode(methodKey, methodComputedKey, methodIsComputed, asyncMethodFn, asyncMethodFn.Span));
                 if (IsPunctuator(","))
                 {
@@ -3493,7 +3502,7 @@ public sealed class JsParser
                     IsAsync: true,
                     IsGenerator: true,
                     RestParameterIndex: parameterInfo.RestParameterIndex,
-                    ParameterBindings: parameterInfo.ParameterBindings);
+                    ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
                 properties.Add(new ObjectPropertyNode(methodKey, methodComputedKey, methodIsComputed, asyncMethodFn, asyncMethodFn.Span));
                 if (IsPunctuator(","))
                 {
@@ -3556,7 +3565,7 @@ public sealed class JsParser
                     MergeSpan(methodStart.Span, body.Span),
                     IsGenerator: true,
                     RestParameterIndex: parameterInfo.RestParameterIndex,
-                    ParameterBindings: parameterInfo.ParameterBindings);
+                    ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
                 properties.Add(new ObjectPropertyNode(methodKey, methodComputedKey, methodIsComputed, methodFn, methodFn.Span));
                 if (IsPunctuator(","))
                 {
@@ -3625,7 +3634,7 @@ public sealed class JsParser
                     forbidYieldIdentifier: false,
                     strictMode: strictObjectMethod,
                     rejectSuperCallInBody: true);
-                value = new FunctionExpressionNode(key, parameters, body, MergeSpan(keyToken.Span, body.Span), RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings);
+                value = new FunctionExpressionNode(key, parameters, body, MergeSpan(keyToken.Span, body.Span), RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
             }
             else if (IsPunctuator(":"))
             {
@@ -3726,6 +3735,7 @@ public sealed class JsParser
                 Advance();
                 var asyncParameters = new List<string>();
                 var asyncParameterBindings = new List<BindingPatternNode?>();
+                var asyncParameterDefaults = new List<ExpressionNode?>();
                 var asyncRestParameterIndex = -1;
                 var asyncValid = true;
                 if (!IsPunctuator(")"))
@@ -3754,10 +3764,15 @@ public sealed class JsParser
                             var binding = ParseParameterBinding();
                             asyncParameters.Add(binding.Identifier);
                             asyncParameterBindings.Add(binding.Pattern);
+                            asyncParameterDefaults.Add(null);
                             if (IsPunctuator("=") && !PeekIsPunctuator(1, ">"))
                             {
                                 Advance();
-                                _ = ParseExpression(2);
+                                var asyncDefault = ParseExpression(2);
+                                if (asyncRestParameterIndex != asyncParameters.Count - 1)
+                                {
+                                    asyncParameterDefaults[asyncParameterDefaults.Count - 1] = asyncDefault;
+                                }
                             }
                         }
                         catch (JsParserException)
@@ -3791,7 +3806,7 @@ public sealed class JsParser
 
                 Advance(); // =
                 Advance(); // >
-                expression = ParseArrowFunctionBody(asyncParameters, asyncParameterBindings, _tokens[saved].Span, isAsync: true, restParameterIndex: asyncRestParameterIndex);
+                expression = ParseArrowFunctionBody(asyncParameters, asyncParameterBindings, _tokens[saved].Span, isAsync: true, restParameterIndex: asyncRestParameterIndex, parameterDefaults: asyncParameterDefaults);
                 return true;
             }
 
@@ -3817,6 +3832,7 @@ public sealed class JsParser
             Advance();
             var parameters = new List<string>();
             var parameterBindings = new List<BindingPatternNode?>();
+            var parameterDefaults = new List<ExpressionNode?>();
             var restParameterIndex = -1;
             var valid = true;
             if (!IsPunctuator(")"))
@@ -3845,10 +3861,15 @@ public sealed class JsParser
                         var binding = ParseParameterBinding();
                         parameters.Add(binding.Identifier);
                         parameterBindings.Add(binding.Pattern);
+                        parameterDefaults.Add(null);
                         if (IsPunctuator("=") && !PeekIsPunctuator(1, ">"))
                         {
                             Advance();
-                            _ = ParseExpression(2);
+                            var arrowDefault = ParseExpression(2);
+                            if (restParameterIndex != parameters.Count - 1)
+                            {
+                                parameterDefaults[parameterDefaults.Count - 1] = arrowDefault;
+                            }
                         }
                     }
                     catch (JsParserException)
@@ -3882,7 +3903,7 @@ public sealed class JsParser
 
             Advance(); // =
             Advance(); // >
-            expression = ParseArrowFunctionBody(parameters, parameterBindings, _tokens[saved].Span, isAsync: false, restParameterIndex: restParameterIndex);
+            expression = ParseArrowFunctionBody(parameters, parameterBindings, _tokens[saved].Span, isAsync: false, restParameterIndex: restParameterIndex, parameterDefaults: parameterDefaults);
             return true;
         }
 
@@ -3894,17 +3915,18 @@ public sealed class JsParser
         IReadOnlyList<BindingPatternNode?> parameterBindings,
         SourceSpan start,
         bool isAsync,
-        int restParameterIndex)
+        int restParameterIndex,
+        IReadOnlyList<ExpressionNode?>? parameterDefaults = null)
     {
         if (IsPunctuator("{"))
         {
             var block = ParseBlockStatement();
             ValidateDirectivePrologueStrictStringEscapes(block.Statements);
-            return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span), IsAsync: isAsync, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings);
+            return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span), IsAsync: isAsync, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings, ParameterDefaults: parameterDefaults);
         }
 
         var bodyExpression = ParseExpression(2);
-        return new ArrowFunctionExpressionNode(parameters, null, bodyExpression, MergeSpan(start, bodyExpression.Span), IsAsync: isAsync, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings);
+        return new ArrowFunctionExpressionNode(parameters, null, bodyExpression, MergeSpan(start, bodyExpression.Span), IsAsync: isAsync, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings, ParameterDefaults: parameterDefaults);
     }
 
     private IReadOnlyList<ExpressionNode> ParseCallArguments()

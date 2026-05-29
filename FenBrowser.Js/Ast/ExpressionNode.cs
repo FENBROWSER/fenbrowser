@@ -56,7 +56,8 @@ public sealed record ArrowFunctionExpressionNode(
     SourceSpan Span,
     bool IsAsync = false,
     int RestParameterIndex = -1,
-    IReadOnlyList<BindingPatternNode?>? ParameterBindings = null) : ExpressionNode(Span);
+    IReadOnlyList<BindingPatternNode?>? ParameterBindings = null,
+    IReadOnlyList<ExpressionNode?>? ParameterDefaults = null) : ExpressionNode(Span);
 
 public enum ObjectPropertyKind { Data, Getter, Setter }
 
@@ -91,7 +92,8 @@ public sealed record FunctionExpressionNode(
     bool IsAsync = false,
     bool IsGenerator = false,
     int RestParameterIndex = -1,
-    IReadOnlyList<BindingPatternNode?>? ParameterBindings = null) : ExpressionNode(Span);
+    IReadOnlyList<BindingPatternNode?>? ParameterBindings = null,
+    IReadOnlyList<ExpressionNode?>? ParameterDefaults = null) : ExpressionNode(Span);
 
 public sealed record NewExpressionNode(ExpressionNode Callee, IReadOnlyList<ExpressionNode> Arguments, SourceSpan Span) : ExpressionNode(Span);
 

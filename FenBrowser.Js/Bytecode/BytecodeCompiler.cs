@@ -415,7 +415,8 @@ public sealed class BytecodeCompiler
             functionDecl.Body.Span,
             functionDecl.Parameters,
             functionDecl.ParameterBindings,
-            out var prologueCount);
+            out var prologueCount,
+            functionDecl.ParameterDefaults);
         var childCompiler = new BytecodeCompiler();
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
@@ -442,28 +443,51 @@ public sealed class BytecodeCompiler
         SourceSpan bodySpan,
         IReadOnlyList<string> parameterNames,
         IReadOnlyList<BindingPatternNode?>? parameterBindings,
-        out int prologueStatementCount)
+        out int prologueStatementCount,
+        IReadOnlyList<ExpressionNode?>? parameterDefaults = null)
     {
         prologueStatementCount = 0;
-        if (parameterBindings is null || parameterBindings.Count == 0)
+        var hasBindings = parameterBindings is not null && parameterBindings.Count > 0;
+        var hasDefaults = parameterDefaults is not null && parameterDefaults.Any(d => d is not null);
+        if (!hasBindings && !hasDefaults)
         {
             return new ProgramNode(ProgramKind.Script, bodyStatements, bodySpan);
         }
 
+        // Synthesise a prologue that runs in parameter order. For each parameter:
+        //  1. apply its default value (`if (p === undefined) p = <default>;`) per
+        //     ECMA-262 10.2.1.3 / FunctionDeclarationInstantiation — the default is
+        //     evaluated only when the argument is undefined, and later defaults may
+        //     reference earlier (already-defaulted) parameters.
+        //  2. destructure a binding-pattern parameter (`var {x} = p;`) so the
+        //     pattern sees the defaulted value.
         var prelude = new List<StatementNode>();
-        var count = Math.Min(parameterNames.Count, parameterBindings.Count);
+        var count = parameterNames.Count;
         for (var i = 0; i < count; i++)
         {
-            var bindingPattern = parameterBindings[i];
-            if (bindingPattern is null)
+            var defaultExpr = parameterDefaults is not null && i < parameterDefaults.Count
+                ? parameterDefaults[i]
+                : null;
+            if (defaultExpr is not null)
             {
-                continue;
+                var parameterName = parameterNames[i];
+                var span = defaultExpr.Span;
+                var undefinedRef = new IdentifierExpressionNode("undefined", span);
+                var test = new BinaryExpressionNode("===", new IdentifierExpressionNode(parameterName, span), undefinedRef, span);
+                var assign = new AssignmentExpressionNode(new IdentifierExpressionNode(parameterName, span), defaultExpr, span);
+                prelude.Add(new IfStatementNode(test, new ExpressionStatementNode(assign, span), null, span));
             }
 
-            var parameterName = parameterNames[i];
-            var parameterRef = new IdentifierExpressionNode(parameterName, bindingPattern.Span);
-            var declarator = new VariableDeclaratorNode(parameterName, parameterRef, bindingPattern.Span, bindingPattern);
-            prelude.Add(new VariableDeclarationStatementNode("var", new[] { declarator }, bindingPattern.Span));
+            var bindingPattern = parameterBindings is not null && i < parameterBindings.Count
+                ? parameterBindings[i]
+                : null;
+            if (bindingPattern is not null)
+            {
+                var parameterName = parameterNames[i];
+                var parameterRef = new IdentifierExpressionNode(parameterName, bindingPattern.Span);
+                var declarator = new VariableDeclaratorNode(parameterName, parameterRef, bindingPattern.Span, bindingPattern);
+                prelude.Add(new VariableDeclarationStatementNode("var", new[] { declarator }, bindingPattern.Span));
+            }
         }
 
         if (prelude.Count == 0)
@@ -847,7 +871,8 @@ public sealed class BytecodeCompiler
             fnExpr.Body.Span,
             fnExpr.Parameters,
             fnExpr.ParameterBindings,
-            out var prologueCount);
+            out var prologueCount,
+            fnExpr.ParameterDefaults);
         var childCompiler = new BytecodeCompiler { _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _brandTokens = this._brandTokens };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
@@ -2318,7 +2343,8 @@ public sealed class BytecodeCompiler
                     fnExpr.Body.Span,
                     fnExpr.Parameters,
                     fnExpr.ParameterBindings,
-                    out var fnExprPrologueCount);
+                    out var fnExprPrologueCount,
+                    fnExpr.ParameterDefaults);
                 // ECMA-262 NamedEvaluation: an anonymous function expression adopts
                 // the binding/assignment name; a named expression keeps its own name.
                 var fnExprName = fnExpr.Name ?? ConsumeNameHint();
@@ -2366,7 +2392,8 @@ public sealed class BytecodeCompiler
                     bodySpan,
                     arrow.Parameters,
                     arrow.ParameterBindings,
-                    out var arrowPrologueCount);
+                    out var arrowPrologueCount,
+                    arrow.ParameterDefaults);
                 // ECMA-262 NamedEvaluation: arrows are always anonymous, so they take
                 // the binding/assignment name when one is in scope, else the empty name.
                 var arrowName = ConsumeNameHint() ?? string.Empty;

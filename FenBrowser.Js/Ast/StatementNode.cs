@@ -42,7 +42,8 @@ public sealed record FunctionDeclarationNode(
     bool IsAsync = false,
     bool IsGenerator = false,
     int RestParameterIndex = -1,
-    IReadOnlyList<BindingPatternNode?>? ParameterBindings = null) : StatementNode(Span);
+    IReadOnlyList<BindingPatternNode?>? ParameterBindings = null,
+    IReadOnlyList<ExpressionNode?>? ParameterDefaults = null) : StatementNode(Span);
 
 public sealed record ThrowStatementNode(ExpressionNode Argument, SourceSpan Span) : StatementNode(Span);
 
