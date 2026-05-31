@@ -107,7 +107,12 @@ public sealed class JsParser
         var end = Current().Span;
         var span = new SourceSpan(start.Start, Math.Max(0, end.Start - start.Start), start.Line, start.Column);
         ValidateDirectivePrologueStrictStringEscapes(statements);
-        return new ProgramNode(kind, statements, span);
+        var program = new ProgramNode(kind, statements, span);
+        // ECMA-262 lexical-declaration early errors (duplicate let/const/class, or a
+        // lexical name clashing with a var/function in the same scope). Run at parse
+        // time so these surface as SyntaxError.
+        LexicalDeclarationChecker.Check(program);
+        return program;
     }
 
     private void UpdateDirectivePrologueState(StatementNode statement)

@@ -1548,4 +1548,32 @@ public sealed class ParserTests
         var fn = Assert.IsType<FunctionDeclarationNode>(program.Body[0]);
         Assert.Equal(new[] { "a", "rest" }, fn.Parameters);
     }
+
+    // ECMA-262 lexical-declaration early errors (parse phase).
+    [Theory]
+    [InlineData("let x; let x;")]
+    [InlineData("const x = 1; const x = 2;")]
+    [InlineData("let x; const x = 1;")]
+    [InlineData("{ let x; var x; }")]
+    [InlineData("{ let f; function f() {} }")]
+    [InlineData("class C {} let C;")]
+    [InlineData("let [a, b] = []; let a;")]
+    [InlineData("switch (0) { case 1: let x; default: let x; }")]
+    public void RejectsLexicalRedeclaration(string source)
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText(source)));
+    }
+
+    [Theory]
+    [InlineData("var x; var x = 2;")]                       // var redeclaration is legal
+    [InlineData("let x = 1; { let x = 2; }")]               // distinct block scopes
+    [InlineData("function f() {} function f() {}")]         // Annex B sloppy duplicate fns
+    [InlineData("var f; function f() {}")]                  // var/function legal
+    [InlineData("let x; function g() { let x; }")]          // distinct function scope
+    [InlineData("for (let i = 0; i < 1; i++) { let i; }")]  // head vs body block
+    public void AllowsValidDeclarations(string source)
+    {
+        // Must not throw — parses successfully.
+        _ = JsParser.ParseScript(new SourceText(source));
+    }
 }
