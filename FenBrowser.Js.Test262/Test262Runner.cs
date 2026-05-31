@@ -738,6 +738,8 @@ public sealed class Test262Runner
             "regExpUtils.js",
             "detachArrayBuffer.js",
             "resizableArrayBufferUtils.js",
+            "testAtomics.js",
+            "atomicsHelper.js",
         };
 
         Console.WriteLine($"Running runtime subset: total={subset.Count}, timeoutMs={timeoutMs}, root={rootPath}");
@@ -1438,7 +1440,8 @@ public sealed class Test262Runner
 
     private static bool RequiresRuntimeHarnessSupport(string sourceText)
     {
-        return sourceText.Contains("assert.", StringComparison.Ordinal) ||
+        return sourceText.Contains("Test262Error", StringComparison.Ordinal) ||
+               sourceText.Contains("assert.", StringComparison.Ordinal) ||
                sourceText.Contains("assert(", StringComparison.Ordinal) ||
                sourceText.Contains("$DONE", StringComparison.Ordinal) ||
                sourceText.Contains("$262", StringComparison.Ordinal);
@@ -1450,16 +1453,16 @@ public sealed class Test262Runner
 
                function Test262Error(message) { this.message = message; }
                var assert = function (condition, message) {
-                 if (!condition) { throw (message || "assert failed"); }
+                 if (!condition) { throw new Test262Error(message || "assert failed"); }
                };
                assert.sameValue = function (actual, expected, message) {
-                 if (actual !== expected && !(actual !== actual && expected !== expected)) { throw (message || "assert.sameValue failed"); }
+                 if (actual !== expected && !(actual !== actual && expected !== expected)) { throw new Test262Error(message || "assert.sameValue failed"); }
                };
                function isPrimitive(value) {
                  return value === null || (typeof value !== "object" && typeof value !== "function");
                }
                assert.notSameValue = function (actual, expected, message) {
-                 if (actual === expected) { throw (message || "assert.notSameValue failed"); }
+                 if (actual === expected) { throw new Test262Error(message || "assert.notSameValue failed"); }
                };
                assert.throws = function (expectedError, fn, message) {
                  var threw = false;
@@ -1475,10 +1478,19 @@ public sealed class Test262Runner
                  return error;
                };
                assert.compareArray = function (actual, expected, message) {
-                 if (actual.length !== expected.length) { throw (message || "assert.compareArray length"); }
-                 for (var i = 0; i < actual.length; i++) {
-                   if (actual[i] !== expected[i]) { throw (message || "assert.compareArray element"); }
+                 if (!compareArray(actual, expected)) {
+                   throw new Test262Error(message || "assert.compareArray failed");
                  }
+               };
+               function compareArray(a, b) {
+                 if (a.length !== b.length) { return false; }
+                 for (var i = 0; i < a.length; i++) {
+                   if (!Object.is(a[i], b[i])) { return false; }
+                 }
+                 return true;
+               }
+               compareArray.format = function (arrayLike) {
+                 return "[" + Array.prototype.map.call(arrayLike, String).join(", ") + "]";
                };
                function verifyProperty(obj, name, desc) {
                  var originalDesc = Object.getOwnPropertyDescriptor(obj, name);
@@ -1581,6 +1593,64 @@ public sealed class Test262Runner
                  try { return new ArrayBuffer(byteLength, { maxByteLength: maxByteLength }); }
                  catch (_e) { return new ArrayBuffer(byteLength); }
                }
+               function MayNeedBigInt(ta, n) {
+                 if ((typeof BigInt64Array === "function" && ta instanceof BigInt64Array) ||
+                     (typeof BigUint64Array === "function" && ta instanceof BigUint64Array)) {
+                   return BigInt(n);
+                 }
+                 return n;
+               }
+               function Convert(item) {
+                 return typeof item === "bigint" ? Number(item) : item;
+               }
+               function ToNumbers(array) {
+                 var result = [];
+                 for (var i = 0; i < array.length; i++) {
+                   result.push(Convert(array[i]));
+                 }
+                 return result;
+               }
+               function CreateRabForTest(ctor) {
+                 var bytesPer = ctor.BYTES_PER_ELEMENT || 1;
+                 var rab = CreateResizableArrayBuffer(4 * bytesPer, 8 * bytesPer);
+                 var taWrite = new ctor(rab);
+                 for (var i = 0; i < 4; ++i) {
+                   taWrite[i] = MayNeedBigInt(taWrite, 2 * i);
+                 }
+                 return rab;
+               }
+               function CollectValuesAndResize(n, values, rab, resizeAfter, resizeTo) {
+                 values.push(typeof n === "bigint" ? Number(n) : n);
+                 if (values.length === resizeAfter) {
+                   rab.resize(resizeTo);
+                 }
+                 return true;
+               }
+               function TestIterationAndResize(iterable, expected, rab, resizeAfter, newByteLength) {
+                 var values = [];
+                 var resized = false;
+                 var arrayValues = false;
+                 for (var iteratorValue of iterable) {
+                   if (Array.isArray(iteratorValue)) {
+                     arrayValues = true;
+                     values.push([iteratorValue[0], Number(iteratorValue[1])]);
+                   } else {
+                     values.push(Number(iteratorValue));
+                   }
+                   if (!resized && values.length === resizeAfter) {
+                     rab.resize(newByteLength);
+                     resized = true;
+                   }
+                 }
+                 if (!arrayValues) {
+                   assert.compareArray([].concat(values), expected, "TestIterationAndResize: list of iterated values");
+                 } else {
+                   for (var i = 0; i < expected.length; i++) {
+                     assert.compareArray(values[i], expected[i], "TestIterationAndResize: list of iterated lists of values");
+                   }
+                 }
+                 assert(resized, "TestIterationAndResize: resize condition should have been hit");
+               }
                function isConstructor(fn) { try { new fn(); return true; } catch (_e) { return false; } }
                var fnGlobalObject = globalThis;
                var helpers = {
@@ -1615,9 +1685,13 @@ public sealed class Test262Runner
     // or has been observed to cause regressions when re-loaded.
     private static readonly HashSet<string> _loadableHarnessIncludes = new(StringComparer.Ordinal)
     {
+        "byteConversionValues.js",
+        "compareArray.js",
+        "detachArrayBuffer.js",
         "proxyTrapsHelper.js",
         "testTypedArray.js",
         "propertyHelper.js",
+        "regExpUtils.js",
     };
 
     private static string BuildRuntimeHarnessIncludePrelude(string rootPath, IReadOnlyList<string> includes)

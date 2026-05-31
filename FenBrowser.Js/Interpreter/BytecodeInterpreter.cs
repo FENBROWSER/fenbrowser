@@ -7,6 +7,7 @@ using FenBrowser.Js.Parser;
 using FenBrowser.Js.Promises;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
+using System.Numerics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -98,6 +99,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     ObjectHandle IBuiltinContext.MaterializeStructuredCloneFunction() => EnsureStructuredCloneFunction();
     ObjectHandle IBuiltinContext.MaterializeIntlObject() => EnsureIntlObject();
     ObjectHandle IBuiltinContext.MaterializeArrayBufferConstructor() => EnsureArrayBufferConstructor();
+    ObjectHandle IBuiltinContext.MaterializeSharedArrayBufferConstructor() => EnsureSharedArrayBufferConstructor();
     ObjectHandle IBuiltinContext.MaterializeDataViewConstructor() => EnsureDataViewConstructor();
     BuiltinBinding[] IBuiltinContext.MaterializeTypedArrayConstructors() => EnsureTypedArrayConstructors();
     private ObjectHandle? _objectConstructorHandle;
@@ -1278,12 +1280,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
                     if (keyValue.Tag == JsValueTag.Symbol)
                     {
-                        // Symbol-keyed [[Set]] - install on the parallel symbol table.
-                        obj.DefineOwnSymbolProperty(keyValue.AsSymbolId(),
-                            new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
-                        if (value.Tag == JsValueTag.Object)
+                        var ok = SetSymbolPropertyValue(ownerHandle, obj, keyValue.AsSymbolId(), value, frame.Registers[ins.A]);
+                        if (!ok && function.IsStrictMode)
                         {
-                            _heap.WriteBarrier(ownerHandle, value.AsObjectHandle());
+                            ThrowTypeError(frame, "Cannot assign to symbol-keyed property.");
                         }
 
                         break;
@@ -3772,8 +3772,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             .Register(new GeneratorBuiltin())
             .Register(new GeneratorFunctionBuiltin())
             .Register(new ArrayBufferBuiltin())
+            .Register(new SharedArrayBufferBuiltin())
             .Register(new DataViewBuiltin())
             .Register(new TypedArrayBuiltin())
+            .Register(new AtomicsBuiltin())
             .Register(new IntlBuiltin());
         foreach (var b in registry.Materialize(this))
             InstallBinding(global, globalHandle, b);
@@ -4696,12 +4698,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         var constructor = new NativeFunctionObject(
             "RegExp",
-            (_, args) => CreateRegExpObject(args),
-            args => CreateRegExpObject(args),
+            (_, args) => RegExpFunctionCall(args),
+            args => RegExpFunctionConstruct(args),
             length: 2);
+        var functionPrototypeHandle = GetGlobalPrototype("Function");
+        constructor.SetPrototype(functionPrototypeHandle);
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
+        _heap.WriteBarrier(constructorHandle, functionPrototypeHandle);
 
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
@@ -4814,17 +4819,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var normalizedFlags = NormalizeRegExpFlags(flags);
         var hasS = normalizedFlags.Contains('s', StringComparison.Ordinal);
         var hasU = normalizedFlags.Contains('u', StringComparison.Ordinal);
-        var options = (hasS || hasU)
+        var hasV = normalizedFlags.Contains('v', StringComparison.Ordinal);
+        var options = (hasS || hasU || hasV)
             ? RegexOptions.CultureInvariant
             : RegexOptions.ECMAScript | RegexOptions.CultureInvariant;
         if (normalizedFlags.Contains('i', StringComparison.Ordinal)) options |= RegexOptions.IgnoreCase;
         if (normalizedFlags.Contains('m', StringComparison.Ordinal)) options |= RegexOptions.Multiline;
         if (hasS) options |= RegexOptions.Singleline;
+        var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
 
         Regex regex;
         try
         {
-            regex = new Regex(pattern, options, TimeSpan.FromMilliseconds(250));
+            regex = new Regex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
         }
         catch (ArgumentException ex)
         {
@@ -4847,6 +4854,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             new JsPropertyDescriptor(JsValue.FromBoolean(hasS), Writable: false, Enumerable: false, Configurable: true));
         _ = obj.DefineOwnProperty("unicode",
             new JsPropertyDescriptor(JsValue.FromBoolean(hasU), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty("unicodeSets",
+            new JsPropertyDescriptor(JsValue.FromBoolean(hasV), Writable: false, Enumerable: false, Configurable: true));
         _ = obj.DefineOwnProperty("sticky",
             new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('y', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
         _ = obj.DefineOwnProperty("hasIndices",
@@ -4858,14 +4867,94 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
+    private JsValue RegExpFunctionCall(IReadOnlyList<JsValue> args)
+    {
+        var patternArg = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var flagsArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        if (flagsArg.Tag == JsValueTag.Undefined && ShouldReturnPatternOnRegExpCall(patternArg))
+        {
+            return patternArg;
+        }
+
+        return CreateRegExpObject(args);
+    }
+
+    private JsValue RegExpFunctionConstruct(IReadOnlyList<JsValue> args)
+    {
+        return CreateRegExpObject(args);
+    }
+
+    private bool ShouldReturnPatternOnRegExpCall(JsValue patternArg)
+    {
+        if (patternArg.Tag != JsValueTag.Object || !IsRegExpLike(patternArg))
+        {
+            return false;
+        }
+
+        var obj = _heap.GetObject(patternArg.AsObjectHandle());
+        if (!TryGetPropertyValue(obj, patternArg, "constructor", out var patternConstructor) ||
+            patternConstructor.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        return _regexpConstructorHandle is { } ctor &&
+               patternConstructor.AsObjectHandle() == ctor;
+    }
+
+    private void ResolveRegExpPatternAndFlags(JsValue patternArg, JsValue flagsArg, out string pattern, out string flags)
+    {
+        if (patternArg.Tag == JsValueTag.Object && IsRegExpLike(patternArg))
+        {
+            var obj = _heap.GetObject(patternArg.AsObjectHandle());
+            if (!TryGetPropertyValue(obj, patternArg, "source", out var sourceValue))
+            {
+                sourceValue = JsValue.FromString(string.Empty);
+            }
+
+            pattern = sourceValue.Tag == JsValueTag.Undefined ? string.Empty : ToStringValue(sourceValue);
+            if (flagsArg.Tag == JsValueTag.Undefined)
+            {
+                if (!TryGetPropertyValue(obj, patternArg, "flags", out var inheritedFlags))
+                {
+                    inheritedFlags = JsValue.FromString(string.Empty);
+                }
+
+                flags = inheritedFlags.Tag == JsValueTag.Undefined ? string.Empty : ToStringValue(inheritedFlags);
+                return;
+            }
+        }
+        else
+        {
+            pattern = patternArg.Tag == JsValueTag.Undefined ? string.Empty : ToStringValue(patternArg);
+        }
+
+        flags = flagsArg.Tag == JsValueTag.Undefined ? string.Empty : ToStringValue(flagsArg);
+    }
+
+    private bool IsRegExpLike(JsValue value)
+    {
+        if (value.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var obj = _heap.GetObject(value.AsObjectHandle());
+        var matchSymbolId = GetWellKnownSymbolId("match");
+        var matcher = matchSymbolId == 0 ? JsValue.Undefined : GetReceiverSymbolProperty(value, matchSymbolId);
+        if (matcher.Tag != JsValueTag.Undefined)
+        {
+            return IsTruthy(matcher);
+        }
+
+        return obj is RegExpObject;
+    }
+
     private JsValue CreateRegExpObject(IReadOnlyList<JsValue> args)
     {
-        var pattern = args.Count > 0 && args[0].Tag != JsValueTag.Undefined
-            ? ToStringValue(args[0])
-            : string.Empty;
-        var flags = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
-            ? ToStringValue(args[1])
-            : string.Empty;
+        var patternArg = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var flagsArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        ResolveRegExpPatternAndFlags(patternArg, flagsArg, out var pattern, out var flags);
         var normalizedFlags = NormalizeRegExpFlags(flags);
         // ECMA-262 22.2.4 flags → RegexOptions mapping.
         // ECMAScript mode is the default; dotAll (s) conflicts with it and
@@ -4873,7 +4962,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // remove the ECMAScript option to get fuller Unicode behaviour.
         bool hasS = normalizedFlags.Contains('s', StringComparison.Ordinal);
         bool hasU = normalizedFlags.Contains('u', StringComparison.Ordinal);
-        var options = (hasS || hasU)
+        bool hasV = normalizedFlags.Contains('v', StringComparison.Ordinal);
+        var options = (hasS || hasU || hasV)
             ? RegexOptions.CultureInvariant
             : RegexOptions.ECMAScript | RegexOptions.CultureInvariant;
         if (normalizedFlags.Contains('i', StringComparison.Ordinal))
@@ -4887,11 +4977,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         if (hasS) options |= RegexOptions.Singleline;
+        var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
 
         Regex regex;
         try
         {
-            regex = new Regex(pattern, options, TimeSpan.FromMilliseconds(250));
+            regex = new Regex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
         }
         catch (ArgumentException ex)
         {
@@ -4918,6 +5009,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = obj.DefineOwnProperty(
             "unicode",
             new JsPropertyDescriptor(JsValue.FromBoolean(hasU), Writable: false, Enumerable: false, Configurable: true));
+        _ = obj.DefineOwnProperty(
+            "unicodeSets",
+            new JsPropertyDescriptor(JsValue.FromBoolean(hasV), Writable: false, Enumerable: false, Configurable: true));
         _ = obj.DefineOwnProperty(
             "sticky",
             new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('y', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
@@ -5043,16 +5137,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var normalizedFlags = NormalizeRegExpFlags(newFlags);
         var hasS = normalizedFlags.Contains('s', StringComparison.Ordinal);
         var hasU = normalizedFlags.Contains('u', StringComparison.Ordinal);
-        var options = (hasS || hasU)
+        var hasV = normalizedFlags.Contains('v', StringComparison.Ordinal);
+        var options = (hasS || hasU || hasV)
             ? RegexOptions.CultureInvariant
             : RegexOptions.ECMAScript | RegexOptions.CultureInvariant;
         if (normalizedFlags.Contains('i', StringComparison.Ordinal)) options |= RegexOptions.IgnoreCase;
         if (normalizedFlags.Contains('m', StringComparison.Ordinal)) options |= RegexOptions.Multiline;
         if (hasS) options |= RegexOptions.Singleline;
+        var dotNetPattern = RewriteEcmaCharacterClassEscapes(newPattern);
         Regex regex;
         try
         {
-            regex = new Regex(newPattern, options, TimeSpan.FromMilliseconds(250));
+            regex = new Regex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
         }
         catch (ArgumentException ex)
         {
@@ -5068,6 +5164,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('i', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
         _ = target.DefineOwnProperty("multiline",
             new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('m', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        _ = target.DefineOwnProperty("dotAll",
+            new JsPropertyDescriptor(JsValue.FromBoolean(hasS), Writable: false, Enumerable: false, Configurable: true));
+        _ = target.DefineOwnProperty("unicode",
+            new JsPropertyDescriptor(JsValue.FromBoolean(hasU), Writable: false, Enumerable: false, Configurable: true));
+        _ = target.DefineOwnProperty("unicodeSets",
+            new JsPropertyDescriptor(JsValue.FromBoolean(hasV), Writable: false, Enumerable: false, Configurable: true));
+        _ = target.DefineOwnProperty("sticky",
+            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('y', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
+        _ = target.DefineOwnProperty("hasIndices",
+            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('d', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
         _ = target.DefineOwnProperty("flags",
             new JsPropertyDescriptor(JsValue.FromString(normalizedFlags), Writable: false, Enumerable: false, Configurable: true));
         _ = target.DefineOwnProperty("lastIndex",
@@ -5973,6 +6079,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var seenMultiline = false;
         var seenDotAll = false;
         var seenUnicode = false;
+        var seenUnicodeSets = false;
         var seenSticky = false;
         var seenHasIndices = false;
         foreach (var flag in flags)
@@ -5994,6 +6101,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case 'u' when !seenUnicode:
                     seenUnicode = true;
                     break;
+                case 'v' when !seenUnicodeSets:
+                    seenUnicodeSets = true;
+                    break;
                 case 'y' when !seenSticky:
                     seenSticky = true;
                     break;
@@ -6005,6 +6115,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case 'm':
                 case 's':
                 case 'u':
+                case 'v':
                 case 'y':
                 case 'd':
                     throw new JsThrownException(CreateSyntaxError("RegExp flags must not be duplicated."));
@@ -6013,14 +6124,91 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
         }
 
+        // Canonical order per RegExp.prototype.flags getter.
         return string.Concat(
+            seenHasIndices ? "d" : string.Empty,
             seenGlobal ? "g" : string.Empty,
             seenIgnoreCase ? "i" : string.Empty,
             seenMultiline ? "m" : string.Empty,
             seenDotAll ? "s" : string.Empty,
             seenUnicode ? "u" : string.Empty,
-            seenSticky ? "y" : string.Empty,
-            seenHasIndices ? "d" : string.Empty);
+            seenUnicodeSets ? "v" : string.Empty,
+            seenSticky ? "y" : string.Empty);
+    }
+
+    private static string RewriteEcmaCharacterClassEscapes(string pattern)
+    {
+        if (string.IsNullOrEmpty(pattern))
+        {
+            return pattern;
+        }
+
+        const string whiteSpaceClass = @"[\u0009-\u000D\u0020\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]";
+        const string nonWhiteSpaceClass = @"[^\u0009-\u000D\u0020\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]";
+        var rewritten = new System.Text.StringBuilder(pattern.Length + 24);
+        var inCharClass = false;
+
+        for (var i = 0; i < pattern.Length; i++)
+        {
+            var ch = pattern[i];
+            if (ch == '\\' && i + 1 < pattern.Length)
+            {
+                var next = pattern[i + 1];
+                if (!inCharClass)
+                {
+                    switch (next)
+                    {
+                        case 'd':
+                            rewritten.Append("[0-9]");
+                            i++;
+                            continue;
+                        case 'D':
+                            rewritten.Append("[^0-9]");
+                            i++;
+                            continue;
+                        case 'w':
+                            rewritten.Append("[A-Za-z0-9_]");
+                            i++;
+                            continue;
+                        case 'W':
+                            rewritten.Append("[^A-Za-z0-9_]");
+                            i++;
+                            continue;
+                        case 's':
+                            rewritten.Append(whiteSpaceClass);
+                            i++;
+                            continue;
+                        case 'S':
+                            rewritten.Append(nonWhiteSpaceClass);
+                            i++;
+                            continue;
+                    }
+                }
+
+                rewritten.Append(ch);
+                rewritten.Append(next);
+                i++;
+                continue;
+            }
+
+            if (ch == '[' && !inCharClass)
+            {
+                inCharClass = true;
+                rewritten.Append(ch);
+                continue;
+            }
+
+            if (ch == ']' && inCharClass)
+            {
+                inCharClass = false;
+                rewritten.Append(ch);
+                continue;
+            }
+
+            rewritten.Append(ch);
+        }
+
+        return rewritten.ToString();
     }
 
     private ObjectHandle EnsureJsonObject()
@@ -8493,6 +8681,63 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     }
 
     [MayExecuteJs]
+    private bool SetSymbolPropertyValue(ObjectHandle ownerHandle, JsObject obj, long symbolId, JsValue value, JsValue receiver)
+    {
+        if (obj.TryGetOwnSymbolProperty(symbolId, out var ownDescriptor))
+        {
+            return SetSymbolPropertyFromDescriptor(ownerHandle, obj, symbolId, ownDescriptor, value, receiver);
+        }
+
+        if (TryGetPrototypeSymbolPropertyDescriptor(obj, symbolId, out var inheritedDescriptor))
+        {
+            if (inheritedDescriptor.IsAccessor)
+            {
+                return CallSetter(inheritedDescriptor, value, receiver);
+            }
+
+            if (!inheritedDescriptor.Writable)
+            {
+                return false;
+            }
+        }
+
+        if (!obj.Extensible)
+        {
+            return false;
+        }
+
+        var descriptor = new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true);
+        _ = obj.DefineOwnSymbolProperty(symbolId, descriptor);
+        WriteDescriptorBarrier(ownerHandle, descriptor);
+        return true;
+    }
+
+    [MayExecuteJs]
+    private bool SetSymbolPropertyFromDescriptor(
+        ObjectHandle ownerHandle,
+        JsObject obj,
+        long symbolId,
+        JsPropertyDescriptor descriptor,
+        JsValue value,
+        JsValue receiver)
+    {
+        if (descriptor.IsAccessor)
+        {
+            return CallSetter(descriptor, value, receiver);
+        }
+
+        if (!descriptor.Writable)
+        {
+            return false;
+        }
+
+        var updated = descriptor with { Value = value };
+        _ = obj.DefineOwnSymbolProperty(symbolId, updated);
+        WriteDescriptorBarrier(ownerHandle, updated);
+        return true;
+    }
+
+    [MayExecuteJs]
     private bool SetPropertyFromDescriptor(
         ObjectHandle ownerHandle,
         JsObject obj,
@@ -8515,6 +8760,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = obj.DefineOwnProperty(key, updated);
         WriteDescriptorBarrier(ownerHandle, updated);
         return true;
+    }
+
+    private bool TryGetPrototypeSymbolPropertyDescriptor(JsObject obj, long symbolId, out JsPropertyDescriptor descriptor)
+    {
+        var prototype = obj.PrototypeHandle;
+        while (prototype is { } handle)
+        {
+            var prototypeObject = _heap.GetObject(handle);
+            if (prototypeObject.TryGetOwnSymbolProperty(symbolId, out descriptor))
+            {
+                return true;
+            }
+
+            prototype = prototypeObject.PrototypeHandle;
+        }
+
+        descriptor = default;
+        return false;
     }
 
     private bool TryGetPrototypePropertyDescriptor(JsObject obj, string key, out JsPropertyDescriptor descriptor)
@@ -11439,6 +11702,74 @@ fallbackArraySpecies:
         return _arrayBufferPrototypeHandle!.Value;
     }
 
+    // ECMA-262 25.2.3 — the %SharedArrayBuffer% constructor.
+    private ObjectHandle EnsureSharedArrayBufferConstructor()
+    {
+        if (_sharedArrayBufferConstructorHandle is { } existing)
+            return existing;
+
+        var prototype = CreateOrdinaryObject();
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var constructor = new NativeFunctionObject(
+            "SharedArrayBuffer",
+            (_, _2) => throw new JsThrownException(CreateTypeError("SharedArrayBuffer constructor must be invoked with 'new'.")),
+            args =>
+            {
+                var length = args.Count > 0 ? args[0].AsNumber() : 0;
+                if (double.IsNaN(length) || length < 0 || length > int.MaxValue)
+                    throw new JsThrownException(CreateRangeError("Invalid SharedArrayBuffer length."));
+                var buf = new ArrayBufferObject((int)length);
+                buf.SetPrototype(prototypeHandle);
+                return JsValue.FromObject(_heap.AllocateObject(buf, AllocationSite.Current()));
+            },
+            length: 1);
+        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        _heap.PushRoot(constructorHandle);
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        var byteLengthGetter = new NativeFunctionObject("get byteLength", (thisValue, _2) =>
+        {
+            if (thisValue.Tag != JsValueTag.Object || _heap.GetObject(thisValue.AsObjectHandle()) is not ArrayBufferObject buf)
+                throw new JsThrownException(CreateTypeError("SharedArrayBuffer.prototype.byteLength called on non-SharedArrayBuffer."));
+            return JsValue.FromNumber(buf.ByteLength);
+        }, length: 0);
+        var byteLengthGetterHandle = _heap.AllocateObject(byteLengthGetter, AllocationSite.Current());
+        prototype.DefineOwnProperty("byteLength", JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(byteLengthGetterHandle), JsValue.Undefined, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, byteLengthGetterHandle);
+
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "slice", (thisValue, args) =>
+        {
+            if (thisValue.Tag != JsValueTag.Object || _heap.GetObject(thisValue.AsObjectHandle()) is not ArrayBufferObject buf)
+                throw new JsThrownException(CreateTypeError("SharedArrayBuffer.prototype.slice called on non-SharedArrayBuffer."));
+            var len = buf.ByteLength;
+            var begin = args.Count > 0 ? (int)Math.Min(Math.Max(args[0].AsNumber(), 0), len) : 0;
+            var end = args.Count > 1 ? (int)Math.Min(Math.Max(args[1].AsNumber(), 0), len) : len;
+            if (end < begin) end = begin;
+            var newLen = end - begin;
+            var clone = buf.Clone(begin, newLen);
+            clone.SetPrototype(EnsureSharedArrayBufferPrototype());
+            return JsValue.FromObject(_heap.AllocateObject(clone, AllocationSite.Current()));
+        }, length: 2);
+
+        _sharedArrayBufferConstructorHandle = constructorHandle;
+        _sharedArrayBufferPrototypeHandle = prototypeHandle;
+        return constructorHandle;
+    }
+
+    private ObjectHandle? _sharedArrayBufferConstructorHandle;
+    private ObjectHandle? _sharedArrayBufferPrototypeHandle;
+
+    private ObjectHandle EnsureSharedArrayBufferPrototype()
+    {
+        EnsureSharedArrayBufferConstructor();
+        return _sharedArrayBufferPrototypeHandle!.Value;
+    }
+
     // ECMA-262 25.3 — the %DataView% constructor.
     private ObjectHandle EnsureDataViewConstructor()
     {
@@ -11459,8 +11790,8 @@ fallbackArraySpecies:
                     throw new JsThrownException(CreateTypeError("DataView: first argument must be an ArrayBuffer."));
                 if (buf.IsDetached)
                     throw new JsThrownException(CreateTypeError("DataView: ArrayBuffer is detached."));
-                var byteOffset = args.Count > 1 ? (int)Math.Max(args[1].AsNumber(), 0) : 0;
-                var byteLength = args.Count > 2 ? (int)args[2].AsNumber() : buf.ByteLength - byteOffset;
+                var byteOffset = args.Count > 1 ? ToIndexForView(args[1], "Invalid DataView byteOffset.") : 0;
+                var byteLength = args.Count > 2 ? ToIndexForView(args[2], "Invalid DataView byteLength.") : buf.ByteLength - byteOffset;
                 if (byteOffset + byteLength > buf.ByteLength)
                     throw new JsThrownException(CreateRangeError("DataView: offset + length exceeds ArrayBuffer bounds."));
                 var view = new DataViewObject(buf, byteOffset, byteLength);
@@ -11479,7 +11810,9 @@ fallbackArraySpecies:
             JsValue.FromObject(_heap.AllocateObject(new NativeFunctionObject("get buffer", (thisValue, _2) =>
             {
                 var dv = RequireDataView(thisValue);
-                return JsValue.FromObject(_heap.AllocateObject(dv.Buffer, AllocationSite.Current()));
+                if (dv.Buffer.OwnerHandle is not { } bufferHandle)
+                    bufferHandle = _heap.AllocateObject(dv.Buffer, AllocationSite.Current());
+                return JsValue.FromObject(bufferHandle);
             }, length: 0), AllocationSite.Current())), JsValue.Undefined, Enumerable: false, Configurable: true));
 
         prototype.DefineOwnProperty("byteLength", JsPropertyDescriptor.Accessor(
@@ -11553,41 +11886,76 @@ fallbackArraySpecies:
             }
         }
 
+        int ReadByteOffset(IReadOnlyList<JsValue> args)
+            => args.Count > 0 ? ToIndexForView(args[0], "Invalid DataView byteOffset.") : 0;
+
+        bool ReadLittleEndian(IReadOnlyList<JsValue> args, int index)
+            => index < args.Count && ValueToBooleanProxy(args[index]);
+
+        double ReadNumberArg(IReadOnlyList<JsValue> args, int index)
+            => index < args.Count ? ToNumber(args[index]) : 0;
+
+        BigInteger ReadBigIntArg(IReadOnlyList<JsValue> args, int index)
+        {
+            if (index >= args.Count)
+                return BigInteger.Zero;
+
+            var value = args[index];
+            if (value.Tag == JsValueTag.Object)
+                value = ToPrimitive(value, PrimitiveHint.Number);
+
+            if (value.Tag != JsValueTag.BigInt)
+                throw new JsThrownException(CreateTypeError("Cannot convert value to BigInt."));
+            return value.AsBigInt();
+        }
+
         // 25.3.1.1 GetViewValue - all getters
         DefineNativePrototypeMethod(protoHandle, proto, "getInt8", (thisValue, args) =>
-            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetInt8(args.Count > 0 ? (int)args[0].AsNumber() : 0))), length: 1);
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetInt8(ReadByteOffset(args)))), length: 1);
         DefineNativePrototypeMethod(protoHandle, proto, "getUint8", (thisValue, args) =>
-            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetUint8(args.Count > 0 ? (int)args[0].AsNumber() : 0))), length: 1);
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetUint8(ReadByteOffset(args)))), length: 1);
         DefineNativePrototypeMethod(protoHandle, proto, "getInt16", (thisValue, args) =>
-            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetInt16(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean()))), length: 2);
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetInt16(ReadByteOffset(args), ReadLittleEndian(args, 1)))), length: 1);
         DefineNativePrototypeMethod(protoHandle, proto, "getUint16", (thisValue, args) =>
-            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetUint16(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean()))), length: 2);
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetUint16(ReadByteOffset(args), ReadLittleEndian(args, 1)))), length: 1);
         DefineNativePrototypeMethod(protoHandle, proto, "getInt32", (thisValue, args) =>
-            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetInt32(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean()))), length: 2);
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetInt32(ReadByteOffset(args), ReadLittleEndian(args, 1)))), length: 1);
         DefineNativePrototypeMethod(protoHandle, proto, "getUint32", (thisValue, args) =>
-            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetUint32(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean()))), length: 2);
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetUint32(ReadByteOffset(args), ReadLittleEndian(args, 1)))), length: 1);
         DefineNativePrototypeMethod(protoHandle, proto, "getFloat32", (thisValue, args) =>
-            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetFloat32(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean()))), length: 2);
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetFloat32(ReadByteOffset(args), ReadLittleEndian(args, 1)))), length: 1);
         DefineNativePrototypeMethod(protoHandle, proto, "getFloat64", (thisValue, args) =>
-            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetFloat64(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 && args[1].AsBoolean()))), length: 2);
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetFloat64(ReadByteOffset(args), ReadLittleEndian(args, 1)))), length: 1);
+        DefineNativePrototypeMethod(protoHandle, proto, "getBigInt64", (thisValue, args) =>
+            GuardDataViewOp(thisValue, dv => JsValue.FromBigInt(dv.GetBigInt64(ReadByteOffset(args), ReadLittleEndian(args, 1)))), length: 1);
+        DefineNativePrototypeMethod(protoHandle, proto, "getBigUint64", (thisValue, args) =>
+            GuardDataViewOp(thisValue, dv => JsValue.FromBigInt(dv.GetBigUint64(ReadByteOffset(args), ReadLittleEndian(args, 1)))), length: 1);
+        DefineNativePrototypeMethod(protoHandle, proto, "getFloat16", (thisValue, args) =>
+            GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetFloat16(ReadByteOffset(args), ReadLittleEndian(args, 1)))), length: 1);
 
         // 25.3.1.2 SetViewValue - all setters
         DefineNativePrototypeMethod(protoHandle, proto, "setInt8", (thisValue, args) =>
-            GuardDataViewOpVoid(thisValue, dv => dv.SetInt8(args.Count > 0 ? (int)args[0].AsNumber() : 0, (sbyte)(args.Count > 1 ? args[1].AsNumber() : 0))), length: 2);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetInt8(ReadByteOffset(args), (sbyte)ReadNumberArg(args, 1))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setUint8", (thisValue, args) =>
-            GuardDataViewOpVoid(thisValue, dv => dv.SetUint8(args.Count > 0 ? (int)args[0].AsNumber() : 0, (byte)(args.Count > 1 ? args[1].AsNumber() : 0))), length: 2);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetUint8(ReadByteOffset(args), (byte)ReadNumberArg(args, 1))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setInt16", (thisValue, args) =>
-            GuardDataViewOpVoid(thisValue, dv => dv.SetInt16(args.Count > 0 ? (int)args[0].AsNumber() : 0, (short)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean())), length: 3);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetInt16(ReadByteOffset(args), (short)ReadNumberArg(args, 1), ReadLittleEndian(args, 2))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setUint16", (thisValue, args) =>
-            GuardDataViewOpVoid(thisValue, dv => dv.SetUint16(args.Count > 0 ? (int)args[0].AsNumber() : 0, (ushort)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean())), length: 3);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetUint16(ReadByteOffset(args), (ushort)ReadNumberArg(args, 1), ReadLittleEndian(args, 2))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setInt32", (thisValue, args) =>
-            GuardDataViewOpVoid(thisValue, dv => dv.SetInt32(args.Count > 0 ? (int)args[0].AsNumber() : 0, (int)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean())), length: 3);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetInt32(ReadByteOffset(args), (int)ReadNumberArg(args, 1), ReadLittleEndian(args, 2))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setUint32", (thisValue, args) =>
-            GuardDataViewOpVoid(thisValue, dv => dv.SetUint32(args.Count > 0 ? (int)args[0].AsNumber() : 0, (uint)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean())), length: 3);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetUint32(ReadByteOffset(args), (uint)ReadNumberArg(args, 1), ReadLittleEndian(args, 2))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setFloat32", (thisValue, args) =>
-            GuardDataViewOpVoid(thisValue, dv => dv.SetFloat32(args.Count > 0 ? (int)args[0].AsNumber() : 0, (float)(args.Count > 1 ? args[1].AsNumber() : 0), args.Count > 2 && args[2].AsBoolean())), length: 3);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetFloat32(ReadByteOffset(args), (float)ReadNumberArg(args, 1), ReadLittleEndian(args, 2))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setFloat64", (thisValue, args) =>
-            GuardDataViewOpVoid(thisValue, dv => dv.SetFloat64(args.Count > 0 ? (int)args[0].AsNumber() : 0, args.Count > 1 ? args[1].AsNumber() : 0, args.Count > 2 && args[2].AsBoolean())), length: 3);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetFloat64(ReadByteOffset(args), ReadNumberArg(args, 1), ReadLittleEndian(args, 2))), length: 2);
+        DefineNativePrototypeMethod(protoHandle, proto, "setBigInt64", (thisValue, args) =>
+            GuardDataViewOpVoid(thisValue, dv => dv.SetBigInt64(ReadByteOffset(args), ReadBigIntArg(args, 1), ReadLittleEndian(args, 2))), length: 2);
+        DefineNativePrototypeMethod(protoHandle, proto, "setBigUint64", (thisValue, args) =>
+            GuardDataViewOpVoid(thisValue, dv => dv.SetBigUint64(ReadByteOffset(args), ReadBigIntArg(args, 1), ReadLittleEndian(args, 2))), length: 2);
+        DefineNativePrototypeMethod(protoHandle, proto, "setFloat16", (thisValue, args) =>
+            GuardDataViewOpVoid(thisValue, dv => dv.SetFloat16(ReadByteOffset(args), ReadNumberArg(args, 1), ReadLittleEndian(args, 2))), length: 2);
     }
 
     // ECMA-262 23.2 — all 11 %TypedArray% constructors.
@@ -11711,14 +12079,21 @@ fallbackArraySpecies:
             name,
             (_, _2) => throw new JsThrownException(CreateTypeError($"{name} constructor must be invoked with 'new'.")),
             args => ConstructTypedArray(elementType, elementSize, prototypeHandle, args),
-            length: 1);
+            length: 3);
         constructor.SetPrototype(typedArrayCtorHandle);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
-        _ = constructor.SetProperty("BYTES_PER_ELEMENT", JsValue.FromNumber(elementSize));
+        _ = constructor.DefineOwnProperty(
+            "prototype",
+            new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
+        _ = constructor.DefineOwnProperty(
+            "BYTES_PER_ELEMENT",
+            new JsPropertyDescriptor(JsValue.FromNumber(elementSize), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _heap.WriteBarrier(constructorHandle, typedArrayCtorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
+        _ = prototype.DefineOwnProperty(
+            "BYTES_PER_ELEMENT",
+            new JsPropertyDescriptor(JsValue.FromNumber(elementSize), Writable: false, Enumerable: false, Configurable: false));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         InstallTypedArrayPrototypeMethods(prototypeHandle, prototype, name, elementType, elementSize);
@@ -11808,7 +12183,7 @@ fallbackArraySpecies:
 
         for (var i = 0; i < items.Count; i++)
         {
-            typed.SetElement(i, items[i]);
+            typed.SetElement(i, NormalizeTypedArrayElementValue(typed.ElementType, items[i]));
         }
 
         return result;
@@ -11832,8 +12207,8 @@ fallbackArraySpecies:
             var len = src.Length;
             var buf = new ArrayBufferObject(len * elementSize);
             var view = CreateTypedArrayInstance(elementType, buf, 0, len * elementSize);
-            for (var i = 0; i < len; i++)
-                view.SetElement(i, src.GetElement(i));
+                for (var i = 0; i < len; i++)
+                    view.SetElement(i, NormalizeTypedArrayElementValue(elementType, src.GetElement(i)));
             view.SetPrototype(protoHandle);
             return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
         }
@@ -11876,7 +12251,7 @@ fallbackArraySpecies:
                 var len = collected.Count;
                 var buf = new ArrayBufferObject(len * elementSize);
                 var view = CreateTypedArrayInstance(elementType, buf, 0, len * elementSize);
-                for (var i = 0; i < len; i++) view.SetElement(i, collected[i]);
+                for (var i = 0; i < len; i++) view.SetElement(i, NormalizeTypedArrayElementValue(elementType, collected[i]));
                 view.SetPrototype(protoHandle);
                 return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
             }
@@ -11894,7 +12269,7 @@ fallbackArraySpecies:
                 {
                     var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     var element = srcObj.TryGetProperty(key, h => _heap.GetObject(h), out var d) ? d.Value : JsValue.Undefined;
-                    view.SetElement(i, element);
+                    view.SetElement(i, NormalizeTypedArrayElementValue(elementType, element));
                 }
                 view.SetPrototype(protoHandle);
                 return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
@@ -11926,6 +12301,27 @@ fallbackArraySpecies:
         return (int)intLen;
     }
 
+    private int ToIndexForView(JsValue value, string errorMessage)
+    {
+        var integer = ToIntegerOrInfinity(value);
+        if (integer < 0 || double.IsPositiveInfinity(integer) || integer > int.MaxValue)
+            throw new JsThrownException(CreateRangeError(errorMessage));
+        return (int)integer;
+    }
+
+    private JsValue NormalizeTypedArrayElementValue(TypedArrayElementType elementType, JsValue value)
+    {
+        if (elementType is TypedArrayElementType.BigInt64 or TypedArrayElementType.BigUint64)
+        {
+            var primitive = value.Tag == JsValueTag.Object ? ToPrimitive(value, PrimitiveHint.Number) : value;
+            if (primitive.Tag != JsValueTag.BigInt)
+                throw new JsThrownException(CreateTypeError("Cannot convert value to BigInt."));
+            return primitive;
+        }
+
+        return JsValue.FromNumber(ToNumber(value));
+    }
+
     private static TypedArrayObject CreateTypedArrayInstance(TypedArrayElementType elementType, ArrayBufferObject buf, int byteOffset, int byteLength)
     {
         return elementType switch
@@ -11954,7 +12350,13 @@ fallbackArraySpecies:
         // 23.2.3 getters: buffer, byteLength, byteOffset, length
         proto.DefineOwnProperty("buffer", JsPropertyDescriptor.Accessor(
             JsValue.FromObject(_heap.AllocateObject(new NativeFunctionObject("get buffer",
-                (thisValue, _2) => JsValue.FromObject(_heap.AllocateObject(RequireTypedArray(thisValue).Buffer, AllocationSite.Current())),
+                (thisValue, _2) =>
+                {
+                    var typed = RequireTypedArray(thisValue);
+                    if (typed.Buffer.OwnerHandle is not { } bufferHandle)
+                        bufferHandle = _heap.AllocateObject(typed.Buffer, AllocationSite.Current());
+                    return JsValue.FromObject(bufferHandle);
+                },
                 length: 0), AllocationSite.Current())),
             JsValue.Undefined, Enumerable: false, Configurable: true));
 
@@ -14216,10 +14618,14 @@ fallbackArraySpecies:
 
         if (keyValue.Tag == JsValueTag.Symbol)
         {
-            obj.DefineOwnSymbolProperty(keyValue.AsSymbolId(),
-                new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
-            if (value.Tag == JsValueTag.Object)
-                _heap.WriteBarrier(ownerHandle, value.AsObjectHandle());
+            try
+            {
+                _ = SetSymbolPropertyValue(ownerHandle, obj, keyValue.AsSymbolId(), value, frame.Registers[ownerReg]);
+            }
+            catch (JsThrownException ex)
+            {
+                ThrowOrHandle(frame, ex.Value);
+            }
             return;
         }
 
