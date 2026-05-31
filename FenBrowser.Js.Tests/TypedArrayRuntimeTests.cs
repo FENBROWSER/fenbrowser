@@ -110,6 +110,36 @@ public sealed class TypedArrayRuntimeTests
     }
 
     [Fact]
+    public void TypedArrayInfinityLengthThrowsRangeError()
+    {
+        // ECMA-262 23.2.5.1 step 3 → AllocateTypedArray routes the length through
+        // ToIndex, which throws RangeError for Infinity. Previously the (int) cast
+        // overflowed and crashed the host buffer allocation.
+        var result = Run(@"
+            var ok = false;
+            try { new Int8Array(Infinity); }
+            catch (e) { ok = e instanceof RangeError; }
+            ok;
+        ");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void TypedArrayExcessiveArrayLikeLengthThrowsRangeError()
+    {
+        // ECMA-262 23.2.5.1 step 6 (object/array-like path) → AllocateTypedArrayBuffer
+        // applies the byte-size limit; length 2^53 must surface as a RangeError rather
+        // than overflowing the int length*elementSize multiply.
+        var result = Run(@"
+            var ok = false;
+            try { new Int16Array({ length: Math.pow(2, 53) }); }
+            catch (e) { ok = e instanceof RangeError; }
+            ok;
+        ");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void Uint8ArrayConstructorExists()
     {
         Assert.Equal("function", Run("typeof Uint8Array;").AsString());

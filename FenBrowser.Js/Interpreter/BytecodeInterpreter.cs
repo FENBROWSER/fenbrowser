@@ -11812,7 +11812,11 @@ fallbackArraySpecies:
             else
             {
                 // InitializeTypedArrayFromArrayLike: read length, then indices 0..len-1.
-                var len = GetArrayLength(srcObj);
+                // ECMA-262 23.2.5.1 step 6 → AllocateTypedArrayBuffer routes the length
+                // through ToIndex + the byte-size limit; an excessive length (e.g. 2^53)
+                // must surface as a RangeError instead of overflowing the int multiply
+                // and crashing the host buffer allocation.
+                var len = ValidateTypedArrayLength(GetArrayLengthDouble(srcObj), elementSize);
                 var buf = new ArrayBufferObject(len * elementSize);
                 var view = CreateTypedArrayInstance(elementType, buf, 0, len * elementSize);
                 for (var i = 0; i < len; i++)
@@ -11826,14 +11830,29 @@ fallbackArraySpecies:
             }
         }
 
-        // new X(length) — allocate new buffer
+        // new X(length) — allocate new buffer. ECMA-262 23.2.5.1 step 3 routes the
+        // length through ToIndex (RangeError for Infinity / negative / > 2^53-1).
         {
-            var length = (int)Math.Max(arg0.AsNumber(), 0);
+            var length = ValidateTypedArrayLength(ToNumber(arg0), elementSize);
             var buf = new ArrayBufferObject(length * elementSize);
             var view = CreateTypedArrayInstance(elementType, buf, 0, length * elementSize);
             view.SetPrototype(protoHandle);
             return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
         }
+    }
+
+    // ECMA-262 7.1.22 ToIndex + the array-length allocation limit. Rejects
+    // non-integer-index / infinite / negative / > 2^53-1 lengths, and lengths whose
+    // byte size would overflow the int-addressed backing store, with a RangeError
+    // instead of letting the (int) cast wrap or the byte multiply overflow (crash).
+    private int ValidateTypedArrayLength(double lengthValue, int elementSize)
+    {
+        var intLen = double.IsNaN(lengthValue)
+            ? 0.0
+            : (lengthValue >= 0 ? Math.Floor(lengthValue) : Math.Ceiling(lengthValue));
+        if (intLen < 0 || intLen > 9007199254740991.0 || intLen * (double)elementSize > int.MaxValue)
+            throw new JsThrownException(CreateRangeError("Invalid typed array length."));
+        return (int)intLen;
     }
 
     private static TypedArrayObject CreateTypedArrayInstance(TypedArrayElementType elementType, ArrayBufferObject buf, int byteOffset, int byteLength)

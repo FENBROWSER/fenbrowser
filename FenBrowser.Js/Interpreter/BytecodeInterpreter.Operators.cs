@@ -22,7 +22,15 @@ public sealed partial class BytecodeInterpreter
         Func<double, double, double> numOp)
     {
         if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
-            return JsValue.FromBigInt(bigIntOp(left.AsBigInt(), right.AsBigInt()));
+        {
+            var r = right.AsBigInt();
+            // ECMA-262 BigInt::divide / BigInt::remainder: "If y is 0ℤ, throw a
+            // RangeError." Otherwise the BigInteger op throws DivideByZeroException
+            // and crashes the host.
+            if (r.IsZero && (opName == "division" || opName == "modulo"))
+                throw new JsThrownException(CreateRangeError($"Division by zero in BigInt {opName}."));
+            return JsValue.FromBigInt(bigIntOp(left.AsBigInt(), r));
+        }
         if (left.Tag == JsValueTag.BigInt || right.Tag == JsValueTag.BigInt)
             throw new JsThrownException(CreateTypeError($"Cannot mix BigInt and other types in {opName}."));
         return JsValue.FromNumber(numOp(ToNumber(left), ToNumber(right)));

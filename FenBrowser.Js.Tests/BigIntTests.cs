@@ -153,6 +153,24 @@ public sealed class BigIntTests
     }
 
     [Fact]
+    public void BigIntDivideByZeroThrowsRangeError()
+    {
+        // ECMA-262 6.1.6.2.5 BigInt::divide: "If y is 0ℤ, throw a RangeError."
+        // Previously the underlying BigInteger divide threw DivideByZeroException and
+        // crashed the host instead of surfacing a catchable JS RangeError.
+        var code = @"var ok = false; try { 5n / 0n; } catch (e) { ok = e instanceof RangeError; } ok;";
+        Assert.True(Run(code).AsBoolean());
+    }
+
+    [Fact]
+    public void BigIntModuloByZeroThrowsRangeError()
+    {
+        // ECMA-262 6.1.6.2.6 BigInt::remainder: "If d is 0ℤ, throw a RangeError."
+        var code = @"var ok = false; try { 5n % 0n; } catch (e) { ok = e instanceof RangeError; } ok;";
+        Assert.True(Run(code).AsBoolean());
+    }
+
+    [Fact]
     public void BigIntVariableAssignment()
     {
         Assert.True(Run("var x = 42n; x === 42n;").AsBoolean());
