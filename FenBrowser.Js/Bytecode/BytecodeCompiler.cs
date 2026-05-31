@@ -20,12 +20,28 @@ public sealed class BytecodeCompiler
         // emits this-many LeaveScope ops before jumping so nested
         // let/const block scopes are torn down per spec 13.7/13.8.
         public int ScopeDepthAtEntry { get; init; }
+        // Monotonic nesting sequence (see _nestingSeq). break/continue targeting
+        // this loop must run every `finally` whose Seq is greater than this.
+        public int Seq { get; init; }
     }
 
     private sealed class LabelTarget
     {
         public required string Name { get; init; }
         public required List<int> BreakJumpIndices { get; init; }
+        public int ScopeDepthAtEntry { get; init; }
+        public int Seq { get; init; }
+    }
+
+    // A `finally` block that is currently "pending" — i.e. an abrupt completion
+    // (break/continue/return) escaping it must run it first (ECMA-262 14.15.3).
+    // The compiler-driven model emits an inline copy of the block at each such
+    // exit; the shared trailing copy after the try handles normal/throw completion.
+    private sealed class FinallyFrame
+    {
+        public required StatementNode Block { get; init; }
+        public required int Seq { get; init; }
+        public required int ScopeDepthAtEntry { get; init; }
     }
 
     private static int s_privateClassCounter;
@@ -56,6 +72,11 @@ public sealed class BytecodeCompiler
     private readonly List<string> _parameterNames = new();
     private readonly Stack<LoopContext> _loopStack = new();
     private readonly Stack<LabelTarget> _labelStack = new();
+    // Pending `finally` blocks (innermost on top) and a monotonic counter shared by
+    // loops, labels, and finally frames so an abrupt completion can emit exactly the
+    // finally blocks nested between it and its target, innermost-first.
+    private readonly Stack<FinallyFrame> _finallyStack = new();
+    private int _nestingSeq;
     // Tracks block-scoped let/const names so they are not added to
     // _lexicalDeclarationNames/_constDeclarationNames. EnterScope creates
     // their bindings instead.
@@ -150,6 +171,8 @@ public sealed class BytecodeCompiler
         _parameterNames.Clear();
         _loopStack.Clear();
         _labelStack.Clear();
+        _finallyStack.Clear();
+        _nestingSeq = 0;
         _name = name;
         _nextRegister = 1;
         _currentFunctionKind = functionKind;
@@ -944,7 +967,7 @@ public sealed class BytecodeCompiler
         var ctx = new LoopContext
         {
             ContinueTarget = loopStart,
-            BreakJumpIndices = new List<int>(),ContinueJumpIndices = new List<int>(),ScopeDepthAtEntry = _openScopeDepth};
+            BreakJumpIndices = new List<int>(),ContinueJumpIndices = new List<int>(),ScopeDepthAtEntry = _openScopeDepth, Seq = _nestingSeq++};
         _loopStack.Push(ctx);
         if (_pendingLabel != null)
         {
@@ -983,6 +1006,7 @@ public sealed class BytecodeCompiler
             BreakJumpIndices = new List<int>(),
             ContinueJumpIndices = new List<int>(),
             ScopeDepthAtEntry = _openScopeDepth,
+            Seq = _nestingSeq++,
         };
         _loopStack.Push(ctx);
         if (_pendingLabel != null)
@@ -1017,10 +1041,29 @@ public sealed class BytecodeCompiler
 
     private void CompileReturnStatement(ReturnStatementNode returnStmt)
     {
+        // ECMA-262 14.15.3 / 13.10.1: `return expr` inside a try evaluates expr, runs
+        // every enclosing finally, then returns. We compute the value into a fresh
+        // register first (finally code only allocates higher registers, so it can't
+        // clobber it), run the pending finallies inline, then move it into the return
+        // slot. When no finally is pending EmitAbruptCompletion is a no-op, preserving
+        // the original fast path exactly.
+        var hasPendingFinally = _finallyStack.Count > 0;
+
         if (returnStmt.Argument is not null)
         {
             var reg = CompileExpression(returnStmt.Argument);
+            if (hasPendingFinally)
+            {
+                EmitAbruptCompletion(0, -1, leaveTrailingScopes: false);
+            }
             _instructions.Add(new Instruction(OpCode.Move, 0, reg, 0));
+        }
+        else if (hasPendingFinally)
+        {
+            EmitAbruptCompletion(0, -1, leaveTrailingScopes: false);
+            // The finally may have written register 0; restore the undefined result.
+            var undef = LoadUndefinedConstant();
+            _instructions.Add(new Instruction(OpCode.Move, 0, undef, 0));
         }
 
         _instructions.Add(new Instruction(OpCode.Return, 0, 0, 0));
@@ -1046,7 +1089,8 @@ public sealed class BytecodeCompiler
             ContinueTarget = -1,
             BreakJumpIndices = new List<int>(),
             ContinueJumpIndices = new List<int>(),
-            ScopeDepthAtEntry = _openScopeDepth
+            ScopeDepthAtEntry = _openScopeDepth,
+            Seq = _nestingSeq++
         };
         _loopStack.Push(ctx);
         if (_pendingLabel != null)
@@ -1123,7 +1167,7 @@ public sealed class BytecodeCompiler
         var ctx = new LoopContext
         {
             ContinueTarget = loopStart,
-            BreakJumpIndices = new List<int>(),ContinueJumpIndices = new List<int>(),ScopeDepthAtEntry = _openScopeDepth};
+            BreakJumpIndices = new List<int>(),ContinueJumpIndices = new List<int>(),ScopeDepthAtEntry = _openScopeDepth, Seq = _nestingSeq++};
         _loopStack.Push(ctx);
         if (_pendingLabel != null)
         {
@@ -1183,7 +1227,7 @@ public sealed class BytecodeCompiler
         var ctx = new LoopContext
         {
             ContinueTarget = loopStart,
-            BreakJumpIndices = new List<int>(),ContinueJumpIndices = new List<int>(),ScopeDepthAtEntry = _openScopeDepth};
+            BreakJumpIndices = new List<int>(),ContinueJumpIndices = new List<int>(),ScopeDepthAtEntry = _openScopeDepth, Seq = _nestingSeq++};
         _loopStack.Push(ctx);
         if (_pendingLabel != null)
         {
@@ -1323,7 +1367,7 @@ public sealed class BytecodeCompiler
         var ctx = new LoopContext
         {
             ContinueTarget = loopStart,
-            BreakJumpIndices = new List<int>(),ContinueJumpIndices = new List<int>(),ScopeDepthAtEntry = _openScopeDepth};
+            BreakJumpIndices = new List<int>(),ContinueJumpIndices = new List<int>(),ScopeDepthAtEntry = _openScopeDepth, Seq = _nestingSeq++};
         _loopStack.Push(ctx);
         if (_pendingLabel != null)
         {
@@ -1595,7 +1639,17 @@ public sealed class BytecodeCompiler
         var pushHandler = _instructions.Count;
         _instructions.Add(new Instruction(OpCode.PushHandler, -1, 0, 0, D: -1));
 
+        // The finally is pending for any break/continue/return inside the try body:
+        // such an abrupt completion emits an inline copy of it before exiting
+        // (ECMA-262 14.15.3). The throw/normal paths use the shared copy below.
+        _finallyStack.Push(new FinallyFrame
+        {
+            Block = stmt.FinallyBlock,
+            Seq = _nestingSeq++,
+            ScopeDepthAtEntry = _openScopeDepth
+        });
         CompileStatement(stmt.TryBlock);
+        _ = _finallyStack.Pop();
 
         _instructions.Add(new Instruction(OpCode.PopHandler, 0, 0, 0));
 
@@ -1611,6 +1665,14 @@ public sealed class BytecodeCompiler
     {
         var pushHandler = _instructions.Count;
         _instructions.Add(new Instruction(OpCode.PushHandler, -1, 0, 0, D: -1));
+
+        // Pending across BOTH the try body and the catch body (ECMA-262 14.15.3).
+        _finallyStack.Push(new FinallyFrame
+        {
+            Block = stmt.FinallyBlock,
+            Seq = _nestingSeq++,
+            ScopeDepthAtEntry = _openScopeDepth
+        });
 
         CompileStatement(stmt.TryBlock);
 
@@ -1628,6 +1690,7 @@ public sealed class BytecodeCompiler
         CompileStatement(stmt.CatchBlock);
 
         _instructions.Add(new Instruction(OpCode.PopHandler, 0, 0, 0));
+        _ = _finallyStack.Pop();
 
         PatchJump(jumpPastCatch, _instructions.Count);
 
@@ -1675,6 +1738,7 @@ public sealed class BytecodeCompiler
             ContinueJumpIndices = new List<int>(),
             IsSwitch = true,
             ScopeDepthAtEntry = _openScopeDepth,
+            Seq = _nestingSeq++,
         };
         _loopStack.Push(ctx);
         if (_pendingLabel != null)
@@ -1736,7 +1800,9 @@ public sealed class BytecodeCompiler
             var target = new LabelTarget
             {
                 Name = labeled.Label,
-                BreakJumpIndices = new List<int>()
+                BreakJumpIndices = new List<int>(),
+                ScopeDepthAtEntry = _openScopeDepth,
+                Seq = _nestingSeq++
             };
             _labelStack.Push(target);
             CompileStatement(labeled.Body);
@@ -3238,7 +3304,7 @@ public sealed class BytecodeCompiler
             }
 
             var target = _loopStack.Peek();
-            EmitLeaveScopesForJump(target.ScopeDepthAtEntry);
+            EmitAbruptCompletion(target.ScopeDepthAtEntry, target.Seq, leaveTrailingScopes: true);
             var jump = EmitPlaceholder(OpCode.Jump);
             target.BreakJumpIndices.Add(jump);
             return;
@@ -3248,6 +3314,7 @@ public sealed class BytecodeCompiler
         {
             if (labelCtx.Name == label)
             {
+                EmitAbruptCompletion(labelCtx.ScopeDepthAtEntry, labelCtx.Seq, leaveTrailingScopes: true);
                 var jump = EmitPlaceholder(OpCode.Jump);
                 labelCtx.BreakJumpIndices.Add(jump);
                 return;
@@ -3258,7 +3325,7 @@ public sealed class BytecodeCompiler
         {
             if (ctx.Label == label)
             {
-                EmitLeaveScopesForJump(ctx.ScopeDepthAtEntry);
+                EmitAbruptCompletion(ctx.ScopeDepthAtEntry, ctx.Seq, leaveTrailingScopes: true);
                 var jump = EmitPlaceholder(OpCode.Jump);
                 ctx.BreakJumpIndices.Add(jump);
                 return;
@@ -3282,6 +3349,54 @@ public sealed class BytecodeCompiler
         }
     }
 
+    // ECMA-262 14.15.3: an abrupt completion (break/continue/return) escaping one or
+    // more `finally` blocks must run each of them, innermost-first, before reaching its
+    // target. Emits an inline copy of every pending finally whose Seq > targetSeq,
+    // interleaving the LeaveScope ops that tear down the scopes between each finally and
+    // the next. For `break`/`continue`, pass the target loop/label's depth + Seq and
+    // leaveTrailingScopes:true so remaining block scopes close before the jump. For
+    // `return`, pass targetSeq:-1 (run all) and leaveTrailingScopes:false (the Return op
+    // discards the frame). Pops frames as it emits them so a nested abrupt completion
+    // inside a finally routes only through the still-outer finallies, then restores the
+    // stack for the (possibly dead) code the surrounding compiler keeps emitting.
+    private void EmitAbruptCompletion(int targetScopeDepth, int targetSeq, bool leaveTrailingScopes)
+    {
+        if (_finallyStack.Count == 0 || _finallyStack.Peek().Seq <= targetSeq)
+        {
+            if (leaveTrailingScopes) EmitLeaveScopesForJump(targetScopeDepth);
+            return;
+        }
+
+        var savedFinally = _finallyStack.ToArray(); // index 0 = innermost (top of stack)
+        var savedDepth = _openScopeDepth;
+        // _openScopeDepth is decremented in lockstep with each emitted LeaveScope so the
+        // inline-compiled finally body (and any abrupt completion nested inside it) sees
+        // the true runtime scope depth, then restored for the surrounding compiler.
+        while (_finallyStack.Count > 0 && _finallyStack.Peek().Seq > targetSeq)
+        {
+            var f = _finallyStack.Pop();
+            while (_openScopeDepth > f.ScopeDepthAtEntry)
+            {
+                _instructions.Add(new Instruction(OpCode.LeaveScope));
+                _openScopeDepth--;
+            }
+            CompileStatement(f.Block);
+        }
+
+        if (leaveTrailingScopes)
+        {
+            while (_openScopeDepth > targetScopeDepth)
+            {
+                _instructions.Add(new Instruction(OpCode.LeaveScope));
+                _openScopeDepth--;
+            }
+        }
+
+        _openScopeDepth = savedDepth;
+        _finallyStack.Clear();
+        for (var i = savedFinally.Length - 1; i >= 0; i--) _finallyStack.Push(savedFinally[i]);
+    }
+
     private void CompileContinueStatement(string? label)
     {
         if (label == null)
@@ -3292,7 +3407,7 @@ public sealed class BytecodeCompiler
             }
 
             var topCtx = _loopStack.Peek();
-            EmitLeaveScopesForJump(topCtx.ScopeDepthAtEntry);
+            EmitAbruptCompletion(topCtx.ScopeDepthAtEntry, topCtx.Seq, leaveTrailingScopes: true);
             var target = topCtx.ContinueTarget;
             if (target >= 0)
             {
@@ -3314,7 +3429,7 @@ public sealed class BytecodeCompiler
                     throw new InvalidOperationException($"Label '{label}' does not mark a loop.");
                 }
 
-                EmitLeaveScopesForJump(ctx.ScopeDepthAtEntry);
+                EmitAbruptCompletion(ctx.ScopeDepthAtEntry, ctx.Seq, leaveTrailingScopes: true);
                 var target = ctx.ContinueTarget;
                 if (target >= 0)
                 {

@@ -22,6 +22,62 @@ public sealed class TryFinallyRuntimeTests
     }
 
     [Fact]
+    public void TryFinally_BreakInTry_FinallyExecutes()
+    {
+        // ECMA-262 14.15.3: break out of a try-finally must run finally first.
+        Assert.Equal(1, RunNum("var fin = 0, c = 0; while (c < 5) { try { break; } finally { fin = 1; } } fin;"));
+    }
+
+    [Fact]
+    public void TryFinally_ContinueInTry_FinallyExecutes()
+    {
+        Assert.Equal(2, RunNum("var fin = 0, c = 0; while (c < 2) { try { c += 1; continue; } finally { fin += 1; } } fin;"));
+    }
+
+    [Fact]
+    public void TryFinally_ReturnInTry_FinallyExecutesAndValuePreserved()
+    {
+        // return evaluates the value, runs finally, then returns the original value.
+        Assert.Equal(10, RunNum("function f() { var x = 10; try { return x; } finally { x = 99; } } f();"));
+    }
+
+    [Fact]
+    public void TryFinally_ReturnInFinally_OverridesTryReturn()
+    {
+        Assert.Equal(2, RunNum("function f() { try { return 1; } finally { return 2; } } f();"));
+    }
+
+    [Fact]
+    public void TryFinally_NestedReturn_RunsBothFinallariesInnermostFirst()
+    {
+        Assert.Equal(12, RunNum(@"
+var order = 0;
+function f() {
+    try { try { return 7; } finally { order = order * 10 + 1; } }
+    finally { order = order * 10 + 2; }
+}
+f();
+order;"));
+    }
+
+    [Fact]
+    public void TryFinally_LabeledBreakAcrossNestedFinallies_RunsInnermostFirst()
+    {
+        // break L exits both loops after one iteration, running the inner finally
+        // (j-loop body) then the outer finally (i-loop body): order = 0*10+1 then *10+2.
+        Assert.Equal(12, RunNum(@"
+var order = 0;
+L: for (var i = 0; i < 2; i++) {
+    try {
+        for (var j = 0; j < 2; j++) {
+            try { break L; } finally { order = order * 10 + 1; }
+        }
+    } finally { order = order * 10 + 2; }
+}
+order;"));
+    }
+
+    [Fact]
     public void TryFinally_ThrowInTry_FinallyExecutesBeforePropagation()
     {
         Assert.Equal(3, RunNum(@"
