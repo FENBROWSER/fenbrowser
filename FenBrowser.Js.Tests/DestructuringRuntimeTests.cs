@@ -40,6 +40,32 @@ public sealed class DestructuringRuntimeTests
     }
 
     [Fact]
+    public void ObjectAssignment_ShorthandDefaultVsAliasedTarget()
+    {
+        // `{a = 5}` is a CoverInitializedName (target a, default 5); `{a: x}` aliases
+        // property a onto target x; `{a: x = 8}` aliases with a default. These are
+        // distinguished from `{a: <member>}` (which is not a binding-pattern element).
+        Assert.Equal(5d, Run("var a; ({ a = 5 } = {}); a;").AsNumber());
+        Assert.Equal(7d, Run("var x; ({ a: x } = { a: 7 }); x;").AsNumber());
+        Assert.Equal(8d, Run("var x; ({ a: x = 8 } = {}); x;").AsNumber());
+    }
+
+    [Fact]
+    public void ObjectAssignment_MemberTargetEvaluatesAndThrowsBrandCheck()
+    {
+        // `{a: this.#field}` is a member assignment target, NOT a shorthand default; on
+        // a non-instance receiver the private write must throw a TypeError (it must not
+        // be silently mis-read as `{a = this.#field}`).
+        var result = Run(@"
+            class C { #field; m() { ({ a: this.#field } = { a: 0 }); } }
+            var ok = false;
+            try { C.prototype.m.call({}); } catch (e) { ok = e instanceof TypeError; }
+            ok;
+        ");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void DestructuringAssignment_SwapsAndEvaluatesToRhs()
     {
         // The assignment expression evaluates to the right-hand-side value.

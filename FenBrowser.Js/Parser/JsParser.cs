@@ -3625,6 +3625,7 @@ public sealed class JsParser
             }
 
             ExpressionNode value;
+            var isCoverInitializedName = false;
             if (IsPunctuator("("))
             {
                 var (parameterInfo, body) = ParseFunctionParametersAndBody(
@@ -3650,6 +3651,7 @@ public sealed class JsParser
             {
                 Advance();
                 value = ParseExpression(2);
+                isCoverInitializedName = true;
             }
             else if (!isComputed && key is not null)
             {
@@ -3659,7 +3661,7 @@ public sealed class JsParser
             {
                 throw new JsParserException($"Expected ':' or '=' after object property key, found '{Current().Text}'.");
             }
-            properties.Add(new ObjectPropertyNode(key, computedKey, isComputed, value, value.Span));
+            properties.Add(new ObjectPropertyNode(key, computedKey, isComputed, value, value.Span, IsCoverInitializedName: isCoverInitializedName));
             if (IsPunctuator(","))
             {
                 Advance();

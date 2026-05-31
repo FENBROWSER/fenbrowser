@@ -61,7 +61,11 @@ public sealed record ArrowFunctionExpressionNode(
 
 public enum ObjectPropertyKind { Data, Getter, Setter }
 
-public sealed record ObjectPropertyNode(string? Key, ExpressionNode? ComputedKey, bool IsComputed, ExpressionNode Value, SourceSpan Span, ObjectPropertyKind Kind = ObjectPropertyKind.Data);
+// IsCoverInitializedName marks the `{ key = default }` shorthand-with-default form
+// (CoverInitializedName, ECMA-262 13.2.5). It is a SyntaxError in a real object literal
+// but the assignment-pattern cover grammar needs to tell it apart from `{ key: value }`,
+// which is otherwise structurally identical in the AST (both Key="key", Value=<expr>).
+public sealed record ObjectPropertyNode(string? Key, ExpressionNode? ComputedKey, bool IsComputed, ExpressionNode Value, SourceSpan Span, ObjectPropertyKind Kind = ObjectPropertyKind.Data, bool IsCoverInitializedName = false);
 
 public sealed record ObjectLiteralExpressionNode(IReadOnlyList<ObjectPropertyNode> Properties, SourceSpan Span) : ExpressionNode(Span);
 

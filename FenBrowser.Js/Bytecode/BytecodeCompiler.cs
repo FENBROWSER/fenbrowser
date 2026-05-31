@@ -1526,11 +1526,33 @@ public sealed class BytecodeCompiler
                         {
                             targetPattern = valuePattern;
                         }
-                        else
+                        else if (property.Value is AssignmentExpressionNode aliasedDefault &&
+                                 TryConvertForAssignmentPattern(aliasedDefault.Left, out var aliasedTarget) &&
+                                 aliasedTarget is not null)
                         {
-                            // Fallback for shorthand default initializers like `{ x = 1 }`.
+                            // `{ key: target = default }` — aliased target with a default.
+                            targetPattern = aliasedTarget;
+                            initializer = aliasedDefault.Right;
+                        }
+                        else if (property.IsCoverInitializedName)
+                        {
+                            // Genuine `{ key = default }` shorthand: target is the key
+                            // identifier, the value is its default initializer.
                             targetPattern = new IdentifierBindingPatternNode(property.Key, property.Span);
                             initializer = property.Value;
+                        }
+                        else
+                        {
+                            // `{ key: <expr> }` where <expr> is not an identifier or a
+                            // nested pattern is NOT a valid binding-pattern element (e.g.
+                            // `{a: this.#field}` / `{a: o.x}` — a member-expression
+                            // assignment target a binding pattern can't represent). Fail
+                            // the conversion so the caller compiles the left side as an
+                            // expression instead (evaluating the member reference and
+                            // throwing the correct error), rather than mis-reading it as a
+                            // shorthand default.
+                            pattern = null;
+                            return false;
                         }
                     }
                     else if (property.Value is AssignmentExpressionNode assignment)
