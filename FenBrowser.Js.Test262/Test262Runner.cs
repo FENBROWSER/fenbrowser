@@ -893,7 +893,18 @@ public sealed class Test262Runner
                         // outer Task.WhenAny timeout gate.
                         interpreter.WallClockTimeoutMs = Math.Max(1, timeoutMs);
                         interpreter.InterruptCallback = () => Volatile.Read(ref interruptRequested) == 0;
-                        _ = interpreter.Execute(function);
+                        try
+                        {
+                            _ = interpreter.Execute(function);
+                        }
+                        catch (JsThrownException thrown)
+                        {
+                            // Capture a "Name: message" description while the interpreter
+                            // (and its heap) is still alive; the outer catch only sees the
+                            // JsValue handle, whose heap is gone by then.
+                            thrown.Description ??= interpreter.DescribeThrownValue(thrown.Value);
+                            throw;
+                        }
                     }
                 });
                 var timeoutTask = Task.Delay(Math.Max(1, timeoutMs));
@@ -1192,7 +1203,7 @@ public sealed class Test262Runner
                     relativePath,
                     classification = "runtime-error",
                     message = "Unhandled runtime throw.",
-                    details = FormatThrownValue(ex.Value),
+                    details = FormatThrownValue(ex.Value, ex.Description),
                     expected = expected is not null,
                     expectedReason = expected?.Reason,
                     expectedOwner = expected?.Owner,
@@ -1737,8 +1748,15 @@ public sealed class Test262Runner
         return expectations.Entries.FirstOrDefault(entry => entry.Matches(relativePath, entry.Status));
     }
 
-    private static string FormatThrownValue(JsValue value)
+    private static string FormatThrownValue(JsValue value, string? description = null)
     {
+        // For thrown Error-like objects, prefer the interpreter-captured "Name: message"
+        // description so the bare "thrown=object" classification becomes actionable.
+        if (value.Tag == JsValueTag.Object && !string.IsNullOrEmpty(description))
+        {
+            return $"thrown=object:{description}";
+        }
+
         return value.Tag switch
         {
             JsValueTag.Undefined => "thrown=undefined",

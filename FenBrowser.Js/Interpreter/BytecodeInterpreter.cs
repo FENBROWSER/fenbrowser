@@ -242,6 +242,50 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _heap.AddRootSource(this);
     }
 
+    // Diagnostic-only: render a thrown JS value as a short "Name: message" string by
+    // reading the (prototype-resolved) `name` and `message` properties when the value is
+    // an Error-like object. Used by the test262 runner to turn the opaque "thrown=object"
+    // classification into an actionable error description. Best-effort: never throws.
+    public string DescribeThrownValue(JsValue value)
+    {
+        try
+        {
+            if (value.Tag != JsValueTag.Object)
+            {
+                return value.Tag switch
+                {
+                    JsValueTag.Undefined => "undefined",
+                    JsValueTag.Null => "null",
+                    JsValueTag.Boolean => $"boolean:{value.AsBoolean()}",
+                    JsValueTag.Int32 => $"int32:{value.AsInt32()}",
+                    JsValueTag.Number => $"number:{value.AsNumber()}",
+                    JsValueTag.String => $"string:{value.AsString()}",
+                    JsValueTag.Symbol => "symbol",
+                    JsValueTag.BigInt => $"bigint:{value.AsBigInt()}",
+                    _ => value.Tag.ToString()
+                };
+            }
+
+            var obj = _heap.GetObject(value.AsObjectHandle());
+            if (obj is null) return "object";
+
+            string name = TryGetPropertyValue(obj, value, "name", out var nameVal) &&
+                          nameVal.Tag != JsValueTag.Undefined
+                ? ToStringValue(nameVal)
+                : "Error";
+            string message = TryGetPropertyValue(obj, value, "message", out var msgVal) &&
+                             msgVal.Tag != JsValueTag.Undefined
+                ? ToStringValue(msgVal)
+                : string.Empty;
+
+            return string.IsNullOrEmpty(message) ? name : $"{name}: {message}";
+        }
+        catch
+        {
+            return "object";
+        }
+    }
+
     [MayExecuteJs]
     public JsValue Execute(BytecodeFunction function)
     {
