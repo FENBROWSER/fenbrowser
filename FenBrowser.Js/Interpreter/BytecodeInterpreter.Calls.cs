@@ -337,7 +337,7 @@ public sealed partial class BytecodeInterpreter
                 throw new JsThrownException(CreateTypeError("Function is not a constructor."));
             }
 
-            var constructed = native.Construct(args);
+            var constructed = native.ConstructWithNewTarget(args, newTarget);
             if (constructed.Tag == JsValueTag.Object &&
                 newTarget.Tag == JsValueTag.Object &&
                 value.Tag == JsValueTag.Object &&
@@ -375,6 +375,32 @@ public sealed partial class BytecodeInterpreter
         {
             _directEvalEnv = frame.Environment;
             _directEvalStrictMode = frame.Function.IsStrictMode;
+        }
+
+        // ECMA-262 super(...) where the base class is a native constructor (e.g. an
+        // abstract base such as Iterator): route through [[Construct]] with this frame's
+        // NewTarget rather than [[Call]] (which native bases reject). The derived
+        // instance (already created with the subclass prototype chain) remains `this`;
+        // the constructed object is discarded for these slot-less abstract bases.
+        if (callee.Tag == JsValueTag.Object &&
+            frame.SuperConstructorHandle is { } superHandle &&
+            callee.AsObjectHandle() == superHandle)
+        {
+            frame.SuperConstructorHandle = null;
+            if (_heap.GetObject(callee.AsObjectHandle()) is NativeFunctionObject nativeBase && nativeBase.IsConstructor)
+            {
+                try
+                {
+                    _ = ConstructFunction(callee, args, frame.NewTarget);
+                    frame.Registers[destinationRegister] = JsValue.Undefined;
+                }
+                catch (JsThrownException ex)
+                {
+                    if (frame.CatchHandlers.Count == 0) throw;
+                    ThrowOrHandle(frame, ex.Value);
+                }
+                return;
+            }
         }
 
         try

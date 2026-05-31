@@ -155,4 +155,31 @@ public sealed class IteratorHelpersTests
     {
         Assert.Equal(3, RunNum("Iterator.from('abc').toArray().length;"));
     }
+
+    [Fact]
+    public void NewIteratorDirectlyThrowsTypeError()
+    {
+        // ECMA-262 27.1.3.1: `new Iterator()` (NewTarget === %Iterator%) is a TypeError.
+        Assert.True(RunBool("var ok=false; try{ new Iterator(); }catch(e){ ok = e instanceof TypeError; } ok;"));
+    }
+
+    [Fact]
+    public void SubclassOfIteratorConstructsAndInheritsHelpers()
+    {
+        // A subclass (NewTarget !== %Iterator%) constructs normally and the instance
+        // inherits %Iterator.prototype% helpers through its prototype chain.
+        Assert.Equal("0,2,4", RunStr(@"
+            class C extends Iterator {
+                constructor() { super(); this.i = 0; }
+                next() { return this.i < 3 ? { value: this.i++, done: false } : { value: undefined, done: true }; }
+            }
+            (new C()).map(x => x * 2).toArray().join(',');
+        "));
+    }
+
+    [Fact]
+    public void SubclassInstanceIsInstanceOfIterator()
+    {
+        Assert.True(RunBool("class C extends Iterator { next(){ return { done: true }; } } (new C()) instanceof Iterator;"));
+    }
 }

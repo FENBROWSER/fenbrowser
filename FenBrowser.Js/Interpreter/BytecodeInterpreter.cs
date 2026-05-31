@@ -3344,13 +3344,28 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
         _heap.PushRoot(prototypeHandle);
 
+        // ECMA-262 27.1.3.1 Iterator(): a TypeError when called/constructed with
+        // NewTarget undefined or === %Iterator% itself (the abstract base), but a
+        // subclass (`class X extends Iterator {}`) constructs normally — NewTarget is X,
+        // so we return a fresh object that ConstructFunction re-parents to X.prototype.
+        ObjectHandle? iteratorCtorHandleRef = null;
         var constructor = new NativeFunctionObject(
             "Iterator",
             (_, _) => throw new JsThrownException(CreateTypeError("Iterator is abstract; cannot be invoked directly.")),
-            _ => throw new JsThrownException(CreateTypeError("Iterator is abstract; cannot be constructed directly.")),
-            length: 0);
+            length: 0,
+            constructWithNewTarget: (_, newTarget) =>
+            {
+                if (newTarget.Tag != JsValueTag.Object ||
+                    (iteratorCtorHandleRef is { } selfHandle && newTarget.AsObjectHandle() == selfHandle))
+                {
+                    throw new JsThrownException(CreateTypeError("Iterator is abstract; cannot be constructed directly."));
+                }
+
+                return JsValue.FromObject(_heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current()));
+            });
         _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
+        iteratorCtorHandleRef = constructorHandle;
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);

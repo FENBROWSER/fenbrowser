@@ -313,6 +313,7 @@ public sealed partial class BytecodeInterpreter
         }
 
         frame.Registers[ins.A] = JsValue.FromObject(baseHandle);
+        frame.SuperConstructorHandle = baseHandle;
     }
 
 }
