@@ -1867,6 +1867,28 @@ public sealed class BytecodeCompiler
 
                 return valueReg;
             }
+            case AssignmentExpressionNode assign when assign.Left is ArrayLiteralExpressionNode or ObjectLiteralExpressionNode:
+            {
+                // ECMA-262 13.15.5 DestructuringAssignmentEvaluation. An array/object
+                // literal on the left of `=` is the assignment-pattern cover grammar
+                // (e.g. `[a, b] = arr`, `({a} = obj)`). Reinterpret it as a binding
+                // pattern and store into the EXISTING bindings (StoreVar), unlike a
+                // declaration which initializes fresh bindings. The whole expression
+                // evaluates to the right-hand-side value.
+                if (TryConvertForAssignmentPattern(assign.Left, out var assignPattern) && assignPattern is not null)
+                {
+                    var rhsReg = CompileExpression(assign.Right);
+                    EmitBindingPatternAssignment(assignPattern, rhsReg, OpCode.StoreVar);
+                    return rhsReg;
+                }
+
+                // Targets the converter can't express as a binding pattern (e.g. a
+                // member-expression element like `[o.x] = v`) fall through to the
+                // invalid-target behavior below.
+                _ = CompileExpression(assign.Left);
+                EmitRuntimeReferenceError("Invalid left-hand side in assignment.");
+                return LoadUndefinedConstant();
+            }
             case AssignmentExpressionNode assign:
             {
                 // Annex B web-compat runtime error behavior for non-reference

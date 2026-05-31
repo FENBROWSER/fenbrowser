@@ -24,6 +24,30 @@ public sealed class DestructuringRuntimeTests
     }
 
     [Fact]
+    public void ArrayDestructuringAssignment_StoresIntoExistingBindings()
+    {
+        // ECMA-262 13.15.5: array-literal LHS of `=` is the assignment-pattern cover
+        // grammar — stores into existing bindings, with defaults and rest.
+        var value = Run("var a, b, rest; [a, b = 5, ...rest] = [1, undefined, 3, 4]; a + b + rest[0] + rest[1];");
+        Assert.Equal(13d, value.AsNumber());
+    }
+
+    [Fact]
+    public void ObjectDestructuringAssignment_StoresIntoExistingBindings()
+    {
+        var value = Run("var x, z, rest; ({ x, y: z = 7, ...rest } = { x: 2, y: undefined, k: 9 }); x + z + rest.k;");
+        Assert.Equal(18d, value.AsNumber());
+    }
+
+    [Fact]
+    public void DestructuringAssignment_SwapsAndEvaluatesToRhs()
+    {
+        // The assignment expression evaluates to the right-hand-side value.
+        var value = Run("var a = 1, b = 2; var v = ([a, b] = [b, a]); a + ',' + b + ',' + v.length;");
+        Assert.Equal("2,1,2", value.AsString());
+    }
+
+    [Fact]
     public void ObjectDestructuringDeclaration_BindsAliasesDefaultsAndRest()
     {
         var value = Run("const { x, y: z = 7, ...rest } = { x: 2, y: undefined, k: 9 }; x + z + rest.k;");
