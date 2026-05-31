@@ -699,6 +699,57 @@ public sealed class ClassRuntimeTests
     }
 
     [Fact]
+    public void PrivateGetterReadableWithNoPrivateField()
+    {
+        // ECMA-262 PrivateBrandAdd: a class whose only private member is an accessor
+        // must still brand its instances so `this.#m` resolves through the accessor.
+        Assert.Equal(7d, Run(@"
+            class C { get #m() { return 7; } read() { return this.#m; } }
+            (new C()).read();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void PrivateSetterInvokedWithNoPrivateField()
+    {
+        Assert.Equal(9d, Run(@"
+            class C { set #m(v) { this._v = v; } run() { this.#m = 9; return this._v; } }
+            (new C()).run();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void PrivateGetterOnlyWriteThrowsTypeError()
+    {
+        // PrivateSet on a getter-only accessor is a TypeError.
+        Assert.True(Run(@"
+            class C { get #m() { return 1; } run() { this.#m = 2; } }
+            var ok = false;
+            try { (new C()).run(); } catch (e) { ok = e instanceof TypeError; }
+            ok;
+        ").AsBoolean());
+    }
+
+    [Fact]
+    public void StaticPrivateFieldReadableFromStaticMethod()
+    {
+        // The class constructor object carries the class brand so `C.#s` resolves.
+        Assert.Equal(5d, Run(@"
+            class C { static #s = 5; static get() { return C.#s; } }
+            C.get();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void StaticPrivateMethodCallableFromStaticMethod()
+    {
+        Assert.Equal(8d, Run(@"
+            class C { static #m() { return 8; } static run() { return C.#m(); } }
+            C.run();
+        ").AsNumber());
+    }
+
+    [Fact]
     public void PrivateNameIsNotEnumerableAsPublic()
     {
         // Private names are mangled, so user code can't reach them via the

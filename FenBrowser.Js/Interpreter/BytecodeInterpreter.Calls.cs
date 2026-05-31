@@ -442,6 +442,17 @@ public sealed partial class BytecodeInterpreter
             instanceObject.SetPrototype(prototypeValue.AsObjectHandle());
         }
 
+        // ECMA-262 PrivateBrandAdd: every instance of a class that declares any private
+        // element is branded on construction — not only when a private *field*
+        // initializer happens to run. Without this, a class whose only private members
+        // are methods/accessors (no fields) never brands its instances, so every
+        // `this.#getter`/`this.#setter = v` would wrongly throw. Stamp before the
+        // constructor body executes so field inits and private calls inside it see it.
+        if (callee.Function.BrandTokens.Count > 0)
+        {
+            instanceObject.PrivateBrand = callee.Function.BrandTokens[0];
+        }
+
         var defaultInstance = JsValue.FromObject(_heap.AllocateObject(instanceObject, AllocationSite.Current()));
         _pendingNewTarget = newTarget.Tag == JsValueTag.Undefined
             ? JsValue.Undefined

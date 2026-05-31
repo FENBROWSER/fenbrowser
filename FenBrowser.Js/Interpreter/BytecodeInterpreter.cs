@@ -1432,9 +1432,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
                     if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand)
                         throw new JsThrownException(CreateTypeError("Cannot read private field from an object whose class did not declare it."));
-                    if (!obj.TryGetOwnProperty(name, out var desc))
+                    // ECMA-262 PrivateGet: a private field is an own data property, but a
+                    // private method/accessor lives on the prototype. Resolve through the
+                    // chain (TryGetPropertyValue invokes a private getter when present).
+                    if (!TryGetPropertyValue(obj, objVal, name, out var privateValue))
                         throw new JsThrownException(CreateTypeError("Cannot read private field from an object whose class did not declare it."));
-                    frame.Registers[ins.A] = desc.Value;
+                    frame.Registers[ins.A] = privateValue;
                     break;
                 }
                 case OpCode.SetPrivateField:
@@ -1446,9 +1449,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         throw new JsThrownException(CreateTypeError("Cannot write private field to non-object."));
                     var obj = _heap.GetObject(objVal.AsObjectHandle());
                     var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
-                    if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand || !obj.TryGetOwnProperty(name, out var existing))
+                    if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand)
                         throw new JsThrownException(CreateTypeError("Cannot write private field to an object whose class did not declare it."));
-                    obj.DefineOwnProperty(name, existing with { Value = value });
+                    WritePrivateField(obj, objVal, name, value);
                     break;
                 }
                 case OpCode.GetElem:
@@ -7493,6 +7496,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         EnvironmentRecord? outerEnvironment = null)
     {
         var fnObj = new JsFunctionObject(function, outerEnvironment, function.Kind);
+        // ECMA-262 PrivateBrandAdd for the static side: a class constructor object
+        // carries its class brand so that `C.#staticPriv` access (which brand-checks
+        // the constructor object itself) succeeds. We stamp every brand-bearing
+        // function object; only constructors are ever the target of a private access,
+        // so stamping ordinary private-name-referencing methods is inert.
+        if (function.BrandTokens.Count > 0)
+        {
+            fnObj.PrivateBrand = function.BrandTokens[0];
+        }
         var functionPrototype = function.Kind switch
         {
             FunctionKind.Generator => EnsureGeneratorFunctionPrototype(),

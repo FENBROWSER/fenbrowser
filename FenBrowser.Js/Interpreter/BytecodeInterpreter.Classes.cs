@@ -36,9 +36,9 @@ public sealed partial class BytecodeInterpreter
         var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
         if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand)
             throw new JsThrownException(CreateTypeError("Cannot read private field from an object whose class did not declare it."));
-        if (!obj.TryGetOwnProperty(name, out var desc))
+        if (!TryGetPropertyValue(obj, objVal, name, out var privateValue))
             throw new JsThrownException(CreateTypeError("Cannot read private field from an object whose class did not declare it."));
-        frame.Registers[destReg] = desc.Value;
+        frame.Registers[destReg] = privateValue;
     }
 
 
@@ -52,9 +52,38 @@ public sealed partial class BytecodeInterpreter
             throw new JsThrownException(CreateTypeError("Cannot write private field to non-object."));
         var obj = _heap.GetObject(objVal.AsObjectHandle());
         var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
-        if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand || !obj.TryGetOwnProperty(name, out var existing))
+        if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand)
             throw new JsThrownException(CreateTypeError("Cannot write private field to an object whose class did not declare it."));
-        obj.DefineOwnProperty(name, existing with { Value = value });
+        WritePrivateField(obj, objVal, name, value);
+    }
+
+    // ECMA-262 PrivateSet: write a private field/accessor after the brand check has
+    // passed. A private *field* is an own data property (set in place). A private
+    // *setter* lives on the prototype as an accessor — invoke it with the receiver.
+    // A getter-only private accessor (no setter) is a TypeError per the spec.
+    private void WritePrivateField(JsObject obj, JsValue receiver, string name, JsValue value)
+    {
+        if (obj.TryGetOwnProperty(name, out var own) && !own.IsAccessor)
+        {
+            obj.DefineOwnProperty(name, own with { Value = value });
+            return;
+        }
+
+        if (own.IsAccessor)
+        {
+            if (!CallSetter(own, value, receiver))
+                throw new JsThrownException(CreateTypeError("Cannot write to a private accessor that has only a getter."));
+            return;
+        }
+
+        if (TryGetPrototypePropertyDescriptor(obj, name, out var protoDesc) && protoDesc.IsAccessor)
+        {
+            if (!CallSetter(protoDesc, value, receiver))
+                throw new JsThrownException(CreateTypeError("Cannot write to a private accessor that has only a getter."));
+            return;
+        }
+
+        throw new JsThrownException(CreateTypeError("Cannot write private field to an object whose class did not declare it."));
     }
 
 
