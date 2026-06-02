@@ -31,6 +31,7 @@ public sealed class ErrorBuiltins : IBuiltinModule
         bindings.Add(BuiltinBinding.NonEnumerable("ReferenceError", JsValue.FromObject(CreateNativeError(context, errorProto, "ReferenceError"))));
         bindings.Add(BuiltinBinding.NonEnumerable("EvalError", JsValue.FromObject(CreateNativeError(context, errorProto, "EvalError"))));
         bindings.Add(BuiltinBinding.NonEnumerable("URIError", JsValue.FromObject(CreateNativeError(context, errorProto, "URIError"))));
+        bindings.Add(BuiltinBinding.NonEnumerable("SuppressedError", JsValue.FromObject(CreateNativeError(context, errorProto, "SuppressedError", length: 3))));
 
         // Error.prototype.toString
         DefineProtoMethod(context, heap, errorProto, heap.GetObject(errorProto), "toString", ErrorToString);
@@ -81,10 +82,32 @@ public sealed class ErrorBuiltins : IBuiltinModule
         return ctorHandle;
     }
 
-    private static ObjectHandle CreateNativeError(IBuiltinContext ctx, ObjectHandle errorProtoHandle, string name)
+    private static ObjectHandle CreateNativeError(IBuiltinContext ctx, ObjectHandle errorProtoHandle, string name, int length = 1)
     {
         var protoHandle = CreateErrorPrototype(ctx, errorProtoHandle, name);
-        return CreateErrorConstructor(ctx, protoHandle, name);
+        return CreateErrorConstructor(ctx, protoHandle, name, length);
+    }
+
+    private static ObjectHandle CreateErrorConstructor(IBuiltinContext ctx, ObjectHandle protoHandle, string name, int length = 1)
+    {
+        var capturedProto = protoHandle;
+        var capturedCtx = ctx;
+        var heap = ctx.Heap;
+        var constructor = new NativeFunctionObject(
+            name,
+            (_, args) => BuildError(capturedCtx, capturedProto, name, args),
+            args => BuildError(capturedCtx, capturedProto, name, args),
+            length: length);
+        constructor.SetProperty("prototype", JsValue.FromObject(protoHandle));
+        var ctorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
+        heap.PushRoot(ctorHandle);
+        heap.WriteBarrier(ctorHandle, protoHandle);
+        var proto = heap.GetObject(protoHandle);
+        _ = proto.DefineOwnProperty(
+            "constructor",
+            new JsPropertyDescriptor(JsValue.FromObject(ctorHandle), Writable: true, Enumerable: false, Configurable: true));
+        heap.WriteBarrier(protoHandle, ctorHandle);
+        return ctorHandle;
     }
 
     private static JsValue BuildError(IBuiltinContext ctx, ObjectHandle protoHandle, string name, IReadOnlyList<JsValue> args)

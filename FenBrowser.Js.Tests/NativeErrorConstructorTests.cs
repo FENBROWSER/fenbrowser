@@ -38,4 +38,12 @@ public sealed class NativeErrorConstructorTests
     {
         Assert.Equal("ReferenceError: bad", RunStr("new ReferenceError('bad').toString();"));
     }
+
+    [Fact]
+    public void SuppressedErrorHasExpectedNameAndLength()
+    {
+        Assert.Equal("SuppressedError", RunStr("new SuppressedError('boom').name;"));
+        Assert.Equal("3", RunStr("String(SuppressedError.length);"));
+        Assert.True(RunBool("new SuppressedError('boom') instanceof Error;"));
+    }
 }
