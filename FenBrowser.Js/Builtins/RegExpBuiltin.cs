@@ -152,10 +152,10 @@ public sealed class RegExpBuiltin : IBuiltinModule
         }
 
         var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
-        Regex regex;
+        BclRegex regex;
         try
         {
-            regex = new Regex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
+            regex = new BclRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
         }
         catch (ArgumentException ex)
         {

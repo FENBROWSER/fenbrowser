@@ -119,4 +119,39 @@ public sealed class RegExpLiteralTests
         var result = Run("Function.prototype.isPrototypeOf(RegExp);");
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void UnicodeDotMatchesSingleSurrogatePairCodePoint()
+    {
+        var result = Run("/^.$/u.test('\\ud800\\udc00');");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void UnicodeSimpleClassMatchesSingleSurrogatePairCodePoint()
+    {
+        var result = Run("/^[\\ud800\\udc00]$/u.test('\\ud800\\udc00');");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void UnicodeCaseFoldKelvinRequiresUAndI()
+    {
+        var result = Run("/\\u212a/i.test('k') === false && /\\u212a/iu.test('k') === true;");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void UnicodeBackreferenceMatchesByCodePoint()
+    {
+        var result = Run("/(.+).*\\1/u.test('\\ud800\\udc00\\ud800') === false;");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void UnicodeAstralQuantifierCountsCodePoints()
+    {
+        var result = Run("/\\ud834\\udf06{2}/u.test('\\ud834\\udf06\\ud834\\udf06');");
+        Assert.True(result.AsBoolean());
+    }
 }

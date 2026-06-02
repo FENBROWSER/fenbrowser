@@ -467,7 +467,7 @@ public sealed class StringBuiltin : IBuiltinModule
         var pattern = (args.Count == 0 || regexp.Tag == JsValueTag.Undefined)
             ? string.Empty
             : ToStringForRegExpPattern(ctx, regexp);
-        var match = Regex.Match(s, pattern);
+        var match = BclRegex.Match(s, pattern);
         return BuildMatchResultArray(ctx, s, match);
     }
 
