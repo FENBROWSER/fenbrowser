@@ -5280,7 +5280,44 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             results.Add(JsValue.FromObject(_heap.AllocateObject(record, AllocationSite.Current())));
         }
 
-        return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(results), AllocationSite.Current()));
+        // ECMA-262 §22.2.5.10 — return a RegExpStringIterator, not a plain array.
+        var capturedResults = results;
+        var iter = new RegExpStringIteratorObject(capturedResults);
+        iter.SetPrototype(EnsureRegExpStringIteratorPrototype());
+        return JsValue.FromObject(_heap.AllocateObject(iter, AllocationSite.Current()));
+    }
+
+    private ObjectHandle? _regExpStringIteratorProtoHandle;
+    private ObjectHandle EnsureRegExpStringIteratorPrototype()
+    {
+        if (_regExpStringIteratorProtoHandle is { } e) return e;
+        var proto = CreateOrdinaryObject();
+        proto.SetPrototype(EnsureIteratorPrototype());
+        var ph = _heap.AllocateObject(proto, AllocationSite.Current());
+        _heap.PushRoot(ph);
+        // ECMA-262 §22.2.5.10.1 %RegExpStringIteratorPrototype%.next()
+        var next = new NativeFunctionObject("next", (thisValue, _) =>
+        {
+            if (thisValue.Tag != JsValueTag.Object ||
+                _heap.GetObject(thisValue.AsObjectHandle()) is not RegExpStringIteratorObject ri)
+                throw new JsThrownException(CreateTypeError("RegExpStringIterator.prototype.next called on incompatible receiver."));
+            if (ri.Index >= ri.Results.Count)
+                return BuildIteratorResult(JsValue.Undefined, done: true);
+            return BuildIteratorResult(ri.Results[ri.Index++], done: false);
+        }, length: 0);
+        var nextH = _heap.AllocateObject(next, AllocationSite.Current());
+        proto.DefineOwnProperty("next", new JsPropertyDescriptor(JsValue.FromObject(nextH), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(ph, nextH);
+        _regExpStringIteratorProtoHandle = ph;
+        return ph;
+    }
+
+    /// <summary>ECMA-262 §22.2.5.10.1 RegExpStringIterator — holds pre-computed match results.</summary>
+    private sealed class RegExpStringIteratorObject : JsObject
+    {
+        public readonly List<JsValue> Results;
+        public int Index;
+        public RegExpStringIteratorObject(List<JsValue> results) { Results = results; Index = 0; }
     }
 
     private RegExpObject RegExpThisValue(JsValue thisValue)
@@ -11622,12 +11659,22 @@ fallbackArraySpecies:
             args =>
             {
                 var length = args.Count > 0 ? args[0].AsNumber() : 0;
-                // ECMA-262 25.1.3.1 step 4 + 6.2.6.1 CreateByteDataBlock: byteLength must be
-                // a non-negative integer = the implementation-defined maximum, else RangeError.
-                // Our backing store is a managed byte[], so the limit is int.MaxValue.
                 if (double.IsNaN(length) || length < 0 || length > int.MaxValue)
                     throw new JsThrownException(CreateRangeError("Invalid ArrayBuffer length."));
-                var buf = new ArrayBufferObject((int)length);
+                // ES2024: optional maxByteLength for resizable buffers
+                var maxByteLen = 0;
+                if (args.Count > 1 && args[1].Tag == JsValueTag.Object)
+                {
+                    var opts = _heap.GetObject(args[1].AsObjectHandle());
+                    if (opts.TryGetProperty("maxByteLength", x => _heap.GetObject(x), out var mblDesc) &&
+                        mblDesc.Value.Tag is JsValueTag.Number or JsValueTag.Int32)
+                    {
+                        var mbl = mblDesc.Value.AsNumber();
+                        if (mbl >= length && mbl <= int.MaxValue)
+                            maxByteLen = (int)mbl;
+                    }
+                }
+                var buf = new ArrayBufferObject((int)length, maxByteLen);
                 buf.SetPrototype(prototypeHandle);
                 return JsValue.FromObject(_heap.AllocateObject(buf, AllocationSite.Current()));
             },

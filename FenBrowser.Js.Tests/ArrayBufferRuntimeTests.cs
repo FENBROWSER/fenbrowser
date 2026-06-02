@@ -9,6 +9,12 @@ namespace FenBrowser.Js.Tests;
 
 public sealed class ArrayBufferRuntimeTests
 {
+    private static JsValue Eval(string src)
+    {
+        var fn = new BytecodeCompiler().CompileScript(new SourceText(src));
+        return new BytecodeInterpreter().Execute(fn);
+    }
+
     [Fact]
     public void ConstructorAllocatesBuffer()
     {
@@ -68,6 +74,18 @@ public sealed class ArrayBufferRuntimeTests
     [Fact]
     public void Constructor_NegativeLength_ThrowsRangeError()
         => Assert.True(CaughtRangeError("new ArrayBuffer(-1);"));
+
+    [Fact]
+    public void ResizableBufferReportsMaxByteLengthAndCanResize()
+    {
+        var result = Eval(@"
+            var buf = new ArrayBuffer(4, { maxByteLength: 8 });
+            var before = buf.resizable === true && buf.maxByteLength === 8 && buf.byteLength === 4;
+            buf.resize(6);
+            before && buf.byteLength === 6 && buf.maxByteLength === 8;
+        ");
+        Assert.True(result.AsBoolean());
+    }
 }
 
 public sealed class TypedArrayObjectTests

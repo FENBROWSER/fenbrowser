@@ -6,24 +6,33 @@ namespace FenBrowser.Js.Objects;
 // Wraps a byte[] backing store with [[ArrayBufferByteLength]] and
 // [[ArrayBufferDetached]] internal slots. Views (TypedArray, DataView)
 // reference the buffer and become detached when it detaches.
+// ES2024: resizable ArrayBuffers via [[ArrayBufferMaxByteLength]] slot.
 public sealed class ArrayBufferObject : JsObject
 {
     private byte[] _data;
 
-    public ArrayBufferObject(int byteLength)
+    public ArrayBufferObject(int byteLength, int maxByteLength = 0)
     {
         _data = new byte[byteLength];
         ByteLength = byteLength;
+        MaxByteLength = maxByteLength > 0 ? maxByteLength : byteLength;
     }
 
     internal ArrayBufferObject(byte[] data)
     {
         _data = data;
         ByteLength = data.Length;
+        MaxByteLength = data.Length;
     }
 
     // 25.1.5.1 [[ArrayBufferByteLength]]
     public int ByteLength { get; private set; }
+
+    // ES2024 [[ArrayBufferMaxByteLength]] — maximum size for resizable buffers.
+    public int MaxByteLength { get; private set; }
+
+    // ES2024: whether this buffer was created with maxByteLength (resizable).
+    public bool IsResizable => MaxByteLength > ByteLength || MaxByteLength == 0 ? MaxByteLength > ByteLength : false;
 
     // 25.1.5.2 [[ArrayBufferData]] — raw byte access.
     public byte[] Data
@@ -45,6 +54,18 @@ public sealed class ArrayBufferObject : JsObject
         IsDetached = true;
         _data = Array.Empty<byte>();
         ByteLength = 0;
+        MaxByteLength = 0;
+    }
+
+    // ES2024 25.1.5.X ResizeArrayBuffer(newByteLength)
+    public void Resize(int newByteLength)
+    {
+        if (IsDetached)
+            throw new InvalidOperationException("ArrayBuffer is detached.");
+        if (newByteLength > MaxByteLength)
+            throw new ArgumentOutOfRangeException(nameof(newByteLength), "New byte length exceeds maximum.");
+        Array.Resize(ref _data, newByteLength);
+        ByteLength = newByteLength;
     }
 
     // 25.1.5.5 CloneArrayBuffer(src, srcByteOffset, srcLength)
