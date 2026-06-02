@@ -81,16 +81,14 @@ public sealed class RegExpFlagTests
     [Fact]
     public void FlagsPropertyIsNormalized()
     {
-        var result = Run("var r = new RegExp('a', 'ggi'); r.flags;");
-        Assert.Equal("gi", result.AsString());
+        var result = Run("var r = new RegExp('a', 'ygim'); r.flags;");
+        Assert.Equal("gimy", result.AsString());
     }
 
     [Fact]
-    public void DuplicateFlagSilentlyDeduplicated()
+    public void DuplicateFlagsThrow()
     {
-        // ECMA-262 22.2.4: duplicate flags are silently deduplicated.
-        var result = Run("var r = new RegExp('a', 'gg'); r.global;");
-        Assert.True(result.Tag == JsValueTag.Boolean && result.AsBoolean());
+        Assert.Throws<JsThrownException>(() => Run("new RegExp('a', 'gg');"));
     }
 
     [Fact]
@@ -107,6 +105,13 @@ public sealed class RegExpFlagTests
     }
 
     [Fact]
+    public void UnicodeSetsFlagReadable()
+    {
+        var result = Run("var r = new RegExp('a', 'v'); r.unicodeSets;");
+        Assert.True(result.Tag == JsValueTag.Boolean && result.AsBoolean());
+    }
+
+    [Fact]
     public void DotAllMatchesNewlines()
     {
         var result = Run("var r = new RegExp('a.b', 's'); r.test('a\\nb');");
@@ -116,8 +121,35 @@ public sealed class RegExpFlagTests
     [Fact]
     public void UnicodeMatchesUnicodeClass()
     {
-        // With 'u' flag, .NET regex should handle \\w more broadly (no ASCII restriction)
         var result = Run("var r = new RegExp('^\\\\d+$', 'u'); r.test('123');");
+        Assert.True(result.Tag == JsValueTag.Boolean && result.AsBoolean());
+    }
+
+    [Fact]
+    public void WhitespaceEscapeMatchesExtendedWhitespace()
+    {
+        var result = Run("var r = /\\s/; r.test('\\u00A0') && r.test('\\u2028') && r.test('\\uFEFF');");
+        Assert.True(result.Tag == JsValueTag.Boolean && result.AsBoolean());
+    }
+
+    [Fact]
+    public void NonWhitespaceEscapeRejectsExtendedWhitespace()
+    {
+        var result = Run("var r = /\\S/; !r.test('\\u00A0') && !r.test('\\u2028') && !r.test('\\uFEFF');");
+        Assert.True(result.Tag == JsValueTag.Boolean && result.AsBoolean());
+    }
+
+    [Fact]
+    public void DigitEscapeWithUnicodeFlagIsAsciiOnly()
+    {
+        var result = Run("var r = /\\d/u; !r.test('\\u0660') && r.test('0');");
+        Assert.True(result.Tag == JsValueTag.Boolean && result.AsBoolean());
+    }
+
+    [Fact]
+    public void WordEscapeWithUnicodeFlagIsAsciiOnly()
+    {
+        var result = Run("var r = /\\w/u; !r.test('\\u00E9') && r.test('_');");
         Assert.True(result.Tag == JsValueTag.Boolean && result.AsBoolean());
     }
 }

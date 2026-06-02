@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
@@ -23,15 +24,32 @@ public sealed class RegExpBuiltin : IBuiltinModule
 
         var capturedCtx = context;
         var capturedProto = prototypeHandle;
+        ObjectHandle constructorHandle = default;
+        var functionPrototypeHandle = default(ObjectHandle);
+        var hasFunctionPrototype = false;
         var constructor = new NativeFunctionObject(
             "RegExp",
-            (_, args) => BuildRegExp(capturedCtx, capturedProto, args),
-            args => BuildRegExp(capturedCtx, capturedProto, args),
+            (_, args) => BuildRegExpCall(capturedCtx, capturedProto, constructorHandle, args),
+            args => BuildRegExpConstruct(capturedCtx, capturedProto, args),
             length: 2);
+        var functionConstructorHandle = context.MaterializeFunctionConstructor();
+        var functionConstructor = heap.GetObject(functionConstructorHandle);
+        if (context.TryGetPropertyValue(functionConstructor, JsValue.FromObject(functionConstructorHandle), "prototype", out var functionPrototypeValue) &&
+            functionPrototypeValue.Tag == JsValueTag.Object)
+        {
+            functionPrototypeHandle = functionPrototypeValue.AsObjectHandle();
+            constructor.SetPrototype(functionPrototypeHandle);
+            hasFunctionPrototype = true;
+        }
+
         constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
-        var constructorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
+        constructorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
         heap.PushRoot(constructorHandle);
         heap.WriteBarrier(constructorHandle, prototypeHandle);
+        if (hasFunctionPrototype)
+        {
+            heap.WriteBarrier(constructorHandle, functionPrototypeHandle);
+        }
 
         var protoObj = heap.GetObject(prototypeHandle);
         protoObj.DefineOwnProperty("constructor",
@@ -40,40 +58,109 @@ public sealed class RegExpBuiltin : IBuiltinModule
 
         context.InstallRegExpPrototypeMethods(prototypeHandle, protoObj);
 
+        var speciesSymbolId = context.CreateWellKnownSymbol("species").AsSymbolId();
+        var speciesGetter = new NativeFunctionObject("get [Symbol.species]", (thisValue, _args) => thisValue, length: 0);
+        var speciesGetterHandle = heap.AllocateObject(speciesGetter, AllocationSite.Current());
+        constructor.DefineOwnSymbolProperty(
+            speciesSymbolId,
+            JsPropertyDescriptor.Accessor(
+                JsValue.FromObject(speciesGetterHandle),
+                JsValue.Undefined,
+                Enumerable: false,
+                Configurable: true));
+        heap.WriteBarrier(constructorHandle, speciesGetterHandle);
+
         // ES2025 RegExp.escape
         context.DefineIntrinsicFunction(constructorHandle, constructor, "escape", (_, args) =>
         {
             if (args.Count == 0 || args[0].Tag != JsValueTag.String)
+            {
                 throw new JsThrownException(context.CreateTypeError("RegExp.escape: argument must be a string."));
+            }
+
             return JsValue.FromString(RegExpEscape(args[0].AsString()));
         }, length: 1);
 
         return new[] { BuiltinBinding.NonEnumerable("RegExp", JsValue.FromObject(constructorHandle)) };
     }
 
-    private static JsValue BuildRegExp(IBuiltinContext ctx, ObjectHandle protoHandle, IReadOnlyList<JsValue> args)
+    private static JsValue BuildRegExpCall(
+        IBuiltinContext ctx,
+        ObjectHandle protoHandle,
+        ObjectHandle constructorHandle,
+        IReadOnlyList<JsValue> args)
     {
-        var pattern = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? ctx.ToStringValue(args[0]) : string.Empty;
-        var flags = args.Count > 1 && args[1].Tag != JsValueTag.Undefined ? ctx.ToStringValue(args[1]) : string.Empty;
+        var patternArg = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var flagsArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+
+        if (flagsArg.Tag == JsValueTag.Undefined &&
+            ShouldReturnPatternOnCall(ctx, patternArg, constructorHandle))
+        {
+            return patternArg;
+        }
+
+        return BuildRegExpObject(ctx, protoHandle, patternArg, flagsArg);
+    }
+
+    private static JsValue BuildRegExpConstruct(
+        IBuiltinContext ctx,
+        ObjectHandle protoHandle,
+        IReadOnlyList<JsValue> args)
+    {
+        var patternArg = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var flagsArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+        return BuildRegExpObject(ctx, protoHandle, patternArg, flagsArg);
+    }
+
+    private static JsValue BuildRegExpObject(
+        IBuiltinContext ctx,
+        ObjectHandle protoHandle,
+        JsValue patternArg,
+        JsValue flagsArg)
+    {
+        ResolvePatternAndFlags(ctx, patternArg, flagsArg, out var pattern, out var flags);
+
         string normalizedFlags;
-        try { normalizedFlags = NormalizeRegExpFlags(flags); }
-        catch (ArgumentException) { throw new JsThrownException(ctx.CreateSyntaxError("Invalid RegExp flags.")); }
-        // ECMA-262 22.2.4 flags → RegexOptions mapping.
-        // ECMAScript mode is the default; dotAll (s) conflicts with it and
-        // Unicode (u) restricts \w/\d to ASCII in ECMAScript mode, so both
-        // remove the ECMAScript option to get fuller Unicode behaviour.
-        bool hasS = normalizedFlags.Contains('s', StringComparison.Ordinal);
-        bool hasU = normalizedFlags.Contains('u', StringComparison.Ordinal);
-        var options = (hasS || hasU)
+        try
+        {
+            normalizedFlags = NormalizeRegExpFlags(flags);
+        }
+        catch (ArgumentException)
+        {
+            throw new JsThrownException(ctx.CreateSyntaxError("Invalid RegExp flags."));
+        }
+
+        var hasS = normalizedFlags.Contains('s', StringComparison.Ordinal);
+        var hasU = normalizedFlags.Contains('u', StringComparison.Ordinal);
+        var hasV = normalizedFlags.Contains('v', StringComparison.Ordinal);
+        var options = (hasS || hasU || hasV)
             ? RegexOptions.CultureInvariant
             : RegexOptions.ECMAScript | RegexOptions.CultureInvariant;
-        if (normalizedFlags.Contains('i', StringComparison.Ordinal)) options |= RegexOptions.IgnoreCase;
-        if (normalizedFlags.Contains('m', StringComparison.Ordinal)) options |= RegexOptions.Multiline;
-        if (hasS) options |= RegexOptions.Singleline;
+        if (normalizedFlags.Contains('i', StringComparison.Ordinal))
+        {
+            options |= RegexOptions.IgnoreCase;
+        }
 
+        if (normalizedFlags.Contains('m', StringComparison.Ordinal))
+        {
+            options |= RegexOptions.Multiline;
+        }
+
+        if (hasS)
+        {
+            options |= RegexOptions.Singleline;
+        }
+
+        var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
         Regex regex;
-        try { regex = new Regex(pattern, options, TimeSpan.FromMilliseconds(250)); }
-        catch (ArgumentException ex) { throw new JsThrownException(ctx.CreateSyntaxError(ex.Message)); }
+        try
+        {
+            regex = new Regex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
+        }
+        catch (ArgumentException ex)
+        {
+            throw new JsThrownException(ctx.CreateSyntaxError(ex.Message));
+        }
 
         var obj = new RegExpObject(pattern, normalizedFlags, regex);
         obj.SetPrototype(protoHandle);
@@ -83,6 +170,7 @@ public sealed class RegExpBuiltin : IBuiltinModule
         obj.DefineOwnProperty("multiline", new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('m', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
         obj.DefineOwnProperty("dotAll", new JsPropertyDescriptor(JsValue.FromBoolean(hasS), Writable: false, Enumerable: false, Configurable: true));
         obj.DefineOwnProperty("unicode", new JsPropertyDescriptor(JsValue.FromBoolean(hasU), Writable: false, Enumerable: false, Configurable: true));
+        obj.DefineOwnProperty("unicodeSets", new JsPropertyDescriptor(JsValue.FromBoolean(hasV), Writable: false, Enumerable: false, Configurable: true));
         obj.DefineOwnProperty("sticky", new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('y', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
         obj.DefineOwnProperty("hasIndices", new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('d', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
         obj.DefineOwnProperty("flags", new JsPropertyDescriptor(JsValue.FromString(normalizedFlags), Writable: false, Enumerable: false, Configurable: true));
@@ -90,31 +178,208 @@ public sealed class RegExpBuiltin : IBuiltinModule
         return JsValue.FromObject(ctx.Heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
+    private static bool ShouldReturnPatternOnCall(IBuiltinContext ctx, JsValue patternArg, ObjectHandle constructorHandle)
+    {
+        if (patternArg.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        if (!IsRegExpLike(ctx, patternArg))
+        {
+            return false;
+        }
+
+        var patternObject = ctx.Heap.GetObject(patternArg.AsObjectHandle());
+        if (!ctx.TryGetPropertyValue(patternObject, patternArg, "constructor", out var patternConstructor))
+        {
+            return false;
+        }
+
+        return patternConstructor.Tag == JsValueTag.Object &&
+               patternConstructor.AsObjectHandle() == constructorHandle;
+    }
+
+    private static void ResolvePatternAndFlags(
+        IBuiltinContext ctx,
+        JsValue patternArg,
+        JsValue flagsArg,
+        out string pattern,
+        out string flags)
+    {
+        if (patternArg.Tag == JsValueTag.Object && IsRegExpLike(ctx, patternArg))
+        {
+            var patternObject = ctx.Heap.GetObject(patternArg.AsObjectHandle());
+            if (!ctx.TryGetPropertyValue(patternObject, patternArg, "source", out var sourceValue))
+            {
+                sourceValue = JsValue.FromString(string.Empty);
+            }
+
+            pattern = sourceValue.Tag == JsValueTag.Undefined ? string.Empty : ctx.ToStringValue(sourceValue);
+            if (flagsArg.Tag == JsValueTag.Undefined)
+            {
+                if (!ctx.TryGetPropertyValue(patternObject, patternArg, "flags", out var inheritedFlags))
+                {
+                    inheritedFlags = JsValue.FromString(string.Empty);
+                }
+
+                flags = inheritedFlags.Tag == JsValueTag.Undefined ? string.Empty : ctx.ToStringValue(inheritedFlags);
+                return;
+            }
+        }
+        else
+        {
+            pattern = patternArg.Tag == JsValueTag.Undefined ? string.Empty : ctx.ToStringValue(patternArg);
+        }
+
+        flags = flagsArg.Tag == JsValueTag.Undefined ? string.Empty : ctx.ToStringValue(flagsArg);
+    }
+
+    private static bool IsRegExpLike(IBuiltinContext ctx, JsValue value)
+    {
+        if (value.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var objectValue = ctx.Heap.GetObject(value.AsObjectHandle());
+        var matchSymbolId = ctx.CreateWellKnownSymbol("match").AsSymbolId();
+        if (objectValue.TryGetSymbolProperty(matchSymbolId, h => ctx.Heap.GetObject(h), out var descriptor))
+        {
+            var matcher = descriptor.IsAccessor ? JsValue.Undefined : descriptor.Value;
+            if (matcher.Tag != JsValueTag.Undefined)
+            {
+                return matcher.Tag switch
+                {
+                    JsValueTag.Boolean => matcher.AsBoolean(),
+                    JsValueTag.Int32 => matcher.AsInt32() != 0,
+                    JsValueTag.Number => matcher.AsNumber() != 0 && !double.IsNaN(matcher.AsNumber()),
+                    JsValueTag.String => matcher.AsString().Length != 0,
+                    JsValueTag.Null => false,
+                    JsValueTag.Undefined => false,
+                    _ => true
+                };
+            }
+        }
+
+        return objectValue is RegExpObject;
+    }
+
+    private static string RewriteEcmaCharacterClassEscapes(string pattern)
+    {
+        if (string.IsNullOrEmpty(pattern))
+        {
+            return pattern;
+        }
+
+        const string whiteSpaceClass = @"[\u0009-\u000D\u0020\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]";
+        const string nonWhiteSpaceClass = @"[^\u0009-\u000D\u0020\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]";
+        var rewritten = new StringBuilder(pattern.Length + 24);
+        var inCharClass = false;
+
+        for (var i = 0; i < pattern.Length; i++)
+        {
+            var ch = pattern[i];
+            if (ch == '\\' && i + 1 < pattern.Length)
+            {
+                var next = pattern[i + 1];
+                if (!inCharClass)
+                {
+                    switch (next)
+                    {
+                        case 'd':
+                            rewritten.Append("[0-9]");
+                            i++;
+                            continue;
+                        case 'D':
+                            rewritten.Append("[^0-9]");
+                            i++;
+                            continue;
+                        case 'w':
+                            rewritten.Append("[A-Za-z0-9_]");
+                            i++;
+                            continue;
+                        case 'W':
+                            rewritten.Append("[^A-Za-z0-9_]");
+                            i++;
+                            continue;
+                        case 's':
+                            rewritten.Append(whiteSpaceClass);
+                            i++;
+                            continue;
+                        case 'S':
+                            rewritten.Append(nonWhiteSpaceClass);
+                            i++;
+                            continue;
+                    }
+                }
+
+                rewritten.Append(ch);
+                rewritten.Append(next);
+                i++;
+                continue;
+            }
+
+            if (ch == '[' && !inCharClass)
+            {
+                inCharClass = true;
+                rewritten.Append(ch);
+                continue;
+            }
+
+            if (ch == ']' && inCharClass)
+            {
+                inCharClass = false;
+                rewritten.Append(ch);
+                continue;
+            }
+
+            rewritten.Append(ch);
+        }
+
+        return rewritten.ToString();
+    }
+
     private static string NormalizeRegExpFlags(string flags)
     {
-        var sb = new System.Text.StringBuilder(flags.Length);
-        var seenG = false; var seenI = false; var seenM = false;
-        var seenS = false; var seenU = false; var seenY = false; var seenD = false;
+        var seen = new HashSet<char>();
         foreach (var c in flags)
         {
             switch (c)
             {
-                case 'g': if (!seenG) { seenG = true; sb.Append(c); } break;
-                case 'i': if (!seenI) { seenI = true; sb.Append(c); } break;
-                case 'm': if (!seenM) { seenM = true; sb.Append(c); } break;
-                case 's': if (!seenS) { seenS = true; sb.Append(c); } break;
-                case 'u': if (!seenU) { seenU = true; sb.Append(c); } break;
-                case 'y': if (!seenY) { seenY = true; sb.Append(c); } break;
-                case 'd': if (!seenD) { seenD = true; sb.Append(c); } break;
-                default: throw new ArgumentException("Invalid flag: " + c);
+                case 'd':
+                case 'g':
+                case 'i':
+                case 'm':
+                case 's':
+                case 'u':
+                case 'v':
+                case 'y':
+                    if (!seen.Add(c))
+                    {
+                        throw new ArgumentException("Duplicate flag: " + c);
+                    }
+                    break;
+                default:
+                    throw new ArgumentException("Invalid flag: " + c);
             }
         }
-        return sb.ToString();
+
+        var canonical = new StringBuilder(flags.Length);
+        foreach (var c in "dgimsuvy")
+        {
+            if (seen.Contains(c))
+            {
+                canonical.Append(c);
+            }
+        }
+
+        return canonical.ToString();
     }
 
     private static string RegExpEscape(string s)
     {
-        var sb = new System.Text.StringBuilder(s.Length);
+        var sb = new StringBuilder(s.Length);
         for (var i = 0; i < s.Length; i++)
         {
             var c = s[i];
@@ -123,6 +388,7 @@ public sealed class RegExpBuiltin : IBuiltinModule
                 sb.Append('\\').Append('x').Append(((int)c).ToString("X2", System.Globalization.CultureInfo.InvariantCulture));
                 continue;
             }
+
             switch (c)
             {
                 case '\t': sb.Append("\\t"); continue;
@@ -131,9 +397,17 @@ public sealed class RegExpBuiltin : IBuiltinModule
                 case '\f': sb.Append("\\f"); continue;
                 case '\r': sb.Append("\\r"); continue;
             }
-            if ("^$\\.*+?()[]{}|/".IndexOf(c) >= 0) sb.Append('\\').Append(c);
-            else sb.Append(c);
+
+            if ("^$\\.*+?()[]{}|/".IndexOf(c) >= 0)
+            {
+                sb.Append('\\').Append(c);
+            }
+            else
+            {
+                sb.Append(c);
+            }
         }
+
         return sb.ToString();
     }
 }

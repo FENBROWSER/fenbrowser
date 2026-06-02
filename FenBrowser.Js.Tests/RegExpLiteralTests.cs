@@ -98,4 +98,25 @@ public sealed class RegExpLiteralTests
         var result = Run("/abc/g.lastIndex;");
         Assert.Equal(0.0, result.AsNumber(), 4);
     }
+
+    [Fact]
+    public void RegExpCallWithRegExpAndUndefinedFlagsReturnsSameObject()
+    {
+        var result = Run("var r = /x/i; RegExp(r) === r;");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void RegExpCallWithSymbolMatchAndSameConstructorReturnsInput()
+    {
+        var result = Run("var o = { constructor: RegExp }; o[Symbol.match] = true; RegExp(o) === o;");
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void RegExpConstructorInheritsFromFunctionPrototype()
+    {
+        var result = Run("Function.prototype.isPrototypeOf(RegExp);");
+        Assert.True(result.AsBoolean());
+    }
 }
