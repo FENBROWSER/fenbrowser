@@ -6,7 +6,7 @@ namespace FenBrowser.Js.Test262;
 
 public sealed class Test262Expectations
 {
-    private static readonly Regex MilestonePattern = new("^M\\d+(?:\\.\\d+)?$", RegexOptions.CultureInvariant);
+    private static readonly System.Text.RegularExpressions.Regex MilestonePattern = new("^M\\d+(?:\\.\\d+)?$", RegexOptions.CultureInvariant);
 
     private static readonly HashSet<string> ValidStatuses = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -224,15 +224,15 @@ public sealed record Test262ExpectationEntry(
                BuildRegex(PathPattern).IsMatch(relativePath);
     }
 
-    private static readonly ConcurrentDictionary<string, Regex> RegexCache = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, System.Text.RegularExpressions.Regex> RegexCache = new(StringComparer.Ordinal);
 
-    private static Regex BuildRegex(string glob)
+    private static System.Text.RegularExpressions.Regex BuildRegex(string glob)
     {
         var normalized = glob.Replace('\\', '/');
         return RegexCache.GetOrAdd(normalized, static key =>
         {
-            var pattern = "^" + Regex.Escape(key).Replace("\\*", ".*") + "$";
-            return new Regex(pattern, RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+            var pattern = "^" + System.Text.RegularExpressions.Regex.Escape(key).Replace("\\*", ".*") + "$";
+            return new System.Text.RegularExpressions.Regex(pattern, RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
         });
     }
 }

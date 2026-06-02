@@ -5,7 +5,7 @@ namespace FenBrowser.Js.Test262;
 
 public static class Test262GateVerifier
 {
-    private static readonly Regex MilestonePattern = new("^M\\d+(?:\\.\\d+)?$", RegexOptions.CultureInvariant);
+    private static readonly System.Text.RegularExpressions.Regex MilestonePattern = new("^M\\d+(?:\\.\\d+)?$", RegexOptions.CultureInvariant);
 
     public static GateVerificationResult Verify(string currentResultPath, string? previousResultPath)
     {

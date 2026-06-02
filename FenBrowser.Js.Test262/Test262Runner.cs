@@ -4,7 +4,10 @@ using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Runtime;
+using System.Collections.Concurrent;
+using System.Runtime.ExceptionServices;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace FenBrowser.Js.Test262;
 
@@ -46,7 +49,7 @@ public sealed class Test262Runner
 
         if (list)
         {
-            foreach (var file in files.Take(200))
+            foreach (var file in files.Take(Math.Max(1, max)))
             {
                 Console.WriteLine(file);
             }
@@ -325,7 +328,7 @@ public sealed class Test262Runner
                 }
 
                 var source = new SourceText(parserInput, file);
-                var parseTask = Task.Run(() =>
+                var parseCompleted = RunWithPerTestTimeout(() =>
                 {
                     var overrideInvoker = ParseInvokerForTests;
                     if (overrideInvoker is not null)
@@ -340,10 +343,8 @@ public sealed class Test262Runner
                     {
                         JsParser.ParseScript(source);
                     }
-                });
-                var timeoutTask = Task.Delay(Math.Max(1, timeoutMs));
-                var completedTask = Task.WhenAny(parseTask, timeoutTask).GetAwaiter().GetResult();
-                if (!ReferenceEquals(completedTask, parseTask))
+                }, timeoutMs);
+                if (!parseCompleted)
                 {
                     timedOut++;
                     var expected = FindMatchingExpectation(expectations, relativePath, "Timeout");
@@ -383,9 +384,6 @@ public sealed class Test262Runner
                     });
                     continue;
                 }
-
-                // Propagate parser exceptions with original types (not AggregateException).
-                parseTask.GetAwaiter().GetResult();
 
                 if (expectsSyntaxError)
                 {
@@ -740,9 +738,12 @@ public sealed class Test262Runner
             "resizableArrayBufferUtils.js",
             "testAtomics.js",
             "atomicsHelper.js",
+            "temporalHelpers.js",
         };
 
         Console.WriteLine($"Running runtime subset: total={subset.Count}, timeoutMs={timeoutMs}, root={rootPath}");
+
+        var compiler = new BytecodeCompiler();
 
         foreach (var file in subset)
         {
@@ -876,7 +877,7 @@ public sealed class Test262Runner
                 }
 
                 var interruptRequested = 0;
-                var executeTask = Task.Run(() =>
+                var executeCompleted = RunWithPerTestTimeout(() =>
                 {
                     var overrideInvoker = RuntimeInvokerForTests;
                     if (overrideInvoker is not null)
@@ -886,13 +887,12 @@ public sealed class Test262Runner
                     else
                     {
                         var source = new SourceText(runtimeInput, file);
-                        var program = parseAsModule ? JsParser.ParseModule(source) : JsParser.ParseScript(source);
-                        var compiler = new BytecodeCompiler();
-                        var function = compiler.CompileProgram(program);
+                        var function = parseAsModule
+                            ? compiler.CompileProgram(JsParser.ParseModule(source))
+                            : compiler.CompileScript(source);
                         var interpreter = new BytecodeInterpreter(new JsHeap());
                         // Use interpreter-level wall-clock budget so long-running scripts
-                        // terminate from inside execution instead of lingering after the
-                        // outer Task.WhenAny timeout gate.
+                        // terminate from inside execution before the external timeout.
                         interpreter.WallClockTimeoutMs = Math.Max(1, timeoutMs);
                         interpreter.InterruptCallback = () => Volatile.Read(ref interruptRequested) == 0;
                         try
@@ -908,20 +908,10 @@ public sealed class Test262Runner
                             throw;
                         }
                     }
-                });
-                var timeoutTask = Task.Delay(Math.Max(1, timeoutMs));
-                var completedTask = Task.WhenAny(executeTask, timeoutTask).GetAwaiter().GetResult();
-                if (!ReferenceEquals(completedTask, executeTask))
+                }, timeoutMs);
+                if (!executeCompleted)
                 {
                     Volatile.Write(ref interruptRequested, 1);
-                    try
-                    {
-                        _ = executeTask.Wait(Math.Max(1, Math.Min(timeoutMs, 250)));
-                    }
-                    catch
-                    {
-                        // Best-effort unwind after timeout; timeout classification is kept.
-                    }
                     timedOut++;
                     var expected = FindMatchingExpectation(expectations, relativePath, "Timeout");
                     if (expected is not null)
@@ -959,8 +949,6 @@ public sealed class Test262Runner
                     });
                     continue;
                 }
-
-                executeTask.GetAwaiter().GetResult();
 
                 if (expectsSyntaxError || expectsRuntimeThrow)
                 {
@@ -1438,6 +1426,37 @@ public sealed class Test262Runner
         return string.Equals(phase, "runtime", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool RunWithPerTestTimeout(Action action, int timeoutMs)
+    {
+        ExceptionDispatchInfo? captured = null;
+        using var cts = new CancellationTokenSource(Math.Max(1, timeoutMs));
+        var task = Task.Run(() =>
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception ex)
+            {
+                captured = ExceptionDispatchInfo.Capture(ex);
+            }
+        }, cts.Token);
+
+        try
+        {
+            task.Wait(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // Timeout fired before the task completed.
+            // The interpreter's WallClockTimeoutMs + InterruptCallback handle in-flight abort.
+            return false;
+        }
+
+        captured?.Throw();
+        return true;
+    }
+
     private static bool RequiresRuntimeHarnessSupport(string sourceText)
     {
         return sourceText.Contains("Test262Error", StringComparison.Ordinal) ||
@@ -1447,7 +1466,12 @@ public sealed class Test262Runner
                sourceText.Contains("$262", StringComparison.Ordinal);
     }
 
-    private static string BuildRuntimeHarnessPrelude()
+    // Cached harness prelude string — built once, reused for every test.
+    private static readonly string _cachedHarnessPrelude = BuildRuntimeHarnessPreludeRaw();
+
+    private static string BuildRuntimeHarnessPrelude() => _cachedHarnessPrelude;
+
+    private static string BuildRuntimeHarnessPreludeRaw()
     {
         var prelude = """
 
@@ -1694,6 +1718,8 @@ public sealed class Test262Runner
         "regExpUtils.js",
     };
 
+    private static readonly ConcurrentDictionary<string, string> _includeFileCache = new(StringComparer.Ordinal);
+
     private static string BuildRuntimeHarnessIncludePrelude(string rootPath, IReadOnlyList<string> includes)
     {
         if (includes.Count == 0)
@@ -1715,7 +1741,7 @@ public sealed class Test262Runner
                 continue;
             }
 
-            snippets.Add(File.ReadAllText(includePath));
+            snippets.Add(_includeFileCache.GetOrAdd(includePath, File.ReadAllText));
         }
 
         return snippets.Count == 0 ? string.Empty : string.Join("\n", snippets);
