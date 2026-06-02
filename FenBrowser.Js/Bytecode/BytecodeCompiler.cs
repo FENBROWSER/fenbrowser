@@ -1071,63 +1071,108 @@ public sealed class BytecodeCompiler
 
     private void CompileForStatement(ForStatementNode forStmt)
     {
-        if (forStmt.Initializer is not null)
+        Dictionary<string, bool>? loopHeaderDecls = null;
+        if (forStmt.Initializer is VariableDeclarationStatementNode initDecl &&
+            (string.Equals(initDecl.Kind, "let", StringComparison.Ordinal) ||
+             string.Equals(initDecl.Kind, "const", StringComparison.Ordinal)))
         {
-            CompileStatement(forStmt.Initializer);
+            loopHeaderDecls = new Dictionary<string, bool>(StringComparer.Ordinal);
+            var isConst = string.Equals(initDecl.Kind, "const", StringComparison.Ordinal);
+            foreach (var declarator in initDecl.Declarators)
+            {
+                foreach (var boundName in GetDeclaratorBoundNames(declarator))
+                {
+                    loopHeaderDecls[boundName] = isConst;
+                }
+            }
+
+            if (loopHeaderDecls.Count > 0)
+            {
+                var nameSet = new HashSet<string>(loopHeaderDecls.Keys, StringComparer.Ordinal);
+                _blockScopedNameStack.Push(nameSet);
+                foreach (var kvp in loopHeaderDecls)
+                {
+                    var slot = GetOrCreateVariableSlot(kvp.Key);
+                    var immutable = kvp.Value ? 1 : 0;
+                    _instructions.Add(new Instruction(OpCode.EnterScope, slot, immutable, 0));
+                    _openScopeDepth++;
+                }
+            }
         }
 
-        var loopStart = _instructions.Count;
-        int? jumpIfFalseIndex = null;
-        if (forStmt.Test is not null)
-        {
-            var testReg = CompileExpression(forStmt.Test);
-            jumpIfFalseIndex = EmitPlaceholder(OpCode.JumpIfFalse, testReg);
-        }
-
-        var ctx = new LoopContext
-        {
-            ContinueTarget = -1,
-            BreakJumpIndices = new List<int>(),
-            ContinueJumpIndices = new List<int>(),
-            ScopeDepthAtEntry = _openScopeDepth,
-            Seq = _nestingSeq++
-        };
-        _loopStack.Push(ctx);
-        if (_pendingLabel != null)
-        {
-            ctx.Label = _pendingLabel;
-            _pendingLabel = null;
-        }
         try
         {
-            CompileStatement(forStmt.Body);
-            var continueTarget = _instructions.Count;
-            ctx.ContinueTarget = continueTarget;
-            if (forStmt.Update is not null)
+            if (forStmt.Initializer is not null)
             {
-                _ = CompileExpression(forStmt.Update);
+                CompileStatement(forStmt.Initializer);
             }
 
-            _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
-            var loopEnd = _instructions.Count;
-            if (jumpIfFalseIndex is not null)
+            var loopStart = _instructions.Count;
+            int? jumpIfFalseIndex = null;
+            if (forStmt.Test is not null)
             {
-                PatchJump(jumpIfFalseIndex.Value, loopEnd);
+                var testReg = CompileExpression(forStmt.Test);
+                jumpIfFalseIndex = EmitPlaceholder(OpCode.JumpIfFalse, testReg);
             }
 
-            foreach (var breakJump in ctx.BreakJumpIndices)
+            var ctx = new LoopContext
             {
-                PatchJump(breakJump, loopEnd);
+                ContinueTarget = -1,
+                BreakJumpIndices = new List<int>(),
+                ContinueJumpIndices = new List<int>(),
+                ScopeDepthAtEntry = _openScopeDepth,
+                Seq = _nestingSeq++
+            };
+            _loopStack.Push(ctx);
+            if (_pendingLabel != null)
+            {
+                ctx.Label = _pendingLabel;
+                _pendingLabel = null;
             }
-
-            foreach (var continueJump in ctx.ContinueJumpIndices)
+            try
             {
-                PatchJump(continueJump, continueTarget);
+                CompileStatement(forStmt.Body);
+                var continueTarget = _instructions.Count;
+                ctx.ContinueTarget = continueTarget;
+                if (forStmt.Update is not null)
+                {
+                    _ = CompileExpression(forStmt.Update);
+                }
+
+                _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
+                var loopEnd = _instructions.Count;
+                if (jumpIfFalseIndex is not null)
+                {
+                    PatchJump(jumpIfFalseIndex.Value, loopEnd);
+                }
+
+                foreach (var breakJump in ctx.BreakJumpIndices)
+                {
+                    PatchJump(breakJump, loopEnd);
+                }
+
+                foreach (var continueJump in ctx.ContinueJumpIndices)
+                {
+                    PatchJump(continueJump, continueTarget);
+                }
+            }
+            finally
+            {
+                _ = _loopStack.Pop();
             }
         }
         finally
         {
-            _ = _loopStack.Pop();
+            if (loopHeaderDecls is { Count: > 0 })
+            {
+                foreach (var _ in loopHeaderDecls)
+                {
+                    _instructions.Add(new Instruction(OpCode.LeaveScope));
+                    _openScopeDepth--;
+                }
+
+                _blockScopedNameStack.Pop();
+            }
         }
     }
 

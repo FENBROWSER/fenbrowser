@@ -83,4 +83,12 @@ public sealed class LexicalEnvironmentRuntimeTests
             "TypeError",
             RunStr("let observed; try { const c = 1; c = 2; } catch (e) { observed = e.name; } observed;"));
     }
+
+    [Fact]
+    public void ForLetInitializerIsRecreatedOnEachOuterIteration()
+    {
+        Assert.Equal(
+            2,
+            RunNum("let count = 0; for (let outer = 0; outer < 2; outer++) { for (let length = 0; length < 1; length++) { count++; } } count;"));
+    }
 }
