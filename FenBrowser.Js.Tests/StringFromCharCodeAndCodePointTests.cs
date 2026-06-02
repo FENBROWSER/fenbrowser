@@ -44,4 +44,10 @@ public sealed class StringFromCharCodeAndCodePointTests
         Assert.Throws<JsThrownException>(() => RunStr("String.fromCodePoint(NaN);"));
         Assert.Throws<JsThrownException>(() => RunStr("String.fromCodePoint(1.5);"));
     }
+
+    [Fact]
+    public void FromCodePoint_AllowsLoneSurrogateCodePoint()
+    {
+        Assert.Equal("\uD800", RunStr("String.fromCodePoint(0xD800);"));
+    }
 }

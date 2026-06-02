@@ -123,7 +123,18 @@ public sealed class StringBuiltin : IBuiltinModule
                 var n = context.ToNumber(args[i]);
                 if (double.IsNaN(n) || n < 0 || n > 0x10FFFF || Math.Floor(n) != n)
                     throw new JsThrownException(context.CreateRangeError("Invalid code point in String.fromCodePoint argument list."));
-                sb.Append(char.ConvertFromUtf32((int)n));
+                var codePoint = (int)n;
+                if (codePoint <= 0xFFFF)
+                {
+                    // ECMAScript allows lone surrogate code points here; emit the
+                    // corresponding single UTF-16 code unit directly.
+                    sb.Append((char)codePoint);
+                    continue;
+                }
+
+                var astral = codePoint - 0x10000;
+                sb.Append((char)(0xD800 + (astral >> 10)));
+                sb.Append((char)(0xDC00 + (astral & 0x3FF)));
             }
             return JsValue.FromString(sb.ToString());
         }, length: 1);
