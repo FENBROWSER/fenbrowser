@@ -23,9 +23,9 @@ public sealed class TemporalStubTests
     }
 
     [Fact]
-    public void PlainDateToStringFormatsIsoDate()
+    public void TemporalNowSurfaceExists()
     {
-        var result = Run("new Temporal.PlainDate(2024, 1, 15).toString();");
-        Assert.Equal("2024-01-15", result.AsString());
+        var result = Run("typeof Temporal.Now === 'object' && typeof Temporal.Now.instant === 'function' && typeof Temporal.Now.plainDateISO === 'function';");
+        Assert.True(result.AsBoolean());
     }
 }

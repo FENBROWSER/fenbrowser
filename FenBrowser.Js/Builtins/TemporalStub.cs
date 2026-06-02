@@ -489,6 +489,8 @@ public sealed class TemporalStub : IBuiltinModule
             f = new NativeFunctionObject(name,
                 (_, _a) =>
                 {
+                    if (constructFactory != null)
+                        return AttachPrototype(h, constructFactory(ctx, h, _a), protoH);
                     var o = new JsObject(); o.SetPrototype(protoH);
                     o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.Undefined, false, false, false));
                     return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
@@ -496,7 +498,7 @@ public sealed class TemporalStub : IBuiltinModule
                 _a =>
                 {
                     if (constructFactory != null)
-                        return constructFactory(ctx, h, _a);
+                        return AttachPrototype(h, constructFactory(ctx, h, _a), protoH);
                     var o = new JsObject(); o.SetPrototype(protoH);
                     o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.Undefined, false, false, false));
                     return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
@@ -517,6 +519,16 @@ public sealed class TemporalStub : IBuiltinModule
         parent.DefineOwnProperty(name, new JsPropertyDescriptor(JsValue.FromObject(cH), true, false, true));
         h.WriteBarrier(pH, cH);
         return (cH, protoH);
+    }
+
+    private static JsValue AttachPrototype(JsHeap h, JsValue value, ObjectHandle protoHandle)
+    {
+        if (value.Tag == JsValueTag.Object)
+        {
+            h.GetObject(value.AsObjectHandle()).SetPrototype(protoHandle);
+        }
+
+        return value;
     }
 
     private static void AddGetter(JsHeap h, ObjectHandle pH, JsObject p, string n, Func<JsObject, JsValue> g)
