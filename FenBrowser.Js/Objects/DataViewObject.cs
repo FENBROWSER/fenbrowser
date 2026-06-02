@@ -40,6 +40,17 @@ public sealed class DataViewObject : TypedArrayView
         return BitConverter.Int32BitsToSingle(v);
     }
 
+    public double GetFloat16(int byteOffset, bool littleEndian)
+    {
+        ValidateOffset(byteOffset, 2);
+        var raw = Buffer.Data;
+        var off = ByteOffset + byteOffset;
+        var bits = BitConverter.ToUInt16(raw, off);
+        if (littleEndian != BitConverter.IsLittleEndian)
+            bits = BinaryPrimitives.ReverseEndianness(bits);
+        return (double)BitConverter.UInt16BitsToHalf(bits);
+    }
+
     public int GetInt32(int byteOffset, bool littleEndian)
     {
         ValidateOffset(byteOffset, 4);
@@ -144,6 +155,15 @@ public sealed class DataViewObject : TypedArrayView
             bits = (int)BinaryPrimitives.ReverseEndianness((uint)bits);
             BitConverter.TryWriteBytes(raw.AsSpan(off, 4), bits);
         }
+    }
+
+    public void SetFloat16(int byteOffset, double value, bool littleEndian)
+    {
+        ValidateOffset(byteOffset, 2);
+        var bits = BitConverter.HalfToUInt16Bits((Half)value);
+        if (littleEndian != BitConverter.IsLittleEndian)
+            bits = BinaryPrimitives.ReverseEndianness(bits);
+        BitConverter.TryWriteBytes(Buffer.Data.AsSpan(ByteOffset + byteOffset, 2), bits);
     }
 
     public void SetInt32(int byteOffset, int value, bool littleEndian)

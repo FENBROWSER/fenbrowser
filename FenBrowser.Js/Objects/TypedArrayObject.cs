@@ -75,6 +75,23 @@ public abstract class TypedArrayObject : TypedArrayView
             case TypedArrayElementType.Float64:
                 BitConverter.TryWriteBytes(raw.AsSpan(offset, 8), value.AsNumber());
                 break;
+            case TypedArrayElementType.BigInt64:
+            {
+                var big = value.Tag == JsValueTag.BigInt ? value.AsBigInt() : new BigInteger((long)value.AsNumber());
+                var two64 = BigInteger.One << 64;
+                var wrapped = ((big % two64) + two64) % two64;
+                var signed = wrapped >= (BigInteger.One << 63) ? wrapped - two64 : wrapped;
+                BitConverter.TryWriteBytes(raw.AsSpan(offset, 8), (long)signed);
+                break;
+            }
+            case TypedArrayElementType.BigUint64:
+            {
+                var big = value.Tag == JsValueTag.BigInt ? value.AsBigInt() : new BigInteger((ulong)Math.Max(0, value.AsNumber()));
+                var two64 = BigInteger.One << 64;
+                var wrapped = ((big % two64) + two64) % two64;
+                BitConverter.TryWriteBytes(raw.AsSpan(offset, 8), (ulong)wrapped);
+                break;
+            }
         }
     }
 

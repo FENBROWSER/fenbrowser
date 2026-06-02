@@ -1,3 +1,5 @@
+using FenBrowser.Js.Runtime;
+
 namespace FenBrowser.Js.Objects;
 
 // ECMA-262 23.2 — TypedArray element types.
@@ -44,5 +46,7 @@ public abstract class TypedArrayView : JsObject
     public override void Trace(Heap.IHeapTracer tracer)
     {
         base.Trace(tracer);
+        if (Buffer.OwnerHandle is { } bufferHandle)
+            tracer.Trace(bufferHandle);
     }
 }
