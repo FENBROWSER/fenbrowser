@@ -146,6 +146,7 @@ internal sealed class TestBuiltinContext : IBuiltinContext
     public ObjectHandle MaterializeStructuredCloneFunction() => throw new NotSupportedException();
     public ObjectHandle MaterializeIntlObject() => throw new NotSupportedException();
     public ObjectHandle MaterializeArrayBufferConstructor() => throw new NotSupportedException();
+    public ObjectHandle MaterializeSharedArrayBufferConstructor() => throw new NotSupportedException();
     public ObjectHandle MaterializeDataViewConstructor() => throw new NotSupportedException();
     public BuiltinBinding[] MaterializeTypedArrayConstructors() => throw new NotSupportedException();
 }

@@ -93,6 +93,7 @@ public interface IBuiltinContext
 
     // TypedArray / ArrayBuffer / DataView constructors.
     ObjectHandle MaterializeArrayBufferConstructor();
+    ObjectHandle MaterializeSharedArrayBufferConstructor();
     ObjectHandle MaterializeDataViewConstructor();
     BuiltinBinding[] MaterializeTypedArrayConstructors();
 
