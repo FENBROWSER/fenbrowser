@@ -879,6 +879,18 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesHexLiteralsAsUnsignedMagnitude()
+    {
+        var program = JsParser.ParseScript(new SourceText("0xFA; 0xD800;"));
+        var s1 = Assert.IsType<ExpressionStatementNode>(program.Body[0]);
+        var n1 = Assert.IsType<NumericLiteralExpressionNode>(s1.Expression);
+        Assert.Equal(250, n1.Value);
+        var s2 = Assert.IsType<ExpressionStatementNode>(program.Body[1]);
+        var n2 = Assert.IsType<NumericLiteralExpressionNode>(s2.Expression);
+        Assert.Equal(55296, n2.Value);
+    }
+
+    [Fact]
     public void ParsesBigIntSuffixedNumericLiteralsAsNumericSubset()
     {
         var program = JsParser.ParseScript(new SourceText("1n; 0x2An; 0o10n; 0b11n;"));

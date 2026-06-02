@@ -3141,9 +3141,9 @@ public sealed class JsParser
 
         if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
         {
-            if (text.Length > 2 && BigInteger.TryParse(text[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hex))
+            if (text.Length > 2 && TryParseRadix(text[2..], 16, out var hex))
             {
-                value = (double)hex;
+                value = hex;
                 return true;
             }
 
