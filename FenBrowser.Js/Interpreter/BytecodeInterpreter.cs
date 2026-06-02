@@ -3777,7 +3777,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             .Register(new DataViewBuiltin())
             .Register(new TypedArrayBuiltin())
             .Register(new AtomicsBuiltin())
-            .Register(new IntlBuiltin());
+            .Register(new IntlBuiltin())
+            .Register(new TemporalStub());
         foreach (var b in registry.Materialize(this))
             InstallBinding(global, globalHandle, b);
 
