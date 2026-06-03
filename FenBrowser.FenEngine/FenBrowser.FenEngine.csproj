@@ -18,6 +18,7 @@
   <!-- Enhanced Project References with proper build ordering -->
   <ItemGroup>
     <ProjectReference Include="..\FenBrowser.Core\FenBrowser.Core.csproj" />
+    <ProjectReference Include="..\FenBrowser.Js\FenBrowser.Js.csproj" />
     <ProjectReference Include="..\FenBrowser.WebIdlGen\FenBrowser.WebIdlGen.csproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <!-- Ensures build order: WebIdlGen builds before projects that need bindings -->

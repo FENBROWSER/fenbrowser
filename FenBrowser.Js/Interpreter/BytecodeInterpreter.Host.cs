@@ -1,5 +1,6 @@
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Host;
+using FenBrowser.Js.Objects;
 using FenBrowser.Js.Promises;
 using FenBrowser.Js.Runtime;
 
@@ -127,6 +128,104 @@ public sealed partial class BytecodeInterpreter
                 Writable: true,
                 Enumerable: false,
                 Configurable: true));
+    }
+
+    // Host embedder seam: allocate a callable native function on the current
+    // heap so hosted browser surfaces can expose DOM/Web API methods directly
+    // without reaching into interpreter internals.
+    public JsValue AllocateNativeFunction(
+        string name,
+        Func<JsValue, IReadOnlyList<JsValue>, JsValue> call,
+        int length = 0)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        ArgumentNullException.ThrowIfNull(call);
+
+        var function = new NativeFunctionObject(name, call, length: length);
+        function.SetPrototype(EnsureFunctionPrototype());
+        var handle = _heap.AllocateObject(function, AllocationSite.Current());
+        return JsValue.FromObject(handle);
+    }
+
+    public JsValue AllocateNativeConstructor(
+        string name,
+        Func<JsValue, IReadOnlyList<JsValue>, JsValue> call,
+        Func<IReadOnlyList<JsValue>, JsValue> construct,
+        int length = 0)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        ArgumentNullException.ThrowIfNull(call);
+        ArgumentNullException.ThrowIfNull(construct);
+
+        var function = new NativeFunctionObject(name, call, construct, length: length);
+        function.SetPrototype(EnsureFunctionPrototype());
+        var handle = _heap.AllocateObject(function, AllocationSite.Current());
+        return JsValue.FromObject(handle);
+    }
+
+    public bool CanCallValue(JsValue value)
+    {
+        return IsCallable(value);
+    }
+
+    public JsValue InvokeFunction(JsValue function, IReadOnlyList<JsValue> args, JsValue thisValue)
+    {
+        return CallFunction(function, args, thisValue);
+    }
+
+    public JsValue AllocateObject(IReadOnlyDictionary<string, JsValue> properties)
+    {
+        ArgumentNullException.ThrowIfNull(properties);
+
+        var obj = CreateOrdinaryObject();
+        foreach (var property in properties)
+        {
+            _ = obj.DefineOwnProperty(
+                property.Key,
+                new JsPropertyDescriptor(
+                    property.Value,
+                    Writable: true,
+                    Enumerable: true,
+                    Configurable: true));
+        }
+
+        return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
+    }
+
+    public JsValue AllocateArray(IReadOnlyList<JsValue> elements)
+    {
+        ArgumentNullException.ThrowIfNull(elements);
+        return JsValue.FromObject(_heap.AllocateObject(CreateArrayFromElements(elements), AllocationSite.Current()));
+    }
+
+    public void SetObjectProperty(
+        JsValue target,
+        string name,
+        JsValue value,
+        bool writable = true,
+        bool enumerable = true,
+        bool configurable = true)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        if (target.Tag != JsValueTag.Object)
+        {
+            throw new ArgumentException("Target must be an object.", nameof(target));
+        }
+
+        var handle = target.AsObjectHandle();
+        var obj = _heap.GetObject(handle);
+        _ = obj.DefineOwnProperty(
+            name,
+            new JsPropertyDescriptor(
+                value,
+                Writable: writable,
+                Enumerable: enumerable,
+                Configurable: configurable));
+
+        if (value.Tag == JsValueTag.Object)
+        {
+            _heap.WriteBarrier(handle, value.AsObjectHandle());
+        }
     }
 
     // E.6 - install a JS value as a global binding under the given name. Used

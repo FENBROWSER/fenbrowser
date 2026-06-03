@@ -2388,10 +2388,7 @@ pre {{
             // globals and cookie-name set at the point of navigation completion.
             // No-ops unless FEN_NAV_GLOBALS_SNAPSHOT=1 or LogNavigationGlobals is
             // set; bounded by ProbeTimeoutMs; failures are swallowed.
-            FenBrowser.FenEngine.Scripting.NavigationGlobalsProbe.Capture(
-                _engine?.JsEngine,
-                _current,
-                navigationId);
+            _engine?.ScriptEngine?.CaptureNavigationGlobals(_current, navigationId);
 
             EngineLog.EmitSuppressedSummary();
             var (unsupportedHtml, unsupportedCss, unsupportedJs) = EngineCapabilities.GetUnsupportedCounts();
@@ -4106,7 +4103,7 @@ pre {{
                 return;
             }
 
-            var jsEngine = _engine?.JsEngine;
+            var jsEngine = _engine?.ScriptEngine;
             if (jsEngine == null)
             {
                 return;
@@ -4125,7 +4122,7 @@ pre {{
 
         private void SyncScriptContextToSelectedBrowsingContext()
         {
-            var jsEngine = _engine?.JsEngine;
+            var jsEngine = _engine?.ScriptEngine;
             if (jsEngine == null)
             {
                 return;

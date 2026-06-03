@@ -325,7 +325,7 @@ namespace FenBrowser.FenEngine.Rendering
         }
 
         public Node ActiveDom => _activeDom;
-        public JavaScriptEngine JsEngine => _activeJs;
+        public IBrowserScriptEngine ScriptEngine => _activeJs;
         private Node _activeDom;
         private long _renderSnapshotVersion;
         private bool _hasStableStyles;
@@ -339,7 +339,7 @@ namespace FenBrowser.FenEngine.Rendering
         private double? _activeViewportWidth;
         private double? _activeViewportHeight;
         private Action<object> _activeFixedBackground;
-        private JavaScriptEngine _activeJs;
+        private IBrowserScriptEngine _activeJs;
         public BrowserCookieJar CookieJar { get; set; } = new BrowserCookieJar();
         private readonly System.Threading.SemaphoreSlim _repaintGate = new System.Threading.SemaphoreSlim(1, 1);
         private readonly object _uiDispatcher;
@@ -1397,7 +1397,7 @@ public void Dispose()
             double? viewportWidth,
             double? viewportHeight,
             Action<object> onFixedBackground,
-            JavaScriptEngine js)
+            IBrowserScriptEngine js)
         {
             SetActiveDom(dom);
             _activeBaseUri = baseUri;
@@ -1499,7 +1499,7 @@ public void Dispose()
             Func<Uri, Task<string>> fetchExternalCssAsync,
             Func<Uri, Task<Stream>> imageLoader,
             Action<Uri> onNavigate,
-            JavaScriptEngine js,
+            IBrowserScriptEngine js,
             double? viewportWidth,
             double? viewportHeight,
             Action<object> onFixedBackground,
@@ -2227,7 +2227,7 @@ public void Dispose()
             }
         }
 
-        private JavaScriptEngine SetupJavaScriptEngine(
+        private IBrowserScriptEngine SetupJavaScriptEngine(
              Uri baseUri,
              Action<Uri> onNavigate, 
              bool allowJs, 
@@ -2237,8 +2237,8 @@ public void Dispose()
         {
              if (!allowJs) return null;
 
-             EngineLogCompat.Debug("[CustomHtmlEngine] Creating JavaScriptEngine...", LogCategory.Rendering);
-             var js = new JavaScriptEngine(new JsHostAdapter(
+             EngineLogCompat.Debug("[CustomHtmlEngine] Creating browser script engine...", LogCategory.Rendering);
+             var js = BrowserScriptEngineRuntime.Create(new JsHostAdapter(
                  navigate: onNavigate,
                  post: (_, __) => { },
                  status: _ => { },
@@ -2288,33 +2288,32 @@ public void Dispose()
                      catch { /* diagnostics must never break a navigation */ }
                      ConsoleMessage?.Invoke(msg);
                  },
-                 scrollToElement: (el) => { }))
+                 scrollToElement: (el) => { }));
+
+             js.Sandbox = allowJs ? SandboxPolicy.AllowAll : SandboxPolicy.NoScripts;
+             js.AllowExternalScripts = allowJs;
+             js.SubresourceAllowed = (u, kind) =>
              {
-                 Sandbox = allowJs ? SandboxPolicy.AllowAll : SandboxPolicy.NoScripts,
-                 AllowExternalScripts = allowJs,
-                 SubresourceAllowed = (u, kind) =>
+                 if (!allowJs) return false;
+                 if (ActivePolicy != null)
                  {
-                     if (!allowJs) return false;
-                     if (ActivePolicy != null)
+                     string directive = kind switch
                      {
-                         string directive = kind switch
-                         {
-                             "script" => "script-src",
-                             "style" => "style-src",
-                             "img" => "img-src",
-                             "font" => "font-src",
-                             "media" => "media-src",
-                             "connect" => "connect-src",
-                             "frame" => "frame-src",
-                             "object" => "object-src",
-                             _ => "default-src"
-                         };
-                        return ActivePolicy.IsAllowed(directive, u, baseUri);
-                     }
-                     return true;
-                 },
-                 ExecuteInlineScriptsOnInnerHTML = allowJs
+                         "script" => "script-src",
+                         "style" => "style-src",
+                         "img" => "img-src",
+                         "font" => "font-src",
+                         "media" => "media-src",
+                         "connect" => "connect-src",
+                         "frame" => "frame-src",
+                         "object" => "object-src",
+                         _ => "default-src"
+                     };
+                    return ActivePolicy.IsAllowed(directive, u, baseUri);
+                 }
+                 return true;
              };
+             js.ExecuteInlineScriptsOnInnerHTML = allowJs;
 
              // Wire up CSP Nonce check
              js.NonceAllowed = (nonce) =>
@@ -2412,7 +2411,7 @@ public void Dispose()
              return js;
         }
 
-        private async Task RunScriptsAsync(JavaScriptEngine js, Element dom, Uri baseUri)
+        private async Task RunScriptsAsync(IBrowserScriptEngine js, Element dom, Uri baseUri)
         {
             if (js == null) return;
             
