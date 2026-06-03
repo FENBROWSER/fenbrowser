@@ -21,8 +21,8 @@
   <!-- Find WebIDL Gen DLL -->
   <PropertyGroup>
     <WebIdlGenerateBindings Condition="'$(WebIdlGenerateBindings)' == ''">true</WebIdlGenerateBindings>
-    <WebIdlGenDll Condition="'$(Configuration)' != ''">$(MSBuildThisFileDirectory)..\..\FenBrowser.WebIdlGen\bin\$(Configuration)\net8.0\webidlgen.dll</WebIdlGenDll>
-    <WebIdlGenDll Condition="'$(Configuration)' == ''">$(MSBuildThisFileDirectory)..\..\FenBrowser.WebIdlGen\bin\Debug\net8.0\webidlgen.dll</WebIdlGenDll>
+    <WebIdlGenDll Condition="'$(Configuration)' != ''">$(MSBuildThisFileDirectory)..\..\FenBrowser.WebIdlGen\bin\$(Configuration)\net10.0\webidlgen.dll</WebIdlGenDll>
+    <WebIdlGenDll Condition="'$(Configuration)' == ''">$(MSBuildThisFileDirectory)..\..\FenBrowser.WebIdlGen\bin\Debug\net10.0\webidlgen.dll</WebIdlGenDll>
     <WebIdlOutDir Condition="'$(WebIdlOutDir)' == ''">$(MSBuildProjectDirectory)\Bindings\Generated\</WebIdlOutDir>
     <WebIdlInDir Condition="'$(WebIdlInDir)' == ''">$(MSBuildThisFileDirectory)..\..\FenBrowser.Core\WebIDL\Idl\</WebIdlInDir>
     <WebIdlOutDirArg>$([System.String]::Copy('$(WebIdlOutDir)').TrimEnd('\'))</WebIdlOutDirArg>
