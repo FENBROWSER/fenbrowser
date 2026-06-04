@@ -44,6 +44,12 @@ public sealed class JsParser
     private bool _allowYieldExpression;
     private bool _allowAwaitExpression;
     private bool _allowAnnexBForInInitializerTail;
+    // ECMA-262 grammar parameter [~In]: while true, the `in` keyword is NOT
+    // treated as a relational operator so the `for ( LHS in Iterable )` head can
+    // recognise `in` as the for-in marker even when LHS is a binary/assignment
+    // chain (e.g. `for (n in M = !0, g())`). Reset to false (allow `in`) at every
+    // parenthesised / bracketed boundary where the grammar restores [+In].
+    private bool _noIn;
 
     // Recursive-descent depth guard. Deeply nested source (e.g. thousands of
     // open parens or nested blocks) would otherwise exhaust the native call
@@ -243,7 +249,34 @@ public sealed class JsParser
         return false;
     }
 
-    private static bool ContainsSuperCallInStatement(StatementNode statement) =>
+    // Minified bundles produce deeply left-nested expression chains (e.g. a||b||c||…
+    // thousands deep) that the precedence-climbing parser builds iteratively without
+    // growing the stack, but a naive recursive AST walk would blow it. Bound the
+    // early-error super-call scan: failing to flag an illegal super() buried thousands
+    // of levels deep is harmless (it cannot occur in hand-written code), whereas a
+    // StackOverflowException is an uncatchable process kill.
+    [ThreadStatic] private static int _superCallScanDepth;
+    private const int MaxSuperCallScanDepth = 400;
+
+    private static bool ContainsSuperCallInStatement(StatementNode statement)
+    {
+        if (++_superCallScanDepth > MaxSuperCallScanDepth)
+        {
+            _superCallScanDepth--;
+            return false;
+        }
+
+        try
+        {
+            return ContainsSuperCallInStatementCore(statement);
+        }
+        finally
+        {
+            _superCallScanDepth--;
+        }
+    }
+
+    private static bool ContainsSuperCallInStatementCore(StatementNode statement) =>
         statement switch
         {
             BlockStatementNode block => ContainsSuperCallInStatements(block.Statements),
@@ -282,7 +315,25 @@ public sealed class JsParser
             _ => false
         };
 
-    private static bool ContainsSuperCallInExpression(ExpressionNode expression) =>
+    private static bool ContainsSuperCallInExpression(ExpressionNode expression)
+    {
+        if (++_superCallScanDepth > MaxSuperCallScanDepth)
+        {
+            _superCallScanDepth--;
+            return false;
+        }
+
+        try
+        {
+            return ContainsSuperCallInExpressionCore(expression);
+        }
+        finally
+        {
+            _superCallScanDepth--;
+        }
+    }
+
+    private static bool ContainsSuperCallInExpressionCore(ExpressionNode expression) =>
         expression switch
         {
             CallExpressionNode { Callee: SuperExpressionNode } => true,
@@ -474,7 +525,14 @@ public sealed class JsParser
             throw new JsParserException("super() calls are not allowed in this method context.");
         }
 
-        ValidateRestrictedIdentifiersInStatements(body.Statements, forbidAwaitIdentifier, forbidYieldIdentifier);
+        // The body walk can only ever throw on a `await`/`yield` identifier, so when
+        // neither is forbidden (the common plain-method case, ubiquitous in minified
+        // object literals) skip the entire recursive descent — both for speed and to
+        // avoid a deep-stack walk over thousands-deep minified expression chains.
+        if (forbidAwaitIdentifier || forbidYieldIdentifier)
+        {
+            ValidateRestrictedIdentifiersInStatements(body.Statements, forbidAwaitIdentifier, forbidYieldIdentifier);
+        }
     }
 
     private static void ValidateRestrictedIdentifiersInStatements(
@@ -488,7 +546,33 @@ public sealed class JsParser
         }
     }
 
+    [ThreadStatic] private static int _restrictedIdentScanDepth;
+
     private static void ValidateRestrictedIdentifiersInStatement(
+        StatementNode statement,
+        bool forbidAwaitIdentifier,
+        bool forbidYieldIdentifier)
+    {
+        // Bound the early-error walk so a thousands-deep minified body cannot overflow
+        // the stack. Skipping detection of a restricted identifier at pathological depth
+        // is harmless; a StackOverflowException is an uncatchable process kill.
+        if (++_restrictedIdentScanDepth > MaxSuperCallScanDepth)
+        {
+            _restrictedIdentScanDepth--;
+            return;
+        }
+
+        try
+        {
+            ValidateRestrictedIdentifiersInStatementCore(statement, forbidAwaitIdentifier, forbidYieldIdentifier);
+        }
+        finally
+        {
+            _restrictedIdentScanDepth--;
+        }
+    }
+
+    private static void ValidateRestrictedIdentifiersInStatementCore(
         StatementNode statement,
         bool forbidAwaitIdentifier,
         bool forbidYieldIdentifier)
@@ -620,6 +704,27 @@ public sealed class JsParser
     }
 
     private static void ValidateRestrictedIdentifiersInExpression(
+        ExpressionNode expression,
+        bool forbidAwaitIdentifier,
+        bool forbidYieldIdentifier)
+    {
+        if (++_restrictedIdentScanDepth > MaxSuperCallScanDepth)
+        {
+            _restrictedIdentScanDepth--;
+            return;
+        }
+
+        try
+        {
+            ValidateRestrictedIdentifiersInExpressionCore(expression, forbidAwaitIdentifier, forbidYieldIdentifier);
+        }
+        finally
+        {
+            _restrictedIdentScanDepth--;
+        }
+    }
+
+    private static void ValidateRestrictedIdentifiersInExpressionCore(
         ExpressionNode expression,
         bool forbidAwaitIdentifier,
         bool forbidYieldIdentifier)
@@ -1297,17 +1402,28 @@ public sealed class JsParser
         var initializerIsDeclaration = false;
         if (!IsPunctuator(";"))
         {
-            if (Current().Kind == TokenKind.Keyword && (Current().Text == "let" || Current().Text == "const" || Current().Text == "var"))
+            // The for-head LHS is parsed under [~In] so a bare `in` terminates it
+            // and is recognised below as the for-in marker (ECMA-262 14.7.4).
+            var savedNoIn = _noIn;
+            _noIn = true;
+            try
             {
-                initializer = ParseVariableDeclarationStatement(inForHead: true);
-                initializerIsDeclaration = true;
+                if (Current().Kind == TokenKind.Keyword && (Current().Text == "let" || Current().Text == "const" || Current().Text == "var"))
+                {
+                    initializer = ParseVariableDeclarationStatement(inForHead: true);
+                    initializerIsDeclaration = true;
+                }
+                else
+                {
+                    var initExpr = ParseExpression(0);
+                    initializerExpression = initExpr;
+                    initializer = new ExpressionStatementNode(initExpr, initExpr.Span);
+                    requireInitializerSemicolon = true;
+                }
             }
-            else
+            finally
             {
-                var initExpr = ParseExpression(0);
-                initializerExpression = initExpr;
-                initializer = new ExpressionStatementNode(initExpr, initExpr.Span);
-                requireInitializerSemicolon = true;
+                _noIn = savedNoIn;
             }
         }
         else
@@ -1653,19 +1769,32 @@ public sealed class JsParser
         if (hasCatch)
         {
             Advance(); // catch
-            ExpectPunctuator("(");
             string catchIdentifier;
-            if (IsIdentifierLike(Current()))
+
+            // ES2019 optional catch binding (https://tc39.es/ecma262/#sec-try-statement):
+            // `try { } catch { }` with no parameter. Ubiquitous in minified bundles
+            // (every modern web app uses it), so its absence here previously forced the
+            // entire script onto the legacy engine.
+            if (IsPunctuator("("))
             {
-                catchIdentifier = Advance().Text;
+                Advance(); // (
+                if (IsIdentifierLike(Current()))
+                {
+                    catchIdentifier = Advance().Text;
+                }
+                else
+                {
+                    _ = ParseExpression(0);
+                    catchIdentifier = "<pattern>";
+                }
+
+                ExpectPunctuator(")");
             }
             else
             {
-                _ = ParseExpression(0);
-                catchIdentifier = "<pattern>";
+                catchIdentifier = "<no-binding>";
             }
 
-            ExpectPunctuator(")");
             var catchBlock = ParseBlockStatement();
             if (Current().Kind == TokenKind.Keyword && Current().Text == "finally")
             {
@@ -1900,7 +2029,7 @@ public sealed class JsParser
     {
         if (!(IsIdentifierLike(Current()) && Current().Text == text))
         {
-            throw new JsParserException($"Expected '{text}', found '{Current().Text}'.");
+            throw new JsParserException($"Expected '{text}', found '{Current().Text}'{Where()}.");
         }
         Advance();
     }
@@ -2704,6 +2833,26 @@ public sealed class JsParser
         throw new JsParserException($"Expected identifier, found '{Current().Text}'.");
     }
 
+    // Parse a sub-expression with [+In] restored (used at every bracketed /
+    // parenthesised boundary). A no-op unless we are inside a for-head LHS.
+    private ExpressionNode ParseExpressionAllowIn(int minBindingPower)
+    {
+        if (!_noIn)
+        {
+            return ParseExpression(minBindingPower);
+        }
+
+        _noIn = false;
+        try
+        {
+            return ParseExpression(minBindingPower);
+        }
+        finally
+        {
+            _noIn = true;
+        }
+    }
+
     private ExpressionNode ParseExpression(int minBindingPower)
     {
         EnterRecursion();
@@ -2830,7 +2979,8 @@ public sealed class JsParser
                         break;
                     }
 
-                    throw new JsParserException("Invalid assignment target.");
+                    throw new JsParserException(
+                        $"Invalid assignment target ({left.GetType().Name}){Where()}.");
                 }
 
                 var op = Advance().Text;
@@ -3111,20 +3261,36 @@ public sealed class JsParser
         if (IsPunctuator("("))
         {
             var open = Advance();
-            var expression = ParseExpression(0);
+            // ( Expression[+In] ): a parenthesised group restores [+In].
+            var savedNoIn = _noIn;
+            _noIn = false;
+            ExpressionNode expression;
+            try
+            {
+                expression = ParseExpression(0);
+            }
+            finally
+            {
+                _noIn = savedNoIn;
+            }
             ExpectPunctuator(")");
             var span = MergeSpan(open.Span, expression.Span);
             return new ParenthesizedExpressionNode(expression, span);
         }
 
-        if (IsPunctuator("{"))
+        if (IsPunctuator("{") || IsPunctuator("["))
         {
-            return ParseObjectLiteral();
-        }
-
-        if (IsPunctuator("["))
-        {
-            return ParseArrayLiteral();
+            // Array/object literal members are AssignmentExpression[+In].
+            var savedNoIn = _noIn;
+            _noIn = false;
+            try
+            {
+                return IsPunctuator("{") ? ParseObjectLiteral() : ParseArrayLiteral();
+            }
+            finally
+            {
+                _noIn = savedNoIn;
+            }
         }
 
         throw new JsParserException($"Unexpected token '{token.Text}' ({token.Kind}).");
@@ -3940,26 +4106,36 @@ public sealed class JsParser
     {
         var args = new List<ExpressionNode>();
         ExpectPunctuator("(");
-        while (!Is(TokenKind.EndOfFile) && !IsPunctuator(")"))
+        // Arguments are AssignmentExpression[+In]: restore [+In] for the list.
+        var savedNoIn = _noIn;
+        _noIn = false;
+        try
         {
-            if (IsPunctuator("..."))
+            while (!Is(TokenKind.EndOfFile) && !IsPunctuator(")"))
             {
-                var spread = Advance();
-                var argument = ParseExpression(2);
-                args.Add(new SpreadElementExpressionNode(argument, MergeSpan(spread.Span, argument.Span)));
-            }
-            else
-            {
-                args.Add(ParseExpression(2));
-            }
+                if (IsPunctuator("..."))
+                {
+                    var spread = Advance();
+                    var argument = ParseExpression(2);
+                    args.Add(new SpreadElementExpressionNode(argument, MergeSpan(spread.Span, argument.Span)));
+                }
+                else
+                {
+                    args.Add(ParseExpression(2));
+                }
 
-            if (IsPunctuator(","))
-            {
-                Advance();
-                continue;
-            }
+                if (IsPunctuator(","))
+                {
+                    Advance();
+                    continue;
+                }
 
-            break;
+                break;
+            }
+        }
+        finally
+        {
+            _noIn = savedNoIn;
         }
 
         ExpectPunctuator(")");
@@ -4008,7 +4184,8 @@ public sealed class JsParser
             if (IsPunctuator("["))
             {
                 Advance();
-                var propExpr = ParseExpression(0);
+                // MemberExpression [ Expression[+In] ]
+                var propExpr = ParseExpressionAllowIn(0);
                 ExpectPunctuator("]");
                 var close = Previous();
                 left = new MemberExpressionNode(left, string.Empty, Computed: true, PropertyExpression: propExpr, MergeSpan(left.Span, close.Span));
@@ -4230,6 +4407,13 @@ public sealed class JsParser
 
         if (token.Kind == TokenKind.Keyword && (token.Text == "in" || token.Text == "instanceof"))
         {
+            // [~In]: suppress `in` (but not `instanceof`) so the enclosing for-head
+            // parse stops here and can treat `in` as the for-in marker.
+            if (_noIn && token.Text == "in")
+            {
+                return false;
+            }
+
             leftBindingPower = 15;
             rightBindingPower = 16;
             return true;
@@ -4416,10 +4600,17 @@ public sealed class JsParser
     {
         if (!IsPunctuator(text))
         {
-            throw new JsParserException($"Expected '{text}', found '{Current().Text}'.");
+            throw new JsParserException($"Expected '{text}', found '{Current().Text}'{Where()}.");
         }
 
         Advance();
+    }
+
+    // Source position of the current token, for diagnostics in parse errors.
+    private string Where()
+    {
+        var span = Current().Span;
+        return $" at {span.Line}:{span.Column} (offset {span.Start})";
     }
 
     private static SourceSpan MergeSpan(SourceSpan start, SourceSpan end)

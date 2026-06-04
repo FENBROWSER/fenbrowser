@@ -281,7 +281,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 ? ToStringValue(msgVal)
                 : string.Empty;
 
-            return string.IsNullOrEmpty(message) ? name : $"{name}: {message}";
+            var rendered = string.IsNullOrEmpty(message) ? name : $"{name}: {message}";
+
+            if (TryGetPropertyValue(obj, value, "stack", out var stackVal) &&
+                stackVal.Tag == JsValueTag.String)
+            {
+                var stack = stackVal.AsString();
+                if (!string.IsNullOrEmpty(stack) && stack != rendered)
+                {
+                    rendered += "\n" + stack;
+                }
+            }
+
+            return rendered;
         }
         catch
         {
@@ -324,8 +336,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // rather than a crash. The root cause is tracked separately.
             throw new JsThrownException(CreateTypeError("Internal heap error: " + fatal.Message));
         }
+        catch (JsThrownException thrown)
+        {
+            StampDescription(thrown);
+            throw;
+        }
         DrainPendingMicrotasks();
         return result;
+    }
+
+    // Populate the diagnostic Description of an escaping JS exception while the heap is
+    // still live, so host/log sites that render ex.Message see the real error text.
+    internal void StampDescription(JsThrownException thrown)
+    {
+        if (thrown is null || !string.IsNullOrEmpty(thrown.Description))
+        {
+            return;
+        }
+
+        try
+        {
+            thrown.Description = DescribeThrownValue(thrown.Value);
+        }
+        catch
+        {
+            // Diagnostic best-effort only — never let description rendering mask the
+            // original exception.
+        }
     }
 
     // ECMA-262 27.5.1.3 GeneratorYield — save frame execution state into the
@@ -505,6 +542,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // "report the exception" semantics for the first failing job); PromiseJobs
     // catch their own errors and route them into the parent Promise's reject
     // path via the capability, matching 27.2.2.1 NewPromiseReactionJob step 5.
+    // Drain the microtask/promise-job queues from a host callback boundary (timers,
+    // events) so promise reactions scheduled inside a setTimeout/rAF callback run with
+    // the same checkpoint semantics as top-level script execution.
+    public void PumpMicrotasks() => DrainPendingMicrotasks();
+
     private void DrainPendingMicrotasks()
     {
         while (_pendingMicrotasks.Count > 0 || _jobQueue.Count > 0)
@@ -858,6 +900,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 {
                     var handle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
                     frame.Registers[ins.A] = JsValue.FromObject(handle);
+                    break;
+                }
+                case OpCode.CopyDataProperties:
+                {
+                    // ECMA-262 13.2.5.5 object spread `{ ...src }`: copy own
+                    // enumerable string+symbol properties from the source into the
+                    // target object literal. null/undefined source is a no-op.
+                    CopyDataPropertiesInto(frame.Registers[ins.A], frame.Registers[ins.B]);
                     break;
                 }
                 case OpCode.NewArray:
@@ -7759,6 +7809,68 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _objectPrototypeHandle = prototypeHandle;
         _objectConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    // ECMA-262 7.3.25 CopyDataProperties(target, source, excludedItems=empty).
+    // Used by object spread `{ ...source }`. Copies every own enumerable property
+    // (string keys first, then symbol keys) from source into target using [[Get]]
+    // to read and CreateDataPropertyOrThrow to write. A null/undefined source is a
+    // no-op (step 2). The target is always a freshly built object literal, so the
+    // CreateDataProperty (define) semantics — distinct from Object.assign's [[Set]]
+    // — never observe an inherited setter.
+    private void CopyDataPropertiesInto(JsValue targetValue, JsValue source)
+    {
+        if (source.Tag == JsValueTag.Undefined || source.Tag == JsValueTag.Null)
+        {
+            return;
+        }
+
+        if (targetValue.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var targetHandle = targetValue.AsObjectHandle();
+        var target = _heap.GetObject(targetHandle);
+
+        var fromValue = ToObjectValue(source);
+        var fromObj = _heap.GetObject(fromValue.AsObjectHandle());
+
+        foreach (var pair in fromObj.EnumerateOwnProperties())
+        {
+            if (!pair.Value.Enumerable)
+            {
+                continue;
+            }
+
+            var value = TryGetPropertyValue(fromObj, fromValue, pair.Key, out var v)
+                ? v
+                : JsValue.Undefined;
+            _ = target.DefineOwnProperty(
+                pair.Key,
+                new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+            if (value.Tag == JsValueTag.Object)
+            {
+                _heap.WriteBarrier(targetHandle, value.AsObjectHandle());
+            }
+        }
+
+        foreach (var pair in fromObj.EnumerateOwnSymbolProperties())
+        {
+            if (!pair.Value.Enumerable)
+            {
+                continue;
+            }
+
+            var value = GetReceiverSymbolProperty(fromValue, pair.Key);
+            _ = target.DefineOwnSymbolProperty(
+                pair.Key,
+                new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+            if (value.Tag == JsValueTag.Object)
+            {
+                _heap.WriteBarrier(targetHandle, value.AsObjectHandle());
+            }
+        }
     }
 
     private enum OwnEnumerableKind

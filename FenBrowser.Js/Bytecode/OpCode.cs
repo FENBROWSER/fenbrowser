@@ -235,4 +235,11 @@ public enum OpCode : byte
 
 		// ECMA-262 14.7.5.1 - for-await-of async iterator materialisation.
 		EnumerateValuesAsync,
+
+		// ECMA-262 13.2.5.5 PropertyDefinition : ... AssignmentExpression
+		// (object spread, e.g. `{ ...src }`). A=target object reg, B=source value
+		// reg. Performs CopyDataProperties(target, source, excluded=empty): copies
+		// every own enumerable property (string and symbol keys) of source into
+		// target via [[Get]]/[[Set]]. null/undefined source is a no-op.
+		CopyDataProperties,
 }

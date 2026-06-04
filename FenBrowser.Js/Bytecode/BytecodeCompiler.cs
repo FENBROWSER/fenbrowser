@@ -2615,6 +2615,16 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.NewObject, dest, 0, 0));
                 foreach (var prop in obj.Properties)
                 {
+                    // ECMA-262 13.2.5.5: object spread `{ ...src }`. Parsed as a
+                    // data property with a null key whose value is a spread element.
+                    // Copy own enumerable properties from the source into `dest`.
+                    if (!prop.IsComputed && prop.Key is null && prop.Value is SpreadElementExpressionNode objectSpread)
+                    {
+                        var sourceReg = CompileExpression(objectSpread.Argument);
+                        _instructions.Add(new Instruction(OpCode.CopyDataProperties, dest, sourceReg, 0));
+                        continue;
+                    }
+
                     // NamedEvaluation: a static-key data property `{ f: function(){} }`
                     // (and method shorthand `{ f(){} }`) names the function "f".
                     var valueReg = (!prop.IsComputed && prop.Kind == ObjectPropertyKind.Data && prop.Key is not null)
