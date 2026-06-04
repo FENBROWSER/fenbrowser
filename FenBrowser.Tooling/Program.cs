@@ -122,7 +122,7 @@ namespace FenBrowser.Tooling
                 {
                     failure = ex;
                 }
-            }, 16 * 1024 * 1024);
+            }, 64 * 1024 * 1024);
 
             worker.IsBackground = true;
             worker.Start();

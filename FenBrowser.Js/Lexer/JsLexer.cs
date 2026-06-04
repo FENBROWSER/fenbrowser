@@ -624,6 +624,17 @@ public sealed class JsLexer
         if (_index + 1 < _source.Length)
         {
             var two = _source.Substring(_index, 2);
+            // ECMA-262 12.7: OptionalChainingPunctuator `?.` has the negative
+            // lookahead [∉ DecimalDigit], so `x?.5:y` is a conditional whose
+            // consequent is the numeric literal `.5`, not optional chaining.
+            if (two is "?." && _index + 2 < _source.Length && _source[_index + 2] is >= '0' and <= '9')
+            {
+                _index += 1;
+                _column += 1;
+                text = "?";
+                return true;
+            }
+
             if (two is "==" or "!=" or "<=" or ">=" or "&&" or "||" or "??" or "?." or "+=" or "-=" or "*=" or "/=" or "%=" or "&=" or "^=" or "|=" or "++" or "--" or "<<" or ">>" or "**")
             {
                 _index += 2;

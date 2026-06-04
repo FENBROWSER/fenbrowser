@@ -1035,7 +1035,7 @@ public sealed class JsParser
             return new ParsedVariableBinding(name, pattern, pattern.Span);
         }
 
-        throw new JsParserException($"Expected identifier, found '{Current().Text}'.");
+        throw new JsParserException($"Expected identifier, found '{Current().Text}'{Where()}.");
     }
 
     private BindingPatternNode ParseBindingPattern()
@@ -1244,7 +1244,7 @@ public sealed class JsParser
             return new Token(TokenKind.Identifier, name, start);
         }
 
-        throw new JsParserException($"Expected identifier, found '{Current().Text}'.");
+        throw new JsParserException($"Expected identifier, found '{Current().Text}'{Where()}.");
     }
 
     private void ConsumeBindingPatternTarget()
@@ -2830,7 +2830,7 @@ public sealed class JsParser
             return new ParsedVariableBinding(name, pattern, pattern.Span);
         }
 
-        throw new JsParserException($"Expected identifier, found '{Current().Text}'.");
+        throw new JsParserException($"Expected identifier, found '{Current().Text}'{Where()}.");
     }
 
     // Parse a sub-expression with [+In] restored (used at every bracketed /
@@ -4527,7 +4527,7 @@ public sealed class JsParser
     {
         if (!IsIdentifierLike(Current()))
         {
-            throw new JsParserException($"Expected identifier, found '{Current().Text}'.");
+            throw new JsParserException($"Expected identifier, found '{Current().Text}'{Where()}.");
         }
 
         return Advance();
@@ -4539,7 +4539,7 @@ public sealed class JsParser
             Current().Kind != TokenKind.Keyword &&
             Current().Kind != TokenKind.PrivateIdentifier)
         {
-            throw new JsParserException($"Expected identifier, found '{Current().Text}'.");
+            throw new JsParserException($"Expected identifier, found '{Current().Text}'{Where()}.");
         }
 
         return Advance();
