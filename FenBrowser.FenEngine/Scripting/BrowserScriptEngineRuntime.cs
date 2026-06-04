@@ -1,7 +1,9 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -111,6 +113,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 {
     private readonly LegacyBrowserScriptEngineAdapter _legacy;
     private readonly object _fenJsLock = new();
+    private readonly ConcurrentDictionary<long, Timer> _fenJsTimers = new();
+    private long _fenJsTimerIdCounter;
+    private JsValue _fenJsGlobalThis = JsValue.Undefined;
+    private readonly System.Diagnostics.Stopwatch _fenJsClock = System.Diagnostics.Stopwatch.StartNew();
     private readonly BrowserFenJsHostHooks _hostHooks = new();
     private readonly NavigationEpoch _navigationEpoch = NavigationEpoch.Initial;
     private readonly Dictionary<object, HostObjectHandle> _hostHandleCache =
@@ -223,6 +229,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return !string.IsNullOrWhiteSpace(script);
     }
 
+    private static long ResolveFenJsScriptTimeoutMs()
+    {
+        const long defaultTimeoutMs = 30000;
+        var raw = Environment.GetEnvironmentVariable("FEN_FENJS_SCRIPT_TIMEOUT_MS");
+        if (!string.IsNullOrWhiteSpace(raw) &&
+            long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) &&
+            parsed >= 0)
+        {
+            return parsed;
+        }
+
+        return defaultTimeoutMs;
+    }
+
     private object EvaluateWithFenJs(string script)
     {
         return ConvertFenJsValue(EvaluateWithFenJsRaw(script));
@@ -230,13 +250,54 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private JsValue EvaluateWithFenJsRaw(string script)
     {
-        lock (_fenJsLock)
+        return RunFenJsWithLargeStack(() =>
         {
-            _fenJsEvaluationCount++;
-            var function = _compiler.CompileScript(new SourceText(script, "<fenbrowser-fenjs-eval>"));
-            new BytecodeVerifier().Verify(function);
-            return _interpreter.Execute(function);
+            lock (_fenJsLock)
+            {
+                _fenJsEvaluationCount++;
+                var function = _compiler.CompileScript(new SourceText(script, "<fenbrowser-fenjs-eval>"));
+                new BytecodeVerifier().Verify(function);
+                return _interpreter.Execute(function);
+            }
+        });
+    }
+
+    // The recursive-descent parser, the bytecode compiler, and the interpreter all
+    // recurse with the AST/call depth. Real-world minified bundles (x.com's main.js is
+    // 1.4 MB) nest expressions thousands deep and blow the ~1 MB stack of a threadpool
+    // thread — the path page scripts run on. FenBrowser.Host already re-enters its main
+    // loop on a 16 MB thread for exactly this reason; mirror that here so every FenJS
+    // compile/execute gets a fat stack. A ThreadStatic flag makes re-entrant calls (a
+    // native callback that evaluates more script) run inline instead of spawning — and,
+    // critically, avoids dead-locking on _fenJsLock which the outer worker already holds.
+    [ThreadStatic] private static bool _onFenJsLargeStackThread;
+    private const int FenJsLargeStackBytes = 16 * 1024 * 1024;
+
+    private T RunFenJsWithLargeStack<T>(Func<T> work)
+    {
+        if (_onFenJsLargeStackThread)
+        {
+            return work();
         }
+
+        T result = default;
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo captured = null;
+        var thread = new Thread(
+            () =>
+            {
+                _onFenJsLargeStackThread = true;
+                try { result = work(); }
+                catch (Exception ex) { captured = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex); }
+            },
+            FenJsLargeStackBytes)
+        {
+            IsBackground = true,
+            Name = "FenJs-LargeStack"
+        };
+        thread.Start();
+        thread.Join();
+        captured?.Throw();
+        return result;
     }
 
     private async Task ExecutePageScriptsWithFenJsAsync(Node domRoot, Uri baseUri)
@@ -306,9 +367,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 SetCurrentScriptElement(scriptElement);
                 EvaluateWithFenJsRaw(code);
             }
-            catch
+            catch (Exception fenJsEx)
             {
                 _legacyFallbackCount++;
+                var snippet = code.Length > 140 ? code.Substring(0, 140) : code;
+                snippet = snippet.Replace("\n", " ").Replace("\r", " ");
+                FenBrowser.Core.EngineLogCompat.Warn(
+                    $"[FenJsBridge] Page script failed on FenJS, falling back to legacy engine " +
+                    $"(len={code.Length}, src='{scriptElement.GetAttribute("src")}'): {fenJsEx.Message} :: {snippet}",
+                    FenBrowser.Core.Logging.LogCategory.JavaScript);
                 _legacy.Evaluate(code);
             }
             finally
@@ -330,7 +397,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 HostResolveContext = new HostObjectResolveContext(
                     CurrentRealmId: 0,
                     CurrentDocumentEpoch: _documentEpoch,
-                    CurrentNavigationEpoch: _navigationEpoch)
+                    CurrentNavigationEpoch: _navigationEpoch),
+                // Bound per-invocation execution so a runaway or pathologically slow
+                // page script (or one our interpreter mis-evaluates into a spin loop)
+                // surfaces as a catchable RangeError instead of freezing the browser
+                // thread forever. Override via FEN_FENJS_SCRIPT_TIMEOUT_MS.
+                WallClockTimeoutMs = ResolveFenJsScriptTimeoutMs()
             };
 
             _hostHandleCache.Clear();
@@ -404,6 +476,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         _interpreter.RegisterGlobalValue("outerHeight", JsValue.FromNumber(WindowHeight));
 
         var globalThisValue = EvaluateWithFenJsRaw("globalThis");
+        _fenJsGlobalThis = globalThisValue;
         _interpreter.RegisterGlobalValue("window", globalThisValue);
         _interpreter.RegisterGlobalValue("self", globalThisValue);
         _interpreter.RegisterGlobalValue("top", globalThisValue);
@@ -429,8 +502,281 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 },
                 length: 2));
 
+        InstallFenJsPerformance();
+        InstallFenJsTimers();
         InstallFenJsBrowserConstructors();
         InstallFenJsNativeBrowserConstructors();
+    }
+
+    // W3C High Resolution Time / Performance Timeline. SPA frameworks (React, and
+    // x.com's bootstrap specifically) call performance.now()/mark()/measure() during
+    // hydration; a missing `performance` global throws ReferenceError and aborts the
+    // app mount before any content renders. https://www.w3.org/TR/hr-time-3/
+    private void InstallFenJsPerformance()
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var timeOrigin = (DateTimeOffset.UtcNow - DateTimeOffset.UnixEpoch).TotalMilliseconds
+            - stopwatch.Elapsed.TotalMilliseconds;
+
+        _interpreter.RegisterGlobalValue(
+            "__fenPerformanceNow",
+            _interpreter.AllocateNativeFunction(
+                "now",
+                (_, _) => JsValue.FromNumber(stopwatch.Elapsed.TotalMilliseconds),
+                length: 0));
+        _interpreter.RegisterGlobalValue("__fenPerformanceTimeOrigin", JsValue.FromNumber(timeOrigin));
+
+        EvaluateWithFenJsRaw(
+            """
+            (function () {
+                var nowFn = __fenPerformanceNow;
+                var origin = __fenPerformanceTimeOrigin;
+                var marks = Object.create(null);
+                var entries = [];
+
+                function pushEntry(name, entryType, startTime, duration) {
+                    var e = {
+                        name: String(name),
+                        entryType: entryType,
+                        startTime: startTime,
+                        duration: duration,
+                        toJSON: function () {
+                            return { name: this.name, entryType: this.entryType, startTime: this.startTime, duration: this.duration };
+                        }
+                    };
+                    entries.push(e);
+                    return e;
+                }
+
+                var perf = {
+                    now: function () { return nowFn(); },
+                    timeOrigin: origin,
+                    mark: function (name) {
+                        var t = nowFn();
+                        marks[name] = t;
+                        return pushEntry(name, 'mark', t, 0);
+                    },
+                    measure: function (name, startMark, endMark) {
+                        var s = (startMark != null && marks[startMark] != null) ? marks[startMark] : 0;
+                        var e = (endMark != null && marks[endMark] != null) ? marks[endMark] : nowFn();
+                        return pushEntry(name, 'measure', s, e - s);
+                    },
+                    clearMarks: function (name) {
+                        if (name == null) { marks = Object.create(null); }
+                        else { delete marks[name]; }
+                    },
+                    clearMeasures: function () {},
+                    clearResourceTimings: function () {},
+                    setResourceTimingBufferSize: function () {},
+                    getEntries: function () { return entries.slice(); },
+                    getEntriesByType: function (type) {
+                        return entries.filter(function (e) { return e.entryType === type; });
+                    },
+                    getEntriesByName: function (name, type) {
+                        return entries.filter(function (e) {
+                            return e.name === String(name) && (type == null || e.entryType === type);
+                        });
+                    },
+                    toJSON: function () { return { timeOrigin: origin }; }
+                };
+
+                perf.timing = {
+                    navigationStart: origin, fetchStart: origin, domainLookupStart: origin,
+                    domainLookupEnd: origin, connectStart: origin, connectEnd: origin,
+                    secureConnectionStart: origin, requestStart: origin, responseStart: origin,
+                    responseEnd: origin, domLoading: origin, domInteractive: origin,
+                    domContentLoadedEventStart: origin, domContentLoadedEventEnd: origin,
+                    domComplete: origin, loadEventStart: origin, loadEventEnd: origin,
+                    unloadEventStart: 0, unloadEventEnd: 0, redirectStart: 0, redirectEnd: 0
+                };
+                perf.navigation = { type: 0, redirectCount: 0 };
+
+                Object.defineProperty(globalThis, 'performance', {
+                    value: perf, writable: true, configurable: true, enumerable: true
+                });
+            })();
+            """);
+    }
+
+    // HTML timers + animation frames, executed on the SAME FenJS interpreter as page
+    // scripts. Without these, any script calling setTimeout threw "setTimeout is not
+    // defined" in FenJS and fell back to the legacy engine, whose global state is
+    // disjoint — so deferred callbacks (every SPA bootstrap, incl. x.com) could not see
+    // globals set by the page. Keeping callbacks on one interpreter preserves window
+    // state across the whole page lifecycle. https://html.spec.whatwg.org/#timers
+    private void InstallFenJsTimers()
+    {
+        _interpreter.RegisterGlobalValue(
+            "setTimeout",
+            _interpreter.AllocateNativeFunction(
+                "setTimeout",
+                (_, args) => ScheduleFenJsTimer(args, repeat: false),
+                length: 1));
+        _interpreter.RegisterGlobalValue(
+            "setInterval",
+            _interpreter.AllocateNativeFunction(
+                "setInterval",
+                (_, args) => ScheduleFenJsTimer(args, repeat: true),
+                length: 1));
+        _interpreter.RegisterGlobalValue(
+            "clearTimeout",
+            _interpreter.AllocateNativeFunction(
+                "clearTimeout",
+                (_, args) => ClearFenJsTimer(args),
+                length: 1));
+        _interpreter.RegisterGlobalValue(
+            "clearInterval",
+            _interpreter.AllocateNativeFunction(
+                "clearInterval",
+                (_, args) => ClearFenJsTimer(args),
+                length: 1));
+        _interpreter.RegisterGlobalValue(
+            "requestAnimationFrame",
+            _interpreter.AllocateNativeFunction(
+                "requestAnimationFrame",
+                (_, args) => ScheduleFenJsAnimationFrame(args),
+                length: 1));
+        _interpreter.RegisterGlobalValue(
+            "cancelAnimationFrame",
+            _interpreter.AllocateNativeFunction(
+                "cancelAnimationFrame",
+                (_, args) => ClearFenJsTimer(args),
+                length: 1));
+    }
+
+    private JsValue ScheduleFenJsTimer(IReadOnlyList<JsValue> args, bool repeat)
+    {
+        if (args == null || args.Count == 0)
+        {
+            return JsValue.FromNumber(0);
+        }
+
+        var callback = args[0];
+        var delayMs = args.Count > 1 ? ToFiniteDelay(args[1]) : 0;
+        var extraArgs = args.Count > 2 ? args.Skip(2).ToArray() : Array.Empty<JsValue>();
+
+        var id = Interlocked.Increment(ref _fenJsTimerIdCounter);
+        var period = repeat ? Math.Max(4, delayMs) : Timeout.Infinite;
+        var timer = new Timer(
+            _ =>
+            {
+                if (!repeat)
+                {
+                    if (_fenJsTimers.TryRemove(id, out var self))
+                    {
+                        self.Dispose();
+                    }
+                }
+
+                InvokeFenJsCallbackSafely(callback, extraArgs, "setTimeout/setInterval");
+            },
+            null,
+            Math.Max(0, delayMs),
+            period);
+
+        _fenJsTimers[id] = timer;
+        return JsValue.FromNumber(id);
+    }
+
+    private JsValue ScheduleFenJsAnimationFrame(IReadOnlyList<JsValue> args)
+    {
+        if (args == null || args.Count == 0)
+        {
+            return JsValue.FromNumber(0);
+        }
+
+        var callback = args[0];
+        var id = Interlocked.Increment(ref _fenJsTimerIdCounter);
+        var timer = new Timer(
+            _ =>
+            {
+                if (_fenJsTimers.TryRemove(id, out var self))
+                {
+                    self.Dispose();
+                }
+
+                var timestamp = JsValue.FromNumber(_fenJsClock.Elapsed.TotalMilliseconds);
+                InvokeFenJsCallbackSafely(callback, new[] { timestamp }, "requestAnimationFrame");
+            },
+            null,
+            16,
+            Timeout.Infinite);
+
+        _fenJsTimers[id] = timer;
+        return JsValue.FromNumber(id);
+    }
+
+    private JsValue ClearFenJsTimer(IReadOnlyList<JsValue> args)
+    {
+        if (args != null && args.Count > 0 && args[0].Tag != JsValueTag.Undefined)
+        {
+            var id = (long)ReadJsNumber(args[0]);
+            if (_fenJsTimers.TryRemove(id, out var timer))
+            {
+                timer.Dispose();
+            }
+        }
+
+        return JsValue.Undefined;
+    }
+
+    private static int ToFiniteDelay(JsValue value)
+    {
+        var d = ReadJsNumber(value);
+        if (double.IsNaN(d) || d < 0)
+        {
+            return 0;
+        }
+
+        return d > int.MaxValue ? int.MaxValue : (int)d;
+    }
+
+    private static double ReadJsNumber(JsValue value)
+    {
+        return value.Tag switch
+        {
+            JsValueTag.Int32 => value.AsInt32(),
+            JsValueTag.Number => value.AsNumber(),
+            JsValueTag.Boolean => value.AsBoolean() ? 1d : 0d,
+            JsValueTag.String => double.TryParse(
+                value.AsString(),
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out var parsed) ? parsed : 0d,
+            _ => 0d
+        };
+    }
+
+    // Invoke a FenJS callback from a host timer thread, holding the interpreter lock so
+    // it can never race with page-script evaluation, then drain microtasks and request
+    // a repaint so DOM mutations made by the callback become visible.
+    private void InvokeFenJsCallbackSafely(JsValue callback, IReadOnlyList<JsValue> args, string origin)
+    {
+        RunFenJsWithLargeStack<object>(() =>
+        {
+            lock (_fenJsLock)
+            {
+                try
+                {
+                    if (_interpreter.CanCallValue(callback))
+                    {
+                        _interpreter.InvokeFunction(callback, args ?? Array.Empty<JsValue>(), _fenJsGlobalThis);
+                    }
+                    _interpreter.PumpMicrotasks();
+                }
+                catch (Exception ex)
+                {
+                    FenBrowser.Core.EngineLogCompat.Warn(
+                        $"[FenJsTimers] {origin} callback failed: {ex.Message}",
+                        FenBrowser.Core.Logging.LogCategory.JavaScript);
+                }
+            }
+
+            return null;
+        });
+
+        try { RequestRender?.Invoke(); }
+        catch { /* render request is best-effort */ }
     }
 
     private void InstallFenJsBrowserConstructors()

@@ -170,7 +170,25 @@ public sealed partial class BytecodeInterpreter
 
     public JsValue InvokeFunction(JsValue function, IReadOnlyList<JsValue> args, JsValue thisValue)
     {
-        return CallFunction(function, args, thisValue);
+        // Give each host-initiated invocation (timer/event callback) a fresh wall-clock
+        // budget. The deadline field is otherwise only armed by Execute, so without this
+        // a callback would inherit the previous script's already-expired deadline and
+        // abort immediately with a spurious timeout RangeError.
+        if (WallClockTimeoutMs > 0)
+        {
+            _wallClockDeadlineTicks = System.Environment.TickCount64 + WallClockTimeoutMs;
+            _wallClockCheckCountdown = WallClockCheckInterval;
+        }
+
+        try
+        {
+            return CallFunction(function, args, thisValue);
+        }
+        catch (JsThrownException thrown)
+        {
+            StampDescription(thrown);
+            throw;
+        }
     }
 
     public JsValue AllocateObject(IReadOnlyDictionary<string, JsValue> properties)

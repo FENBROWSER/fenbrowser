@@ -37,6 +37,12 @@ namespace FenBrowser.Tooling
                 case "verify":
                     await RunVerifyAsync(args).ConfigureAwait(false);
                     return;
+                case "diagnose":
+                    await RunDiagnoseAsync(args).ConfigureAwait(false);
+                    return;
+                case "jstime":
+                    RunJsTime(args);
+                    return;
                 case "acid2":
                     await RunAcid2Async().ConfigureAwait(false);
                     return;
@@ -73,6 +79,70 @@ namespace FenBrowser.Tooling
             }
         }
 
+        // Isolates the FenJS front-end so we can tell whether a heavy bundle hangs
+        // in parse vs compile vs execute. Runs on a 16 MB stack thread because the
+        // browser does too (deep minified nesting overflows the default 1 MB stack).
+        private static void RunJsTime(string[] args)
+        {
+            if (args.Length < 2)
+            {
+                Console.WriteLine("usage: jstime <js_file> [phase=parse|compile|all]");
+                return;
+            }
+
+            var path = args[1];
+            var phase = args.Length >= 3 ? args[2].Trim().ToLowerInvariant() : "all";
+            var text = File.ReadAllText(path);
+            Console.WriteLine($"[jstime] file={path} bytes={text.Length} phase={phase}");
+
+            Exception? failure = null;
+            var worker = new System.Threading.Thread(() =>
+            {
+                try
+                {
+                    var source = new FenBrowser.Js.Source.SourceText(text, path);
+
+                    var swParse = System.Diagnostics.Stopwatch.StartNew();
+                    var program = FenBrowser.Js.Parser.JsParser.ParseScript(source);
+                    swParse.Stop();
+                    Console.WriteLine($"[jstime] PARSE ok in {swParse.ElapsedMilliseconds} ms (statements={program.Body.Count})");
+
+                    if (phase == "parse")
+                    {
+                        return;
+                    }
+
+                    var swCompile = System.Diagnostics.Stopwatch.StartNew();
+                    var compiler = new FenBrowser.Js.Bytecode.BytecodeCompiler();
+                    var fn = compiler.CompileProgram(program);
+                    swCompile.Stop();
+                    Console.WriteLine($"[jstime] COMPILE ok in {swCompile.ElapsedMilliseconds} ms (instructions={fn.Instructions.Count})");
+                }
+                catch (Exception ex)
+                {
+                    failure = ex;
+                }
+            }, 16 * 1024 * 1024);
+
+            worker.IsBackground = true;
+            worker.Start();
+            if (!worker.Join(TimeSpan.FromSeconds(120)))
+            {
+                Console.WriteLine("[jstime] TIMED OUT after 120s (front-end did not finish) — capturing stack…");
+                Console.WriteLine("[jstime] HANG CONFIRMED in front-end (parse/compile).");
+                Environment.Exit(2);
+            }
+
+            if (failure is not null)
+            {
+                Console.WriteLine($"[jstime] FAILED: {failure.GetType().Name}: {failure.Message}");
+                Console.WriteLine(failure.StackTrace);
+                Environment.Exit(1);
+            }
+
+            Console.WriteLine("[jstime] DONE");
+        }
+
         private static async Task RunVerifyAsync(string[] args)
         {
             if (args.Length < 2)
@@ -83,6 +153,132 @@ namespace FenBrowser.Tooling
             await VerificationRunner.GenerateSnapshot(args[1], "verification_output.png").ConfigureAwait(false);
         }
 
+
+        private static async Task RunDiagnoseAsync(string[] args)
+        {
+            if (args.Length < 2)
+            {
+                throw new ArgumentException("diagnose requires <url> [settle_ms]");
+            }
+
+            var url = args[1];
+            var settleMs = args.Length > 2 && int.TryParse(args[2], out var parsed) ? parsed : 20000;
+
+            CssEngineConfig.CurrentEngine = CssEngineType.Custom;
+
+            var consoleMessages = new List<string>();
+            var navFailures = new List<string>();
+
+            using var host = new FenBrowser.FenEngine.Rendering.BrowserHost();
+            host.ConsoleMessage += msg => { lock (consoleMessages) consoleMessages.Add(msg); };
+            host.NavigationFailed += (_, msg) => { lock (navFailures) navFailures.Add(msg); };
+
+            Console.WriteLine($"[diagnose] Navigating to {url} (settle {settleMs}ms)...");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+
+            bool navOk;
+            try
+            {
+                navOk = await host.NavigateAsync(url).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[diagnose] NavigateAsync threw: {ex.GetType().Name}: {ex.Message}");
+                Console.WriteLine(ex.StackTrace);
+                return;
+            }
+
+            // Settle: let subresources, scripts, and async work run. Poll DOM size until stable.
+            int lastCount = -1, stableTicks = 0;
+            var deadline = DateTime.UtcNow.AddMilliseconds(settleMs);
+            while (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(250).ConfigureAwait(false);
+                int count = CountDomNodes(host.GetDomRoot());
+                if (count == lastCount) { if (++stableTicks >= 8) break; }
+                else { stableTicks = 0; lastCount = count; }
+            }
+            sw.Stop();
+
+            // Probe the live page global state (runs on the same script interpreter).
+            string[] probes =
+            {
+                "typeof window",
+                "document.readyState",
+                "typeof window.__SCRIPTS_LOADED__",
+                "Object.keys(window.__SCRIPTS_LOADED__||{}).join(',')",
+                "typeof window.__INITIAL_STATE__",
+                "typeof window.webpackChunk_twitter_responsive_web",
+                "document.querySelectorAll('*').length",
+                "document.getElementById('react-root') ? document.getElementById('react-root').children.length : 'no-react-root'",
+            };
+            Console.WriteLine();
+            Console.WriteLine("---- page global probes ----");
+            foreach (var p in probes)
+            {
+                string val;
+                try
+                {
+                    var r = await host.ExecuteScriptAsync(p).ConfigureAwait(false);
+                    val = r?.ToString() ?? "null";
+                }
+                catch (Exception ex) { val = "<throw> " + ex.Message; }
+                if (val.Length > 200) val = val.Substring(0, 200) + "…";
+                Console.WriteLine($"   {p}  =>  {val}");
+            }
+
+            var root = host.GetDomRoot();
+            int nodeCount = CountDomNodes(root);
+            string rawHtml = SafeCall(() => host.GetRawHtml()) ?? string.Empty;
+            string text = SafeCall(() => host.GetTextContent()) ?? string.Empty;
+            var styles = SafeCall(() => host.ComputedStyles);
+
+            Console.WriteLine();
+            Console.WriteLine("================ DIAGNOSE REPORT ================");
+            Console.WriteLine($"NavigateAsync returned : {navOk}");
+            Console.WriteLine($"Final URL              : {host.CurrentUri}");
+            Console.WriteLine($"Elapsed                : {sw.ElapsedMilliseconds} ms");
+            Console.WriteLine($"DOM nodes              : {nodeCount}");
+            Console.WriteLine($"Raw HTML length        : {rawHtml.Length}");
+            Console.WriteLine($"Rendered text length   : {text.Length}");
+            Console.WriteLine($"Computed styles count  : {styles?.Count ?? 0}");
+            Console.WriteLine($"Nav failures           : {navFailures.Count}");
+            foreach (var f in navFailures.Take(20)) Console.WriteLine($"   ! {f}");
+            Console.WriteLine($"Console messages       : {consoleMessages.Count}");
+            foreach (var m in consoleMessages.Take(60))
+            {
+                var line = m.Replace("\n", " ").Replace("\r", " ");
+                if (line.Length > 300) line = line.Substring(0, 300) + "…";
+                Console.WriteLine($"   > {line}");
+            }
+            Console.WriteLine();
+            Console.WriteLine("---- rendered text (first 800 chars) ----");
+            Console.WriteLine(text.Length > 800 ? text.Substring(0, 800) : text);
+            Console.WriteLine("=================================================");
+        }
+
+        private static T SafeCall<T>(Func<T> fn)
+        {
+            try { return fn(); } catch { return default; }
+        }
+
+        private static int CountDomNodes(FenBrowser.Core.Dom.V2.Node root)
+        {
+            if (root == null) return 0;
+            int count = 0;
+            var stack = new Stack<FenBrowser.Core.Dom.V2.Node>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var node = stack.Pop();
+                count++;
+                for (var child = node.FirstChild; child != null; child = child.NextSibling)
+                {
+                    stack.Push(child);
+                }
+            }
+            return count;
+        }
 
         private static async Task RunAcid2Async()
         {
@@ -423,6 +619,7 @@ namespace FenBrowser.Tooling
         {
             Console.WriteLine("FenBrowser.Tooling commands:");
             Console.WriteLine("  verify <html_path>");
+            Console.WriteLine("  diagnose <url> [settle_ms]");
             Console.WriteLine("  acid2");
             Console.WriteLine("  acid2-compare");
             Console.WriteLine("  acid2-layout-html [output_html]");
