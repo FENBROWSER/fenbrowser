@@ -1892,7 +1892,56 @@ public sealed class BytecodeCompiler
         return false;
     }
 
+    // Expression-tree compilation is recursive, so a pathologically deep AST
+    // (e.g. a minified bundle with thousands of chained `||`/`,`/`+` operands)
+    // would otherwise exhaust the native stack and crash the process with an
+    // uncatchable StackOverflowException — a denial-of-service hazard on
+    // untrusted input. Bound the depth and surface a catchable error instead.
+    // The limit is well above what real-world bundles need (x.com's i18n bundle
+    // nests ~1550 deep) but must be reachable without overflow, so callers run
+    // the compiler on an enlarged stack (see RunFenJsWithLargeStack / jstime).
+    // Thread-static so the count reflects the true C# recursion depth across
+    // nested-function compilation: each nested function/arrow gets its own
+    // BytecodeCompiler instance, but they all recurse on one thread, and it is
+    // that combined native-stack depth that risks overflow. Diagnostic only.
+    [ThreadStatic] private static int _compileExpressionDepth;
+    [ThreadStatic] private static int _maxObservedCompileDepth;
+
+    // Diagnostic: deepest expression-compile recursion observed on this thread.
+    public int MaxObservedCompileDepth => _maxObservedCompileDepth;
+
     private int CompileExpression(ExpressionNode expr)
+    {
+        if (++_compileExpressionDepth > _maxObservedCompileDepth)
+        {
+            _maxObservedCompileDepth = _compileExpressionDepth;
+        }
+
+        // Probe the *actual* remaining native stack rather than a fixed depth.
+        // Real minified bundles nest deeply (x.com's i18n compiles an ~8800-deep
+        // left-associative chain), so callers run on an enlarged stack; a fixed
+        // limit would either reject valid code or be unreachable before overflow.
+        // TryEnsureSufficientExecutionStack returns false near exhaustion, letting
+        // us throw a catchable error instead of crashing the process with an
+        // uncatchable StackOverflowException (a DoS hazard on untrusted input).
+        if (!System.Runtime.CompilerServices.RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        {
+            _compileExpressionDepth--;
+            throw new InvalidOperationException(
+                "Expression nesting too deep to compile (insufficient stack).");
+        }
+
+        try
+        {
+            return CompileExpressionCore(expr);
+        }
+        finally
+        {
+            _compileExpressionDepth--;
+        }
+    }
+
+    private int CompileExpressionCore(ExpressionNode expr)
     {
         switch (expr)
         {
