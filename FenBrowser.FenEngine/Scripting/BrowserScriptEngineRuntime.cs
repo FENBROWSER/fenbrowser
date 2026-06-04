@@ -11,6 +11,7 @@ using System.Text;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Network.Handlers;
 using FenBrowser.Core.Parsing;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Host;
@@ -271,7 +272,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     // native callback that evaluates more script) run inline instead of spawning — and,
     // critically, avoids dead-locking on _fenJsLock which the outer worker already holds.
     [ThreadStatic] private static bool _onFenJsLargeStackThread;
-    private const int FenJsLargeStackBytes = 16 * 1024 * 1024;
+    // 256 MB: real-world minified bundles nest very deeply. The parser builds
+    // operator chains iteratively, but the compiler's tree-walk recurses — and
+    // x.com's i18n bundle compiles an ~8800-deep left-associative chain (16 MB
+    // overflowed at ~1550). Give the compile/execute thread a fat stack; the
+    // compiler's TryEnsureSufficientExecutionStack guard still aborts catchably
+    // if even this is exceeded, rather than crashing the process.
+    private const int FenJsLargeStackBytes = 256 * 1024 * 1024;
 
     private T RunFenJsWithLargeStack<T>(Func<T> work)
     {
@@ -338,14 +345,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     continue;
                 }
 
-                if (ExternalScriptFetcher != null)
-                {
-                    code = await ExternalScriptFetcher(scriptUri, baseUri).ConfigureAwait(false);
-                }
-                else if (FetchOverride != null)
-                {
-                    code = await FetchOverride(scriptUri).ConfigureAwait(false);
-                }
+                code = await FetchExternalPageScriptAsync(scriptUri, baseUri).ConfigureAwait(false);
             }
             else
             {
@@ -372,9 +372,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 _legacyFallbackCount++;
                 var snippet = code.Length > 140 ? code.Substring(0, 140) : code;
                 snippet = snippet.Replace("\n", " ").Replace("\r", " ");
+                var detail = fenJsEx.Message;
+                if (fenJsEx is FenBrowser.Js.Interpreter.JsThrownException jte && _interpreter != null)
+                {
+                    try { detail = "thrown=> " + _interpreter.DescribeThrownValue(jte.Value); }
+                    catch { /* diagnostics must never mask the original failure */ }
+                }
                 FenBrowser.Core.EngineLogCompat.Warn(
                     $"[FenJsBridge] Page script failed on FenJS, falling back to legacy engine " +
-                    $"(len={code.Length}, src='{scriptElement.GetAttribute("src")}'): {fenJsEx.Message} :: {snippet}",
+                    $"(len={code.Length}, src='{scriptElement.GetAttribute("src")}'): {detail} :: {snippet}",
                     FenBrowser.Core.Logging.LogCategory.JavaScript);
                 _legacy.Evaluate(code);
             }
@@ -385,8 +391,61 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
     }
 
+    private async Task<string> FetchExternalPageScriptAsync(Uri scriptUri, Uri referer)
+    {
+        if (scriptUri == null)
+        {
+            return null;
+        }
+
+        if (ExternalScriptFetcher != null)
+        {
+            return await ExternalScriptFetcher(scriptUri, referer).ConfigureAwait(false);
+        }
+
+        if (FetchOverride != null)
+        {
+            return await FetchOverride(scriptUri).ConfigureAwait(false);
+        }
+
+        if (FetchHandler == null)
+        {
+            return null;
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, scriptUri);
+        if (referer != null)
+        {
+            request.Headers.Referrer = referer;
+            if (!CorsHandler.IsSameOrigin(scriptUri, referer))
+            {
+                var origin = CorsHandler.SerializeOrigin(new UriBuilder(
+                    referer.Scheme,
+                    referer.Host,
+                    referer.IsDefaultPort ? -1 : referer.Port).Uri);
+                if (!string.IsNullOrWhiteSpace(origin))
+                {
+                    request.Headers.TryAddWithoutValidation("Origin", origin);
+                }
+            }
+        }
+
+        using var response = await FetchHandler(request).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+    }
+
     private void ResetFenJsSession()
     {
+        // Establish the large-stack worker BEFORE taking _fenJsLock. ResetFenJsSession
+        // transitively calls InstallFenJsDomGlobals -> EvaluateWithFenJsRaw, which spawns
+        // the large-stack thread. If we held _fenJsLock on a plain render thread and then
+        // spawned, the worker would block forever on the lock the joining caller still
+        // holds (Monitor is not cross-thread reentrant) -> deadlock. Acquiring the fat
+        // stack first means the nested EvaluateWithFenJsRaw sees _onFenJsLargeStackThread
+        // and runs inline, so the lock is taken once, on a single thread, reentrantly.
+        RunFenJsWithLargeStack<object>(() =>
+        {
         lock (_fenJsLock)
         {
             _compiler = new BytecodeCompiler();
@@ -405,6 +464,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 WallClockTimeoutMs = ResolveFenJsScriptTimeoutMs()
             };
 
+            // The generational nursery GC (tier-4 scaffold) does not yet root every
+            // transient handle that real-world bundles keep live across an allocation
+            // burst, so an auto-MinorCollect fired mid-bundle can reclaim a still-reachable
+            // object and resurface as "Stale heap handle." — which aborts page boot for
+            // allocation-heavy SPAs like x.com (its webpack runtime trips it immediately).
+            // Until the missing roots are tracked down, disable the auto-trigger for the
+            // browser page-script interpreter: a single page load does not need nursery
+            // sweeps, and correctness here matters far more than reclaiming young cells.
+            _interpreter.Heap.YoungAllocationsPerMinorGc = 0;
+
             _hostHandleCache.Clear();
             _documentEventListeners.Clear();
             _windowEventListeners.Clear();
@@ -418,6 +487,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 InstallFenJsDomGlobals(_currentDomRoot, _currentBaseUri);
             }
         }
+            return null;
+        });
     }
 
     private static object ConvertFenJsValue(FenBrowser.Js.Runtime.JsValue value)
@@ -438,6 +509,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private void BindFenJsDomContext(Node domRoot, Uri baseUri, string documentReadyState)
     {
+        // Acquire the large stack before _fenJsLock for the same reason as
+        // ResetFenJsSession: the nested ResetFenJsSession -> InstallFenJsDomGlobals ->
+        // EvaluateWithFenJsRaw must run inline on this worker rather than spawning a
+        // second thread that deadlocks on the lock we hold here.
+        RunFenJsWithLargeStack<object>(() =>
+        {
         lock (_fenJsLock)
         {
             _currentDomRoot = domRoot;
@@ -448,6 +525,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             _documentEpoch = _documentEpoch.Next();
             ResetFenJsSession();
         }
+            return null;
+        });
     }
 
     private void InstallFenJsDomGlobals(Node domRoot, Uri baseUri)

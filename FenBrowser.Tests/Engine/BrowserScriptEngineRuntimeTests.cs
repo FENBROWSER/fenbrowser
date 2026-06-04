@@ -1,5 +1,7 @@
 using System;
 using System.Globalization;
+using System.Net;
+using System.Net.Http;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Parsing;
@@ -163,6 +165,38 @@ namespace FenBrowser.Tests.Engine
             Assert.Equal(true, engine.Evaluate("globalThis.__wimbInit"));
             Assert.Equal("https://example.com/assets/bootstrap.js", engine.Evaluate("window.WIMB.meta.js_src_url")?.ToString());
             Assert.Equal(true, engine.Evaluate("document.currentScript === null"));
+            Assert.Equal(0, engine.LegacyFallbackCount);
+        }
+
+        [Fact]
+        public async Task FenJsMode_SetDomAsync_FetchesExternalScriptsThroughBrowserFetchHandler()
+        {
+            Environment.SetEnvironmentVariable(RuntimeSelectorVariable, "fenjs");
+            BrowserScriptEngineRuntime.Reset();
+
+            var baseUri = new Uri("https://example.com/app/index.html");
+            var document = new HtmlParser(
+                "<html><body><div id='state'>pending</div><script src=\"/assets/bootstrap.js\"></script></body></html>",
+                baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+            engine.AllowExternalScripts = true;
+            engine.FetchHandler = request =>
+            {
+                Assert.Equal("https://example.com/assets/bootstrap.js", request.RequestUri?.AbsoluteUri);
+                Assert.Equal(baseUri, request.Headers.Referrer);
+
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        "document.getElementById('state').textContent = 'loaded'; globalThis.__fetchHandlerBootstrap = document.currentScript.src;")
+                };
+                return Task.FromResult(response);
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("loaded", engine.Evaluate("document.getElementById('state').textContent")?.ToString());
+            Assert.Equal("https://example.com/assets/bootstrap.js", engine.Evaluate("globalThis.__fetchHandlerBootstrap")?.ToString());
             Assert.Equal(0, engine.LegacyFallbackCount);
         }
 
