@@ -6,6 +6,7 @@ using FenBrowser.Core.Engine;
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Core.EventLoop;
+using FenBrowser.FenEngine.Errors;
 
 namespace FenBrowser.FenEngine.Core.Types
 {
@@ -65,6 +66,26 @@ namespace FenBrowser.FenEngine.Core.Types
             return FenValue.FromObject(error);
         }
 
+        private static FenValue CreateRejectionValue(Exception exception)
+        {
+            if (exception == null)
+            {
+                return FenValue.FromString("Error");
+            }
+
+            if (JsThrownValueException.TryExtract(exception, out var thrownValue))
+            {
+                return thrownValue;
+            }
+
+            if (exception is FenError fenError)
+            {
+                return FenValue.FromError(fenError.Message);
+            }
+
+            return FenValue.FromError(exception.Message);
+        }
+
         private static List<string> GetPromiseInputKeys(FenObject source, IExecutionContext context)
         {
             var keys = new List<string>();
@@ -118,7 +139,7 @@ namespace FenBrowser.FenEngine.Core.Types
                 catch (Exception ex)
                 {
                     // Any error during execution rejects the promise
-                    RejectPromise(FenValue.FromString(ex.Message));
+                    RejectPromise(CreateRejectionValue(ex));
                 }
             }
         }
@@ -294,7 +315,7 @@ namespace FenBrowser.FenEngine.Core.Types
             }
             catch (Exception ex)
             {
-                capability.RejectPromise(FenValue.FromString(ex.Message));
+                capability.RejectPromise(CreateRejectionValue(ex));
             }
         }
 

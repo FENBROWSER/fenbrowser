@@ -205,6 +205,105 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void Promise_Then_CallbackPreservesEnclosingLexicalBindings()
+        {
+            var rt = CreateRuntime();
+            Run(rt, @"
+                var observed;
+                function boot() {
+                    let local = 'captured';
+                    Promise.resolve(1).then(function() { observed = local; });
+                }
+                boot();
+            ");
+
+            Assert.Equal("captured", rt.GetGlobal("observed").ToString());
+        }
+
+        [Fact]
+        public void Promise_Then_CallbackPreservesForOfLexicalBindings()
+        {
+            var rt = CreateRuntime();
+            Run(rt, @"
+                var observed = [];
+                for (let f of ['a', 'b', 'c']) {
+                    Promise.resolve().then(function() { observed.push(f); });
+                }
+            ");
+
+            var arr = rt.GetGlobal("observed").AsObject();
+            Assert.NotNull(arr);
+            Assert.Equal("a", arr.Get("0").ToString());
+            Assert.Equal("b", arr.Get("1").ToString());
+            Assert.Equal("c", arr.Get("2").ToString());
+        }
+
+        [Fact]
+        public void Promise_Catch_CallbackPreservesEnclosingLexicalBindings()
+        {
+            var rt = CreateRuntime();
+            Run(rt, @"
+                var observed = 'unset';
+                function boot() {
+                    let f = 'captured-catch';
+                    Promise.reject('boom').catch(function() { observed = f; });
+                }
+                boot();
+            ");
+
+            Assert.Equal("captured-catch", rt.GetGlobal("observed").ToString());
+        }
+
+        [Fact]
+        public void Promise_Finally_CallbackPreservesEnclosingLexicalBindings()
+        {
+            var rt = CreateRuntime();
+            Run(rt, @"
+                var observed = 'unset';
+                function boot() {
+                    let f = 'captured-finally';
+                    Promise.resolve('ok').finally(function() { observed = f; });
+                }
+                boot();
+            ");
+
+            Assert.Equal("captured-finally", rt.GetGlobal("observed").ToString());
+        }
+
+        [Fact]
+        public void Promise_Then_CallbackPreservesFunctionValuedLexicalBindings()
+        {
+            var rt = CreateRuntime();
+            Run(rt, @"
+                var observed = 'unset';
+                function boot() {
+                    let f = function() { return 'captured-function'; };
+                    Promise.resolve('ok').then(function() { observed = f(); });
+                }
+                boot();
+            ");
+
+            Assert.Equal("captured-function", rt.GetGlobal("observed").ToString());
+        }
+
+        [Fact]
+        public void Promise_Then_CallbackThrowPreservesErrorObjectShape()
+        {
+            var rt = CreateRuntime();
+            Run(rt, @"
+                var rejected;
+                Promise.resolve()
+                    .then(function() { throw new Error('boom'); })
+                    .catch(function(err) { rejected = err; });
+            ");
+
+            var rejected = rt.GetGlobal("rejected").AsObject();
+            Assert.NotNull(rejected);
+            Assert.Equal("Error", rejected.Get("name").ToString());
+            Assert.Equal("boom", rejected.Get("message").ToString());
+        }
+
+        [Fact]
         public void Promise_RealmBranding_UsesNativePromisePrototypeAcrossFactoriesAndChains()
         {
             var rt = CreateRuntime();
