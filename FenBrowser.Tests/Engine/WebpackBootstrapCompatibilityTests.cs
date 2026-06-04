@@ -259,6 +259,36 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public void MinifiedCommaMemberCall_InsideArrowSwitchDefault_PreservesPropertyLookup()
+        {
+            var runtime = new FenRuntime();
+
+            runtime.ExecuteSimple(@"
+                var hits = [];
+                var n = {
+                  f: function(value) {
+                    hits.push(value);
+                    return value;
+                  }
+                };
+
+                var s = (e, t) => {
+                  let { type: r } = t;
+                  switch (t.type) {
+                    default:
+                      return (0, n.f)(`x ${r}`);
+                  }
+                };
+
+                globalThis.__memberCallResult = s(null, { type: 'VALUE' });
+                globalThis.__memberCallHit = hits[0];
+            ");
+
+            Assert.Equal("x VALUE", runtime.GetGlobal("__memberCallResult").ToString());
+            Assert.Equal("x VALUE", runtime.GetGlobal("__memberCallHit").ToString());
+        }
+
+        [Fact]
         public void FlattenedLogicalAnd_StopsAtFirstFalsyOperand()
         {
             var runtime = new FenRuntime();
