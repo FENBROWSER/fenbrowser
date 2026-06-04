@@ -35,6 +35,21 @@ public class RendererChildLoopIoTests
     }
 
     [Fact]
+    public async Task ReadLineWithTimeoutAsync_ReusesPendingRead_AcrossTimeoutPolls()
+    {
+        using var reader = new SinglePendingReadTextReader("late", TimeSpan.FromMilliseconds(80));
+
+        var first = await RendererChildLoopIo.ReadLineWithTimeoutAsync(reader, TimeSpan.FromMilliseconds(20));
+        var second = await RendererChildLoopIo.ReadLineWithTimeoutAsync(reader, TimeSpan.FromMilliseconds(200));
+
+        Assert.False(first.Completed);
+        Assert.True(first.TimedOut);
+        Assert.True(second.Completed);
+        Assert.Equal("late", second.Line);
+        Assert.Equal(1, reader.ReadCount);
+    }
+
+    [Fact]
     public async Task ReadLineWithTimeoutAsync_ReturnsEndOfStream_WhenReaderCompletesWithNull()
     {
         using var reader = new EndOfStreamTextReader();
@@ -60,6 +75,24 @@ public class RendererChildLoopIoTests
         public override ValueTask<string?> ReadLineAsync(CancellationToken cancellationToken)
         {
             return ValueTask.FromResult<string?>(null);
+        }
+    }
+
+    private sealed class SinglePendingReadTextReader(string line, TimeSpan delay) : TextReader
+    {
+        private int _readCount;
+
+        public int ReadCount => Volatile.Read(ref _readCount);
+
+        public override async ValueTask<string?> ReadLineAsync(CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _readCount) != 1)
+            {
+                throw new InvalidOperationException("Concurrent ReadLineAsync started.");
+            }
+
+            await Task.Delay(delay, cancellationToken);
+            return line;
         }
     }
 }
