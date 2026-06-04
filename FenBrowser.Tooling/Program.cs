@@ -116,13 +116,27 @@ namespace FenBrowser.Tooling
                     var compiler = new FenBrowser.Js.Bytecode.BytecodeCompiler();
                     var fn = compiler.CompileProgram(program);
                     swCompile.Stop();
-                    Console.WriteLine($"[jstime] COMPILE ok in {swCompile.ElapsedMilliseconds} ms (instructions={fn.Instructions.Count})");
+                    Console.WriteLine($"[jstime] COMPILE ok in {swCompile.ElapsedMilliseconds} ms (instructions={fn.Instructions.Count}, maxDepth={compiler.MaxObservedCompileDepth})");
+
+                    if (phase == "exec" || phase == "run")
+                    {
+                        var interp = new FenBrowser.Js.Interpreter.BytecodeInterpreter();
+                        var swExec = System.Diagnostics.Stopwatch.StartNew();
+                        var result = interp.Execute(fn);
+                        swExec.Stop();
+                        Console.WriteLine($"[jstime] EXEC ok in {swExec.ElapsedMilliseconds} ms (result={result.Tag})");
+                    }
+                }
+                catch (FenBrowser.Js.Interpreter.JsThrownException jte)
+                {
+                    Console.WriteLine($"[jstime] THREW: {jte.Message}");
+                    failure = null;
                 }
                 catch (Exception ex)
                 {
                     failure = ex;
                 }
-            }, 64 * 1024 * 1024);
+            }, 256 * 1024 * 1024);
 
             worker.IsBackground = true;
             worker.Start();
