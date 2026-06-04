@@ -1182,7 +1182,14 @@ public sealed class JsParser
         else
         {
             Token keyToken;
-            if (IsIdentifierLike(Current()))
+            // A BindingProperty's key is a PropertyName, i.e. an IdentifierName, so any
+            // reserved word is allowed as the key (e.g. `let {default: r} = m`, pervasive
+            // in minified bundles that destructure `import()` results). IsIdentifierLike
+            // is the stricter "valid BindingIdentifier" test; a reserved word that is not
+            // a valid binding can still be a key, but only in the explicit `key: target`
+            // form — never as a shorthand `{default}` that would bind a reserved word.
+            var keyIsBindingIdentifier = IsIdentifierLike(Current());
+            if (keyIsBindingIdentifier || Current().Kind == TokenKind.Keyword)
             {
                 keyToken = Advance();
                 key = keyToken.Text;
@@ -1194,7 +1201,7 @@ public sealed class JsParser
             }
             else
             {
-                throw new JsParserException($"Expected object binding property name, found '{Current().Text}'.");
+                throw new JsParserException($"Expected object binding property name, found '{Current().Text}'{Where()}.");
             }
 
             if (IsPunctuator(":"))
@@ -1202,9 +1209,13 @@ public sealed class JsParser
                 Advance();
                 target = ParseBindingPattern();
             }
-            else
+            else if (keyIsBindingIdentifier)
             {
                 target = new IdentifierBindingPatternNode(key, keyToken.Span);
+            }
+            else
+            {
+                throw new JsParserException($"'{key}' is a reserved word and cannot be a shorthand binding{Where()}.");
             }
         }
 
@@ -3293,7 +3304,7 @@ public sealed class JsParser
             }
         }
 
-        throw new JsParserException($"Unexpected token '{token.Text}' ({token.Kind}).");
+        throw new JsParserException($"Unexpected token '{token.Text}' ({token.Kind}){Where()}.");
     }
 
     private static bool TryParseNumberLiteral(string text, out double value)
@@ -4091,14 +4102,28 @@ public sealed class JsParser
         int restParameterIndex,
         IReadOnlyList<ExpressionNode?>? parameterDefaults = null)
     {
+        // ECMA-262 ArrowFunction: the body is parsed with its OWN [Yield]/[Await]
+        // context, not the enclosing one. ConciseBody is [~Yield], and Await is +Await
+        // only for an async arrow (AsyncConciseBody), ~Await otherwise. Without this,
+        // an async arrow nested inside a non-async function inherited the enclosing
+        // [~Await] and parsed `await x` as the identifier `await` followed by `x`
+        // (e.g. `function m(){ let c=async()=>{ await u(); }; }` — pervasive in minified
+        // bundles like x.com's main.js). Top-level async arrows only worked by accident
+        // because the program default is [+Await].
         if (IsPunctuator("{"))
         {
-            var block = ParseBlockStatement();
+            var block = ParseWithExpressionContext(
+                allowYieldExpression: false,
+                allowAwaitExpression: isAsync,
+                ParseBlockStatement);
             ValidateDirectivePrologueStrictStringEscapes(block.Statements);
             return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span), IsAsync: isAsync, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings, ParameterDefaults: parameterDefaults);
         }
 
-        var bodyExpression = ParseExpression(2);
+        var bodyExpression = ParseWithExpressionContext(
+            allowYieldExpression: false,
+            allowAwaitExpression: isAsync,
+            () => ParseExpression(2));
         return new ArrowFunctionExpressionNode(parameters, null, bodyExpression, MergeSpan(start, bodyExpression.Span), IsAsync: isAsync, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings, ParameterDefaults: parameterDefaults);
     }
 
