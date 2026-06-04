@@ -105,5 +105,21 @@ namespace FenBrowser.Tests.Engine
             Assert.False(EventLoopCoordinator.Instance.HasPendingDelayedTasks);
             Assert.Equal(0, EventLoopCoordinator.Instance.TaskCount);
         }
+
+        [Fact]
+        public void GetSuggestedWaitMilliseconds_UsesNextDelayedTaskDeadline()
+        {
+            var context = new FenBrowser.FenEngine.Core.ExecutionContext();
+
+            context.ScheduleCallback(() => { }, 25);
+
+            var initialWait = EventLoopCoordinator.Instance.GetSuggestedWaitMilliseconds();
+            Assert.InRange(initialWait, 1, 25);
+
+            Thread.Sleep(35);
+
+            var maturedWait = EventLoopCoordinator.Instance.GetSuggestedWaitMilliseconds();
+            Assert.Equal(0, maturedWait);
+        }
     }
 }

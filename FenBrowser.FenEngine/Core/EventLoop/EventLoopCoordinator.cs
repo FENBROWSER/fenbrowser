@@ -513,6 +513,35 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
                 }
             }
         }
+        public int GetSuggestedWaitMilliseconds(int maxWaitMs = 50)
+        {
+            if (HasPendingTasks || HasPendingMicrotasks || HasPendingAnimationFrames)
+            {
+                return 0;
+            }
+
+            lock (_delayedTaskLock)
+            {
+                if (_delayedTasks.Count == 0)
+                {
+                    return -1;
+                }
+
+                var now = Environment.TickCount64;
+                long nextDueTime = long.MaxValue;
+                foreach (var delayedTask in _delayedTasks)
+                {
+                    if (delayedTask.DueTimeMs < nextDueTime)
+                    {
+                        nextDueTime = delayedTask.DueTimeMs;
+                    }
+                }
+
+                var waitMs = Math.Max(0, nextDueTime - now);
+                return (int)Math.Min(waitMs, Math.Max(0, maxWaitMs));
+            }
+        }
+
         public TaskQueueSnapshot GetTaskSnapshot() => _taskQueue.GetSnapshot();
         public bool HasPendingTasksFor(TaskSource source) => _taskQueue.HasPendingTasksFor(source);
         public bool HasPendingTasksFor(TaskPriorityGroup group) => _taskQueue.HasPendingTasksFor(group);

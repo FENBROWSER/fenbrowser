@@ -677,11 +677,15 @@ public class BrowserIntegration
             bool rendered = SyncAndRender(deadline, coordinator);
 
             // Stage 4: Adaptive wait
-            bool hasWork = _needsRepaint || coordinator.HasPendingTasks || coordinator.HasPendingMicrotasks || sliceTelemetry.ProcessedTaskCount > 0;
+            bool hasWork = _needsRepaint ||
+                           coordinator.HasPendingTasks ||
+                           coordinator.HasPendingMicrotasks ||
+                           coordinator.HasPendingDelayedTasks ||
+                           sliceTelemetry.ProcessedTaskCount > 0;
             int waitMs;
             if (_needsRepaint) waitMs = 16;
             else if (sliceTelemetry.ProcessedTaskCount > 0) waitMs = 1;
-            else if (hasWork) waitMs = 0;
+            else if (hasWork) waitMs = coordinator.GetSuggestedWaitMilliseconds();
             else waitMs = -1; // Block until woken
 
             _wakeEvent.WaitOne(waitMs);
