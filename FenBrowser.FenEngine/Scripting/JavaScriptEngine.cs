@@ -152,7 +152,8 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 EngineLogCompat.Debug($"[ScheduleCallback] Scheduled for {delay}ms", LogCategory.JavaScript);
                 var safeDelay = Math.Max(0, delay);
-                FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance.ScheduleDelayedTask(
+                var eventLoop = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
+                eventLoop.ScheduleDelayedTask(
                     () =>
                     {
                         EngineLogCompat.Debug("[EventLoop] Executing scheduled callback", LogCategory.JavaScript);
@@ -163,7 +164,7 @@ namespace FenBrowser.FenEngine.Scripting
                     "JavaScriptEngine.ScheduleCallback");
 
                 _ = ObserveBackgroundTaskFailureAsync(
-                    WakeScheduledCallbackAsync(safeDelay),
+                    WakeScheduledCallbackAsync(eventLoop, safeDelay),
                     message => EngineLogCompat.Warn($"[JavaScriptEngine] ScheduleCallbackAsync failed: {message}", LogCategory.JavaScript));
             };
 
@@ -319,7 +320,7 @@ namespace FenBrowser.FenEngine.Scripting
             }
         }
 
-        private static async Task WakeScheduledCallbackAsync(int delay)
+        private static async Task WakeScheduledCallbackAsync(FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator eventLoop, int delay)
         {
             if (delay > 0)
             {
@@ -329,8 +330,6 @@ namespace FenBrowser.FenEngine.Scripting
             {
                 await Task.Yield();
             }
-
-            var eventLoop = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
 
             void DrainReadyWork()
             {
@@ -569,15 +568,17 @@ namespace FenBrowser.FenEngine.Scripting
             object key = NormalizeEventTargetKey(target);
             if (key == null) return;
 
-            if (eventArgs is DomEvent domEvent && _fenRuntime?.Context != null)
+            var dispatchedEvent = CoerceEventArgsToDomEvent(eventName, eventArgs);
+
+            if (dispatchedEvent != null && _fenRuntime?.Context != null)
             {
-                InvokeObjectListenersForDomEvent(target, domEvent, _fenRuntime.Context, isCapturePhase: true, atTargetPhase: true);
-                if (!domEvent.ImmediatePropagationStopped)
+                InvokeObjectListenersForDomEvent(target, dispatchedEvent, _fenRuntime.Context, isCapturePhase: true, atTargetPhase: true);
+                if (!dispatchedEvent.ImmediatePropagationStopped)
                 {
-                    InvokeObjectListenersForDomEvent(target, domEvent, _fenRuntime.Context, isCapturePhase: false, atTargetPhase: true);
+                    InvokeObjectListenersForDomEvent(target, dispatchedEvent, _fenRuntime.Context, isCapturePhase: false, atTargetPhase: true);
                 }
-                InvokeEventPropertyHandler(target, eventName, domEvent);
-                InvokeInlineEventAttributeHandler(target, eventName, domEvent);
+                InvokeEventPropertyHandler(target, eventName, dispatchedEvent);
+                InvokeInlineEventAttributeHandler(target, eventName, dispatchedEvent);
                 return;
             }
 
@@ -635,6 +636,43 @@ namespace FenBrowser.FenEngine.Scripting
             InvokeInlineEventAttributeHandler(target, eventName, eventArgs);
         }
 
+        private DomEvent CoerceEventArgsToDomEvent(string eventName, FenObject eventArgs)
+        {
+            if (eventArgs is DomEvent domEvent)
+            {
+                return domEvent;
+            }
+
+            var context = _fenRuntime?.Context;
+            if (eventArgs == null)
+            {
+                return new DomEvent(eventName, context: context);
+            }
+
+            var resolvedType = eventName;
+            var typeValue = eventArgs.Get("type", context);
+            if (!typeValue.IsUndefined && !typeValue.IsNull)
+            {
+                var candidateType = typeValue.ToString();
+                if (!string.IsNullOrWhiteSpace(candidateType))
+                {
+                    resolvedType = candidateType;
+                }
+            }
+
+            var bubbles = eventArgs.Get("bubbles", context).ToBoolean();
+            var cancelable = eventArgs.Get("cancelable", context).ToBoolean();
+            var composed = eventArgs.Get("composed", context).ToBoolean();
+            domEvent = new DomEvent(resolvedType, bubbles, cancelable, composed, context);
+
+            foreach (var propertyName in eventArgs.GetOwnPropertyNames())
+            {
+                domEvent.Set(propertyName, eventArgs.Get(propertyName, context), context);
+            }
+
+            return domEvent;
+        }
+
         private void InvokeEventPropertyHandler(object target, string eventName, FenObject eventArgs = null)
         {
             if (_fenRuntime == null || string.IsNullOrWhiteSpace(eventName))
@@ -664,7 +702,7 @@ namespace FenBrowser.FenEngine.Scripting
                 return;
             }
 
-            var domEvent = eventArgs as DomEvent ?? new DomEvent(eventName, false, false, false, _fenRuntime.Context);
+            var domEvent = CoerceEventArgsToDomEvent(eventName, eventArgs);
             SetEventCurrentTargetForObject(domEvent, thisBinding, target, _fenRuntime.Context);
 
             try
@@ -699,7 +737,7 @@ namespace FenBrowser.FenEngine.Scripting
             var targetValue = DomWrapperFactory.Wrap(element, _fenRuntime.Context);
             var previousEvent = _fenRuntime.GetGlobal("event");
             var previousThis = _fenRuntime.GetGlobal("__fen_inline_this");
-            var eventObject = eventArgs as DomEvent ?? new DomEvent(eventName, false, false, false, _fenRuntime.Context);
+            var eventObject = CoerceEventArgsToDomEvent(eventName, eventArgs);
 
             try
             {
@@ -906,6 +944,21 @@ namespace FenBrowser.FenEngine.Scripting
             catch
             {
             }
+        }
+
+        private void EnqueuePendingMutation(MutationRecord record)
+        {
+            if (record == null)
+            {
+                return;
+            }
+
+            lock (_mutationLock)
+            {
+                _pendingMutations.Add(record);
+            }
+
+            RecordMutation(record);
         }
 
         private object ResolveDocumentEventTarget(Element target)

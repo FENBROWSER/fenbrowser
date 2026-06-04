@@ -66,6 +66,49 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task DispatchEvent_WithoutExplicitDomEvent_StillInvokesOnloadPropertyHandler()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><script id='probe'></script><script>var s=document.getElementById('probe');s.onload=function(){globalThis.__scriptLoadHits=(globalThis.__scriptLoadHits||0)+1;};</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            var probe = doc.GetElementById("probe");
+            Assert.NotNull(probe);
+
+            engine.DispatchEvent(probe, "load");
+
+            Assert.Equal("1", engine.Evaluate("String(globalThis.__scriptLoadHits)")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_UnhandledRejectionEvent_PreservesReasonForPropertyAndListenerHandlers()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><script>" +
+                "window.onunhandledrejection=function(ev){globalThis.__propertyReasonType=typeof ev.reason;globalThis.__propertyReason=String(ev.reason);};" +
+                "window.addEventListener('unhandledrejection',function(ev){globalThis.__listenerReasonType=typeof ev.reason;globalThis.__listenerReason=String(ev.reason);});" +
+                "Promise.reject('boom');" +
+                "</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+
+            Assert.Equal("string", engine.Evaluate("globalThis.__propertyReasonType")?.ToString());
+            Assert.Equal("string", engine.Evaluate("globalThis.__listenerReasonType")?.ToString());
+            Assert.Equal("boom", engine.Evaluate("globalThis.__propertyReason")?.ToString());
+            Assert.Equal("boom", engine.Evaluate("globalThis.__listenerReason")?.ToString());
+        }
+
+        [Fact]
         public async Task SetDomAsync_GlobalBootstrapProbe_SeesMathOnWindowAndGlobalThis()
         {
             var baseUri = new Uri("https://example.com/index.html");
@@ -684,6 +727,74 @@ namespace FenBrowser.Tests.Engine
         }
 
         [Fact]
+        public async Task SetDomAsync_SetTimeoutFunctionCallbackPreservesLexicalBindings()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><script>document.addEventListener('DOMContentLoaded', function () { let f = 'captured-timeout'; setTimeout(function () { globalThis.__timeoutCaptured = f; }, 1); });</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+            await Task.Delay(50);
+
+            Assert.Equal("captured-timeout", engine.Evaluate("globalThis.__timeoutCaptured")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_WindowSetTimeoutFunctionCallbackPreservesLexicalBindings()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><script>document.addEventListener('DOMContentLoaded', function () { let f = 'captured-window-timeout'; window.setTimeout(function () { globalThis.__windowTimeoutCaptured = f; }, 1); });</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+            await Task.Delay(50);
+
+            Assert.Equal("captured-window-timeout", engine.Evaluate("globalThis.__windowTimeoutCaptured")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_SelfSetTimeoutFunctionCallbackPreservesLexicalBindings()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><script>document.addEventListener('DOMContentLoaded', function () { let f = 'captured-self-timeout'; self.setTimeout(function () { globalThis.__selfTimeoutCaptured = f; }, 1); });</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+            await Task.Delay(50);
+
+            Assert.Equal("captured-self-timeout", engine.Evaluate("globalThis.__selfTimeoutCaptured")?.ToString());
+        }
+
+        [Fact]
+        public async Task SetDomAsync_RequestAnimationFrameCallbackPreservesLexicalBindings()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><body><script>document.addEventListener('DOMContentLoaded', function () { let f = 'captured-raf'; requestAnimationFrame(function () { globalThis.__rafCaptured = f; }); });</script></body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost());
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+            await Task.Delay(50);
+
+            Assert.Equal("captured-raf", engine.Evaluate("globalThis.__rafCaptured")?.ToString());
+        }
+
+        [Fact]
         public async Task RequestIdleCallback_CallbackRunsWithDeadlineObject()
         {
             var engine = new JavaScriptEngine(CreateHost());
@@ -761,6 +872,47 @@ namespace FenBrowser.Tests.Engine
                 dynamicScriptLoadedBool,
                 $"dynamicScriptLoaded={dynamicScriptLoaded}, mutationObserved={mutationObserved}, stateText={stateText}, appendChildStatus={appendChildStatus}, scriptCount={scriptCount}");
             Assert.Equal("updated", stateText);
+        }
+
+        [Fact]
+        public async Task SetDomAsync_DynamicExternalScriptInsertedViaHeadAppendChildExecutesAndUpdatesState()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var parser = new HtmlParser(
+                "<html><head></head><body><div id='state'>pending</div>" +
+                "<script>document.addEventListener('DOMContentLoaded', function () { window.__headMutationObserved = false; new MutationObserver(function () { window.__headMutationObserved = true; }).observe(document.head, { childList: true }); try { var s = document.createElement('script'); s.setAttribute('src', '/assets/chunk.js'); document.head.appendChild(s); window.__headAppendChildStatus = 'ok'; } catch (e) { window.__headAppendChildStatus = String(e && e.message ? e.message : e); } });</script>" +
+                "</body></html>",
+                baseUri);
+            var doc = parser.Parse();
+
+            var engine = new JavaScriptEngine(CreateHost())
+            {
+                ExternalScriptFetcher = (uri, _) => Task.FromResult(
+                    "window.__headDynamicScriptLoaded = true; document.getElementById('state').textContent = 'head-updated';")
+            };
+
+            await engine.SetDomAsync(doc.DocumentElement, baseUri);
+            await Task.Delay(75);
+
+            var appendChildStatus = engine.Evaluate("window.__headAppendChildStatus")?.ToString();
+            var scriptCount = engine.Evaluate("String(document.getElementsByTagName('script').length)")?.ToString();
+            var headScriptCount = engine.Evaluate("String(document.head.getElementsByTagName('script').length)")?.ToString();
+            var mutationObserved = engine.Evaluate("window.__headMutationObserved");
+            var dynamicScriptLoaded = engine.Evaluate("window.__headDynamicScriptLoaded");
+            var stateText = engine.Evaluate("document.getElementById('state').textContent")?.ToString();
+            var mutationObservedBool = string.Equals(mutationObserved?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
+            var dynamicScriptLoadedBool = string.Equals(dynamicScriptLoaded?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
+
+            Assert.Equal("ok", appendChildStatus);
+            Assert.Equal("2", scriptCount);
+            Assert.Equal("1", headScriptCount);
+            Assert.True(
+                mutationObservedBool,
+                $"mutationObserved={mutationObserved}, dynamicScriptLoaded={dynamicScriptLoaded}, stateText={stateText}, appendChildStatus={appendChildStatus}, scriptCount={scriptCount}, headScriptCount={headScriptCount}");
+            Assert.True(
+                dynamicScriptLoadedBool,
+                $"dynamicScriptLoaded={dynamicScriptLoaded}, mutationObserved={mutationObserved}, stateText={stateText}, appendChildStatus={appendChildStatus}, scriptCount={scriptCount}, headScriptCount={headScriptCount}");
+            Assert.Equal("head-updated", stateText);
         }
 
         [Fact]

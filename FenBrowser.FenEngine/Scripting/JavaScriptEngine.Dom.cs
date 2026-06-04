@@ -230,11 +230,7 @@ namespace FenBrowser.FenEngine.Scripting
                 ((ContainerNode)host._node).AppendChild(j._node);
                 try
                 {
-                    var name = j._node.IsText() ? (j._node.TextContent ?? "") : (j._node is Element je ? (je.Id != null ? "#" + je.Id : je.NodeName) : j._node.NodeName);
-                    lock (_e._mutationLock)
-                    {
-                        _e._pendingMutations.Add(new MutationRecord { Type = MutationRecordType.ChildList, AddedNodes = new System.Collections.Generic.List<Node> { j._node }, RemovedNodes = new System.Collections.Generic.List<Node>() });
-                    }
+                    _e.EnqueuePendingMutation(new MutationRecord { Type = MutationRecordType.ChildList, AddedNodes = new System.Collections.Generic.List<Node> { j._node }, RemovedNodes = new System.Collections.Generic.List<Node>() });
                 }
                 catch (Exception ex) { TryLogDomWarn($"[JsDocument] appendChild mutation queue failed: {ex.Message}"); }
                 _e.RequestRepaint();
@@ -251,11 +247,7 @@ namespace FenBrowser.FenEngine.Scripting
                     if (host != null && host._node != null)
                     {
                         ((ContainerNode)host._node).RemoveChild(j._node);
-                        lock (_e._mutationLock)
-                        {
-                            var name = j._node.IsText() ? (j._node.TextContent ?? "") : (j._node is Element je ? (je.Id != null ? "#" + je.Id : je.NodeName) : j._node.NodeName);
-                            _e._pendingMutations.Add(new MutationRecord { Type = MutationRecordType.ChildList, AddedNodes = new System.Collections.Generic.List<Node>(), RemovedNodes = new System.Collections.Generic.List<Node> { j._node } });
-                        }
+                        _e.EnqueuePendingMutation(new MutationRecord { Type = MutationRecordType.ChildList, AddedNodes = new System.Collections.Generic.List<Node>(), RemovedNodes = new System.Collections.Generic.List<Node> { j._node } });
                         _e.RequestRepaint();
                     }
                 }
@@ -579,10 +571,7 @@ namespace FenBrowser.FenEngine.Scripting
                 if (_node is Element el) el.SetAttribute(name, value);
                 try
                 {
-                    lock (_e._mutationLock)
-                    {
-                        _e._pendingMutations.Add(new MutationRecord { Type = MutationRecordType.Attributes, AttributeName = name, Target = _node });
-                    }
+                    _e.EnqueuePendingMutation(new MutationRecord { Type = MutationRecordType.Attributes, AttributeName = name, Target = _node });
                 }
                 catch (Exception ex) { TryLogDomWarn($"[JsDomElement] setAttribute mutation queue failed: {ex.Message}"); }
                 _e.RequestRepaint();
@@ -601,8 +590,7 @@ namespace FenBrowser.FenEngine.Scripting
                 ((ContainerNode)_node).AppendChild(j._node);
                 try
                 {
-                    var name = j._node.IsText() ? "#text" : (j._node is Element nodeEl ? (nodeEl.Id != null ? "#" + nodeEl.Id : nodeEl.NodeName) : j._node.NodeName);
-                    lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = MutationRecordType.ChildList, AddedNodes = new System.Collections.Generic.List<Node> { j._node }, RemovedNodes = new System.Collections.Generic.List<Node>() }); }
+                    _e.EnqueuePendingMutation(new MutationRecord { Type = MutationRecordType.ChildList, AddedNodes = new System.Collections.Generic.List<Node> { j._node }, RemovedNodes = new System.Collections.Generic.List<Node>() });
                 }
                 catch (Exception ex) { TryLogDomWarn($"[JsDomElement] appendChild mutation queue failed: {ex.Message}"); }
                 _e.RequestRepaint();
@@ -677,8 +665,7 @@ namespace FenBrowser.FenEngine.Scripting
                 try
                 {
                     ((ContainerNode)_node).RemoveChild(j._node);
-                    var name = j._node.IsText() ? (j._node.TextContent ?? "") : (j._node is Element je ? (je.Id != null ? "#" + je.Id : je.NodeName) : j._node.NodeName);
-                    lock (_e._mutationLock) { _e._pendingMutations.Add(new MutationRecord { Type = MutationRecordType.ChildList, AddedNodes = new System.Collections.Generic.List<Node>(), RemovedNodes = new System.Collections.Generic.List<Node> { j._node } }); }
+                    _e.EnqueuePendingMutation(new MutationRecord { Type = MutationRecordType.ChildList, AddedNodes = new System.Collections.Generic.List<Node>(), RemovedNodes = new System.Collections.Generic.List<Node> { j._node } });
                 }
                 catch (Exception ex) { TryLogDomWarn($"[JsDomElement] removeChild mutation queue failed: {ex.Message}"); }
                 _e.RequestRepaint();
