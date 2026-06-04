@@ -282,7 +282,133 @@ public sealed partial class BytecodeInterpreter
             }
         }
 
-        throw new JsThrownException(CreateTypeError("Value is not callable."));
+        throw new JsThrownException(CreateTypeError(
+            "Value is not callable. " + DescribeCallee(value) +
+            " this=" + DescribeValueShort(thisValue) +
+            " arg0=" + (args.Count > 0 ? DescribeValueShort(args[0]) : "<none>")));
+    }
+
+    private string KeyText(JsValue v)
+    {
+        try
+        {
+            return v.Tag switch
+            {
+                JsValueTag.String => "\"" + v.AsString() + "\"",
+                JsValueTag.Int32 => v.AsInt32().ToString(),
+                JsValueTag.Number => v.AsNumber().ToString(System.Globalization.CultureInfo.InvariantCulture),
+                JsValueTag.Symbol => "symbol",
+                _ => v.Tag.ToString()
+            };
+        }
+        catch { return "?"; }
+    }
+
+    private string DescribeValueShort(JsValue value)
+    {
+        try
+        {
+            if (value.Tag != JsValueTag.Object) return value.Tag.ToString();
+            var obj = _heap.GetObject(value.AsObjectHandle());
+            if (obj is null) return "object<null>";
+            var keys = new List<string>();
+            foreach (var kv in obj.EnumerateOwnProperties())
+            {
+                keys.Add(kv.Key);
+                if (keys.Count >= 6) break;
+            }
+            return obj.GetType().Name + "{" + string.Join(",", keys) + "}";
+        }
+        catch { return "?"; }
+    }
+
+    // Diagnostic: render the non-callable callee so a bundle that calls a missing
+    // global/host function (undefined) is distinguishable from one calling a plain
+    // object. Best-effort — never throws.
+    private string DescribeCallee(JsValue value)
+    {
+        try
+        {
+            if (value.Tag != JsValueTag.Object)
+            {
+                return "(callee tag=" + value.Tag + ")";
+            }
+
+            var obj = _heap.GetObject(value.AsObjectHandle());
+            if (obj is null) return "(callee=object<null>)";
+            var keys = new List<string>();
+            foreach (var kv in obj.EnumerateOwnProperties())
+            {
+                keys.Add(kv.Key);
+                if (keys.Count >= 8) break;
+            }
+            return "(callee=object class=" + obj.GetType().Name + " keys=[" + string.Join(",", keys) + "]) " + DescribeFrameStack();
+        }
+        catch
+        {
+            return "(callee=?)";
+        }
+    }
+
+    private string DescribeFrameStack()
+    {
+        try
+        {
+            var names = new List<string>();
+            foreach (var f in _activeFrames)
+            {
+                names.Add(string.IsNullOrEmpty(f.Function?.Name) ? "<anon>" : f.Function.Name);
+                if (names.Count >= 12) break;
+            }
+            return "frames=[" + string.Join(" <- ", names) + "] " + DisassembleNearCurrentIp();
+        }
+        catch
+        {
+            return "frames=?";
+        }
+    }
+
+    // Dump the bytecode window around the failing call so we can see which property
+    // (resolved via PropertyNames) was loaded as the non-callable callee — the only way
+    // to localize a runtime fault inside a minified bundle that carries no source map.
+    private string DisassembleNearCurrentIp()
+    {
+        try
+        {
+            if (_activeFrames.Count == 0) return string.Empty;
+            var frame = _activeFrames.Peek();
+            var fn = frame.Function;
+            var ip = frame.InstructionPointer;
+            var from = System.Math.Max(0, ip - 7);
+            var to = System.Math.Min(fn.Instructions.Count - 1, ip + 1);
+            var sb = new System.Text.StringBuilder("asm@ip" + ip + "{");
+            for (var i = from; i <= to; i++)
+            {
+                var ins = fn.Instructions[i];
+                sb.Append(i).Append(':').Append(ins.OpCode);
+                if (ins.OpCode == OpCode.GetPropByName && (uint)ins.C < (uint)fn.PropertyNames.Count)
+                {
+                    sb.Append('.').Append(fn.PropertyNames[ins.C]);
+                }
+                // For GetElem, the key is a live register value — surface it so we can see
+                // exactly which dynamic key resolved to the non-callable object.
+                if (ins.OpCode == OpCode.GetElem &&
+                    (uint)ins.C < (uint)frame.Registers.Length &&
+                    (uint)ins.B < (uint)frame.Registers.Length)
+                {
+                    sb.Append("[key=").Append(DescribeValueShort(frame.Registers[ins.C]))
+                      .Append('=').Append(KeyText(frame.Registers[ins.C]))
+                      .Append(" recv=").Append(DescribeValueShort(frame.Registers[ins.B])).Append(']');
+                }
+                sb.Append(' ');
+            }
+            sb.Append('}');
+            return sb.ToString();
+        }
+        catch
+        {
+            return string.Empty;
+        }
     }
 
 
