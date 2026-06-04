@@ -2351,12 +2351,11 @@ public void Dispose()
                  CookieJar.SetDocumentCookie(scope, cookieString, _activeBaseUri ?? scope, BrowserSettings.Instance.BlockThirdPartyCookies);
              js.RequestRender = ScheduleRepaintFromJs;
 
-             if (fetchExternalCssAsync != null)
+             if (ScriptFetcher != null)
              {
                  js.ExternalScriptFetcher = async (u, referer2) =>
                  {
-                     if (ScriptFetcher != null) return await ScriptFetcher(u).ConfigureAwait(false);
-                     return null;
+                     return await ScriptFetcher(u).ConfigureAwait(false);
                  };
              }
 
