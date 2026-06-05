@@ -40,14 +40,14 @@ public sealed class NumberBuiltin : IBuiltinModule
             length: 1);
 
         // 21.1.2 Properties of the Number Constructor
-        _ = constructor.SetProperty("MAX_VALUE", JsValue.FromNumber(double.MaxValue));
-        _ = constructor.SetProperty("MIN_VALUE", JsValue.FromNumber(double.Epsilon));
-        _ = constructor.SetProperty("NaN", JsValue.FromNumber(double.NaN));
-        _ = constructor.SetProperty("POSITIVE_INFINITY", JsValue.FromNumber(double.PositiveInfinity));
-        _ = constructor.SetProperty("NEGATIVE_INFINITY", JsValue.FromNumber(double.NegativeInfinity));
-        _ = constructor.SetProperty("EPSILON", JsValue.FromNumber(Math.Pow(2d, -52)));
-        _ = constructor.SetProperty("MAX_SAFE_INTEGER", JsValue.FromNumber(9007199254740991d));
-        _ = constructor.SetProperty("MIN_SAFE_INTEGER", JsValue.FromNumber(-9007199254740991d));
+        _ = constructor.DefineOwnProperty("MAX_VALUE", new JsPropertyDescriptor(JsValue.FromNumber(double.MaxValue), Writable: false, Enumerable: false, Configurable: false));
+        _ = constructor.DefineOwnProperty("MIN_VALUE", new JsPropertyDescriptor(JsValue.FromNumber(double.Epsilon), Writable: false, Enumerable: false, Configurable: false));
+        _ = constructor.DefineOwnProperty("NaN", new JsPropertyDescriptor(JsValue.FromNumber(double.NaN), Writable: false, Enumerable: false, Configurable: false));
+        _ = constructor.DefineOwnProperty("POSITIVE_INFINITY", new JsPropertyDescriptor(JsValue.FromNumber(double.PositiveInfinity), Writable: false, Enumerable: false, Configurable: false));
+        _ = constructor.DefineOwnProperty("NEGATIVE_INFINITY", new JsPropertyDescriptor(JsValue.FromNumber(double.NegativeInfinity), Writable: false, Enumerable: false, Configurable: false));
+        _ = constructor.DefineOwnProperty("EPSILON", new JsPropertyDescriptor(JsValue.FromNumber(Math.Pow(2d, -52)), Writable: false, Enumerable: false, Configurable: false));
+        _ = constructor.DefineOwnProperty("MAX_SAFE_INTEGER", new JsPropertyDescriptor(JsValue.FromNumber(9007199254740991d), Writable: false, Enumerable: false, Configurable: false));
+        _ = constructor.DefineOwnProperty("MIN_SAFE_INTEGER", new JsPropertyDescriptor(JsValue.FromNumber(-9007199254740991d), Writable: false, Enumerable: false, Configurable: false));
 
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = heap.AllocateObject(constructor, AllocationSite.Current());

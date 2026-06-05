@@ -7992,7 +7992,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         var callHandle = EnsureFunctionCallMethod();
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
-        _ = prototype.SetProperty("call", JsValue.FromObject(callHandle));
+        _ = prototype.DefineOwnProperty("call", new JsPropertyDescriptor(JsValue.FromObject(callHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _heap.WriteBarrier(prototypeHandle, callHandle);
 
@@ -8002,7 +8002,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var applyHandle = _heap.AllocateObject(
             new NativeFunctionObject("apply", FunctionPrototypeApply, length: 2),
             AllocationSite.Current());
-        _ = prototype.SetProperty("apply", JsValue.FromObject(applyHandle));
+        _ = prototype.DefineOwnProperty("apply", new JsPropertyDescriptor(JsValue.FromObject(applyHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, applyHandle);
 
         // ECMA-262 20.2.3.2 Function.prototype.bind(thisArg, ...args). Returns a new
@@ -8012,13 +8012,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var bindHandle = _heap.AllocateObject(
             new NativeFunctionObject("bind", FunctionPrototypeBind, length: 1),
             AllocationSite.Current());
-        _ = prototype.SetProperty("bind", JsValue.FromObject(bindHandle));
+        _ = prototype.DefineOwnProperty("bind", new JsPropertyDescriptor(JsValue.FromObject(bindHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, bindHandle);
 
         var toStringHandle = _heap.AllocateObject(
             new NativeFunctionObject("toString", FunctionPrototypeToString, length: 0),
             AllocationSite.Current());
-        _ = prototype.SetProperty("toString", JsValue.FromObject(toStringHandle));
+        _ = prototype.DefineOwnProperty("toString", new JsPropertyDescriptor(JsValue.FromObject(toStringHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, toStringHandle);
 
         var hasInstanceFnHandle = _heap.AllocateObject(
@@ -9013,12 +9013,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue ObjectGetOwnPropertyDescriptor(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = thisValue;
-        if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
-        {
-            throw new JsThrownException(CreateTypeError("Object.getOwnPropertyDescriptor requires an object target."));
-        }
-
-        var target = _heap.GetObject(args[0].AsObjectHandle());
+        // ECMA-262 20.1.2.8 step 1: obj = ToObject(O). A primitive first argument is
+        // coerced to its wrapper (so getOwnPropertyDescriptor(true, "foo") returns
+        // undefined rather than throwing); only undefined/null raise a TypeError.
+        var firstArg = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var targetValue = ToObjectValue(firstArg);
+        var target = _heap.GetObject(targetValue.AsObjectHandle());
         var keyArg = args.Count > 1 ? args[1] : JsValue.Undefined;
         var isSymbolKey = keyArg.Tag == JsValueTag.Symbol;
         var key = isSymbolKey ? string.Empty : ToPropertyKey(keyArg);
