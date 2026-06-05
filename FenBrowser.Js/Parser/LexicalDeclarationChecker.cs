@@ -202,6 +202,76 @@ internal static class LexicalDeclarationChecker
         }
     }
 
+    // ECMA-262 13.15.1 (try Statement: Static Semantics: Early Errors):
+    //   - BoundNames of CatchParameter must not contain duplicate entries.
+    //   - No BoundName of CatchParameter may also occur in the LexicallyDeclaredNames
+    //     of the catch Block.
+    //   - No BoundName of CatchParameter may also occur in the VarDeclaredNames of the
+    //     catch Block — except when CatchParameter is a single BindingIdentifier, which
+    //     Annex B.3.4 permits to coexist with a `var` of the same name.
+    private static void CheckCatchParameter(string catchIdentifier, BindingPatternNode? catchPattern,
+        IReadOnlyList<StatementNode> catchStatements)
+    {
+        var boundNames = new List<string>();
+        var isPattern = catchPattern is not null;
+        if (catchPattern is not null)
+        {
+            CollectPatternNames(catchPattern, boundNames);
+        }
+        else if (catchIdentifier is not ("<no-binding>" or "<pattern>"))
+        {
+            boundNames.Add(catchIdentifier);
+        }
+
+        if (boundNames.Count == 0)
+        {
+            return;
+        }
+
+        var seen = new HashSet<string>(System.StringComparer.Ordinal);
+        foreach (var name in boundNames)
+        {
+            if (!seen.Add(name))
+                throw new JsParserException($"Identifier '{name}' has already been declared.");
+        }
+
+        // LexicallyDeclaredNames of the catch Block (top-level let/const/class + functions).
+        var lexNames = new HashSet<string>(System.StringComparer.Ordinal);
+        foreach (var stmt in catchStatements)
+        {
+            switch (Unwrap(stmt))
+            {
+                case VariableDeclarationStatementNode v when v.Kind != "var":
+                    foreach (var n in DeclaredNames(v)) lexNames.Add(n);
+                    break;
+                case ClassDeclarationNode c when c.Name is { Length: > 0 }:
+                    lexNames.Add(c.Name);
+                    break;
+                case FunctionDeclarationNode f when f.Name is { Length: > 0 }:
+                    lexNames.Add(f.Name);
+                    break;
+            }
+        }
+        foreach (var name in seen)
+        {
+            if (lexNames.Contains(name))
+                throw new JsParserException($"Identifier '{name}' has already been declared.");
+        }
+
+        // A binding pattern also conflicts with any `var` of the same name in the block;
+        // a single binding identifier does not (Annex B.3.4).
+        if (isPattern)
+        {
+            var varNames = new HashSet<string>(System.StringComparer.Ordinal);
+            foreach (var stmt in catchStatements) CollectVarNames(stmt, varNames);
+            foreach (var name in seen)
+            {
+                if (varNames.Contains(name))
+                    throw new JsParserException($"Identifier '{name}' has already been declared.");
+            }
+        }
+    }
+
     // Recurse into the nested lexical scopes a statement contains so each is checked
     // at its own level. Block/case/loop/try bodies are scopes; function and class
     // bodies are handled by their own parse-time validation.
@@ -239,6 +309,7 @@ internal static class LexicalDeclarationChecker
                 break;
             case TryCatchStatementNode tc:
                 CheckScope(tc.TryBlock.Statements);
+                CheckCatchParameter(tc.CatchIdentifier, tc.CatchPattern, tc.CatchBlock.Statements);
                 CheckScope(tc.CatchBlock.Statements);
                 break;
             case TryFinallyStatementNode tf:
@@ -247,6 +318,7 @@ internal static class LexicalDeclarationChecker
                 break;
             case TryCatchFinallyStatementNode tcf:
                 CheckScope(tcf.TryBlock.Statements);
+                CheckCatchParameter(tcf.CatchIdentifier, tcf.CatchPattern, tcf.CatchBlock.Statements);
                 CheckScope(tcf.CatchBlock.Statements);
                 CheckScope(tcf.FinallyBlock.Statements);
                 break;

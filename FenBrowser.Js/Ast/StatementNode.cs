@@ -52,7 +52,8 @@ public sealed record TryCatchStatementNode(
     BlockStatementNode TryBlock,
     string CatchIdentifier,
     BlockStatementNode CatchBlock,
-    SourceSpan Span) : StatementNode(Span);
+    SourceSpan Span,
+    BindingPatternNode? CatchPattern = null) : StatementNode(Span);
 
 public sealed record TryFinallyStatementNode(
     BlockStatementNode TryBlock,
@@ -64,7 +65,8 @@ public sealed record TryCatchFinallyStatementNode(
     string CatchIdentifier,
     BlockStatementNode CatchBlock,
     BlockStatementNode FinallyBlock,
-    SourceSpan Span) : StatementNode(Span);
+    SourceSpan Span,
+    BindingPatternNode? CatchPattern = null) : StatementNode(Span);
 
 public sealed record ForStatementNode(
     StatementNode? Initializer,

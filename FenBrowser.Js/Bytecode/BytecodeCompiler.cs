@@ -1712,13 +1712,55 @@ public sealed class BytecodeCompiler
         // exception value from register 0. The catch var is function-scoped
         // rather than block-scoped; proper block scoping (EnterScope/LeaveScope)
         // will replace this once those opcodes are fully debugged.
-        var catchSlot = GetOrCreateVariableSlot(tryCatchStmt.CatchIdentifier);
-        _varDeclarationNames.Add(tryCatchStmt.CatchIdentifier);
-        _instructions.Add(new Instruction(OpCode.StoreVar, 0, catchSlot, 0));
+        EmitCatchParameterBinding(tryCatchStmt.CatchIdentifier, tryCatchStmt.CatchPattern);
+        // The Catch block's completion starts empty; reset so an empty catch body
+        // yields undefined rather than the exception value still sitting in reg 0.
+        EmitCompletionReset();
         CompileStatement(tryCatchStmt.CatchBlock);
 
         PatchJump(jumpAfterCatch, _instructions.Count);
     }
+
+    // Bind the caught exception (in register 0) to the CatchParameter. A plain
+    // identifier stores straight into its slot; a BindingPattern destructures the
+    // exception value. Bound names are registered as var declarations to match the
+    // existing function-scoped catch-binding behaviour.
+    private void EmitCatchParameterBinding(string catchIdentifier, BindingPatternNode? catchPattern)
+    {
+        if (catchPattern is null)
+        {
+            var catchSlot = GetOrCreateVariableSlot(catchIdentifier);
+            _varDeclarationNames.Add(catchIdentifier);
+            _instructions.Add(new Instruction(OpCode.StoreVar, 0, catchSlot, 0));
+            return;
+        }
+
+        var names = new List<string>();
+        CollectBoundNames(catchPattern, names);
+        foreach (var name in names)
+        {
+            _ = GetOrCreateVariableSlot(name);
+            _varDeclarationNames.Add(name);
+        }
+
+        // Copy the exception out of register 0 before destructuring, since pattern
+        // assignment allocates and writes registers while extracting elements.
+        var exReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.Move, exReg, 0, 0));
+        EmitBindingPatternAssignment(catchPattern, exReg, OpCode.StoreVar);
+    }
+
+    // A Finally block's normal completion value is discarded (ECMA-262 14.15.3):
+    // the try/catch value is the statement's completion. Compile it with completion
+    // capture suppressed so its expression statements don't overwrite reg 0.
+    private void CompileFinallyBlock(StatementNode finallyBlock)
+    {
+        var saved = _captureCompletionValue;
+        _captureCompletionValue = false;
+        CompileStatement(finallyBlock);
+        _captureCompletionValue = saved;
+    }
+
     private void CompileTryFinallyStatement(TryFinallyStatementNode stmt)
     {
         var pushHandler = _instructions.Count;
@@ -1739,7 +1781,7 @@ public sealed class BytecodeCompiler
         _instructions.Add(new Instruction(OpCode.PopHandler, 0, 0, 0));
 
         var finallyStart = _instructions.Count;
-        CompileStatement(stmt.FinallyBlock);
+        CompileFinallyBlock(stmt.FinallyBlock);
         _instructions.Add(new Instruction(OpCode.EndFinally, 0, 0, 0));
 
         var ins = _instructions[pushHandler];
@@ -1765,13 +1807,12 @@ public sealed class BytecodeCompiler
         var jumpPastCatch = EmitPlaceholder(OpCode.Jump);
 
         var catchEntry = _instructions.Count;
-        var catchSlot = GetOrCreateVariableSlot(stmt.CatchIdentifier);
-        _varDeclarationNames.Add(stmt.CatchIdentifier);
 
         var catchFinallyHandler = _instructions.Count;
         _instructions.Add(new Instruction(OpCode.PushHandler, -1, 0, 0, D: -1));
 
-        _instructions.Add(new Instruction(OpCode.StoreVar, 0, catchSlot, 0));
+        EmitCatchParameterBinding(stmt.CatchIdentifier, stmt.CatchPattern);
+        EmitCompletionReset();
         CompileStatement(stmt.CatchBlock);
 
         _instructions.Add(new Instruction(OpCode.PopHandler, 0, 0, 0));
@@ -1780,7 +1821,7 @@ public sealed class BytecodeCompiler
         PatchJump(jumpPastCatch, _instructions.Count);
 
         var finallyStart = _instructions.Count;
-        CompileStatement(stmt.FinallyBlock);
+        CompileFinallyBlock(stmt.FinallyBlock);
         _instructions.Add(new Instruction(OpCode.EndFinally, 0, 0, 0));
 
         var outerIns = _instructions[pushHandler];
@@ -3598,7 +3639,7 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.LeaveScope));
                 _openScopeDepth--;
             }
-            CompileStatement(f.Block);
+            CompileFinallyBlock(f.Block);
         }
 
         if (leaveTrailingScopes)

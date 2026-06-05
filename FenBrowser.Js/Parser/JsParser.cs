@@ -1872,6 +1872,7 @@ public sealed class JsParser
         {
             Advance(); // catch
             string catchIdentifier;
+            BindingPatternNode? catchPattern = null;
 
             // ES2019 optional catch binding (https://tc39.es/ecma262/#sec-try-statement):
             // `try { } catch { }` with no parameter. Ubiquitous in minified bundles
@@ -1886,7 +1887,9 @@ public sealed class JsParser
                 }
                 else
                 {
-                    _ = ParseExpression(0);
+                    // CatchParameter may be a BindingPattern (`catch ([a, b])`,
+                    // `catch ({ message })`); capture it so the binding is created.
+                    catchPattern = ParseBindingPattern();
                     catchIdentifier = "<pattern>";
                 }
 
@@ -1902,10 +1905,10 @@ public sealed class JsParser
             {
                 Advance(); // finally
                 var finallyBlock = ParseBlockStatement();
-                return new TryCatchFinallyStatementNode(tryBlock, catchIdentifier, catchBlock, finallyBlock, MergeSpan(start.Span, finallyBlock.Span));
+                return new TryCatchFinallyStatementNode(tryBlock, catchIdentifier, catchBlock, finallyBlock, MergeSpan(start.Span, finallyBlock.Span), catchPattern);
             }
 
-            return new TryCatchStatementNode(tryBlock, catchIdentifier, catchBlock, MergeSpan(start.Span, catchBlock.Span));
+            return new TryCatchStatementNode(tryBlock, catchIdentifier, catchBlock, MergeSpan(start.Span, catchBlock.Span), catchPattern);
         }
 
         Advance(); // finally
