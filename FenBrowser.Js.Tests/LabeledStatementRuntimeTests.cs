@@ -1,5 +1,6 @@
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Interpreter;
+using FenBrowser.Js.Parser;
 using FenBrowser.Js.Source;
 using Xunit;
 
@@ -181,28 +182,28 @@ public sealed class LabeledStatementRuntimeTests
     [Fact]
     public void LabeledBreak_UndefinedLabel_Throws()
     {
-        Assert.Throws<InvalidOperationException>(() =>
+        Assert.Throws<JsParserException>(() =>
             RunNum("var x; myLabel:{ x=1; break wrongLabel; x=2; } x;"));
     }
 
     [Fact]
     public void LabeledContinue_UndefinedLabel_Throws()
     {
-        Assert.Throws<InvalidOperationException>(() =>
+        Assert.Throws<JsParserException>(() =>
             RunNum("for(var i=0;i<5;i=i+1){ continue outer; }"));
     }
 
     [Fact]
     public void BreakWithoutLoopOrLabel_Throws()
     {
-        Assert.Throws<InvalidOperationException>(() =>
+        Assert.Throws<JsParserException>(() =>
             RunNum("break;"));
     }
 
     [Fact]
     public void ContinueWithoutLoop_Throws()
     {
-        Assert.Throws<InvalidOperationException>(() =>
+        Assert.Throws<JsParserException>(() =>
             RunNum("continue;"));
     }
 }

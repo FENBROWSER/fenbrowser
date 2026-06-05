@@ -4128,14 +4128,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateError("Refused to evaluate a string as JavaScript because 'unsafe-eval' is not allowed by the policy."));
         }
 
-        var program = JsParser.ParseScript(new SourceText(args[0].AsString(), "<eval>"));
         var directEvalEnvironment = _directEvalEnv;
         var directEvalStrictMode = _directEvalStrictMode;
         _directEvalEnv = null;
         _directEvalStrictMode = false;
 
-        var compiled = new BytecodeCompiler().CompileProgram(program, inheritedStrictMode: directEvalStrictMode);
-        new BytecodeVerifier().Verify(compiled);
+        // ECMA-262 19.2.1.1: parsing/early-error failures of the eval source must
+        // throw a SyntaxError (a catchable JS error), not a raw host exception.
+        BytecodeFunction compiled;
+        try
+        {
+            var program = JsParser.ParseScript(new SourceText(args[0].AsString(), "<eval>"));
+            compiled = new BytecodeCompiler().CompileProgram(program, inheritedStrictMode: directEvalStrictMode);
+            new BytecodeVerifier().Verify(compiled);
+        }
+        catch (Exception ex) when (ex is JsParserException or UnsupportedFeatureException)
+        {
+            throw new JsThrownException(CreateSyntaxError(ex.Message));
+        }
         var globalHandle = EnsureGlobalObject();
         EnvironmentRecord env;
         if (directEvalEnvironment is not null)

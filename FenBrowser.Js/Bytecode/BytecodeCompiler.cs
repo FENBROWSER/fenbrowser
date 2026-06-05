@@ -3467,7 +3467,7 @@ public sealed class BytecodeCompiler
         {
             if (_loopStack.Count == 0)
             {
-                throw new InvalidOperationException("'break' is only valid inside loops or switch statements.");
+                throw new JsParserException("'break' is only valid inside loops or switch statements.");
             }
 
             var target = _loopStack.Peek();
@@ -3499,7 +3499,7 @@ public sealed class BytecodeCompiler
             }
         }
 
-        throw new InvalidOperationException($"Undefined label '{label}'.");
+        throw new JsParserException($"Undefined label '{label}'.");
     }
 
     // Emit enough LeaveScope ops to bring the open-scope depth down to
@@ -3570,7 +3570,7 @@ public sealed class BytecodeCompiler
         {
             if (_loopStack.Count == 0)
             {
-                throw new InvalidOperationException("'continue' is only valid inside loops.");
+                throw new JsParserException("'continue' is only valid inside loops.");
             }
 
             var topCtx = _loopStack.Peek();
@@ -3593,7 +3593,7 @@ public sealed class BytecodeCompiler
             {
                 if (ctx.IsSwitch)
                 {
-                    throw new InvalidOperationException($"Label '{label}' does not mark a loop.");
+                    throw new JsParserException($"Label '{label}' does not mark a loop.");
                 }
 
                 EmitAbruptCompletion(ctx.ScopeDepthAtEntry, ctx.Seq, leaveTrailingScopes: true);
@@ -3610,7 +3610,7 @@ public sealed class BytecodeCompiler
             }
         }
 
-        throw new InvalidOperationException($"Undefined label '{label}'.");
+        throw new JsParserException($"Undefined label '{label}'.");
     }
 
     private void PatchJump(int instructionIndex, int target)

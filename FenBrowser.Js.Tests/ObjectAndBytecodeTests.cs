@@ -383,14 +383,14 @@ public sealed class ObjectAndBytecodeTests
     public void CompilerRejectsBreakOutsideLoop()
     {
         var compiler = new BytecodeCompiler();
-        Assert.Throws<InvalidOperationException>(() => compiler.CompileScript(new SourceText("break;")));
+        Assert.Throws<JsParserException>(() => compiler.CompileScript(new SourceText("break;")));
     }
 
     [Fact]
     public void CompilerRejectsContinueOutsideLoop()
     {
         var compiler = new BytecodeCompiler();
-        Assert.Throws<InvalidOperationException>(() => compiler.CompileScript(new SourceText("continue;")));
+        Assert.Throws<JsParserException>(() => compiler.CompileScript(new SourceText("continue;")));
     }
 
     [Fact]
