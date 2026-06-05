@@ -86,6 +86,7 @@ public interface IBuiltinContext
     ObjectHandle MaterializeWeakRefConstructor();
     ObjectHandle MaterializeFinalizationRegistryConstructor();
     ObjectHandle MaterializeAggregateErrorConstructor();
+    ObjectHandle MaterializeSuppressedErrorConstructor();
     ObjectHandle MaterializeStructuredCloneFunction();
 
     // Intl (ECMA-402).

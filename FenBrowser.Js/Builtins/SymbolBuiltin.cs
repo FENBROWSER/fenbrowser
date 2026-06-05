@@ -41,7 +41,7 @@ public sealed class SymbolBuiltin : IBuiltinModule
 
         // ECMA-262 20.4.2 well-known symbols
         var wellKnown = new[] { "iterator", "asyncIterator", "hasInstance", "isConcatSpreadable",
-            "match", "matchAll", "replace", "search", "species", "split", "toPrimitive",
+            "match", "matchAll", "replace", "search", "species", "split", "dispose", "asyncDispose", "toPrimitive",
             "toStringTag", "unscopables" };
         foreach (var name in wellKnown)
         {

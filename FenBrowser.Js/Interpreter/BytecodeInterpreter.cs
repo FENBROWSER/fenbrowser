@@ -95,6 +95,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     ObjectHandle IBuiltinContext.MaterializeWeakRefConstructor() => EnsureWeakRefConstructor();
     ObjectHandle IBuiltinContext.MaterializeFinalizationRegistryConstructor() => EnsureFinalizationRegistryConstructor();
     ObjectHandle IBuiltinContext.MaterializeAggregateErrorConstructor() => EnsureAggregateErrorConstructor();
+    ObjectHandle IBuiltinContext.MaterializeSuppressedErrorConstructor() => GetGlobalConstructorHandle("SuppressedError");
     ObjectHandle IBuiltinContext.MaterializeGeneratorFunctionConstructor() => EnsureGeneratorFunctionConstructor();
     string IBuiltinContext.CaptureCallStack(string errorName, string message) => FormatCallStack(errorName, message);
     ObjectHandle IBuiltinContext.MaterializeStructuredCloneFunction() => EnsureStructuredCloneFunction();
@@ -2125,6 +2126,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         InstallWellKnownSymbol(constructor, "search");
         InstallWellKnownSymbol(constructor, "species");
         InstallWellKnownSymbol(constructor, "split");
+        InstallWellKnownSymbol(constructor, "dispose");
+        InstallWellKnownSymbol(constructor, "asyncDispose");
         InstallWellKnownSymbol(constructor, "toPrimitive");
         InstallWellKnownSymbol(constructor, "toStringTag");
         InstallWellKnownSymbol(constructor, "unscopables");
@@ -3852,6 +3855,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             .Register(new BigIntBuiltin())
             .Register(new StringBuiltin())
             .Register(new SymbolBuiltin())
+            .Register(new DisposableStackBuiltin())
+            .Register(new AsyncDisposableStackBuiltin())
             .Register(new DateBuiltin())
             .Register(new RegExpBuiltin())
             .Register(new ObjectBuiltin())
@@ -14220,6 +14225,19 @@ fallbackArraySpecies:
             "Array" => EnsureArrayPrototype(),
             _ => EnsureObjectPrototype(),
         };
+    }
+
+    private ObjectHandle GetGlobalConstructorHandle(string constructorName)
+    {
+        var globalHandle = EnsureGlobalObject();
+        var global = _heap.GetObject(globalHandle);
+        if (TryGetPropertyValue(global, JsValue.FromObject(globalHandle), constructorName, out var ctorVal) &&
+            ctorVal.Tag == JsValueTag.Object)
+        {
+            return ctorVal.AsObjectHandle();
+        }
+
+        throw new InvalidOperationException($"Global constructor '{constructorName}' was not found.");
     }
 
     private ObjectHandle EnsureGeneratorPrototype()

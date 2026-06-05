@@ -1605,11 +1605,20 @@ public sealed class Test262Runner
                    var realmThrowTypeError = function () { throw new TypeError(); };
                    var realmGlobal = {
                      TypeError: TypeError,
+                     Symbol: Symbol,
+                     SuppressedError: typeof SuppressedError === "function" ? SuppressedError : undefined,
+                     DisposableStack: typeof DisposableStack === "function" ? DisposableStack : undefined,
                      Function: function () {
                        var fn = Function.apply(null, arguments);
-                       Object.defineProperty(fn, "__throwTypeError__", {
-                         value: realmThrowTypeError,
+                       Object.defineProperty(fn, "__realmGlobal__", {
+                         value: realmGlobal,
                          writable: false,
+                         enumerable: false,
+                         configurable: true
+                       });
+                        Object.defineProperty(fn, "__throwTypeError__", {
+                          value: realmThrowTypeError,
+                          writable: false,
                          enumerable: false,
                          configurable: true
                        });
