@@ -3182,11 +3182,16 @@ public sealed class BytecodeCompiler
     // it inherits the prior statement's value, but these UpdateEmpty statements
     // must seed register 0 with `undefined` at entry so an empty body does not
     // leak the previous value. Only matters for the top-level script/eval body.
+    private int _completionResetConstIndex = -1;
+
     private void EmitCompletionReset()
     {
         if (!_captureCompletionValue) return;
-        var ci = AddConstant(JsValue.Undefined);
-        _instructions.Add(new Instruction(OpCode.LoadConst, 0, ci, 0));
+        if (_completionResetConstIndex < 0)
+        {
+            _completionResetConstIndex = AddConstant(JsValue.Undefined);
+        }
+        _instructions.Add(new Instruction(OpCode.LoadConst, 0, _completionResetConstIndex, 0));
     }
 
     private static FunctionKind SelectFunctionKind(bool isAsync, bool isGenerator, bool isArrow)

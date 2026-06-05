@@ -113,8 +113,11 @@ public sealed class BytecodeVerifier
         switch (ins.OpCode)
         {
             case OpCode.LoadConst:
+                // LoadConst.A is the destination register; LoadConst.B is an index
+                // into the constant pool (the VM reads function.Constants[ins.B]),
+                // not a register, so it must be range-checked against the pool.
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
-                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidateConstantIndex(function, ip, ins.B);
                 break;
             case OpCode.LoadThis:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
@@ -449,6 +452,14 @@ public sealed class BytecodeVerifier
         if (slot < 0 || slot >= Math.Max(1, function.VariableSlots.Count))
         {
             throw new InvalidOperationException($"Invalid variable slot {slot} at ip {ip}.");
+        }
+    }
+
+    private static void ValidateConstantIndex(BytecodeFunction function, int ip, int index)
+    {
+        if (index < 0 || index >= function.Constants.Count)
+        {
+            throw new InvalidOperationException($"Invalid constant index {index} at ip {ip}.");
         }
     }
 
