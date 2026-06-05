@@ -3,6 +3,7 @@ using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Intl;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
+using System.Text.RegularExpressions;
 
 namespace FenBrowser.Js.Builtins;
 
@@ -726,8 +727,16 @@ public sealed class TemporalStub : IBuiltinModule
         AddNowStatic(ctx, h, nH, now, "instant", _ => MakeInstant(ctx, h, DateTime.UtcNow));
         AddNowStatic(ctx, h, nH, now, "plainDateISO", _ => MakePlainDate(ctx, h, DateTime.Today));
         AddNowStatic(ctx, h, nH, now, "plainTimeISO", _ => MakePlainTime(ctx, h, DateTime.UtcNow.TimeOfDay));
-        AddNowStatic(ctx, h, nH, now, "plainDateTimeISO", _ => MakePlainDateTime(ctx, h, DateTime.UtcNow));
-        AddNowStatic(ctx, h, nH, now, "zonedDateTimeISO", _ => MakeZonedDateTime(ctx, h, DateTimeOffset.UtcNow, "UTC"));
+        AddNowStatic(ctx, h, nH, now, "plainDateTimeISO", a => {
+            var timeZone = NormalizeNowTimeZoneArg(ctx, a);
+            _ = timeZone;
+            return AttachTemporalPrototypeByName(ctx, h, t, "PlainDateTime", MakePlainDateTime(ctx, h, DateTime.UtcNow));
+        });
+        AddNowStatic(ctx, h, nH, now, "zonedDateTimeISO", a => {
+            var timeZone = NormalizeNowTimeZoneArg(ctx, a);
+            var zoned = IntlDateTimeFormatting.ConvertToTimeZone(DateTimeOffset.UtcNow, timeZone, out var resolvedTimeZoneId);
+            return AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", MakeZonedDateTime(ctx, h, zoned, resolvedTimeZoneId));
+        });
     }
 
     private static void AddNowStatic(IBuiltinContext ctx, JsHeap h, ObjectHandle oH, JsObject o, string n,
@@ -737,6 +746,59 @@ public sealed class TemporalStub : IBuiltinModule
         var nfH = h.AllocateObject(nf, AllocationSite.Current());
         o.DefineOwnProperty(n, new JsPropertyDescriptor(JsValue.FromObject(nfH), true, false, true));
         h.WriteBarrier(oH, nfH);
+    }
+
+    private static string NormalizeNowTimeZoneArg(IBuiltinContext ctx, IReadOnlyList<JsValue> args)
+    {
+        if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
+        {
+            return "UTC";
+        }
+
+        var raw = ToStrArg(ctx, args[0]);
+        if (IsBareDateTime(raw) || HasSubMinuteOffset(raw))
+        {
+            throw new JsThrownException(ctx.CreateRangeError("Invalid time zone string."));
+        }
+
+        var extracted = IntlDateTimeFormatting.ExtractTimeZoneId(raw);
+        return string.IsNullOrWhiteSpace(extracted) ? "UTC" : extracted;
+    }
+
+    private static bool IsBareDateTime(string value)
+    {
+        return value.Contains('T') &&
+               !value.Contains('[') &&
+               !value.EndsWith("Z", StringComparison.OrdinalIgnoreCase) &&
+               !System.Text.RegularExpressions.Regex.IsMatch(value, @"[+\-]\d{2}:?\d{2}$");
+    }
+
+    private static bool HasSubMinuteOffset(string value)
+    {
+        return System.Text.RegularExpressions.Regex.IsMatch(value, @"[+\-]\d{2}:\d{2}:\d{2}") ||
+               System.Text.RegularExpressions.Regex.IsMatch(value, @"[+\-]\d{4}:\d{2}");
+    }
+
+    private static JsValue AttachTemporalPrototypeByName(IBuiltinContext ctx, JsHeap h, JsObject temporal, string ctorName, JsValue value)
+    {
+        if (value.Tag != JsValueTag.Object)
+        {
+            return value;
+        }
+
+        if (!temporal.TryGetProperty(ctorName, x => h.GetObject(x), out var ctorDescriptor) || ctorDescriptor.Value.Tag != JsValueTag.Object)
+        {
+            return value;
+        }
+
+        var ctor = h.GetObject(ctorDescriptor.Value.AsObjectHandle());
+        if (!ctx.TryGetPropertyValue(ctor, ctorDescriptor.Value, "prototype", out var prototypeValue) || prototypeValue.Tag != JsValueTag.Object)
+        {
+            return value;
+        }
+
+        h.GetObject(value.AsObjectHandle()).SetPrototype(prototypeValue.AsObjectHandle());
+        return value;
     }
 
     // ─── Temporal.Duration ─────────────────────────────────
@@ -1181,6 +1243,7 @@ public sealed class TemporalStub : IBuiltinModule
         foreach (var f in new[] { "year", "month", "day", "hour", "minute", "second", "millisecond", "microsecond", "nanosecond",
             "epochSeconds", "epochMilliseconds", "epochMicroseconds", "epochNanoseconds", "offsetNanoseconds" })
             AddGetter(h, pH, p, f, o => GetV(h, o, f));
+        AddGetter(h, pH, p, "calendarId", _ => JsValue.FromString("iso8601"));
         AddGetter(h, pH, p, "monthCode", o => { int m = (int)GetVNum(h, o, "month"); return JsValue.FromString($"M{m:D2}"); });
         AddGetter(h, pH, p, "dayOfWeek", o => { int y = (int)GetVNum(h, o, "year"); int mo = (int)GetVNum(h, o, "month"); int d = (int)GetVNum(h, o, "day"); if (y < 1 || mo < 1 || d < 1) return JsValue.FromNumber(1); try { var dt = new DateTime(Math.Min(y, 9999), Math.Min(mo, 12), Math.Min(d, 28)); int dow = (int)dt.DayOfWeek; return JsValue.FromNumber(dow == 0 ? 7 : dow); } catch { return JsValue.FromNumber(1); } });
         AddGetter(h, pH, p, "dayOfYear", o => { int y = (int)GetVNum(h, o, "year"); int mo = (int)GetVNum(h, o, "month"); int d = (int)GetVNum(h, o, "day"); if (y < 1 || mo < 1 || d < 1) return JsValue.FromNumber(1); try { var dt = new DateTime(Math.Min(y, 9999), Math.Min(mo, 12), Math.Min(d, 28)); return JsValue.FromNumber(dt.DayOfYear); } catch { return JsValue.FromNumber(1); } });
