@@ -18,6 +18,7 @@ public sealed class TemporalStub : IBuiltinModule
     {
         var heap = context.Heap;
         var temporal = new JsObject();
+        temporal.SetPrototype(context.GetObjectPrototype());
         var tHandle = heap.AllocateObject(temporal, AllocationSite.Current());
         heap.PushRoot(tHandle);
 
@@ -32,6 +33,10 @@ public sealed class TemporalStub : IBuiltinModule
         InstallZonedDateTime(context, temporal, tHandle, heap);
         InstallCalendar(context, temporal, tHandle, heap);
         InstallTimeZone(context, temporal, tHandle, heap);
+        var toStringTag = context.CreateWellKnownSymbol("toStringTag");
+        _ = temporal.DefineOwnSymbolProperty(
+            toStringTag.AsSymbolId(),
+            new JsPropertyDescriptor(JsValue.FromString("Temporal"), Writable: false, Enumerable: false, Configurable: true));
 
         return new[] { BuiltinBinding.NonEnumerable("Temporal", JsValue.FromObject(tHandle)) };
     }
