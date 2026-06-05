@@ -2681,7 +2681,9 @@ public sealed class BytecodeCompiler
                 return dest;
             }
             case ClassExpressionNode classExpr:
-                return CompileClassExpressionToRegister(classExpr.Name, classExpr.BaseClass, classExpr.Members);
+                // ECMA-262 NamedEvaluation: an anonymous class expression adopts the
+                // pending binding name (`let C = class {}` / `[c = class {}]`).
+                return CompileClassExpressionToRegister(classExpr.Name ?? ConsumeNameHint(), classExpr.BaseClass, classExpr.Members);
             case ArrowFunctionExpressionNode arrow:
             {
                 IReadOnlyList<StatementNode> statements;
