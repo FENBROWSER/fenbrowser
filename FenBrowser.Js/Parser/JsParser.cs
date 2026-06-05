@@ -2695,6 +2695,7 @@ public sealed class JsParser
         ExpectPunctuator("{");
 
         var cases = new List<SwitchCaseNode>();
+        var sawDefault = false;
         while (!Is(TokenKind.EndOfFile) && !IsPunctuator("}"))
         {
             ExpressionNode? test = null;
@@ -2707,6 +2708,12 @@ public sealed class JsParser
             }
             else if (Current().Kind == TokenKind.Keyword && Current().Text == "default")
             {
+                // ECMA-262 14.12.1: a CaseBlock may contain at most one DefaultClause.
+                if (sawDefault)
+                {
+                    throw new JsParserException("More than one default clause in switch statement.");
+                }
+                sawDefault = true;
                 Advance();
                 ExpectPunctuator(":");
             }

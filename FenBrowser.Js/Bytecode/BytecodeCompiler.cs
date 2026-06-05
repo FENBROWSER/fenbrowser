@@ -1794,6 +1794,44 @@ public sealed class BytecodeCompiler
     private void CompileSwitchStatement(SwitchStatementNode switchStmt)
     {
         var discReg = CompileExpression(switchStmt.Discriminant);
+
+        // ECMA-262 14.12.4: the CaseBlock is one lexical scope spanning every clause
+        // (BlockDeclarationInstantiation runs once over the whole CaseBlock). Collect
+        // its let/const bindings and enter that scope after evaluating the discriminant
+        // so inner lexical names shadow the enclosing scope instead of colliding on the
+        // same slot (e.g. `let x` outside and a different `let x` inside the switch).
+        var caseDecls = new Dictionary<string, bool>(StringComparer.Ordinal);
+        foreach (var c in switchStmt.Cases)
+        {
+            foreach (var s in c.Consequent)
+            {
+                if (s is VariableDeclarationStatementNode vd &&
+                    (string.Equals(vd.Kind, "let", StringComparison.Ordinal) ||
+                     string.Equals(vd.Kind, "const", StringComparison.Ordinal)))
+                {
+                    bool isConst = string.Equals(vd.Kind, "const", StringComparison.Ordinal);
+                    foreach (var d in vd.Declarators)
+                        foreach (var boundName in GetDeclaratorBoundNames(d))
+                            caseDecls[boundName] = isConst;
+                }
+            }
+        }
+
+        // Depth before the CaseBlock scope is opened: a `break` exits the whole switch,
+        // so its abrupt-completion must tear down these case scopes inline before jumping
+        // to the end (which is emitted before the normal-exit LeaveScope ops below).
+        var outerScopeDepth = _openScopeDepth;
+        if (caseDecls.Count > 0)
+        {
+            _blockScopedNameStack.Push(new HashSet<string>(caseDecls.Keys, StringComparer.Ordinal));
+            foreach (var kvp in caseDecls)
+            {
+                var slot = GetOrCreateVariableSlot(kvp.Key);
+                _instructions.Add(new Instruction(OpCode.EnterScope, slot, kvp.Value ? 1 : 0, 0));
+                _openScopeDepth++;
+            }
+        }
+
         var caseHeaders = new List<int>(switchStmt.Cases.Count);
         int defaultCaseIndex = -1;
         for (int i = 0; i < switchStmt.Cases.Count; i++)
@@ -1822,7 +1860,7 @@ public sealed class BytecodeCompiler
             BreakJumpIndices = new List<int>(),
             ContinueJumpIndices = new List<int>(),
             IsSwitch = true,
-            ScopeDepthAtEntry = _openScopeDepth,
+            ScopeDepthAtEntry = outerScopeDepth,
             Seq = _nestingSeq++,
         };
         _loopStack.Push(ctx);
@@ -1862,6 +1900,19 @@ public sealed class BytecodeCompiler
         finally
         {
             _ = _loopStack.Pop();
+        }
+
+        // Normal (fall-through) exit of the CaseBlock closes its lexical scope. Abrupt
+        // exits via `break` already emitted their own LeaveScope ops inline (they jump
+        // to loopEnd, above this point).
+        if (caseDecls.Count > 0)
+        {
+            foreach (var _ in caseDecls)
+            {
+                _instructions.Add(new Instruction(OpCode.LeaveScope));
+                _openScopeDepth--;
+            }
+            _blockScopedNameStack.Pop();
         }
     }
 
@@ -3568,12 +3619,19 @@ public sealed class BytecodeCompiler
     {
         if (label == null)
         {
-            if (_loopStack.Count == 0)
+            // `continue` targets the nearest enclosing *iteration* statement.
+            // A switch on top of the loop stack is not a valid target, so skip
+            // switch contexts (they only patch BreakJumpIndices, never Continue).
+            LoopContext? topCtx = null;
+            foreach (var ctx in _loopStack)
+            {
+                if (!ctx.IsSwitch) { topCtx = ctx; break; }
+            }
+            if (topCtx == null)
             {
                 throw new JsParserException("'continue' is only valid inside loops.");
             }
 
-            var topCtx = _loopStack.Peek();
             EmitAbruptCompletion(topCtx.ScopeDepthAtEntry, topCtx.Seq, leaveTrailingScopes: true);
             var target = topCtx.ContinueTarget;
             if (target >= 0)

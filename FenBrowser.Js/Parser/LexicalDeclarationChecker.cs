@@ -27,7 +27,13 @@ internal static class LexicalDeclarationChecker
 
     // Validate one lexical scope (the statement list of a Script/FunctionBody/Block/
     // CaseBlock), then recurse into the nested scopes it contains.
-    private static void CheckScope(IReadOnlyList<StatementNode> statements)
+    //
+    // `treatFunctionsAsLexical`: a plain Block relaxes the duplicate/var early errors
+    // for FunctionDeclarations (Annex B.3.2.4 web-compat: `{ function f(){} function f(){} }`
+    // and `{ function f(){} var f; }` are legal in sloppy code). A switch CaseBlock has no
+    // such Annex B relaxation, so its function names are full LexicallyDeclaredNames and
+    // participate in every early error. Callers pass true for switch CaseBlocks.
+    private static void CheckScope(IReadOnlyList<StatementNode> statements, bool treatFunctionsAsLexical = false)
     {
         var lexNames = new HashSet<string>(System.StringComparer.Ordinal);
         var funcNames = new HashSet<string>(System.StringComparer.Ordinal);
@@ -49,7 +55,15 @@ internal static class LexicalDeclarationChecker
                         throw new JsParserException($"Identifier '{c.Name}' has already been declared.");
                     break;
                 case FunctionDeclarationNode f when f.Name is { Length: > 0 }:
-                    funcNames.Add(f.Name);
+                    if (treatFunctionsAsLexical)
+                    {
+                        if (!lexNames.Add(f.Name))
+                            throw new JsParserException($"Identifier '{f.Name}' has already been declared.");
+                    }
+                    else
+                    {
+                        funcNames.Add(f.Name);
+                    }
                     break;
             }
         }
@@ -240,7 +254,7 @@ internal static class LexicalDeclarationChecker
                 // A switch CaseBlock is a single lexical scope spanning all clauses.
                 var caseStatements = new List<StatementNode>();
                 foreach (var c in sw.Cases) caseStatements.AddRange(c.Consequent);
-                CheckScope(caseStatements);
+                CheckScope(caseStatements, treatFunctionsAsLexical: true);
                 break;
         }
     }
