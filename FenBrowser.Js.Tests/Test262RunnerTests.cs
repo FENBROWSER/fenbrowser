@@ -2618,6 +2618,89 @@ public sealed class Test262RunnerTests
     }
 
     [Fact]
+    public void Run_RuntimeSubset_ProvidesAbstractModuleSourceHostIntrinsic()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "abstract-module-source.js");
+        var outputPath = Path.Combine(tempRoot, "abstract-module-source-result.json");
+
+        try
+        {
+            File.WriteAllText(testFile, """
+            /*---
+            flags: [module]
+            features: [source-phase-imports]
+            ---*/
+
+            assert.sameValue(typeof $262.AbstractModuleSource, 'function');
+            verifyProperty($262.AbstractModuleSource, 'length', {
+              value: 0,
+              writable: false,
+              enumerable: false,
+              configurable: true
+            });
+            verifyProperty($262.AbstractModuleSource, 'name', {
+              value: 'AbstractModuleSource',
+              writable: false,
+              enumerable: false,
+              configurable: true
+            });
+            verifyProperty($262.AbstractModuleSource, 'prototype', {
+              value: $262.AbstractModuleSource.prototype,
+              writable: false,
+              enumerable: false,
+              configurable: false
+            });
+            assert.sameValue(Object.getPrototypeOf($262.AbstractModuleSource), Function.prototype);
+            assert.sameValue(Object.getPrototypeOf($262.AbstractModuleSource.prototype), Object.prototype);
+            assert.sameValue($262.AbstractModuleSource.prototype.constructor, $262.AbstractModuleSource);
+            var tag = Object.getOwnPropertyDescriptor($262.AbstractModuleSource.prototype, Symbol.toStringTag);
+            assert.sameValue(typeof tag.get, 'function');
+            assert.sameValue(tag.set, undefined);
+            assert.sameValue(tag.enumerable, false);
+            assert.sameValue(tag.configurable, true);
+            assert.sameValue(tag.get.call(262), undefined);
+            assert.sameValue(tag.get.call($262.AbstractModuleSource.prototype), undefined);
+            assert.throws(TypeError, function () { new $262.AbstractModuleSource(); });
+            """);
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: false,
+                runtimeSubset: true,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 1,
+                timeoutMs: 1000,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            var summary = doc.RootElement.GetProperty("summary");
+            Assert.Equal(1, summary.GetProperty("passed").GetInt32());
+            Assert.Equal(0, summary.GetProperty("runtimeErrors").GetInt32());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Run_RuntimeSubset_PropertyHelperVerifyNotWritableUsesRuntimePrelude()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));

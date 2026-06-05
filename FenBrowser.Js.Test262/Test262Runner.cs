@@ -1566,10 +1566,41 @@ public sealed class Test262Runner
                  assert.sameValue(obj[name], oldValue, "property should not be writable");
                  return true;
                }
+               function createAbstractModuleSourceIntrinsic() {
+                 function AbstractModuleSource() {
+                   throw new TypeError();
+                 }
+                 var prototype = {};
+                 Object.defineProperty(prototype, "constructor", {
+                   value: AbstractModuleSource,
+                   writable: true,
+                   enumerable: false,
+                   configurable: true
+                 });
+                 Object.defineProperty(prototype, Symbol.toStringTag, {
+                   get: function () {
+                     if (this === null || (typeof this !== "object" && typeof this !== "function")) {
+                       return undefined;
+                     }
+                     var name = this.__moduleSourceClassName__;
+                     return typeof name === "string" ? name : undefined;
+                   },
+                   enumerable: false,
+                   configurable: true
+                 });
+                 Object.defineProperty(AbstractModuleSource, "prototype", {
+                   value: prototype,
+                   writable: false,
+                   enumerable: false,
+                   configurable: false
+                 });
+                 return AbstractModuleSource;
+               }
                function $DONE(error) { if (error !== undefined) { throw error; } }
                var $262 = {
                  evalScript: function (sourceText) { return eval(sourceText); },
                  global: globalThis,
+                 AbstractModuleSource: createAbstractModuleSourceIntrinsic(),
                  createRealm: function () {
                    var realmThrowTypeError = function () { throw new TypeError(); };
                    var realmGlobal = {
