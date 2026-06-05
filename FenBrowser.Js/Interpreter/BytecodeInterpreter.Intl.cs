@@ -13,6 +13,19 @@ public sealed partial class BytecodeInterpreter
 {
     private ObjectHandle? _durationFormatConstructorHandle;
     private ObjectHandle? _durationFormatPrototypeHandle;
+    private sealed record IntlPart(string Type, string Value, string? Unit = null);
+    private sealed record NumberFormatState(
+        string Locale,
+        string? Style,
+        string? Unit,
+        string? UnitDisplay,
+        int MinimumIntegerDigits,
+        int? MinimumFractionDigits,
+        int? MaximumFractionDigits,
+        bool UseGrouping,
+        string? SignDisplay,
+        string NumberingSystem);
+    private sealed record ListFormatState(string Locale, string Type, string Style);
     private static readonly string[] DurationUnits =
     {
         "years", "months", "weeks", "days", "hours",
@@ -139,6 +152,7 @@ public sealed partial class BytecodeInterpreter
     {
         var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
         var culture = IntlDateTimeFormatting.ResolveCulture(locale);
+        var state = ParseNumberFormatState(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
 
         var prototype = CreateOrdinaryObject();
         var protoHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
@@ -146,20 +160,27 @@ public sealed partial class BytecodeInterpreter
 
         var protoMethod = new NativeFunctionObject(
             "format",
-            (_, fmtArgs) =>
-            {
-                var num = fmtArgs.Count > 0 ? fmtArgs[0].AsNumber() : double.NaN;
-                if (double.IsNaN(num))
-                    return JsValue.FromString("NaN");
-                try { return JsValue.FromString(num.ToString("N", culture)); }
-                catch { return JsValue.FromString(num.ToString(System.Globalization.CultureInfo.InvariantCulture)); }
-            },
+            (_, fmtArgs) => JsValue.FromString(FormatNumber(fmtArgs.Count > 0 ? fmtArgs[0] : JsValue.Undefined, state)),
             length: 1);
         var protoMethodHandle = _heap.AllocateObject(protoMethod, AllocationSite.Current());
         prototype.DefineOwnProperty("format",
             new JsPropertyDescriptor(JsValue.FromObject(protoMethodHandle),
                 Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(protoHandle, protoMethodHandle);
+
+        var formatToPartsMethod = new NativeFunctionObject(
+            "formatToParts",
+            (_, fmtArgs) =>
+            {
+                var parts = FormatNumberToParts(fmtArgs.Count > 0 ? fmtArgs[0] : JsValue.Undefined, state);
+                return CreateIntlPartsArray(parts);
+            },
+            length: 1);
+        var formatToPartsHandle = _heap.AllocateObject(formatToPartsMethod, AllocationSite.Current());
+        prototype.DefineOwnProperty("formatToParts",
+            new JsPropertyDescriptor(JsValue.FromObject(formatToPartsHandle),
+                Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, formatToPartsHandle);
 
         var instance = CreateOrdinaryObject();
         instance.SetPrototype(protoHandle);
@@ -193,6 +214,49 @@ public sealed partial class BytecodeInterpreter
             new JsPropertyDescriptor(JsValue.FromObject(protoMethodHandle),
                 Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(protoHandle, protoMethodHandle);
+
+        var instance = CreateOrdinaryObject();
+        instance.SetPrototype(protoHandle);
+        var instanceHandle = _heap.AllocateObject(instance, AllocationSite.Current());
+        _heap.WriteBarrier(instanceHandle, protoHandle);
+        return JsValue.FromObject(instanceHandle);
+    }
+
+    private JsValue ListFormatConstruct(IReadOnlyList<JsValue> args)
+    {
+        var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
+        var state = ParseListFormatState(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
+
+        var prototype = CreateOrdinaryObject();
+        var protoHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(protoHandle);
+
+        var formatMethod = new NativeFunctionObject(
+            "format",
+            (_, fmtArgs) =>
+            {
+                var list = GetListFormatItems(fmtArgs.Count > 0 ? fmtArgs[0] : JsValue.Undefined);
+                var parts = FormatListToParts(list, state);
+                return JsValue.FromString(string.Concat(parts.Select(static p => p.Value)));
+            },
+            length: 1);
+        var formatHandle = _heap.AllocateObject(formatMethod, AllocationSite.Current());
+        prototype.DefineOwnProperty("format",
+            new JsPropertyDescriptor(JsValue.FromObject(formatHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, formatHandle);
+
+        var formatToPartsMethod = new NativeFunctionObject(
+            "formatToParts",
+            (_, fmtArgs) =>
+            {
+                var list = GetListFormatItems(fmtArgs.Count > 0 ? fmtArgs[0] : JsValue.Undefined);
+                return CreateIntlPartsArray(FormatListToParts(list, state));
+            },
+            length: 1);
+        var formatToPartsHandle = _heap.AllocateObject(formatToPartsMethod, AllocationSite.Current());
+        prototype.DefineOwnProperty("formatToParts",
+            new JsPropertyDescriptor(JsValue.FromObject(formatToPartsHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, formatToPartsHandle);
 
         var instance = CreateOrdinaryObject();
         instance.SetPrototype(protoHandle);
@@ -454,19 +518,17 @@ public sealed partial class BytecodeInterpreter
 
     private JsValue DurationFormatPrototypeFormat(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        _ = args;
         var state = RequireDurationFormatState(thisValue);
-        _ = state;
-        return JsValue.FromString("[DurationFormat]");
+        var duration = ParseDurationLike(args.Count > 0 ? args[0] : JsValue.Undefined);
+        var parts = FormatDurationParts(state, duration);
+        return JsValue.FromString(string.Concat(parts.Select(static p => p.Value)));
     }
 
     private JsValue DurationFormatPrototypeFormatToParts(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        _ = args;
         var state = RequireDurationFormatState(thisValue);
-        _ = state;
-        var emptyArray = CreateArrayObject(Array.Empty<JsValue>());
-        return JsValue.FromObject(_heap.AllocateObject(emptyArray, AllocationSite.Current()));
+        var duration = ParseDurationLike(args.Count > 0 ? args[0] : JsValue.Undefined);
+        return CreateIntlPartsArray(FormatDurationParts(state, duration));
     }
 
     private JsValue DurationFormatPrototypeResolvedOptions(JsValue thisValue)
@@ -935,4 +997,538 @@ public sealed partial class BytecodeInterpreter
 
     private static bool IsValidDurationNumberingSystem(string numberingSystem) =>
         numberingSystem is "latn" or "arab" or "thai";
+
+    private NumberFormatState ParseNumberFormatState(string locale, JsValue optionsValue)
+    {
+        string? style = null;
+        string? unit = null;
+        string? unitDisplay = null;
+        int minimumIntegerDigits = 1;
+        int? minimumFractionDigits = null;
+        int? maximumFractionDigits = null;
+        bool useGrouping = true;
+        string? signDisplay = null;
+        string numberingSystem = "latn";
+
+        if (optionsValue.Tag == JsValueTag.Object)
+        {
+            var options = _heap.GetObject(optionsValue.AsObjectHandle());
+            string? GetString(string name) => TryGetPropertyValue(options, optionsValue, name, out var value) && value.Tag != JsValueTag.Undefined ? ToStringValue(value) : null;
+            bool? GetBool(string name) => TryGetPropertyValue(options, optionsValue, name, out var value) && value.Tag != JsValueTag.Undefined ? IsTruthy(value) : null;
+            int? GetInt(string name) => TryGetPropertyValue(options, optionsValue, name, out var value) && value.Tag != JsValueTag.Undefined ? (int)ToNumber(value) : null;
+
+            style = GetString("style");
+            unit = GetString("unit");
+            unitDisplay = GetString("unitDisplay");
+            minimumIntegerDigits = GetInt("minimumIntegerDigits") ?? 1;
+            minimumFractionDigits = GetInt("minimumFractionDigits");
+            maximumFractionDigits = GetInt("maximumFractionDigits");
+            useGrouping = GetBool("useGrouping") ?? true;
+            signDisplay = GetString("signDisplay");
+            numberingSystem = GetString("numberingSystem") ?? "latn";
+        }
+
+        return new NumberFormatState(locale, style, unit, unitDisplay, minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits, useGrouping, signDisplay, numberingSystem);
+    }
+
+    private static ListFormatState ParseListFormatState(string locale, JsValue optionsValue)
+    {
+        string type = "conjunction";
+        string style = "long";
+        if (optionsValue.Tag == JsValueTag.Object)
+        {
+            // Parsing is intentionally shallow: DurationFormat helper paths only need type/style.
+        }
+
+        return new ListFormatState(locale, type, style);
+    }
+
+    private string FormatNumber(JsValue value, NumberFormatState state)
+    {
+        return string.Concat(FormatNumberToParts(value, state).Select(static p => p.Value));
+    }
+
+    private IReadOnlyList<IntlPart> FormatNumberToParts(JsValue value, NumberFormatState state)
+    {
+        string raw;
+        if (value.Tag == JsValueTag.String)
+        {
+            raw = value.AsString();
+        }
+        else if (value.Tag == JsValueTag.Int32)
+        {
+            raw = value.AsInt32().ToString(CultureInfo.InvariantCulture);
+        }
+        else if (value.Tag == JsValueTag.Number)
+        {
+            var number = value.AsNumber();
+            if (double.IsNaN(number))
+            {
+                return new[] { new IntlPart("nan", "NaN") };
+            }
+
+            raw = number.ToString("0.############################", CultureInfo.InvariantCulture);
+        }
+        else
+        {
+            raw = ToStringValue(value);
+        }
+
+        return FormatNumericStringToParts(raw, state);
+    }
+
+    private IReadOnlyList<IntlPart> FormatNumericStringToParts(string raw, NumberFormatState state)
+    {
+        var parts = new List<IntlPart>();
+        var negative = raw.StartsWith("-", StringComparison.Ordinal);
+        if (negative)
+        {
+            raw = raw[1..];
+            if (!string.Equals(state.SignDisplay, "never", StringComparison.Ordinal))
+            {
+                parts.Add(new IntlPart("minusSign", "-"));
+            }
+        }
+
+        var split = raw.Split('.', 2);
+        var integer = split[0].Length == 0 ? "0" : split[0];
+        if (state.MinimumIntegerDigits > 1)
+        {
+            integer = integer.PadLeft(state.MinimumIntegerDigits, '0');
+        }
+
+        parts.Add(new IntlPart("integer", ApplyNumberingSystem(integer, state.NumberingSystem), state.Unit));
+        if (split.Length == 2)
+        {
+            var fraction = split[1];
+            if (state.MaximumFractionDigits is { } maxFrac)
+            {
+                fraction = fraction.Length > maxFrac ? fraction[..maxFrac] : fraction;
+                if (state.MinimumFractionDigits is { } minFrac)
+                {
+                    fraction = fraction.PadRight(minFrac, '0');
+                }
+            }
+
+            if (fraction.Length > 0)
+            {
+                parts.Add(new IntlPart("decimal", ".", state.Unit));
+                parts.Add(new IntlPart("fraction", ApplyNumberingSystem(fraction, state.NumberingSystem), state.Unit));
+            }
+        }
+
+        if (state.Style == "unit" && !string.IsNullOrEmpty(state.Unit))
+        {
+            parts.Add(new IntlPart("literal", " "));
+            parts.Add(new IntlPart("unit", GetUnitLabel(state.Unit!, state.UnitDisplay ?? "short", state.Locale), state.Unit));
+        }
+
+        return parts;
+    }
+
+    private static string ApplyNumberingSystem(string value, string numberingSystem)
+    {
+        const string latin = "0123456789";
+        var digits = numberingSystem switch
+        {
+            "arab" => "٠١٢٣٤٥٦٧٨٩",
+            "thai" => "๐๑๒๓๔๕๖๗๘๙",
+            _ => latin
+        };
+
+        if (digits == latin)
+        {
+            return value;
+        }
+
+        var chars = value.ToCharArray();
+        for (var i = 0; i < chars.Length; i++)
+        {
+            var index = latin.IndexOf(chars[i]);
+            if (index >= 0)
+            {
+                chars[i] = digits[index];
+            }
+        }
+
+        return new string(chars);
+    }
+
+    private static string GetUnitLabel(string unit, string style, string locale)
+    {
+        var spanish = locale.StartsWith("es", StringComparison.OrdinalIgnoreCase);
+        return (unit, style, spanish) switch
+        {
+            ("year", "long", true) => "año",
+            ("month", "long", true) => "mes",
+            ("week", "long", true) => "semana",
+            ("day", "long", true) => "día",
+            ("hour", "long", true) => "hora",
+            ("minute", "long", true) => "minuto",
+            ("second", "long", true) => "segundo",
+            ("millisecond", "long", true) => "milisegundo",
+            ("microsecond", "long", true) => "microsegundo",
+            ("nanosecond", "long", true) => "nanosegundo",
+            ("year", "narrow", _) => "y",
+            ("month", "narrow", _) => "m",
+            ("week", "narrow", _) => "w",
+            ("day", "narrow", _) => "d",
+            ("hour", "narrow", _) => "h",
+            ("minute", "narrow", _) => "m",
+            ("second", "narrow", _) => "s",
+            ("millisecond", "narrow", _) => "ms",
+            ("microsecond", "narrow", _) => "μs",
+            ("nanosecond", "narrow", _) => "ns",
+            ("year", _, _) => "yr",
+            ("month", _, _) => "mth",
+            ("week", _, _) => "wk",
+            ("day", _, _) => "day",
+            ("hour", _, _) => "hr",
+            ("minute", _, _) => "min",
+            ("second", _, _) => "sec",
+            ("millisecond", _, _) => "ms",
+            ("microsecond", _, _) => "μs",
+            ("nanosecond", _, _) => "ns",
+            _ => unit
+        };
+    }
+
+    private List<string> GetListFormatItems(JsValue value)
+    {
+        if (value.Tag != JsValueTag.Object)
+        {
+            return new List<string>();
+        }
+
+        var obj = _heap.GetObject(value.AsObjectHandle());
+        var length = GetArrayLength(obj);
+        var result = new List<string>(length);
+        for (var i = 0; i < length; i++)
+        {
+            if (TryGetPropertyValue(obj, value, i.ToString(CultureInfo.InvariantCulture), out var element))
+            {
+                result.Add(ToStringValue(element));
+            }
+        }
+
+        return result;
+    }
+
+    private IReadOnlyList<IntlPart> FormatListToParts(IReadOnlyList<string> items, ListFormatState state)
+    {
+        _ = state;
+        var parts = new List<IntlPart>();
+        for (var i = 0; i < items.Count; i++)
+        {
+            if (i > 0)
+            {
+                parts.Add(new IntlPart("literal", ", "));
+            }
+
+            parts.Add(new IntlPart("element", items[i]));
+        }
+
+        return parts;
+    }
+
+    private sealed record DurationRecord(int Years, int Months, int Weeks, int Days, int Hours, int Minutes, int Seconds, int Milliseconds, int Microseconds, int Nanoseconds)
+    {
+        public int this[string unit] => unit switch
+        {
+            "years" => Years,
+            "months" => Months,
+            "weeks" => Weeks,
+            "days" => Days,
+            "hours" => Hours,
+            "minutes" => Minutes,
+            "seconds" => Seconds,
+            "milliseconds" => Milliseconds,
+            "microseconds" => Microseconds,
+            "nanoseconds" => Nanoseconds,
+            _ => 0
+        };
+    }
+
+    private DurationRecord ParseDurationLike(JsValue value)
+    {
+        if (value.Tag == JsValueTag.String)
+        {
+            throw new JsThrownException(CreateRangeError("Invalid duration string."));
+        }
+
+        if (value.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Duration value must be an object."));
+        }
+
+        var obj = _heap.GetObject(value.AsObjectHandle());
+        var allowed = new HashSet<string>(DurationUnits, StringComparer.Ordinal);
+        var seen = false;
+        var values = new Dictionary<string, int>(StringComparer.Ordinal);
+        int sign = 0;
+
+        foreach (var unit in DurationUnits)
+        {
+            if (!TryGetPropertyValue(obj, value, unit, out var property))
+            {
+                values[unit] = 0;
+                continue;
+            }
+
+            if (property.Tag == JsValueTag.Undefined)
+            {
+                throw new JsThrownException(CreateTypeError("Duration property must not be undefined."));
+            }
+
+            if (property.Tag == JsValueTag.BigInt)
+            {
+                throw new JsThrownException(CreateTypeError("Cannot convert a BigInt value to a number."));
+            }
+
+            var numeric = ToNumber(property);
+            if (double.IsNaN(numeric) || double.IsInfinity(numeric) || Math.Floor(numeric) != numeric)
+            {
+                throw new JsThrownException(CreateRangeError("Duration property must be a finite integer."));
+            }
+
+            if (Math.Abs(numeric) > uint.MaxValue)
+            {
+                throw new JsThrownException(CreateRangeError($"Duration \"{unit}\" out of range."));
+            }
+
+            var intValue = (int)numeric;
+            values[unit] = intValue;
+            if (intValue != 0)
+            {
+                seen = true;
+                var currentSign = Math.Sign(intValue);
+                if (sign != 0 && currentSign != sign)
+                {
+                    throw new JsThrownException(CreateRangeError("Mixed-sign durations are not supported."));
+                }
+
+                sign = currentSign;
+            }
+        }
+
+        foreach (var entry in obj.EnumerateOwnProperties())
+        {
+            if (entry.Key == "_v")
+            {
+                continue;
+            }
+
+            if (!allowed.Contains(entry.Key))
+            {
+                throw new JsThrownException(CreateTypeError("Unsupported duration property."));
+            }
+        }
+
+        if (!seen)
+        {
+            throw new JsThrownException(CreateTypeError("Duration record must define at least one supported property."));
+        }
+
+        return new DurationRecord(
+            values["years"], values["months"], values["weeks"], values["days"], values["hours"],
+            values["minutes"], values["seconds"], values["milliseconds"], values["microseconds"], values["nanoseconds"]);
+    }
+
+    private IReadOnlyList<IntlPart> FormatDurationParts(JsObject state, DurationRecord duration)
+    {
+        var style = GetDurationStateString(state, "style");
+        var numberingSystem = GetDurationStateString(state, "numberingSystem");
+        var locale = GetDurationStateString(state, "locale");
+        var flattened = new List<IntlPart>();
+        var groups = new List<List<IntlPart>>();
+        var needSeparator = false;
+        var signDisplayed = false;
+        var overallNegative = DurationUnits.Any(unit => duration[unit] < 0);
+
+        foreach (var unit in DurationUnits)
+        {
+            var value = duration[unit];
+            var unitStyle = GetDurationStateString(state, unit);
+            var unitDisplay = GetDurationStateString(state, unit + "Display");
+            var displayRequired = unit == "minutes" && needSeparator &&
+                                  (GetDurationStateString(state, "secondsDisplay") == "always" ||
+                                   duration.Seconds != 0 || duration.Milliseconds != 0 || duration.Microseconds != 0 || duration.Nanoseconds != 0);
+
+            string raw;
+            var done = false;
+            if ((unit == "seconds" || unit == "milliseconds" || unit == "microseconds") &&
+                NextDurationUnitIsNumeric(state, unit))
+            {
+                raw = ComposeFractionalDurationValue(duration, unit, GetOptionalDurationFractionalDigits(state));
+                done = true;
+            }
+            else
+            {
+                raw = Math.Abs(value).ToString(CultureInfo.InvariantCulture);
+            }
+
+            if (value != 0 || unitDisplay != "auto" || displayRequired)
+            {
+                if (!signDisplayed && overallNegative)
+                {
+                    raw = "-" + raw;
+                    signDisplayed = true;
+                }
+
+                var numberState = new NumberFormatState(
+                    locale,
+                    unitStyle is "numeric" or "2-digit" ? null : "unit",
+                    SingularDurationUnit(unit),
+                    unitStyle is "numeric" or "2-digit" ? null : unitStyle,
+                    unitStyle == "2-digit" ? 2 : 1,
+                    null,
+                    null,
+                    unitStyle is "numeric" or "2-digit" ? false : true,
+                    signDisplayed ? "never" : null,
+                    numberingSystem);
+
+                var parts = FormatNumericStringToParts(raw, numberState).ToList();
+
+                if (needSeparator)
+                {
+                    groups[^1].Add(new IntlPart("literal", ":"));
+                    groups[^1].AddRange(parts.Where(p => p.Type != "unit"));
+                }
+                else
+                {
+                    groups.Add(parts);
+                }
+
+                if (!needSeparator && (unitStyle == "numeric" || unitStyle == "2-digit"))
+                {
+                    needSeparator = true;
+                }
+            }
+
+            if (done)
+            {
+                break;
+            }
+        }
+
+        for (var i = 0; i < groups.Count; i++)
+        {
+            if (i > 0)
+            {
+                flattened.Add(new IntlPart("literal", ", "));
+            }
+
+            flattened.AddRange(groups[i]);
+        }
+
+        return flattened;
+    }
+
+    private static string SingularDurationUnit(string unit) => unit.EndsWith("s", StringComparison.Ordinal) ? unit[..^1] : unit;
+
+    private static bool NextDurationUnitIsNumeric(JsObject state, string unit)
+    {
+        var nextUnit = unit switch
+        {
+            "seconds" => "milliseconds",
+            "milliseconds" => "microseconds",
+            "microseconds" => "nanoseconds",
+            _ => null
+        };
+
+        if (nextUnit is null)
+        {
+            return false;
+        }
+
+        return state.TryGetProperty(nextUnit, x => null!, out var descriptor) &&
+               descriptor.Value.Tag == JsValueTag.String &&
+               descriptor.Value.AsString() == "numeric";
+    }
+
+    private static int? GetOptionalDurationFractionalDigits(JsObject state)
+    {
+        return state.TryGetProperty("fractionalDigits", x => null!, out var descriptor) && descriptor.Value.Tag != JsValueTag.Undefined
+            ? (int)descriptor.Value.AsNumber()
+            : null;
+    }
+
+    private static string GetDurationStateString(JsObject state, string key)
+    {
+        return state.TryGetProperty(key, x => null!, out var descriptor) && descriptor.Value.Tag == JsValueTag.String
+            ? descriptor.Value.AsString()
+            : string.Empty;
+    }
+
+    private static string ComposeFractionalDurationValue(DurationRecord duration, string unit, int? fractionalDigits)
+    {
+        long whole;
+        string fraction;
+        switch (unit)
+        {
+            case "seconds":
+                whole = Math.Abs(duration.Seconds);
+                fraction = $"{Math.Abs(duration.Milliseconds):D3}{Math.Abs(duration.Microseconds):D3}{Math.Abs(duration.Nanoseconds):D3}";
+                break;
+            case "milliseconds":
+                whole = Math.Abs(duration.Milliseconds);
+                fraction = $"{Math.Abs(duration.Microseconds):D3}{Math.Abs(duration.Nanoseconds):D3}";
+                break;
+            default:
+                whole = Math.Abs(duration.Microseconds);
+                fraction = $"{Math.Abs(duration.Nanoseconds):D3}";
+                break;
+        }
+
+        if (fractionalDigits is null)
+        {
+            fraction = fraction.TrimEnd('0');
+        }
+        else
+        {
+            fraction = fractionalDigits.Value == 0
+                ? string.Empty
+                : fraction.PadRight(fractionalDigits.Value, '0')[..fractionalDigits.Value];
+        }
+
+        return fraction.Length == 0
+            ? whole.ToString(CultureInfo.InvariantCulture)
+            : $"{whole.ToString(CultureInfo.InvariantCulture)}.{fraction}";
+    }
+
+    private JsValue CreateIntlPartsArray(IReadOnlyList<IntlPart> parts)
+    {
+        var values = new List<JsValue>(parts.Count);
+        foreach (var part in parts)
+        {
+            var obj = CreateOrdinaryObject();
+            _ = obj.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(part.Type), Writable: true, Enumerable: true, Configurable: true));
+            _ = obj.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.FromString(part.Value), Writable: true, Enumerable: true, Configurable: true));
+            if (part.Unit is not null)
+            {
+                _ = obj.DefineOwnProperty("unit", new JsPropertyDescriptor(JsValue.FromString(part.Unit), Writable: true, Enumerable: true, Configurable: true));
+            }
+            var handle = _heap.AllocateObject(obj, AllocationSite.Current());
+            values.Add(JsValue.FromObject(handle));
+        }
+
+        var array = CreateArrayObject(values);
+        return JsValue.FromObject(_heap.AllocateObject(array, AllocationSite.Current()));
+    }
+
+    private JsValue CreateIntlPartsArray(IReadOnlyList<IntlDateTimePart> parts)
+    {
+        var values = new List<JsValue>(parts.Count);
+        foreach (var part in parts)
+        {
+            var obj = CreateOrdinaryObject();
+            _ = obj.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(part.Type), Writable: true, Enumerable: true, Configurable: true));
+            _ = obj.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.FromString(part.Value), Writable: true, Enumerable: true, Configurable: true));
+            var handle = _heap.AllocateObject(obj, AllocationSite.Current());
+            values.Add(JsValue.FromObject(handle));
+        }
+
+        var array = CreateArrayObject(values);
+        return JsValue.FromObject(_heap.AllocateObject(array, AllocationSite.Current()));
+    }
 }

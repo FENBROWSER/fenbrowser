@@ -6753,6 +6753,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _heap.WriteBarrier(handle, ctorHandle);
         }
 
+        // ECMA-402 Intl.ListFormat constructor.
+        {
+            var ctor = new NativeFunctionObject(
+                "ListFormat",
+                (_, _) => throw new JsThrownException(CreateTypeError("Intl.ListFormat must be invoked with 'new'.")),
+                construct: args => ListFormatConstruct(args),
+                length: 0);
+            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
+            _heap.PushRoot(ctorHandle);
+            _ = intl.DefineOwnProperty(
+                "ListFormat",
+                new JsPropertyDescriptor(
+                    JsValue.FromObject(ctorHandle),
+                    Writable: true,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(handle, ctorHandle);
+        }
+
         // ECMA-402 Intl.DurationFormat constructor.
         {
             var prototypeHandle = EnsureDurationFormatPrototype();
@@ -6817,6 +6836,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var fnHandle = _heap.AllocateObject(fn, AllocationSite.Current());
             _ = intl.DefineOwnProperty(
                 "getCanonicalLocales",
+                new JsPropertyDescriptor(
+                    JsValue.FromObject(fnHandle),
+                    Writable: true,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(handle, fnHandle);
+        }
+
+        {
+            var fn = new NativeFunctionObject(
+                "supportedValuesOf",
+                (_, args) =>
+                {
+                    var key = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
+                    var values = key == "numberingSystem"
+                        ? new[] { JsValue.FromString("latn"), JsValue.FromString("arab"), JsValue.FromString("thai") }
+                        : Array.Empty<JsValue>();
+                    var arr = CreateArrayFromElements(values);
+                    return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+                },
+                length: 1);
+            var fnHandle = _heap.AllocateObject(fn, AllocationSite.Current());
+            _ = intl.DefineOwnProperty(
+                "supportedValuesOf",
                 new JsPropertyDescriptor(
                     JsValue.FromObject(fnHandle),
                     Writable: true,
