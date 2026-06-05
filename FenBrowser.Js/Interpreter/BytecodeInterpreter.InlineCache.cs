@@ -53,6 +53,9 @@ public sealed partial class BytecodeInterpreter
 
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         if (obj is ProxyObject) return false;
+        // ECMA-262 10.4.2.4: writing an Array's "length" is an exotic operation that
+        // may delete out-of-range elements. Never short-circuit it through the IC.
+        if (obj is ArrayObject && key == "length") return false;
         if (!ic.TryGet(obj, key, out var slot) || obj.PropertyArray[slot] is not { } desc)
             return false;
         if (desc.IsAccessor || !desc.Writable)
@@ -72,6 +75,7 @@ public sealed partial class BytecodeInterpreter
         if (receiver.Tag != JsValueTag.Object) return;
         var obj = _heap.GetObject(receiver.AsObjectHandle());
         if (obj is ProxyObject) return;
+        if (obj is ArrayObject && key == "length") return;
         if (!obj.CurrentShape.TryGetSlot(key, out var slot) || obj.PropertyArray[slot] is not { } desc) return;
         if (desc.IsAccessor || !desc.Writable) return;
 
