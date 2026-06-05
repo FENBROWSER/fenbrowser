@@ -165,16 +165,39 @@ public sealed class NumberBuiltin : IBuiltinModule
         if (double.IsInfinity(value)) return JsValue.FromString(value > 0 ? "Infinity" : "-Infinity");
 
         if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
-            return JsValue.FromString(MathHelpers.NormaliseExponential(value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)));
+        {
+            // ECMA-262 21.1.3.2 step 10.b: fractionDigits undefined → use the fewest
+            // fraction digits whose exponential form still round-trips to x. The old
+            // "R" path never produced exponential notation, so (123.456).toExponential()
+            // wrongly returned "123.456" instead of "1.23456e+2".
+            for (var f = 0; f < 17; f++)
+            {
+                var candidate = FormatExponentialFixed(value, f);
+                if (double.TryParse(candidate, System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var back) && back == value)
+                {
+                    return JsValue.FromString(candidate);
+                }
+            }
+
+            return JsValue.FromString(FormatExponentialFixed(value, 17));
+        }
 
         var digits = (int)ctx.ToNumber(args[0]);
         if (digits < 0 || digits > 100)
             throw new JsThrownException(ctx.CreateRangeError("toExponential() digits argument must be between 0 and 100."));
 
+        return JsValue.FromString(FormatExponentialFixed(value, digits));
+    }
+
+    // Format `value` in normalized ECMA-262 exponential notation with exactly
+    // `digits` fraction digits (e.g. digits=2 → "1.23e+4", digits=0 → "1e+4").
+    private static string FormatExponentialFixed(double value, int digits)
+    {
         var format = "0." + new string('0', digits) + "e+0";
         var raw = value.ToString(format, System.Globalization.CultureInfo.InvariantCulture);
         if (digits == 0) raw = raw.Replace(".e", "e", StringComparison.Ordinal);
-        return JsValue.FromString(MathHelpers.NormaliseExponential(raw));
+        return MathHelpers.NormaliseExponential(raw);
     }
 
     // 21.1.3.5 toPrecision
