@@ -354,26 +354,33 @@ public sealed class BytecodeCompiler
                 }
                 break;
             case IfStatementNode ifStmt:
+                EmitCompletionReset();
                 CompileIfStatement(ifStmt);
                 break;
             case WhileStatementNode whileStmt:
+                EmitCompletionReset();
                 CompileWhileStatement(whileStmt);
                 break;
             case DoWhileStatementNode doWhileStmt:
+                EmitCompletionReset();
                 CompileDoWhileStatement(doWhileStmt);
                 break;
             case WithStatementNode withStmt:
                 throw new UnsupportedFeatureException("with", FeatureSupportLevel.ParserOnly, withStmt.Span);
             case ForStatementNode forStmt:
+                EmitCompletionReset();
                 CompileForStatement(forStmt);
                 break;
             case ForInStatementNode forInStmt:
+                EmitCompletionReset();
                 CompileForInStatement(forInStmt);
                 break;
             case ForOfStatementNode forOfStmt:
+                EmitCompletionReset();
                 CompileForOfStatement(forOfStmt);
                 break;
             case ForAwaitOfStatementNode forAwaitOfStmt:
+                EmitCompletionReset();
                 CompileForAwaitOfStatement(forAwaitOfStmt);
                 break;
             case ReturnStatementNode returnStmt:
@@ -389,12 +396,15 @@ public sealed class BytecodeCompiler
                 CompileThrowStatement(throwStmt);
                 break;
             case TryCatchStatementNode tryCatchStmt:
+                EmitCompletionReset();
                 CompileTryCatchStatement(tryCatchStmt);
                 break;
             case TryFinallyStatementNode tryFinallyStmt:
+                EmitCompletionReset();
                 CompileTryFinallyStatement(tryFinallyStmt);
                 break;
             case TryCatchFinallyStatementNode tryCatchFinallyStmt:
+                EmitCompletionReset();
                 CompileTryCatchFinallyStatement(tryCatchFinallyStmt);
                 break;
             case FunctionDeclarationNode functionDecl:
@@ -408,9 +418,11 @@ public sealed class BytecodeCompiler
                 CompileClassDeclaration(classDecl);
                 break;
             case SwitchStatementNode switchStmt:
+                EmitCompletionReset();
                 CompileSwitchStatement(switchStmt);
                 break;
             case LabeledStatementNode labeledStmt:
+                EmitCompletionReset();
                 CompileLabeledStatement(labeledStmt);
                 break;
             default:
@@ -3160,6 +3172,22 @@ public sealed class BytecodeCompiler
     }
 
     private int AllocateRegister() => _nextRegister++;
+
+    // ECMA-262: IfStatement, every IterationStatement, SwitchStatement,
+    // WithStatement, TryStatement, and LabelledStatement evaluate to
+    // `UpdateEmpty(result, undefined)` — i.e. they never produce an *empty*
+    // completion; an empty inner result becomes `undefined`. The completion
+    // value lives in register 0 (written by ExpressionStatement). Empty
+    // producers (var/empty/declaration/block) correctly leave it untouched so
+    // it inherits the prior statement's value, but these UpdateEmpty statements
+    // must seed register 0 with `undefined` at entry so an empty body does not
+    // leak the previous value. Only matters for the top-level script/eval body.
+    private void EmitCompletionReset()
+    {
+        if (!_captureCompletionValue) return;
+        var ci = AddConstant(JsValue.Undefined);
+        _instructions.Add(new Instruction(OpCode.LoadConst, 0, ci, 0));
+    }
 
     private static FunctionKind SelectFunctionKind(bool isAsync, bool isGenerator, bool isArrow)
     {
