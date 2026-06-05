@@ -2209,8 +2209,11 @@ public sealed class Test262RunnerTests
         }
     }
 
+    // A `negative: phase: runtime` test IS executable in runtime-subset mode: the runner
+    // runs it and expects a throw. When the code does NOT throw (here the no-op invoker),
+    // it is a real failure — and a matching expectation downgrades it to ExpectedFailure.
     [Fact]
-    public void Run_RuntimeSubset_NegativeRuntimeMetadataIsInvalidConfiguration_EvenWithExpectation()
+    public void Run_RuntimeSubset_NegativeRuntimeMetadata_NonThrowing_IsExpectedFailure_WithExpectation()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempRoot);
@@ -2275,11 +2278,11 @@ public sealed class Test262RunnerTests
             Assert.Equal(0, exitCode);
             using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
             var summary = doc.RootElement.GetProperty("summary");
-            Assert.Equal(0, summary.GetProperty("expectedFailures").GetInt32());
+            Assert.Equal(1, summary.GetProperty("expectedFailures").GetInt32());
 
             var tests = doc.RootElement.GetProperty("tests");
             var first = tests.EnumerateArray().First();
-            Assert.Equal("InvalidTestConfiguration", first.GetProperty("status").GetString());
+            Assert.Equal("ExpectedFailure", first.GetProperty("status").GetString());
         }
         finally
         {
@@ -2288,8 +2291,10 @@ public sealed class Test262RunnerTests
         }
     }
 
+    // Same as above but with no expectation: a non-throwing `negative: phase: runtime`
+    // test is a plain failure (no longer mis-reported as InvalidTestConfiguration).
     [Fact]
-    public void Run_RuntimeSubset_NegativeRuntimeMetadataIsInvalidConfiguration_WithoutExpectation()
+    public void Run_RuntimeSubset_NegativeRuntimeMetadata_NonThrowing_IsFailure_WithoutExpectation()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(tempRoot);
@@ -2339,7 +2344,7 @@ public sealed class Test262RunnerTests
 
             var tests = doc.RootElement.GetProperty("tests");
             var first = tests.EnumerateArray().First();
-            Assert.Equal("InvalidTestConfiguration", first.GetProperty("status").GetString());
+            Assert.Equal("Failed", first.GetProperty("status").GetString());
         }
         finally
         {

@@ -638,6 +638,43 @@ public sealed class Test262Runner
         Console.WriteLine($"Parser subset result written: {outputPath}");
     }
 
+    // Runtime-subset mode CAN execute, so a `negative: phase: runtime` test is valid
+    // here (handled via expectsRuntimeThrow) — unlike parser-subset mode. Only a
+    // parse/early negative whose type isn't SyntaxError is genuinely unhandleable.
+    private static bool IsInvalidRuntimeSubsetConfiguration(Test262FrontmatterMetadata frontmatter, out string reason)
+    {
+        reason = string.Empty;
+        if (frontmatter.Negative is null)
+        {
+            return false;
+        }
+
+        var phase = frontmatter.Negative.Phase?.Trim();
+        var type = frontmatter.Negative.Type?.Trim();
+        if (string.IsNullOrWhiteSpace(type))
+        {
+            return false;
+        }
+
+        // runtime-phase negatives are executable here (caught + verified downstream).
+        if (string.Equals(phase, "runtime", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // parse/early negatives are only handled when the expected type is SyntaxError.
+        var isParseOrEarly = string.IsNullOrWhiteSpace(phase) ||
+                             string.Equals(phase, "parse", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(phase, "early", StringComparison.OrdinalIgnoreCase);
+        if (isParseOrEarly && !string.Equals(type, "SyntaxError", StringComparison.OrdinalIgnoreCase))
+        {
+            reason = $"Negative parse/early expectation '{type}' is not executable in runtime-subset mode.";
+            return true;
+        }
+
+        return false;
+    }
+
     private static bool IsInvalidParserSubsetConfiguration(Test262FrontmatterMetadata frontmatter, out string reason)
     {
         reason = string.Empty;
@@ -743,10 +780,12 @@ public sealed class Test262Runner
 
         Console.WriteLine($"Running runtime subset: total={subset.Count}, timeoutMs={timeoutMs}, root={rootPath}");
 
-        var compiler = new BytecodeCompiler();
-
         foreach (var file in subset)
         {
+            // A fresh compiler per test: BytecodeCompiler carries per-compilation mutable
+            // state (register/instruction buffers, scope stacks). A prior test that threw
+            // mid-compile would otherwise leave it dirty and crash a later compilation.
+            var compiler = new BytecodeCompiler();
             try
             {
                 var relativePath = Path.GetRelativePath(rootPath, file).Replace('\\', '/');
@@ -757,7 +796,7 @@ public sealed class Test262Runner
                 var parserInput = PrepareParserInput(sourceText, frontmatter);
                 var parseAsModule = frontmatter.Flags.Any(f => string.Equals(f, "module", StringComparison.OrdinalIgnoreCase));
 
-                if (IsInvalidParserSubsetConfiguration(frontmatter, out var invalidReason))
+                if (IsInvalidRuntimeSubsetConfiguration(frontmatter, out var invalidReason))
                 {
                     invalidTestConfiguration++;
                     failures.Add(new { path = file, relativePath, classification = "invalid-test-configuration", message = invalidReason });
