@@ -9769,22 +9769,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
         }, length: 1);
 
-        // ECMA-262 23.1.2.2 Array.isArray(arg). Spec walks Proxy targets; we have no
-        // Proxy yet, so the operation collapses to "is the value an ArrayObject?".
+        // ECMA-262 23.1.2.2 Array.isArray(arg) delegates to IsArray, including
+        // proxy target recursion and revoked-proxy TypeError behavior.
         DefineIntrinsicFunction(constructorHandle, constructor, "isArray", (_, args) =>
         {
-            if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
-            {
-                return JsValue.FromBoolean(false);
-            }
-
-            var handle = args[0].AsObjectHandle();
-            var obj = _heap.GetObject(handle);
-            // ECMA-262 23.1.2.2: Array.isArray returns true for Array exotic
-            // objects. Array.prototype is itself an Array exotic object.
-            if (obj is ArrayObject) return JsValue.FromBoolean(true);
-            if (handle == _arrayPrototypeHandle) return JsValue.FromBoolean(true);
-            return JsValue.FromBoolean(false);
+            var value = args.Count == 0 ? JsValue.Undefined : args[0];
+            return JsValue.FromBoolean(IsArrayValue(value));
         }, length: 1);
 
         _arrayPrototypeHandle = prototypeHandle;
@@ -11195,7 +11185,13 @@ fallbackArraySpecies:
             return false;
         }
 
-        return IsArrayObject(_heap.GetObject(value.AsObjectHandle()));
+        var handle = value.AsObjectHandle();
+        if (handle == _arrayPrototypeHandle)
+        {
+            return true;
+        }
+
+        return IsArrayObject(_heap.GetObject(handle));
     }
 
     private bool IsArrayObject(JsObject obj)

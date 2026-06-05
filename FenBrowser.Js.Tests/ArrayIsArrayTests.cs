@@ -31,4 +31,24 @@ public sealed class ArrayIsArrayTests
     {
         Assert.Equal(expected, RunBool(source));
     }
+
+    [Fact]
+    public void ReturnsTrueForProxyWrappingArray()
+    {
+        Assert.True(RunBool("Array.isArray(new Proxy([], {}));"));
+    }
+
+    [Fact]
+    public void ThrowsTypeErrorForRevokedProxyWrappingArray()
+    {
+        var fn = new BytecodeCompiler().CompileScript(new SourceText(@"
+            var handle = Proxy.revocable([], {});
+            handle.revoke();
+            Array.isArray(handle.proxy);
+        "));
+
+        new BytecodeVerifier().Verify(fn);
+
+        Assert.Throws<JsThrownException>(() => new BytecodeInterpreter().Execute(fn));
+    }
 }
