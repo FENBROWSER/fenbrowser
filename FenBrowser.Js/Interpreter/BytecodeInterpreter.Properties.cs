@@ -238,6 +238,19 @@ public sealed partial class BytecodeInterpreter
             return TryGetPropertyValue(_heap.GetObject(prototypeHandle), receiver, key, out value);
         }
 
+        // ECMA-262 10.3.3: callable native objects whose [[Prototype]] was never
+        // wired up still need Function.prototype methods (`call`, `apply`, `bind`,
+        // `toString`) to be reachable. GetReceiverProperty already applies this
+        // fallback; mirror it here so internal consumers (ToPrimitive's
+        // toString/valueOf probe, IsRegExp, etc.) resolve inherited function
+        // methods too — otherwise String(nativeFn) / regex.test(nativeFn) throw
+        // "Cannot convert object to primitive value".
+        if ((obj is NativeFunctionObject || obj is JsFunctionObject || obj is BoundFunctionObject)
+            && _functionPrototypeHandle is { } fnProto)
+        {
+            return TryGetPropertyValue(_heap.GetObject(fnProto), receiver, key, out value);
+        }
+
         value = JsValue.Undefined;
         return false;
     }
