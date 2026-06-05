@@ -434,10 +434,22 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
-    public void PlainFunctionCallThisIsUndefinedInCurrentSubset()
+    public void PlainFunctionCallThisBindsToGlobalInSloppyMode()
+    {
+        // ECMA-262 10.2.1.3: a non-strict function called with no receiver binds
+        // `this` to the global object (globalThis), not undefined.
+        var compiler = new BytecodeCompiler();
+        var fn = compiler.CompileScript(new SourceText("function f(){ return this === globalThis; } f();"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void PlainFunctionCallThisIsUndefinedInStrictMode()
     {
         var compiler = new BytecodeCompiler();
-        var fn = compiler.CompileScript(new SourceText("function f(){ return typeof this == \"undefined\"; } f();"));
+        var fn = compiler.CompileScript(new SourceText("function f(){ \"use strict\"; return typeof this == \"undefined\"; } f();"));
         new BytecodeVerifier().Verify(fn);
         var result = new BytecodeInterpreter().Execute(fn);
         Assert.True(result.AsBoolean());

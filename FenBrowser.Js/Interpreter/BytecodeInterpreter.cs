@@ -619,6 +619,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // declarative record chained to it so free identifier references walk the
         // lexical scope chain through env records. Otherwise, fall back to the
         // detached fresh env that InterpreterFrame would have allocated on its own.
+        // ECMA-262 10.2.1.3 OrdinaryCallBindThis: a non-strict ordinary function called
+        // with a null/undefined receiver binds `this` to the realm's global object.
+        // Arrow functions have no own `this`; derived constructors bind it via super().
+        if (!function.IsStrictMode
+            && function.Kind != FunctionKind.Arrow
+            && !function.IsDerivedConstructor
+            && thisValue.Tag is JsValueTag.Undefined or JsValueTag.Null)
+        {
+            thisValue = JsValue.FromObject(EnsureGlobalObject());
+        }
+
         EnvironmentRecord? frameEnv;
         if (frameEnvironment is not null)
         {
