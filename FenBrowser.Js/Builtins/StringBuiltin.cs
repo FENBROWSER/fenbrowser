@@ -74,6 +74,7 @@ public sealed class StringBuiltin : IBuiltinModule
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "replace", Replace, length: 2);
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "replaceAll", ReplaceAll, length: 2);
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "normalize", Normalize, length: 0);
+        DefineIteratorMethod(capturedCtx, heap, prototypeHandle, protoObj);
 
         // Annex B B.2.2 — legacy HTML wrappers. Spec is purely lexical:
         // each wraps `this` in an HTML tag, escaping any " in the attribute.
@@ -228,6 +229,110 @@ public sealed class StringBuiltin : IBuiltinModule
         heap.WriteBarrier(fnHandle, callHandle);
         proto.DefineOwnProperty(name, new JsPropertyDescriptor(JsValue.FromObject(fnHandle), Writable: true, Enumerable: false, Configurable: true));
         heap.WriteBarrier(protoHandle, fnHandle);
+    }
+
+    private static void DefineIteratorMethod(IBuiltinContext ctx, JsHeap heap, ObjectHandle protoHandle, JsObject proto)
+    {
+        var iteratorPrototypeHandle = GetIteratorPrototypeHandle(ctx);
+        var stringIteratorPrototype = new JsObject();
+        stringIteratorPrototype.SetPrototype(iteratorPrototypeHandle);
+        var stringIteratorPrototypeHandle = heap.AllocateObject(stringIteratorPrototype, AllocationSite.Current());
+        heap.PushRoot(stringIteratorPrototypeHandle);
+        heap.WriteBarrier(stringIteratorPrototypeHandle, iteratorPrototypeHandle);
+
+        var callHandle = ctx.GetFunctionCallMethod();
+        var next = new NativeFunctionObject("next", (thisValue, _) => StringIteratorNext(ctx, thisValue), length: 0);
+        var nextHandle = heap.AllocateObject(next, AllocationSite.Current());
+        next.SetPrototype(ctx.GetObjectPrototype());
+        next.SetProperty("call", JsValue.FromObject(callHandle));
+        heap.WriteBarrier(nextHandle, callHandle);
+        _ = stringIteratorPrototype.DefineOwnProperty(
+            "next",
+            new JsPropertyDescriptor(JsValue.FromObject(nextHandle), Writable: true, Enumerable: false, Configurable: true));
+        heap.WriteBarrier(stringIteratorPrototypeHandle, nextHandle);
+
+        var toStringTag = ctx.CreateWellKnownSymbol("toStringTag");
+        _ = stringIteratorPrototype.DefineOwnSymbolProperty(
+            toStringTag.AsSymbolId(),
+            new JsPropertyDescriptor(JsValue.FromString("String Iterator"), Writable: false, Enumerable: false, Configurable: true));
+
+        var iteratorMethod = new NativeFunctionObject("[Symbol.iterator]", (thisValue, _) =>
+        {
+            var iterator = new StringIteratorInstance(RequireString(ctx, thisValue));
+            iterator.SetPrototype(stringIteratorPrototypeHandle);
+            var iteratorHandle = heap.AllocateObject(iterator, AllocationSite.Current());
+            heap.WriteBarrier(iteratorHandle, stringIteratorPrototypeHandle);
+            return JsValue.FromObject(iteratorHandle);
+        }, length: 0);
+        var iteratorMethodHandle = heap.AllocateObject(iteratorMethod, AllocationSite.Current());
+        iteratorMethod.SetPrototype(ctx.GetObjectPrototype());
+        iteratorMethod.SetProperty("call", JsValue.FromObject(callHandle));
+        heap.WriteBarrier(iteratorMethodHandle, callHandle);
+
+        var iteratorSymbol = ctx.CreateWellKnownSymbol("iterator");
+        _ = proto.DefineOwnSymbolProperty(
+            iteratorSymbol.AsSymbolId(),
+            new JsPropertyDescriptor(JsValue.FromObject(iteratorMethodHandle), Writable: true, Enumerable: false, Configurable: true));
+        heap.WriteBarrier(protoHandle, iteratorMethodHandle);
+    }
+
+    private static ObjectHandle GetIteratorPrototypeHandle(IBuiltinContext ctx)
+    {
+        var iteratorConstructorHandle = ctx.MaterializeIteratorConstructor();
+        var iteratorConstructor = ctx.Heap.GetObject(iteratorConstructorHandle);
+        if (ctx.TryGetPropertyValue(iteratorConstructor, JsValue.FromObject(iteratorConstructorHandle), "prototype", out var prototype) &&
+            prototype.Tag == JsValueTag.Object)
+        {
+            return prototype.AsObjectHandle();
+        }
+
+        throw new InvalidOperationException("Iterator constructor prototype is not available.");
+    }
+
+    private static JsValue StringIteratorNext(IBuiltinContext ctx, JsValue thisValue)
+    {
+        if (thisValue.Tag != JsValueTag.Object ||
+            ctx.Heap.GetObject(thisValue.AsObjectHandle()) is not StringIteratorInstance iterator)
+        {
+            throw new JsThrownException(ctx.CreateTypeError("StringIterator.prototype.next called on incompatible receiver."));
+        }
+
+        if (iterator.Index >= iterator.Value.Length)
+        {
+            return CreateIteratorResult(ctx, JsValue.Undefined, done: true);
+        }
+
+        var start = iterator.Index;
+        var width = 1;
+        if (char.IsHighSurrogate(iterator.Value[start]) &&
+            start + 1 < iterator.Value.Length &&
+            char.IsLowSurrogate(iterator.Value[start + 1]))
+        {
+            width = 2;
+        }
+
+        iterator.Index += width;
+        return CreateIteratorResult(ctx, JsValue.FromString(iterator.Value.Substring(start, width)), done: false);
+    }
+
+    private static JsValue CreateIteratorResult(IBuiltinContext ctx, JsValue value, bool done)
+    {
+        var result = new JsObject();
+        result.SetPrototype(ctx.GetObjectPrototype());
+        _ = result.DefineOwnProperty("value", new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+        _ = result.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(done), Writable: true, Enumerable: true, Configurable: true));
+        return JsValue.FromObject(ctx.Heap.AllocateObject(result, AllocationSite.Current()));
+    }
+
+    private sealed class StringIteratorInstance : JsObject
+    {
+        public StringIteratorInstance(string value)
+        {
+            Value = value;
+        }
+
+        public string Value { get; }
+        public int Index { get; set; }
     }
 
     private static JsValue CharAt(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
