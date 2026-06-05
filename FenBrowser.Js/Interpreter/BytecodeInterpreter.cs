@@ -7876,84 +7876,83 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue CollectOwnEnumerable(IReadOnlyList<JsValue> args, OwnEnumerableKind kind)
     {
-        var target = args.Count > 0 ? args[0] : JsValue.Undefined;
-        if (target.Tag == JsValueTag.Undefined || target.Tag == JsValueTag.Null)
+        // ECMA-262 20.1.2.{keys,values,entries} step 1: obj = ToObject(O) (coerces
+        // primitives; undefined/null throw via ToObjectValue).
+        var firstArg = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var targetValue = ToObjectValue(firstArg);
+        var obj = _heap.GetObject(targetValue.AsObjectHandle());
+
+        // 7.3.23 EnumerableOwnProperties: snapshot the own string keys first, then for
+        // each re-read the own descriptor (so a getter that deletes a later key or flips
+        // its enumerability is observed) and [[Get]] the value (invoking accessors).
+        var keys = new List<string>();
+        if (obj is ProxyObject proxyOwnEnumerable)
         {
-            // 7.1.18 ToObject(undefined|null) throws TypeError; the user-visible
-            // call site is Object.{keys,values,entries}, so the message names it.
-            throw new JsThrownException(CreateTypeError(
-                "Cannot convert undefined or null to object."));
+            foreach (var key in ProxyOwnKeys(proxyOwnEnumerable))
+            {
+                if (key.Tag == JsValueTag.String)
+                {
+                    keys.Add(key.AsString());
+                }
+            }
+        }
+        else
+        {
+            foreach (var pair in obj.EnumerateOwnProperties())
+            {
+                keys.Add(pair.Key);
+            }
         }
 
         var items = new List<JsValue>();
-        if (target.Tag == JsValueTag.Object)
+        foreach (var key in keys)
         {
-            var obj = _heap.GetObject(target.AsObjectHandle());
-            if (obj is ProxyObject proxyOwnEnumerable)
+            bool enumerable;
+            if (obj is ProxyObject proxyDesc)
             {
-                foreach (var key in ProxyOwnKeys(proxyOwnEnumerable))
+                if (!ProxyTryGetOwnPropertyDescriptor(proxyDesc, key, out var pd) || !pd.Enumerable)
                 {
-                    if (key.Tag != JsValueTag.String)
-                    {
-                        continue;
-                    }
-
-                    if (!ProxyTryGetOwnPropertyDescriptor(proxyOwnEnumerable, key.AsString(), out var descriptor) ||
-                        !descriptor.Enumerable)
-                    {
-                        continue;
-                    }
-
-                    switch (kind)
-                    {
-                        case OwnEnumerableKind.Keys:
-                            items.Add(key);
-                            break;
-                        case OwnEnumerableKind.Values:
-                            items.Add(descriptor.IsAccessor ? JsValue.Undefined : descriptor.Value);
-                            break;
-                        case OwnEnumerableKind.Entries:
-                        {
-                            var value = descriptor.IsAccessor ? JsValue.Undefined : descriptor.Value;
-                            var entry = CreateArrayObject(new[] { key, value });
-                            var entryHandle = _heap.AllocateObject(entry, AllocationSite.Current());
-                            items.Add(JsValue.FromObject(entryHandle));
-                            break;
-                        }
-                    }
+                    continue;
                 }
+
+                enumerable = true;
             }
             else
             {
-                foreach (var pair in obj.EnumerateOwnProperties())
+                if (!obj.TryGetOwnProperty(key, out var d) || !d.Enumerable)
                 {
-                    if (!pair.Value.Enumerable)
-                    {
-                        continue;
-                    }
-
-                    switch (kind)
-                    {
-                        case OwnEnumerableKind.Keys:
-                            items.Add(JsValue.FromString(pair.Key));
-                            break;
-                        case OwnEnumerableKind.Values:
-                            items.Add(pair.Value.IsAccessor ? JsValue.Undefined : pair.Value.Value);
-                            break;
-                        case OwnEnumerableKind.Entries:
-                        {
-                            var value = pair.Value.IsAccessor ? JsValue.Undefined : pair.Value.Value;
-                            var entry = CreateArrayObject(new[] { JsValue.FromString(pair.Key), value });
-                            var entryHandle = _heap.AllocateObject(entry, AllocationSite.Current());
-                            items.Add(JsValue.FromObject(entryHandle));
-                            break;
-                        }
-                    }
+                    continue;
                 }
+
+                enumerable = true;
+            }
+
+            if (!enumerable)
+            {
+                continue;
+            }
+
+            if (kind == OwnEnumerableKind.Keys)
+            {
+                items.Add(JsValue.FromString(key));
+                continue;
+            }
+
+            var value = GetReceiverProperty(targetValue, key);
+            if (kind == OwnEnumerableKind.Values)
+            {
+                items.Add(value);
+            }
+            else
+            {
+                var entry = CreateArrayFromElements(new[] { JsValue.FromString(key), value });
+                items.Add(JsValue.FromObject(_heap.AllocateObject(entry, AllocationSite.Current())));
             }
         }
 
-        var arr = CreateArrayObject(items);
+        // CreateArrayFromElements (not CreateArrayObject) so a single numeric value is
+        // never misread as an array length.
+        var arr = CreateArrayFromElements(items);
         var arrHandle = _heap.AllocateObject(arr, AllocationSite.Current());
         return JsValue.FromObject(arrHandle);
     }
