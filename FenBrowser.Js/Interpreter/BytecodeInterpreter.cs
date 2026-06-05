@@ -16465,6 +16465,16 @@ fallbackArraySpecies:
             return string.CompareOrdinal(left.AsString(), right.AsString()) < 0;
         if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
             return left.AsBigInt() < right.AsBigInt();
+        if (left.Tag == JsValueTag.BigInt && right.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            var number = ToNumber(right);
+            return !double.IsNaN(number) && CompareBigIntAndDouble(left.AsBigInt(), number) < 0;
+        }
+        if (right.Tag == JsValueTag.BigInt && left.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            var number = ToNumber(left);
+            return !double.IsNaN(number) && CompareBigIntAndDouble(right.AsBigInt(), number) > 0;
+        }
         return ToNumber(left) < ToNumber(right);
     }
 
@@ -16474,6 +16484,16 @@ fallbackArraySpecies:
             return string.CompareOrdinal(left.AsString(), right.AsString()) > 0;
         if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
             return left.AsBigInt() > right.AsBigInt();
+        if (left.Tag == JsValueTag.BigInt && right.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            var number = ToNumber(right);
+            return !double.IsNaN(number) && CompareBigIntAndDouble(left.AsBigInt(), number) > 0;
+        }
+        if (right.Tag == JsValueTag.BigInt && left.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            var number = ToNumber(left);
+            return !double.IsNaN(number) && CompareBigIntAndDouble(right.AsBigInt(), number) < 0;
+        }
         return ToNumber(left) > ToNumber(right);
     }
 
@@ -16483,6 +16503,16 @@ fallbackArraySpecies:
             return string.CompareOrdinal(left.AsString(), right.AsString()) <= 0;
         if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
             return left.AsBigInt() <= right.AsBigInt();
+        if (left.Tag == JsValueTag.BigInt && right.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            var number = ToNumber(right);
+            return !double.IsNaN(number) && CompareBigIntAndDouble(left.AsBigInt(), number) <= 0;
+        }
+        if (right.Tag == JsValueTag.BigInt && left.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            var number = ToNumber(left);
+            return !double.IsNaN(number) && CompareBigIntAndDouble(right.AsBigInt(), number) >= 0;
+        }
         return ToNumber(left) <= ToNumber(right);
     }
 
@@ -16492,7 +16522,39 @@ fallbackArraySpecies:
             return string.CompareOrdinal(left.AsString(), right.AsString()) >= 0;
         if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
             return left.AsBigInt() >= right.AsBigInt();
+        if (left.Tag == JsValueTag.BigInt && right.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            var number = ToNumber(right);
+            return !double.IsNaN(number) && CompareBigIntAndDouble(left.AsBigInt(), number) >= 0;
+        }
+        if (right.Tag == JsValueTag.BigInt && left.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            var number = ToNumber(left);
+            return !double.IsNaN(number) && CompareBigIntAndDouble(right.AsBigInt(), number) <= 0;
+        }
         return ToNumber(left) >= ToNumber(right);
+    }
+
+    private static int CompareBigIntAndDouble(System.Numerics.BigInteger left, double right)
+    {
+        if (double.IsPositiveInfinity(right))
+        {
+            return -1;
+        }
+
+        if (double.IsNegativeInfinity(right))
+        {
+            return 1;
+        }
+
+        var truncated = Math.Truncate(right);
+        var cmp = left.CompareTo(new System.Numerics.BigInteger(truncated));
+        if (cmp != 0 || truncated == right)
+        {
+            return cmp;
+        }
+
+        return right > 0 ? -1 : 1;
     }
 
     private bool TryInstanceOf(InterpreterFrame frame, JsValue left, JsValue right, out bool result)

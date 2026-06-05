@@ -148,11 +148,37 @@ public sealed partial class BytecodeInterpreter
         var keyValue = frame.Registers[ins.B];
         var accessorFnValue = frame.Registers[ins.C];
 
-        // Convert the key value to a property key string
-        var accessorName = ToPropertyKey(keyValue);
-
         JsValue getValue = JsValue.Undefined;
         JsValue setValue = JsValue.Undefined;
+        if (keyValue.Tag == JsValueTag.Symbol)
+        {
+            var symbolId = keyValue.AsSymbolId();
+            if (targetObj.TryGetOwnSymbolProperty(symbolId, out var existingSymbol) && existingSymbol.IsAccessor)
+            {
+                getValue = existingSymbol.Get;
+                setValue = existingSymbol.Set;
+            }
+
+            if (ins.OpCode == OpCode.DefineGetterByReg)
+            {
+                getValue = accessorFnValue;
+            }
+            else
+            {
+                setValue = accessorFnValue;
+            }
+
+            _ = targetObj.DefineOwnSymbolProperty(symbolId,
+                Objects.JsPropertyDescriptor.Accessor(getValue, setValue, Enumerable: false, Configurable: true));
+            if (accessorFnValue.Tag == JsValueTag.Object)
+            {
+                _heap.WriteBarrier(targetHandle, accessorFnValue.AsObjectHandle());
+            }
+
+            return;
+        }
+
+        var accessorName = ToPropertyKey(keyValue);
         if (targetObj.TryGetOwnProperty(accessorName, out var existing) && existing.IsAccessor)
         {
             getValue = existing.Get;
@@ -212,11 +238,20 @@ public sealed partial class BytecodeInterpreter
 
         var targetHandle = targetValue.AsObjectHandle();
         var targetObj = _heap.GetObject(targetHandle);
-        var name = ToPropertyKey(frame.Registers[ins.B]);
+        var keyValue = frame.Registers[ins.B];
         var fnValue = frame.Registers[ins.C];
 
-        _ = targetObj.DefineOwnProperty(name,
-            new Objects.JsPropertyDescriptor(fnValue, Writable: true, Enumerable: false, Configurable: true));
+        if (keyValue.Tag == JsValueTag.Symbol)
+        {
+            _ = targetObj.DefineOwnSymbolProperty(keyValue.AsSymbolId(),
+                new Objects.JsPropertyDescriptor(fnValue, Writable: true, Enumerable: false, Configurable: true));
+        }
+        else
+        {
+            var name = ToPropertyKey(keyValue);
+            _ = targetObj.DefineOwnProperty(name,
+                new Objects.JsPropertyDescriptor(fnValue, Writable: true, Enumerable: false, Configurable: true));
+        }
         if (fnValue.Tag == JsValueTag.Object)
         {
             _heap.WriteBarrier(targetHandle, fnValue.AsObjectHandle());

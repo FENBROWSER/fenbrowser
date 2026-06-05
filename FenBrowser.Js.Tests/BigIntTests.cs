@@ -132,6 +132,12 @@ public sealed class BigIntTests
     }
 
     [Fact]
+    public void BigIntMixedWithNumberRelationalComparison()
+    {
+        Assert.True(Run("-1n < 0 && 1n > 0 && 1n <= 1 && 1 >= 1n;").AsBoolean());
+    }
+
+    [Fact]
     public void BigIntMixedWithNumberThrowsInAdd()
     {
         var code = @"var ok = false; try { 1n + 1; } catch (e) { ok = e instanceof TypeError; } ok;";

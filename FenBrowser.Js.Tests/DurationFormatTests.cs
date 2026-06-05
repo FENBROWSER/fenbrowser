@@ -34,9 +34,9 @@ public sealed class DurationFormatTests
     {
         Assert.True(RunBool("""
             var options = new Intl.DurationFormat("en").resolvedOptions();
-            options.style === "long" &&
-            options.years === "long" &&
-            options.hours === "long" &&
+            options.style === "short" &&
+            options.years === "short" &&
+            options.hours === "short" &&
             options.hoursDisplay === "always" &&
             options.numberingSystem === "latn"
             """));
@@ -70,6 +70,17 @@ public sealed class DurationFormatTests
             nullOptionsThrows &&
             supported.length === 1 &&
             supported[0] === "en"
+            """));
+    }
+
+    [Fact]
+    public void DurationFormatNegativePartsKeepSingleLeadingMinusSign()
+    {
+        Assert.True(RunBool("""
+            var parts = new Intl.DurationFormat("en").formatToParts({ years: -1, months: -2 });
+            parts[0].type === "minusSign" &&
+            parts[0].value === "-" &&
+            parts.filter(function (part) { return part.type === "minusSign"; }).length === 1
             """));
     }
 }

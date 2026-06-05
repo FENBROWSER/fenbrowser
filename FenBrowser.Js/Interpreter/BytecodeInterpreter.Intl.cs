@@ -627,7 +627,7 @@ public sealed partial class BytecodeInterpreter
         var state = CreateOrdinaryObject();
 
         string numberingSystem = "latn";
-        string style = "long";
+        string style = "short";
         string? fractionalDigits = null;
         var unitStyles = new Dictionary<string, string>(StringComparer.Ordinal);
         var unitDisplays = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -1429,6 +1429,7 @@ public sealed partial class BytecodeInterpreter
 
             if (value != 0 || unitDisplay != "auto" || displayRequired)
             {
+                var suppressSign = signDisplayed;
                 if (!signDisplayed && overallNegative)
                 {
                     raw = "-" + raw;
@@ -1444,7 +1445,7 @@ public sealed partial class BytecodeInterpreter
                     null,
                     null,
                     unitStyle is "numeric" or "2-digit" ? false : true,
-                    signDisplayed ? "never" : null,
+                    suppressSign ? "never" : null,
                     numberingSystem);
 
                 var parts = FormatNumericStringToParts(raw, numberState).ToList();
