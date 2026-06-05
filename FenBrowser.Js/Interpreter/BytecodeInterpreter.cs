@@ -10447,12 +10447,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         var obj = ToObject(thisValue);
         var length = GetArrayLength(obj);
-        if (length == 0 || args.Count == 0)
+        if (length == 0)
         {
             return JsValue.FromNumber(-1);
         }
 
-        var target = args[0];
+        // ECMA-262 23.1.3.20: a missing searchElement defaults to undefined and the
+        // search still runs (so [undefined].lastIndexOf() returns 0).
+        var target = args.Count > 0 ? args[0] : JsValue.Undefined;
         var fromIndex = args.Count > 1 ? (int)ToNumber(args[1]) : length - 1;
         if (fromIndex < 0)
         {
@@ -11171,12 +11173,14 @@ fallbackArraySpecies:
     {
         var obj = ToObject(thisValue);
         var length = GetArrayLength(obj);
-        if (length == 0 || args.Count == 0)
+        if (length == 0)
         {
             return JsValue.FromNumber(-1);
         }
 
-        var target = args[0];
+        // ECMA-262 23.1.3.16: a missing searchElement defaults to undefined and the
+        // search still runs (so [undefined].indexOf() returns 0).
+        var target = args.Count > 0 ? args[0] : JsValue.Undefined;
         var fromIndex = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
         if (fromIndex < 0)
         {
