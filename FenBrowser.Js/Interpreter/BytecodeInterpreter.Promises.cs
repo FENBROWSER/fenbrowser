@@ -35,7 +35,7 @@ public sealed partial class BytecodeInterpreter
             (_, _) => throw new JsThrownException(CreateTypeError("Promise constructor must be invoked with 'new'.")),
             args => PromiseConstruct(args),
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
 
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);

@@ -63,7 +63,7 @@ public sealed class ErrorBuiltins : IBuiltinModule
             (_, args) => BuildError(capturedCtx, capturedProto, name, args),
             args => BuildError(capturedCtx, capturedProto, name, args),
             length: 1);
-        constructor.SetProperty("prototype", JsValue.FromObject(protoHandle));
+        constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(protoHandle), Writable: false, Enumerable: false, Configurable: false));
         var ctorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
         heap.PushRoot(ctorHandle);
         heap.WriteBarrier(ctorHandle, protoHandle);
@@ -98,7 +98,7 @@ public sealed class ErrorBuiltins : IBuiltinModule
             (_, args) => BuildError(capturedCtx, capturedProto, name, args),
             args => BuildError(capturedCtx, capturedProto, name, args),
             length: length);
-        constructor.SetProperty("prototype", JsValue.FromObject(protoHandle));
+        constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(protoHandle), Writable: false, Enumerable: false, Configurable: false));
         var ctorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
         heap.PushRoot(ctorHandle);
         heap.WriteBarrier(ctorHandle, protoHandle);

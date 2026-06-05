@@ -49,7 +49,7 @@ public sealed class NumberBuiltin : IBuiltinModule
         _ = constructor.SetProperty("MAX_SAFE_INTEGER", JsValue.FromNumber(9007199254740991d));
         _ = constructor.SetProperty("MIN_SAFE_INTEGER", JsValue.FromNumber(-9007199254740991d));
 
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
         heap.PushRoot(constructorHandle);
         heap.WriteBarrier(constructorHandle, prototypeHandle);

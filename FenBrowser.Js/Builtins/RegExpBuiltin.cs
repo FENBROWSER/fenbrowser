@@ -42,7 +42,7 @@ public sealed class RegExpBuiltin : IBuiltinModule
             hasFunctionPrototype = true;
         }
 
-        constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         constructorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
         heap.PushRoot(constructorHandle);
         heap.WriteBarrier(constructorHandle, prototypeHandle);

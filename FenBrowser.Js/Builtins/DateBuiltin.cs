@@ -36,7 +36,7 @@ public sealed class DateBuiltin : IBuiltinModule
                 return JsValue.FromObject(heap.AllocateObject(d, AllocationSite.Current()));
             },
             length: 7);
-        constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
         heap.PushRoot(constructorHandle);
         heap.WriteBarrier(constructorHandle, prototypeHandle);

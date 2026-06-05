@@ -38,7 +38,7 @@ public sealed class BooleanBuiltin : IBuiltinModule
                 return JsValue.FromObject(heap.AllocateObject(obj, AllocationSite.Current()));
             },
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
         heap.PushRoot(constructorHandle);
         heap.WriteBarrier(constructorHandle, prototypeHandle);

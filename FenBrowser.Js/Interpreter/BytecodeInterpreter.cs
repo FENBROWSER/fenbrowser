@@ -2206,7 +2206,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             },
             length: 0);
 
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -2496,7 +2496,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             },
             length: 0);
 
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -2939,7 +2939,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             },
             length: 0);
 
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -3051,7 +3051,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             },
             length: 0);
 
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -3414,7 +3414,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
                 return JsValue.FromObject(_heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current()));
             });
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         iteratorCtorHandleRef = constructorHandle;
         _heap.PushRoot(constructorHandle);
@@ -4128,7 +4128,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             (_, args) => CreateErrorObject("TypeError", EnsureTypeErrorPrototype(), GetOptionalMessage(args)),
             args => CreateErrorObject("TypeError", EnsureTypeErrorPrototype(), GetOptionalMessage(args)),
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty(
@@ -4164,7 +4164,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             (_, args) => CreateErrorObject("RangeError", EnsureRangeErrorPrototype(), GetOptionalMessage(args)),
             args => CreateErrorObject("RangeError", EnsureRangeErrorPrototype(), GetOptionalMessage(args)),
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty(
@@ -4200,7 +4200,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             (_, args) => CreateErrorObject("SyntaxError", EnsureSyntaxErrorPrototype(), GetOptionalMessage(args)),
             args => CreateErrorObject("SyntaxError", EnsureSyntaxErrorPrototype(), GetOptionalMessage(args)),
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty(
@@ -4236,7 +4236,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             (_, args) => CreateErrorObject("Error", EnsureErrorPrototype(), GetOptionalMessage(args)),
             args => CreateErrorObject("Error", EnsureErrorPrototype(), GetOptionalMessage(args)),
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty(
@@ -4320,7 +4320,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             (_, args) => CreateDateObject(args.Count > 0 ? ToNumber(args[0]) : 0d),
             args => CreateDateObject(args.Count > 0 ? ToNumber(args[0]) : 0d),
             length: 7);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
@@ -4755,7 +4755,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             length: 2);
         var functionPrototypeHandle = GetGlobalPrototype("Function");
         constructor.SetPrototype(functionPrototypeHandle);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _heap.WriteBarrier(constructorHandle, functionPrototypeHandle);
@@ -7143,19 +7143,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             (_, args) => CreateObjectFromValue(args.Count > 0 ? args[0] : JsValue.Undefined),
             args => CreateObjectFromValue(args.Count > 0 ? args[0] : JsValue.Undefined),
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
-        var definePropertyHandle = _heap.AllocateObject(
-            new NativeFunctionObject("defineProperty", ObjectDefineProperty, length: 3),
-            AllocationSite.Current());
-        _ = constructor.SetProperty("defineProperty", JsValue.FromObject(definePropertyHandle));
-        _heap.WriteBarrier(constructorHandle, definePropertyHandle);
-        var getOwnPropertyDescriptorHandle = _heap.AllocateObject(
-            new NativeFunctionObject("getOwnPropertyDescriptor", ObjectGetOwnPropertyDescriptor, length: 2),
-            AllocationSite.Current());
-        _ = constructor.SetProperty("getOwnPropertyDescriptor", JsValue.FromObject(getOwnPropertyDescriptorHandle));
-        _heap.WriteBarrier(constructorHandle, getOwnPropertyDescriptorHandle);
+        // Built-in methods are { [[Writable]]: true, [[Enumerable]]: false,
+        // [[Configurable]]: true } — use DefineIntrinsicFunction so they are not
+        // enumerable (SetProperty would create them enumerable).
+        DefineIntrinsicFunction(constructorHandle, constructor, "defineProperty", ObjectDefineProperty, length: 3);
+        DefineIntrinsicFunction(constructorHandle, constructor, "getOwnPropertyDescriptor", ObjectGetOwnPropertyDescriptor, length: 2);
 
         // ECMA-262 20.1.2.13 Object.is(value1, value2). Implements the SameValue
         // abstract operation (7.2.10): +0 and -0 are NOT equal, NaN is equal to NaN.
@@ -7991,7 +7986,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             args => CreateDynamicFunction(args, FunctionKind.Ordinary),
             length: 1);
         constructor.SetPrototype(prototypeHandle);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
@@ -9505,7 +9500,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             (_, args) => JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(args), AllocationSite.Current())),
             args => JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(args), AllocationSite.Current())),
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
@@ -11454,7 +11449,7 @@ fallbackArraySpecies:
             (_, args) => JsValue.FromBoolean(args.Count > 0 && IsTruthy(args[0])),
             args => CreateBooleanObject(args.Count > 0 && IsTruthy(args[0])),
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
@@ -11524,7 +11519,7 @@ fallbackArraySpecies:
             (_, args) => JsValue.FromNumber(args.Count > 0 ? ToNumber(args[0]) : 0d),
             args => CreateNumberObject(args.Count > 0 ? ToNumber(args[0]) : 0d),
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         // ECMA-262 21.1.2 - Properties of the Number Constructor.
         _ = constructor.SetProperty("MAX_VALUE", JsValue.FromNumber(double.MaxValue));
         _ = constructor.SetProperty("MIN_VALUE", JsValue.FromNumber(double.Epsilon));
@@ -12000,7 +11995,7 @@ fallbackArraySpecies:
             (_, args) => Build(args),
             args => Build(args),
             length: 2);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
@@ -12057,7 +12052,7 @@ fallbackArraySpecies:
                 return JsValue.FromObject(handle);
             },
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -12125,7 +12120,7 @@ fallbackArraySpecies:
                 return JsValue.FromObject(handle);
             },
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -12306,7 +12301,7 @@ fallbackArraySpecies:
                 return JsValue.FromObject(_heap.AllocateObject(buf, AllocationSite.Current()));
             },
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -12440,7 +12435,7 @@ fallbackArraySpecies:
                 return JsValue.FromObject(_heap.AllocateObject(buf, AllocationSite.Current()));
             },
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -12514,7 +12509,7 @@ fallbackArraySpecies:
                 return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
             },
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -13623,7 +13618,7 @@ fallbackArraySpecies:
             (_, args) => CreateErrorObject(capturedName, capturedProto, GetOptionalMessage(args)),
             args => CreateErrorObject(capturedName, capturedProto, GetOptionalMessage(args)),
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty(
@@ -13658,7 +13653,7 @@ fallbackArraySpecies:
             (_, args) => CreateErrorObject("URIError", EnsureUriErrorPrototype(), GetOptionalMessage(args)),
             args => CreateErrorObject("URIError", EnsureUriErrorPrototype(), GetOptionalMessage(args)),
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty(
@@ -14437,7 +14432,7 @@ fallbackArraySpecies:
             (_, args) => JsValue.FromString(args.Count > 0 ? ToStringValue(args[0]) : string.Empty),
             args => CreateStringObject(args.Count > 0 ? ToStringValue(args[0]) : string.Empty),
             length: 1);
-        _ = constructor.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
