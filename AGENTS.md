@@ -194,6 +194,15 @@ Do not run large suites by default when a smaller proof is sufficient.
 
 Every test262 run MUST enforce a **2-second per-test timeout**. Any test exceeding 2s is **skipped**, never awaited — a single test must never hang or block the suite. Always pass `--timeout-ms 2000` (CLI) / `-TimeoutMs 2000` (scripts) plus a stall watchdog (`-StallTimeoutSec 30`). This applies to every test262 invocation — quick categories, full chunks, single reruns — with no exception.
 
+### test262 execution & results policy (mandatory)
+
+- **Run category by category**, not the whole suite blindly. Drive one category at a time.
+- A category is **done at ≥95% pass rate**; once it clears 95%, move to the next category. Stay on a category (localize-and-fix loop) until it does.
+- **Results layout** — everything under `Results/test262/`:
+  - `Results/test262/full/` — full-suite run results (summary + per-category breakdown of a full pass).
+  - `Results/test262/categories/` — individual per-category run results.
+- **Clear stale results and keep at most one day of history.** Before/after a run, purge result files older than 24h so the folders only hold the latest day. Do not let `Results/test262/` accumulate. (`Results/` is gitignored — this is local housekeeping, never committed.)
+
 ## Commit and push discipline
 
 Ship work in feature/component-sized units, one at a time. For each unit, before starting the next:

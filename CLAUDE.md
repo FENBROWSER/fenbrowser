@@ -134,6 +134,14 @@ dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj -c Release
 powershell -Command "(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory"
 ```
 
+### Execution & Results Policy (MANDATORY)
+- **Category by category** — drive one category at a time, not the whole suite blindly.
+- **95% gate** — a category is done at **≥95% pass rate**; only then move to the next. Stay on a category (localize-and-fix) until it clears 95%.
+- **Results layout** under `Results/test262/`:
+  - `Results/test262/full/` — full-suite run results.
+  - `Results/test262/categories/` — per-category run results.
+- **Clear stale results; keep only one day of history** — purge result files older than 24h before/after runs so the folders hold only the latest day. (`Results/` is gitignored — local housekeeping, never committed.)
+
 ### Chunk Validation Rules
 - Record: chunk number, range, time, passed, failed, pass%, avg/test
 - If chunk crashes or <900 tests complete, retry once before moving on
