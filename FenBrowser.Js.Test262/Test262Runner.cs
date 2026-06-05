@@ -1811,6 +1811,7 @@ public sealed class Test262Runner
         "testTypedArray.js",
         "propertyHelper.js",
         "regExpUtils.js",
+        "tcoHelper.js",
     };
 
     private static readonly ConcurrentDictionary<string, string> _includeFileCache = new(StringComparer.Ordinal);
