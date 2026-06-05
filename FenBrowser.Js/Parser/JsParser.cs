@@ -1749,6 +1749,7 @@ public sealed class JsParser
             MergeSpan(start.Span, body.Span),
             IsAsync: isAsync,
             IsGenerator: isGenerator,
+            HasSimpleParameterList: parameterInfo.IsSimple,
             RestParameterIndex: parameterInfo.RestParameterIndex,
             ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
     }
@@ -3467,6 +3468,7 @@ public sealed class JsParser
             MergeSpan(start.Span, body.Span),
             IsAsync: isAsync,
             IsGenerator: isGenerator,
+            HasSimpleParameterList: parameterInfo.IsSimple,
             RestParameterIndex: parameterInfo.RestParameterIndex,
             ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
     }
@@ -3551,7 +3553,7 @@ public sealed class JsParser
                     strictMode: strictObjectMethod,
                     rejectSuperCallInBody: true);
                 var accessorFnName = accessorKey ?? accessorKind.Text;
-                var accessorFn = new FunctionExpressionNode(accessorFnName, parameters, body, MergeSpan(accessorKind.Span, body.Span), RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
+                var accessorFn = new FunctionExpressionNode(accessorFnName, parameters, body, MergeSpan(accessorKind.Span, body.Span), HasSimpleParameterList: parameterInfo.IsSimple, RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
                 var accessorPropKind = accessorKind.Text == "get" ? ObjectPropertyKind.Getter : ObjectPropertyKind.Setter;
                 properties.Add(new ObjectPropertyNode(accessorKey, accessorComputedKey, accessorIsComputed, accessorFn, accessorFn.Span, accessorPropKind));
                 if (IsPunctuator(","))
@@ -3817,7 +3819,7 @@ public sealed class JsParser
                     forbidYieldIdentifier: false,
                     strictMode: strictObjectMethod,
                     rejectSuperCallInBody: true);
-                value = new FunctionExpressionNode(key, parameters, body, MergeSpan(keyToken.Span, body.Span), RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
+                value = new FunctionExpressionNode(key, parameters, body, MergeSpan(keyToken.Span, body.Span), HasSimpleParameterList: parameterInfo.IsSimple, RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
             }
             else if (IsPunctuator(":"))
             {
@@ -4102,6 +4104,10 @@ public sealed class JsParser
         int restParameterIndex,
         IReadOnlyList<ExpressionNode?>? parameterDefaults = null)
     {
+        var hasSimpleParameterList = restParameterIndex < 0 &&
+            parameterBindings.All(binding => binding is null) &&
+            (parameterDefaults is null || parameterDefaults.All(def => def is null));
+
         // ECMA-262 ArrowFunction: the body is parsed with its OWN [Yield]/[Await]
         // context, not the enclosing one. ConciseBody is [~Yield], and Await is +Await
         // only for an async arrow (AsyncConciseBody), ~Await otherwise. Without this,
@@ -4117,14 +4123,14 @@ public sealed class JsParser
                 allowAwaitExpression: isAsync,
                 ParseBlockStatement);
             ValidateDirectivePrologueStrictStringEscapes(block.Statements);
-            return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span), IsAsync: isAsync, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings, ParameterDefaults: parameterDefaults);
+            return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span), IsAsync: isAsync, HasSimpleParameterList: hasSimpleParameterList, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings, ParameterDefaults: parameterDefaults);
         }
 
         var bodyExpression = ParseWithExpressionContext(
             allowYieldExpression: false,
             allowAwaitExpression: isAsync,
             () => ParseExpression(2));
-        return new ArrowFunctionExpressionNode(parameters, null, bodyExpression, MergeSpan(start, bodyExpression.Span), IsAsync: isAsync, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings, ParameterDefaults: parameterDefaults);
+        return new ArrowFunctionExpressionNode(parameters, null, bodyExpression, MergeSpan(start, bodyExpression.Span), IsAsync: isAsync, HasSimpleParameterList: hasSimpleParameterList, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings, ParameterDefaults: parameterDefaults);
     }
 
     private IReadOnlyList<ExpressionNode> ParseCallArguments()

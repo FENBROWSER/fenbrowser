@@ -26,6 +26,7 @@ public sealed class BytecodeFunction
     public int RestParameterIndex { get; init; } = -1;
 
     public bool HasOwnArgumentsObject { get; init; }
+    public bool UsesRestrictedArgumentsObject { get; init; }
 
     public FunctionKind Kind { get; init; } = FunctionKind.Ordinary;
 

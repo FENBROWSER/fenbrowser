@@ -24,26 +24,28 @@ public sealed class NativeFunctionObject : JsObject
         Func<JsValue, IReadOnlyList<JsValue>, JsValue> call,
         Func<IReadOnlyList<JsValue>, JsValue>? construct = null,
         int length = 0,
-        Func<IReadOnlyList<JsValue>, JsValue, JsValue>? constructWithNewTarget = null)
+        Func<IReadOnlyList<JsValue>, JsValue, JsValue>? constructWithNewTarget = null,
+        bool lengthConfigurable = true,
+        bool nameConfigurable = true)
     {
         Name = name;
         _call = call;
         _construct = construct;
         _constructWithNewTarget = constructWithNewTarget;
         _ = DefineOwnProperty(
-            "name",
-            new JsPropertyDescriptor(
-                JsValue.FromString(name),
-                Writable: false,
-                Enumerable: false,
-                Configurable: true));
-        _ = DefineOwnProperty(
             "length",
             new JsPropertyDescriptor(
                 JsValue.FromNumber(length),
                 Writable: false,
                 Enumerable: false,
-                Configurable: true));
+                Configurable: lengthConfigurable));
+        _ = DefineOwnProperty(
+            "name",
+            new JsPropertyDescriptor(
+                JsValue.FromString(name),
+                Writable: false,
+                Enumerable: false,
+                Configurable: nameConfigurable));
     }
 
     public string Name { get; }

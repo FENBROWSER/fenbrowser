@@ -124,6 +124,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private ObjectHandle? _functionConstructorHandle;
     private ObjectHandle? _generatorFunctionConstructorHandle;
     private ObjectHandle? _functionPrototypeHandle;
+    private ObjectHandle? _throwTypeErrorIntrinsicHandle;
     private ObjectHandle? _generatorFunctionPrototypeHandle;
     private ObjectHandle? _functionCallMethodHandle;
     private ObjectHandle? _evalFunctionHandle;
@@ -749,7 +750,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (function.HasOwnArgumentsObject &&
                 !function.ParameterNames.Contains("arguments", StringComparer.Ordinal))
             {
-                var argumentsObject = CreateArgumentsObject(args);
+                var argumentsObject = CreateArgumentsObject(args, function.UsesRestrictedArgumentsObject, callee);
                 _ = frame.Environment.CreateMutableBinding("arguments", deletable: false);
                 _ = frame.Environment.InitializeBinding("arguments", argumentsObject);
             }
@@ -1855,7 +1856,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return obj;
     }
 
-    private JsValue CreateArgumentsObject(IReadOnlyList<JsValue> args)
+    private JsValue CreateArgumentsObject(IReadOnlyList<JsValue> args, bool restricted, JsFunctionObject? callee)
     {
         var obj = CreateOrdinaryObject();
         obj.ToStringTagSlot = BuiltinTagSlot.Arguments;
@@ -1880,7 +1881,54 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             WriteDescriptorBarrier(handle, descriptor);
         }
 
+        if (restricted)
+        {
+            var thrower = ResolveRestrictedFunctionThrower(callee);
+            var descriptor = JsPropertyDescriptor.Accessor(
+                thrower,
+                thrower,
+                Enumerable: false,
+                Configurable: false);
+            _ = obj.DefineOwnProperty("callee", descriptor);
+            WriteDescriptorBarrier(handle, descriptor);
+        }
+
         return JsValue.FromObject(handle);
+    }
+
+    private JsValue ResolveRestrictedFunctionThrower(JsFunctionObject? callee)
+    {
+        if (callee is not null &&
+            callee.TryGetOwnProperty("__throwTypeError__", out var overrideDesc) &&
+            overrideDesc.Value.Tag == JsValueTag.Object &&
+            IsCallable(overrideDesc.Value))
+        {
+            return overrideDesc.Value;
+        }
+
+        return JsValue.FromObject(EnsureThrowTypeErrorIntrinsic());
+    }
+
+    private ObjectHandle EnsureThrowTypeErrorIntrinsic()
+    {
+        if (_throwTypeErrorIntrinsicHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var thrower = new NativeFunctionObject(
+            string.Empty,
+            (_, _) => throw new JsThrownException(CreateTypeError(string.Empty)),
+            length: 0,
+            lengthConfigurable: false,
+            nameConfigurable: false);
+        thrower.SetPrototype(EnsureFunctionPrototype());
+        thrower.PreventExtensions();
+
+        var handle = _heap.AllocateObject(thrower, AllocationSite.Current());
+        _heap.PushRoot(handle);
+        _throwTypeErrorIntrinsicHandle = handle;
+        return handle;
     }
 
     private enum ArrayIteratorKind
@@ -7959,6 +8007,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private ObjectHandle EnsureFunctionPrototype()
     {
+        if (_functionPrototypeHandle is { } existing)
+        {
+            return existing;
+        }
+
         _ = EnsureFunctionConstructor();
         return _functionPrototypeHandle!.Value;
     }
@@ -7974,6 +8027,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         prototype.SetPrototype(EnsureObjectPrototype());
         var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
         _heap.PushRoot(prototypeHandle);
+        _functionPrototypeHandle = prototypeHandle;
 
         var constructor = new NativeFunctionObject(
             "Function",
@@ -7990,6 +8044,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = prototype.DefineOwnProperty("call", new JsPropertyDescriptor(JsValue.FromObject(callHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _heap.WriteBarrier(prototypeHandle, callHandle);
+
+        var restrictedThrower = JsValue.FromObject(EnsureThrowTypeErrorIntrinsic());
+        var restrictedDescriptor = JsPropertyDescriptor.Accessor(
+            restrictedThrower,
+            restrictedThrower,
+            Enumerable: false,
+            Configurable: true);
+        _ = prototype.DefineOwnProperty("arguments", restrictedDescriptor);
+        _ = prototype.DefineOwnProperty("caller", restrictedDescriptor);
+        WriteDescriptorBarrier(prototypeHandle, restrictedDescriptor);
 
         // ECMA-262 20.2.3.1 Function.prototype.apply(thisArg, argsArray). The
         // second argument is an Array (or array-like). null/undefined become an
@@ -8028,7 +8092,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _heap.WriteBarrier(prototypeHandle, hasInstanceFnHandle);
         }
 
-        _functionPrototypeHandle = prototypeHandle;
         _functionConstructorHandle = constructorHandle;
         return constructorHandle;
     }

@@ -55,6 +55,7 @@ public sealed record ArrowFunctionExpressionNode(
     ExpressionNode? ExpressionBody,
     SourceSpan Span,
     bool IsAsync = false,
+    bool HasSimpleParameterList = true,
     int RestParameterIndex = -1,
     IReadOnlyList<BindingPatternNode?>? ParameterBindings = null,
     IReadOnlyList<ExpressionNode?>? ParameterDefaults = null) : ExpressionNode(Span);
@@ -95,6 +96,7 @@ public sealed record FunctionExpressionNode(
     SourceSpan Span,
     bool IsAsync = false,
     bool IsGenerator = false,
+    bool HasSimpleParameterList = true,
     int RestParameterIndex = -1,
     IReadOnlyList<BindingPatternNode?>? ParameterBindings = null,
     IReadOnlyList<ExpressionNode?>? ParameterDefaults = null) : ExpressionNode(Span);

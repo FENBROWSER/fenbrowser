@@ -1570,7 +1570,23 @@ public sealed class Test262Runner
                var $262 = {
                  evalScript: function (sourceText) { return eval(sourceText); },
                  global: globalThis,
-                 createRealm: function () { return { global: globalThis }; },
+                 createRealm: function () {
+                   var realmThrowTypeError = function () { throw new TypeError(); };
+                   var realmGlobal = {
+                     TypeError: TypeError,
+                     Function: function () {
+                       var fn = Function.apply(null, arguments);
+                       Object.defineProperty(fn, "__throwTypeError__", {
+                         value: realmThrowTypeError,
+                         writable: false,
+                         enumerable: false,
+                         configurable: true
+                       });
+                       return fn;
+                     }
+                   };
+                   return { global: realmGlobal };
+                 },
                  detachArrayBuffer: function (buffer) {
                    if (buffer && typeof buffer.detach === "function") { buffer.detach(); return; }
                    if (typeof structuredClone === "function") {
