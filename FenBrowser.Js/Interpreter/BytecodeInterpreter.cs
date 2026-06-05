@@ -7,6 +7,7 @@ using FenBrowser.Js.Parser;
 using FenBrowser.Js.Promises;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
+using System.Linq;
 using System.Numerics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -6752,6 +6753,61 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _heap.WriteBarrier(handle, ctorHandle);
         }
 
+        // ECMA-402 Intl.DurationFormat constructor.
+        {
+            var prototypeHandle = EnsureDurationFormatPrototype();
+            var prototype = _heap.GetObject(prototypeHandle);
+            var ctor = new NativeFunctionObject(
+                "DurationFormat",
+                (_, _) => throw new JsThrownException(CreateTypeError("Intl.DurationFormat must be invoked with 'new'.")),
+                construct: args => DurationFormatConstruct(args),
+                length: 0);
+            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
+            _heap.PushRoot(ctorHandle);
+
+            _ = ctor.DefineOwnProperty(
+                "prototype",
+                new JsPropertyDescriptor(
+                    JsValue.FromObject(prototypeHandle),
+                    Writable: false,
+                    Enumerable: false,
+                    Configurable: false));
+            _heap.WriteBarrier(ctorHandle, prototypeHandle);
+
+            var supportedLocalesOf = new NativeFunctionObject(
+                "supportedLocalesOf",
+                (_, args) => GetCanonicalLocales(args),
+                length: 1);
+            var supportedLocalesOfHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());
+            _ = ctor.DefineOwnProperty(
+                "supportedLocalesOf",
+                new JsPropertyDescriptor(
+                    JsValue.FromObject(supportedLocalesOfHandle),
+                    Writable: true,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(ctorHandle, supportedLocalesOfHandle);
+
+            _ = prototype.DefineOwnProperty(
+                "constructor",
+                new JsPropertyDescriptor(
+                    JsValue.FromObject(ctorHandle),
+                    Writable: true,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(prototypeHandle, ctorHandle);
+
+            _ = intl.DefineOwnProperty(
+                "DurationFormat",
+                new JsPropertyDescriptor(
+                    JsValue.FromObject(ctorHandle),
+                    Writable: true,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(handle, ctorHandle);
+            _durationFormatConstructorHandle = ctorHandle;
+        }
+
         // ECMA-402 §9.2.1 getCanonicalLocales(locales).
         {
             var fn = new NativeFunctionObject(
@@ -6775,47 +6831,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue GetCanonicalLocales(IReadOnlyList<JsValue> args)
     {
-        // ECMA-402 §9.2.1 CanonicalizeLocaleList.
-        // For now, just return the input locales as an array.
-        // Real implementation in Commit 5.
-        if (args.Count == 0)
-        {
-            var emptyArr = CreateArrayFromElements(Array.Empty<JsValue>());
-            return JsValue.FromObject(_heap.AllocateObject(emptyArr, AllocationSite.Current()));
-        }
-
-        var localesList = new List<JsValue>();
-        var arg = args[0];
-
-        if (arg.Tag == JsValueTag.String)
-        {
-            localesList.Add(arg);
-        }
-        else if (arg.Tag == JsValueTag.Object)
-        {
-            var argObj = _heap.GetObject(arg.AsObjectHandle());
-            if (argObj is ArrayObject)
-            {
-                var len = GetArrayLength(argObj);
-                for (var i = 0; i < len; i++)
-                {
-                    if (TryGetPropertyValue(argObj, arg, i.ToString(System.Globalization.CultureInfo.InvariantCulture), out var elem))
-                    {
-                        localesList.Add(elem);
-                    }
-                }
-            }
-            else
-            {
-                localesList.Add(arg);
-            }
-        }
-        else
-        {
-            throw new JsThrownException(CreateTypeError("locales argument must be a string or array of strings."));
-        }
-
-        var arrObj = CreateArrayFromElements(localesList);
+        var canonicalLocales = args.Count == 0
+            ? Array.Empty<JsValue>()
+            : CanonicalizeLocaleListForDuration(args[0]).Select(JsValue.FromString).ToArray();
+        var arrObj = CreateArrayFromElements(canonicalLocales);
         var arrHandle = _heap.AllocateObject(arrObj, AllocationSite.Current());
         return JsValue.FromObject(arrHandle);
     }
