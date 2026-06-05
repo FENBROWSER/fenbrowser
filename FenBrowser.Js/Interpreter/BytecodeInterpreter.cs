@@ -8135,6 +8135,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 Writable: false,
                 Enumerable: false,
                 Configurable: true));
+        // ECMA-262 15.x — only ordinary, generator, async-generator and constructor
+        // function objects have an own `prototype` property. Arrow functions, methods,
+        // async (non-generator) functions and bound functions have none. When present,
+        // `prototype` is { [[Writable]]: true (false for class constructors),
+        // [[Enumerable]]: false, [[Configurable]]: false } — crucially non-enumerable,
+        // so Object.keys(fn) never surfaces it (webpack's onChunksLoaded helper iterates
+        // Object.keys(__webpack_require__.O) and calls each, which breaks if `prototype`
+        // leaks in as an enumerable key).
+        var hasOwnPrototype = function.Kind is FunctionKind.Ordinary
+            or FunctionKind.Generator
+            or FunctionKind.AsyncGenerator
+            or FunctionKind.Constructor;
+        if (!hasOwnPrototype)
+        {
+            var bareHandle = _heap.AllocateObject(fnObj, AllocationSite.Current());
+            return JsValue.FromObject(bareHandle);
+        }
+
         var functionInstancePrototype = CreateOrdinaryObject();
         if (function.Kind == FunctionKind.Generator)
         {
@@ -8146,7 +8164,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var prototypeHandle = _heap.AllocateObject(functionInstancePrototype, AllocationSite.Current());
-        _ = fnObj.SetProperty("prototype", JsValue.FromObject(prototypeHandle));
+        _ = fnObj.DefineOwnProperty(
+            "prototype",
+            new JsPropertyDescriptor(
+                JsValue.FromObject(prototypeHandle),
+                Writable: function.Kind != FunctionKind.Constructor,
+                Enumerable: false,
+                Configurable: false));
         var handle = _heap.AllocateObject(fnObj, AllocationSite.Current());
         _ = functionInstancePrototype.DefineOwnProperty(
             "constructor",
