@@ -769,6 +769,7 @@ public sealed class Test262Runner
             "compareIterator.js",
             "asyncHelpers.js",
             "testTypedArray.js",
+            "testIntl.js",
             "proxyTrapsHelper.js",
             "regExpUtils.js",
             "detachArrayBuffer.js",
@@ -1811,6 +1812,8 @@ public sealed class Test262Runner
         "testTypedArray.js",
         "propertyHelper.js",
         "regExpUtils.js",
+        "testIntl.js",
+        "temporalHelpers.js",
         "tcoHelper.js",
     };
 
