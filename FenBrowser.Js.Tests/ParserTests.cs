@@ -1491,6 +1491,24 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void ParsesTemplateLiteralSubstitutionContainingRegexLiteral()
+    {
+        const string source = """
+        function formatPropertyName(propertyKey, objectName = "") {
+          return `${objectName}['${propertyKey.replace(/'/g, "\\'")}']`;
+        }
+        """;
+
+        var program = JsParser.ParseScript(new SourceText(source));
+        var fn = Assert.IsType<FunctionDeclarationNode>(program.Body[0]);
+        var body = Assert.IsType<BlockStatementNode>(fn.Body);
+        var ret = Assert.IsType<ReturnStatementNode>(body.Statements[0]);
+        var template = Assert.IsType<TemplateLiteralExpressionNode>(ret.Argument);
+
+        Assert.Equal(2, template.Expressions.Count);
+    }
+
+    [Fact]
     public void ParsesTaggedTemplateAsParserOnlyExpression()
     {
         var program = JsParser.ParseScript(new SourceText("tag`hello ${name}`;"));

@@ -4430,6 +4430,31 @@ public sealed class JsParser
         for (var i = start; i < raw.Length; i++)
         {
             var ch = raw[i];
+            if (ch == '/')
+            {
+                var commentEnd = SkipRawComment(raw, i);
+                if (commentEnd > i)
+                {
+                    i = commentEnd - 1;
+                    continue;
+                }
+
+                if (CanStartRawRegexLiteral(raw, i))
+                {
+                    var regexEnd = SkipRawRegexLiteral(raw, i);
+                    if (regexEnd < 0)
+                    {
+                        return -1;
+                    }
+
+                    if (regexEnd > i)
+                    {
+                        i = regexEnd - 1;
+                        continue;
+                    }
+                }
+            }
+
             if (ch == '\'' || ch == '"')
             {
                 i = SkipQuotedRaw(raw, i, ch);
@@ -4473,6 +4498,109 @@ public sealed class JsParser
                 {
                     return i;
                 }
+            }
+        }
+
+        return -1;
+    }
+
+    private static bool CanStartRawRegexLiteral(string raw, int slashIndex)
+    {
+        for (var i = slashIndex - 1; i >= 0; i--)
+        {
+            var c = raw[i];
+            if (char.IsWhiteSpace(c))
+            {
+                continue;
+            }
+
+            return c is '(' or '{' or '[' or ',' or ';' or ':' or '?' or '=' or '!' or '&' or '|' or '^' or '~' or '+' or '-' or '*' or '%' or '<' or '>' or '/';
+        }
+
+        return true;
+    }
+
+    private static int SkipRawComment(string raw, int start)
+    {
+        if (start + 1 >= raw.Length)
+        {
+            return start;
+        }
+
+        var next = raw[start + 1];
+        if (next == '/')
+        {
+            var i = start + 2;
+            while (i < raw.Length && !IsRawLineTerminator(raw[i]))
+            {
+                i++;
+            }
+
+            return i;
+        }
+
+        if (next != '*')
+        {
+            return start;
+        }
+
+        for (var i = start + 2; i + 1 < raw.Length; i++)
+        {
+            if (raw[i] == '*' && raw[i + 1] == '/')
+            {
+                return i + 2;
+            }
+        }
+
+        return -1;
+    }
+
+    private static int SkipRawRegexLiteral(string raw, int start)
+    {
+        var escaped = false;
+        var inCharClass = false;
+        for (var i = start + 1; i < raw.Length; i++)
+        {
+            var ch = raw[i];
+            if (!escaped)
+            {
+                if (ch == '\\')
+                {
+                    escaped = true;
+                    continue;
+                }
+
+                if (ch == '[')
+                {
+                    inCharClass = true;
+                    continue;
+                }
+
+                if (ch == ']' && inCharClass)
+                {
+                    inCharClass = false;
+                    continue;
+                }
+
+                if (ch == '/' && !inCharClass)
+                {
+                    i++;
+                    while (i < raw.Length && char.IsLetter(raw[i]))
+                    {
+                        i++;
+                    }
+
+                    return i;
+                }
+
+                if (IsRawLineTerminator(ch))
+                {
+                    return -1;
+                }
+            }
+            else
+            {
+                escaped = false;
             }
         }
 
@@ -4529,6 +4657,8 @@ public sealed class JsParser
 
         return -1;
     }
+
+    private static bool IsRawLineTerminator(char ch) => ch is '\r' or '\n' or '\u2028' or '\u2029';
 
     private bool TryGetInfixBindingPower(Token token, out string op, out int leftBindingPower, out int rightBindingPower)
     {

@@ -1283,6 +1283,19 @@ public sealed class JsLexer
         while (_index < _source.Length)
         {
             var c = _source[_index];
+            if (c == '/')
+            {
+                if (TrySkipTemplateSubstitutionComment())
+                {
+                    continue;
+                }
+
+                if (CanStartRegexLiteralInTemplateSubstitution() && TrySkipTemplateSubstitutionRegexLiteral())
+                {
+                    continue;
+                }
+            }
+
             if (c == '\'' || c == '"')
             {
                 if (!SkipStringLiteralInTemplateSubstitution(c))
@@ -1354,6 +1367,134 @@ public sealed class JsLexer
                 _index++;
                 _column++;
             }
+        }
+
+        return false;
+    }
+
+    private bool TrySkipTemplateSubstitutionComment()
+    {
+        if (_index + 1 >= _source.Length)
+        {
+            return false;
+        }
+
+        var next = _source[_index + 1];
+        if (next == '/')
+        {
+            _index += 2;
+            _column += 2;
+            while (_index < _source.Length && !IsLineTerminator(_source[_index]))
+            {
+                _index++;
+                _column++;
+            }
+
+            return true;
+        }
+
+        if (next != '*')
+        {
+            return false;
+        }
+
+        _index += 2;
+        _column += 2;
+        while (_index < _source.Length)
+        {
+            var c = _source[_index];
+            if (c == '*' && _index + 1 < _source.Length && _source[_index + 1] == '/')
+            {
+                _index += 2;
+                _column += 2;
+                return true;
+            }
+
+            if (IsLineTerminator(c))
+            {
+                AdvanceLineTerminator();
+            }
+            else
+            {
+                _index++;
+                _column++;
+            }
+        }
+
+        return false;
+    }
+
+    private bool CanStartRegexLiteralInTemplateSubstitution()
+    {
+        for (var i = _index - 1; i >= 0; i--)
+        {
+            var c = _source[i];
+            if (char.IsWhiteSpace(c))
+            {
+                continue;
+            }
+
+            return c is '(' or '{' or '[' or ',' or ';' or ':' or '?' or '=' or '!' or '&' or '|' or '^' or '~' or '+' or '-' or '*' or '%' or '<' or '>' or '/';
+        }
+
+        return true;
+    }
+
+    private bool TrySkipTemplateSubstitutionRegexLiteral()
+    {
+        var i = _index + 1;
+        var escaped = false;
+        var inCharClass = false;
+        while (i < _source.Length)
+        {
+            var c = _source[i];
+            if (!escaped)
+            {
+                if (c == '\\')
+                {
+                    escaped = true;
+                    i++;
+                    continue;
+                }
+
+                if (c == '[')
+                {
+                    inCharClass = true;
+                    i++;
+                    continue;
+                }
+
+                if (c == ']' && inCharClass)
+                {
+                    inCharClass = false;
+                    i++;
+                    continue;
+                }
+
+                if (c == '/' && !inCharClass)
+                {
+                    i++;
+                    while (i < _source.Length && char.IsLetter(_source[i]))
+                    {
+                        i++;
+                    }
+
+                    _column += i - _index;
+                    _index = i;
+                    return true;
+                }
+
+                if (IsLineTerminator(c))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                escaped = false;
+            }
+
+            i++;
         }
 
         return false;
