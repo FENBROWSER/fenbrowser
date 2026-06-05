@@ -379,14 +379,19 @@ public sealed partial class BytecodeInterpreter
             var frame = _activeFrames.Peek();
             var fn = frame.Function;
             var ip = frame.InstructionPointer;
-            var from = System.Math.Max(0, ip - 7);
+            var from = System.Math.Max(0, ip - 16);
             var to = System.Math.Min(fn.Instructions.Count - 1, ip + 1);
             var sb = new System.Text.StringBuilder("asm@ip" + ip + "{");
             for (var i = from; i <= to; i++)
             {
                 var ins = fn.Instructions[i];
                 sb.Append(i).Append(':').Append(ins.OpCode);
-                if (ins.OpCode == OpCode.GetPropByName && (uint)ins.C < (uint)fn.PropertyNames.Count)
+                // Emit raw operands so the dataflow of which register feeds a bad
+                // key/callee can be traced by hand across the window.
+                sb.Append("(A").Append(ins.A).Append(" B").Append(ins.B)
+                  .Append(" C").Append(ins.C).Append(" D").Append(ins.D).Append(')');
+                if ((ins.OpCode == OpCode.GetPropByName || ins.OpCode == OpCode.SetPropByName)
+                    && (uint)ins.C < (uint)fn.PropertyNames.Count)
                 {
                     sb.Append('.').Append(fn.PropertyNames[ins.C]);
                 }

@@ -15879,7 +15879,8 @@ fallbackArraySpecies:
             return primitive;
         }
 
-        throw new JsThrownException(CreateTypeError("Cannot convert object to primitive value."));
+        throw new JsThrownException(CreateTypeError(
+            "Cannot convert object to primitive value. (value=" + DescribeValueShort(value) + ", hint=" + hint + ") " + DescribeFrameStack()));
     }
 
     [MayExecuteJs]
