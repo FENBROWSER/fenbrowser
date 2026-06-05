@@ -837,12 +837,25 @@ public sealed class JsParser
         }
     }
 
-    private StatementNode ParseStatement()
+    // ECMA-262 distinguishes StatementListItem (block/program body — Declarations
+    // allowed) from Statement (single-statement bodies of if/iteration/with/label —
+    // Declarations forbidden). Annex B B.3.4/B.3.2 additionally permit a *plain*
+    // (non-generator, non-async) FunctionDeclaration as the body of an IfStatement
+    // clause or a LabelledStatement in non-strict code, but never as an iteration
+    // or `with` body.
+    private enum StatementBodyContext
+    {
+        StatementListItem,   // block / program: all Declarations allowed
+        IfClauseOrLabel,     // single Statement; Annex B sloppy FunctionDeclaration allowed
+        IterationOrWith,     // single Statement; no Declarations at all
+    }
+
+    private StatementNode ParseStatement(StatementBodyContext ctx = StatementBodyContext.StatementListItem)
     {
         EnterRecursion();
         try
         {
-            return ParseStatementCore();
+            return ParseStatementCore(ctx);
         }
         finally
         {
@@ -850,7 +863,7 @@ public sealed class JsParser
         }
     }
 
-    private StatementNode ParseStatementCore()
+    private StatementNode ParseStatementCore(StatementBodyContext ctx)
     {
         if (IsPunctuator("@"))
         {
@@ -867,7 +880,7 @@ public sealed class JsParser
         {
             var labelToken = Advance();
             ExpectPunctuator(":");
-            var body = ParseStatement();
+            var body = ParseStatement(StatementBodyContext.IfClauseOrLabel);
             return new LabeledStatementNode(labelToken.Text, body, MergeSpan(labelToken.Span, body.Span));
         }
 
@@ -898,9 +911,27 @@ public sealed class JsParser
                 case "export":
                     return ParseExportDeclaration();
                 case "class":
+                    if (ctx != StatementBodyContext.StatementListItem)
+                    {
+                        throw new JsParserException("Class declaration is not allowed as a single-statement body.");
+                    }
                     return ParseClassDeclaration();
-                case "let":
                 case "const":
+                    if (ctx != StatementBodyContext.StatementListItem)
+                    {
+                        throw new JsParserException("Lexical declaration is not allowed as a single-statement body.");
+                    }
+                    return ParseVariableDeclarationStatement();
+                case "let":
+                    // `let` heads a LexicalDeclaration only in StatementListItem
+                    // position; as a single-statement body it is an ordinary
+                    // identifier (Annex B / ASI), so fall through to expression
+                    // parsing — `let x;` then errors, `let \n x` parses via ASI.
+                    if (ctx != StatementBodyContext.StatementListItem)
+                    {
+                        break;
+                    }
+                    return ParseVariableDeclarationStatement();
                 case "var":
                     return ParseVariableDeclarationStatement();
                 case "if":
@@ -918,11 +949,27 @@ public sealed class JsParser
                 case "async":
                     if (PeekKeyword(1, "function"))
                     {
+                        if (ctx != StatementBodyContext.StatementListItem)
+                        {
+                            throw new JsParserException("Async function declaration is not allowed as a single-statement body.");
+                        }
                         return ParseFunctionDeclaration();
                     }
 
                     break;
                 case "function":
+                    if (ctx != StatementBodyContext.StatementListItem)
+                    {
+                        // Annex B B.3.4/B.3.2: only a plain (non-generator)
+                        // FunctionDeclaration in non-strict code may be an
+                        // IfStatement clause or LabelledStatement body. Generators,
+                        // strict mode, and iteration/with bodies always reject.
+                        var isGenerator = PeekIsPunctuator(1, "*");
+                        if (isGenerator || _strictMode || ctx != StatementBodyContext.IfClauseOrLabel)
+                        {
+                            throw new JsParserException("Function declaration is not allowed as a single-statement body here.");
+                        }
+                    }
                     return ParseFunctionDeclaration();
                 case "return":
                     return ParseReturnStatement();
@@ -1337,12 +1384,12 @@ public sealed class JsParser
         ExpectPunctuator("(");
         var test = ParseExpression(0);
         ExpectPunctuator(")");
-        var consequent = ParseStatement();
+        var consequent = ParseStatement(StatementBodyContext.IfClauseOrLabel);
         StatementNode? alternate = null;
         if (Current().Kind == TokenKind.Keyword && Current().Text == "else")
         {
             Advance();
-            alternate = ParseStatement();
+            alternate = ParseStatement(StatementBodyContext.IfClauseOrLabel);
         }
 
         var endSpan = alternate?.Span ?? consequent.Span;
@@ -1353,7 +1400,7 @@ public sealed class JsParser
     private DoWhileStatementNode ParseDoWhileStatement()
     {
         var start = Advance(); // do
-        var bodyStmt = ParseStatement();
+        var bodyStmt = ParseStatement(StatementBodyContext.IterationOrWith);
         var body = bodyStmt is BlockStatementNode block ? block
             : new BlockStatementNode(new[] { bodyStmt }, bodyStmt.Span);
         if (!(Current().Kind == TokenKind.Keyword && Current().Text == "while"))
@@ -1376,7 +1423,7 @@ public sealed class JsParser
         ExpectPunctuator("(");
         var test = ParseExpression(0);
         ExpectPunctuator(")");
-        var body = ParseStatement();
+        var body = ParseStatement(StatementBodyContext.IterationOrWith);
         return new WhileStatementNode(test, body, MergeSpan(start.Span, body.Span));
     }
 
@@ -1391,7 +1438,7 @@ public sealed class JsParser
         ExpectPunctuator("(");
         var obj = ParseExpression(0);
         ExpectPunctuator(")");
-        var body = ParseStatement();
+        var body = ParseStatement(StatementBodyContext.IterationOrWith);
         return new WithStatementNode(obj, body, MergeSpan(start.Span, body.Span));
     }
 
@@ -1454,7 +1501,7 @@ public sealed class JsParser
             Advance(); // in
             var iterable = ParseExpression(0);
             ExpectPunctuator(")");
-            var forInBody = ParseStatement();
+            var forInBody = ParseStatement(StatementBodyContext.IterationOrWith);
             return new ForInStatementNode(initializer, iterable, forInBody, MergeSpan(start.Span, forInBody.Span));
         }
 
@@ -1468,7 +1515,7 @@ public sealed class JsParser
             Advance(); // of
             var iterable = ParseExpression(0);
             ExpectPunctuator(")");
-            var forOfBody = ParseStatement();
+            var forOfBody = ParseStatement(StatementBodyContext.IterationOrWith);
             return isForAwait
                 ? new ForAwaitOfStatementNode(initializer, iterable, forOfBody, MergeSpan(start.Span, forOfBody.Span))
                 : new ForOfStatementNode(initializer, iterable, forOfBody, MergeSpan(start.Span, forOfBody.Span));
@@ -1493,7 +1540,7 @@ public sealed class JsParser
                     var forInInitializer = new ExpressionStatementNode(inLeftCandidate, inLeftCandidate.Span);
                     ValidateForInInitializer(forInInitializer);
                     Advance();
-                    var forInBody = ParseStatement();
+                    var forInBody = ParseStatement(StatementBodyContext.IterationOrWith);
                     return new ForInStatementNode(
                         forInInitializer,
                         inRightCandidate,
@@ -1515,7 +1562,7 @@ public sealed class JsParser
                 }
 
                 Advance();
-                var bodyWithImplicitlyEmptyRemainder = ParseStatement();
+                var bodyWithImplicitlyEmptyRemainder = ParseStatement(StatementBodyContext.IterationOrWith);
                 return new ForStatementNode(initializer, null, null, bodyWithImplicitlyEmptyRemainder, MergeSpan(start.Span, bodyWithImplicitlyEmptyRemainder.Span));
             }
             else
@@ -1587,7 +1634,7 @@ public sealed class JsParser
             }
 
             ExpectPunctuator(")");
-            var forInBody = ParseStatement();
+            var forInBody = ParseStatement(StatementBodyContext.IterationOrWith);
             return new ForInStatementNode(
                 rewrittenDeclaration,
                 iterable,
@@ -1598,7 +1645,7 @@ public sealed class JsParser
         if (IsPunctuator(")"))
         {
             Advance();
-            var bodyWithImplicitlyEmptyRemainder = ParseStatement();
+            var bodyWithImplicitlyEmptyRemainder = ParseStatement(StatementBodyContext.IterationOrWith);
             return new ForStatementNode(initializer, null, null, bodyWithImplicitlyEmptyRemainder, MergeSpan(start.Span, bodyWithImplicitlyEmptyRemainder.Span));
         }
 
@@ -1617,7 +1664,7 @@ public sealed class JsParser
         }
 
         ExpectPunctuator(")");
-        var body = ParseStatement();
+        var body = ParseStatement(StatementBodyContext.IterationOrWith);
         return new ForStatementNode(initializer, test, update, body, MergeSpan(start.Span, body.Span));
     }
 
