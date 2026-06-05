@@ -26,6 +26,10 @@ public sealed class GeneratorObject : JsObject
 	public ObjectHandle? YieldStarIterator { get; set; }
     public bool IsAsyncGenerator { get; set; }
 
+	// The full argument list passed when the generator function was called, so the
+	// body's `arguments` object reflects every argument — not just the named ones.
+	public JsValue[] InitialArgs { get; set; } = System.Array.Empty<JsValue>();
+
 	public GeneratorObject(BytecodeFunction function, JsValue[] registers, EnvironmentRecord? environment)
 	{
 		Function = function;
@@ -44,6 +48,10 @@ public sealed class GeneratorObject : JsObject
 
 	public JsValue[] GetInitialParameters()
 	{
+		// Return the full argument list when available so the body's `arguments`
+		// object is complete; fall back to the named parameters from registers.
+		if (InitialArgs.Length > 0)
+			return InitialArgs;
 		var paramCount = Function.ParameterNames.Count;
 		var result = new JsValue[paramCount];
 		for (var i = 0; i < paramCount; i++)

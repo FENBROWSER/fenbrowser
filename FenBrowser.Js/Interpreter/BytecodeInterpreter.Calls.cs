@@ -205,6 +205,7 @@ public sealed partial class BytecodeInterpreter
 
                 var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment);
                 genObj.ThisValue = thisValue;
+                genObj.InitialArgs = args as JsValue[] ?? System.Linq.Enumerable.ToArray(args);
                 genObj.SetPrototype(GetGlobalPrototype("GeneratorPrototype"));
                 var genHandle = _heap.AllocateObject(genObj, AllocationSite.Current());
                 if (fn.Function.PrologueEndIp > 0)
@@ -226,7 +227,8 @@ public sealed partial class BytecodeInterpreter
                 var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment)
                 {
                     ThisValue = thisValue,
-                    IsAsyncGenerator = true
+                    IsAsyncGenerator = true,
+                    InitialArgs = args as JsValue[] ?? System.Linq.Enumerable.ToArray(args)
                 };
                 genObj.SetPrototype(EnsureAsyncGeneratorPrototype());
                 var genHandle = _heap.AllocateObject(genObj, AllocationSite.Current());
