@@ -161,15 +161,15 @@ public sealed class NumberBuiltin : IBuiltinModule
     private static JsValue NumberPrototypeToExponential(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var value = NumberThisValue(ctx, thisValue);
-        if (double.IsNaN(value)) return JsValue.FromString("NaN");
-        if (double.IsInfinity(value)) return JsValue.FromString(value > 0 ? "Infinity" : "-Infinity");
 
+        // ECMA-262 21.1.3.2 step 10.b: fractionDigits undefined → use the fewest
+        // fraction digits whose exponential form still round-trips to x. The old "R"
+        // path never produced exponential notation, so (123.456).toExponential()
+        // wrongly returned "123.456" instead of "1.23456e+2".
         if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
         {
-            // ECMA-262 21.1.3.2 step 10.b: fractionDigits undefined → use the fewest
-            // fraction digits whose exponential form still round-trips to x. The old
-            // "R" path never produced exponential notation, so (123.456).toExponential()
-            // wrongly returned "123.456" instead of "1.23456e+2".
+            if (double.IsNaN(value)) return JsValue.FromString("NaN");
+            if (double.IsInfinity(value)) return JsValue.FromString(value > 0 ? "Infinity" : "-Infinity");
             for (var f = 0; f < 17; f++)
             {
                 var candidate = FormatExponentialFixed(value, f);
@@ -183,7 +183,11 @@ public sealed class NumberBuiltin : IBuiltinModule
             return JsValue.FromString(FormatExponentialFixed(value, 17));
         }
 
+        // Step 2: ToInteger(fractionDigits) runs (and observes valueOf side effects)
+        // before the x-is-NaN/Infinity short-circuit at steps 5-6.
         var digits = (int)ctx.ToNumber(args[0]);
+        if (double.IsNaN(value)) return JsValue.FromString("NaN");
+        if (double.IsInfinity(value)) return JsValue.FromString(value > 0 ? "Infinity" : "-Infinity");
         if (digits < 0 || digits > 100)
             throw new JsThrownException(ctx.CreateRangeError("toExponential() digits argument must be between 0 and 100."));
 
@@ -204,12 +208,16 @@ public sealed class NumberBuiltin : IBuiltinModule
     private static JsValue NumberPrototypeToPrecision(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var value = NumberThisValue(ctx, thisValue);
+        // Step 2: precision undefined → ToString(x) (before any NaN handling).
         if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
             return JsValue.FromString(MathHelpers.FormatNumberForString(value));
+
+        // Step 3: ToInteger(precision) runs (observing valueOf side effects) before
+        // the x-is-NaN check at step 4.
+        var precision = (int)ctx.ToNumber(args[0]);
         if (double.IsNaN(value)) return JsValue.FromString("NaN");
         if (double.IsInfinity(value)) return JsValue.FromString(value > 0 ? "Infinity" : "-Infinity");
 
-        var precision = (int)ctx.ToNumber(args[0]);
         if (precision < 1 || precision > 100)
             throw new JsThrownException(ctx.CreateRangeError("toPrecision() precision argument must be between 1 and 100."));
 
