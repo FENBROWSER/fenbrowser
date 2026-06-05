@@ -7363,33 +7363,29 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // the Object.keys path.
         DefineIntrinsicFunction(constructorHandle, constructor, "getOwnPropertyNames", (_, args) =>
         {
-            var target = args.Count > 0 ? args[0] : JsValue.Undefined;
-            if (target.Tag == JsValueTag.Undefined || target.Tag == JsValueTag.Null)
-            {
-                throw new JsThrownException(CreateTypeError(
-                    "Cannot convert undefined or null to object."));
-            }
+            // ECMA-262 20.1.2.10 step 1: obj = ToObject(O). A primitive coerces to its
+            // wrapper (getOwnPropertyNames("ab") → ["0","1","length"]); only
+            // undefined/null throw.
+            var firstArg = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var targetValue = ToObjectValue(firstArg);
+            var obj = _heap.GetObject(targetValue.AsObjectHandle());
 
             var items = new List<JsValue>();
-            if (target.Tag == JsValueTag.Object)
+            if (obj is ProxyObject proxyOwnNames)
             {
-                var obj = _heap.GetObject(target.AsObjectHandle());
-                if (obj is ProxyObject proxyOwnNames)
+                foreach (var key in ProxyOwnKeys(proxyOwnNames))
                 {
-                    foreach (var key in ProxyOwnKeys(proxyOwnNames))
+                    if (key.Tag == JsValueTag.String)
                     {
-                        if (key.Tag == JsValueTag.String)
-                        {
-                            items.Add(key);
-                        }
+                        items.Add(key);
                     }
                 }
-                else
+            }
+            else
+            {
+                foreach (var pair in obj.EnumerateOwnProperties())
                 {
-                    foreach (var pair in obj.EnumerateOwnProperties())
-                    {
-                        items.Add(JsValue.FromString(pair.Key));
-                    }
+                    items.Add(JsValue.FromString(pair.Key));
                 }
             }
 

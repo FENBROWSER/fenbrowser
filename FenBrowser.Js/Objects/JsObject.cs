@@ -129,8 +129,10 @@ public class JsObject : ITraceable
         return false;
     }
 
-    // Enumerate own string-keyed properties in insertion order. Virtual so
-    // exotic objects (String) can yield their synthesised indexed properties.
+    // Enumerate own string-keyed properties. ECMA-262 10.1.11.1 OrdinaryOwnPropertyKeys:
+    // array-index keys first in ascending numeric order, then the remaining string keys
+    // in insertion (property-creation) order. Virtual so exotic objects (String) can
+    // yield their synthesised indexed properties.
     public virtual IEnumerable<KeyValuePair<string, JsPropertyDescriptor>> EnumerateOwnProperties()
     {
         var chain = new List<(string key, int slot)>();
@@ -138,11 +140,62 @@ public class JsObject : ITraceable
             chain.Add((s.AddedProperty!, s.AddedSlot));
         chain.Reverse();
 
+        List<(uint idx, string key, int slot)>? integerKeys = null;
         foreach (var (key, slot) in chain)
+        {
+            if (IsArrayIndexKey(key, out var idx))
+                (integerKeys ??= new List<(uint, string, int)>()).Add((idx, key, slot));
+        }
+
+        // Fast path: no array-index keys, so insertion order already matches the spec.
+        if (integerKeys is null)
+        {
+            foreach (var (key, slot) in chain)
+            {
+                if (_properties[slot] is { } desc)
+                    yield return new KeyValuePair<string, JsPropertyDescriptor>(key, desc);
+            }
+
+            yield break;
+        }
+
+        integerKeys.Sort((a, b) => a.idx.CompareTo(b.idx));
+        foreach (var (_, key, slot) in integerKeys)
         {
             if (_properties[slot] is { } desc)
                 yield return new KeyValuePair<string, JsPropertyDescriptor>(key, desc);
         }
+
+        foreach (var (key, slot) in chain)
+        {
+            if (!IsArrayIndexKey(key, out _) && _properties[slot] is { } desc)
+                yield return new KeyValuePair<string, JsPropertyDescriptor>(key, desc);
+        }
+    }
+
+    // ECMA-262 6.1.7: an array index is a canonical numeric string whose value is an
+    // integer in [0, 2^32 - 1). Used to order own keys (integer indices come first).
+    internal static bool IsArrayIndexKey(string key, out uint index)
+    {
+        index = 0;
+        if (string.IsNullOrEmpty(key) || key.Length > 10)
+            return false;
+        if (key.Length > 1 && key[0] == '0')
+            return false;   // no leading zeros — not a canonical numeric string
+
+        ulong result = 0;
+        foreach (var c in key)
+        {
+            if (c < '0' || c > '9')
+                return false;
+            result = (result * 10) + (ulong)(c - '0');
+        }
+
+        if (result >= 4294967295UL)   // 2^32 - 1 is not itself an array index
+            return false;
+
+        index = (uint)result;
+        return true;
     }
 
     // Symbol-keyed property access.
