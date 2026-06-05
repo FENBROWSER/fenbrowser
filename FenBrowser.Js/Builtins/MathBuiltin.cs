@@ -86,6 +86,11 @@ public sealed class MathBuiltin : IBuiltinModule
         var random = new Random();
         DefineMathFunction(context, handle, math, "random", _ => JsValue.FromNumber(random.NextDouble()), length: 0);
 
+        // 21.3.1.9 Math [ @@toStringTag ] = "Math"
+        var toStringTagSymbol = context.CreateWellKnownSymbol("toStringTag");
+        math.DefineOwnSymbolProperty(toStringTagSymbol.AsSymbolId(), new JsPropertyDescriptor(
+            JsValue.FromString("Math"), Writable: false, Enumerable: false, Configurable: true));
+
         return new[] { BuiltinBinding.NonEnumerable("Math", JsValue.FromObject(handle)) };
     }
 

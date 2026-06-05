@@ -6570,6 +6570,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         DefineIntrinsicFunction(handle, json, "parse", JsonParse, length: 2);
         DefineIntrinsicFunction(handle, json, "stringify", JsonStringify, length: 3);
 
+        // ECMA-262 25.5.3 JSON [ @@toStringTag ] = "JSON".
+        DefineBuiltinToStringTag(json, "JSON");
+
         _jsonObjectHandle = handle;
         return handle;
     }
