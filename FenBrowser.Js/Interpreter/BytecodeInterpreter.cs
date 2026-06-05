@@ -8235,10 +8235,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 Writable: false,
                 Enumerable: false,
                 Configurable: true));
+        var functionLength = function.ExpectedArgumentCount >= 0
+            ? function.ExpectedArgumentCount
+            : function.ParameterNames.Count;
         _ = fnObj.DefineOwnProperty(
             "length",
             new JsPropertyDescriptor(
-                JsValue.FromNumber(function.ParameterNames.Count),
+                JsValue.FromNumber(functionLength),
                 Writable: false,
                 Enumerable: false,
                 Configurable: true));

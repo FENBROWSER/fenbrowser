@@ -25,6 +25,11 @@ public sealed class BytecodeFunction
 
     public int RestParameterIndex { get; init; } = -1;
 
+    // ECMA-262 ExpectedArgumentCount: the function's `length` — the count of formal
+    // parameters before the first one that has a default initializer or is the rest
+    // parameter. -1 means "not computed" (falls back to ParameterNames.Count).
+    public int ExpectedArgumentCount { get; init; } = -1;
+
     public bool HasOwnArgumentsObject { get; init; }
     public bool UsesRestrictedArgumentsObject { get; init; }
 

@@ -160,7 +160,8 @@ public sealed class BytecodeCompiler
         FunctionKind functionKind,
         bool inheritedStrictMode,
         bool captureCompletionValue,
-        int prologueStatementCount = 0)
+        int prologueStatementCount = 0,
+        IReadOnlyList<ExpressionNode?>? parameterDefaults = null)
     {
         _instructions.Clear();
         _constants.Clear();
@@ -229,6 +230,7 @@ public sealed class BytecodeCompiler
             PropertyNames = _propertyNames.ToArray(),
             ParameterNames = _parameterNames.ToArray(),
             RestParameterIndex = restParameterIndex,
+            ExpectedArgumentCount = ComputeExpectedArgumentCount(parameters.Count, restParameterIndex, parameterDefaults),
             HasOwnArgumentsObject = hasOwnArgumentsObject,
             UsesRestrictedArgumentsObject = hasOwnArgumentsObject && (_isStrictMode || !hasSimpleParameterList),
             NestedFunctions = _nestedFunctions.ToArray(),
@@ -447,6 +449,22 @@ public sealed class BytecodeCompiler
         }
     }
 
+    // ECMA-262 ExpectedArgumentCount (function `length`): count the formal parameters
+    // up to — but not including — the first one that has a default initializer or is
+    // the rest parameter. A destructuring parameter without a default still counts.
+    private static int ComputeExpectedArgumentCount(
+        int parameterCount, int restParameterIndex, IReadOnlyList<ExpressionNode?>? parameterDefaults)
+    {
+        var count = 0;
+        for (var i = 0; i < parameterCount; i++)
+        {
+            if (i == restParameterIndex) break;
+            if (parameterDefaults is not null && i < parameterDefaults.Count && parameterDefaults[i] is not null) break;
+            count++;
+        }
+        return count;
+    }
+
     private void CompileFunctionDeclaration(FunctionDeclarationNode functionDecl)
     {
         var nestedProgram = BuildFunctionProgramWithParameterBindings(
@@ -467,7 +485,8 @@ public sealed class BytecodeCompiler
             functionKind: SelectFunctionKind(functionDecl.IsAsync, functionDecl.IsGenerator, isArrow: false),
             inheritedStrictMode: _isStrictMode,
             captureCompletionValue: false,
-            prologueStatementCount: prologueCount);
+            prologueStatementCount: prologueCount,
+            parameterDefaults: functionDecl.ParameterDefaults);
         var nestedIndex = _nestedFunctions.Count;
         _nestedFunctions.Add(nestedFunction);
 
@@ -924,7 +943,8 @@ public sealed class BytecodeCompiler
             functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false),
             inheritedStrictMode: _isStrictMode,
             captureCompletionValue: false,
-            prologueStatementCount: prologueCount);
+            prologueStatementCount: prologueCount,
+            parameterDefaults: fnExpr.ParameterDefaults);
         var nestedIndex = _nestedFunctions.Count;
         _nestedFunctions.Add(nestedFunction);
         var dest = AllocateRegister();
@@ -2673,7 +2693,8 @@ public sealed class BytecodeCompiler
                     functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false),
                     inheritedStrictMode: _isStrictMode,
                     captureCompletionValue: false,
-                    prologueStatementCount: fnExprPrologueCount);
+                    prologueStatementCount: fnExprPrologueCount,
+                    parameterDefaults: fnExpr.ParameterDefaults);
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();
@@ -2725,7 +2746,8 @@ public sealed class BytecodeCompiler
                     functionKind: SelectFunctionKind(arrow.IsAsync, isGenerator: false, isArrow: true),
                     inheritedStrictMode: _isStrictMode,
                     captureCompletionValue: false,
-                    prologueStatementCount: arrowPrologueCount);
+                    prologueStatementCount: arrowPrologueCount,
+                    parameterDefaults: arrow.ParameterDefaults);
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();
