@@ -161,7 +161,8 @@ public sealed class BytecodeCompiler
         bool inheritedStrictMode,
         bool captureCompletionValue,
         int prologueStatementCount = 0,
-        IReadOnlyList<ExpressionNode?>? parameterDefaults = null)
+        IReadOnlyList<ExpressionNode?>? parameterDefaults = null,
+        bool bindOwnNameInBody = false)
     {
         _instructions.Clear();
         _constants.Clear();
@@ -231,6 +232,7 @@ public sealed class BytecodeCompiler
             ParameterNames = _parameterNames.ToArray(),
             RestParameterIndex = restParameterIndex,
             ExpectedArgumentCount = ComputeExpectedArgumentCount(parameters.Count, restParameterIndex, parameterDefaults),
+            BindsOwnNameInBody = bindOwnNameInBody && name is { Length: > 0 },
             HasOwnArgumentsObject = hasOwnArgumentsObject,
             UsesRestrictedArgumentsObject = hasOwnArgumentsObject && (_isStrictMode || !hasSimpleParameterList),
             NestedFunctions = _nestedFunctions.ToArray(),
@@ -2694,7 +2696,9 @@ public sealed class BytecodeCompiler
                     inheritedStrictMode: _isStrictMode,
                     captureCompletionValue: false,
                     prologueStatementCount: fnExprPrologueCount,
-                    parameterDefaults: fnExpr.ParameterDefaults);
+                    parameterDefaults: fnExpr.ParameterDefaults,
+                    // A named function expression binds its own name inside its body.
+                    bindOwnNameInBody: fnExpr.Name is { Length: > 0 });
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();

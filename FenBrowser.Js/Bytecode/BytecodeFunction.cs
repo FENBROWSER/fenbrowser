@@ -30,6 +30,11 @@ public sealed class BytecodeFunction
     // parameter. -1 means "not computed" (falls back to ParameterNames.Count).
     public int ExpectedArgumentCount { get; init; } = -1;
 
+    // True for a named function expression: its own name is bound (immutably) inside
+    // the function body so it can refer to itself (e.g. for recursion), but the name
+    // is not visible outside the expression.
+    public bool BindsOwnNameInBody { get; init; }
+
     public bool HasOwnArgumentsObject { get; init; }
     public bool UsesRestrictedArgumentsObject { get; init; }
 

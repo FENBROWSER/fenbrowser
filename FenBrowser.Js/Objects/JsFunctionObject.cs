@@ -33,6 +33,10 @@ public sealed class JsFunctionObject : JsObject
     // the inherited definition.
     public Runtime.ObjectHandle? HomeObject { get; set; }
 
+    // The heap handle of this function object itself, stamped at allocation. Lets a
+    // named function expression bind its own name (visible inside its body) to itself.
+    public Runtime.ObjectHandle? SelfHandle { get; set; }
+
     public override void Trace(IHeapTracer tracer)
     {
         base.Trace(tracer);

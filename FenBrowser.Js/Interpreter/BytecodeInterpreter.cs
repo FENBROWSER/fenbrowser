@@ -662,6 +662,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var functionEnv = new FunctionEnvironmentRecord(
                 ThisBindingStatus.Uninitialized, JsValue.Undefined, JsValue.Undefined, callee?.HomeObject, outerEnvironment);
             _ = functionEnv.BindThisValue(thisValue);
+            // ECMA-262 15.2.5: a named function expression binds its own name (immutably)
+            // in scope of its body so it can reference itself (e.g. for recursion).
+            if (function.BindsOwnNameInBody && function.Name is { Length: > 0 } selfName
+                && callee?.SelfHandle is { } selfHandle)
+            {
+                _ = functionEnv.CreateImmutableBinding(selfName, strict: true);
+                _ = functionEnv.InitializeBinding(selfName, JsValue.FromObject(selfHandle));
+            }
             frameEnv = functionEnv;
         }
         var frame = new InterpreterFrame(function, thisValue, frameEnv) { CalleeFunctionObject = callee, OwnerGenerator = ownerGenerator, AsyncContext = asyncContext };
@@ -8260,6 +8268,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (!hasOwnPrototype)
         {
             var bareHandle = _heap.AllocateObject(fnObj, AllocationSite.Current());
+            fnObj.SelfHandle = bareHandle;
             return JsValue.FromObject(bareHandle);
         }
 
@@ -8282,6 +8291,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 Enumerable: false,
                 Configurable: false));
         var handle = _heap.AllocateObject(fnObj, AllocationSite.Current());
+        fnObj.SelfHandle = handle;
         _ = functionInstancePrototype.DefineOwnProperty(
             "constructor",
             new JsPropertyDescriptor(
