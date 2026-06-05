@@ -8833,6 +8833,23 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 : new JsPropertyDescriptor(hasValue ? value : JsValue.Undefined, writable, enumerable, configurable);
         }
 
+        // ECMA-262 10.4.2.4 ArraySetLength: defining an Array's "length" is exotic —
+        // it coerces/validates the value, may delete out-of-range elements, and fails
+        // (TypeError) when a non-configurable element blocks truncation. The ordinary
+        // define path below would just overwrite the slot.
+        if (!isSymbolKey && key == "length" && target is ArrayObject && target is not ProxyObject)
+        {
+            var succeeded = !newIsAccessor && ApplyArrayLengthDefine(
+                targetHandle, target, hasValue, value, hasWritableFlag, writable,
+                hasEnumerable, enumerable, hasConfigurable, configurable);
+            if (!succeeded)
+            {
+                throw new JsThrownException(CreateTypeError("Cannot redefine property: length"));
+            }
+
+            return args[0];
+        }
+
         if (target is ProxyObject proxyDefineProperty)
         {
             if (isSymbolKey)
@@ -9214,6 +9231,95 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var finalDesc = lenDesc with { Value = JsValue.FromNumber(finalLen) };
         _ = arr.DefineOwnProperty("length", finalDesc);
         WriteDescriptorBarrier(ownerHandle, finalDesc);
+        return success;
+    }
+
+    // ECMA-262 10.4.2.4 ArraySetLength invoked from Array [[DefineOwnProperty]] on
+    // "length" (descriptor form). Returns false when the redefinition must fail (the
+    // caller raises TypeError); throws RangeError for a non-uint32 length value.
+    private bool ApplyArrayLengthDefine(
+        ObjectHandle handle, JsObject arr,
+        bool hasValue, JsValue value,
+        bool hasWritable, bool writable,
+        bool hasEnumerable, bool enumerable,
+        bool hasConfigurable, bool configurable)
+    {
+        if (!arr.TryGetOwnProperty("length", out var oldLenDesc))
+        {
+            return false;
+        }
+
+        // Array "length" is permanently non-enumerable and non-configurable.
+        if ((hasEnumerable && enumerable) || (hasConfigurable && configurable))
+        {
+            return false;
+        }
+
+        // Step 1: a length descriptor with no [[Value]] only adjusts attributes.
+        if (!hasValue)
+        {
+            if (!oldLenDesc.Writable && hasWritable && writable)
+            {
+                return false;   // a non-writable length cannot be made writable again
+            }
+
+            var attrOnly = oldLenDesc with { Writable = hasWritable ? writable : oldLenDesc.Writable };
+            _ = arr.DefineOwnProperty("length", attrOnly);
+            WriteDescriptorBarrier(handle, attrOnly);
+            return true;
+        }
+
+        var numberLen = ToNumber(value);
+        var newLen = ToUint32(numberLen);
+        if (newLen != numberLen)
+        {
+            throw new JsThrownException(CreateRangeError("Invalid array length"));
+        }
+
+        var oldLen = ToUint32(oldLenDesc.Value.AsNumber());
+        var newWritable = !hasWritable || writable;
+
+        if (newLen >= oldLen)
+        {
+            var grown = oldLenDesc with { Value = JsValue.FromNumber(newLen), Writable = newWritable };
+            _ = arr.DefineOwnProperty("length", grown);
+            WriteDescriptorBarrier(handle, grown);
+            return true;
+        }
+
+        if (!oldLenDesc.Writable)
+        {
+            return false;
+        }
+
+        var toDelete = new List<int>();
+        foreach (var p in arr.EnumerateOwnProperties())
+        {
+            if (IsCanonicalIntegerIndex(p.Key, out var idx) && (uint)idx >= newLen)
+            {
+                toDelete.Add(idx);
+            }
+        }
+
+        toDelete.Sort();
+        var finalLen = newLen;
+        var success = true;
+        for (var i = toDelete.Count - 1; i >= 0; i--)
+        {
+            var ikey = toDelete[i].ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (arr.TryGetOwnProperty(ikey, out var elemDesc) && !elemDesc.Configurable)
+            {
+                finalLen = (uint)toDelete[i] + 1;
+                success = false;
+                break;
+            }
+
+            _ = arr.DeleteProperty(ikey);
+        }
+
+        var finalDesc = oldLenDesc with { Value = JsValue.FromNumber(finalLen), Writable = newWritable };
+        _ = arr.DefineOwnProperty("length", finalDesc);
+        WriteDescriptorBarrier(handle, finalDesc);
         return success;
     }
 
