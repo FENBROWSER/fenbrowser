@@ -6705,6 +6705,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 length: 0);
             var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
             _heap.PushRoot(ctorHandle);
+            var prototypeHandle = EnsureDateTimeFormatPrototype();
+            var prototype = _heap.GetObject(prototypeHandle);
+            _ = ctor.DefineOwnProperty(
+                "prototype",
+                new JsPropertyDescriptor(
+                    JsValue.FromObject(prototypeHandle),
+                    Writable: false,
+                    Enumerable: false,
+                    Configurable: false));
+            _heap.WriteBarrier(ctorHandle, prototypeHandle);
+            _ = prototype.DefineOwnProperty(
+                "constructor",
+                new JsPropertyDescriptor(
+                    JsValue.FromObject(ctorHandle),
+                    Writable: true,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(prototypeHandle, ctorHandle);
             _ = intl.DefineOwnProperty(
                 "DateTimeFormat",
                 new JsPropertyDescriptor(
@@ -6795,7 +6813,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
             var supportedLocalesOf = new NativeFunctionObject(
                 "supportedLocalesOf",
-                (_, args) => GetCanonicalLocales(args),
+                (_, args) => DurationFormatSupportedLocalesOf(args),
                 length: 1);
             var supportedLocalesOfHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());
             _ = ctor.DefineOwnProperty(

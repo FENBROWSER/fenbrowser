@@ -11,6 +11,7 @@ namespace FenBrowser.Js.Interpreter;
 // Also carries EnsureProxyConstructor() placeholder until full Proxy lands.
 public sealed partial class BytecodeInterpreter
 {
+    private ObjectHandle? _dateTimeFormatPrototypeHandle;
     private ObjectHandle? _durationFormatConstructorHandle;
     private ObjectHandle? _durationFormatPrototypeHandle;
     private sealed record IntlPart(string Type, string Value, string? Unit = null);
@@ -85,6 +86,45 @@ public sealed partial class BytecodeInterpreter
         _heap.WriteBarrier(instanceHandle, protoHandle);
 
         return JsValue.FromObject(instanceHandle);
+    }
+
+    private ObjectHandle EnsureDateTimeFormatPrototype()
+    {
+        if (_dateTimeFormatPrototypeHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var prototype = CreateOrdinaryObject();
+        var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(prototypeHandle);
+
+        var formatMethod = new NativeFunctionObject(
+            "format",
+            (_, _) => JsValue.FromString("Invalid Date"),
+            length: 1);
+        var formatHandle = _heap.AllocateObject(formatMethod, AllocationSite.Current());
+        _ = prototype.DefineOwnProperty(
+            "format",
+            new JsPropertyDescriptor(JsValue.FromObject(formatHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, formatHandle);
+
+        var formatToPartsMethod = new NativeFunctionObject(
+            "formatToParts",
+            (_, _) =>
+            {
+                var emptyArray = CreateArrayObject(Array.Empty<JsValue>());
+                return JsValue.FromObject(_heap.AllocateObject(emptyArray, AllocationSite.Current()));
+            },
+            length: 1);
+        var formatToPartsHandle = _heap.AllocateObject(formatToPartsMethod, AllocationSite.Current());
+        _ = prototype.DefineOwnProperty(
+            "formatToParts",
+            new JsPropertyDescriptor(JsValue.FromObject(formatToPartsHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, formatToPartsHandle);
+
+        _dateTimeFormatPrototypeHandle = prototypeHandle;
+        return prototypeHandle;
     }
 
     // ECMA-402 11.3.2 Intl.DateTimeFormat.prototype.format(date).
@@ -587,106 +627,107 @@ public sealed partial class BytecodeInterpreter
         var state = CreateOrdinaryObject();
 
         string numberingSystem = "latn";
-        string style = "short";
+        string style = "long";
         string? fractionalDigits = null;
         var unitStyles = new Dictionary<string, string>(StringComparer.Ordinal);
         var unitDisplays = new Dictionary<string, string>(StringComparer.Ordinal);
 
-        foreach (var unit in DurationUnits)
+        if (optionsValue.Tag == JsValueTag.Null)
         {
-            unitStyles[unit] = "short";
-            unitDisplays[unit] = "always";
+            throw new JsThrownException(CreateTypeError("Cannot convert null to object."));
         }
 
-        if (optionsValue.Tag == JsValueTag.Object)
+        JsObject? optionsObject = null;
+        var optionsReceiver = JsValue.Undefined;
+        if (optionsValue.Tag != JsValueTag.Undefined)
         {
-            var optionsObject = _heap.GetObject(optionsValue.AsObjectHandle());
-
-            string? GetStringOption(string name)
-            {
-                if (!TryGetPropertyValue(optionsObject, optionsValue, name, out var value) || value.Tag == JsValueTag.Undefined)
-                {
-                    return null;
-                }
-
-                return ToStringValue(value);
-            }
-
-            string? localeMatcher = GetStringOption("localeMatcher");
-            if (localeMatcher is not null && localeMatcher is not "lookup" and not "best fit")
-            {
-                throw new JsThrownException(CreateRangeError($"{localeMatcher} is an invalid localeMatcher option value"));
-            }
-
-            var requestedNumberingSystem = GetStringOption("numberingSystem");
-            if (requestedNumberingSystem is not null)
-            {
-                if (!IsValidDurationNumberingSystem(requestedNumberingSystem))
-                {
-                    throw new JsThrownException(CreateRangeError($"{requestedNumberingSystem} is an invalid numberingSystem option value"));
-                }
-
-                numberingSystem = requestedNumberingSystem;
-                locale = RemoveUnicodeNumberingExtension(locale);
-            }
-            else if (TryGetUnicodeExtension(locale, "nu", out var unicodeNumberingSystem) &&
-                     IsValidDurationNumberingSystem(unicodeNumberingSystem))
-            {
-                numberingSystem = unicodeNumberingSystem;
-            }
-            else
-            {
-                locale = RemoveUnicodeNumberingExtension(locale);
-            }
-
-            var requestedStyle = GetStringOption("style");
-            if (requestedStyle is not null)
-            {
-                if (requestedStyle is not "long" and not "short" and not "narrow" and not "digital")
-                {
-                    throw new JsThrownException(CreateRangeError($"{requestedStyle} is an invalid style option value"));
-                }
-
-                style = requestedStyle;
-            }
-
-            string? previousStyle = null;
-            foreach (var unit in DurationUnits)
-            {
-                var requestedUnitStyle = GetStringOption(unit);
-                var resolvedStyle = ResolveDurationUnitStyle(unit, style, previousStyle, requestedUnitStyle);
-                unitStyles[unit] = resolvedStyle;
-                previousStyle = resolvedStyle;
-
-                var displayOption = GetStringOption(unit + "Display");
-                if (displayOption is not null && displayOption is not "auto" and not "always")
-                {
-                    throw new JsThrownException(CreateRangeError($"{displayOption} is an invalid {unit}Display option value"));
-                }
-
-                unitDisplays[unit] = displayOption ?? "always";
-            }
-
-            if (TryGetPropertyValue(optionsObject, optionsValue, "fractionalDigits", out var fractionalDigitsValue) &&
-                fractionalDigitsValue.Tag != JsValueTag.Undefined)
-            {
-                var numeric = ToNumber(fractionalDigitsValue);
-                if (double.IsNaN(numeric) || double.IsInfinity(numeric) || numeric < 0 || numeric > 9 || Math.Floor(numeric) != numeric)
-                {
-                    throw new JsThrownException(CreateRangeError($"new Intl.DurationFormat(\"en\", {{fractionalDigits: \"{ToStringValue(fractionalDigitsValue)}\"}}) throws RangeError"));
-                }
-
-                fractionalDigits = ((int)numeric).ToString(CultureInfo.InvariantCulture);
-            }
+            optionsObject = ToObject(optionsValue);
+            optionsReceiver = optionsValue.Tag == JsValueTag.Object
+                ? optionsValue
+                : JsValue.FromObject(_heap.AllocateObject(optionsObject, AllocationSite.Current()));
         }
-        else if (TryGetUnicodeExtension(locale, "nu", out var localeNumberingSystem) &&
-                 IsValidDurationNumberingSystem(localeNumberingSystem))
+
+        string? GetStringOption(string name)
         {
-            numberingSystem = localeNumberingSystem;
+            if (optionsObject is null)
+            {
+                return null;
+            }
+
+            if (!TryGetPropertyValue(optionsObject, optionsReceiver, name, out var value) || value.Tag == JsValueTag.Undefined)
+            {
+                return null;
+            }
+
+            return ToStringValue(value);
+        }
+
+        string? localeMatcher = GetStringOption("localeMatcher");
+        if (localeMatcher is not null && localeMatcher is not "lookup" and not "best fit")
+        {
+            throw new JsThrownException(CreateRangeError($"{localeMatcher} is an invalid localeMatcher option value"));
+        }
+
+        var requestedNumberingSystem = GetStringOption("numberingSystem");
+        if (requestedNumberingSystem is not null)
+        {
+            if (!IsValidDurationNumberingSystem(requestedNumberingSystem))
+            {
+                throw new JsThrownException(CreateRangeError($"{requestedNumberingSystem} is an invalid numberingSystem option value"));
+            }
+
+            numberingSystem = requestedNumberingSystem;
+            locale = RemoveUnicodeNumberingExtension(locale);
+        }
+        else if (TryGetUnicodeExtension(locale, "nu", out var unicodeNumberingSystem) &&
+                 IsValidDurationNumberingSystem(unicodeNumberingSystem))
+        {
+            numberingSystem = unicodeNumberingSystem;
         }
         else
         {
             locale = RemoveUnicodeNumberingExtension(locale);
+        }
+
+        var requestedStyle = GetStringOption("style");
+        if (requestedStyle is not null)
+        {
+            if (requestedStyle is not "long" and not "short" and not "narrow" and not "digital")
+            {
+                throw new JsThrownException(CreateRangeError($"{requestedStyle} is an invalid style option value"));
+            }
+
+            style = requestedStyle;
+        }
+
+        string? previousStyle = null;
+        foreach (var unit in DurationUnits)
+        {
+            var requestedUnitStyle = GetStringOption(unit);
+            var resolvedStyle = ResolveDurationUnitStyle(unit, style, previousStyle, requestedUnitStyle);
+            unitStyles[unit] = resolvedStyle;
+            previousStyle = resolvedStyle;
+
+            var displayOption = GetStringOption(unit + "Display");
+            if (displayOption is not null && displayOption is not "auto" and not "always")
+            {
+                throw new JsThrownException(CreateRangeError($"{displayOption} is an invalid {unit}Display option value"));
+            }
+
+            unitDisplays[unit] = displayOption ?? "always";
+        }
+
+        if (optionsObject is not null &&
+            TryGetPropertyValue(optionsObject, optionsReceiver, "fractionalDigits", out var fractionalDigitsValue) &&
+            fractionalDigitsValue.Tag != JsValueTag.Undefined)
+        {
+            var numeric = ToNumber(fractionalDigitsValue);
+            if (double.IsNaN(numeric) || double.IsInfinity(numeric) || numeric < 0 || numeric > 9 || Math.Floor(numeric) != numeric)
+            {
+                throw new JsThrownException(CreateRangeError($"new Intl.DurationFormat(\"en\", {{fractionalDigits: \"{ToStringValue(fractionalDigitsValue)}\"}}) throws RangeError"));
+            }
+
+            fractionalDigits = ((int)numeric).ToString(CultureInfo.InvariantCulture);
         }
 
         _ = state.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(locale), Writable: false, Enumerable: false, Configurable: false));
@@ -731,7 +772,7 @@ public sealed partial class BytecodeInterpreter
             }
             else
             {
-                resolved = "short";
+                resolved = baseStyle;
             }
         }
         else
@@ -768,6 +809,19 @@ public sealed partial class BytecodeInterpreter
     {
         var locales = CanonicalizeLocaleListForDuration(localesValue);
         return locales.Count == 0 ? GetDefaultDurationLocale() : locales[0];
+    }
+
+    private JsValue DurationFormatSupportedLocalesOf(IReadOnlyList<JsValue> args)
+    {
+        var canonicalLocales = args.Count == 0
+            ? Array.Empty<JsValue>()
+            : CanonicalizeLocaleListForDuration(args[0])
+                .Where(IsSupportedDurationLocale)
+                .Select(JsValue.FromString)
+                .ToArray();
+        var arrObj = CreateArrayFromElements(canonicalLocales);
+        var arrHandle = _heap.AllocateObject(arrObj, AllocationSite.Current());
+        return JsValue.FromObject(arrHandle);
     }
 
     private List<string> CanonicalizeLocaleListForDuration(JsValue localesValue)
@@ -867,6 +921,12 @@ public sealed partial class BytecodeInterpreter
         }
 
         return string.Join("-", result);
+    }
+
+    private static bool IsSupportedDurationLocale(string locale)
+    {
+        var primaryLanguage = locale.Split('-', 2)[0];
+        return !string.Equals(primaryLanguage, "zxx", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsStructurallyValidDurationLocaleTag(string tag)
@@ -1119,7 +1179,7 @@ public sealed partial class BytecodeInterpreter
 
         if (state.Style == "unit" && !string.IsNullOrEmpty(state.Unit))
         {
-            parts.Add(new IntlPart("literal", " "));
+            parts.Add(new IntlPart("literal", " ", state.Unit));
             parts.Add(new IntlPart("unit", GetUnitLabel(state.Unit!, state.UnitDisplay ?? "short", state.Locale), state.Unit));
         }
 

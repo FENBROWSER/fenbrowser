@@ -34,9 +34,9 @@ public sealed class DurationFormatTests
     {
         Assert.True(RunBool("""
             var options = new Intl.DurationFormat("en").resolvedOptions();
-            options.style === "short" &&
-            options.years === "short" &&
-            options.hours === "short" &&
+            options.style === "long" &&
+            options.years === "long" &&
+            options.hours === "long" &&
             options.hoursDisplay === "always" &&
             options.numberingSystem === "latn"
             """));
@@ -52,6 +52,24 @@ public sealed class DurationFormatTests
             } catch (e) {
               e && e.name;
             }
+            """));
+    }
+
+    [Fact]
+    public void DurationFormatConstructorRejectsNullOptionsAndFiltersUnsupportedLocales()
+    {
+        Assert.True(RunBool("""
+            var nullOptionsThrows = false;
+            try {
+              new Intl.DurationFormat([], null);
+            } catch (e) {
+              nullOptionsThrows = e && e.name === "TypeError";
+            }
+
+            var supported = Intl.DurationFormat.supportedLocalesOf(["en", "zxx"]);
+            nullOptionsThrows &&
+            supported.length === 1 &&
+            supported[0] === "en"
             """));
     }
 }
