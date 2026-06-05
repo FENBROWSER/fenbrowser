@@ -94,6 +94,16 @@ public sealed class JsParser
         return parser.ParseProgram(ProgramKind.Module);
     }
 
+    // Parses the body of a dynamically-created function (the Function/
+    // GeneratorFunction/AsyncFunction constructor) as a FunctionBody, so a
+    // top-level `return` inside it is valid (ECMA-262 20.2.1.1.1).
+    public static ProgramNode ParseFunctionBody(SourceText source)
+    {
+        var tokens = new JsLexer(source).LexAll();
+        var parser = new JsParser(tokens) { _functionBodyDepth = 1 };
+        return parser.ParseProgram(ProgramKind.Script);
+    }
+
     private ProgramNode ParseProgram(ProgramKind kind)
     {
         _moduleMode = kind == ProgramKind.Module;
@@ -1748,8 +1758,31 @@ public sealed class JsParser
         return false;
     }
 
+    // ECMA-262 14.10.1: a ReturnStatement is only valid inside a FunctionBody.
+    // Incremented while parsing any function/method/arrow block body so a `return`
+    // at script/eval top level (depth 0) is rejected as an early SyntaxError.
+    private int _functionBodyDepth;
+
+    private BlockStatementNode ParseFunctionBlockBody(Func<BlockStatementNode> parse)
+    {
+        _functionBodyDepth++;
+        try
+        {
+            return parse();
+        }
+        finally
+        {
+            _functionBodyDepth--;
+        }
+    }
+
     private ReturnStatementNode ParseReturnStatement()
     {
+        if (_functionBodyDepth == 0)
+        {
+            throw new JsParserException("'return' statement is only valid inside a function.");
+        }
+
         var start = Advance(); // return
         ExpressionNode? argument = null;
         if (!IsPunctuator(";") && !IsPunctuator("}") && !Is(TokenKind.EndOfFile))
@@ -2770,7 +2803,7 @@ public sealed class JsParser
             var body = ParseWithExpressionContext(
                 allowYieldExpression: allowYieldInBody,
                 allowAwaitExpression: allowAwaitInBody,
-                parse: ParseBlockStatement);
+                parse: () => ParseFunctionBlockBody(ParseBlockStatement));
             return (parameterInfo, body);
         }
         finally
@@ -4178,7 +4211,7 @@ public sealed class JsParser
             var block = ParseWithExpressionContext(
                 allowYieldExpression: false,
                 allowAwaitExpression: isAsync,
-                ParseBlockStatement);
+                () => ParseFunctionBlockBody(ParseBlockStatement));
             ValidateDirectivePrologueStrictStringEscapes(block.Statements);
             return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span), IsAsync: isAsync, HasSimpleParameterList: hasSimpleParameterList, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings, ParameterDefaults: parameterDefaults);
         }

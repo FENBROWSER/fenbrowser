@@ -137,7 +137,7 @@ public sealed class BytecodeCompiler
         string? name,
         FunctionKind functionKind)
     {
-        var program = JsParser.ParseScript(body);
+        var program = JsParser.ParseFunctionBody(body);
         return CompileProgramCore(
             program,
             parameters,

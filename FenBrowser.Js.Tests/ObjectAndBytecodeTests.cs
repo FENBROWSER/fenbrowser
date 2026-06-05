@@ -181,8 +181,13 @@ public sealed class ObjectAndBytecodeTests
     [Fact]
     public void CompilerAndInterpreterHonorReturn()
     {
+        // `return` is only valid inside a function body (ECMA-262 14.10.1), so
+        // compile the snippet as a function body rather than a top-level script.
         var compiler = new BytecodeCompiler();
-        var fn = compiler.CompileScript(new SourceText("let x = 1; return x + 2; x = 99;"));
+        var fn = compiler.CompileFunctionBody(
+            new SourceText("let x = 1; return x + 2; x = 99;"),
+            System.Array.Empty<string>(),
+            name: "anonymous");
         new BytecodeVerifier().Verify(fn);
 
         var result = new BytecodeInterpreter().Execute(fn);
