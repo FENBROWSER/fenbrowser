@@ -70,6 +70,9 @@ public sealed class MathBuiltin : IBuiltinModule
         DefineMathFunction(context, handle, math, "imul", args => JsValue.FromNumber(MathImul(context, args)), length: 2);
         // 21.3.2.16 Math.fround
         DefineMathFunction(context, handle, math, "fround", args => MathUnary(context, args, v => (double)(float)v), length: 1);
+        // Math.f16round (Float16 proposal): round to the nearest half-precision value.
+        // NaN stays NaN; everything else round-trips through IEEE-754 binary16.
+        DefineMathFunction(context, handle, math, "f16round", args => MathUnary(context, args, v => double.IsNaN(v) ? double.NaN : (double)(Half)v), length: 1);
         // 21.3.2.31/.12/.33 sinh/cosh/tanh
         DefineMathFunction(context, handle, math, "sinh", args => MathUnary(context, args, Math.Sinh), length: 1);
         DefineMathFunction(context, handle, math, "cosh", args => MathUnary(context, args, Math.Cosh), length: 1);
@@ -147,6 +150,13 @@ public sealed class MathBuiltin : IBuiltinModule
     {
         var x = args.Count > 0 ? context.ToNumber(args[0]) : double.NaN;
         var y = args.Count > 1 ? context.ToNumber(args[1]) : double.NaN;
+        // ECMA-262 Number::exponentiate: a base of magnitude exactly 1 with an
+        // infinite exponent is NaN (C's pow, which .NET follows, returns 1).
+        if (double.IsInfinity(y) && Math.Abs(x) == 1d)
+        {
+            return JsValue.FromNumber(double.NaN);
+        }
+
         return JsValue.FromNumber(Math.Pow(x, y));
     }
 
@@ -173,13 +183,17 @@ public sealed class MathBuiltin : IBuiltinModule
             return JsValue.FromNumber(double.NegativeInfinity);
         }
 
+        // ECMA-262 21.3.2.24 step 2: ToNumber every argument first (side effects in
+        // valueOf must run for all of them) before reducing; a NaN anywhere wins.
+        var sawNaN = false;
         var result = double.NegativeInfinity;
         foreach (var arg in args)
         {
             var value = context.ToNumber(arg);
             if (double.IsNaN(value))
             {
-                return JsValue.FromNumber(double.NaN);
+                sawNaN = true;
+                continue;
             }
 
             if (value > result || (value == 0d && result == 0d && !MathHelpers.IsNegativeZero(value)))
@@ -188,7 +202,7 @@ public sealed class MathBuiltin : IBuiltinModule
             }
         }
 
-        return JsValue.FromNumber(result);
+        return JsValue.FromNumber(sawNaN ? double.NaN : result);
     }
 
     private static JsValue MathMin(IBuiltinContext context, IReadOnlyList<JsValue> args)
@@ -198,13 +212,17 @@ public sealed class MathBuiltin : IBuiltinModule
             return JsValue.FromNumber(double.PositiveInfinity);
         }
 
+        // ECMA-262 21.3.2.25 step 2: ToNumber every argument first before reducing;
+        // a NaN anywhere wins.
+        var sawNaN = false;
         var result = double.PositiveInfinity;
         foreach (var arg in args)
         {
             var value = context.ToNumber(arg);
             if (double.IsNaN(value))
             {
-                return JsValue.FromNumber(double.NaN);
+                sawNaN = true;
+                continue;
             }
 
             if (value < result || (value == 0d && result == 0d && MathHelpers.IsNegativeZero(value)))
@@ -213,7 +231,7 @@ public sealed class MathBuiltin : IBuiltinModule
             }
         }
 
-        return JsValue.FromNumber(result);
+        return JsValue.FromNumber(sawNaN ? double.NaN : result);
     }
 
     private static JsValue MathHypot(IBuiltinContext context, IReadOnlyList<JsValue> args)
