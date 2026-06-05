@@ -924,14 +924,24 @@ public sealed class JsParser
                     return ParseVariableDeclarationStatement();
                 case "let":
                     // `let` heads a LexicalDeclaration only in StatementListItem
-                    // position; as a single-statement body it is an ordinary
-                    // identifier (Annex B / ASI), so fall through to expression
-                    // parsing — `let x;` then errors, `let \n x` parses via ASI.
-                    if (ctx != StatementBodyContext.StatementListItem)
+                    // position and only when followed by a binding start (`[`, `{`,
+                    // or a BindingIdentifier). Otherwise it is an ordinary
+                    // identifier (sloppy) — `let + 1`, `let.x`, `let()` — so fall
+                    // through to expression parsing. As a single-statement body it
+                    // is likewise never a declaration.
+                    if (ctx == StatementBodyContext.StatementListItem && StartsLetLexicalDeclaration())
                     {
-                        break;
+                        return ParseVariableDeclarationStatement();
                     }
-                    return ParseVariableDeclarationStatement();
+                    // In a single-statement body `let [` can be neither an
+                    // ExpressionStatement (the `let [` lookahead restriction, which
+                    // ignores line terminators) nor a Declaration — so it is a
+                    // SyntaxError. `let {` and other forms fall through (identifier).
+                    if (ctx != StatementBodyContext.StatementListItem && PeekIsPunctuator(1, "["))
+                    {
+                        throw new JsParserException("'let [' may not begin a single-statement body.");
+                    }
+                    break;
                 case "var":
                     return ParseVariableDeclarationStatement();
                 case "if":
@@ -4623,6 +4633,21 @@ public sealed class JsParser
         return Advance();
     }
 
+    // ECMA-262 13.3.1: `let` at the start of a statement begins a LexicalDeclaration
+    // only when the next token is `[`, `{`, or a BindingIdentifier. Otherwise `let`
+    // is an ordinary identifier (sloppy mode) and the statement is an
+    // ExpressionStatement. (`let [` is always a declaration — ExpressionStatement
+    // explicitly forbids a leading `let [`.)
+    private bool StartsLetLexicalDeclaration()
+    {
+        var next = _tokens[Math.Min(_index + 1, _tokens.Count - 1)];
+        if (next.Kind == TokenKind.Punctuator && (next.Text == "[" || next.Text == "{"))
+        {
+            return true;
+        }
+        return IsIdentifierLike(next);
+    }
+
     private bool IsIdentifierLike(Token token)
     {
         if (token.Kind == TokenKind.Keyword)
@@ -4646,6 +4671,13 @@ public sealed class JsParser
             if (token.Text == "yield")
             {
                 return !_strictMode && !_moduleMode;
+            }
+
+            if (token.Text == "let")
+            {
+                // `let` is reserved only in strict-mode code; in sloppy code it is
+                // a valid Identifier (e.g. `var let = 1`, `let: stmt`, `let + 1`).
+                return !_strictMode;
             }
 
             return false;
