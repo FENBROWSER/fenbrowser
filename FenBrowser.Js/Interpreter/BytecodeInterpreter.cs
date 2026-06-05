@@ -8867,11 +8867,37 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             else
             {
                 _ = target.DefineOwnProperty(key, descriptor);
+                // ECMA-262 10.4.2.1 Array [[DefineOwnProperty]]: defining an array-index
+                // element at or beyond the current length extends "length" (matching
+                // what plain `arr[i] = v` assignment already does).
+                if (target is ArrayObject && IsCanonicalIntegerIndex(key, out var definedIdx))
+                {
+                    ExtendArrayLengthForIndex(targetHandle, target, definedIdx);
+                }
             }
             WriteDescriptorBarrier(targetHandle, descriptor);
         }
 
         return args[0];
+    }
+
+    // ECMA-262 10.4.2.1 step 3.h: after an array-index element is defined, if its
+    // index is >= the array's length, set length = index + 1 (only when length is a
+    // writable data property; a non-writable length would have failed validation).
+    private void ExtendArrayLengthForIndex(ObjectHandle handle, JsObject arr, int index)
+    {
+        if (!arr.TryGetOwnProperty("length", out var lenDesc) || lenDesc.IsAccessor || !lenDesc.Writable)
+        {
+            return;
+        }
+
+        var oldLen = ToUint32(lenDesc.Value.AsNumber());
+        if ((uint)index >= oldLen)
+        {
+            var updated = lenDesc with { Value = JsValue.FromNumber((uint)index + 1) };
+            _ = arr.DefineOwnProperty("length", updated);
+            WriteDescriptorBarrier(handle, updated);
+        }
     }
 
     // ECMA-262 10.1.6.3 ValidateAndApplyPropertyDescriptor (validation half): whether
