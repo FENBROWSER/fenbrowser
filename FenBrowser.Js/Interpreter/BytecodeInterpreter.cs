@@ -4611,6 +4611,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toDateString", DatePrototypeToDateString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toTimeString", DatePrototypeToTimeString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toUTCString", DatePrototypeToUtcString);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleString", DatePrototypeToLocaleString, length: 2);
 
         // Annex B B.2.3 legacy aliases (audit �4.1).
         // B.2.3.1 Date.prototype.getYear: return year - 1900, NaN if invalid.
@@ -4688,6 +4689,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var t = GetDateTimeValue(thisValue, "toString");
         if (!double.IsFinite(t)) return JsValue.FromString("Invalid Date");
         return JsValue.FromString(FormatDatePart(t) + " " + FormatTimePart(t));
+    }
+
+    private JsValue DatePrototypeToLocaleString(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var t = GetDateTimeValue(thisValue, "toLocaleString");
+        if (!double.IsFinite(t))
+        {
+            return JsValue.FromString("Invalid Date");
+        }
+
+        var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
+        var culture = FenBrowser.Js.Intl.IntlDateTimeFormatting.ResolveCulture(locale);
+        var options = ParseDateTimeFormatOptions(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
+        try
+        {
+            FenBrowser.Js.Intl.IntlDateTimeFormatting.ValidateOptions(options);
+        }
+        catch (InvalidOperationException)
+        {
+            throw new JsThrownException(CreateTypeError("dateStyle/timeStyle conflicts with explicit component options."));
+        }
+
+        var result = FenBrowser.Js.Intl.IntlDateTimeFormatting.Format(DateTimeOffset.FromUnixTimeMilliseconds((long)t), culture, options);
+        return JsValue.FromString(result.Text);
     }
 
     private JsValue DatePrototypeToDateString(JsValue thisValue, IReadOnlyList<JsValue> args)

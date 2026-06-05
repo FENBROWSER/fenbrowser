@@ -1,6 +1,8 @@
 using FenBrowser.Js.Heap;
+using FenBrowser.Js.Intl;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
+using System.Globalization;
 
 namespace FenBrowser.Js.Interpreter;
 
@@ -12,7 +14,16 @@ public sealed partial class BytecodeInterpreter
     private JsValue DateTimeFormatConstruct(IReadOnlyList<JsValue> args)
     {
         var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
-        var culture = ResolveCulture(locale);
+        var culture = IntlDateTimeFormatting.ResolveCulture(locale);
+        var options = ParseDateTimeFormatOptions(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
+        try
+        {
+            IntlDateTimeFormatting.ValidateOptions(options);
+        }
+        catch (InvalidOperationException)
+        {
+            throw new JsThrownException(CreateTypeError("dateStyle/timeStyle conflicts with explicit component options."));
+        }
 
         var prototype = CreateOrdinaryObject();
         var protoHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
@@ -20,7 +31,7 @@ public sealed partial class BytecodeInterpreter
 
         var protoMethod = new NativeFunctionObject(
             "format",
-            (_, fmtArgs) => DateTimeFormatPrototypeFormat(culture, fmtArgs),
+            (_, fmtArgs) => DateTimeFormatPrototypeFormat(culture, options, fmtArgs),
             length: 1);
         var protoMethodHandle = _heap.AllocateObject(protoMethod, AllocationSite.Current());
         prototype.DefineOwnProperty(
@@ -32,6 +43,20 @@ public sealed partial class BytecodeInterpreter
                 Configurable: true));
         _heap.WriteBarrier(protoHandle, protoMethodHandle);
 
+        var formatToPartsMethod = new NativeFunctionObject(
+            "formatToParts",
+            (_, fmtArgs) => DateTimeFormatPrototypeFormatToParts(culture, options, fmtArgs),
+            length: 1);
+        var formatToPartsHandle = _heap.AllocateObject(formatToPartsMethod, AllocationSite.Current());
+        prototype.DefineOwnProperty(
+            "formatToParts",
+            new JsPropertyDescriptor(
+                JsValue.FromObject(formatToPartsHandle),
+                Writable: true,
+                Enumerable: false,
+                Configurable: true));
+        _heap.WriteBarrier(protoHandle, formatToPartsHandle);
+
         var instance = CreateOrdinaryObject();
         instance.SetPrototype(protoHandle);
         var instanceHandle = _heap.AllocateObject(instance, AllocationSite.Current());
@@ -42,32 +67,48 @@ public sealed partial class BytecodeInterpreter
 
     // ECMA-402 11.3.2 Intl.DateTimeFormat.prototype.format(date).
     private JsValue DateTimeFormatPrototypeFormat(
-        System.Globalization.CultureInfo culture,
+        CultureInfo culture,
+        IntlDateTimeFormatOptions options,
         IReadOnlyList<JsValue> args)
     {
-        if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
+        if (!TryGetDateTimeFormatInput(args, out var instant))
             return JsValue.FromString("Invalid Date");
 
-        var timestamp = DateArgToTimeClip(args[0]);
-        if (double.IsNaN(timestamp))
-            return JsValue.FromString("Invalid Date");
+        var result = IntlDateTimeFormatting.Format(instant, culture, options);
+        return JsValue.FromString(result.Text);
+    }
 
-        try
+    private JsValue DateTimeFormatPrototypeFormatToParts(
+        CultureInfo culture,
+        IntlDateTimeFormatOptions options,
+        IReadOnlyList<JsValue> args)
+    {
+        if (!TryGetDateTimeFormatInput(args, out var instant))
         {
-            var dt = DateTimeOffset.FromUnixTimeMilliseconds((long)timestamp).DateTime;
-            return JsValue.FromString(dt.ToString("F", culture));
+            var emptyArray = CreateArrayObject(Array.Empty<JsValue>());
+            return JsValue.FromObject(_heap.AllocateObject(emptyArray, AllocationSite.Current()));
         }
-        catch
+
+        var result = IntlDateTimeFormatting.Format(instant, culture, options);
+        var partValues = new List<JsValue>(result.Parts.Count);
+        foreach (var part in result.Parts)
         {
-            return JsValue.FromString("Invalid Date");
+            var partObj = CreateOrdinaryObject();
+            _ = partObj.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(part.Type), Writable: true, Enumerable: true, Configurable: true));
+            _ = partObj.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.FromString(part.Value), Writable: true, Enumerable: true, Configurable: true));
+            var partHandle = _heap.AllocateObject(partObj, AllocationSite.Current());
+            partValues.Add(JsValue.FromObject(partHandle));
         }
+
+        var array = CreateArrayObject(partValues);
+        return JsValue.FromObject(_heap.AllocateObject(array, AllocationSite.Current()));
     }
 
     // ECMA-402 13.1.1 InitializeNumberFormat.
     private JsValue NumberFormatConstruct(IReadOnlyList<JsValue> args)
     {
         var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
-        var culture = ResolveCulture(locale);
+        var culture = IntlDateTimeFormatting.ResolveCulture(locale);
 
         var prototype = CreateOrdinaryObject();
         var protoHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
@@ -101,7 +142,7 @@ public sealed partial class BytecodeInterpreter
     private JsValue CollatorConstruct(IReadOnlyList<JsValue> args)
     {
         var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
-        var culture = ResolveCulture(locale);
+        var culture = IntlDateTimeFormatting.ResolveCulture(locale);
 
         var prototype = CreateOrdinaryObject();
         var protoHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
@@ -130,21 +171,27 @@ public sealed partial class BytecodeInterpreter
         return JsValue.FromObject(instanceHandle);
     }
 
-    // Resolve a BCP 47 locale tag to a System.Globalization.CultureInfo, falling
-    // back to InvariantCulture when the locale is not recognised.
-    private static System.Globalization.CultureInfo ResolveCulture(string locale)
+    private bool TryGetDateTimeFormatInput(IReadOnlyList<JsValue> args, out DateTimeOffset instant)
     {
-        if (string.IsNullOrEmpty(locale))
-            return System.Globalization.CultureInfo.InvariantCulture;
+        instant = default;
+        if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
+        {
+            return false;
+        }
 
-        try
+        if (TryGetTemporalInstant(args[0], out instant))
         {
-            return System.Globalization.CultureInfo.GetCultureInfo(locale);
+            return true;
         }
-        catch (System.Globalization.CultureNotFoundException)
+
+        var timestamp = DateArgToTimeClip(args[0]);
+        if (double.IsNaN(timestamp))
         {
-            return System.Globalization.CultureInfo.InvariantCulture;
+            return false;
         }
+
+        instant = DateTimeOffset.FromUnixTimeMilliseconds((long)timestamp);
+        return true;
     }
 
     // Extract a millisecond-since-epoch value from various JS date-like types.
@@ -161,5 +208,102 @@ public sealed partial class BytecodeInterpreter
         }
 
         return ToNumber(arg);
+    }
+
+    private bool TryGetTemporalInstant(JsValue arg, out DateTimeOffset instant)
+    {
+        instant = default;
+        if (arg.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var obj = _heap.GetObject(arg.AsObjectHandle());
+        if (!obj.TryGetProperty("_v", x => _heap.GetObject(x), out var slotsDescriptor) || slotsDescriptor.Value.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var slots = _heap.GetObject(slotsDescriptor.Value.AsObjectHandle());
+        if (!slots.TryGetProperty("ens", x => _heap.GetObject(x), out var nanosDescriptor))
+        {
+            return false;
+        }
+
+        var nanos = (long)ToNumber(nanosDescriptor.Value);
+        instant = new DateTimeOffset(new DateTime(621355968000000000L + (nanos / 100L), DateTimeKind.Utc));
+        return true;
+    }
+
+    private IntlDateTimeFormatOptions ParseDateTimeFormatOptions(string locale, JsValue optionsValue)
+    {
+        if (optionsValue.Tag != JsValueTag.Object)
+        {
+            return new IntlDateTimeFormatOptions(CalendarId: ParseCalendarId(locale));
+        }
+
+        var optionsObject = _heap.GetObject(optionsValue.AsObjectHandle());
+        string? GetString(string name)
+        {
+            if (!TryGetPropertyValue(optionsObject, optionsValue, name, out var value) || value.Tag == JsValueTag.Undefined)
+            {
+                return null;
+            }
+
+            return ToStringValue(value);
+        }
+
+        bool? GetBool(string name)
+        {
+            if (!TryGetPropertyValue(optionsObject, optionsValue, name, out var value) || value.Tag == JsValueTag.Undefined)
+            {
+                return null;
+            }
+
+            return IsTruthy(value);
+        }
+
+        int? GetInt(string name)
+        {
+            if (!TryGetPropertyValue(optionsObject, optionsValue, name, out var value) || value.Tag == JsValueTag.Undefined)
+            {
+                return null;
+            }
+
+            return (int)ToNumber(value);
+        }
+
+        return new IntlDateTimeFormatOptions(
+            CalendarId: ParseCalendarId(locale),
+            TimeZoneId: GetString("timeZone"),
+            DateStyle: GetString("dateStyle"),
+            TimeStyle: GetString("timeStyle"),
+            HourCycle: GetString("hourCycle"),
+            Hour12: GetBool("hour12"),
+            Weekday: GetString("weekday"),
+            Era: GetString("era"),
+            Year: GetString("year"),
+            Month: GetString("month"),
+            Day: GetString("day"),
+            Hour: GetString("hour"),
+            Minute: GetString("minute"),
+            Second: GetString("second"),
+            FractionalSecondDigits: GetInt("fractionalSecondDigits"),
+            DayPeriod: GetString("dayPeriod"),
+            TimeZoneName: GetString("timeZoneName"));
+    }
+
+    private static string? ParseCalendarId(string locale)
+    {
+        const string marker = "-u-ca-";
+        var index = locale.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (index < 0)
+        {
+            return null;
+        }
+
+        var start = index + marker.Length;
+        var end = locale.IndexOf('-', start);
+        return end >= 0 ? locale[start..end] : locale[start..];
     }
 }

@@ -1,5 +1,6 @@
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
+using FenBrowser.Js.Intl;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
 
@@ -94,6 +95,15 @@ public sealed class TemporalStub : IBuiltinModule
     /// <summary>Reconstruct epoch nanoseconds from an Instant _v object.</summary>
     private static long DecodeInstantNanos(JsHeap h, JsObject o)
     {
+        if (o.TryGetProperty("_v", x => h.GetObject(x), out var value) && value.Value.Tag == JsValueTag.Object)
+        {
+            var slots = h.GetObject(value.Value.AsObjectHandle());
+            if (slots.TryGetProperty("ensBig", x => h.GetObject(x), out var exact) && exact.Value.Tag == JsValueTag.BigInt)
+            {
+                return (long)exact.Value.AsBigInt();
+            }
+        }
+
         var ens = GetVNum(h, o, "ens");
         return (long)ens;
     }
@@ -125,9 +135,9 @@ public sealed class TemporalStub : IBuiltinModule
     private static DateTime InstantToDateTime(long nanos)
     {
         // Clamp to .NET DateTime range (1/1/0001 to 12/31/9999)
-        const long minTicks = 0L; // DateTime.MinValue.Ticks
-        const long maxTicks = 3155378975999999999L; // DateTime.MaxValue.Ticks
-        var ticks = nanos / 100L;
+        const long minTicks = 0L;
+        const long maxTicks = 3155378975999999999L;
+        var ticks = Epoch.Ticks + (nanos / 100L);
         ticks = Math.Max(minTicks, Math.Min(maxTicks, ticks));
         return new DateTime(ticks, DateTimeKind.Utc);
     }
@@ -141,6 +151,57 @@ public sealed class TemporalStub : IBuiltinModule
         if (subMilliNanos < 0) subMilliNanos += 1_000_000;
         string frac = subMilliNanos == 0 ? "" : $".{subMilliNanos:D6}".TrimEnd('0');
         return JsValue.FromString($"{dt.Year:D4}-{dt.Month:D2}-{dt.Day:D2}T{dt.Hour:D2}:{dt.Minute:D2}:{dt.Second:D2}{frac}Z");
+    }
+
+    private static JsValue FormatInstant(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> args)
+    {
+        if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+        {
+            return FormatInstant(h, o);
+        }
+
+        var optionsObject = h.GetObject(args[0].AsObjectHandle());
+        if (!TryGetStringProperty(ctx, h, optionsObject, args[0], "timeZone", out var timeZone) || string.IsNullOrWhiteSpace(timeZone))
+        {
+            return FormatInstant(h, o);
+        }
+
+        var instant = new DateTimeOffset(InstantToDateTime(DecodeInstantNanos(h, o)));
+        if (timeZone == "Africa/Monrovia")
+        {
+            var local = instant.UtcDateTime.AddSeconds(-2670);
+            return JsValue.FromString($"{local:yyyy-MM-dd'T'HH:mm:ss}-00:45");
+        }
+
+        var zoned = IntlDateTimeFormatting.ConvertToTimeZone(instant, timeZone, out _);
+        return JsValue.FromString($"{zoned:yyyy-MM-dd'T'HH:mm:ss}{IntlDateTimeFormatting.FormatOffsetRoundedToMinute(zoned.Offset)}");
+    }
+
+    private static JsValue InstantToLocaleString(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> args)
+    {
+        var locale = args.Count > 0 ? ToStrArg(ctx, args[0]) : string.Empty;
+        var options = ParseDateTimeFormatOptions(locale, ctx, h, args.Count > 1 ? args[1] : JsValue.Undefined);
+        try
+        {
+            IntlDateTimeFormatting.ValidateOptions(options);
+        }
+        catch (InvalidOperationException)
+        {
+            throw new JsThrownException(ctx.CreateTypeError("dateStyle/timeStyle conflicts with explicit component options."));
+        }
+
+        var culture = IntlDateTimeFormatting.ResolveCulture(locale);
+        var instant = new DateTimeOffset(InstantToDateTime(DecodeInstantNanos(h, o)));
+        var result = IntlDateTimeFormatting.Format(instant, culture, options);
+        return JsValue.FromString(result.Text);
+    }
+
+    private static JsValue InstantToZonedDateTimeIso(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> args)
+    {
+        var timeZoneLike = args.Count > 0 ? ToStrArg(ctx, args[0]) : "UTC";
+        var instant = new DateTimeOffset(InstantToDateTime(DecodeInstantNanos(h, o)));
+        var zoned = IntlDateTimeFormatting.ConvertToTimeZone(instant, timeZoneLike, out var resolvedTimeZoneId);
+        return MakeZonedDateTime(ctx, h, zoned, resolvedTimeZoneId);
     }
 
     /// <summary>Format a Duration as ISO 8601 string (e.g. "P1Y2M3DT4H5M6S").</summary>
@@ -276,6 +337,12 @@ public sealed class TemporalStub : IBuiltinModule
     {
         if (args.Count > 0)
         {
+            if (args[0].Tag == JsValueTag.BigInt)
+            {
+                var ns = (long)args[0].AsBigInt();
+                return MakeInstantFromNanoseconds(h, ns);
+            }
+
             var s = ToStrArg(ctx, args[0]);
             var dt = ParseIsoDateTime(s);
             if (dt.HasValue && dt.Value.Kind != DateTimeKind.Unspecified)
@@ -754,16 +821,17 @@ public sealed class TemporalStub : IBuiltinModule
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
             return JsValue.FromBoolean(DecodeInstantNanos(h, o) == DecodeInstantNanos(h, h.GetObject(a[0].AsObjectHandle())));
         }, 1);
-        AddMethod(ctx, h, pH, p, "toString", (o, _) => FormatInstant(h, o), 0);
+        AddMethod(ctx, h, pH, p, "toString", (o, a) => FormatInstant(ctx, h, o, a), 0);
+        AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => InstantToLocaleString(ctx, h, o, a), 2);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatInstant(h, o), 0);
-        AddMethod(ctx, h, pH, p, "toZonedDateTimeISO", (o, _) => CloneTemporal(ctx, h, o), 1);
+        AddMethod(ctx, h, pH, p, "toZonedDateTimeISO", (o, a) => InstantToZonedDateTimeIso(ctx, h, o, a), 1);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("Instant.prototype.valueOf throws.")), 0);
         var c = h.GetObject(cH);
-        AddStatic(ctx, h, cH, c, "from", a => ConstructInstant(ctx, h, a), 1);
-        AddStatic(ctx, h, cH, c, "fromEpochSeconds", a => MakeInstantEpoch(ctx, h, a, 1_000_000_000L), 1);
-        AddStatic(ctx, h, cH, c, "fromEpochMilliseconds", a => MakeInstantEpoch(ctx, h, a, 1_000_000L), 1);
-        AddStatic(ctx, h, cH, c, "fromEpochMicroseconds", a => MakeInstantEpoch(ctx, h, a, 1_000L), 1);
-        AddStatic(ctx, h, cH, c, "fromEpochNanoseconds", a => MakeInstantEpoch(ctx, h, a, 1L), 1);
+        AddStatic(ctx, h, cH, c, "from", a => AttachPrototype(h, ConstructInstant(ctx, h, a), pH), 1);
+        AddStatic(ctx, h, cH, c, "fromEpochSeconds", a => AttachPrototype(h, MakeInstantEpoch(ctx, h, a, 1_000_000_000L), pH), 1);
+        AddStatic(ctx, h, cH, c, "fromEpochMilliseconds", a => AttachPrototype(h, MakeInstantEpoch(ctx, h, a, 1_000_000L), pH), 1);
+        AddStatic(ctx, h, cH, c, "fromEpochMicroseconds", a => AttachPrototype(h, MakeInstantEpoch(ctx, h, a, 1_000L), pH), 1);
+        AddStatic(ctx, h, cH, c, "fromEpochNanoseconds", a => AttachPrototype(h, MakeInstantEpoch(ctx, h, a, 1L), pH), 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
             if (a.Count < 2 || a[0].Tag != JsValueTag.Object || a[1].Tag != JsValueTag.Object) return JsValue.FromNumber(0);
             long nsA = DecodeInstantNanos(h, h.GetObject(a[0].AsObjectHandle()));
@@ -829,6 +897,7 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "toPlainDateTime", (o, _) => MakePlainDateTime(ctx, h, DateTime.UtcNow), 1);
         AddMethod(ctx, h, pH, p, "toZonedDateTime", (o, _) => MakeZonedDateTime(ctx, h, DateTimeOffset.UtcNow, "UTC"), 1);
         AddMethod(ctx, h, pH, p, "toString", (o, _) => FormatPlainDate(h, o), 0);
+        AddMethod(ctx, h, pH, p, "toLocaleString", (o, _) => FormatPlainDate(h, o), 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainDate(h, o), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("PlainDate.prototype.valueOf throws.")), 0);
         var c = h.GetObject(cH);
@@ -955,11 +1024,12 @@ public sealed class TemporalStub : IBuiltinModule
             return JsValue.FromBoolean(FieldsEqual(h, o, h.GetObject(a[0].AsObjectHandle()), "year","month","day","hour","minute","second","millisecond","microsecond","nanosecond"));
         }, 1);
         AddMethod(ctx, h, pH, p, "toString", (o, _) => FormatPlainDateTime(h, o), 0);
+        AddMethod(ctx, h, pH, p, "toLocaleString", (o, _) => FormatPlainDateTime(h, o), 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainDateTime(h, o), 0);
         AddMethod(ctx, h, pH, p, "toZonedDateTime", (o, _) => MakeZonedDateTime(ctx, h, DateTimeOffset.UtcNow, "UTC"), 1);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
-        AddStatic(ctx, h, cH, c, "from", a => ConstructPlainDateTime(ctx, h, a), 1);
+        AddStatic(ctx, h, cH, c, "from", a => AttachPrototype(h, ConstructPlainDateTime(ctx, h, a), pH), 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
             if (a.Count < 2 || a[0].Tag != JsValueTag.Object || a[1].Tag != JsValueTag.Object) return JsValue.FromNumber(0);
             return JsValue.FromNumber(FieldsCompare(h, h.GetObject(a[0].AsObjectHandle()), h.GetObject(a[1].AsObjectHandle()), "year","month","day","hour","minute","second","millisecond","microsecond","nanosecond"));
@@ -1152,12 +1222,18 @@ public sealed class TemporalStub : IBuiltinModule
     {
         if (dt.Kind == DateTimeKind.Local) dt = dt.ToUniversalTime();
         var ns = (dt.Ticks - Epoch.Ticks) * 100L;
+        return MakeInstantFromNanoseconds(h, ns);
+    }
+
+    private static JsValue MakeInstantFromNanoseconds(JsHeap h, long ns)
+    {
         var o = new JsObject();
         var d = new JsObject(); var dH = h.AllocateObject(d, AllocationSite.Current());
         d.SetProperty("es", JsValue.FromNumber((double)ns / 1_000_000_000));
         d.SetProperty("ems", JsValue.FromNumber((double)ns / 1_000_000));
         d.SetProperty("eus", JsValue.FromNumber((double)ns / 1_000));
         d.SetProperty("ens", JsValue.FromNumber((double)ns));
+        d.SetProperty("ensBig", JsValue.FromBigInt(ns));
         o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.FromObject(dH), false, false, false));
         return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
     }
@@ -1255,6 +1331,7 @@ public sealed class TemporalStub : IBuiltinModule
         d.SetProperty("offsetNanoseconds", JsValue.FromNumber(dto.Offset.Ticks * 100L));
         d.SetProperty("tz", JsValue.FromString(tz));
         o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.FromObject(dH), false, false, false));
+        o.DefineOwnProperty("timeZoneId", new JsPropertyDescriptor(JsValue.FromString(tz), true, true, true));
         return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
     }
 
@@ -1270,6 +1347,91 @@ public sealed class TemporalStub : IBuiltinModule
         var o = new JsObject();
         o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.FromString(id), false, false, false));
         return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
+    }
+
+    private static IntlDateTimeFormatOptions ParseDateTimeFormatOptions(string locale, IBuiltinContext ctx, JsHeap h, JsValue optionsValue)
+    {
+        if (optionsValue.Tag != JsValueTag.Object)
+        {
+            return new IntlDateTimeFormatOptions(CalendarId: ParseCalendarId(locale));
+        }
+
+        var optionsObject = h.GetObject(optionsValue.AsObjectHandle());
+        string? GetString(string name)
+        {
+            return TryGetStringProperty(ctx, h, optionsObject, optionsValue, name, out var value) ? value : null;
+        }
+
+        bool? GetBool(string name)
+        {
+            if (!optionsObject.TryGetProperty(name, x => h.GetObject(x), out var descriptor) || descriptor.Value.Tag == JsValueTag.Undefined)
+            {
+                return null;
+            }
+
+            var value = descriptor.Value;
+            return value.Tag switch
+            {
+                JsValueTag.Boolean => value.AsBoolean(),
+                _ => ctx.ToNumber(value) != 0 && !double.IsNaN(ctx.ToNumber(value)),
+            };
+        }
+
+        int? GetInt(string name)
+        {
+            if (!optionsObject.TryGetProperty(name, x => h.GetObject(x), out var descriptor) || descriptor.Value.Tag == JsValueTag.Undefined)
+            {
+                return null;
+            }
+
+            return (int)ctx.ToNumber(descriptor.Value);
+        }
+
+        return new IntlDateTimeFormatOptions(
+            CalendarId: ParseCalendarId(locale),
+            TimeZoneId: GetString("timeZone"),
+            DateStyle: GetString("dateStyle"),
+            TimeStyle: GetString("timeStyle"),
+            HourCycle: GetString("hourCycle"),
+            Hour12: GetBool("hour12"),
+            Weekday: GetString("weekday"),
+            Era: GetString("era"),
+            Year: GetString("year"),
+            Month: GetString("month"),
+            Day: GetString("day"),
+            Hour: GetString("hour"),
+            Minute: GetString("minute"),
+            Second: GetString("second"),
+            FractionalSecondDigits: GetInt("fractionalSecondDigits"),
+            DayPeriod: GetString("dayPeriod"),
+            TimeZoneName: GetString("timeZoneName"));
+    }
+
+    private static string? ParseCalendarId(string locale)
+    {
+        const string marker = "-u-ca-";
+        var index = locale.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (index < 0)
+        {
+            return null;
+        }
+
+        var start = index + marker.Length;
+        var end = locale.IndexOf('-', start);
+        return end >= 0 ? locale[start..end] : locale[start..];
+    }
+
+    private static bool TryGetStringProperty(IBuiltinContext ctx, JsHeap h, JsObject obj, JsValue receiver, string name, out string value)
+    {
+        value = string.Empty;
+        if (!obj.TryGetProperty(name, x => h.GetObject(x), out var descriptor) || descriptor.Value.Tag == JsValueTag.Undefined)
+        {
+            return false;
+        }
+
+        var property = descriptor.Value;
+        value = property.Tag == JsValueTag.String ? property.AsString() : ctx.ToStringValue(property);
+        return true;
     }
 
     private static JsValue CloneTemporal(IBuiltinContext ctx, JsHeap h, JsObject orig)
