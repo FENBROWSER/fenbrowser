@@ -190,6 +190,26 @@ Typical order:
 
 Do not run large suites by default when a smaller proof is sufficient.
 
+### test262 timeout policy (mandatory, no exceptions)
+
+Every test262 run MUST enforce a **2-second per-test timeout**. Any test exceeding 2s is **skipped**, never awaited — a single test must never hang or block the suite. Always pass `--timeout-ms 2000` (CLI) / `-TimeoutMs 2000` (scripts) plus a stall watchdog (`-StallTimeoutSec 30`). This applies to every test262 invocation — quick categories, full chunks, single reruns — with no exception.
+
+## Commit and push discipline
+
+Ship work in feature/component-sized units, one at a time. For each unit, before starting the next:
+
+1. Clean build of the affected project(s) succeeds with zero errors.
+2. Verify with test262, WPT, or local unit tests (whichever exercises the change); it must pass with no new failures.
+3. Only if verification passed, commit — human-style messages, split into the smallest coherent chunks (one logical change per commit).
+4. Push the committed work.
+5. Then move to the next unit.
+
+Hard rules:
+- Never commit unbuilt or unverified code.
+- Never batch multiple unrelated features/fixes into one commit.
+- Never leave a completed, verified unit unpushed before starting the next one.
+- Do not add AI/co-author trailers to commit messages.
+
 ## Output contract for agent responses
 
 Default response format:

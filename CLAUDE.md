@@ -61,6 +61,22 @@ From `docs/DEFINITION_OF_DONE.md` — check before finishing any implementation:
 
 **Tier 2 (architecture changes):** no >5% benchmark regression; arena slab high-water mark stable; `docs/VOLUME_*.md` updated.
 
+## Commit & Push Discipline (Non-Negotiable)
+
+Ship work in **feature/component-sized units**, one at a time. For each unit, complete this loop **before starting the next**:
+
+1. **Clean build** — `dotnet build` of the affected project(s) must succeed with **zero errors**.
+2. **Verify** — run the relevant verification: **test262**, **WPT**, or **local unit tests** (whichever exercises the change). It must pass with no new failures. (When the change is in the JS engine, prefer a test262 slice + `FenBrowser.Js.Tests`.)
+3. **Commit only if verification passed** — write **human-style** commit messages and split work into the **smallest coherent chunks** (one logical change per commit, e.g. a fix and its unrelated diagnostic land as separate commits).
+4. **Push** the committed work to the remote.
+5. **Then** move on to the next feature/component.
+
+Hard rules:
+- Never commit code that did not build or was not verified.
+- Never batch multiple unrelated features/fixes into one commit.
+- Never leave a completed, verified unit unpushed before starting the next one.
+- Do **not** add AI/co-author trailers to commit messages — commits read as authored by a human.
+
 ## Build Commands
 
 ```bash
@@ -102,7 +118,7 @@ Test262 tests MUST be run in **chunks of 1000** with strict safety controls:
 2. **Completion Threshold**: Each chunk MUST have **900+ tests complete** (pass or fail) before moving to the next chunk.
 3. **Memory Safety**: Check RAM before each chunk. **NEVER exceed 70% RAM usage**.
 4. **Results File**: All results go to `docs/test_results.md`.
-5. **Per-test timeout**: 180 seconds.
+5. **Per-test timeout — MANDATORY, NO EXCEPTIONS**: Every test262 run MUST enforce a **2-second per-test timeout**. Any test that runs longer than 2s is **skipped**, never awaited — a single test must never hang or block the whole suite. Always pass `--timeout-ms 2000` (CLI) / `-TimeoutMs 2000` (scripts) together with a stall watchdog (`-StallTimeoutSec 30`). This applies to *every* test262 invocation — quick categories, full chunks, single reruns — with no exception.
 
 ```bash
 # Build once
