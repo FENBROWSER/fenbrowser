@@ -71,6 +71,11 @@ public sealed partial class BytecodeInterpreter
         IntlDateTimeFormatOptions options,
         IReadOnlyList<JsValue> args)
     {
+        if (TryGetTemporalPlainTime(args, culture, options, out var plainTimeResult))
+        {
+            return JsValue.FromString(plainTimeResult.Text);
+        }
+
         if (!TryGetDateTimeFormatInput(args, out var instant))
             return JsValue.FromString("Invalid Date");
 
@@ -83,6 +88,22 @@ public sealed partial class BytecodeInterpreter
         IntlDateTimeFormatOptions options,
         IReadOnlyList<JsValue> args)
     {
+        if (TryGetTemporalPlainTime(args, culture, options, out var plainTimeResult))
+        {
+            var plainPartValues = new List<JsValue>(plainTimeResult.Parts.Count);
+            foreach (var part in plainTimeResult.Parts)
+            {
+                var partObj = CreateOrdinaryObject();
+                _ = partObj.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(part.Type), Writable: true, Enumerable: true, Configurable: true));
+                _ = partObj.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.FromString(part.Value), Writable: true, Enumerable: true, Configurable: true));
+                var partHandle = _heap.AllocateObject(partObj, AllocationSite.Current());
+                plainPartValues.Add(JsValue.FromObject(partHandle));
+            }
+
+            var plainArray = CreateArrayObject(plainPartValues);
+            return JsValue.FromObject(_heap.AllocateObject(plainArray, AllocationSite.Current()));
+        }
+
         if (!TryGetDateTimeFormatInput(args, out var instant))
         {
             var emptyArray = CreateArrayObject(Array.Empty<JsValue>());
@@ -233,6 +254,52 @@ public sealed partial class BytecodeInterpreter
         var nanos = (long)ToNumber(nanosDescriptor.Value);
         instant = new DateTimeOffset(new DateTime(621355968000000000L + (nanos / 100L), DateTimeKind.Utc));
         return true;
+    }
+
+    private bool TryGetTemporalPlainTime(
+        IReadOnlyList<JsValue> args,
+        CultureInfo culture,
+        IntlDateTimeFormatOptions options,
+        out IntlDateTimeFormatResult result)
+    {
+        result = default!;
+        if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var obj = _heap.GetObject(args[0].AsObjectHandle());
+        if (!obj.TryGetProperty("_v", x => _heap.GetObject(x), out var slotsDescriptor) || slotsDescriptor.Value.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var slots = _heap.GetObject(slotsDescriptor.Value.AsObjectHandle());
+        if (!slots.TryGetProperty("hour", x => _heap.GetObject(x), out var hourDescriptor))
+        {
+            return false;
+        }
+
+        if (slots.TryGetProperty("y", x => _heap.GetObject(x), out _))
+        {
+            return false;
+        }
+
+        try
+        {
+            var hour = (int)ToNumber(hourDescriptor.Value);
+            var minute = slots.TryGetProperty("minute", x => _heap.GetObject(x), out var minuteDescriptor) ? (int)ToNumber(minuteDescriptor.Value) : 0;
+            var second = slots.TryGetProperty("second", x => _heap.GetObject(x), out var secondDescriptor) ? (int)ToNumber(secondDescriptor.Value) : 0;
+            var millisecond = slots.TryGetProperty("millisecond", x => _heap.GetObject(x), out var msDescriptor) ? (int)ToNumber(msDescriptor.Value) : 0;
+            var microsecond = slots.TryGetProperty("microsecond", x => _heap.GetObject(x), out var microsDescriptor) ? (int)ToNumber(microsDescriptor.Value) : 0;
+            var nanosecond = slots.TryGetProperty("nanosecond", x => _heap.GetObject(x), out var nanosDescriptor) ? (int)ToNumber(nanosDescriptor.Value) : 0;
+            result = IntlDateTimeFormatting.FormatPlainTime(hour, minute, second, millisecond, microsecond, nanosecond, culture, options);
+            return true;
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new JsThrownException(CreateTypeError(ex.Message));
+        }
     }
 
     private IntlDateTimeFormatOptions ParseDateTimeFormatOptions(string locale, JsValue optionsValue)

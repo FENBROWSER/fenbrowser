@@ -135,6 +135,58 @@ internal static class IntlDateTimeFormatting
         return new IntlDateTimeFormatResult(string.Concat(parts.Select(static part => part.Value)), parts);
     }
 
+    public static void ValidatePlainTimeOptions(IntlDateTimeFormatOptions options)
+    {
+        if (!string.IsNullOrEmpty(options.DateStyle))
+        {
+            throw new InvalidOperationException("dateStyle conflicts with PlainTime.");
+        }
+
+        if (!string.IsNullOrEmpty(options.TimeStyle) &&
+            (!string.IsNullOrEmpty(options.Hour) ||
+             !string.IsNullOrEmpty(options.Minute) ||
+             !string.IsNullOrEmpty(options.Second) ||
+             options.FractionalSecondDigits.HasValue ||
+             !string.IsNullOrEmpty(options.DayPeriod)))
+        {
+            throw new InvalidOperationException("timeStyle conflicts with explicit time component options.");
+        }
+    }
+
+    public static IntlDateTimeFormatResult FormatPlainTime(
+        int hour,
+        int minute,
+        int second,
+        int millisecond,
+        int microsecond,
+        int nanosecond,
+        CultureInfo culture,
+        IntlDateTimeFormatOptions options)
+    {
+        ValidatePlainTimeOptions(options);
+        var hasTimeStyle = !string.IsNullOrEmpty(options.TimeStyle);
+        var hasExplicitFields =
+            !string.IsNullOrEmpty(options.Hour) ||
+            !string.IsNullOrEmpty(options.Minute) ||
+            !string.IsNullOrEmpty(options.Second) ||
+            options.FractionalSecondDigits.HasValue ||
+            !string.IsNullOrEmpty(options.DayPeriod);
+
+        if (!hasTimeStyle && !hasExplicitFields)
+        {
+            options = options with { Hour = "numeric", Minute = "numeric", Second = "numeric" };
+        }
+
+        if (hasTimeStyle)
+        {
+            options = options with { Hour = "numeric", Minute = "numeric", Second = "numeric" };
+        }
+
+        var parts = new List<IntlDateTimePart>();
+        AppendPlainTimeParts(parts, culture, options, hour, minute, second, millisecond, microsecond, nanosecond);
+        return new IntlDateTimeFormatResult(string.Concat(parts.Select(static part => part.Value)), parts);
+    }
+
     public static DateTimeOffset ConvertToTimeZone(DateTimeOffset utcInstant, string? timeZoneLike, out string resolvedTimeZoneId)
     {
         var timeZoneId = ExtractTimeZoneId(timeZoneLike);
@@ -371,6 +423,64 @@ internal static class IntlDateTimeFormatting
         {
             parts.Add(new IntlDateTimePart("literal", " "));
             parts.Add(new IntlDateTimePart("timeZoneName", GetTimeZoneName(options.TimeZoneName!, resolvedTimeZoneId, offset)));
+        }
+    }
+
+    private static void AppendPlainTimeParts(
+        List<IntlDateTimePart> parts,
+        CultureInfo culture,
+        IntlDateTimeFormatOptions options,
+        int hour,
+        int minute,
+        int second,
+        int millisecond,
+        int microsecond,
+        int nanosecond)
+    {
+        var hasHour = !string.IsNullOrEmpty(options.Hour);
+        var hasMinute = !string.IsNullOrEmpty(options.Minute);
+        var hasSecond = !string.IsNullOrEmpty(options.Second);
+        var hasFraction = options.FractionalSecondDigits.HasValue;
+        var use12Hour = ShouldUseTwelveHour(culture, options);
+        var hourCycle = ResolveHourCycle(culture, options, use12Hour);
+
+        if (hasHour)
+        {
+            parts.Add(new IntlDateTimePart("hour", FormatHour(hour, hourCycle)));
+        }
+
+        if (hasMinute)
+        {
+            if (hasHour)
+            {
+                parts.Add(new IntlDateTimePart("literal", ":"));
+            }
+
+            parts.Add(new IntlDateTimePart("minute", minute.ToString("D2", CultureInfo.InvariantCulture)));
+        }
+
+        if (hasSecond)
+        {
+            if (hasHour || hasMinute)
+            {
+                parts.Add(new IntlDateTimePart("literal", ":"));
+            }
+
+            parts.Add(new IntlDateTimePart("second", second.ToString("D2", CultureInfo.InvariantCulture)));
+        }
+
+        if (hasFraction)
+        {
+            var fractional = millisecond * 1_000_000 + microsecond * 1_000 + nanosecond;
+            var digits = Math.Clamp(options.FractionalSecondDigits!.Value, 1, 9);
+            parts.Add(new IntlDateTimePart("literal", "."));
+            parts.Add(new IntlDateTimePart("fractionalSecond", fractional.ToString("D9", CultureInfo.InvariantCulture)[..digits]));
+        }
+
+        if (use12Hour && (hasHour || !string.IsNullOrEmpty(options.DayPeriod)))
+        {
+            parts.Add(new IntlDateTimePart("literal", " "));
+            parts.Add(new IntlDateTimePart("dayPeriod", hour < 12 ? culture.DateTimeFormat.AMDesignator : culture.DateTimeFormat.PMDesignator));
         }
     }
 

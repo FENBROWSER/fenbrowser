@@ -204,6 +204,29 @@ public sealed class TemporalStub : IBuiltinModule
         return MakeZonedDateTime(ctx, h, zoned, resolvedTimeZoneId);
     }
 
+    private static JsValue PlainTimeToLocaleString(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> args)
+    {
+        var locale = args.Count > 0 ? ToStrArg(ctx, args[0]) : string.Empty;
+        var options = ParseDateTimeFormatOptions(locale, ctx, h, args.Count > 1 ? args[1] : JsValue.Undefined);
+        try
+        {
+            var result = IntlDateTimeFormatting.FormatPlainTime(
+                (int)GetVNum(h, o, "hour"),
+                (int)GetVNum(h, o, "minute"),
+                (int)GetVNum(h, o, "second"),
+                (int)GetVNum(h, o, "millisecond"),
+                (int)GetVNum(h, o, "microsecond"),
+                (int)GetVNum(h, o, "nanosecond"),
+                IntlDateTimeFormatting.ResolveCulture(locale),
+                options);
+            return JsValue.FromString(result.Text);
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new JsThrownException(ctx.CreateTypeError(ex.Message));
+        }
+    }
+
     /// <summary>Format a Duration as ISO 8601 string (e.g. "P1Y2M3DT4H5M6S").</summary>
     private static JsValue FormatDuration(JsHeap h, JsObject o)
     {
@@ -363,22 +386,52 @@ public sealed class TemporalStub : IBuiltinModule
         int hr = 0, mi = 0, s = 0, ms = 0, us = 0, ns = 0;
         if (args.Count > 0)
         {
-            var str = ToStrArg(ctx, args[0]);
-            var ts = ParseIsoTime(str);
-            if (ts.HasValue)
+            if (args[0].Tag == JsValueTag.String)
             {
-                hr = ts.Value.Hours; mi = ts.Value.Minutes; s = ts.Value.Seconds;
-                ms = ts.Value.Milliseconds;
-                us = (int)((ts.Value.Ticks % TimeSpan.TicksPerMillisecond) / 10) % 1000;
+                var str = args[0].AsString();
+                var ts = ParseIsoTime(str);
+                if (!ts.HasValue && str.Contains('T'))
+                {
+                    var timePart = str[(str.IndexOf('T') + 1)..];
+                    var zoneStart = timePart.IndexOfAny(new[] { 'Z', '+', '-' });
+                    if (zoneStart > 0)
+                    {
+                        timePart = timePart[..zoneStart];
+                    }
+
+                    var bracketStart = timePart.IndexOf('[');
+                    if (bracketStart >= 0)
+                    {
+                        timePart = timePart[..bracketStart];
+                    }
+
+                    ts = ParseIsoTime(timePart);
+                }
+
+                if (ts.HasValue)
+                {
+                    hr = ts.Value.Hours; mi = ts.Value.Minutes; s = ts.Value.Seconds;
+                    ms = ts.Value.Milliseconds;
+                    us = (int)((ts.Value.Ticks % TimeSpan.TicksPerMillisecond) / 10) % 1000;
+                }
+                else
+                {
+                    hr = (int)ctx.ToNumber(args[0]);
+                    mi = args.Count > 1 ? (int)ctx.ToNumber(args[1]) : 0;
+                    s = args.Count > 2 ? (int)ctx.ToNumber(args[2]) : 0;
+                    ms = args.Count > 3 ? (int)ctx.ToNumber(args[3]) : 0;
+                    us = args.Count > 4 ? (int)ctx.ToNumber(args[4]) : 0;
+                    ns = args.Count > 5 ? (int)ctx.ToNumber(args[5]) : 0;
+                }
             }
             else
             {
-                hr = args.Count > 0 ? (int)args[0].AsNumber() : 0;
-                mi = args.Count > 1 ? (int)args[1].AsNumber() : 0;
-                s = args.Count > 2 ? (int)args[2].AsNumber() : 0;
-                ms = args.Count > 3 ? (int)args[3].AsNumber() : 0;
-                us = args.Count > 4 ? (int)args[4].AsNumber() : 0;
-                ns = args.Count > 5 ? (int)args[5].AsNumber() : 0;
+                hr = args.Count > 0 ? (int)ctx.ToNumber(args[0]) : 0;
+                mi = args.Count > 1 ? (int)ctx.ToNumber(args[1]) : 0;
+                s = args.Count > 2 ? (int)ctx.ToNumber(args[2]) : 0;
+                ms = args.Count > 3 ? (int)ctx.ToNumber(args[3]) : 0;
+                us = args.Count > 4 ? (int)ctx.ToNumber(args[4]) : 0;
+                ns = args.Count > 5 ? (int)ctx.ToNumber(args[5]) : 0;
             }
         }
         return MakePlainTime(ctx, h, hr, mi, s, ms, us, ns);
@@ -956,11 +1009,12 @@ public sealed class TemporalStub : IBuiltinModule
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
             return JsValue.FromBoolean(FieldsEqual(h, o, h.GetObject(a[0].AsObjectHandle()), "hour","minute","second","millisecond","microsecond","nanosecond"));
         }, 1);
+        AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => PlainTimeToLocaleString(ctx, h, o, a), 2);
         AddMethod(ctx, h, pH, p, "toString", (o, _) => FormatPlainTime(h, o), 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainTime(h, o), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
-        AddStatic(ctx, h, cH, c, "from", a => ConstructPlainTime(ctx, h, a), 1);
+        AddStatic(ctx, h, cH, c, "from", a => AttachPrototype(h, ConstructPlainTime(ctx, h, a), pH), 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
             if (a.Count < 2 || a[0].Tag != JsValueTag.Object || a[1].Tag != JsValueTag.Object) return JsValue.FromNumber(0);
             return JsValue.FromNumber(FieldsCompare(h, h.GetObject(a[0].AsObjectHandle()), h.GetObject(a[1].AsObjectHandle()), "hour","minute","second","millisecond","microsecond","nanosecond"));
