@@ -17,6 +17,14 @@ namespace FenBrowser.Js.Interpreter;
 
 public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSource
 {
+    private static readonly char[] EcmaWhitespaceChars =
+    [
+        '\u0009', '\u000A', '\u000B', '\u000C', '\u000D', '\u0020', '\u00A0', '\u1680',
+        '\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005', '\u2006', '\u2007',
+        '\u2008', '\u2009', '\u200A', '\u2028', '\u2029', '\u202F', '\u205F', '\u3000',
+        '\uFEFF'
+    ];
+
     private readonly JsHeap _heap;
     public JsHeap Heap => _heap;
     // Audit �1: every active InterpreterFrame is registered here so the GC
@@ -16217,12 +16225,11 @@ fallbackArraySpecies:
         if (value.Tag == JsValueTag.String)
         {
             var text = value.AsString();
-            if (string.IsNullOrWhiteSpace(text))
+            var trimmed = text.Trim(EcmaWhitespaceChars);
+            if (trimmed.Length == 0)
             {
                 return 0;
             }
-
-            var trimmed = text.Trim();
             if (string.Equals(trimmed, "Infinity", StringComparison.Ordinal) ||
                 string.Equals(trimmed, "+Infinity", StringComparison.Ordinal))
             {
@@ -16263,8 +16270,8 @@ fallbackArraySpecies:
             }
 
             if (double.TryParse(
-                    text,
-                    System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowLeadingWhite | System.Globalization.NumberStyles.AllowTrailingWhite,
+                    trimmed,
+                    System.Globalization.NumberStyles.Float,
                     System.Globalization.CultureInfo.InvariantCulture,
                     out var parsed))
             {

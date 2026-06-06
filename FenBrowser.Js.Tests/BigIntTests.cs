@@ -234,6 +234,12 @@ public sealed class BigIntTests
     }
 
     [Fact]
+    public void NumberConstructorConvertsBigInt()
+    {
+        Assert.True(Run("Number(1n) === 1 && Number(-2n) === -2;").AsBoolean());
+    }
+
+    [Fact]
     public void BigIntConstructorParsesPrefixedStrings()
     {
         Assert.True(Run("BigInt('0x10') === 16n && BigInt('0o10') === 8n && BigInt('0b10') === 2n;").AsBoolean());

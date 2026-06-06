@@ -30,14 +30,15 @@ public sealed class NumberBuiltin : IBuiltinModule
 
         var constructor = new NativeFunctionObject(
             "Number",
-            (_, args) => JsValue.FromNumber(args.Count > 0 ? context.ToNumber(args[0]) : 0d),
-            args =>
+            (_, args) => JsValue.FromNumber(args.Count > 0 ? ToNumberConstructorValue(context, args[0]) : 0d),
+            length: 1,
+            constructWithNewTarget: (args, newTarget) =>
             {
-                var obj = new NumberObject(args.Count > 0 ? context.ToNumber(args[0]) : 0d);
-                obj.SetPrototype(capturedProto);
+                var obj = new NumberObject(args.Count > 0 ? ToNumberConstructorValue(context, args[0]) : 0d);
+                obj.SetPrototype(ResolveConstructorPrototype(context, newTarget, capturedProto));
                 return JsValue.FromObject(heap.AllocateObject(obj, AllocationSite.Current()));
-            },
-            length: 1);
+            });
+        constructor.SetPrototype(GetFunctionPrototypeHandle(context));
 
         // 21.1.2 Properties of the Number Constructor
         _ = constructor.DefineOwnProperty("MAX_VALUE", new JsPropertyDescriptor(JsValue.FromNumber(double.MaxValue), Writable: false, Enumerable: false, Configurable: false));
@@ -76,11 +77,13 @@ public sealed class NumberBuiltin : IBuiltinModule
         heap.WriteBarrier(constructorHandle, parseFloatHandle);
 
         var protoObj = heap.GetObject(prototypeHandle);
-        _ = protoObj.SetProperty("constructor", JsValue.FromObject(constructorHandle));
+        _ = protoObj.DefineOwnProperty("constructor",
+            new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         // 21.1.3 prototype methods
         DefineProtoMethod(heap, capturedCtx, prototypeHandle, protoObj, "toString", NumberPrototypeToString, length: 1);
+        DefineProtoMethod(heap, capturedCtx, prototypeHandle, protoObj, "toLocaleString", NumberPrototypeToLocaleString, length: 0);
         DefineProtoMethod(heap, capturedCtx, prototypeHandle, protoObj, "toFixed", NumberPrototypeToFixed, length: 1);
         DefineProtoMethod(heap, capturedCtx, prototypeHandle, protoObj, "toExponential", NumberPrototypeToExponential, length: 1);
         DefineProtoMethod(heap, capturedCtx, prototypeHandle, protoObj, "toPrecision", NumberPrototypeToPrecision, length: 1);
@@ -95,6 +98,79 @@ public sealed class NumberBuiltin : IBuiltinModule
         var value = args[0].AsNumber();
         if (double.IsNaN(value) || double.IsInfinity(value)) return false;
         return Math.Floor(value) == value;
+    }
+
+    private static double ToNumberConstructorValue(IBuiltinContext context, JsValue value)
+    {
+        return value.Tag == JsValueTag.BigInt
+            ? (double)value.AsBigInt()
+            : context.ToNumber(value);
+    }
+
+    private static ObjectHandle ResolveConstructorPrototype(IBuiltinContext ctx, JsValue newTarget, ObjectHandle defaultPrototypeHandle)
+    {
+        if (newTarget.Tag != JsValueTag.Object)
+        {
+            return defaultPrototypeHandle;
+        }
+
+        var newTargetObject = ctx.Heap.GetObject(newTarget.AsObjectHandle());
+        if (ctx.TryGetPropertyValue(newTargetObject, newTarget, "prototype", out var prototypeValue) &&
+            prototypeValue.Tag == JsValueTag.Object)
+        {
+            return prototypeValue.AsObjectHandle();
+        }
+
+        if (TryGetRealmNumberPrototype(ctx, newTargetObject, newTarget, out var realmPrototypeHandle))
+        {
+            return realmPrototypeHandle;
+        }
+
+        return defaultPrototypeHandle;
+    }
+
+    private static ObjectHandle GetFunctionPrototypeHandle(IBuiltinContext ctx)
+    {
+        var functionConstructorHandle = ctx.MaterializeFunctionConstructor();
+        var functionConstructor = ctx.Heap.GetObject(functionConstructorHandle);
+        if (ctx.TryGetPropertyValue(functionConstructor, JsValue.FromObject(functionConstructorHandle), "prototype", out var prototypeValue) &&
+            prototypeValue.Tag == JsValueTag.Object)
+        {
+            return prototypeValue.AsObjectHandle();
+        }
+
+        throw new InvalidOperationException("Function.prototype is unavailable.");
+    }
+
+    private static bool TryGetRealmNumberPrototype(
+        IBuiltinContext ctx,
+        JsObject newTargetObject,
+        JsValue newTarget,
+        out ObjectHandle prototypeHandle)
+    {
+        prototypeHandle = default;
+        if (!ctx.TryGetPropertyValue(newTargetObject, newTarget, "__realmGlobal__", out var realmGlobal) ||
+            realmGlobal.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var realmGlobalObject = ctx.Heap.GetObject(realmGlobal.AsObjectHandle());
+        if (!ctx.TryGetPropertyValue(realmGlobalObject, realmGlobal, "Number", out var realmNumber) ||
+            realmNumber.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var realmNumberObject = ctx.Heap.GetObject(realmNumber.AsObjectHandle());
+        if (!ctx.TryGetPropertyValue(realmNumberObject, realmNumber, "prototype", out var prototypeValue) ||
+            prototypeValue.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        prototypeHandle = prototypeValue.AsObjectHandle();
+        return true;
     }
 
     private static double NumberThisValue(IBuiltinContext ctx, JsValue thisValue)
@@ -141,6 +217,12 @@ public sealed class NumberBuiltin : IBuiltinModule
         var result = negative ? "-" + intText : intText;
         if (frac.Length > 0) result += "." + frac.ToString();
         return JsValue.FromString(result);
+    }
+
+    private static JsValue NumberPrototypeToLocaleString(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = args;
+        return NumberPrototypeToString(ctx, thisValue, Array.Empty<JsValue>());
     }
 
     // 21.1.3.3 toFixed
