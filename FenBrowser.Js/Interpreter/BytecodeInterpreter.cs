@@ -6677,6 +6677,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // ECMA-402 §14 Intl.Locale constructor.
         _ = EnsureLocaleConstructor(intl, handle);
 
+        // ECMA-402 §17 Intl.RelativeTimeFormat constructor.
+        _ = EnsureRelativeTimeFormatConstructor(intl, handle);
+
         // ECMA-402 §9.2.1 getCanonicalLocales(locales).
         {
             var fn = new NativeFunctionObject(
