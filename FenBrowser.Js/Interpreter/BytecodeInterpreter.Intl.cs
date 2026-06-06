@@ -1340,10 +1340,97 @@ public sealed partial class BytecodeInterpreter
         };
     }
 
+    // Reads the duration components stored on a Temporal.Duration's internal data
+    // holder ("_v"), identified by the presence of the calendar/time unit fields.
+    // Returns false for any other object so the ordinary property-reading path runs.
+    private bool TryReadTemporalDurationSlots(JsObject obj, out DurationRecord record)
+    {
+        record = null!;
+        if (!obj.TryGetOwnProperty("_v", out var holder) || holder.Value.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var data = _heap.GetObject(holder.Value.AsObjectHandle());
+        if (!data.TryGetOwnProperty("years", out _) || !data.TryGetOwnProperty("nanoseconds", out _))
+        {
+            return false;
+        }
+
+        double Slot(string unit) =>
+            data.TryGetOwnProperty(unit, out var d) ? NumericSlotValue(d.Value) : 0;
+
+        record = new DurationRecord(
+            Slot("years"), Slot("months"), Slot("weeks"), Slot("days"), Slot("hours"),
+            Slot("minutes"), Slot("seconds"), Slot("milliseconds"), Slot("microseconds"), Slot("nanoseconds"));
+        return true;
+    }
+
+    private static double NumericSlotValue(JsValue value) => value.Tag switch
+    {
+        JsValueTag.Int32 => value.AsInt32(),
+        JsValueTag.Number => value.AsNumber(),
+        _ => 0
+    };
+
+    // Parses an ISO 8601 / Temporal duration string (e.g. "P1Y2M3W4DT5H6M7.008S").
+    // A fractional part is supported on the seconds field, split into milli/micro/nano.
+    private bool TryParseIsoDuration(string input, out DurationRecord record)
+    {
+        record = null!;
+        if (string.IsNullOrEmpty(input))
+        {
+            return false;
+        }
+
+        var match = System.Text.RegularExpressions.Regex.Match(
+            input,
+            @"^([+-])?P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)(?:[.,](\d{1,9}))?S)?)?$");
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        // Reject "P" / "PT" with no components at all.
+        var hasAny = false;
+        for (var g = 2; g <= 9; g++)
+        {
+            if (match.Groups[g].Success) { hasAny = true; break; }
+        }
+
+        if (!hasAny)
+        {
+            return false;
+        }
+
+        double G(int i) => match.Groups[i].Success ? double.Parse(match.Groups[i].Value, CultureInfo.InvariantCulture) : 0;
+        var signFactor = match.Groups[1].Value == "-" ? -1d : 1d;
+
+        double milliseconds = 0, microseconds = 0, nanoseconds = 0;
+        if (match.Groups[9].Success)
+        {
+            var frac = match.Groups[9].Value.PadRight(9, '0');
+            milliseconds = double.Parse(frac[..3], CultureInfo.InvariantCulture);
+            microseconds = double.Parse(frac[3..6], CultureInfo.InvariantCulture);
+            nanoseconds = double.Parse(frac[6..9], CultureInfo.InvariantCulture);
+        }
+
+        record = new DurationRecord(
+            signFactor * G(2), signFactor * G(3), signFactor * G(4), signFactor * G(5),
+            signFactor * G(6), signFactor * G(7), signFactor * G(8),
+            signFactor * milliseconds, signFactor * microseconds, signFactor * nanoseconds);
+        return true;
+    }
+
     private DurationRecord ParseDurationLike(JsValue value)
     {
         if (value.Tag == JsValueTag.String)
         {
+            if (TryParseIsoDuration(value.AsString(), out var parsed))
+            {
+                return parsed;
+            }
+
             throw new JsThrownException(CreateRangeError("Invalid duration string."));
         }
 
@@ -1353,6 +1440,14 @@ public sealed partial class BytecodeInterpreter
         }
 
         var obj = _heap.GetObject(value.AsObjectHandle());
+
+        // sec-todurationrecord: a Temporal.Duration is read from its internal slots
+        // directly, bypassing the prototype getters (which a caller may have tainted).
+        if (TryReadTemporalDurationSlots(obj, out var slotRecord))
+        {
+            return slotRecord;
+        }
+
         var allowed = new HashSet<string>(DurationUnits, StringComparer.Ordinal);
         // Per sec-todurationrecord, a duration property that is absent or explicitly
         // `undefined` is simply skipped; the TypeError is only thrown when *every*
