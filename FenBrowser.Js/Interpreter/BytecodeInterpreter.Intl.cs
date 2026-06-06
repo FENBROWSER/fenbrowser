@@ -670,22 +670,30 @@ public sealed partial class BytecodeInterpreter
         }
 
         var requestedNumberingSystem = GetStringOption("numberingSystem");
-        if (requestedNumberingSystem is not null)
+        if (requestedNumberingSystem is not null && !IsWellFormedNumberingSystem(requestedNumberingSystem))
         {
-            if (!IsValidDurationNumberingSystem(requestedNumberingSystem))
-            {
-                throw new JsThrownException(CreateRangeError($"{requestedNumberingSystem} is an invalid numberingSystem option value"));
-            }
-
-            numberingSystem = requestedNumberingSystem;
-            locale = RemoveUnicodeNumberingExtension(locale);
+            // Only a syntactically malformed value is rejected; a well-formed but
+            // unsupported value is ignored and resolution falls back to the locale
+            // extension or the default (sec-getoption / ResolveLocale).
+            throw new JsThrownException(CreateRangeError($"{requestedNumberingSystem} is an invalid numberingSystem option value"));
         }
-        else if (TryGetUnicodeExtension(locale, "nu", out var unicodeNumberingSystem) &&
-                 IsValidDurationNumberingSystem(unicodeNumberingSystem))
+
+        // Resolve the effective numbering system: a supported option wins, otherwise a
+        // supported locale "nu" extension, otherwise the default. ResolveLocale keeps the
+        // "-u-nu-" subtag in the resolved locale only when the locale already carries a
+        // supported extension equal to the final numbering system.
+        var hasLocaleNu = TryGetUnicodeExtension(locale, "nu", out var unicodeNumberingSystem) &&
+                          IsValidDurationNumberingSystem(unicodeNumberingSystem);
+        if (requestedNumberingSystem is not null && IsValidDurationNumberingSystem(requestedNumberingSystem))
+        {
+            numberingSystem = requestedNumberingSystem;
+        }
+        else if (hasLocaleNu)
         {
             numberingSystem = unicodeNumberingSystem;
         }
-        else
+
+        if (!(hasLocaleNu && string.Equals(unicodeNumberingSystem, numberingSystem, StringComparison.Ordinal)))
         {
             locale = RemoveUnicodeNumberingExtension(locale);
         }
@@ -1076,6 +1084,14 @@ public sealed partial class BytecodeInterpreter
 
     private static bool IsValidDurationNumberingSystem(string numberingSystem) =>
         numberingSystem is "latn" or "arab" or "thai";
+
+    // A well-formed Unicode BCP 47 numbering-system "type": one or more 3–8 character
+    // alphanumeric subtags joined by "-". Used to distinguish a malformed option value
+    // (RangeError) from a well-formed but unsupported one (ignored).
+    private static bool IsWellFormedNumberingSystem(string numberingSystem) =>
+        System.Text.RegularExpressions.Regex.IsMatch(
+            numberingSystem, @"^[a-z0-9]{3,8}(-[a-z0-9]{3,8})*$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
     private NumberFormatState ParseNumberFormatState(string locale, JsValue optionsValue)
     {
