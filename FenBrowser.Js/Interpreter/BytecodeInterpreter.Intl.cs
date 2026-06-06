@@ -4,6 +4,7 @@ using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
 using System.Globalization;
 using System.Linq;
+using System.Numerics;
 
 namespace FenBrowser.Js.Interpreter;
 
@@ -714,7 +715,25 @@ public sealed partial class BytecodeInterpreter
                 throw new JsThrownException(CreateRangeError($"{displayOption} is an invalid {unit}Display option value"));
             }
 
-            unitDisplays[unit] = displayOption ?? "always";
+            // ECMA-402 GetDurationUnitOptions: displayDefault is "always" only when the
+            // unit's style was explicitly requested, or — under the "digital" base style —
+            // for the hours/minutes/seconds fields. Otherwise it defaults to "auto", so
+            // unset zero-valued units (e.g. months in `{ years: 0 }`) are suppressed.
+            string displayDefault;
+            if (requestedUnitStyle is not null)
+            {
+                displayDefault = "always";
+            }
+            else if (style == "digital" && unit is "hours" or "minutes" or "seconds")
+            {
+                displayDefault = "always";
+            }
+            else
+            {
+                displayDefault = "auto";
+            }
+
+            unitDisplays[unit] = displayOption ?? displayDefault;
         }
 
         if (optionsObject is not null &&
@@ -1146,7 +1165,7 @@ public sealed partial class BytecodeInterpreter
             raw = raw[1..];
             if (!string.Equals(state.SignDisplay, "never", StringComparison.Ordinal))
             {
-                parts.Add(new IntlPart("minusSign", "-"));
+                parts.Add(new IntlPart("minusSign", "-", state.Unit));
             }
         }
 
@@ -1291,9 +1310,9 @@ public sealed partial class BytecodeInterpreter
         return parts;
     }
 
-    private sealed record DurationRecord(int Years, int Months, int Weeks, int Days, int Hours, int Minutes, int Seconds, int Milliseconds, int Microseconds, int Nanoseconds)
+    private sealed record DurationRecord(double Years, double Months, double Weeks, double Days, double Hours, double Minutes, double Seconds, double Milliseconds, double Microseconds, double Nanoseconds)
     {
-        public int this[string unit] => unit switch
+        public double this[string unit] => unit switch
         {
             "years" => Years,
             "months" => Months,
@@ -1323,45 +1342,46 @@ public sealed partial class BytecodeInterpreter
 
         var obj = _heap.GetObject(value.AsObjectHandle());
         var allowed = new HashSet<string>(DurationUnits, StringComparer.Ordinal);
-        var seen = false;
-        var values = new Dictionary<string, int>(StringComparer.Ordinal);
+        // Per sec-todurationrecord, a duration property that is absent or explicitly
+        // `undefined` is simply skipped; the TypeError is only thrown when *every*
+        // recognized property is absent. A present property whose value is 0 (or -0)
+        // counts as defined, so all-zero durations such as `{ years: 0 }` are valid.
+        var anyDefined = false;
+        var values = new Dictionary<string, double>(StringComparer.Ordinal);
         int sign = 0;
 
         foreach (var unit in DurationUnits)
         {
-            if (!TryGetPropertyValue(obj, value, unit, out var property))
+            if (!TryGetPropertyValue(obj, value, unit, out var property) || property.Tag == JsValueTag.Undefined)
             {
                 values[unit] = 0;
                 continue;
             }
 
-            if (property.Tag == JsValueTag.Undefined)
-            {
-                throw new JsThrownException(CreateTypeError("Duration property must not be undefined."));
-            }
+            anyDefined = true;
 
             if (property.Tag == JsValueTag.BigInt)
             {
                 throw new JsThrownException(CreateTypeError("Cannot convert a BigInt value to a number."));
             }
 
+            // ToIntegerIfIntegral: the value must already be an integral Number.
             var numeric = ToNumber(property);
             if (double.IsNaN(numeric) || double.IsInfinity(numeric) || Math.Floor(numeric) != numeric)
             {
                 throw new JsThrownException(CreateRangeError("Duration property must be a finite integer."));
             }
 
-            if (Math.Abs(numeric) > uint.MaxValue)
+            // Normalize -0 to +0 so the sign check below treats it as zero.
+            if (numeric == 0)
             {
-                throw new JsThrownException(CreateRangeError($"Duration \"{unit}\" out of range."));
+                numeric = 0;
             }
 
-            var intValue = (int)numeric;
-            values[unit] = intValue;
-            if (intValue != 0)
+            values[unit] = numeric;
+            if (numeric != 0)
             {
-                seen = true;
-                var currentSign = Math.Sign(intValue);
+                var currentSign = Math.Sign(numeric);
                 if (sign != 0 && currentSign != sign)
                 {
                     throw new JsThrownException(CreateRangeError("Mixed-sign durations are not supported."));
@@ -1384,9 +1404,36 @@ public sealed partial class BytecodeInterpreter
             }
         }
 
-        if (!seen)
+        if (!anyDefined)
         {
             throw new JsThrownException(CreateTypeError("Duration record must define at least one supported property."));
+        }
+
+        // sec-isvalidduration: the calendar units must each be < 2^32 in magnitude and the
+        // exact normalized-seconds total must be < 2^53. The total is evaluated on exact
+        // mathematical values (BigInteger) so that boundary cases near 2^53 — and inputs
+        // beyond 2^53 such as `milliseconds: 4503599627370497000` — classify correctly.
+        const double pow32 = 4294967296d; // 2^32
+        if (Math.Abs(values["years"]) >= pow32 ||
+            Math.Abs(values["months"]) >= pow32 ||
+            Math.Abs(values["weeks"]) >= pow32)
+        {
+            throw new JsThrownException(CreateRangeError("Duration calendar unit out of range."));
+        }
+
+        var totalNanoseconds =
+            ToBigIntegerExact(values["days"]) * 86_400_000_000_000 +
+            ToBigIntegerExact(values["hours"]) * 3_600_000_000_000 +
+            ToBigIntegerExact(values["minutes"]) * 60_000_000_000 +
+            ToBigIntegerExact(values["seconds"]) * 1_000_000_000 +
+            ToBigIntegerExact(values["milliseconds"]) * 1_000_000 +
+            ToBigIntegerExact(values["microseconds"]) * 1_000 +
+            ToBigIntegerExact(values["nanoseconds"]);
+        // 2^53 seconds expressed in nanoseconds.
+        var maxNanoseconds = BigInteger.Pow(2, 53) * 1_000_000_000;
+        if (BigInteger.Abs(totalNanoseconds) >= maxNanoseconds)
+        {
+            throw new JsThrownException(CreateRangeError("Duration time units out of range."));
         }
 
         return new DurationRecord(
@@ -1424,10 +1471,15 @@ public sealed partial class BytecodeInterpreter
             }
             else
             {
-                raw = Math.Abs(value).ToString(CultureInfo.InvariantCulture);
+                // "F0" renders an integral double in full decimal form without exponent.
+                raw = Math.Abs(value).ToString("F0", CultureInfo.InvariantCulture);
             }
 
-            if (value != 0 || unitDisplay != "auto" || displayRequired)
+            // The display gate tests the *composed* value: when a unit absorbs numeric
+            // sub-units (e.g. seconds carrying nonzero milliseconds), its effective value is
+            // nonzero even if its own integer component is 0, so it must still be emitted.
+            var valueIsZero = done ? raw == "0" : value == 0;
+            if (!valueIsZero || unitDisplay != "auto" || displayRequired)
             {
                 var suppressSign = signDisplayed;
                 if (!signDisplayed && overallNegative)
@@ -1521,25 +1573,45 @@ public sealed partial class BytecodeInterpreter
             : string.Empty;
     }
 
+    // Converts an integral double to its exact BigInteger value (the double is already
+    // validated as integral by ToIntegerIfIntegral, so this loses no precision).
+    private static BigInteger ToBigIntegerExact(double value) => new BigInteger(value);
+
     private static string ComposeFractionalDurationValue(DurationRecord duration, string unit, int? fractionalDigits)
     {
-        long whole;
-        string fraction;
+        // Compose the fractional value on exact mathematical values (PartitionDurationFormatPattern):
+        // sum the sub-second contributions in nanosecond-resolution integers so that inputs beyond
+        // 2^53 nanoseconds keep full precision. fracLen is the number of fractional digits the unit
+        // carries (seconds → 9, milliseconds → 6, microseconds → 3).
+        static BigInteger Abs(double v) => BigInteger.Abs(new BigInteger(v));
+
+        BigInteger total;
+        int fracLen;
         switch (unit)
         {
             case "seconds":
-                whole = Math.Abs(duration.Seconds);
-                fraction = $"{Math.Abs(duration.Milliseconds):D3}{Math.Abs(duration.Microseconds):D3}{Math.Abs(duration.Nanoseconds):D3}";
+                total = Abs(duration.Seconds) * 1_000_000_000
+                        + Abs(duration.Milliseconds) * 1_000_000
+                        + Abs(duration.Microseconds) * 1_000
+                        + Abs(duration.Nanoseconds);
+                fracLen = 9;
                 break;
             case "milliseconds":
-                whole = Math.Abs(duration.Milliseconds);
-                fraction = $"{Math.Abs(duration.Microseconds):D3}{Math.Abs(duration.Nanoseconds):D3}";
+                total = Abs(duration.Milliseconds) * 1_000_000
+                        + Abs(duration.Microseconds) * 1_000
+                        + Abs(duration.Nanoseconds);
+                fracLen = 6;
                 break;
             default:
-                whole = Math.Abs(duration.Microseconds);
-                fraction = $"{Math.Abs(duration.Nanoseconds):D3}";
+                total = Abs(duration.Microseconds) * 1_000
+                        + Abs(duration.Nanoseconds);
+                fracLen = 3;
                 break;
         }
+
+        var denom = BigInteger.Pow(10, fracLen);
+        var whole = total / denom;
+        var fraction = (total % denom).ToString(CultureInfo.InvariantCulture).PadLeft(fracLen, '0');
 
         if (fractionalDigits is null)
         {
