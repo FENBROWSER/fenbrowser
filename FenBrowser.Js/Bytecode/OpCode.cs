@@ -57,6 +57,10 @@ public enum OpCode : byte
     // compiler sequences ToNumeric → Increment/Decrement → store, yielding the
     // old value for postfix and the new value for prefix.
     ToNumeric,
+    // ECMA-262 7.1.17 ToString applied to a single operand. Used to coerce template
+    // literal substitutions (13.2.8.6) which call ToString — i.e. ToPrimitive with the
+    // "string" hint (toString-first) — rather than the `+` operator's default hint.
+    ToStringCoerce,
     Increment,
     Decrement,
     Delete,

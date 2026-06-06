@@ -3382,8 +3382,14 @@ public sealed class BytecodeCompiler
         for (var i = 0; i < template.Expressions.Count; i++)
         {
             var expressionReg = CompileExpression(template.Expressions[i]);
+            // Template substitutions are coerced with ToString (string hint), not the
+            // `+` operator's default hint, so an object's toString is preferred over
+            // its valueOf. Coercing here also guarantees the subsequent Add operates
+            // on two strings.
+            var stringReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.ToStringCoerce, stringReg, expressionReg, 0));
             var combinedReg = AllocateRegister();
-            _instructions.Add(new Instruction(OpCode.Add, combinedReg, currentReg, expressionReg));
+            _instructions.Add(new Instruction(OpCode.Add, combinedReg, currentReg, stringReg));
             currentReg = combinedReg;
 
             if (template.Quasis[i + 1].Length > 0)

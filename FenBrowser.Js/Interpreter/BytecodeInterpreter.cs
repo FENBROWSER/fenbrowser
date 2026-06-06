@@ -1719,6 +1719,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
+                case OpCode.ToStringCoerce:
+                    // ToString runs user code (toString/valueOf via ToPrimitive) and may
+                    // throw — route through the frame handler stack.
+                    try
+                    {
+                        frame.Registers[ins.A] = JsValue.FromString(ToStringValue(frame.Registers[ins.B]));
+                    }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    break;
                 case OpCode.Increment:
                     frame.Registers[ins.A] = StepNumeric(frame.Registers[ins.B], +1);
                     break;
@@ -15819,6 +15828,10 @@ fallbackArraySpecies:
                 break;
             case OpCode.ToNumeric:
                 try { frame.Registers[a] = ToNumericValue(frame.Registers[b]); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                break;
+            case OpCode.ToStringCoerce:
+                try { frame.Registers[a] = JsValue.FromString(ToStringValue(frame.Registers[b])); }
                 catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Increment:
