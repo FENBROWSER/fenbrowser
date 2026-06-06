@@ -91,13 +91,23 @@ public sealed class JsHeap
         obj.OwnerHandle = objHandle;
         obj.OwnerHeap = this;
 
+        // A GC triggered by this very allocation — the stress-mode full
+        // collection below, or the periodic auto-minor collection — runs
+        // before the caller can store the returned handle anywhere the
+        // tracer can reach (a register, a property). The fresh object is
+        // therefore unreachable at collection time and would be swept out
+        // from under the caller, leaving the returned handle dangling
+        // ("Stale heap handle."). Pin it across the collection it provokes.
         if (_stressMode == GcStressMode.AfterEveryAlloc)
         {
+            var mark = _roots.Count;
+            _roots.Push(objHandle);
             CollectGarbage();
+            _roots.PopTo(mark);
         }
         else
         {
-            MaybeAutoMinorCollect();
+            MaybeAutoMinorCollect(objHandle);
         }
 
         return objHandle;
@@ -109,13 +119,19 @@ public sealed class JsHeap
         MaybeStressGc();
 
         var handle = AllocateCell(HeapCellKind.String, new StringPayload(value));
+        var stringHandle = new StringHandle(handle.Index, handle.Generation);
 
         if (_stressMode == GcStressMode.AfterEveryAlloc)
         {
+            // Pin the fresh string across the stress collection it triggers
+            // (see AllocateObject for why the in-flight handle must survive).
+            var mark = _roots.Count;
+            _roots.Push(stringHandle);
             CollectGarbage();
+            _roots.PopTo(mark);
         }
 
-        return new StringHandle(handle.Index, handle.Generation);
+        return stringHandle;
     }
 
     public SymbolHandle AllocateSymbol(string? description, AllocationSite site)
@@ -124,13 +140,19 @@ public sealed class JsHeap
         MaybeStressGc();
 
         var handle = AllocateCell(HeapCellKind.Symbol, new SymbolPayload(description));
+        var symbolHandle = new SymbolHandle(handle.Index, handle.Generation);
 
         if (_stressMode == GcStressMode.AfterEveryAlloc)
         {
+            // Pin the fresh symbol across the stress collection it triggers
+            // (see AllocateObject for why the in-flight handle must survive).
+            var mark = _roots.Count;
+            _roots.Push(symbolHandle);
             CollectGarbage();
+            _roots.PopTo(mark);
         }
 
-        return new SymbolHandle(handle.Index, handle.Generation);
+        return symbolHandle;
     }
 
     public JsObject GetObject(ObjectHandle handle)
@@ -321,14 +343,20 @@ public sealed class JsHeap
 
     // Tier 4 #22: invoked from AllocateObject. Skipped in stress modes
     // because those drive collection on their own cadence.
-    private void MaybeAutoMinorCollect()
+    private void MaybeAutoMinorCollect(ObjectHandle pin)
     {
         if (YoungAllocationsPerMinorGc <= 0) return;
         _youngAllocationsSinceLastMinorGc++;
         if (_youngAllocationsSinceLastMinorGc >= YoungAllocationsPerMinorGc)
         {
             _youngAllocationsSinceLastMinorGc = 0;
+            // Keep the freshly-allocated object (which triggered this minor
+            // collection but is not yet referenced by any root) alive across
+            // the sweep.
+            var mark = _roots.Count;
+            _roots.Push(pin);
             MinorCollect();
+            _roots.PopTo(mark);
         }
     }
 
