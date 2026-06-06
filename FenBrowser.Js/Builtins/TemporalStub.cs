@@ -467,14 +467,22 @@ public sealed class TemporalStub : IBuiltinModule
 
     private static JsValue ConstructDuration(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> args)
     {
-        if (args.Count > 0)
+        // Temporal.Duration.from accepts an ISO 8601 string; the `new Temporal.Duration`
+        // constructor takes positional numeric components (years … nanoseconds), each
+        // defaulting to 0. Distinguish on the first argument's type.
+        if (args.Count > 0 && args[0].Tag == JsValueTag.String)
         {
-            var s = ToStrArg(ctx, args[0]);
+            var s = args[0].AsString();
             if (ParseIsoDuration(s, out var y, out var mo, out var w, out var d,
                     out var hr, out var mi, out var sec, out var ms, out var us, out var ns))
                 return MakeDuration(ctx, h, y, mo, w, d, hr, mi, sec, ms, us, ns);
+            return MakeDuration(ctx, h, TimeSpan.Zero);
         }
-        return MakeDuration(ctx, h, TimeSpan.Zero);
+
+        int Comp(int i) => i < args.Count ? (int)ctx.ToNumber(args[i]) : 0;
+        return MakeDuration(ctx, h,
+            Comp(0), Comp(1), Comp(2), Comp(3), Comp(4),
+            Comp(5), Comp(6), Comp(7), Comp(8), Comp(9));
     }
 
     // ISO 8601 parsing helpers for Temporal constructors.
