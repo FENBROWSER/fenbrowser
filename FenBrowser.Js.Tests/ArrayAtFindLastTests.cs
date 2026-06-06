@@ -65,4 +65,38 @@ public sealed class ArrayAtFindLastTests
     {
         Assert.Equal(2, RunNum("var arr = [{n:1},{n:2}]; arr.findLast(function(o){return o.n > 0;}).n;"));
     }
+
+    [Fact]
+    public void AtUsesLiveTypedArrayLengthForResizableBuffers()
+    {
+        Assert.True(RunBool("""
+            var rab = new ArrayBuffer(4, { maxByteLength: 8 });
+            var fixed = new Uint8Array(rab, 0, 4);
+            var tracking = new Uint8Array(rab, 1);
+            function at(target, index) { return Array.prototype.at.call(target, index); }
+            for (var i = 0; i < 4; i++) {
+              fixed[i] = i;
+            }
+
+            var before = at(fixed, -1) === 3 && at(tracking, -1) === 3;
+            rab.resize(3);
+            var afterShrink = at(fixed, -1) === undefined && at(tracking, -1) === 2;
+            rab.resize(6);
+            var afterGrow = at(fixed, -1) === 0 && at(tracking, -1) === 0;
+            before && afterShrink && afterGrow;
+            """));
+    }
+
+    [Fact]
+    public void FindLastUsesMaximumValidIndex()
+    {
+        Assert.True(RunBool("""
+            var seen = [];
+            Array.prototype.findLast.call({ length: Number.MAX_VALUE }, function(_value, index) {
+              seen.push(index);
+              return true;
+            });
+            seen.length === 1 && seen[0] === 9007199254740990;
+            """));
+    }
 }

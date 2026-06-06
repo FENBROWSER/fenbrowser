@@ -12,14 +12,14 @@ public abstract class TypedArrayObject : TypedArrayView
     public abstract TypedArrayElementType ElementType { get; }
     public int Length => ByteLength / ElementSize;
 
-    protected TypedArrayObject(ArrayBufferObject buffer, int byteOffset, int byteLength)
-        : base(buffer, byteOffset, byteLength)
+    protected TypedArrayObject(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false)
+        : base(buffer, byteOffset, byteLength, isLengthTracking)
     {
     }
 
     public JsValue GetElement(int index)
     {
-        if (index < 0 || index >= Length)
+        if (IsOutOfBounds() || index < 0 || index >= Length)
             return JsValue.Undefined;
         var offset = ByteOffset + index * ElementSize;
         var raw = Buffer.Data;
@@ -42,7 +42,7 @@ public abstract class TypedArrayObject : TypedArrayView
 
     public void SetElement(int index, JsValue value)
     {
-        if (index < 0 || index >= Length)
+        if (IsOutOfBounds() || index < 0 || index >= Length)
             return;
         var offset = ByteOffset + index * ElementSize;
         var raw = Buffer.Data;
@@ -132,75 +132,75 @@ public sealed class Int8Array : TypedArrayObject
 {
     public override TypedArrayElementType ElementType => TypedArrayElementType.Int8;
     public override int ElementSize => 1;
-    public Int8Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+    public Int8Array(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false) : base(buffer, byteOffset, byteLength, isLengthTracking) { }
 }
 
 public sealed class Uint8Array : TypedArrayObject
 {
     public override TypedArrayElementType ElementType => TypedArrayElementType.Uint8;
     public override int ElementSize => 1;
-    public Uint8Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+    public Uint8Array(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false) : base(buffer, byteOffset, byteLength, isLengthTracking) { }
 }
 
 public sealed class Uint8ClampedArray : TypedArrayObject
 {
     public override TypedArrayElementType ElementType => TypedArrayElementType.Uint8Clamped;
     public override int ElementSize => 1;
-    public Uint8ClampedArray(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+    public Uint8ClampedArray(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false) : base(buffer, byteOffset, byteLength, isLengthTracking) { }
 }
 
 public sealed class Int16Array : TypedArrayObject
 {
     public override TypedArrayElementType ElementType => TypedArrayElementType.Int16;
     public override int ElementSize => 2;
-    public Int16Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+    public Int16Array(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false) : base(buffer, byteOffset, byteLength, isLengthTracking) { }
 }
 
 public sealed class Uint16Array : TypedArrayObject
 {
     public override TypedArrayElementType ElementType => TypedArrayElementType.Uint16;
     public override int ElementSize => 2;
-    public Uint16Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+    public Uint16Array(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false) : base(buffer, byteOffset, byteLength, isLengthTracking) { }
 }
 
 public sealed class Int32Array : TypedArrayObject
 {
     public override TypedArrayElementType ElementType => TypedArrayElementType.Int32;
     public override int ElementSize => 4;
-    public Int32Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+    public Int32Array(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false) : base(buffer, byteOffset, byteLength, isLengthTracking) { }
 }
 
 public sealed class Uint32Array : TypedArrayObject
 {
     public override TypedArrayElementType ElementType => TypedArrayElementType.Uint32;
     public override int ElementSize => 4;
-    public Uint32Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+    public Uint32Array(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false) : base(buffer, byteOffset, byteLength, isLengthTracking) { }
 }
 
 public sealed class Float32Array : TypedArrayObject
 {
     public override TypedArrayElementType ElementType => TypedArrayElementType.Float32;
     public override int ElementSize => 4;
-    public Float32Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+    public Float32Array(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false) : base(buffer, byteOffset, byteLength, isLengthTracking) { }
 }
 
 public sealed class Float64Array : TypedArrayObject
 {
     public override TypedArrayElementType ElementType => TypedArrayElementType.Float64;
     public override int ElementSize => 8;
-    public Float64Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+    public Float64Array(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false) : base(buffer, byteOffset, byteLength, isLengthTracking) { }
 }
 
 public sealed class BigInt64Array : TypedArrayObject
 {
     public override TypedArrayElementType ElementType => TypedArrayElementType.BigInt64;
     public override int ElementSize => 8;
-    public BigInt64Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+    public BigInt64Array(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false) : base(buffer, byteOffset, byteLength, isLengthTracking) { }
 }
 
 public sealed class BigUint64Array : TypedArrayObject
 {
     public override TypedArrayElementType ElementType => TypedArrayElementType.BigUint64;
     public override int ElementSize => 8;
-    public BigUint64Array(ArrayBufferObject buffer, int byteOffset, int byteLength) : base(buffer, byteOffset, byteLength) { }
+    public BigUint64Array(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false) : base(buffer, byteOffset, byteLength, isLengthTracking) { }
 }

@@ -40,6 +40,30 @@ public sealed class ArrayPrototypeJoinIndexOfIncludesTests
         Assert.Equal(expected, RunStr(source));
     }
 
+    [Fact]
+    public void JoinCapturesLengthBeforeSeparatorCoercion()
+    {
+        Assert.Equal("0.0.0.0", RunStr("""
+            var rab = new ArrayBuffer(4, { maxByteLength: 6 });
+            var sample = new Uint8Array(rab);
+            var sep = { toString: function() { rab.resize(6); return '.'; } };
+            Array.prototype.join.call(sample, sep);
+            """));
+    }
+
+    [Fact]
+    public void JoinUsesLiveTypedArrayReadsForResizableBuffers()
+    {
+        Assert.Equal("0,2", RunStr("""
+            var rab = new ArrayBuffer(4, { maxByteLength: 8 });
+            var write = new Uint8Array(rab);
+            write[0] = 0; write[1] = 2; write[2] = 4; write[3] = 6;
+            var tracking = new Uint8Array(rab, 0);
+            rab.resize(2);
+            Array.prototype.join.call(tracking);
+            """));
+    }
+
     [Theory]
     [InlineData("[10, 20, 30].indexOf(20);", 1)]
     [InlineData("[10, 20, 30].indexOf(99);", -1)]
@@ -62,5 +86,58 @@ public sealed class ArrayPrototypeJoinIndexOfIncludesTests
     public void Includes(string source, bool expected)
     {
         Assert.Equal(expected, RunBool(source));
+    }
+
+    [Fact]
+    public void IncludesTreatsSparseSlotsAsUndefined()
+    {
+        Assert.True(RunBool("""
+            var sample = [, , , 42, , ];
+            [ , , , ].includes(undefined) &&
+            ![, , , 42, ].includes(undefined, 4) &&
+            sample.includes(undefined) &&
+            sample.includes(undefined, 4) &&
+            sample.includes(42, 3);
+            """));
+    }
+
+    [Fact]
+    public void IncludesUsesToLengthBoundaryInsteadOfIntClamp()
+    {
+        Assert.True(RunBool("""
+            var obj = {
+              "0": "a",
+              "1": "b",
+              "9007199254740990": "c",
+              "9007199254740991": "d",
+              "9007199254740992": "e"
+            };
+            var fromIndex = 9007199254740990;
+            obj.length = 9007199254740991;
+            [].includes.call(obj, "c", fromIndex) &&
+            ![].includes.call(obj, "d", fromIndex) &&
+            (obj.length = Infinity, [].includes.call(obj, "c", fromIndex)) &&
+            ![].includes.call(obj, "d", fromIndex);
+            """));
+    }
+
+    [Fact]
+    public void IncludesUsesOriginalLengthAndLiveReadsForResizableTypedArrays()
+    {
+        Assert.True(RunBool("""
+            var rab = new ArrayBuffer(4, { maxByteLength: 8 });
+            var fixed = new Uint8Array(rab, 0, 4);
+            fixed[0] = 0; fixed[1] = 2; fixed[2] = 4; fixed[3] = 6;
+            var tracking = new Uint8Array(rab);
+            var shrink = { valueOf: function() { rab.resize(2); return 0; } };
+            var grow = { valueOf: function() { rab.resize(6); return -4; } };
+
+            var fixedSeesUndefinedAfterShrink = Array.prototype.includes.call(fixed, undefined, shrink);
+            rab.resize(4);
+            fixed[0] = 1;
+            var trackingKeepsOriginalLengthOnGrowth = Array.prototype.includes.call(tracking, 1, grow);
+
+            fixedSeesUndefinedAfterShrink && trackingKeepsOriginalLengthOnGrowth;
+            """));
     }
 }

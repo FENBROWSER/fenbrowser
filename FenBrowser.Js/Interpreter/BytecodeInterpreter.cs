@@ -7414,9 +7414,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 return JsValue.FromBoolean(false);
             }
 
-            var key = ToPropertyKey(args.Count > 1 ? args[1] : JsValue.Undefined);
+            var keyArg = args.Count > 1 ? args[1] : JsValue.Undefined;
             var obj = _heap.GetObject(args[0].AsObjectHandle());
-            return JsValue.FromBoolean(obj.TryGetOwnProperty(key, out var __));
+            if (keyArg.Tag == JsValueTag.Symbol)
+            {
+                return JsValue.FromBoolean(obj.TryGetOwnSymbolProperty(keyArg.AsSymbolId(), out var __));
+            }
+            return JsValue.FromBoolean(obj.TryGetOwnProperty(ToPropertyKey(keyArg), out var ___));
         }, length: 2);
 
         // ECMA-262 20.1.2.11 Object.getOwnPropertyDescriptors(O). Returns an object
@@ -9294,6 +9298,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return ProxyHas(proxyHas, key);
         }
 
+        if (obj is TypedArrayObject typedArray &&
+            IsCanonicalIntegerIndex(key, out var typedArrayIndex))
+        {
+            return !typedArray.IsOutOfBounds() &&
+                   typedArrayIndex >= 0 &&
+                   typedArrayIndex < typedArray.Length;
+        }
+
         if (obj.TryGetOwnProperty(key, out _))
         {
             return true;
@@ -10503,8 +10515,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var key = idx.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        TryGetPropertyValue(obj, thisValue, key, out var v);
-        return v;
+        return GetReceiverProperty(thisValue, key);
     }
 
     // ECMA-262 23.1.3.12 findLast. Mirrors find but walks backwards; visits holes
@@ -10513,15 +10524,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         var receiver = ToObjectValue(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
-        var length = GetArrayLength(obj);
+        var length = GetArrayLengthDouble(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
         RequireCallable(callback, "Array.prototype.findLast");
         for (var i = length - 1; i >= 0; i--)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            TryGetPropertyValue(obj, receiver, key, out var v);
-            if (IsTruthy(InvokeArrayCallback(callback, v, i, receiver, thisArg)))
+            var v = GetReceiverProperty(receiver, key);
+            if (IsTruthy(InvokeArrayCallback(callback, v, JsValue.FromNumber(i), receiver, thisArg)))
             {
                 return v;
             }
@@ -10535,15 +10546,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         var receiver = ToObjectValue(thisValue);
         var obj = _heap.GetObject(receiver.AsObjectHandle());
-        var length = GetArrayLength(obj);
+        var length = GetArrayLengthDouble(obj);
         var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
         var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
         RequireCallable(callback, "Array.prototype.findLastIndex");
         for (var i = length - 1; i >= 0; i--)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            TryGetPropertyValue(obj, receiver, key, out var v);
-            if (IsTruthy(InvokeArrayCallback(callback, v, i, receiver, thisArg)))
+            var v = GetReceiverProperty(receiver, key);
+            if (IsTruthy(InvokeArrayCallback(callback, v, JsValue.FromNumber(i), receiver, thisArg)))
             {
                 return JsValue.FromNumber(i);
             }
@@ -10921,7 +10932,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         for (var i = 0; i < length; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            TryGetPropertyValue(obj, receiver, key, out var v);
+            var v = GetReceiverProperty(receiver, key);
             if (IsTruthy(InvokeArrayCallback(callback, v, i, receiver, thisArg)))
             {
                 return v;
@@ -10944,7 +10955,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         for (var i = 0; i < length; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            TryGetPropertyValue(obj, receiver, key, out var v);
+            var v = GetReceiverProperty(receiver, key);
             if (IsTruthy(InvokeArrayCallback(callback, v, i, receiver, thisArg)))
             {
                 return JsValue.FromNumber(i);
@@ -11056,6 +11067,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         int index,
         JsValue receiver,
         JsValue thisArg)
+        => InvokeArrayCallback(callback, value, JsValue.FromNumber(index), receiver, thisArg);
+
+    private JsValue InvokeArrayCallback(
+        JsValue callback,
+        JsValue value,
+        JsValue index,
+        JsValue receiver,
+        JsValue thisArg)
     {
         if (callback.Tag != JsValueTag.Object)
         {
@@ -11068,7 +11087,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateTypeError("Array callback is not a function."));
         }
 
-        var args = new[] { value, JsValue.FromNumber(index), receiver };
+        var args = new[] { value, index, receiver };
         return CallFunction(callback, args, thisArg);
     }
 
@@ -11234,7 +11253,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var sourceKey = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 if (HasPropertyIncludingProxy(obj, sourceKey))
                 {
-                    _ = TryGetPropertyValue(obj, value, sourceKey, out var subElement);
+                    var subElement = GetReceiverProperty(value, sourceKey);
                     var targetKey = nextIndex.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     CreateDataPropertyOrThrow(resultObj, targetKey, subElement);
                 }
@@ -11331,6 +11350,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
 
                 var speciesCtor = ctor;
+                if (IsMarkedCrossRealmArrayConstructor(ctor))
+                {
+                    goto fallbackArraySpecies;
+                }
+
                 var speciesSymbolId = GetWellKnownSymbolId("species");
                 if (speciesSymbolId != 0)
                 {
@@ -11371,6 +11395,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 fallbackArraySpecies:
         var arr = CreateArrayFromElements(items);
         return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+    }
+
+    private bool IsMarkedCrossRealmArrayConstructor(JsValue ctor)
+    {
+        if (ctor.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var ctorObj = _heap.GetObject(ctor.AsObjectHandle());
+        if (!TryGetPropertyValue(ctorObj, ctor, "__fenRealmIntrinsic__", out var intrinsic) ||
+            intrinsic.Tag != JsValueTag.String ||
+            intrinsic.AsString() != "Array")
+        {
+            return false;
+        }
+
+        return TryGetPropertyValue(ctorObj, ctor, "__fenRealmId__", out var realmId) &&
+               realmId.Tag == JsValueTag.String;
     }
 
     // ECMA-262 23.1.3.2.1 IsConcatSpreadable(O).
@@ -11442,16 +11485,23 @@ fallbackArraySpecies:
     // the shared ToString conversion.
     private JsValue ArrayPrototypeJoin(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
+        var obj = ToObject(thisValue);
+        var length = GetArrayLength(obj);
         var separator = args.Count > 0 && args[0].Tag != JsValueTag.Undefined
             ? ToStringValue(args[0])
             : ",";
-        return JsValue.FromString(JoinArrayElements(thisValue, separator));
+        return JsValue.FromString(JoinArrayElements(thisValue, obj, length, separator));
     }
 
     private string JoinArrayElements(JsValue thisValue, string separator)
     {
         var obj = ToObject(thisValue);
         var length = GetArrayLength(obj);
+        return JoinArrayElements(thisValue, obj, length, separator);
+    }
+
+    private string JoinArrayElements(JsValue thisValue, JsObject obj, int length, string separator)
+    {
         if (length == 0)
         {
             return string.Empty;
@@ -11461,8 +11511,8 @@ fallbackArraySpecies:
         for (var i = 0; i < length; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            if (!TryGetPropertyValue(obj, thisValue, key, out var value) ||
-                value.Tag is JsValueTag.Undefined or JsValueTag.Null)
+            var value = GetReceiverProperty(thisValue, key);
+            if (value.Tag is JsValueTag.Undefined or JsValueTag.Null)
             {
                 values[i] = string.Empty;
             }
@@ -11510,24 +11560,40 @@ fallbackArraySpecies:
     // ECMA-262 23.1.3.14 includes - SameValueZero (NaN matches NaN; +0 matches -0).
     private JsValue ArrayPrototypeIncludes(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var obj = ToObject(thisValue);
-        var length = GetArrayLength(obj);
-        if (length == 0)
+        var receiver = ToObjectValue(thisValue);
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
+        var length = GetArrayLengthDouble(obj);
+        if (length <= 0)
         {
             return JsValue.FromBoolean(false);
         }
 
         var target = args.Count > 0 ? args[0] : JsValue.Undefined;
-        var fromIndex = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
-        if (fromIndex < 0)
+        var fromIndex = args.Count > 1 ? ToIntegerOrInfinity(args[1]) : 0d;
+        double start;
+        if (double.IsNegativeInfinity(fromIndex))
         {
-            fromIndex = Math.Max(0, length + fromIndex);
+            start = 0;
+        }
+        else if (fromIndex < 0)
+        {
+            start = Math.Max(length + fromIndex, 0);
+        }
+        else
+        {
+            start = fromIndex;
         }
 
-        for (var i = fromIndex; i < length; i++)
+        if (double.IsPositiveInfinity(start) || start >= length)
+        {
+            return JsValue.FromBoolean(false);
+        }
+
+        for (var i = start; i < length; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            if (TryGetPropertyValue(obj, thisValue, key, out var value) && SameValueZero(value, target))
+            var value = GetReceiverProperty(receiver, key);
+            if (SameValueZero(value, target))
             {
                 return JsValue.FromBoolean(true);
             }
@@ -11723,8 +11789,8 @@ fallbackArraySpecies:
 
         var constructor = new NativeFunctionObject(
             "Number",
-            (_, args) => JsValue.FromNumber(args.Count > 0 ? ToNumber(args[0]) : 0d),
-            args => CreateNumberObject(args.Count > 0 ? ToNumber(args[0]) : 0d),
+            (_, args) => JsValue.FromNumber(args.Count > 0 ? ToNumberConstructorValue(args[0]) : 0d),
+            args => CreateNumberObject(args.Count > 0 ? ToNumberConstructorValue(args[0]) : 0d),
             length: 1);
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         // ECMA-262 21.1.2 - Properties of the Number Constructor.
@@ -11786,6 +11852,18 @@ fallbackArraySpecies:
         return constructorHandle;
     }
 
+    private double ToNumberConstructorValue(JsValue value)
+    {
+        if (value.Tag == JsValueTag.Object)
+        {
+            value = ToPrimitive(value, PrimitiveHint.Number);
+        }
+
+        return value.Tag == JsValueTag.BigInt
+            ? (double)value.AsBigInt()
+            : ToNumber(value);
+    }
+
     // ECMA-262 19.2.5 parseInt(string, radix). Trims leading whitespace, accepts an
     // optional sign, an optional 0x/0X prefix when radix is 16 or 0, then consumes
     // digits valid for the radix until the first invalid character. Returns NaN when
@@ -11800,8 +11878,10 @@ fallbackArraySpecies:
         var fn = new NativeFunctionObject("parseInt", (_, args) =>
         {
             var text = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
-            var radixArg = args.Count > 1 ? args[1] : JsValue.Undefined;
-            return JsValue.FromNumber(ParseIntegerLiteral(text, radixArg));
+            // 19.2.5 step 7: R = ToInt32(radix). ToNumber runs ToPrimitive so object
+            // radices like new Number(2) / {valueOf(){return 2}} coerce correctly.
+            var radixNum = args.Count > 1 ? ToNumber(args[1]) : double.NaN;
+            return JsValue.FromNumber(ParseIntegerLiteral(text, radixNum));
         }, length: 2);
 
         _parseIntHandle = _heap.AllocateObject(fn, AllocationSite.Current());
@@ -13136,10 +13216,11 @@ fallbackArraySpecies:
             var byteOffset = args.Count > 1 ? (int)Math.Max(args[1].AsNumber(), 0) : 0;
             if (byteOffset % elementSize != 0)
                 throw new JsThrownException(CreateRangeError($"{nameof(TypedArrayElementType)}: byteOffset must be a multiple of {elementSize}."));
+            var isLengthTracking = args.Count <= 2;
             var byteLength = args.Count > 2 ? (int)args[2].AsNumber() * elementSize : ab.ByteLength - byteOffset;
             if (byteOffset + byteLength > ab.ByteLength)
                 throw new JsThrownException(CreateRangeError("TypedArray: offset + length exceeds ArrayBuffer bounds."));
-            var view = CreateTypedArrayInstance(elementType, ab, byteOffset, byteLength);
+            var view = CreateTypedArrayInstance(elementType, ab, byteOffset, byteLength, isLengthTracking);
             view.SetPrototype(protoHandle);
             return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
         }
@@ -13239,21 +13320,21 @@ fallbackArraySpecies:
         return JsValue.FromNumber(ToNumber(value));
     }
 
-    private static TypedArrayObject CreateTypedArrayInstance(TypedArrayElementType elementType, ArrayBufferObject buf, int byteOffset, int byteLength)
+    private static TypedArrayObject CreateTypedArrayInstance(TypedArrayElementType elementType, ArrayBufferObject buf, int byteOffset, int byteLength, bool isLengthTracking = false)
     {
         return elementType switch
         {
-            TypedArrayElementType.Int8 => new Int8Array(buf, byteOffset, byteLength),
-            TypedArrayElementType.Uint8 => new Uint8Array(buf, byteOffset, byteLength),
-            TypedArrayElementType.Uint8Clamped => new Uint8ClampedArray(buf, byteOffset, byteLength),
-            TypedArrayElementType.Int16 => new Int16Array(buf, byteOffset, byteLength),
-            TypedArrayElementType.Uint16 => new Uint16Array(buf, byteOffset, byteLength),
-            TypedArrayElementType.Int32 => new Int32Array(buf, byteOffset, byteLength),
-            TypedArrayElementType.Uint32 => new Uint32Array(buf, byteOffset, byteLength),
-            TypedArrayElementType.Float32 => new Float32Array(buf, byteOffset, byteLength),
-            TypedArrayElementType.Float64 => new Float64Array(buf, byteOffset, byteLength),
-            TypedArrayElementType.BigInt64 => new BigInt64Array(buf, byteOffset, byteLength),
-            TypedArrayElementType.BigUint64 => new BigUint64Array(buf, byteOffset, byteLength),
+            TypedArrayElementType.Int8 => new Int8Array(buf, byteOffset, byteLength, isLengthTracking),
+            TypedArrayElementType.Uint8 => new Uint8Array(buf, byteOffset, byteLength, isLengthTracking),
+            TypedArrayElementType.Uint8Clamped => new Uint8ClampedArray(buf, byteOffset, byteLength, isLengthTracking),
+            TypedArrayElementType.Int16 => new Int16Array(buf, byteOffset, byteLength, isLengthTracking),
+            TypedArrayElementType.Uint16 => new Uint16Array(buf, byteOffset, byteLength, isLengthTracking),
+            TypedArrayElementType.Int32 => new Int32Array(buf, byteOffset, byteLength, isLengthTracking),
+            TypedArrayElementType.Uint32 => new Uint32Array(buf, byteOffset, byteLength, isLengthTracking),
+            TypedArrayElementType.Float32 => new Float32Array(buf, byteOffset, byteLength, isLengthTracking),
+            TypedArrayElementType.Float64 => new Float64Array(buf, byteOffset, byteLength, isLengthTracking),
+            TypedArrayElementType.BigInt64 => new BigInt64Array(buf, byteOffset, byteLength, isLengthTracking),
+            TypedArrayElementType.BigUint64 => new BigUint64Array(buf, byteOffset, byteLength, isLengthTracking),
             _ => throw new ArgumentOutOfRangeException(nameof(elementType))
         };
     }
@@ -13271,7 +13352,14 @@ fallbackArraySpecies:
                 {
                     var typed = RequireTypedArray(thisValue);
                     if (typed.Buffer.OwnerHandle is not { } bufferHandle)
+                    {
+                        // The backing buffer created during typed-array construction
+                        // has no prototype yet; give it %ArrayBuffer.prototype% the
+                        // first time it is exposed so byteLength/slice/transfer work.
+                        if (typed.Buffer.PrototypeHandle is null)
+                            typed.Buffer.SetPrototype(EnsureArrayBufferPrototype());
                         bufferHandle = _heap.AllocateObject(typed.Buffer, AllocationSite.Current());
+                    }
                     return JsValue.FromObject(bufferHandle);
                 },
                 length: 0), AllocationSite.Current())),
@@ -13892,7 +13980,7 @@ fallbackArraySpecies:
         return _isFiniteHandle.Value;
     }
 
-    private static double ParseIntegerLiteral(string text, JsValue radixArg)
+    private static double ParseIntegerLiteral(string text, double radixNumber)
     {
         var s = text.AsSpan().TrimStart();
         if (s.Length == 0)
@@ -13913,9 +14001,8 @@ fallbackArraySpecies:
 
         var radix = 0;
         var stripPrefix = true;
-        if (radixArg.Tag != JsValueTag.Undefined)
         {
-            var r = (int)MathHelpers.ToInt32(ParseNumberForCoerce(radixArg));
+            var r = (int)MathHelpers.ToInt32(radixNumber);
             if (r != 0)
             {
                 if (r < 2 || r > 36)
@@ -14020,22 +14107,6 @@ fallbackArraySpecies:
         }
 
         return double.NaN;
-    }
-
-    private static double ParseNumberForCoerce(JsValue value)
-    {
-        return value.Tag switch
-        {
-            JsValueTag.Number => value.AsNumber(),
-            JsValueTag.Int32 => value.AsInt32(),
-            JsValueTag.Boolean => value.AsBoolean() ? 1d : 0d,
-            JsValueTag.Null => 0d,
-            JsValueTag.Undefined => double.NaN,
-            JsValueTag.String => double.TryParse(value.AsString(),
-                System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : double.NaN,
-            _ => double.NaN,
-        };
     }
 
     private static bool IsIntegerNumber(IReadOnlyList<JsValue> args)

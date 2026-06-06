@@ -68,4 +68,22 @@ public sealed class ArrayEverySomeFindTests
     {
         Assert.Equal(0, RunNum("[10,20,30].findIndex(function(v,i){return i === 0;});"));
     }
+
+    [Fact]
+    public void FindUsesTypedArrayIntegerIndexedReadsAfterResize()
+    {
+        Assert.True(RunBool("""
+            var rab = new ArrayBuffer(3, { maxByteLength: 4 });
+            var sample = new Uint8Array(rab);
+            var values = [];
+            Array.prototype.find.call(sample, function(v) {
+              if (values.length === 0) {
+                rab.resize(2);
+              }
+              values.push(v === undefined ? 'u' : v);
+              return false;
+            });
+            values.length === 3 && values[0] === 0 && values[1] === 0 && values[2] === 'u';
+            """));
+    }
 }

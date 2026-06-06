@@ -18,17 +18,53 @@ public abstract class TypedArrayView : JsObject
 {
     public ArrayBufferObject Buffer { get; }
     public int ByteOffset { get; }
-    public int ByteLength { get; }
+    protected int RequestedByteLength { get; }
+    protected bool IsLengthTracking { get; }
     public abstract int ElementSize { get; }
 
-    protected TypedArrayView(ArrayBufferObject buffer, int byteOffset, int byteLength)
+    protected TypedArrayView(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false)
     {
         Buffer = buffer;
         ByteOffset = byteOffset;
-        ByteLength = byteLength;
+        RequestedByteLength = byteLength;
+        IsLengthTracking = isLengthTracking;
+    }
+
+    public int ByteLength
+    {
+        get
+        {
+            if (Buffer.IsDetached || IsOutOfBounds())
+            {
+                return 0;
+            }
+
+            if (!IsLengthTracking)
+            {
+                return RequestedByteLength;
+            }
+
+            var available = Buffer.ByteLength - ByteOffset;
+            return available - (available % ElementSize);
+        }
     }
 
     public bool IsViewDetached => Buffer.IsDetached;
+
+    public bool IsOutOfBounds()
+    {
+        if (Buffer.IsDetached)
+        {
+            return true;
+        }
+
+        if (IsLengthTracking)
+        {
+            return ByteOffset > Buffer.ByteLength;
+        }
+
+        return (long)ByteOffset + RequestedByteLength > Buffer.ByteLength;
+    }
 
     protected void ValidateOffset(int byteOffset, int size)
     {
