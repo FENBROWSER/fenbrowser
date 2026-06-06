@@ -240,6 +240,38 @@ public sealed class BigIntTests
     }
 
     [Fact]
+    public void BigIntConstructorUsesFunctionPrototype()
+    {
+        Assert.True(Run("Function.prototype.isPrototypeOf(BigInt) && Object.getPrototypeOf(BigInt) === Function.prototype;").AsBoolean());
+    }
+
+    [Fact]
+    public void BigIntToStringSupportsRadix()
+    {
+        Assert.True(Run("(10n).toString(11) === 'a' && (-1n).toString(2) === '-1' && (0n).toString(36) === '0';").AsBoolean());
+    }
+
+    [Fact]
+    public void BigIntWrapperOrdinaryToPrimitiveThrowsWhenHooksAreMissing()
+    {
+        Assert.True(Run("""
+            var originalToString = BigInt.prototype.toString;
+            var originalValueOf = BigInt.prototype.valueOf;
+            Object.defineProperty(BigInt.prototype, 'toString', { get: function() { return undefined; }, configurable: true });
+            Object.defineProperty(BigInt.prototype, 'valueOf', { get: function() { return null; }, configurable: true });
+            var threwDefault = false;
+            var threwNumber = false;
+            var threwString = false;
+            try { new Date(Object(1n)); } catch (e) { threwDefault = e instanceof TypeError; }
+            try { Number(Object(1n)); } catch (e) { threwNumber = e instanceof TypeError; }
+            try { String(Object(1n)); } catch (e) { threwString = e instanceof TypeError; }
+            Object.defineProperty(BigInt.prototype, 'toString', { value: originalToString, writable: true, configurable: true });
+            Object.defineProperty(BigInt.prototype, 'valueOf', { value: originalValueOf, writable: true, configurable: true });
+            threwDefault && threwNumber && threwString;
+            """).AsBoolean());
+    }
+
+    [Fact]
     public void BigIntConstructorParsesPrefixedStrings()
     {
         Assert.True(Run("BigInt('0x10') === 16n && BigInt('0o10') === 8n && BigInt('0b10') === 2n;").AsBoolean());

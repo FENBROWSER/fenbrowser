@@ -89,6 +89,11 @@ public sealed partial class BytecodeInterpreter
                 var boolProto = _heap.GetObject(GetGlobalPrototype("Boolean"));
                 return TryGetPropertyValue(boolProto, receiver, key, out var bv) ? bv : JsValue.Undefined;
             }
+            case JsValueTag.BigInt:
+            {
+                var bigIntProto = _heap.GetObject(GetGlobalPrototype("BigInt"));
+                return TryGetPropertyValue(bigIntProto, receiver, key, out var biv) ? biv : JsValue.Undefined;
+            }
             case JsValueTag.Symbol:
             {
                 // ECMA-262 7.1.18 ToObject(symbol) yields a Symbol wrapper whose

@@ -16108,9 +16108,6 @@ fallbackArraySpecies:
                 case StringObject stringObject:
                     primitive = JsValue.FromString(stringObject.Value);
                     return true;
-                case BigIntObject bigIntObject:
-                    primitive = JsValue.FromBigInt(bigIntObject.Value);
-                    return true;
                 case SymbolObject symbolObject:
                     primitive = JsValue.SymbolFromId(symbolObject.SymbolId);
                     return true;

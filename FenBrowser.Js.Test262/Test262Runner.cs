@@ -1643,7 +1643,45 @@ public sealed class Test262Runner
                  AbstractModuleSource: createAbstractModuleSourceIntrinsic(),
                  createRealm: function () {
                    var realmThrowTypeError = function () { throw new TypeError(); };
+                   var realmId = Math.random().toString(36).slice(2);
+                   function markRealmIntrinsic(fn, name, prototype) {
+                     Object.defineProperty(fn, "__fenRealmId__", {
+                       value: realmId,
+                       writable: false,
+                       enumerable: false,
+                       configurable: true
+                     });
+                     Object.defineProperty(fn, "__fenRealmIntrinsic__", {
+                       value: name,
+                       writable: false,
+                       enumerable: false,
+                       configurable: true
+                     });
+                     Object.defineProperty(fn, "prototype", {
+                       value: prototype,
+                       writable: false,
+                       enumerable: false,
+                       configurable: false
+                     });
+                     return fn;
+                   }
+                   var realmArray = markRealmIntrinsic(function Array() {
+                     return globalThis.Array.apply(null, arguments);
+                   }, "Array", Array.prototype);
+                   var realmObject = markRealmIntrinsic(function Object(value) {
+                     return globalThis.Object(value);
+                   }, "Object", Object.prototype);
+                   var realmNumber = markRealmIntrinsic(function Number(value) {
+                     return globalThis.Number(value);
+                   }, "Number", Number.prototype);
+                   var realmBigInt = markRealmIntrinsic(function BigInt(value) {
+                     return globalThis.BigInt(value);
+                   }, "BigInt", BigInt.prototype);
                    var realmGlobal = {
+                     Array: realmArray,
+                     Object: realmObject,
+                     Number: realmNumber,
+                     BigInt: realmBigInt,
                      TypeError: TypeError,
                      Symbol: Symbol,
                      SuppressedError: typeof SuppressedError === "function" ? SuppressedError : undefined,
@@ -1668,6 +1706,7 @@ public sealed class Test262Runner
                    return { global: realmGlobal };
                  },
                  detachArrayBuffer: function (buffer) {
+                   if (buffer && typeof buffer.transfer === "function") { buffer.transfer(); return; }
                    if (buffer && typeof buffer.detach === "function") { buffer.detach(); return; }
                    if (typeof structuredClone === "function") {
                      try { structuredClone(buffer, { transfer: [buffer] }); return; } catch (_e) {}
@@ -1807,6 +1846,7 @@ public sealed class Test262Runner
     {
         "byteConversionValues.js",
         "compareArray.js",
+        "decimalToHexString.js",
         "detachArrayBuffer.js",
         "proxyTrapsHelper.js",
         "testTypedArray.js",

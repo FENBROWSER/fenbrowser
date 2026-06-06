@@ -27,8 +27,9 @@ public sealed class BigIntBuiltin : IBuiltinModule
         var constructor = new NativeFunctionObject(
             "BigInt",
             (_, args) => ToBigInt(captured, args.Count > 0 ? args[0] : JsValue.Undefined, allowNumber: true),
-            _ => throw new JsThrownException(captured.CreateTypeError("BigInt is not a constructor.")),
-            length: 1);
+            length: 1,
+            constructWithNewTarget: (_, _) => throw new JsThrownException(captured.CreateTypeError("BigInt is not a constructor.")));
+        constructor.SetPrototype(GetFunctionPrototypeHandle(context));
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
         heap.PushRoot(constructorHandle);
@@ -62,10 +63,23 @@ public sealed class BigIntBuiltin : IBuiltinModule
 
         context.DefineIntrinsicFunction(prototypeHandle, prototype, "valueOf", (thisValue, _) =>
             JsValue.FromBigInt(ThisBigIntValue(captured, thisValue)), length: 0);
-        context.DefineIntrinsicFunction(prototypeHandle, prototype, "toString", (thisValue, _) =>
-            JsValue.FromString(ThisBigIntValue(captured, thisValue).ToString(CultureInfo.InvariantCulture)), length: 0);
+        context.DefineIntrinsicFunction(prototypeHandle, prototype, "toString", (thisValue, args) =>
+            JsValue.FromString(BigIntPrototypeToString(captured, thisValue, args)), length: 0);
 
         return new[] { BuiltinBinding.NonEnumerable("BigInt", JsValue.FromObject(constructorHandle)) };
+    }
+
+    private static ObjectHandle GetFunctionPrototypeHandle(IBuiltinContext ctx)
+    {
+        var functionConstructorHandle = ctx.MaterializeFunctionConstructor();
+        var functionConstructor = ctx.Heap.GetObject(functionConstructorHandle);
+        if (ctx.TryGetPropertyValue(functionConstructor, JsValue.FromObject(functionConstructorHandle), "prototype", out var prototypeValue) &&
+            prototypeValue.Tag == JsValueTag.Object)
+        {
+            return prototypeValue.AsObjectHandle();
+        }
+
+        throw new InvalidOperationException("Function.prototype is unavailable.");
     }
 
     private static BigInteger ThisBigIntValue(IBuiltinContext context, JsValue value)
@@ -82,6 +96,45 @@ public sealed class BigIntBuiltin : IBuiltinModule
         }
 
         throw new JsThrownException(context.CreateTypeError("BigInt.prototype method called on incompatible receiver."));
+    }
+
+    private static string BigIntPrototypeToString(IBuiltinContext context, JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var value = ThisBigIntValue(context, thisValue);
+        if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
+        {
+            return value.ToString(CultureInfo.InvariantCulture);
+        }
+
+        var radix = (int)context.ToNumber(args[0]);
+        if (radix < 2 || radix > 36)
+        {
+            throw new JsThrownException(context.CreateRangeError("BigInt.prototype.toString radix must be between 2 and 36."));
+        }
+
+        return BigIntegerToRadixString(value, radix);
+    }
+
+    private static string BigIntegerToRadixString(BigInteger value, int radix)
+    {
+        if (value.IsZero)
+        {
+            return "0";
+        }
+
+        var negative = value.Sign < 0;
+        var remaining = BigInteger.Abs(value);
+        var digits = new List<char>();
+        while (remaining > BigInteger.Zero)
+        {
+            remaining = BigInteger.DivRem(remaining, radix, out var remainder);
+            var digit = (int)remainder;
+            digits.Add((char)(digit < 10 ? '0' + digit : 'a' + digit - 10));
+        }
+
+        digits.Reverse();
+        var result = new string(digits.ToArray());
+        return negative ? "-" + result : result;
     }
 
     private static JsValue ToBigInt(IBuiltinContext context, JsValue input, bool allowNumber)
@@ -301,8 +354,10 @@ public sealed class BigIntBuiltin : IBuiltinModule
         }
 
         var sign = 1;
+        var hadExplicitSign = false;
         if (trimmed[0] == '+' || trimmed[0] == '-')
         {
+            hadExplicitSign = true;
             sign = trimmed[0] == '-' ? -1 : 1;
             trimmed = trimmed[1..];
             if (trimmed.Length == 0)
@@ -313,16 +368,28 @@ public sealed class BigIntBuiltin : IBuiltinModule
 
         if (trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
         {
+            if (hadExplicitSign)
+            {
+                return false;
+            }
             return TryParseRadix(trimmed[2..], 16, sign, out value);
         }
 
         if (trimmed.StartsWith("0o", StringComparison.OrdinalIgnoreCase))
         {
+            if (hadExplicitSign)
+            {
+                return false;
+            }
             return TryParseRadix(trimmed[2..], 8, sign, out value);
         }
 
         if (trimmed.StartsWith("0b", StringComparison.OrdinalIgnoreCase))
         {
+            if (hadExplicitSign)
+            {
+                return false;
+            }
             return TryParseRadix(trimmed[2..], 2, sign, out value);
         }
 
