@@ -32,6 +32,16 @@ public class JsObject : ITraceable
     // Deleted properties are set to null so slot indices stay valid.
     private JsPropertyDescriptor?[] _properties = Array.Empty<JsPropertyDescriptor?>();
 
+    // ECMA-262 10.1.11.1: own string keys enumerate in property-creation order. A
+    // deleted-then-readded property counts as a *new* creation and must move to the
+    // end. Shapes reuse the original slot (to keep inline caches valid), so the shape
+    // chain alone no longer reflects creation order after a delete+re-add. This
+    // parallel per-slot sequence number records the true creation order; a re-add
+    // gets a fresh number so it sorts last. Indexed by Shape slot, grows with
+    // _properties. 0 = unassigned (slot never held a live property).
+    private int[] _insertionSeq = Array.Empty<int>();
+    private int _nextSeq = 1;
+
     // Symbol-keyed own properties (unchanged — symbols are not shape-tracked).
     private Dictionary<long, JsPropertyDescriptor>? _symbolProperties;
 
@@ -86,6 +96,11 @@ public class JsObject : ITraceable
     {
         if (_shape.TryGetSlot(key, out var existingSlot))
         {
+            // Re-adding a previously deleted property is a new creation: give it a
+            // fresh sequence so it enumerates last (10.1.11.1). Redefining a live
+            // property preserves its existing creation order.
+            if (_properties[existingSlot] is null)
+                _insertionSeq[existingSlot] = _nextSeq++;
             _properties[existingSlot] = descriptor;
             BarrierIfObject(descriptor.Value);
             if (descriptor.IsAccessor)
@@ -101,11 +116,16 @@ public class JsObject : ITraceable
         var slot = _shape.PropertyCount - 1;
         if (slot >= _properties.Length)
         {
-            var bigger = new JsPropertyDescriptor?[Math.Max(_properties.Length * 2, slot + 1)];
+            var newLen = Math.Max(_properties.Length * 2, slot + 1);
+            var bigger = new JsPropertyDescriptor?[newLen];
             Array.Copy(_properties, bigger, _properties.Length);
             _properties = bigger;
+            var biggerSeq = new int[newLen];
+            Array.Copy(_insertionSeq, biggerSeq, _insertionSeq.Length);
+            _insertionSeq = biggerSeq;
         }
         _properties[slot] = descriptor;
+        _insertionSeq[slot] = _nextSeq++;
         BarrierIfObject(descriptor.Value);
         if (descriptor.IsAccessor)
         {
@@ -141,14 +161,28 @@ public class JsObject : ITraceable
         chain.Reverse();
 
         List<(uint idx, string key, int slot)>? integerKeys = null;
+        List<(int seq, string key, int slot)>? stringKeys = null;
+        var deleteReordered = false;
         foreach (var (key, slot) in chain)
         {
             if (IsArrayIndexKey(key, out var idx))
+            {
                 (integerKeys ??= new List<(uint, string, int)>()).Add((idx, key, slot));
+            }
+            else
+            {
+                // Chain order is shape-transition order; _insertionSeq is the true
+                // creation order. They diverge only after a delete+re-add, in which
+                // case the seq for this slot won't match its chain position.
+                if (stringKeys is { Count: > 0 } && _insertionSeq[slot] < stringKeys[^1].seq)
+                    deleteReordered = true;
+                (stringKeys ??= new List<(int, string, int)>()).Add((_insertionSeq[slot], key, slot));
+            }
         }
 
-        // Fast path: no array-index keys, so insertion order already matches the spec.
-        if (integerKeys is null)
+        // Fast path: no array-index keys and no delete-induced reordering, so the
+        // shape-chain order already matches the spec enumeration order.
+        if (integerKeys is null && !deleteReordered)
         {
             foreach (var (key, slot) in chain)
             {
@@ -159,17 +193,25 @@ public class JsObject : ITraceable
             yield break;
         }
 
-        integerKeys.Sort((a, b) => a.idx.CompareTo(b.idx));
-        foreach (var (_, key, slot) in integerKeys)
+        if (integerKeys is not null)
         {
-            if (_properties[slot] is { } desc)
-                yield return new KeyValuePair<string, JsPropertyDescriptor>(key, desc);
+            integerKeys.Sort((a, b) => a.idx.CompareTo(b.idx));
+            foreach (var (_, key, slot) in integerKeys)
+            {
+                if (_properties[slot] is { } desc)
+                    yield return new KeyValuePair<string, JsPropertyDescriptor>(key, desc);
+            }
         }
 
-        foreach (var (key, slot) in chain)
+        if (stringKeys is not null)
         {
-            if (!IsArrayIndexKey(key, out _) && _properties[slot] is { } desc)
-                yield return new KeyValuePair<string, JsPropertyDescriptor>(key, desc);
+            if (deleteReordered)
+                stringKeys.Sort((a, b) => a.seq.CompareTo(b.seq));
+            foreach (var (_, key, slot) in stringKeys)
+            {
+                if (_properties[slot] is { } desc)
+                    yield return new KeyValuePair<string, JsPropertyDescriptor>(key, desc);
+            }
         }
     }
 
@@ -297,18 +339,33 @@ public class JsObject : ITraceable
 
         foreach (var descriptor in _properties)
         {
-            if (descriptor is not { } d) continue;
-            if (d.IsAccessor)
-            {
-                if (d.Get.Tag == JsValueTag.Object)
-                    tracer.Trace(d.Get.AsObjectHandle());
-                if (d.Set.Tag == JsValueTag.Object)
-                    tracer.Trace(d.Set.AsObjectHandle());
-            }
-            else if (d.Value.Tag == JsValueTag.Object)
-            {
-                tracer.Trace(d.Value.AsObjectHandle());
-            }
+            if (descriptor is { } d)
+                TraceDescriptor(tracer, d);
+        }
+
+        // Symbol-keyed properties hold live references too — e.g. an object's
+        // [Symbol.iterator] method. Omitting them let the GC reclaim the target
+        // (a generator's @@iterator function, say) and surfaced as a "Stale heap
+        // handle." on the next for-of over that object.
+        if (_symbolProperties is not null)
+        {
+            foreach (var pair in _symbolProperties)
+                TraceDescriptor(tracer, pair.Value);
+        }
+    }
+
+    private static void TraceDescriptor(IHeapTracer tracer, JsPropertyDescriptor d)
+    {
+        if (d.IsAccessor)
+        {
+            if (d.Get.Tag == JsValueTag.Object)
+                tracer.Trace(d.Get.AsObjectHandle());
+            if (d.Set.Tag == JsValueTag.Object)
+                tracer.Trace(d.Set.AsObjectHandle());
+        }
+        else if (d.Value.Tag == JsValueTag.Object)
+        {
+            tracer.Trace(d.Value.AsObjectHandle());
         }
     }
 }
