@@ -1598,10 +1598,18 @@ public sealed partial class BytecodeInterpreter
                 raw = Math.Abs(value).ToString("F0", CultureInfo.InvariantCulture);
             }
 
-            // The display gate tests the *composed* value: when a unit absorbs numeric
-            // sub-units (e.g. seconds carrying nonzero milliseconds), its effective value is
-            // nonzero even if its own integer component is 0, so it must still be emitted.
-            var valueIsZero = done ? raw == "0" : value == 0;
+            // The display gate tests the *composed* value before fractionalDigits rounding:
+            // when a unit absorbs numeric sub-units (e.g. seconds carrying nonzero
+            // milliseconds), its effective value is nonzero even if its own integer component
+            // is 0 and the rendered fraction rounds away, so it must still be emitted.
+            var valueIsZero = done
+                ? unit switch
+                {
+                    "seconds" => duration.Seconds == 0 && duration.Milliseconds == 0 && duration.Microseconds == 0 && duration.Nanoseconds == 0,
+                    "milliseconds" => duration.Milliseconds == 0 && duration.Microseconds == 0 && duration.Nanoseconds == 0,
+                    _ => duration.Microseconds == 0 && duration.Nanoseconds == 0,
+                }
+                : value == 0;
             if (!valueIsZero || unitDisplay != "auto" || displayRequired)
             {
                 var suppressSign = signDisplayed;
