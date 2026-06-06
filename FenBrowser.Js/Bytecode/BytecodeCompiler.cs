@@ -265,6 +265,10 @@ public sealed class BytecodeCompiler
                             }
                         }
                     }
+                    else if (s is FunctionDeclarationNode fd && fd.Name.Length > 0)
+                    {
+                        blockDecls[fd.Name] = false;
+                    }
                 }
                 if (blockDecls.Count > 0)
                 {
@@ -277,6 +281,13 @@ public sealed class BytecodeCompiler
                         int bImmutable = kvp.Value ? 1 : 0;
                         _instructions.Add(new Instruction(OpCode.EnterScope, bSlot, bImmutable, 0));
                         _openScopeDepth++;
+                    }
+                }
+                foreach (var nestedStatement in block.Statements)
+                {
+                    if (nestedStatement is FunctionDeclarationNode nestedFunction)
+                    {
+                        CompileBlockFunctionDeclaration(nestedFunction);
                     }
                 }
                 foreach (var nested in block.Statements)
@@ -439,14 +450,9 @@ public sealed class BytecodeCompiler
     {
         foreach (var stmt in statements)
         {
-            switch (stmt)
+            if (stmt is FunctionDeclarationNode functionDecl)
             {
-                case FunctionDeclarationNode functionDecl:
-                    CompileFunctionDeclaration(functionDecl);
-                    break;
-                case BlockStatementNode block:
-                    HoistFunctionDeclarations(block.Statements);
-                    break;
+                CompileFunctionDeclaration(functionDecl);
             }
         }
     }
@@ -468,6 +474,12 @@ public sealed class BytecodeCompiler
     }
 
     private void CompileFunctionDeclaration(FunctionDeclarationNode functionDecl)
+        => CompileFunctionDeclaration(functionDecl, blockScoped: false);
+
+    private void CompileBlockFunctionDeclaration(FunctionDeclarationNode functionDecl)
+        => CompileFunctionDeclaration(functionDecl, blockScoped: true);
+
+    private void CompileFunctionDeclaration(FunctionDeclarationNode functionDecl, bool blockScoped)
     {
         var nestedProgram = BuildFunctionProgramWithParameterBindings(
             functionDecl.Body.Statements,
@@ -495,8 +507,15 @@ public sealed class BytecodeCompiler
         var dest = AllocateRegister();
         _instructions.Add(new Instruction(OpCode.CreateFunction, dest, nestedIndex, 0));
         var slot = GetOrCreateVariableSlot(functionDecl.Name);
-        _varDeclarationNames.Add(functionDecl.Name);
-        _instructions.Add(new Instruction(OpCode.StoreVar, dest, slot, 0));
+        if (blockScoped)
+        {
+            _instructions.Add(new Instruction(OpCode.InitVar, dest, slot, 0));
+        }
+        else
+        {
+            _varDeclarationNames.Add(functionDecl.Name);
+            _instructions.Add(new Instruction(OpCode.StoreVar, dest, slot, 0));
+        }
     }
 
     private static ProgramNode BuildFunctionProgramWithParameterBindings(
@@ -2762,6 +2781,16 @@ public sealed class BytecodeCompiler
             {
                 var calleeReg = CompileExpression(ne.Callee);
                 var dest = AllocateRegister();
+
+                // ECMA-262 13.3.5.1 — spread argument (new F(...args)). Mirrors the
+                // CallSpread path: unpack the single spread array at runtime.
+                if (ne.Arguments.Count == 1 && ne.Arguments[0] is SpreadElementExpressionNode)
+                {
+                    var spreadArg = CompileExpression(ne.Arguments[0]);
+                    _instructions.Add(new Instruction(OpCode.ConstructSpread, dest, calleeReg, spreadArg));
+                    return dest;
+                }
+
                 switch (ne.Arguments.Count)
                 {
                     case 0:

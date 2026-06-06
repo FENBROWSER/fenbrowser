@@ -212,6 +212,11 @@ public enum OpCode : byte
     // the callee with the given this value.
     CallSpread,
 
+    // ECMA-262 13.3.5.1 — construct (new) with a spread argument (new F(...args)).
+    // A=dest, B=callee, C=spreadArrayReg. Unpacks the array from register C into
+    // individual arguments and constructs the callee with them.
+    ConstructSpread,
+
     // ECMA-262 9.1.1.1 — push a new DeclarativeEnvironmentRecord onto the
     // frame's lexical environment chain. Used by catch blocks and block-scoped
     // declarations (let/const in blocks).

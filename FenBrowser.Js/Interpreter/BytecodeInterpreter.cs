@@ -1677,6 +1677,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         allowDirectEval: ins.E == DirectEvalCallFlag);
                     break;
                 }
+                case OpCode.ConstructSpread:
+                {
+                    // ECMA-262 13.3.5.1 — unpack a spread array into constructor args.
+                    var spreadArray = frame.Registers[ins.C];
+                    var unpackedArgs = Array.Empty<JsValue>();
+                    if (spreadArray.Tag == JsValueTag.Object)
+                    {
+                        var arrObj = _heap.GetObject(spreadArray.AsObjectHandle());
+                        if (arrObj.TryGetOwnProperty("length", out var lenDesc))
+                        {
+                            var len = (int)lenDesc.Value.AsNumber();
+                            unpackedArgs = new JsValue[len];
+                            for (var i = 0; i < len; i++)
+                            {
+                                unpackedArgs[i] = arrObj.TryGetOwnProperty(i.ToString(), out var elemDesc)
+                                    ? elemDesc.Value
+                                    : JsValue.Undefined;
+                            }
+                        }
+                    }
+
+                    StoreConstructResult(frame, ins.A, frame.Registers[ins.B], unpackedArgs);
+                    break;
+                }
                 case OpCode.Construct0:
                 {
                     StoreConstructResult(frame, ins.A, frame.Registers[ins.B], Array.Empty<JsValue>());
