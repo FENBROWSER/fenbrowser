@@ -6650,6 +6650,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _durationFormatConstructorHandle = ctorHandle;
         }
 
+        // ECMA-402 §14 Intl.Locale constructor.
+        _ = EnsureLocaleConstructor(intl, handle);
+
         // ECMA-402 §9.2.1 getCanonicalLocales(locales).
         {
             var fn = new NativeFunctionObject(
