@@ -3538,10 +3538,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // wrapper iterator whose .next delegates to the underlying iterable's
         // Symbol.iterator + next.
         DefineIntrinsicFunction(constructorHandle, constructor, "from", (_, args) =>
-        {
-            var source = args.Count > 0 ? args[0] : JsValue.Undefined;
-            return JsValue.FromObject(BuildIteratorWrapper(source));
-        }, length: 1);
+            IteratorFrom(args.Count > 0 ? args[0] : JsValue.Undefined), length: 1);
 
         // ECMA-262 27.1.4.1 Iterator.concat(...items).
         DefineIntrinsicFunction(constructorHandle, constructor, "concat", (_, args) =>
@@ -3607,73 +3604,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         _ = EnsureIteratorConstructor();
         return _iteratorPrototypeHandle!.Value;
-    }
-
-    // Iterator.from(value): lift any iterable, iterator, or array-like into an
-    // iterator whose prototype is %Iterator.prototype% (so the helpers chain).
-    private ObjectHandle BuildIteratorWrapper(JsValue source)
-    {
-        var values = new List<JsValue>();
-        if (source.Tag == JsValueTag.Object)
-        {
-            var obj = _heap.GetObject(source.AsObjectHandle());
-            // If source already exposes .next, treat it as an iterator and drain
-            // (round-trips an Array.values() through Iterator.from cleanly).
-            if (obj.TryGetProperty("next", h => _heap.GetObject(h), out var nextDesc) &&
-                nextDesc.Value.Tag == JsValueTag.Object)
-            {
-                while (true)
-                {
-                    var r = CallFunction(nextDesc.Value, Array.Empty<JsValue>(), source);
-                    if (r.Tag != JsValueTag.Object) break;
-                    var rObj = _heap.GetObject(r.AsObjectHandle());
-                    TryGetPropertyValue(rObj, r, "done", out var doneVal);
-                    if (IsTruthy(doneVal)) break;
-                    TryGetPropertyValue(rObj, r, "value", out var v);
-                    values.Add(v);
-                }
-            }
-            else
-            {
-                // Try Symbol.iterator dispatch.
-                var iterId = GetWellKnownSymbolId("iterator");
-                if (obj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) &&
-                    iterDesc.Value.Tag == JsValueTag.Object)
-                {
-                    var iter = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), source);
-                    DrainIteratorIntoList(iter, values);
-                }
-                else if (obj is ArrayObject)
-                {
-                    var len = GetArrayLength(obj);
-                    for (var i = 0; i < len; i++)
-                    {
-                        var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                        values.Add(TryGetPropertyValue(obj, source, key, out var v) ? v : JsValue.Undefined);
-                    }
-                }
-                else
-                {
-                    throw new JsThrownException(CreateTypeError("Iterator.from argument is not iterable."));
-                }
-            }
-        }
-        else if (source.Tag == JsValueTag.String)
-        {
-            var s = source.AsString();
-            for (var i = 0; i < s.Length; i++)
-            {
-                values.Add(JsValue.FromString(s[i].ToString()));
-            }
-        }
-        else
-        {
-            throw new JsThrownException(CreateTypeError("Iterator.from argument is not iterable."));
-        }
-
-        var wrap = new SnapshotIteratorObject(values);
-        wrap.SetPrototype(EnsureArrayIteratorPrototype());
-        return _heap.AllocateObject(wrap, AllocationSite.Current());
     }
 
     private GlobalEnvironmentRecord EnsureGlobalEnvironment()

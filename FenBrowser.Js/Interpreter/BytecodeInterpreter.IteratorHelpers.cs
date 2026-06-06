@@ -491,6 +491,118 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
+    // ───────── Iterator.from / %WrapForValidIteratorPrototype% ─────────
+
+    private ObjectHandle? _wrapForValidIteratorPrototypeHandle;
+
+    private sealed class WrapForValidIteratorObject : JsObject
+    {
+        public JsValue Iterated;
+        public JsValue NextMethod;
+
+        public override void Trace(IHeapTracer tracer)
+        {
+            base.Trace(tracer);
+            if (Iterated.Tag == JsValueTag.Object) tracer.Trace(Iterated.AsObjectHandle());
+            if (NextMethod.Tag == JsValueTag.Object) tracer.Trace(NextMethod.AsObjectHandle());
+        }
+    }
+
+    // ECMA-262 27.1.4.1 Iterator.from ( O ). Strings are boxed; the flattened
+    // iterator record is reused directly when it already inherits
+    // %Iterator.prototype% (e.g. a generator), otherwise wrapped.
+    private JsValue IteratorFrom(JsValue source)
+    {
+        if (source.Tag == JsValueTag.String)
+        {
+            source = ToObjectValue(source);
+        }
+
+        var (iter, next) = GetIteratorFlattenable(source, rejectPrimitives: true);
+        if (iter.Tag == JsValueTag.Object && InheritsIteratorPrototype(iter.AsObjectHandle()))
+        {
+            return iter;
+        }
+
+        var wrap = new WrapForValidIteratorObject { Iterated = iter, NextMethod = next };
+        wrap.SetPrototype(EnsureWrapForValidIteratorPrototype());
+        var handle = _heap.AllocateObject(wrap, AllocationSite.Current());
+        if (iter.Tag == JsValueTag.Object) _heap.WriteBarrier(handle, iter.AsObjectHandle());
+        return JsValue.FromObject(handle);
+    }
+
+    private bool InheritsIteratorPrototype(ObjectHandle handle)
+    {
+        var iterProto = EnsureIteratorPrototype();
+        var proto = _heap.GetObject(handle).PrototypeHandle;
+        while (proto is { } p)
+        {
+            if (p == iterProto) return true;
+            proto = _heap.GetObject(p).PrototypeHandle;
+        }
+
+        return false;
+    }
+
+    private ObjectHandle EnsureWrapForValidIteratorPrototype()
+    {
+        if (_wrapForValidIteratorPrototypeHandle is { } existing)
+        {
+            return existing;
+        }
+
+        var proto = CreateOrdinaryObject();
+        proto.SetPrototype(EnsureIteratorPrototype());
+        var protoHandle = _heap.AllocateObject(proto, AllocationSite.Current());
+        _heap.PushRoot(protoHandle);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "next", (thisValue, _) =>
+        {
+            var wrap = RequireWrap(thisValue, "next");
+            var result = CallFunction(wrap.NextMethod, System.Array.Empty<JsValue>(), wrap.Iterated);
+            if (result.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Iterator result is not an object."));
+            }
+
+            return result;
+        }, length: 0);
+
+        DefineNativePrototypeMethod(protoHandle, proto, "return", (thisValue, _) =>
+        {
+            var wrap = RequireWrap(thisValue, "return");
+            var iterator = wrap.Iterated;
+            if (iterator.Tag == JsValueTag.Object)
+            {
+                var iterObj = _heap.GetObject(iterator.AsObjectHandle());
+                if (TryGetPropertyValue(iterObj, iterator, "return", out var ret) &&
+                    ret.Tag != JsValueTag.Undefined && ret.Tag != JsValueTag.Null)
+                {
+                    return CallFunction(ret, System.Array.Empty<JsValue>(), iterator);
+                }
+            }
+
+            return BuildIteratorResult(JsValue.Undefined, done: true);
+        }, length: 0);
+
+        DefineBuiltinToStringTag(proto, "Iterator Helper");
+
+        _wrapForValidIteratorPrototypeHandle = protoHandle;
+        return protoHandle;
+    }
+
+    private WrapForValidIteratorObject RequireWrap(JsValue thisValue, string member)
+    {
+        if (thisValue.Tag == JsValueTag.Object &&
+            _heap.GetObject(thisValue.AsObjectHandle()) is WrapForValidIteratorObject wrap)
+        {
+            return wrap;
+        }
+
+        throw new JsThrownException(CreateTypeError(
+            $"%WrapForValidIteratorPrototype%.{member} called on an incompatible receiver."));
+    }
+
     // ───────── Iterator.zip / Iterator.zipKeyed (Joint Iteration) ─────────
 
     // Iterator.zip ( iterables [ , options ] ): iterables is an iterable of
@@ -561,6 +673,12 @@ public sealed partial class BytecodeInterpreter
             foreach (var key in keyList)
             {
                 TryGetPropertyValue(obj, iterablesArg, key, out var value);
+                // A key whose value is undefined is omitted from the result.
+                if (value.Tag == JsValueTag.Undefined)
+                {
+                    continue;
+                }
+
                 try
                 {
                     var (it, nx) = GetIteratorFlattenable(value, rejectPrimitives: true);
