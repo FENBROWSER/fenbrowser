@@ -959,7 +959,8 @@ public sealed partial class BytecodeInterpreter
         var iters = h.ZipIters!;
         var done = h.ZipDone!;
         JsThrownException? pending = null;
-        for (var j = 0; j < iters.Count; j++)
+        // CloseAllIterators closes the still-open inputs in DESCENDING index order.
+        for (var j = iters.Count - 1; j >= 0; j--)
         {
             if (j == exceptIndex || done[j])
             {
