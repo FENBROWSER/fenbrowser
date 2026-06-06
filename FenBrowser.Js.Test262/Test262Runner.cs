@@ -1855,6 +1855,7 @@ public sealed class Test262Runner
         "testIntl.js",
         "temporalHelpers.js",
         "tcoHelper.js",
+        "iteratorZipUtils.js",
     };
 
     private static readonly ConcurrentDictionary<string, string> _includeFileCache = new(StringComparer.Ordinal);
