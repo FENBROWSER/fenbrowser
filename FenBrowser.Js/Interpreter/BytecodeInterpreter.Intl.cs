@@ -1182,8 +1182,20 @@ public sealed partial class BytecodeInterpreter
             var fraction = split[1];
             if (state.MaximumFractionDigits is { } maxFrac)
             {
-                fraction = fraction.Length > maxFrac ? fraction[..maxFrac] : fraction;
-                if (state.MinimumFractionDigits is { } minFrac)
+                if (fraction.Length > maxFrac)
+                {
+                    fraction = fraction[..maxFrac];
+                }
+
+                // Trailing zeros are removed down to minimumFractionDigits, then the
+                // result is padded back up to that minimum (ToRawFixed / SetNumberFormatDigitOptions).
+                var minFrac = state.MinimumFractionDigits ?? 0;
+                while (fraction.Length > minFrac && fraction.EndsWith("0", StringComparison.Ordinal))
+                {
+                    fraction = fraction[..^1];
+                }
+
+                if (fraction.Length < minFrac)
                 {
                     fraction = fraction.PadRight(minFrac, '0');
                 }
