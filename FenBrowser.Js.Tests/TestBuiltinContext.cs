@@ -124,6 +124,9 @@ internal sealed class TestBuiltinContext : IBuiltinContext
     public (JsValue Promise, JsValue Resolve, JsValue Reject) CreatePromiseCapability()
         => throw new NotSupportedException("CreatePromiseCapability is not supported in TestBuiltinContext.");
 
+    public void InstallUint8ArrayBase64Hex()
+        => throw new NotSupportedException("InstallUint8ArrayBase64Hex is not supported in TestBuiltinContext.");
+
     public void InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto)
         => throw new NotSupportedException("InstallDatePrototypeMethods is not supported in TestBuiltinContext.");
 

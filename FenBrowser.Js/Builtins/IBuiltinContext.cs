@@ -103,6 +103,11 @@ public interface IBuiltinContext
     ObjectHandle MaterializeDataViewConstructor();
     BuiltinBinding[] MaterializeTypedArrayConstructors();
 
+    // Installs the Uint8Array base64/hex methods (fromBase64/fromHex statics and
+    // toBase64/toHex/setFromBase64/setFromHex on the prototype). Must run after
+    // MaterializeTypedArrayConstructors so the Uint8Array constructor exists.
+    void InstallUint8ArrayBase64Hex();
+
     // Install prototype methods on already-created prototypes (for builtins that
     // create their own prototypes and need the interpreter to install methods).
     void InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto);
