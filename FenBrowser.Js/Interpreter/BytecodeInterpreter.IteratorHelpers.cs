@@ -28,6 +28,7 @@ public sealed partial class BytecodeInterpreter
         Drop,
         FlatMap,
         Concat,
+        Zip,
     }
 
     // The Iterator Helper exotic object. Instead of capturing per-helper closure
@@ -59,6 +60,17 @@ public sealed partial class BytecodeInterpreter
         public List<(JsValue Iterable, JsValue Method)>? ConcatRecords;
         public int ConcatIndex;
 
+        // Iterator.zip / zipKeyed (Joint Iteration). Per-input iterator records,
+        // per-input done flags (longest mode), padding values, mode, and—for
+        // zipKeyed—the result keys (the result is then a null-proto object).
+        public List<JsValue>? ZipIters;
+        public List<JsValue>? ZipNexts;
+        public bool[]? ZipDone;
+        public List<JsValue>? ZipPadding;
+        public string? ZipMode;
+        public bool ZipKeyed;
+        public List<string>? ZipKeys;
+
         // [[GeneratorState]] guard: a helper whose body is mid-step rejects a
         // re-entrant next()/return() with a TypeError (generator-is-running).
         public bool Running;
@@ -80,6 +92,16 @@ public sealed partial class BytecodeInterpreter
                     TraceValue(tracer, method);
                 }
             }
+
+            TraceValueList(tracer, ZipIters);
+            TraceValueList(tracer, ZipNexts);
+            TraceValueList(tracer, ZipPadding);
+        }
+
+        private static void TraceValueList(IHeapTracer tracer, List<JsValue>? list)
+        {
+            if (list is null) return;
+            foreach (var v in list) TraceValue(tracer, v);
         }
 
         private static void TraceValue(IHeapTracer tracer, JsValue value)
@@ -228,6 +250,12 @@ public sealed partial class BytecodeInterpreter
     // the nested closure unwind order.
     private void CloseIteratorHelperReturn(IteratorHelperObject helper)
     {
+        if (helper.Kind == IteratorHelperKind.Zip)
+        {
+            CloseZipIters(helper, exceptIndex: -1, normalCompletion: true);
+            return;
+        }
+
         if (helper.HasInner)
         {
             helper.HasInner = false;
@@ -263,6 +291,7 @@ public sealed partial class BytecodeInterpreter
                 IteratorHelperKind.Drop => StepDrop(helper),
                 IteratorHelperKind.FlatMap => StepFlatMap(helper),
                 IteratorHelperKind.Concat => StepConcat(helper),
+                IteratorHelperKind.Zip => StepZip(helper),
                 _ => throw new JsThrownException(CreateTypeError("Unknown iterator helper.")),
             };
         }
@@ -459,6 +488,395 @@ public sealed partial class BytecodeInterpreter
             helper.Inner = innerIter;
             helper.InnerNext = innerNext;
             helper.HasInner = true;
+        }
+    }
+
+    // ───────── Iterator.zip / Iterator.zipKeyed (Joint Iteration) ─────────
+
+    // Iterator.zip ( iterables [ , options ] ): iterables is an iterable of
+    // iterables. Iterator.zipKeyed: iterables is an object whose own enumerable
+    // values are iterables, and results are null-prototype objects keyed by name.
+    private JsValue IteratorZip(IReadOnlyList<JsValue> args, bool keyed)
+    {
+        var iterablesArg = args.Count > 0 ? args[0] : JsValue.Undefined;
+        if (iterablesArg.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError(
+                (keyed ? "Iterator.zipKeyed" : "Iterator.zip") + " requires an object argument."));
+        }
+
+        var (optionsObj, optionsVal) = GetOptionsObject(args.Count > 1 ? args[1] : JsValue.Undefined);
+
+        // mode (default "shortest"); strict membership, no coercion.
+        var mode = "shortest";
+        if (TryGetPropertyValue(optionsObj, optionsVal, "mode", out var modeVal) &&
+            modeVal.Tag != JsValueTag.Undefined)
+        {
+            if (modeVal.Tag != JsValueTag.String ||
+                modeVal.AsString() is not ("shortest" or "longest" or "strict"))
+            {
+                throw new JsThrownException(CreateTypeError("Iterator.zip: invalid 'mode' option."));
+            }
+
+            mode = modeVal.AsString();
+        }
+
+        // padding (only consulted for "longest"): must be undefined or an object.
+        var paddingOption = JsValue.Undefined;
+        if (mode == "longest" &&
+            TryGetPropertyValue(optionsObj, optionsVal, "padding", out var pad) &&
+            pad.Tag != JsValueTag.Undefined)
+        {
+            if (pad.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Iterator.zip: 'padding' must be an object."));
+            }
+
+            paddingOption = pad;
+        }
+
+        var iters = new List<JsValue>();
+        var nexts = new List<JsValue>();
+        var zipKeys = keyed ? new List<string>() : null;
+
+        // Suspend young GC while collecting the input iterator records + padding:
+        // these live only in C# locals/lists until the helper object is allocated.
+        var savedYoung = _heap.YoungAllocationsPerMinorGc;
+        _heap.YoungAllocationsPerMinorGc = -1;
+        try
+        {
+
+        if (keyed)
+        {
+            var obj = _heap.GetObject(iterablesArg.AsObjectHandle());
+            var keyList = new List<string>();
+            foreach (var prop in obj.EnumerateOwnProperties())
+            {
+                if (obj.TryGetOwnProperty(prop.Key, out var d) && d.Enumerable)
+                {
+                    keyList.Add(prop.Key);
+                }
+            }
+
+            foreach (var key in keyList)
+            {
+                TryGetPropertyValue(obj, iterablesArg, key, out var value);
+                try
+                {
+                    var (it, nx) = GetIteratorFlattenable(value, rejectPrimitives: true);
+                    iters.Add(it);
+                    nexts.Add(nx);
+                    zipKeys!.Add(key);
+                }
+                catch (JsThrownException)
+                {
+                    CloseIteratorListAbrupt(iters);
+                    throw;
+                }
+            }
+        }
+        else
+        {
+            var (outerIt, outerNext) = GetIteratorFlattenable(iterablesArg, rejectPrimitives: true);
+            while (true)
+            {
+                bool got;
+                JsValue elem;
+                try
+                {
+                    got = IteratorRecordStepValue(outerIt, outerNext, out elem);
+                }
+                catch (JsThrownException)
+                {
+                    CloseIteratorListAbrupt(iters);
+                    throw;
+                }
+
+                if (!got)
+                {
+                    break;
+                }
+
+                try
+                {
+                    var (it, nx) = GetIteratorFlattenable(elem, rejectPrimitives: true);
+                    iters.Add(it);
+                    nexts.Add(nx);
+                }
+                catch (JsThrownException)
+                {
+                    IteratorCloseOnAbrupt(outerIt);
+                    CloseIteratorListAbrupt(iters);
+                    throw;
+                }
+            }
+        }
+
+        var iterCount = iters.Count;
+        var padding = new List<JsValue>(iterCount);
+        for (var i = 0; i < iterCount; i++)
+        {
+            padding.Add(JsValue.Undefined);
+        }
+
+        if (mode == "longest" && paddingOption.Tag == JsValueTag.Object)
+        {
+            var (padIt, padNext) = GetIteratorFlattenable(paddingOption, rejectPrimitives: true);
+            for (var i = 0; i < iterCount; i++)
+            {
+                if (!IteratorRecordStepValue(padIt, padNext, out var padValue))
+                {
+                    break;
+                }
+
+                padding[i] = padValue;
+            }
+        }
+
+        var helper = new IteratorHelperObject
+        {
+            Kind = IteratorHelperKind.Zip,
+            Underlying = JsValue.Undefined,
+            UnderlyingNext = JsValue.Undefined,
+            Callback = JsValue.Undefined,
+            Inner = JsValue.Undefined,
+            InnerNext = JsValue.Undefined,
+            ZipIters = iters,
+            ZipNexts = nexts,
+            ZipDone = new bool[iterCount],
+            ZipPadding = padding,
+            ZipMode = mode,
+            ZipKeyed = keyed,
+            ZipKeys = zipKeys,
+        };
+        helper.SetPrototype(EnsureIteratorHelperPrototype());
+        return JsValue.FromObject(_heap.AllocateObject(helper, AllocationSite.Current()));
+
+        }
+        finally
+        {
+            _heap.YoungAllocationsPerMinorGc = savedYoung;
+        }
+    }
+
+    // ECMA-262 GetOptionsObject: undefined → fresh null-proto object; Object →
+    // itself; anything else → TypeError.
+    private (JsObject Obj, JsValue Val) GetOptionsObject(JsValue options)
+    {
+        if (options.Tag == JsValueTag.Undefined)
+        {
+            var empty = new JsObject();
+            var handle = _heap.AllocateObject(empty, AllocationSite.Current());
+            return (empty, JsValue.FromObject(handle));
+        }
+
+        if (options.Tag == JsValueTag.Object)
+        {
+            return (_heap.GetObject(options.AsObjectHandle()), options);
+        }
+
+        throw new JsThrownException(CreateTypeError("Iterator.zip options must be an object or undefined."));
+    }
+
+    private JsValue StepZip(IteratorHelperObject h)
+    {
+        // Pin accumulating per-input values: each IteratorStepValue (and the
+        // result-object allocation) can trigger a young GC that would otherwise
+        // reclaim a results[] entry that is not yet referenced by a live object.
+        var savedYoung = _heap.YoungAllocationsPerMinorGc;
+        _heap.YoungAllocationsPerMinorGc = -1;
+        try
+        {
+            return StepZipInner(h);
+        }
+        finally
+        {
+            _heap.YoungAllocationsPerMinorGc = savedYoung;
+        }
+    }
+
+    private JsValue StepZipInner(IteratorHelperObject h)
+    {
+        var iters = h.ZipIters!;
+        var nexts = h.ZipNexts!;
+        var done = h.ZipDone!;
+        var count = iters.Count;
+        if (count == 0)
+        {
+            h.Done = true;
+            return BuildIteratorResult(JsValue.Undefined, done: true);
+        }
+
+        var results = new JsValue[count];
+        for (var i = 0; i < count; i++)
+        {
+            if (done[i])
+            {
+                results[i] = h.ZipPadding![i];
+                continue;
+            }
+
+            bool got;
+            JsValue value;
+            try
+            {
+                got = IteratorRecordStepValue(iters[i], nexts[i], out value);
+            }
+            catch (JsThrownException)
+            {
+                done[i] = true;
+                h.Done = true;
+                CloseZipIters(h, exceptIndex: -1, normalCompletion: false);
+                throw;
+            }
+
+            if (got)
+            {
+                results[i] = value;
+                continue;
+            }
+
+            // Input i is exhausted.
+            switch (h.ZipMode)
+            {
+                case "shortest":
+                    done[i] = true;
+                    h.Done = true;
+                    CloseZipIters(h, exceptIndex: -1, normalCompletion: true);
+                    return BuildIteratorResult(JsValue.Undefined, done: true);
+
+                case "strict":
+                    done[i] = true;
+                    if (i != 0)
+                    {
+                        h.Done = true;
+                        CloseZipIters(h, exceptIndex: -1, normalCompletion: false);
+                        throw new JsThrownException(CreateTypeError(
+                            "Iterator.zip strict: inputs have different lengths."));
+                    }
+
+                    // i == 0: every remaining input must also be done now.
+                    for (var j = 1; j < count; j++)
+                    {
+                        bool gotj;
+                        try
+                        {
+                            gotj = IteratorRecordStepValue(iters[j], nexts[j], out _);
+                        }
+                        catch (JsThrownException)
+                        {
+                            done[j] = true;
+                            h.Done = true;
+                            CloseZipIters(h, exceptIndex: -1, normalCompletion: false);
+                            throw;
+                        }
+
+                        done[j] = true;
+                        if (gotj)
+                        {
+                            h.Done = true;
+                            CloseZipIters(h, exceptIndex: -1, normalCompletion: false);
+                            throw new JsThrownException(CreateTypeError(
+                                "Iterator.zip strict: inputs have different lengths."));
+                        }
+                    }
+
+                    h.Done = true;
+                    return BuildIteratorResult(JsValue.Undefined, done: true);
+
+                default: // longest
+                    done[i] = true;
+                    results[i] = h.ZipPadding![i];
+                    break;
+            }
+        }
+
+        if (h.ZipMode == "longest")
+        {
+            var allDone = true;
+            for (var i = 0; i < count; i++)
+            {
+                if (!done[i]) { allDone = false; break; }
+            }
+
+            if (allDone)
+            {
+                h.Done = true;
+                return BuildIteratorResult(JsValue.Undefined, done: true);
+            }
+        }
+
+        return BuildIteratorResult(BuildZipResult(h, results), done: false);
+    }
+
+    private JsValue BuildZipResult(IteratorHelperObject h, JsValue[] results)
+    {
+        if (!h.ZipKeyed)
+        {
+            var arr = CreateArrayFromElements(results);
+            return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+        }
+
+        // zipKeyed yields a fresh null-prototype object keyed by the input names.
+        var obj = new JsObject();
+        var handle = _heap.AllocateObject(obj, AllocationSite.Current());
+        var keys = h.ZipKeys!;
+        for (var i = 0; i < keys.Count; i++)
+        {
+            obj.SetProperty(keys[i], results[i]);
+            if (results[i].Tag == JsValueTag.Object)
+            {
+                _heap.WriteBarrier(handle, results[i].AsObjectHandle());
+            }
+        }
+
+        return JsValue.FromObject(handle);
+    }
+
+    // Closes the still-open zip inputs. With a normal completion the first
+    // `return` throw propagates (subsequent closes swallow); with an abrupt
+    // completion every close swallows so the original throw is preserved.
+    private void CloseZipIters(IteratorHelperObject h, int exceptIndex, bool normalCompletion)
+    {
+        var iters = h.ZipIters!;
+        var done = h.ZipDone!;
+        JsThrownException? pending = null;
+        for (var j = 0; j < iters.Count; j++)
+        {
+            if (j == exceptIndex || done[j])
+            {
+                continue;
+            }
+
+            done[j] = true;
+            try
+            {
+                if (normalCompletion && pending is null)
+                {
+                    IteratorRecordCloseNormal(iters[j]);
+                }
+                else
+                {
+                    IteratorCloseOnAbrupt(iters[j]);
+                }
+            }
+            catch (JsThrownException e)
+            {
+                pending ??= e;
+            }
+        }
+
+        if (pending is not null)
+        {
+            throw pending;
+        }
+    }
+
+    private void CloseIteratorListAbrupt(List<JsValue> iters)
+    {
+        foreach (var iter in iters)
+        {
+            IteratorCloseOnAbrupt(iter);
         }
     }
 

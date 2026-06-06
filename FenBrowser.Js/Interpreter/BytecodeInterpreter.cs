@@ -3547,6 +3547,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         DefineIntrinsicFunction(constructorHandle, constructor, "concat", (_, args) =>
             IteratorConcat(args), length: 0);
 
+        // Joint Iteration — Iterator.zip / Iterator.zipKeyed.
+        DefineIntrinsicFunction(constructorHandle, constructor, "zip", (_, args) =>
+            IteratorZip(args, keyed: false), length: 1);
+        DefineIntrinsicFunction(constructorHandle, constructor, "zipKeyed", (_, args) =>
+            IteratorZip(args, keyed: true), length: 1);
+
         // %Iterator.prototype%[Symbol.iterator] returns this per 27.1.4.2.1.
         var selfIter = new NativeFunctionObject("[Symbol.iterator]", (thisValue, _) => thisValue, length: 0);
         var selfIterHandle = _heap.AllocateObject(selfIter, AllocationSite.Current());
