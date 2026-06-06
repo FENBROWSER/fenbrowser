@@ -121,6 +121,9 @@ internal sealed class TestBuiltinContext : IBuiltinContext
     public void EnqueueMicrotask(JsValue callback)
         => throw new NotSupportedException("EnqueueMicrotask is not supported in TestBuiltinContext.");
 
+    public (JsValue Promise, JsValue Resolve, JsValue Reject) CreatePromiseCapability()
+        => throw new NotSupportedException("CreatePromiseCapability is not supported in TestBuiltinContext.");
+
     public void InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto)
         => throw new NotSupportedException("InstallDatePrototypeMethods is not supported in TestBuiltinContext.");
 

@@ -67,6 +67,11 @@ public interface IBuiltinContext
     // queueMicrotask(callback).
     void EnqueueMicrotask(JsValue callback);
 
+    // 27.2.1.5 NewPromiseCapability(%Promise%). Returns a fresh pending promise
+    // together with its resolve/reject functions, so a native builtin can feed
+    // a promise from the outside (e.g. AsyncDisposableStack.prototype.disposeAsync).
+    (JsValue Promise, JsValue Resolve, JsValue Reject) CreatePromiseCapability();
+
     // Builtin constructor/materialize helpers — each returns the ObjectHandle of the
     // fully-wired constructor (including prototype + methods). Used by thin-wrapper
     // builtin modules for complex types whose prototype methods still live on the

@@ -409,6 +409,15 @@ public sealed partial class BytecodeInterpreter
         return capability.Promise;
     }
 
+    // Exposes NewPromiseCapability to native builtins through IBuiltinContext so
+    // a builtin (e.g. AsyncDisposableStack.prototype.disposeAsync) can hand back
+    // a promise it settles itself.
+    (JsValue Promise, JsValue Resolve, JsValue Reject) Builtins.IBuiltinContext.CreatePromiseCapability()
+    {
+        var capability = NewPromiseCapability();
+        return (capability.Promise, capability.Resolve, capability.Reject);
+    }
+
     // 27.2.1.5 NewPromiseCapability(%Promise%). Bundles a fresh promise with its
     // resolve/reject closures, suitable for places that want to feed a promise
     // from outside its constructor (Promise.reject, derived .then, etc.).
