@@ -195,7 +195,10 @@ public sealed partial class BytecodeInterpreter
             if (!helper.Done)
             {
                 helper.Done = true;
-                CloseIteratorHelperUnderlying(helper);
+                // %IteratorHelperPrototype%.return performs IteratorClose with a
+                // NORMAL completion: the underlying iterator's `return` result (and
+                // any throw it raises) PROPAGATES to the caller.
+                CloseIteratorHelperReturn(helper);
             }
 
             return BuildIteratorResult(JsValue.Undefined, done: true);
@@ -220,9 +223,10 @@ public sealed partial class BytecodeInterpreter
     }
 
     // Closes the underlying iterator (and the current flatMap/concat inner, if
-    // any) on a .return() / abrupt completion. Inner is closed before outer to
-    // match the nested closure unwind order.
-    private void CloseIteratorHelperUnderlying(IteratorHelperObject helper)
+    // any) for a .return() normal completion: the underlying `return` result is
+    // validated and its throw PROPAGATES. Inner is closed before outer to match
+    // the nested closure unwind order.
+    private void CloseIteratorHelperReturn(IteratorHelperObject helper)
     {
         if (helper.HasInner)
         {
@@ -230,10 +234,10 @@ public sealed partial class BytecodeInterpreter
             var inner = helper.Inner;
             helper.Inner = JsValue.Undefined;
             helper.InnerNext = JsValue.Undefined;
-            IteratorCloseOnAbrupt(inner);
+            IteratorRecordCloseNormal(inner);
         }
 
-        IteratorCloseOnAbrupt(helper.Underlying);
+        IteratorRecordCloseNormal(helper.Underlying);
     }
 
     private JsValue IteratorHelperNext(IteratorHelperObject helper)
@@ -555,7 +559,7 @@ public sealed partial class BytecodeInterpreter
     private JsValue IteratorProtoMap(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         EnsureIteratorReceiver(thisValue, "map");
-        var fn = RequireCallable(args, 0, "Iterator.prototype.map");
+        var fn = RequireCallableOrClose(thisValue, args, "Iterator.prototype.map");
         var (iter, next) = GetIteratorDirect(thisValue);
         return MakeIteratorHelper(IteratorHelperKind.Map, iter, next, fn, 0);
     }
@@ -563,7 +567,7 @@ public sealed partial class BytecodeInterpreter
     private JsValue IteratorProtoFilter(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         EnsureIteratorReceiver(thisValue, "filter");
-        var fn = RequireCallable(args, 0, "Iterator.prototype.filter");
+        var fn = RequireCallableOrClose(thisValue, args, "Iterator.prototype.filter");
         var (iter, next) = GetIteratorDirect(thisValue);
         return MakeIteratorHelper(IteratorHelperKind.Filter, iter, next, fn, 0);
     }
@@ -571,7 +575,7 @@ public sealed partial class BytecodeInterpreter
     private JsValue IteratorProtoTake(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         EnsureIteratorReceiver(thisValue, "take");
-        var limit = CoerceIteratorLimit(args, "Iterator.prototype.take");
+        var limit = CoerceIteratorLimitOrClose(thisValue, args, "Iterator.prototype.take");
         var (iter, next) = GetIteratorDirect(thisValue);
         return MakeIteratorHelper(IteratorHelperKind.Take, iter, next, JsValue.Undefined, limit);
     }
@@ -579,7 +583,7 @@ public sealed partial class BytecodeInterpreter
     private JsValue IteratorProtoDrop(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         EnsureIteratorReceiver(thisValue, "drop");
-        var limit = CoerceIteratorLimit(args, "Iterator.prototype.drop");
+        var limit = CoerceIteratorLimitOrClose(thisValue, args, "Iterator.prototype.drop");
         var (iter, next) = GetIteratorDirect(thisValue);
         return MakeIteratorHelper(IteratorHelperKind.Drop, iter, next, JsValue.Undefined, limit);
     }
@@ -587,7 +591,7 @@ public sealed partial class BytecodeInterpreter
     private JsValue IteratorProtoFlatMap(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         EnsureIteratorReceiver(thisValue, "flatMap");
-        var fn = RequireCallable(args, 0, "Iterator.prototype.flatMap");
+        var fn = RequireCallableOrClose(thisValue, args, "Iterator.prototype.flatMap");
         var (iter, next) = GetIteratorDirect(thisValue);
         return MakeIteratorHelper(IteratorHelperKind.FlatMap, iter, next, fn, 0);
     }
@@ -598,6 +602,36 @@ public sealed partial class BytecodeInterpreter
         {
             throw new JsThrownException(CreateTypeError(
                 "Iterator.prototype." + method + " called on a non-object."));
+        }
+    }
+
+    // ECMA-262 27.2.1.x — when the callback argument is not callable, the spec
+    // closes the underlying iterator (IteratorClose, calling its `return`) and
+    // THEN throws a TypeError, without ever reading `next`.
+    private JsValue RequireCallableOrClose(JsValue thisValue, IReadOnlyList<JsValue> args, string name)
+    {
+        var fn = args.Count > 0 ? args[0] : JsValue.Undefined;
+        if (!IsCallable(fn))
+        {
+            IteratorCloseOnAbrupt(thisValue);
+            throw new JsThrownException(CreateTypeError(name + " callback is not a function."));
+        }
+
+        return fn;
+    }
+
+    // take/drop: coerce + validate the limit; any abrupt completion (a throwing
+    // ToNumber, NaN, or a negative limit) closes the underlying iterator first.
+    private double CoerceIteratorLimitOrClose(JsValue thisValue, IReadOnlyList<JsValue> args, string name)
+    {
+        try
+        {
+            return CoerceIteratorLimit(args, name);
+        }
+        catch (JsThrownException)
+        {
+            IteratorCloseOnAbrupt(thisValue);
+            throw;
         }
     }
 
@@ -622,7 +656,7 @@ public sealed partial class BytecodeInterpreter
     private JsValue IteratorProtoForEach(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         EnsureIteratorReceiver(thisValue, "forEach");
-        var fn = RequireCallable(args, 0, "Iterator.prototype.forEach");
+        var fn = RequireCallableOrClose(thisValue, args, "Iterator.prototype.forEach");
         var (iter, next) = GetIteratorDirect(thisValue);
         long counter = 0;
         while (IteratorRecordStepValue(iter, next, out var value))
@@ -646,7 +680,7 @@ public sealed partial class BytecodeInterpreter
     private JsValue IteratorProtoReduce(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         EnsureIteratorReceiver(thisValue, "reduce");
-        var fn = RequireCallable(args, 0, "Iterator.prototype.reduce");
+        var fn = RequireCallableOrClose(thisValue, args, "Iterator.prototype.reduce");
         var (iter, next) = GetIteratorDirect(thisValue);
         var hasInitial = args.Count > 1;
         long counter = 0;
@@ -694,7 +728,7 @@ public sealed partial class BytecodeInterpreter
     private JsValue IteratorProtoFind(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         EnsureIteratorReceiver(thisValue, "find");
-        var fn = RequireCallable(args, 0, "Iterator.prototype.find");
+        var fn = RequireCallableOrClose(thisValue, args, "Iterator.prototype.find");
         var (iter, next) = GetIteratorDirect(thisValue);
         long counter = 0;
         while (IteratorRecordStepValue(iter, next, out var value))
@@ -727,7 +761,7 @@ public sealed partial class BytecodeInterpreter
         string method, bool stopWhen, bool resultWhenStopped, bool exhaustedResult)
     {
         EnsureIteratorReceiver(thisValue, method);
-        var fn = RequireCallable(args, 0, "Iterator.prototype." + method);
+        var fn = RequireCallableOrClose(thisValue, args, "Iterator.prototype." + method);
         var (iter, next) = GetIteratorDirect(thisValue);
         long counter = 0;
         while (IteratorRecordStepValue(iter, next, out var value))
