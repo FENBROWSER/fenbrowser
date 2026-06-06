@@ -6,5 +6,9 @@ public sealed class ArrayBufferBuiltin : IBuiltinModule
 {
     public string Name => "ArrayBuffer";
     public IReadOnlyList<BuiltinBinding> GetBindings(IBuiltinContext context)
-        => new[] { BuiltinBinding.NonEnumerable("ArrayBuffer", JsValue.FromObject(context.MaterializeArrayBufferConstructor())) };
+    {
+        var handle = context.MaterializeArrayBufferConstructor();
+        context.InstallArrayBufferTransfer();
+        return new[] { BuiltinBinding.NonEnumerable("ArrayBuffer", JsValue.FromObject(handle)) };
+    }
 }

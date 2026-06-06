@@ -108,6 +108,10 @@ public interface IBuiltinContext
     // MaterializeTypedArrayConstructors so the Uint8Array constructor exists.
     void InstallUint8ArrayBase64Hex();
 
+    // Installs ArrayBuffer.prototype.transfer / transferToFixedLength / the
+    // detached getter (ES2024). Run after MaterializeArrayBufferConstructor.
+    void InstallArrayBufferTransfer();
+
     // Install prototype methods on already-created prototypes (for builtins that
     // create their own prototypes and need the interpreter to install methods).
     void InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto);

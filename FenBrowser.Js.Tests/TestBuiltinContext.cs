@@ -127,6 +127,9 @@ internal sealed class TestBuiltinContext : IBuiltinContext
     public void InstallUint8ArrayBase64Hex()
         => throw new NotSupportedException("InstallUint8ArrayBase64Hex is not supported in TestBuiltinContext.");
 
+    public void InstallArrayBufferTransfer()
+        => throw new NotSupportedException("InstallArrayBufferTransfer is not supported in TestBuiltinContext.");
+
     public void InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto)
         => throw new NotSupportedException("InstallDatePrototypeMethods is not supported in TestBuiltinContext.");
 
