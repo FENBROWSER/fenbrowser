@@ -6743,7 +6743,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         int length)
     {
         var function = new NativeFunctionObject(name, call, length: length);
+        if (_functionPrototypeHandle is { } fnProto)
+        {
+            function.SetPrototype(fnProto);
+        }
+
         var functionHandle = _heap.AllocateObject(function, AllocationSite.Current());
+        if (_functionPrototypeHandle is { } fnProtoHandle)
+        {
+            _heap.WriteBarrier(functionHandle, fnProtoHandle);
+        }
+
         _ = owner.DefineOwnProperty(
             name,
             new JsPropertyDescriptor(
@@ -8367,7 +8377,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         int length = 0)
     {
         var function = new NativeFunctionObject(name, call, length: length);
+        // ECMA-262 — every built-in function inherits %Function.prototype%. Set it
+        // when already materialised (it always is by the time lazy builtins like the
+        // Iterator helpers are defined); skipping avoids bootstrap recursion.
+        if (_functionPrototypeHandle is { } fnProto)
+        {
+            function.SetPrototype(fnProto);
+        }
+
         var functionHandle = _heap.AllocateObject(function, AllocationSite.Current());
+        if (_functionPrototypeHandle is { } fnProtoHandle)
+        {
+            _heap.WriteBarrier(functionHandle, fnProtoHandle);
+        }
+
         var callHandle = EnsureFunctionCallMethod();
         _ = function.SetProperty("call", JsValue.FromObject(callHandle));
         _heap.WriteBarrier(functionHandle, callHandle);
