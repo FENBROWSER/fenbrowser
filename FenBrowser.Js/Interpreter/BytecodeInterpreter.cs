@@ -8876,12 +8876,35 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var newIsAccessor = hasGetter || hasSetter;
+        var newIsData = hasValue || hasWritableFlag;
+        // A descriptor carrying neither data nor accessor fields is *generic*
+        // (e.g. { enumerable, configurable } only). Per ECMA-262 10.1.6.3 it does
+        // NOT change the property's kind — it only updates enumerable/configurable.
+        var newIsGeneric = !newIsAccessor && !newIsData;
         JsPropertyDescriptor descriptor;
         if (hasExisting)
         {
             var existingIsAccessor = existingDescriptor.IsAccessor;
+            if (newIsGeneric)
+            {
+                // Generic update: keep the existing kind and its value/get/set,
+                // overriding only the flags the descriptor actually supplies. This is
+                // what lets `defineProperty(o, k, { configurable: false })` lower
+                // configurability of an accessor without clobbering its get/set.
+                descriptor = existingIsAccessor
+                    ? JsPropertyDescriptor.Accessor(
+                        existingDescriptor.Get,
+                        existingDescriptor.Set,
+                        hasEnumerable ? enumerable : existingDescriptor.Enumerable,
+                        hasConfigurable ? configurable : existingDescriptor.Configurable)
+                    : new JsPropertyDescriptor(
+                        existingDescriptor.Value,
+                        existingDescriptor.Writable,
+                        hasEnumerable ? enumerable : existingDescriptor.Enumerable,
+                        hasConfigurable ? configurable : existingDescriptor.Configurable);
+            }
             // Same-kind merge keeps unchanged attributes from `existing`.
-            if (newIsAccessor && existingIsAccessor)
+            else if (newIsAccessor && existingIsAccessor)
             {
                 descriptor = JsPropertyDescriptor.Accessor(
                     hasGetter ? getter : existingDescriptor.Get,
