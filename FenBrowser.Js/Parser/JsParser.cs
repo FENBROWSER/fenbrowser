@@ -1044,6 +1044,17 @@ public sealed class JsParser
         while (true)
         {
             var binding = ParseVariableDeclaratorBinding();
+
+            // ECMA-262 14.3.1 / 13.3.1.1 early error: `eval` and `arguments` may not
+            // be bound by a var/let/const declaration in strict-mode code.
+            if (_strictMode && !IsSyntheticPatternBinding(binding.Identifier) &&
+                (string.Equals(binding.Identifier, "eval", StringComparison.Ordinal) ||
+                 string.Equals(binding.Identifier, "arguments", StringComparison.Ordinal)))
+            {
+                throw new JsParserException(
+                    $"'{binding.Identifier}' may not be declared as a binding name in strict mode.");
+            }
+
             ExpressionNode? initializer = null;
             if (IsPunctuator("="))
             {
