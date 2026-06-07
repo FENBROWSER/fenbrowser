@@ -2,6 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## ⚠️ Current Reality (read first — the tree has diverged from older docs)
+
+Much of this file and the `docs/` Volumes describe the original architecture. The repo has since pivoted; these facts override anything below that conflicts:
+
+- **Target framework is `net10.0`** (not net8.0) across all projects.
+- **The active JavaScript engine is `FenBrowser.Js`** — a standalone tree-walking/bytecode engine (`Lexer → Parser → Ast → BytecodeCompiler → BytecodeVerifier → BytecodeInterpreter`). This is where all current JS conformance work happens. The legacy JS engine inside `FenBrowser.FenEngine/Core/Bytecode/` (the `FenRuntime`/`VirtualMachine`/`FenValue` API) is **no longer the focus** — ignore it for JS work unless explicitly told otherwise.
+- **`FenBrowser.WPT` and `FenBrowser.Test262` projects no longer exist.** Test262 now runs through **`FenBrowser.Js.Test262`** with a completely different CLI (see Test262 section). There is no in-tree WPT runner at present.
+- **New projects**: `FenBrowser.Js` (engine), `FenBrowser.Js.Tests` (xUnit), `FenBrowser.Js.Test262` (conformance runner), `FenBrowser.Js.Shell` (REPL/CLI), `FenBrowser.Js.Compare` (differential vs. a reference engine), `FenBrowser.Js.Fuzz` (fuzzing), `FenBrowser.Core.Tests`, `FenBrowser.Tooling`.
+- **JS resume protocol**: all FenJS revamp work resumes from `.fenjs-progress.md` at the repo root — never restart from step 1.
+- test262 root on this machine: `C:\Users\udayk\Videos\test262`.
+
 ## Documentation Index (Read Before Modifying Subsystems)
 
 The `docs/` folder is the authoritative per-subsystem encyclopedia. **Before modifying any major subsystem, read the relevant Volume** — they contain exact line ranges for key methods, saving multiple searches.
@@ -80,15 +91,21 @@ Hard rules:
 ## Build Commands
 
 ```bash
-# Build entire solution
+# Build entire solution (net10.0)
 dotnet build FenBrowser.sln -c Release
 
-# Build individual projects
+# JS engine work (the common case) — build engine + its tests/runner
+dotnet build FenBrowser.Js/FenBrowser.Js.csproj -c Release
+dotnet build FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release
+dotnet build FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -c Release
+
+# Browser-engine projects
 dotnet build FenBrowser.Core/FenBrowser.Core.csproj -c Release
 dotnet build FenBrowser.FenEngine/FenBrowser.FenEngine.csproj -c Release
 dotnet build FenBrowser.Host/FenBrowser.Host.csproj -c Release
-dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Release
 
+# Note: FenBrowser.Js enables TreatWarningsAsErrors + Nullable=enable — new engine
+# code must be warning-clean and null-annotated or the build fails.
 # FenEngine build auto-runs WebIDL binding generation before compile
 # (WebIdlGen reads FenBrowser.Core/WebIDL/Idl/*.idl → writes FenBrowser.FenEngine/Bindings/Generated/)
 ```
@@ -96,43 +113,56 @@ dotnet build FenBrowser.Tests/FenBrowser.Tests.csproj -c Release
 ## Running Tests
 
 ```bash
-# Run all unit tests (xUnit)
+# JS engine unit tests (the primary suite for JS work)
+dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj
+dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj --filter "FullyQualifiedName~ArrayIsArrayTests"
+dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj --filter "FullyQualifiedName~ClassName.MethodName"
+
+# Browser-engine unit tests
 dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj
-
-# Run a specific test class or method
-dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~JavaScriptEngineModuleLoadingTests"
-dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~ClassName.MethodName"
-
-# Run WPT (Web Platform Tests)
-dotnet build FenBrowser.WPT/FenBrowser.WPT.csproj -c Release
-./FenBrowser.WPT/bin/Release/net8.0/FenBrowser.WPT.exe run_category <name>
-# e.g. run_category accname, run_category accessibility, run_category dom
-# Results written to wpt_results.md
+dotnet test FenBrowser.Core.Tests/FenBrowser.Core.Tests.csproj
 ```
+
+> The old `FenBrowser.WPT` runner no longer exists in the tree. There is currently no in-tree WPT runner.
 
 ## Test262 Conformance Testing Protocol
 
-Test262 tests MUST be run in **chunks of 1000** with strict safety controls:
+Test262 runs through the **`FenBrowser.Js.Test262`** runner. The runner takes a **directory or file path** (not "chunk numbers") and walks it.
 
-1. **Chunk Size**: 1000 tests per chunk (53 total chunks)
-2. **Completion Threshold**: Each chunk MUST have **900+ tests complete** (pass or fail) before moving to the next chunk.
-3. **Memory Safety**: Check RAM before each chunk. **NEVER exceed 70% RAM usage**.
-4. **Results File**: All results go to `docs/test_results.md`.
-5. **Per-test timeout — MANDATORY, NO EXCEPTIONS**: Every test262 run MUST enforce a **2-second per-test timeout**. Any test that runs longer than 2s is **skipped**, never awaited — a single test must never hang or block the whole suite. Always pass `--timeout-ms 2000` (CLI) / `-TimeoutMs 2000` (scripts) together with a stall watchdog (`-StallTimeoutSec 30`). This applies to *every* test262 invocation — quick categories, full chunks, single reruns — with no exception.
+**Per-test timeout — MANDATORY, NO EXCEPTIONS**: Every test262 run MUST pass `--timeout-ms 2000`. Any test running longer than 2s is skipped, never awaited — a single test must never hang or block the whole suite. This applies to *every* invocation — quick categories, full subtrees, single reruns.
 
 ```bash
 # Build once
-dotnet build FenBrowser.Test262/FenBrowser.Test262.csproj -c Release
+dotnet build FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -c Release
+EXE=./FenBrowser.Js.Test262/bin/Release/net10.0/FenBrowser.Js.Test262.exe
+ROOT="C:/Users/udayk/Videos/test262"
 
-# CLI usage
-./FenBrowser.Test262/bin/Release/net8.0/FenBrowser.Test262.exe get_chunk_count
-./FenBrowser.Test262/bin/Release/net8.0/FenBrowser.Test262.exe run_chunk <N>
-./FenBrowser.Test262/bin/Release/net8.0/FenBrowser.Test262.exe run_category <name> [--max <N>]
-./FenBrowser.Test262/bin/Release/net8.0/FenBrowser.Test262.exe run_single <path>
+# Run a category / subtree (runtime semantics). --test262 takes a path under $ROOT.
+$EXE --runtime-subset --root "$ROOT" --test262 "$ROOT/test/built-ins/Array" \
+     --max 100000 --timeout-ms 2000 --out Results/test262/array.json
 
-# Check RAM (Windows) — FreePhysicalMemory must be > 10000000 KB (~10 GB) before each chunk
-powershell -Command "(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory"
+# Run a single file
+$EXE --runtime-subset --root "$ROOT" --test262-file "<abs path to .js>" --timeout-ms 2000 \
+     --out Results/test262/single.json
+
+# Parser-only conformance (no execution)
+$EXE --parser-subset --root "$ROOT" --test262 "$ROOT/test/language" --timeout-ms 2000 --out Results/test262/parse.json
+
+# Other modes: --list, --dry-run, --dashboard, --verify-gates
+# Other flags: --features a,b,c | --supported-features a,b,c | --expectations <path> | --engine <name>
 ```
+
+**Full ~53k-test suite** — use the memory-safe batched script (one OS process per directory batch so RAM is
+released between batches, aggregating into `Results/test262/batched/_batched_total.json`):
+
+```bash
+bash run_full_batched.sh           # at repo root
+# Or a single process over the whole tree (heavier on RAM):
+$EXE --runtime-subset --root "$ROOT" --test262 "$ROOT/test" --max 1000000 --timeout-ms 2000 \
+     --out Results/test262/full.json
+```
+
+Result JSON fields: `passed`, `total`, and `failures[].details` (the real thrown message — *not* `tests[].message`).
 
 ### Execution & Results Policy (MANDATORY)
 - **Category by category** — drive one category at a time, not the whole suite blindly.
@@ -142,34 +172,48 @@ powershell -Command "(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory"
   - `Results/test262/categories/` — per-category run results.
 - **Clear stale results; keep only one day of history** — purge result files older than 24h before/after runs so the folders hold only the latest day. (`Results/` is gitignored — local housekeeping, never committed.)
 
-### Chunk Validation Rules
-- Record: chunk number, range, time, passed, failed, pass%, avg/test
-- If chunk crashes or <900 tests complete, retry once before moving on
-
-### Results Format
-Appended as markdown table rows to `docs/test_results.md`:
-```
-| Chunk | Range | Time (ms) | Tests | Passed | Failed | Pass % | Avg/Test (ms) |
-```
+### Memory safety
+- Check RAM before large runs; prefer `run_full_batched.sh` (process-per-batch) over a single whole-tree process.
+- If a run crashes, retry once before moving on. Stale `Results/` files are gitignored local housekeeping.
 
 ## Architecture Overview
 
-FenBrowser is a multi-process browser engine written in C#/.NET 8, structured around six main layers:
+FenBrowser is a browser engine + standalone JS engine written in C#/.NET 10.
 
 ### Project Dependency Graph
 ```
+FenBrowser.Js            ← standalone JS engine (lexer/parser/bytecode/interpreter) — ACTIVE JS WORK
+    ↑
+FenBrowser.Js.Tests      ← xUnit tests for the JS engine
+FenBrowser.Js.Test262    ← ECMAScript Test262 conformance runner (path-based CLI)
+FenBrowser.Js.Shell      ← JS REPL / script CLI
+FenBrowser.Js.Compare    ← differential testing vs. a reference engine
+FenBrowser.Js.Fuzz       ← JS engine fuzzing
+
 FenBrowser.Core          ← foundational types, DOM, CSS interfaces, networking
     ↑
-FenBrowser.FenEngine     ← JS engine, layout, rendering, WebAPIs (depends on Core)
+FenBrowser.FenEngine     ← layout, rendering, WebAPIs, legacy JS engine (depends on Core)
     ↑
 FenBrowser.Host          ← process orchestration, BrowserIntegration, IPC coordinators
 FenBrowser.DevTools      ← CDP-like debug server (DOM/CSS/Runtime domains)
 FenBrowser.WebDriver     ← WebDriver protocol (W3C)
+FenBrowser.Core.Tests    ← xUnit tests for Core
 FenBrowser.Tests         ← xUnit tests (references Core, FenEngine, DevTools, Host)
-FenBrowser.Test262       ← ECMAScript Test262 CLI runner
-FenBrowser.WPT           ← Web Platform Tests runner
+FenBrowser.Tooling       ← dev/build tooling
 FenBrowser.WebIdlGen     ← WebIDL parser → C# binding code generator
 ```
+
+### FenBrowser.Js (active JavaScript engine)
+Standalone, dependency-light ECMAScript engine. Pipeline: source → lexer → parser → AST → bytecode → interpreter. Key subsystems (all under `FenBrowser.Js/`):
+- **Lexer** (`Lexer/`) and **Parser** (`Parser/`) → **Ast** (`Ast/`), with **AstValidation** (`AstValidation/`)
+- **Bytecode** (`Bytecode/`): `BytecodeCompiler`, `BytecodeVerifier`, the bytecode/opcode definitions
+- **Interpreter** (`Interpreter/`): `BytecodeInterpreter` (+ `BytecodeInterpreter.Operators.cs`), `JsThrownException`
+- **Runtime** (`Runtime/`): `JsValue`/`JsValueTag`, `JsIsolate`, `JsRealm`, handle types (`ObjectHandle`, `StringHandle`, `SymbolHandle`), `StringInterner`, `CspPolicy`
+- **Objects** (`Objects/`): `JsObject` and the object model; **Heap** (`Heap/`): `JsHeap`, handle scopes, GC; **Environments** (`Environments/`): scopes/bindings
+- **Builtins** (`Builtins/`): all `globalThis` built-ins (Array, Object, String, RegExp, Map/Set, Promise, TypedArray, etc.)
+- **Promises** (`Promises/`), **Modules** (`Modules/`), **Intl** (`Intl/`), **Regex** (`Regex/`, with generated unicode property-escape tables), **Source** (`Source/`: `SourceText`), **Host** (`Host/`: `IHostHooks`, host-object table for DOM bridging), **Diagnostics**, **Logging**
+
+> Build constraints: `net10.0`, `Nullable=enable`, **`TreatWarningsAsErrors=true`**, `AllowUnsafeBlocks=false`. New code must be warning-clean and fully null-annotated.
 
 ### FenBrowser.Core
 Platform-agnostic primitives. Key subsystems:
@@ -187,7 +231,7 @@ Platform-agnostic primitives. Key subsystems:
 
 ### FenBrowser.FenEngine
 The rendering and scripting engine. Key subsystems:
-- **JavaScript Engine** (`Core/`): `FenRuntime` → `BytecodeCompiler` (`Core/Bytecode/Compiler/`) → `VirtualMachine` (`Core/Bytecode/VM/`). Integrated via `JavaScriptEngine` (`Scripting/JavaScriptEngine.cs`) which implements `IDomBridge`.
+- **JavaScript Engine (LEGACY — not the active engine)** (`Core/`): `FenRuntime` → `BytecodeCompiler` (`Core/Bytecode/Compiler/`) → `VirtualMachine` (`Core/Bytecode/VM/`). Integrated via `JavaScriptEngine` (`Scripting/JavaScriptEngine.cs`) which implements `IDomBridge`. **For JS work use `FenBrowser.Js` instead.**
 - **JS Types** (`Core/Types/`): `JsMap`, `JsSet`, `JsWeakMap`, `JsWeakSet`, `JsPromise`, `JsBigInt`, `JsSymbol`, `JsTypedArray`, `JsIntl`
 - **DOM Wrappers** (`DOM/`): `ElementWrapper`, `DomWrapperFactory`, `CustomElementRegistry`, `MutationObserver`
 - **Layout Engine** (`Layout/`): `LayoutEngine`, `BoxTreeBuilder`, formatting contexts (Block, Inline, Flex, Grid, Table, Float, AbsolutePosition), `MarginCollapseComputer`, `TextLayoutComputer`
@@ -217,9 +261,9 @@ W3C WebDriver protocol implementation:
 
 ## Key Patterns
 
-- **`InternalsVisibleTo`**: `FenBrowser.Core` and `FenBrowser.FenEngine` expose internals to `FenBrowser.Tests`, `FenBrowser.Test262`, `FenBrowser.WPT`, `FenBrowser.Conformance`
-- **Unsafe code**: `FenBrowser.Core` and `FenBrowser.FenEngine` both enable `AllowUnsafeBlocks` (arena allocator, rendering)
-- **Nullable**: Core and FenEngine use `<Nullable>disable</Nullable>`; Tests uses `enable`
+- **`InternalsVisibleTo`**: `FenBrowser.Js` exposes internals to `FenBrowser.Js.Tests`, `FenBrowser.Js.Test262` (and the other `FenBrowser.Js.*` tools); `FenBrowser.Core`/`FenBrowser.FenEngine` expose internals to `FenBrowser.Tests`, `FenBrowser.Conformance`
+- **Unsafe code**: `FenBrowser.Core` and `FenBrowser.FenEngine` enable `AllowUnsafeBlocks` (arena allocator, rendering); `FenBrowser.Js` does **not** (`AllowUnsafeBlocks=false`)
+- **Nullable**: Core and FenEngine use `<Nullable>disable</Nullable>`; `FenBrowser.Js`, `FenBrowser.Js.Tests`, and `FenBrowser.Tests` use `enable`
 - **SkiaSharp**: rendering backend for both Core and FenEngine; `HarfBuzzSharp` for text shaping in FenEngine
 - **`BuildInParallel>false`**: set in Tests project to avoid MSBuild project-reference instability
 
@@ -229,6 +273,16 @@ Knowing the namespace means you can go directly to the file without searching:
 
 | Namespace | Path |
 |-----------|------|
+| `FenBrowser.Js.Lexer` | `FenBrowser.Js/Lexer/` |
+| `FenBrowser.Js.Parser` / `FenBrowser.Js.Ast` | `FenBrowser.Js/Parser/`, `FenBrowser.Js/Ast/` |
+| `FenBrowser.Js.Bytecode` | `FenBrowser.Js/Bytecode/` |
+| `FenBrowser.Js.Interpreter` | `FenBrowser.Js/Interpreter/` |
+| `FenBrowser.Js.Runtime` | `FenBrowser.Js/Runtime/` |
+| `FenBrowser.Js.Objects` / `FenBrowser.Js.Heap` | `FenBrowser.Js/Objects/`, `FenBrowser.Js/Heap/` |
+| `FenBrowser.Js.Builtins` | `FenBrowser.Js/Builtins/` |
+| `FenBrowser.Js.Source` | `FenBrowser.Js/Source/` |
+| `FenBrowser.Js.Host` | `FenBrowser.Js/Host/` |
+| `FenBrowser.Js.Tests` | `FenBrowser.Js.Tests/` |
 | `FenBrowser.Core.Dom.V2` | `FenBrowser.Core/Dom/V2/` |
 | `FenBrowser.Core.Parsing` | `FenBrowser.Core/Parsing/` |
 | `FenBrowser.Core.Network` | `FenBrowser.Core/Network/` |
@@ -265,7 +319,11 @@ Knowing the namespace means you can go directly to the file without searching:
 
 | Task | File(s) to edit |
 |------|----------------|
-| New Web API | `FenBrowser.FenEngine/WebAPIs/<ApiName>.cs` + register in `Scripting/JavaScriptEngine.cs` |
+| New JS built-in (Array/Object/etc. method) | `FenBrowser.Js/Builtins/<Name>.cs` + `FenBrowser.Js.Tests/<Name>Tests.cs` |
+| New JS opcode | `FenBrowser.Js/Bytecode/` (opcode + `BytecodeCompiler` + `BytecodeVerifier`) + `FenBrowser.Js/Interpreter/BytecodeInterpreter*.cs` |
+| New JS syntax | `FenBrowser.Js/Lexer/` + `FenBrowser.Js/Parser/` + `FenBrowser.Js/Ast/` (+ AstValidation) then compiler/interpreter |
+| New JS engine unit test | `FenBrowser.Js.Tests/<FeatureName>Tests.cs` |
+| New Web API (legacy engine) | `FenBrowser.FenEngine/WebAPIs/<ApiName>.cs` + register in `Scripting/JavaScriptEngine.cs` |
 | New JS built-in type | `FenBrowser.FenEngine/Core/Types/Js<TypeName>.cs` |
 | New JS built-in op/opcode | `FenBrowser.FenEngine/Core/Bytecode/OpCode.cs` + `Compiler/BytecodeCompiler.cs` + `VM/VirtualMachine.cs` |
 | New DOM method/property | `FenBrowser.Core/Dom/V2/Element.cs` or `Document.cs` or `Node.cs` |
@@ -278,39 +336,40 @@ Knowing the namespace means you can go directly to the file without searching:
 | New process IPC channel | `FenBrowser.Host/ProcessIsolation/` |
 | New unit test | `FenBrowser.Tests/<Category>/<FeatureName>Tests.cs` |
 
-## JS Engine API Quick Reference
+## JS Engine API Quick Reference (`FenBrowser.Js`)
 
-Tests and engine code interact with FenEngine through these core types:
+The active engine has a three-stage pipeline. This is exactly how the tests drive it:
 
 ```csharp
-// Standalone runtime (used directly in tests — no DOM needed)
-var runtime = new FenRuntime();
-runtime.ExecuteSimple("var x = 1 + 2;");
-FenValue result = runtime.GetGlobal("x");   // → FenValue{Number, 3.0}
+using FenBrowser.Js.Bytecode;     // BytecodeCompiler, BytecodeVerifier
+using FenBrowser.Js.Interpreter;  // BytecodeInterpreter, JsThrownException
+using FenBrowser.Js.Source;       // SourceText
 
-// FenValue — struct representing any JS value
-FenValue.Undefined / FenValue.Null
-FenValue.FromString("hello")
-FenValue.FromNumber(42.0)
-FenValue.FromBoolean(true)
-FenValue.FromObject(fenObj)
-FenValue.FromFunction(fenFn)
-result.Type          // Interfaces.ValueType enum: Undefined/Null/Boolean/Number/String/Object/Function
-result.ToNumber()    // → double
-result.ToString2()   // → string  (avoid .ToString() — use .ToString2() or cast)
-result.IsFunction    // bool
-result.AsFunction()  // → FenFunction
+// Compile → verify → execute
+var fn = new BytecodeCompiler().CompileScript(new SourceText("var x = 1 + 2; x;"));
+new BytecodeVerifier().Verify(fn);                 // optional but standard in tests
+JsValue result = new BytecodeInterpreter().Execute(fn);
 
-// FenObject — JS object
-var obj = new FenObject();
-obj.Set("key", FenValue.FromString("val"));
-obj.Get("key");      // → FenValue
-
-// FenFunction — callable
-var fn = new FenFunction("myFn", (args, thisVal) => FenValue.FromNumber(args[0].ToNumber() * 2));
+// JsValue (FenBrowser.Js.Runtime) — the universal value type
+result.AsBoolean();   // → bool
+result.AsNumber();    // → double
+// thrown JS errors surface as a CLR exception:
+Assert.Throws<JsThrownException>(() => new BytecodeInterpreter().Execute(badFn));
 ```
 
-For full DOM+WebAPI integration (navigation, script execution in a page context), use `JavaScriptEngine` in `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs`.
+Typical test helper:
+```csharp
+private static bool RunBool(string src)
+{
+    var fn = new BytecodeCompiler().CompileScript(new SourceText(src));
+    new BytecodeVerifier().Verify(fn);
+    return new BytecodeInterpreter().Execute(fn).AsBoolean();
+}
+```
+
+Lower-level allocation/GC is via `JsIsolate`/`JsHeap`/`HandleScope` (`FenBrowser.Js.Runtime` / `FenBrowser.Js.Heap`); host/DOM integration goes through `IHostHooks` + the host-object table in `FenBrowser.Js/Host/`.
+
+> The legacy `FenRuntime`/`FenValue`/`FenObject`/`FenFunction` API in `FenBrowser.FenEngine` is **not** the active engine — don't use it for new JS work.
 
 ## Logging
 
@@ -327,7 +386,7 @@ Available `LogCategory` values: `Navigation`, `Rendering`, `CSS`, `JavaScript`, 
 
 ## Test Patterns
 
-- Tests instantiate `new FenRuntime()` directly for pure JS engine tests (no DOM or network).
-- Tests that need DOM use helpers in `FenBrowser.Tests/Layout/LayoutTestHelper.cs`.
-- Test class names match the file: `FenBrowser.Tests/Engine/FooTests.cs` → class `FooTests`, namespace `FenBrowser.Tests.Engine`.
+- **JS engine tests** (`FenBrowser.Js.Tests`, namespace `FenBrowser.Js.Tests`) compile+verify+execute source directly (see JS Engine API Quick Reference) — no DOM, no network, no base class. One test file per feature: `ArrayIsArrayTests.cs` → class `ArrayIsArrayTests`.
+- Browser-engine tests that need DOM use helpers in `FenBrowser.Tests/Layout/LayoutTestHelper.cs`.
+- Test class names match the file; namespace matches folder.
 - All tests are `[Fact]` or `[Theory]` (xUnit); no base class required.
