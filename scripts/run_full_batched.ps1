@@ -53,6 +53,10 @@ foreach ($leaf in @("intl402", "annexB", "staging")) {
     $batches.Add((Join-Path $Test262Root "test\$leaf"))
 }
 
+$count = $batches.Count
+$runP = 0; $runT = 0
+Write-Host ("Running {0} batches  (per-test {1}ms, stall {2}s)  ->  {3}" -f $count, $TimeoutMs, $StallTimeoutSec, $OutDir) -ForegroundColor Cyan
+
 $i = 0
 foreach ($b in $batches) {
     $i++
@@ -61,12 +65,15 @@ foreach ($b in $batches) {
     $out = Join-Path $OutDir "b_$tag.json"
     $log = Join-Path $OutDir "b_$tag.log"
     $err = "$log.err"
+    $head = "[{0,3}/{1}] {2,-44}" -f $i, $count, $tag
 
     # Resume: skip a batch that already has a valid result JSON.
     if (Test-Path $out) {
         try {
             $prev = Get-Content $out -Raw | ConvertFrom-Json
             if ($null -ne $prev.total) {
+                $runP += [int]$prev.passed; $runT += [int]$prev.total
+                Write-Host ("{0} SKIP   {1}/{2} (cached)" -f $head, [int]$prev.passed, [int]$prev.total) -ForegroundColor DarkGray
                 "$i $tag $([int]$prev.passed) $([int]$prev.total) SKIP" | Add-Content $prog
                 continue
             }
@@ -75,6 +82,7 @@ foreach ($b in $batches) {
     }
 
     Set-Content -Path $log -Value "" -Encoding utf8
+    Write-Host ("{0} run ..." -f $head) -NoNewline
 
     $procArgs = @("--runtime-subset", "--root", $Test262Root, "--test262", $b,
         "--max", $MaxPerBatch, "--timeout-ms", $TimeoutMs, "--out", $out)
@@ -100,11 +108,17 @@ foreach ($b in $batches) {
         }
         catch {}
     }
+    $runP += $passed; $runT += $total
+    $pctB = if ($total) { [math]::Round(100.0 * $passed / $total, 1) } else { 0 }
+    $runPct = if ($runT) { [math]::Round(100.0 * $runP / $runT, 1) } else { 0 }
     if ($stalled) {
         $last = if (Test-Path $log) { Get-Content $log -Tail 1 -ErrorAction SilentlyContinue } else { "" }
+        Write-Host ("`r{0} STALL  {1}/{2}  [cum {3}/{4} {5}%]" -f $head, $passed, $total, $runP, $runT, $runPct) -ForegroundColor Yellow
         "$i $tag $passed $total STALL-KILL last:[$last]" | Add-Content $prog
     }
     else {
+        $color = if ($pctB -ge 95) { "Green" } elseif ($pctB -ge 75) { "White" } else { "Red" }
+        Write-Host ("`r{0} {1,5}/{2,-5} {3,5}%  [cum {4}/{5} {6}%]" -f $head, $passed, $total, $pctB, $runP, $runT, $runPct) -ForegroundColor $color
         "$i $tag $passed $total" | Add-Content $prog
     }
 }

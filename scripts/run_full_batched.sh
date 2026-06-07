@@ -43,6 +43,8 @@ batches+=("$ROOT/test/intl402" "$ROOT/test/annexB" "$ROOT/test/staging")
 # single test from blocking the entire suite.
 STALL=${STALL_TIMEOUT_SEC:-30}
 
+N=${#batches[@]}
+echo "Running $N batches  (per-test 2000ms, stall ${STALL}s)  ->  $OUTDIR"
 i=0
 for b in "${batches[@]}"; do
   i=$((i+1))
@@ -60,9 +62,10 @@ try:
     print(d.get('passed',0), d['total'])
 except Exception:
     sys.exit(1)
-" 2>/dev/null) && { echo "$i ${tag} $done SKIP" >> "$PROG"; continue; }
+" 2>/dev/null) && { printf '[%3d/%d] %-44s SKIP   %s (cached)\n' "$i" "$N" "$tag" "$done"; echo "$i ${tag} $done SKIP" >> "$PROG"; continue; }
   fi
 
+  printf '[%3d/%d] %-44s run ...\n' "$i" "$N" "$tag"
   : > "$log"
   "$EXE" --runtime-subset --root "$ROOT" --test262 "$b" --max 100000 --timeout-ms 2000 --out "$out" >"$log" 2>&1 &
   pid=$!
@@ -89,8 +92,10 @@ except Exception as e:
     print('0 0')
 ")
   if [ "$stalled" = "1" ]; then
+    printf '[%3d/%d] %-44s STALL  %s\n' "$i" "$N" "$tag" "$line"
     echo "$i ${tag} $line STALL-KILL last:[$(tail -n1 "$log" 2>/dev/null)]" >> "$PROG"
   else
+    printf '[%3d/%d] %-44s %s\n' "$i" "$N" "$tag" "$line"
     echo "$i ${tag} $line" >> "$PROG"
   fi
 done
