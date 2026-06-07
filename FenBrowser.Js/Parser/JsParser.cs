@@ -1831,6 +1831,7 @@ public sealed class JsParser
             allowYieldInBody: isGenerator,
             allowAwaitInBody: isAsync);
         var parameters = parameterInfo.Parameters;
+        ValidateStrictModeFunctionName(name, body.Statements);
         ValidateDirectivePrologueStrictStringEscapes(body.Statements);
         return new FunctionDeclarationNode(
             name.Text,
@@ -2144,6 +2145,20 @@ public sealed class JsParser
         if (IsPunctuator(";"))
         {
             Advance();
+        }
+    }
+
+    // ECMA-262 15.1.1 early error: a strict-mode function's BindingIdentifier may
+    // not be `eval` or `arguments`. Strict applies when the surrounding code is
+    // strict or the body opens with a "use strict" directive.
+    private void ValidateStrictModeFunctionName(Token name, IReadOnlyList<StatementNode> bodyStatements)
+    {
+        if ((_strictMode || ContainsUseStrictDirective(bodyStatements)) &&
+            (string.Equals(name.Text, "eval", StringComparison.Ordinal) ||
+             string.Equals(name.Text, "arguments", StringComparison.Ordinal)))
+        {
+            throw new JsParserException(
+                $"'{name.Text}' may not be used as a function name in strict mode.");
         }
     }
 
@@ -2814,6 +2829,26 @@ public sealed class JsParser
                 allowYieldExpression: allowYieldInBody,
                 allowAwaitExpression: allowAwaitInBody,
                 parse: () => ParseFunctionBlockBody(ParseBlockStatement));
+
+            // ECMA-262 15.1.1 / 15.2.1 early errors: in strict-mode code `eval` and
+            // `arguments` may not be bound as parameter names. The function is strict
+            // when the surrounding code is strict or its own body opens with a
+            // "use strict" directive.
+            var effectiveStrict = _strictMode || ContainsUseStrictDirective(body.Statements);
+            if (effectiveStrict)
+            {
+                foreach (var parameter in parameterInfo.Parameters)
+                {
+                    if (!IsSyntheticPatternBinding(parameter) &&
+                        (string.Equals(parameter, "eval", StringComparison.Ordinal) ||
+                         string.Equals(parameter, "arguments", StringComparison.Ordinal)))
+                    {
+                        throw new JsParserException(
+                            $"'{parameter}' may not be used as a parameter name in strict mode.");
+                    }
+                }
+            }
+
             return (parameterInfo, body);
         }
         finally
@@ -3550,9 +3585,11 @@ public sealed class JsParser
             Advance();
         }
 
+        Token? nameToken = null;
         string? name = null;
         if (IsIdentifierLike(Current()))
         {
+            nameToken = Current();
             name = Advance().Text;
         }
 
@@ -3560,6 +3597,11 @@ public sealed class JsParser
             allowYieldInBody: isGenerator,
             allowAwaitInBody: isAsync);
         var parameters = parameterInfo.Parameters;
+        if (nameToken is { } fnNameToken)
+        {
+            ValidateStrictModeFunctionName(fnNameToken, body.Statements);
+        }
+
         ValidateDirectivePrologueStrictStringEscapes(body.Statements);
         return new FunctionExpressionNode(
             name,
