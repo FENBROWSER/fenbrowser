@@ -75,4 +75,29 @@ public class FunctionConstructorAnnexBTests
         Assert.False(r.ok);
         Assert.Equal("JsThrownException", r.errType);
     }
+
+    [Fact]
+    public void FunctionCtor_HashbangInBody_ThrowsSyntaxError()
+    {
+        var r = Compile("Function('#!\\n_');");
+        Assert.False(r.ok);
+        Assert.Equal("JsThrownException", r.errType);
+    }
+
+    [Fact]
+    public void FunctionCtor_HashbangInParameters_ThrowsSyntaxError()
+    {
+        var r = Compile("Function('#!\\n_', '');");
+        Assert.False(r.ok);
+        Assert.Equal("JsThrownException", r.errType);
+    }
+
+    [Fact]
+    public void FunctionCtor_BodyCanResolveGlobalEval()
+    {
+        var fn = new BytecodeCompiler().CompileScript(
+            new SourceText("var f = new Function(\"return eval('this')\"); f() === this;"));
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.True(result.AsBoolean());
+    }
 }

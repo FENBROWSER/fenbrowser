@@ -38,6 +38,14 @@ public sealed class StrictModeRuntimeTests
     }
 
     [Fact]
+    public void StrictMode_IsInheritedByNestedArrowDelete()
+    {
+        Assert.Equal(
+            "TypeError",
+            RunStr("\"use strict\"; let observed; try { (() => { delete Boolean.prototype; })(); } catch (e) { observed = e.name; } observed;"));
+    }
+
+    [Fact]
     public void SloppyMode_AssignmentToUndeclaredCreatesGlobalProperty()
     {
         Assert.True(RunBool("missingInSloppy = 7; globalThis.missingInSloppy === 7;"));

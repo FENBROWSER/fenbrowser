@@ -1353,10 +1353,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var obj = ResolveObject(receiver);
                     if (obj is ProxyObject proxyDel)
                     {
-                        frame.Registers[ins.A] = JsValue.FromBoolean(ProxyDelete(proxyDel, prop));
+                        var deleted = ProxyDelete(proxyDel, prop);
+                        if (!deleted && function.IsStrictMode)
+                        {
+                            ThrowOrHandle(frame, CreateTypeError($"Cannot delete property '{prop}'."));
+                            break;
+                        }
+
+                        frame.Registers[ins.A] = JsValue.FromBoolean(deleted);
                         break;
                     }
-                    frame.Registers[ins.A] = JsValue.FromBoolean(obj.DeleteProperty(prop));
+                    var deletedProp = obj.DeleteProperty(prop);
+                    if (!deletedProp && function.IsStrictMode)
+                    {
+                        ThrowOrHandle(frame, CreateTypeError($"Cannot delete property '{prop}'."));
+                        break;
+                    }
+
+                    frame.Registers[ins.A] = JsValue.FromBoolean(deletedProp);
                     break;
                 }
                 case OpCode.SetElem:
@@ -1477,11 +1491,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var keyValueDel = frame.Registers[ins.C];
                     if (keyValueDel.Tag == JsValueTag.Symbol)
                     {
-                        frame.Registers[ins.A] = JsValue.FromBoolean(obj.DeleteSymbolProperty(keyValueDel.AsSymbolId()));
+                        var deletedSymbol = obj.DeleteSymbolProperty(keyValueDel.AsSymbolId());
+                        if (!deletedSymbol && function.IsStrictMode)
+                        {
+                            ThrowOrHandle(frame, CreateTypeError("Cannot delete symbol-keyed property."));
+                            break;
+                        }
+
+                        frame.Registers[ins.A] = JsValue.FromBoolean(deletedSymbol);
                         break;
                     }
                     var key = ToPropertyKey(keyValueDel);
-                    frame.Registers[ins.A] = JsValue.FromBoolean(obj.DeleteProperty(key));
+                    var deletedKey = obj.DeleteProperty(key);
+                    if (!deletedKey && function.IsStrictMode)
+                    {
+                        ThrowOrHandle(frame, CreateTypeError($"Cannot delete property '{key}'."));
+                        break;
+                    }
+
+                    frame.Registers[ins.A] = JsValue.FromBoolean(deletedKey);
                     break;
                 }
                 case OpCode.EnumerateKeys:
@@ -1787,15 +1815,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     frame.Registers[ins.A] = JsValue.FromBoolean(!IsTruthy(frame.Registers[ins.B]));
                     break;
                 case OpCode.Pos:
-                    frame.Registers[ins.A] = JsValue.FromNumber(ToNumber(frame.Registers[ins.B]));
+                    try
+                    {
+                        frame.Registers[ins.A] = JsValue.FromNumber(ToNumber(frame.Registers[ins.B]));
+                    }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Neg:
                     try
                     {
-                        if (frame.Registers[ins.B].Tag == JsValueTag.BigInt)
-                            frame.Registers[ins.A] = JsValue.FromBigInt(-frame.Registers[ins.B].AsBigInt());
+                        var numeric = ToNumericValue(frame.Registers[ins.B]);
+                        if (numeric.Tag == JsValueTag.BigInt)
+                            frame.Registers[ins.A] = JsValue.FromBigInt(-numeric.AsBigInt());
                         else
-                            frame.Registers[ins.A] = JsValue.FromNumber(-ToNumber(frame.Registers[ins.B]));
+                            frame.Registers[ins.A] = JsValue.FromNumber(-numeric.AsNumber());
                     }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
@@ -1963,7 +1996,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Return:
-                    return frame.Registers[ins.A];
+                {
+                    var returnValue = frame.Registers[ins.A];
+                    if (function.IsDerivedConstructor &&
+                        returnValue.Tag != JsValueTag.Object &&
+                        frame.Environment is FunctionEnvironmentRecord derivedEnv &&
+                        derivedEnv.GetThisBinding(out var derivedThis) == BindingOpResult.Ok)
+                    {
+                        return derivedThis;
+                    }
+
+                    return returnValue;
+                }
                 default:
                     throw new InvalidOperationException($"Unsupported opcode {ins.OpCode}.");
             }
@@ -8358,10 +8402,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var body = args.Count > 0 ? ToStringValue(args[^1]) : string.Empty;
         try
         {
+            if (StartsWithHashbangComment(body))
+            {
+                throw new JsParserException("Hashbang comments are not allowed in function constructor bodies.");
+            }
+
             var parameters = new List<string>();
             for (var i = 0; i + 1 < args.Count; i++)
             {
-                AddFunctionConstructorParameters(parameters, ToStringValue(args[i]));
+                var parameterText = ToStringValue(args[i]);
+                if (StartsWithHashbangComment(parameterText))
+                {
+                    throw new JsParserException("Hashbang comments are not allowed in function constructor parameters.");
+                }
+
+                AddFunctionConstructorParameters(parameters, parameterText);
             }
 
             var compiled = new BytecodeCompiler().CompileFunctionBody(
@@ -8370,13 +8425,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 "anonymous",
                 kind);
             new BytecodeVerifier().Verify(compiled);
-            return CreateFunctionObject(compiled);
+            return CreateFunctionObject(compiled, EnsureGlobalEnvironment());
         }
         catch (Exception ex) when (ex is JsParserException or UnsupportedFeatureException)
         {
             throw new JsThrownException(CreateSyntaxError(ex.Message));
         }
     }
+
+    private static bool StartsWithHashbangComment(string source)
+        => source.Length >= 2 && source[0] == '#' && source[1] == '!';
 
     private static void AddFunctionConstructorParameters(List<string> parameters, string parameterText)
     {
@@ -15654,7 +15712,14 @@ fallbackArraySpecies:
         }
         var obj = ResolveObject(receiver);
         var key = ToPropertyKey(frame.Registers[keyReg]);
-        frame.Registers[destReg] = JsValue.FromBoolean(obj.DeleteProperty(key));
+        var deleted = obj.DeleteProperty(key);
+        if (!deleted && frame.Function.IsStrictMode)
+        {
+            ThrowOrHandle(frame, CreateTypeError($"Cannot delete property '{key}'."));
+            return;
+        }
+
+        frame.Registers[destReg] = JsValue.FromBoolean(deleted);
     }
 
     internal void DeletePropByNameForJit(InterpreterFrame frame, int destReg, int receiverReg, int propNameIndex)
@@ -15669,10 +15734,24 @@ fallbackArraySpecies:
         var obj = ResolveObject(receiver);
         if (obj is ProxyObject proxyDel)
         {
-            frame.Registers[destReg] = JsValue.FromBoolean(ProxyDelete(proxyDel, prop));
+            var deletedProxy = ProxyDelete(proxyDel, prop);
+            if (!deletedProxy && frame.Function.IsStrictMode)
+            {
+                ThrowOrHandle(frame, CreateTypeError($"Cannot delete property '{prop}'."));
+                return;
+            }
+
+            frame.Registers[destReg] = JsValue.FromBoolean(deletedProxy);
             return;
         }
-        frame.Registers[destReg] = JsValue.FromBoolean(obj.DeleteProperty(prop));
+        var deleted = obj.DeleteProperty(prop);
+        if (!deleted && frame.Function.IsStrictMode)
+        {
+            ThrowOrHandle(frame, CreateTypeError($"Cannot delete property '{prop}'."));
+            return;
+        }
+
+        frame.Registers[destReg] = JsValue.FromBoolean(deleted);
     }
 
     internal JsValue CreateFunctionFromNestedForJit(InterpreterFrame frame, int nestedIndex)
@@ -15868,15 +15947,20 @@ fallbackArraySpecies:
                 frame.Registers[a] = JsValue.FromBoolean(!IsTruthy(frame.Registers[b]));
                 break;
             case OpCode.Pos:
-                frame.Registers[a] = JsValue.FromNumber(ToNumber(frame.Registers[b]));
+                try
+                {
+                    frame.Registers[a] = JsValue.FromNumber(ToNumber(frame.Registers[b]));
+                }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Neg:
                 try
                 {
-                    if (frame.Registers[b].Tag == JsValueTag.BigInt)
-                        frame.Registers[a] = JsValue.FromBigInt(-frame.Registers[b].AsBigInt());
+                    var numeric = ToNumericValue(frame.Registers[b]);
+                    if (numeric.Tag == JsValueTag.BigInt)
+                        frame.Registers[a] = JsValue.FromBigInt(-numeric.AsBigInt());
                     else
-                        frame.Registers[a] = JsValue.FromNumber(-ToNumber(frame.Registers[b]));
+                        frame.Registers[a] = JsValue.FromNumber(-numeric.AsNumber());
                 }
                 catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
@@ -16008,6 +16092,7 @@ fallbackArraySpecies:
             JsValueTag.Boolean => value.AsBoolean(),
             JsValueTag.Int32 => value.AsInt32() != 0,
             JsValueTag.Number => value.AsNumber() != 0 && !double.IsNaN(value.AsNumber()),
+            JsValueTag.BigInt => value.AsBigInt() != BigInteger.Zero,
             JsValueTag.String => value.AsString().Length != 0,
             _ => true
         };
@@ -16784,8 +16869,3 @@ fallbackArraySpecies:
     // ForOfIteratorObject / ForInIteratorObject moved to
     // BytecodeInterpreter.Iterators.cs (audit �2 slice 3).
 }
-
-
-
-
-
