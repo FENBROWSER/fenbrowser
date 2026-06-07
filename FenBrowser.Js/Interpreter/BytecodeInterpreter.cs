@@ -7253,12 +7253,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
             foreach (var key in keys)
             {
-                if (!TryGetPropertyValue(propsObj, propsReceiver, key, out var descValue) ||
-                    descValue.Tag != JsValueTag.Object)
-                {
-                    continue;
-                }
-
+                // ECMA-262 20.1.2.4 step 4: descObj = ? Get(props, key); desc = ?
+                // ToPropertyDescriptor(descObj). A non-object descriptor (e.g.
+                // undefined) must throw a TypeError, not be silently skipped — so
+                // pass it through to ObjectDefineProperty, which calls
+                // ToPropertyDescriptor and throws.
+                TryGetPropertyValue(propsObj, propsReceiver, key, out var descValue);
                 ObjectDefineProperty(JsValue.Undefined, new[]
                 {
                     args[0],
@@ -7796,11 +7796,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 foreach (var key in keys)
                 {
-                    if (!TryGetPropertyValue(propsObj, propsReceiver, key, out var descValue) ||
-                        descValue.Tag != JsValueTag.Object)
-                    {
-                        continue;
-                    }
+                    // Same as Object.defineProperties: a non-object descriptor must
+                    // throw via ToPropertyDescriptor, not be skipped.
+                    TryGetPropertyValue(propsObj, propsReceiver, key, out var descValue);
                     ObjectDefineProperty(JsValue.Undefined, new[]
                     {
                         JsValue.FromObject(handle),
