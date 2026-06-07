@@ -122,8 +122,10 @@ public sealed partial class BytecodeInterpreter
             setValue = accessorFnValue;
         }
 
+        // D=1 (set by the object-literal compiler path) => enumerable accessor;
+        // class accessors leave D=0 and stay non-enumerable.
         _ = targetObj.DefineOwnProperty(accessorName,
-            Objects.JsPropertyDescriptor.Accessor(getValue, setValue, Enumerable: false, Configurable: true));
+            Objects.JsPropertyDescriptor.Accessor(getValue, setValue, Enumerable: ins.D != 0, Configurable: true));
         if (accessorFnValue.Tag == JsValueTag.Object)
         {
             _heap.WriteBarrier(targetHandle, accessorFnValue.AsObjectHandle());
@@ -169,7 +171,7 @@ public sealed partial class BytecodeInterpreter
             }
 
             _ = targetObj.DefineOwnSymbolProperty(symbolId,
-                Objects.JsPropertyDescriptor.Accessor(getValue, setValue, Enumerable: false, Configurable: true));
+                Objects.JsPropertyDescriptor.Accessor(getValue, setValue, Enumerable: ins.D != 0, Configurable: true));
             if (accessorFnValue.Tag == JsValueTag.Object)
             {
                 _heap.WriteBarrier(targetHandle, accessorFnValue.AsObjectHandle());
@@ -195,7 +197,7 @@ public sealed partial class BytecodeInterpreter
         }
 
         _ = targetObj.DefineOwnProperty(accessorName,
-            Objects.JsPropertyDescriptor.Accessor(getValue, setValue, Enumerable: false, Configurable: true));
+            Objects.JsPropertyDescriptor.Accessor(getValue, setValue, Enumerable: ins.D != 0, Configurable: true));
         if (accessorFnValue.Tag == JsValueTag.Object)
         {
             _heap.WriteBarrier(targetHandle, accessorFnValue.AsObjectHandle());

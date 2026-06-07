@@ -2865,7 +2865,10 @@ public sealed class BytecodeCompiler
                             ObjectPropertyKind.Setter => OpCode.DefineSetterByReg,
                             _ => OpCode.SetElem,
                         };
-                        _instructions.Add(new Instruction(computedOp, dest, keyReg, valueReg));
+                        // D=1 marks an object-literal accessor as enumerable (class
+                        // accessors leave D=0 and stay non-enumerable).
+                        var computedEnum = prop.Kind is ObjectPropertyKind.Getter or ObjectPropertyKind.Setter ? 1 : 0;
+                        _instructions.Add(new Instruction(computedOp, dest, keyReg, valueReg, computedEnum));
                     }
                     else
                     {
@@ -2886,7 +2889,9 @@ public sealed class BytecodeCompiler
                             ObjectPropertyKind.Setter => OpCode.DefineSetter,
                             _ => OpCode.SetPropByName,
                         };
-                        _instructions.Add(new Instruction(namedOp, dest, nameIndex, valueReg));
+                        // D=1 marks an object-literal accessor as enumerable.
+                        var namedEnum = prop.Kind is ObjectPropertyKind.Getter or ObjectPropertyKind.Setter ? 1 : 0;
+                        _instructions.Add(new Instruction(namedOp, dest, nameIndex, valueReg, namedEnum));
                     }
                 }
 
