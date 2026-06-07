@@ -88,6 +88,14 @@ Hard rules:
 - Never leave a completed, verified unit unpushed before starting the next one.
 - Do **not** add AI/co-author trailers to commit messages — commits read as authored by a human.
 
+## Repository Hygiene — Keep Root Clean (Non-Negotiable)
+
+The repository root must stay clean. **Never create scripts or one-off helpers at root.**
+
+- **All scripts** (`.sh`, `.ps1`, `.py`, `.bat`, `.cmd`) live under **`scripts/`** — including throwaway one-offs. Invoke them from repo root by path, e.g. `bash scripts/run_full_batched.sh`, and write script-internal paths relative to repo root (cwd), not the script's own location.
+- **Runtime artifacts** → `logs/`. **Generated reports/result bundles** → `Results/`. **Maintained docs** → `docs/`. Never write any of these to root or into `docs/`.
+- The root holds only: solution/project files, top-level docs (`README`, `AGENTS.md`, `CLAUDE.md`), config/dotfiles, and the standing project directories. If a task tempts you to drop a file at root, put it in the right folder instead.
+
 ## Build Commands
 
 ```bash

@@ -25,7 +25,7 @@ Primary projects:
 Other important surfaces:
 - `FenBrowser.WebDriver`
 - `FenBrowser.Tests`
-- tooling and scripts under repo root / `scripts/`
+- all tooling and scripts live under `scripts/` — never at repo root
 
 Default behavior:
 - inspect the smallest relevant project first
@@ -44,6 +44,7 @@ Default behavior:
 8. Do not use platform-specific APIs outside host/platform layers unless the task is explicitly platform work.
 9. Treat native resource ownership as critical. Dispose correctly.
 10. Keep replies compact unless a deep dive is requested.
+11. Keep the repository root clean. Never add scripts or one-off helpers at root — they go in `scripts/`.
 
 ## Canonical documentation set
 
@@ -137,6 +138,12 @@ Diagnostics path policy (strict):
 Result/report policy:
 - Use workspace-root `Results/` for generated reports and result bundles.
 - Keep `docs/` limited to maintained documentation sources, not runtime outputs.
+
+Scripts and root-cleanliness policy (strict):
+- Every script (`.sh`, `.ps1`, `.py`, `.bat`, `.cmd`) lives under `scripts/` — never at repo root, including throwaway one-offs.
+- Invoke scripts from repo root by path, e.g. `bash scripts/run_full_batched.sh`; write script-internal paths relative to repo root (cwd), not to the script's own location.
+- The repo root holds only: solution/project files, top-level docs (`README`, `AGENTS.md`, `CLAUDE.md`, `CODEX.md`), config/dotfiles, and the standing project directories. Nothing else accumulates there.
+- If a task tempts you to drop a file at root, put it in the right folder (`scripts/`, `logs/`, `Results/`, `docs/`) instead.
 
 ## Threading boundaries
 
