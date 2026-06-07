@@ -572,7 +572,12 @@ public sealed class StringBuiltin : IBuiltinModule
         var pattern = (args.Count == 0 || regexp.Tag == JsValueTag.Undefined)
             ? string.Empty
             : ToStringForRegExpPattern(ctx, regexp);
-        var match = BclRegex.Match(s, pattern);
+        // Cap backtracking: an arbitrary user pattern run through the BCL engine can
+        // backtrack catastrophically and wedge the thread. The per-test timeout
+        // abandons (does not kill) the worker thread, so an unbounded native regex
+        // is exactly what blocks the whole suite. A 250 ms match timeout matches the
+        // compiled-RegExp path and turns a hang into a catchable failure.
+        var match = BclRegex.Match(s, pattern, RegexOptions.None, TimeSpan.FromMilliseconds(250));
         return BuildMatchResultArray(ctx, s, match);
     }
 
