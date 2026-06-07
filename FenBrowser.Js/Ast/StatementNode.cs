@@ -8,6 +8,8 @@ public sealed record ExpressionStatementNode(ExpressionNode Expression, SourceSp
 
 public sealed record EmptyStatementNode(SourceSpan Span) : StatementNode(Span);
 
+public sealed record DebuggerStatementNode(SourceSpan Span) : StatementNode(Span);
+
 public sealed record LabeledStatementNode(string Label, StatementNode Body, SourceSpan Span) : StatementNode(Span);
 
 public sealed record BlockStatementNode(IReadOnlyList<StatementNode> Statements, SourceSpan Span) : StatementNode(Span);

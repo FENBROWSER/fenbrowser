@@ -44,6 +44,7 @@ public sealed class JsParser
     private bool _allowYieldExpression;
     private bool _allowAwaitExpression;
     private bool _allowAnnexBForInInitializerTail;
+    private int _classStaticBlockDepth;
     // ECMA-262 grammar parameter [~In]: while true, the `in` keyword is NOT
     // treated as a relational operator so the `for ( LHS in Iterable )` head can
     // recognise `in` as the for-in marker even when LHS is a binary/assignment
@@ -886,8 +887,17 @@ public sealed class JsParser
             throw new JsParserException("Decorators are only supported before class declarations in statement position.");
         }
 
-        if (IsIdentifierLike(Current()) && PeekIsPunctuator(1, ":"))
+        if ((IsIdentifierLike(Current()) ||
+             (_classStaticBlockDepth > 0 && Current().Kind == TokenKind.Keyword && Current().Text == "await")) &&
+            PeekIsPunctuator(1, ":"))
         {
+            if (_classStaticBlockDepth > 0 &&
+                Current().Kind == TokenKind.Keyword &&
+                Current().Text == "await")
+            {
+                throw new JsParserException("'await' cannot be used as a label inside a class static block.");
+            }
+
             var labelToken = Advance();
             ExpectPunctuator(":");
             var body = ParseStatement(StatementBodyContext.IfClauseOrLabel);
@@ -1001,6 +1011,8 @@ public sealed class JsParser
                     return ParseBreakStatement();
                 case "continue":
                     return ParseContinueStatement();
+                case "debugger":
+                    return ParseDebuggerStatement();
             }
         }
 
@@ -1796,7 +1808,10 @@ public sealed class JsParser
 
         var start = Advance(); // return
         ExpressionNode? argument = null;
-        if (!IsPunctuator(";") && !IsPunctuator("}") && !Is(TokenKind.EndOfFile))
+        if (!IsPunctuator(";") &&
+            !IsPunctuator("}") &&
+            !Is(TokenKind.EndOfFile) &&
+            !HasLineTerminatorBetween(start, Current()))
         {
             argument = ParseExpression(0);
         }
@@ -2364,7 +2379,17 @@ public sealed class JsParser
             // parameterless function invoked with this=class.
             if (isStatic && IsPunctuator("{"))
             {
-                var block = ParseBlockStatement();
+                _classStaticBlockDepth++;
+                BlockStatementNode block;
+                try
+                {
+                    block = ParseBlockStatement();
+                }
+                finally
+                {
+                    _classStaticBlockDepth--;
+                }
+
                 var staticFn = new FunctionExpressionNode(
                     null,
                     Array.Empty<string>(),
@@ -2829,6 +2854,17 @@ public sealed class JsParser
         }
 
         return new ContinueStatementNode(label, token.Span);
+    }
+
+    private DebuggerStatementNode ParseDebuggerStatement()
+    {
+        var token = Advance(); // debugger
+        if (IsPunctuator(";"))
+        {
+            Advance();
+        }
+
+        return new DebuggerStatementNode(token.Span);
     }
 
     private T ParseWithExpressionContext<T>(bool allowYieldExpression, bool allowAwaitExpression, Func<T> parse)

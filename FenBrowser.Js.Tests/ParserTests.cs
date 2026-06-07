@@ -79,6 +79,24 @@ public sealed class ParserTests
     }
 
     [Fact]
+    public void RejectsAwaitLabelInsideClassStaticBlock()
+    {
+        Assert.Throws<JsParserException>(() =>
+            JsParser.ParseScript(new SourceText("class C { static { await: 0; } }")));
+    }
+
+    [Fact]
+    public void ReturnLineTerminatorTriggersAutomaticSemicolonInsertion()
+    {
+        var program = JsParser.ParseScript(new SourceText("function f(){ return\n1; }"));
+        var fn = Assert.IsType<FunctionDeclarationNode>(Assert.Single(program.Body));
+        Assert.Equal(2, fn.Body.Statements.Count);
+        var ret = Assert.IsType<ReturnStatementNode>(fn.Body.Statements[0]);
+        Assert.Null(ret.Argument);
+        Assert.IsType<ExpressionStatementNode>(fn.Body.Statements[1]);
+    }
+
+    [Fact]
     public void ParsesFunctionNamedAsyncInNonStrictSubset()
     {
         var program = JsParser.ParseScript(new SourceText("function async() {}"));
@@ -544,6 +562,14 @@ public sealed class ParserTests
         var body = Assert.IsType<BlockStatementNode>(forStmt.Body);
         Assert.IsType<ContinueStatementNode>(body.Statements[0]);
         Assert.IsType<BreakStatementNode>(body.Statements[1]);
+    }
+
+    [Fact]
+    public void ParsesDebuggerStatement()
+    {
+        var program = JsParser.ParseScript(new SourceText("while (false) debugger;"));
+        var whileStmt = Assert.IsType<WhileStatementNode>(Assert.Single(program.Body));
+        Assert.IsType<DebuggerStatementNode>(whileStmt.Body);
     }
 
     [Fact]
