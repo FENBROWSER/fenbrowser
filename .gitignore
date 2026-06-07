@@ -61,6 +61,7 @@ Results/
 # Test Results
 TestResults/
 test262_results.md
+!docs/test262_results.md
 *.trx
 *.xml
 
