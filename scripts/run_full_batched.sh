@@ -9,6 +9,19 @@ mkdir -p "$OUTDIR"
 PROG="$OUTDIR/_progress.txt"
 : > "$PROG"
 
+if [ ! -x "$EXE" ] && [ ! -f "$EXE" ]; then
+  echo "Runner not found: $EXE (build: dotnet build FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -c Release)" >&2
+  exit 1
+fi
+
+# Resume: by default a batch whose result JSON already exists is skipped, so an
+# interrupted run continues where it stopped. FRESH=1 wipes prior batch results
+# and reruns everything. (Stall-killed batches write no JSON, so they always rerun.)
+FRESH=${FRESH:-0}
+if [ "$FRESH" = "1" ]; then
+  rm -f "$OUTDIR"/b_*.json "$OUTDIR"/b_*.log "$OUTDIR"/b_*.log.err "$OUTDIR"/_batched_total.json 2>/dev/null
+fi
+
 # Build the batch list: split the two oversized language dirs one level deeper,
 # everything else runs as a second-level (or top-level) directory.
 batches=()
@@ -36,6 +49,20 @@ for b in "${batches[@]}"; do
   tag=$(echo "$b" | sed "s#.*/test/##; s#/#_#g; s#_*$##")
   out="$OUTDIR/b_${tag}.json"
   log="$OUTDIR/b_${tag}.log"
+
+  # Resume: skip a batch that already has a valid result JSON.
+  if [ -f "$out" ]; then
+    done=$(python -c "
+import json,sys
+try:
+    d=json.load(open(r'$out',encoding='utf-8-sig'))
+    if d.get('total') is None: sys.exit(1)
+    print(d.get('passed',0), d['total'])
+except Exception:
+    sys.exit(1)
+" 2>/dev/null) && { echo "$i ${tag} $done SKIP" >> "$PROG"; continue; }
+  fi
+
   : > "$log"
   "$EXE" --runtime-subset --root "$ROOT" --test262 "$b" --max 100000 --timeout-ms 2000 --out "$out" >"$log" 2>&1 &
   pid=$!

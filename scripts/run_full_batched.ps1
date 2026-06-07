@@ -13,7 +13,10 @@ param(
     # Hard stall watchdog: if a batch produces no new output for this many seconds
     # it is wedged on one test -> kill the process tree and move on.
     [int]$StallTimeoutSec = 30,
-    [int]$MaxPerBatch = 100000
+    [int]$MaxPerBatch = 100000,
+    # Resume by default (skip batches that already have a valid result JSON).
+    # -Fresh wipes prior batch results and reruns everything.
+    [switch]$Fresh
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,6 +28,14 @@ if (-not (Test-Path $Exe)) {
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $prog = Join-Path $OutDir "_progress.txt"
 Set-Content -Path $prog -Value "" -Encoding utf8
+
+# Resume: by default a batch whose result JSON already exists is skipped, so an
+# interrupted run continues where it stopped. -Fresh wipes prior batch results and
+# reruns everything. (Stall-killed batches write no JSON, so they always rerun.)
+if ($Fresh) {
+    Get-ChildItem $OutDir -Filter "b_*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $OutDir "_batched_total.json") -Force -ErrorAction SilentlyContinue
+}
 
 # Build the batch list: split the two oversized language dirs one level deeper,
 # everything else runs as a second-level (or top-level) directory.
@@ -50,6 +61,19 @@ foreach ($b in $batches) {
     $out = Join-Path $OutDir "b_$tag.json"
     $log = Join-Path $OutDir "b_$tag.log"
     $err = "$log.err"
+
+    # Resume: skip a batch that already has a valid result JSON.
+    if (Test-Path $out) {
+        try {
+            $prev = Get-Content $out -Raw | ConvertFrom-Json
+            if ($null -ne $prev.total) {
+                "$i $tag $([int]$prev.passed) $([int]$prev.total) SKIP" | Add-Content $prog
+                continue
+            }
+        }
+        catch {}
+    }
+
     Set-Content -Path $log -Value "" -Encoding utf8
 
     $procArgs = @("--runtime-subset", "--root", $Test262Root, "--test262", $b,
