@@ -186,7 +186,7 @@ namespace FenBrowser.Tests.Engine
 
             string html = await File.ReadAllTextAsync(snapshotPath);
             var baseUri = new Uri("https://www.whatismybrowser.com/");
-            string repoCssPath = Path.Combine(repoRoot, "wimb_site.min.css");
+            string repoCssPath = Path.Combine(repoRoot, "test_assets", "wimb_site.min.css");
             string siteCss = File.Exists(repoCssPath) ? await File.ReadAllTextAsync(repoCssPath) : null;
             if (!string.IsNullOrWhiteSpace(siteCss))
             {
