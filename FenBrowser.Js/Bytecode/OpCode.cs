@@ -24,6 +24,9 @@ public enum OpCode : byte
     SetElem,
     GetElem,
     DeleteElem,
+    // ECMA-262 13.2.4 / 13.3.7 spread: expand C (an iterable) into array A starting
+    // at the numeric next-index held in register B; B is updated to the new index.
+    SpreadAppend,
     EnumerateKeys,
     ForInNext,
     // ECMA-262 13.7.5 ForIn/OfHeadEvaluation + 7.4 Iterator Records.

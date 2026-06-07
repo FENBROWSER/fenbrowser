@@ -293,6 +293,7 @@ public sealed class BytecodeVerifier
                 ValidatePropertyName(function, ip, ins.C);
                 break;
             case OpCode.SetElem:
+            case OpCode.SpreadAppend:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 ValidateRegister(ins.C, function.RegisterCount, ip, "C");

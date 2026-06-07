@@ -211,6 +211,55 @@ public sealed partial class BytecodeInterpreter
     // the returned IteratorResult.done is true. Bounded by MaxCallDepth-friendly
     // semantics: each .next() goes through CallFunction so the recursion guard
     // applies.
+    // ECMA-262 13.2.4.1 ArrayAccumulation (SpreadElement) / 13.3.7.1 ArgumentList
+    // spread: collect every value produced by source's iterator. Spreading requires
+    // a real iterator (7.4.1 GetIterator) — unlike for-of's array-like fallback,
+    // a plain object without @@iterator is a TypeError here.
+    private List<JsValue> CollectSpreadValues(JsValue source)
+    {
+        var values = new List<JsValue>();
+
+        if (source.Tag == JsValueTag.Object)
+        {
+            var obj = _heap.GetObject(source.AsObjectHandle());
+            var iterId = GetWellKnownSymbolId("iterator");
+            if (iterId != 0 &&
+                obj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) &&
+                iterDesc.Value.Tag == JsValueTag.Object)
+            {
+                var iter = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), source);
+                DrainIteratorIntoList(iter, values);
+                return values;
+            }
+        }
+        else if (source.Tag == JsValueTag.String)
+        {
+            // The String iterator (22.1.5) walks by code point: a surrogate pair
+            // contributes one element.
+            var s = source.AsString();
+            for (var i = 0; i < s.Length;)
+            {
+                if (char.IsHighSurrogate(s[i]) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]))
+                {
+                    values.Add(JsValue.FromString(s.Substring(i, 2)));
+                    i += 2;
+                }
+                else
+                {
+                    values.Add(JsValue.FromString(s[i].ToString()));
+                    i++;
+                }
+            }
+
+            return values;
+        }
+
+        throw new JsThrownException(CreateTypeError(
+            source.Tag == JsValueTag.Null ? "Cannot spread null." :
+            source.Tag == JsValueTag.Undefined ? "Cannot spread undefined." :
+            "Spread syntax requires an iterable."));
+    }
+
     private void DrainIteratorIntoList(JsValue iter, List<JsValue> sink)
     {
         if (iter.Tag != JsValueTag.Object)

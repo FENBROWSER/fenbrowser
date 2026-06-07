@@ -1403,6 +1403,42 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
                     break;
                 }
+                case OpCode.SpreadAppend:
+                {
+                    // ECMA-262 13.2.4.1 / 13.3.7.1 — expand the iterable in C into the
+                    // array in A starting at the numeric next-index held in B, then
+                    // write the updated index back to B.
+                    var targetHandle = ResolveObjectHandle(frame.Registers[ins.A]);
+                    var targetObj = _heap.GetObject(targetHandle);
+                    var startIndex = (int)frame.Registers[ins.B].AsNumber();
+                    var values = CollectSpreadValues(frame.Registers[ins.C]);
+
+                    var rootMark = _heap.RootCount;
+                    try
+                    {
+                        _heap.PushRoot(targetHandle);
+                        foreach (var v in values)
+                        {
+                            if (v.Tag == JsValueTag.Object)
+                            {
+                                _heap.PushRoot(v.AsObjectHandle());
+                            }
+                        }
+
+                        for (var k = 0; k < values.Count; k++)
+                        {
+                            var key = (startIndex + k).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                            _ = SetPropertyValue(targetHandle, targetObj, key, values[k], frame.Registers[ins.A]);
+                        }
+                    }
+                    finally
+                    {
+                        _heap.PopRootsTo(rootMark);
+                    }
+
+                    frame.Registers[ins.B] = JsValue.FromNumber(startIndex + values.Count);
+                    break;
+                }
                 case OpCode.DeleteElem:
                 {
                     var receiver = frame.Registers[ins.B];
@@ -1941,6 +1977,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 Configurable: true);
             _ = obj.DefineOwnProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture), descriptor);
             WriteDescriptorBarrier(handle, descriptor);
+        }
+
+        // ECMA-262 10.4.4.6/.7 step: %arguments%[@@iterator] is the same function
+        // object as %Array.prototype.values%, so spread/for-of over arguments works.
+        var arrayProto = _heap.GetObject(EnsureArrayPrototype());
+        if (arrayProto.TryGetOwnProperty("values", out var argValuesDesc))
+        {
+            var iterDescriptor = new JsPropertyDescriptor(
+                argValuesDesc.Value,
+                Writable: true,
+                Enumerable: false,
+                Configurable: true);
+            _ = obj.DefineOwnSymbolProperty(GetWellKnownSymbolId("iterator"), iterDescriptor);
+            WriteDescriptorBarrier(handle, iterDescriptor);
         }
 
         if (restricted)
