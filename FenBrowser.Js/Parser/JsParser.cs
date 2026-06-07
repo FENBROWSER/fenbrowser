@@ -2162,6 +2162,23 @@ public sealed class JsParser
         }
     }
 
+    // ECMA-262 13.15.1 / 13.4.1 early error: in strict-mode code the target of a
+    // simple assignment or an update (++/--) expression may not be a direct
+    // reference to `eval` or `arguments`.
+    private void ValidateStrictAssignmentTarget(ExpressionNode target)
+    {
+        if (!_strictMode)
+        {
+            return;
+        }
+
+        if (target is IdentifierExpressionNode { Name: "eval" or "arguments" } id)
+        {
+            throw new JsParserException(
+                $"'{id.Name}' may not be assigned to in strict mode.");
+        }
+    }
+
     private static void ValidateClassNameIdentifier(Token name)
     {
         if (StrictModeReservedIdentifierNames.Contains(name.Text))
@@ -2849,6 +2866,15 @@ public sealed class JsParser
                 }
             }
 
+            // ECMA-262 15.1.1: duplicate parameter names are forbidden in strict-mode
+            // code and whenever the parameter list is non-simple (defaults, rest, or
+            // destructuring). They remain legal only in a sloppy simple-list function.
+            if (parameterInfo.HasDuplicateNames && (effectiveStrict || !parameterInfo.IsSimple))
+            {
+                throw new JsParserException(
+                    "Duplicate parameter names are not allowed in this context.");
+            }
+
             return (parameterInfo, body);
         }
         finally
@@ -3106,6 +3132,7 @@ public sealed class JsParser
                     throw new JsParserException("Invalid update expression target.");
                 }
 
+                ValidateStrictAssignmentTarget(left);
                 var updateToken = Advance();
                 left = BuildUpdateAssignment(left, updateToken.Text, updateToken.Span, isPostfix: true);
                 continue;
@@ -3130,6 +3157,7 @@ public sealed class JsParser
                         $"Invalid assignment target ({left.GetType().Name}){Where()}.");
                 }
 
+                ValidateStrictAssignmentTarget(left);
                 var op = Advance().Text;
                 // ECMA-262 13.15 AssignmentExpression : LeftHandSideExpression
                 // AssignmentOperator AssignmentExpression — the RHS is itself
@@ -3172,6 +3200,7 @@ public sealed class JsParser
                 throw new JsParserException("Invalid update expression target.");
             }
 
+            ValidateStrictAssignmentTarget(target);
             return BuildUpdateAssignment(target, op.Text, op.Span, isPostfix: false);
         }
 
