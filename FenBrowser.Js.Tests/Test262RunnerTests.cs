@@ -12,6 +12,170 @@ namespace FenBrowser.Js.Tests;
 public sealed class Test262RunnerTests
 {
     [Fact]
+    public void Run_RuntimeSubset_StrictDeleteInOnlyStrictTestPasses()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test", "built-ins", "Boolean", "prototype");
+        var harnessDir = Path.Combine(tempRoot, "harness");
+        Directory.CreateDirectory(testDir);
+        Directory.CreateDirectory(harnessDir);
+        var testFile = Path.Combine(testDir, "strict-delete.js");
+        var outputPath = Path.Combine(tempRoot, "strict-delete.json");
+
+        try
+        {
+            File.WriteAllText(Path.Combine(harnessDir, "propertyHelper.js"), """
+            function verifyNotConfigurable(obj, name) {
+              var desc = Object.getOwnPropertyDescriptor(obj, name);
+              assert(desc !== undefined);
+              assert.sameValue(desc.configurable, false);
+              return true;
+            }
+            """);
+            File.WriteAllText(testFile, """
+            /*---
+            includes: [propertyHelper.js]
+            flags: [onlyStrict]
+            ---*/
+            verifyNotConfigurable(Boolean, "prototype");
+            assert.throws(TypeError, () => {
+              delete Boolean.prototype;
+            });
+            """);
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: false,
+                runtimeSubset: true,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 10,
+                timeoutMs: 2000,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            Assert.Equal(1, doc.RootElement.GetProperty("passed").GetInt32());
+            Assert.Equal(0, doc.RootElement.GetProperty("failed").GetInt32());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Run_RuntimeSubset_UnaryPlusPrefersValueOfOverThrowingToString()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test", "language", "expressions", "unary-plus");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "to-primitive.js");
+        var outputPath = Path.Combine(tempRoot, "unary-plus.json");
+
+        try
+        {
+            File.WriteAllText(testFile, """
+            var object = { valueOf: function() { return 1; }, toString: function() { throw "error"; } };
+            if (+object !== 1) {
+              throw new Test262Error("unary plus should use valueOf before toString");
+            }
+            """);
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: false,
+                runtimeSubset: true,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 10,
+                timeoutMs: 2000,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            Assert.Equal(1, doc.RootElement.GetProperty("passed").GetInt32());
+            Assert.Equal(0, doc.RootElement.GetProperty("failed").GetInt32());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Run_RuntimeSubset_DebuggerStatementParsesAndPasses()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempRoot);
+        var testDir = Path.Combine(tempRoot, "test", "language", "statements", "debugger");
+        Directory.CreateDirectory(testDir);
+        var testFile = Path.Combine(testDir, "statement.js");
+        var outputPath = Path.Combine(tempRoot, "debugger.json");
+
+        try
+        {
+            File.WriteAllText(testFile, """
+            while (false) debugger;
+            """);
+
+            var runner = new Test262Runner();
+            var exitCode = runner.Run(
+                rootPath: tempRoot,
+                list: false,
+                dryRun: false,
+                parserSubset: false,
+                runtimeSubset: true,
+                dashboard: false,
+                verifyGates: false,
+                outputPath: outputPath,
+                max: 10,
+                timeoutMs: 2000,
+                engine: "FenJS",
+                expectationsPath: null,
+                inputPath: null,
+                previousPath: null,
+                test262Path: null,
+                test262File: null,
+                featuresCsv: null,
+                supportedFeaturesCsv: null);
+
+            Assert.Equal(0, exitCode);
+            using var doc = JsonDocument.Parse(File.ReadAllText(outputPath));
+            Assert.Equal(1, doc.RootElement.GetProperty("passed").GetInt32());
+            Assert.Equal(0, doc.RootElement.GetProperty("failed").GetInt32());
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Run_DashboardMode_DoesNotLoadExpectations()
     {
         var tempRoot = Path.Combine(Path.GetTempPath(), "fenjs-test262-runner-" + Guid.NewGuid().ToString("N"));

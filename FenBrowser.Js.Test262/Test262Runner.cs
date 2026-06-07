@@ -892,7 +892,7 @@ public sealed class Test262Runner
                 if (frontmatter.Includes.Count > 0 || RequiresRuntimeHarnessSupport(sourceText))
                 {
                     var includePrelude = BuildRuntimeHarnessIncludePrelude(rootPath, frontmatter.Includes);
-                    var prelude = BuildRuntimeHarnessPrelude();
+                    var prelude = BuildRuntimeHarnessPrelude(sourceText);
                     // onlyStrict: "use strict" must be the first statement in the
                     // script to enable strict mode globally. parserInput already has
                     // it prepended via PrepareParserInput, but that puts it AFTER
@@ -1506,10 +1506,23 @@ public sealed class Test262Runner
                sourceText.Contains("$262", StringComparison.Ordinal);
     }
 
-    // Cached harness prelude string — built once, reused for every test.
+    // Cached harness prelude strings — built once, reused for every test.
+    private static readonly string _cachedMinimalHarnessPrelude = """
+               function Test262Error(message) { this.message = message; }
+               """;
     private static readonly string _cachedHarnessPrelude = BuildRuntimeHarnessPreludeRaw();
 
-    private static string BuildRuntimeHarnessPrelude() => _cachedHarnessPrelude;
+    private static string BuildRuntimeHarnessPrelude(string sourceText)
+    {
+        var needsOnlyTest262Error =
+            sourceText.Contains("Test262Error", StringComparison.Ordinal) &&
+            !sourceText.Contains("assert.", StringComparison.Ordinal) &&
+            !sourceText.Contains("assert(", StringComparison.Ordinal) &&
+            !sourceText.Contains("$DONE", StringComparison.Ordinal) &&
+            !sourceText.Contains("$262", StringComparison.Ordinal);
+
+        return needsOnlyTest262Error ? _cachedMinimalHarnessPrelude : _cachedHarnessPrelude;
+    }
 
     private static string BuildRuntimeHarnessPreludeRaw()
     {
@@ -1679,6 +1692,9 @@ public sealed class Test262Runner
                    }, "BigInt", BigInt.prototype);
                    var realmGlobal = {
                      Array: realmArray,
+                     Boolean: markRealmIntrinsic(function Boolean(value) {
+                       return globalThis.Boolean(value);
+                     }, "Boolean", Boolean.prototype),
                      Object: realmObject,
                      Number: realmNumber,
                      BigInt: realmBigInt,
@@ -1848,6 +1864,7 @@ public sealed class Test262Runner
         "compareArray.js",
         "decimalToHexString.js",
         "detachArrayBuffer.js",
+        "nans.js",
         "proxyTrapsHelper.js",
         "testTypedArray.js",
         "propertyHelper.js",
