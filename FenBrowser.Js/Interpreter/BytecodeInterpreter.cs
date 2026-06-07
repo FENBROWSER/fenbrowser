@@ -3527,10 +3527,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 return JsValue.FromObject(_heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current()));
             });
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
+        constructor.SetPrototype(EnsureFunctionPrototype());
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         iteratorCtorHandleRef = constructorHandle;
         _heap.PushRoot(constructorHandle);
-        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(constructorHandle, EnsureFunctionPrototype());
+
+        // ECMA-262 27.1.3.2 — Iterator.prototype.constructor is an accessor whose
+        // getter returns %Iterator% and whose setter uses
+        // SetterThatIgnoresPrototypeProperties (defines an own property on the
+        // receiver unless it is %Iterator.prototype% itself, which throws).
+        DefineIteratorProtoAccessor(prototype, prototypeHandle, "constructor",
+            JsValue.FromObject(constructorHandle), symbolId: 0);
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         // 27.1.4.1 Iterator.from(O). If O already inherits from %Iterator.prototype%
@@ -3574,14 +3582,106 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         DefineNativePrototypeMethod(prototypeHandle, prototype, "find", IteratorProtoFind, length: 1);
         DefineNativePrototypeMethod(prototypeHandle, prototype, "reduce", IteratorProtoReduce, length: 1);
 
-        // ECMA-262 27.1.2.1 %Iterator.prototype% [ @@toStringTag ]. The accessor form
-        // is observable, but a configurable string value matches engines and the
-        // delete-then-inherit chain that test262 exercises.
-        DefineBuiltinToStringTag(prototype, "Iterator");
+        // ECMA-262 27.1.2.1 %Iterator.prototype% [ @@toStringTag ] is an accessor:
+        // get returns "Iterator", set uses SetterThatIgnoresPrototypeProperties.
+        DefineIteratorProtoAccessor(prototype, prototypeHandle, "Symbol(Symbol.toStringTag)",
+            JsValue.FromString("Iterator"), symbolId: GetWellKnownSymbolId("toStringTag"));
+
+        // ECMA-262 27.1.2.2 %Iterator.prototype% [ @@dispose ]: call this.return()
+        // if present (explicit resource management).
+        var disposeId = GetWellKnownSymbolId("dispose");
+        if (disposeId != 0)
+        {
+            var dispose = new NativeFunctionObject("[Symbol.dispose]", (thisValue, _) =>
+            {
+                if (thisValue.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError("Iterator.prototype[Symbol.dispose] called on non-object."));
+                }
+
+                var obj = _heap.GetObject(thisValue.AsObjectHandle());
+                if (TryGetPropertyValue(obj, thisValue, "return", out var ret) &&
+                    ret.Tag != JsValueTag.Undefined && ret.Tag != JsValueTag.Null)
+                {
+                    CallFunction(ret, Array.Empty<JsValue>(), thisValue);
+                }
+
+                return JsValue.Undefined;
+            }, length: 0);
+            var disposeHandle = _heap.AllocateObject(dispose, AllocationSite.Current());
+            dispose.SetPrototype(EnsureFunctionPrototype());
+            prototype.DefineOwnSymbolProperty(disposeId, new JsPropertyDescriptor(
+                JsValue.FromObject(disposeHandle), Writable: true, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(prototypeHandle, disposeHandle);
+        }
 
         _iteratorPrototypeHandle = prototypeHandle;
         _iteratorConstructorHandle = constructorHandle;
         return constructorHandle;
+    }
+
+    // Defines a %Iterator.prototype% accessor pair (constructor / @@toStringTag).
+    // The getter returns a fixed value; the setter implements ECMA-262
+    // SetterThatIgnoresPrototypeProperties(home=%Iterator.prototype%, key): assign
+    // an own property on the receiver, but throw when the receiver IS the home
+    // object. `symbolId` 0 selects the string key `name`; otherwise the symbol.
+    private void DefineIteratorProtoAccessor(JsObject prototype, ObjectHandle prototypeHandle,
+        string name, JsValue value, long symbolId)
+    {
+        var getter = new NativeFunctionObject("get " + name, (_, _) => value, length: 0);
+        getter.SetPrototype(EnsureFunctionPrototype());
+        var getterHandle = _heap.AllocateObject(getter, AllocationSite.Current());
+
+        var setter = new NativeFunctionObject("set " + name, (thisValue, args) =>
+        {
+            if (thisValue.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Cannot set property on a non-object."));
+            }
+
+            if (thisValue.AsObjectHandle() == prototypeHandle)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Cannot assign to read-only property on %Iterator.prototype%."));
+            }
+
+            var v = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var target = _heap.GetObject(thisValue.AsObjectHandle());
+            if (symbolId != 0)
+            {
+                target.DefineOwnSymbolProperty(symbolId, new JsPropertyDescriptor(
+                    v, Writable: true, Enumerable: true, Configurable: true));
+            }
+            else
+            {
+                target.DefineOwnProperty(name, new JsPropertyDescriptor(
+                    v, Writable: true, Enumerable: true, Configurable: true));
+            }
+
+            if (v.Tag == JsValueTag.Object)
+            {
+                _heap.WriteBarrier(thisValue.AsObjectHandle(), v.AsObjectHandle());
+            }
+
+            return JsValue.Undefined;
+        }, length: 1);
+        setter.SetPrototype(EnsureFunctionPrototype());
+        var setterHandle = _heap.AllocateObject(setter, AllocationSite.Current());
+
+        var descriptor = JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(getterHandle), JsValue.FromObject(setterHandle),
+            Enumerable: false, Configurable: true);
+        if (symbolId != 0)
+        {
+            prototype.DefineOwnSymbolProperty(symbolId, descriptor);
+        }
+        else
+        {
+            prototype.DefineOwnProperty(name, descriptor);
+        }
+
+        _heap.WriteBarrier(prototypeHandle, getterHandle);
+        _heap.WriteBarrier(prototypeHandle, setterHandle);
     }
 
     private JsValue RequireCallable(IReadOnlyList<JsValue> args, int idx, string name)
