@@ -224,6 +224,9 @@ public sealed class BytecodeVerifier
                 break;
             case OpCode.EnterScope:
                 break;
+            case OpCode.PushWithEnvironment:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                break;
             case OpCode.LeaveScope:
             case OpCode.EndFinally:
                 break;

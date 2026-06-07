@@ -1183,6 +1183,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     frame.Environment = frame.Environment.OuterEnv ?? frame.Environment;
                     break;
                 }
+                case OpCode.PushWithEnvironment:
+                {
+                    // ECMA-262 14.11.2 — ToObject(value), then push a with object
+                    // environment record so the body resolves names against it.
+                    var bindingValue = ToObjectValue(frame.Registers[ins.A]);
+                    var bindingHandle = bindingValue.AsObjectHandle();
+                    var adapter = new JsObjectBindingAdapter(_heap, bindingHandle);
+                    frame.Environment = new ObjectEnvironmentRecord(adapter, isWithEnvironment: true, frame.Environment);
+                    break;
+                }
                 case OpCode.EndFinally:
                 {
                     if (frame.PendingException is { } pending)

@@ -381,7 +381,9 @@ public sealed class BytecodeCompiler
                 CompileDoWhileStatement(doWhileStmt);
                 break;
             case WithStatementNode withStmt:
-                throw new UnsupportedFeatureException("with", FeatureSupportLevel.ParserOnly, withStmt.Span);
+                EmitCompletionReset();
+                CompileWithStatement(withStmt);
+                break;
             case ForStatementNode forStmt:
                 EmitCompletionReset();
                 CompileForStatement(forStmt);
@@ -1319,6 +1321,21 @@ public sealed class BytecodeCompiler
     // Mirror of CompileForInStatement but using EnumerateValues / ForOfNext so each
     // iteration yields the iterable's value rather than its key. Reuses the same
     // continue/break stack so labelled break still works.
+    // ECMA-262 14.11 WithStatement. Evaluate the head, push an object
+    // environment for the body (free names resolve against the object first via
+    // the runtime name-resolution chain), then pop it. The push counts as an open
+    // lexical scope so break/continue/return out of the body emit the matching
+    // LeaveScope. `with` is a SyntaxError in strict mode (the parser enforces it).
+    private void CompileWithStatement(WithStatementNode withStmt)
+    {
+        var objReg = CompileExpression(withStmt.Object);
+        _instructions.Add(new Instruction(OpCode.PushWithEnvironment, objReg, 0, 0));
+        _openScopeDepth++;
+        CompileStatement(withStmt.Body);
+        _instructions.Add(new Instruction(OpCode.LeaveScope));
+        _openScopeDepth--;
+    }
+
     private void CompileForOfStatement(ForOfStatementNode forOfStmt)
     {
         MemberExpressionNode? targetMember = null;

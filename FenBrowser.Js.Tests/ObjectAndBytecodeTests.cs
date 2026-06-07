@@ -81,13 +81,16 @@ public sealed class ObjectAndBytecodeTests
     }
 
     [Fact]
-    public void CompilerRejectsParserOnlyWithStatement()
+    public void WithStatementResolvesNamesAgainstBindingObject()
     {
+        // `with` pushes an object environment record: free names inside the body
+        // resolve against the object's properties first, falling through to the
+        // enclosing scope for names the object does not provide.
         var compiler = new BytecodeCompiler();
-
-        var ex = Assert.Throws<UnsupportedFeatureException>(() => compiler.CompileScript(new SourceText("with (obj) { value; }")));
-        Assert.Equal("with", ex.FeatureName);
-        Assert.Equal(FeatureSupportLevel.ParserOnly, ex.Level);
+        var fn = compiler.CompileScript(new SourceText(
+            "var x = 1, y = 2; var o = { x: 10 }; var r; with (o) { r = x + y; } r;"));
+        new BytecodeVerifier().Verify(fn);
+        Assert.Equal(12d, new BytecodeInterpreter().Execute(fn).AsNumber());
     }
 
     [Fact]

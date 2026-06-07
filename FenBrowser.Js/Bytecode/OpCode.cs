@@ -229,6 +229,11 @@ public enum OpCode : byte
     // frame.Environment to its outer (parent) record.
     LeaveScope,
 
+    // ECMA-262 14.11 — `with (A) Body`: ToObject(register A) and push an object
+    // environment record (a with-environment) so the body resolves free names
+    // against the object's properties first. Popped by a matching LeaveScope.
+    PushWithEnvironment,
+
 	// ECMA-262 14.4.13 — EndFinally.
 	EndFinally,
 
