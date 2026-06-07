@@ -392,6 +392,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // Preserve exception handler stack so try/catch blocks survive yield.
         gen.SavedCatchHandlers = frame.CatchHandlers.ToArray();
 		gen.SavedFinallyHandlers = frame.FinallyHandlers.ToArray();
+		gen.SavedHandlerEnvironments = frame.HandlerEnvironments.ToArray();
 		gen.PendingException = frame.PendingException;
     }
 
@@ -447,6 +448,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         ctx.AwaitDestReg = awaitDestReg;
         ctx.SavedCatchHandlers = frame.CatchHandlers.ToArray();
 		ctx.SavedFinallyHandlers = frame.FinallyHandlers.ToArray();
+		ctx.SavedHandlerEnvironments = frame.HandlerEnvironments.ToArray();
 		ctx.PendingException = frame.PendingException;
     }
 
@@ -709,11 +711,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // ToArray returns top-first; push in reverse to reconstruct original.
             var savedCatch = ownerGenerator.SavedCatchHandlers;
 			var savedFinally = ownerGenerator.SavedFinallyHandlers;
-            
+			var savedHandlerEnvs = ownerGenerator.SavedHandlerEnvironments;
+
     for (var i = savedCatch.Length - 1; i >= 0; i--)
             {
                 frame.CatchHandlers.Push(savedCatch[i]);
                 frame.FinallyHandlers.Push(savedFinally[i]);
+            }
+            for (var i = savedHandlerEnvs.Length - 1; i >= 0; i--)
+            {
+                frame.HandlerEnvironments.Push(savedHandlerEnvs[i]);
             }
             frame.PendingException = ownerGenerator.PendingException;
         }
@@ -729,11 +736,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             asyncContext.AwaitDestReg = -1;
             var savedCatch = asyncContext.SavedCatchHandlers;
 			var savedFinally = asyncContext.SavedFinallyHandlers;
-            
+			var savedHandlerEnvs = asyncContext.SavedHandlerEnvironments;
+
     for (var i = savedCatch.Length - 1; i >= 0; i--)
             {
                 frame.CatchHandlers.Push(savedCatch[i]);
                 frame.FinallyHandlers.Push(savedFinally[i]);
+            }
+            for (var i = savedHandlerEnvs.Length - 1; i >= 0; i--)
+            {
+                frame.HandlerEnvironments.Push(savedHandlerEnvs[i]);
             }
             frame.PendingException = asyncContext.PendingException;
         }
@@ -915,11 +927,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.PushHandler:
                     frame.CatchHandlers.Push(ins.A);
 					frame.FinallyHandlers.Push(ins.D);
+					frame.HandlerEnvironments.Push(frame.Environment);
                     break;
                 case OpCode.PopHandler:
                     if (frame.CatchHandlers.Count > 0)
                     {
                         frame.CatchHandlers.Pop(); frame.FinallyHandlers.Pop();
+                        if (frame.HandlerEnvironments.Count > 0) frame.HandlerEnvironments.Pop();
                     }
 
                     break;
@@ -1143,6 +1157,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     gen.State = GeneratorState.Suspended;
                     gen.SavedCatchHandlers = frame.CatchHandlers.ToArray();
 		gen.SavedFinallyHandlers = frame.FinallyHandlers.ToArray();
+		gen.SavedHandlerEnvironments = frame.HandlerEnvironments.ToArray();
 		gen.PendingException = frame.PendingException;
 
                     var yieldObj = CreateOrdinaryObject();

@@ -55,6 +55,13 @@ public sealed partial class BytecodeInterpreter
             
     var catchIp = frame.CatchHandlers.Pop();
             var finallyIp = frame.FinallyHandlers.Pop();
+            // Restore the lexical environment to the try's level, discarding any
+            // block or with environments pushed inside the try body.
+            if (frame.HandlerEnvironments.Count > 0)
+            {
+                frame.Environment = frame.HandlerEnvironments.Pop();
+            }
+
             frame.Registers[0] = value;
 
             if (catchIp >= 0)

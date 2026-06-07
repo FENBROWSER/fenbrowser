@@ -17,6 +17,7 @@ public sealed class InterpreterFrame
 		Registers = new JsValue[function.RegisterCount];
 		CatchHandlers = new Stack<int>();
 		FinallyHandlers = new Stack<int>();
+		HandlerEnvironments = new Stack<EnvironmentRecord>();
 		Registers[0] = JsValue.Undefined;
 
 		Environment = environment ?? new DeclarativeEnvironmentRecord(outerEnv: null);
@@ -31,6 +32,12 @@ public sealed class InterpreterFrame
 
 	public Stack<int> CatchHandlers { get; }
 	public Stack<int> FinallyHandlers { get; }
+
+	// The lexical environment in effect at each enclosing PushHandler, so that an
+	// exception unwinding to a catch/finally restores frame.Environment to the
+	// try's level — discarding any block (let/const) or with environments pushed
+	// inside the try body. ECMA-262 14.15 abrupt-completion environment cleanup.
+	public Stack<EnvironmentRecord> HandlerEnvironments { get; }
 
 	public JsValue? PendingException { get; set; }
 

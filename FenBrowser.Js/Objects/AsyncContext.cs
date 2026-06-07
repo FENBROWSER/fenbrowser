@@ -16,6 +16,7 @@ public sealed class AsyncContext : JsObject
 	public int InstructionPointer { get; set; }
 	public int[] SavedCatchHandlers { get; set; } = Array.Empty<int>();
 	public int[] SavedFinallyHandlers { get; set; } = Array.Empty<int>();
+	public FenBrowser.Js.Environments.EnvironmentRecord[] SavedHandlerEnvironments { get; set; } = Array.Empty<FenBrowser.Js.Environments.EnvironmentRecord>();
 	public JsValue? PendingException { get; set; }
 	public int AwaitDestReg { get; set; } = -1;
 	public JsValue SentValue { get; set; } = JsValue.Undefined;
