@@ -2190,6 +2190,18 @@ public sealed class JsParser
         }
     }
 
+    // Strip redundant parentheses so early-error checks see the covered reference,
+    // e.g. `delete (((x)))` is still a delete of the identifier `x`.
+    private static ExpressionNode Unparenthesize(ExpressionNode expression)
+    {
+        while (expression is ParenthesizedExpressionNode parenthesized)
+        {
+            expression = parenthesized.Expression;
+        }
+
+        return expression;
+    }
+
     private static void ValidateClassNameIdentifier(Token name)
     {
         if (StrictModeReservedIdentifierNames.Contains(name.Text))
@@ -3226,6 +3238,16 @@ public sealed class JsParser
         {
             var op = Advance();
             var operand = ParseExpression(40);
+
+            // ECMA-262 13.5.1.1 early error: in strict-mode code the operand of
+            // `delete` may not be a bare variable reference (a parenthesized
+            // reference unwraps to the same). Deleting a property is still fine.
+            if (string.Equals(op.Text, "delete", StringComparison.Ordinal) && _strictMode &&
+                Unparenthesize(operand) is IdentifierExpressionNode)
+            {
+                throw new JsParserException("Delete of an unqualified identifier is not allowed in strict mode.");
+            }
+
             return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
         }
 
