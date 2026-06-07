@@ -21,19 +21,26 @@ public sealed partial class BytecodeInterpreter
         Func<System.Numerics.BigInteger, System.Numerics.BigInteger, System.Numerics.BigInteger> bigIntOp,
         Func<double, double, double> numOp)
     {
-        if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
+        // ECMA-262 13.15.3 ApplyStringOrNumericBinaryOperator (numeric path): coerce
+        // each operand with ToNumeric (ToPrimitive then BigInt-or-ToNumber) BEFORE
+        // deciding BigInt vs Number, in left-to-right order. Skipping this made
+        // `{[Symbol.toPrimitive](){return 2n}} - 1n` and `Object(2n) - 1n` wrongly
+        // throw "Cannot mix BigInt".
+        var lnum = ToNumericValue(left);
+        var rnum = ToNumericValue(right);
+        if (lnum.Tag == JsValueTag.BigInt && rnum.Tag == JsValueTag.BigInt)
         {
-            var r = right.AsBigInt();
+            var r = rnum.AsBigInt();
             // ECMA-262 BigInt::divide / BigInt::remainder: "If y is 0ℤ, throw a
             // RangeError." Otherwise the BigInteger op throws DivideByZeroException
             // and crashes the host.
             if (r.IsZero && (opName == "division" || opName == "modulo"))
                 throw new JsThrownException(CreateRangeError($"Division by zero in BigInt {opName}."));
-            return JsValue.FromBigInt(bigIntOp(left.AsBigInt(), r));
+            return JsValue.FromBigInt(bigIntOp(lnum.AsBigInt(), r));
         }
-        if (left.Tag == JsValueTag.BigInt || right.Tag == JsValueTag.BigInt)
+        if (lnum.Tag == JsValueTag.BigInt || rnum.Tag == JsValueTag.BigInt)
             throw new JsThrownException(CreateTypeError($"Cannot mix BigInt and other types in {opName}."));
-        return JsValue.FromNumber(numOp(ToNumber(left), ToNumber(right)));
+        return JsValue.FromNumber(numOp(lnum.AsNumber(), rnum.AsNumber()));
     }
 
     // ECMA-262 7.1.4-style ToNumeric: a BigInt stays a BigInt; everything else
@@ -42,12 +49,19 @@ public sealed partial class BytecodeInterpreter
     // value rather than a `x + 1` string concatenation.
     private JsValue ToNumericValue(JsValue value)
     {
-        if (value.Tag == JsValueTag.BigInt)
+        // ECMA-262 7.1.4 ToNumeric: ToPrimitive(value, number) first, then if the
+        // primitive is a BigInt keep it, otherwise ToNumber it. Coercing before the
+        // BigInt check is what lets BigInt-wrapping objects (Object(2n)) and
+        // Symbol.toPrimitive overrides participate in numeric operators.
+        var primitive = value.Tag == JsValueTag.Object
+            ? ToPrimitive(value, PrimitiveHint.Number)
+            : value;
+        if (primitive.Tag == JsValueTag.BigInt)
         {
-            return value;
+            return primitive;
         }
 
-        return JsValue.FromNumber(ToNumber(value));
+        return JsValue.FromNumber(ToNumber(primitive));
     }
 
     // Adds delta (+1 / -1) to an already-ToNumeric value, preserving BigInt vs
