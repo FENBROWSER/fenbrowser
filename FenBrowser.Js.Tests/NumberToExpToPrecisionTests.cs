@@ -93,6 +93,20 @@ public sealed class NumberToExpToPrecisionTests
     }
 
     [Fact]
+    public void BooleanConstructorUsesRealmPrototypeWhenNewTargetPrototypeIsNull()
+    {
+        Assert.True(RunBool("""
+            var fakeRealmProto = { marker: 1 };
+            var realmGlobal = { Boolean: { prototype: fakeRealmProto } };
+            function C() {}
+            C.prototype = null;
+            C.__realmGlobal__ = realmGlobal;
+            var o = Reflect.construct(Boolean, [], C);
+            Object.getPrototypeOf(o) === fakeRealmProto;
+            """));
+    }
+
+    [Fact]
     public void NumberTrimRecognizesEcmaWhitespace()
     {
         Assert.True(RunBool("""

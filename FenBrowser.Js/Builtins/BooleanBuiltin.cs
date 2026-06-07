@@ -31,13 +31,14 @@ public sealed class BooleanBuiltin : IBuiltinModule
         var constructor = new NativeFunctionObject(
             "Boolean",
             (_, args) => JsValue.FromBoolean(args.Count > 0 && IsTruthy(args[0])),
-            args =>
+            length: 1,
+            constructWithNewTarget: (args, newTarget) =>
             {
                 var obj = new BooleanObject(args.Count > 0 && IsTruthy(args[0]));
-                obj.SetPrototype(capturedProto);
+                obj.SetPrototype(ResolveConstructorPrototype(context, newTarget, capturedProto));
                 return JsValue.FromObject(heap.AllocateObject(obj, AllocationSite.Current()));
-            },
-            length: 1);
+            });
+        constructor.SetPrototype(GetFunctionPrototypeHandle(context));
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
         heap.PushRoot(constructorHandle);
@@ -76,9 +77,76 @@ public sealed class BooleanBuiltin : IBuiltinModule
             JsValueTag.Boolean => value.AsBoolean(),
             JsValueTag.Int32 => value.AsInt32() != 0,
             JsValueTag.Number => !double.IsNaN(value.AsNumber()) && value.AsNumber() != 0d,
+            JsValueTag.BigInt => value.AsBigInt() != System.Numerics.BigInteger.Zero,
             JsValueTag.String => value.AsString().Length > 0,
             _ => true // Objects (incl. Symbols) are always truthy.
         };
+    }
+
+    private static ObjectHandle ResolveConstructorPrototype(IBuiltinContext ctx, JsValue newTarget, ObjectHandle defaultPrototypeHandle)
+    {
+        if (newTarget.Tag != JsValueTag.Object)
+        {
+            return defaultPrototypeHandle;
+        }
+
+        var newTargetObject = ctx.Heap.GetObject(newTarget.AsObjectHandle());
+        if (ctx.TryGetPropertyValue(newTargetObject, newTarget, "prototype", out var prototypeValue) &&
+            prototypeValue.Tag == JsValueTag.Object)
+        {
+            return prototypeValue.AsObjectHandle();
+        }
+
+        if (TryGetRealmBooleanPrototype(ctx, newTargetObject, newTarget, out var realmPrototypeHandle))
+        {
+            return realmPrototypeHandle;
+        }
+
+        return defaultPrototypeHandle;
+    }
+
+    private static ObjectHandle GetFunctionPrototypeHandle(IBuiltinContext ctx)
+    {
+        var functionConstructorHandle = ctx.MaterializeFunctionConstructor();
+        var functionConstructor = ctx.Heap.GetObject(functionConstructorHandle);
+        if (ctx.TryGetPropertyValue(functionConstructor, JsValue.FromObject(functionConstructorHandle), "prototype", out var prototypeValue) &&
+            prototypeValue.Tag == JsValueTag.Object)
+        {
+            return prototypeValue.AsObjectHandle();
+        }
+
+        throw new InvalidOperationException("Function.prototype is unavailable.");
+    }
+
+    private static bool TryGetRealmBooleanPrototype(
+        IBuiltinContext ctx,
+        JsObject newTargetObject,
+        JsValue newTarget,
+        out ObjectHandle prototypeHandle)
+    {
+        prototypeHandle = default;
+        if (!ctx.TryGetPropertyValue(newTargetObject, newTarget, "__realmGlobal__", out var realmGlobal) ||
+            realmGlobal.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var realmGlobalObject = ctx.Heap.GetObject(realmGlobal.AsObjectHandle());
+        if (!ctx.TryGetPropertyValue(realmGlobalObject, realmGlobal, "Boolean", out var realmBoolean) ||
+            realmBoolean.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var realmBooleanObject = ctx.Heap.GetObject(realmBoolean.AsObjectHandle());
+        if (!ctx.TryGetPropertyValue(realmBooleanObject, realmBoolean, "prototype", out var prototypeValue) ||
+            prototypeValue.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        prototypeHandle = prototypeValue.AsObjectHandle();
+        return true;
     }
 
     private static void DefinePrototypeMethod(
