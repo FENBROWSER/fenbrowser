@@ -22,12 +22,37 @@ done
 for d in "$ROOT"/test/built-ins/*/; do batches+=("$d"); done
 batches+=("$ROOT/test/intl402" "$ROOT/test/annexB" "$ROOT/test/staging")
 
+# Stall watchdog: the per-test --timeout-ms is cooperative and only abandons (does
+# not kill) a worker thread, so a test wedged in native code — e.g. catastrophic
+# regex backtracking — can hang a whole batch forever. The runner streams a
+# [progress] line every ~5s; if a batch's log stops growing for $STALL seconds it is
+# wedged on one test, so we kill the process tree and move on. This is what keeps a
+# single test from blocking the entire suite.
+STALL=${STALL_TIMEOUT_SEC:-30}
+
 i=0
 for b in "${batches[@]}"; do
   i=$((i+1))
   tag=$(echo "$b" | sed "s#.*/test/##; s#/#_#g; s#_*$##")
   out="$OUTDIR/b_${tag}.json"
-  "$EXE" --runtime-subset --root "$ROOT" --test262 "$b" --max 100000 --timeout-ms 2000 --out "$out" >/dev/null 2>&1
+  log="$OUTDIR/b_${tag}.log"
+  : > "$log"
+  "$EXE" --runtime-subset --root "$ROOT" --test262 "$b" --max 100000 --timeout-ms 2000 --out "$out" >"$log" 2>&1 &
+  pid=$!
+  winpid=$(cat "/proc/$pid/winpid" 2>/dev/null || echo "")
+  stalled=0
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 2
+    mtime=$(stat -c %Y "$log" 2>/dev/null || echo 0)
+    idle=$(( $(date +%s) - mtime ))
+    if [ "$idle" -gt "$STALL" ]; then
+      stalled=1
+      [ -n "$winpid" ] && taskkill //PID "$winpid" //F //T >/dev/null 2>&1
+      kill -9 "$pid" 2>/dev/null
+      break
+    fi
+  done
+  wait "$pid" 2>/dev/null
   line=$(python -c "
 import json
 try:
@@ -36,7 +61,11 @@ try:
 except Exception as e:
     print('0 0')
 ")
-  echo "$i ${tag} $line" >> "$PROG"
+  if [ "$stalled" = "1" ]; then
+    echo "$i ${tag} $line STALL-KILL last:[$(tail -n1 "$log" 2>/dev/null)]" >> "$PROG"
+  else
+    echo "$i ${tag} $line" >> "$PROG"
+  fi
 done
 
 python -c "
