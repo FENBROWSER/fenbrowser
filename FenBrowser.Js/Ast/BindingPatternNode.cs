@@ -6,6 +6,11 @@ public abstract record BindingPatternNode(SourceSpan Span) : AstNode(Span);
 
 public sealed record IdentifierBindingPatternNode(string Name, SourceSpan Span) : BindingPatternNode(Span);
 
+// A member-expression destructuring target, e.g. `[o.x] = v` / `({a: o[k]} = v)`.
+// Only legal in assignment patterns (never declarations), so it is produced solely
+// by the assignment cover-grammar conversion and stored via a member set, not a binding.
+public sealed record MemberBindingPatternNode(MemberExpressionNode Member, SourceSpan Span) : BindingPatternNode(Span);
+
 public sealed record ArrayBindingElementNode(
     BindingPatternNode? Target,
     ExpressionNode? Initializer,

@@ -1237,16 +1237,24 @@ public sealed class BytecodeCompiler
 
     private void CompileForInStatement(ForInStatementNode forInStmt)
     {
+        MemberExpressionNode? targetMember = null;
         if (!TryGetForBindingTarget(forInStmt.Initializer, out var targetSlot, out var targetPattern))
         {
-            if (forInStmt.Initializer is ExpressionStatementNode expressionInitializer)
+            if (forInStmt.Initializer is ExpressionStatementNode { Expression: MemberExpressionNode member }
+                && member.Object is not SuperExpressionNode)
+            {
+                targetMember = member;
+            }
+            else if (forInStmt.Initializer is ExpressionStatementNode expressionInitializer)
             {
                 _ = CompileExpression(expressionInitializer.Expression);
                 EmitRuntimeReferenceError("Invalid left-hand side in for-in.");
                 return;
             }
-
-            throw new InvalidOperationException("Unsupported for-in initializer target.");
+            else
+            {
+                throw new InvalidOperationException("Unsupported for-in initializer target.");
+            }
         }
 
         // Annex B B.3.5: sloppy-mode `for (var x = init in obj)` executes `init`
@@ -1266,7 +1274,14 @@ public sealed class BytecodeCompiler
         var keyReg = AllocateRegister();
         var nextIndex = _instructions.Count;
         _instructions.Add(new Instruction(OpCode.ForInNext, keyReg, iteratorReg, -1));
-        EmitForBindingAssignment(targetSlot, targetPattern, keyReg);
+        if (targetMember is not null)
+        {
+            EmitMemberStore(targetMember, keyReg);
+        }
+        else
+        {
+            EmitForBindingAssignment(targetSlot, targetPattern, keyReg);
+        }
 
         var ctx = new LoopContext
         {
@@ -1306,16 +1321,26 @@ public sealed class BytecodeCompiler
     // continue/break stack so labelled break still works.
     private void CompileForOfStatement(ForOfStatementNode forOfStmt)
     {
+        MemberExpressionNode? targetMember = null;
         if (!TryGetForBindingTarget(forOfStmt.Initializer, out var targetSlot, out var targetPattern))
         {
-            if (forOfStmt.Initializer is ExpressionStatementNode expressionInitializer)
+            // A bare (non-super) member expression is a valid for-of reference
+            // target (`for (x.y of it)`); resolve and assign it each iteration.
+            if (forOfStmt.Initializer is ExpressionStatementNode { Expression: MemberExpressionNode member }
+                && member.Object is not SuperExpressionNode)
+            {
+                targetMember = member;
+            }
+            else if (forOfStmt.Initializer is ExpressionStatementNode expressionInitializer)
             {
                 _ = CompileExpression(expressionInitializer.Expression);
                 EmitRuntimeReferenceError("Invalid left-hand side in for-of.");
                 return;
             }
-
-            throw new InvalidOperationException("Unsupported for-of initializer target.");
+            else
+            {
+                throw new InvalidOperationException("Unsupported for-of initializer target.");
+            }
         }
 
         var sourceReg = CompileExpression(forOfStmt.Iterable);
@@ -1326,7 +1351,14 @@ public sealed class BytecodeCompiler
         var valueReg = AllocateRegister();
         var nextIndex = _instructions.Count;
         _instructions.Add(new Instruction(OpCode.ForOfNext, valueReg, iteratorReg, -1));
-        EmitForBindingAssignment(targetSlot, targetPattern, valueReg);
+        if (targetMember is not null)
+        {
+            EmitMemberStore(targetMember, valueReg);
+        }
+        else
+        {
+            EmitForBindingAssignment(targetSlot, targetPattern, valueReg);
+        }
 
         var ctx = new LoopContext
         {
@@ -1532,6 +1564,12 @@ public sealed class BytecodeCompiler
                 return TryConvertForAssignmentPattern(parenthesized.Expression, out pattern);
             case IdentifierExpressionNode identifier:
                 pattern = new IdentifierBindingPatternNode(identifier.Name, identifier.Span);
+                return true;
+            case MemberExpressionNode member when member.Object is not SuperExpressionNode && !IsPrivateMangled(member.Property):
+                // `[o.x] = v` / `({a: o[k]} = v)` — a member-expression assignment
+                // target inside a destructuring pattern. Valid only in assignment
+                // patterns (the only caller of this converter).
+                pattern = new MemberBindingPatternNode(member, member.Span);
                 return true;
             case ArrayLiteralExpressionNode array:
             {
@@ -2412,10 +2450,15 @@ public sealed class BytecodeCompiler
                     }
 
                     isMethodCall = true;
-                    var hasSpreadOptional = call.Arguments.Count == 1 && call.Arguments[0] is SpreadElementExpressionNode;
+                    var hasSpreadOptional = false;
+                    for (var i = 0; i < call.Arguments.Count; i++)
+                    {
+                        if (call.Arguments[i] is SpreadElementExpressionNode) { hasSpreadOptional = true; break; }
+                    }
+
                     if (hasSpreadOptional)
                     {
-                        var spreadArgReg = CompileExpression(call.Arguments[0]);
+                        var spreadArgReg = BuildSpreadArray(call.Arguments);
                         _instructions.Add(new Instruction(OpCode.CallSpread, optionalDest, calleeReg, spreadArgReg, thisReg));
                     }
                     else
@@ -2464,11 +2507,22 @@ public sealed class BytecodeCompiler
                 var isSuperCall = call.Callee is SuperExpressionNode;
                 var dest = AllocateRegister();
 
-                // ECMA-262 13.3.7.1 â€” handle spread arguments (...args) via CallSpread.
-                var hasSpread = call.Arguments.Count == 1 && call.Arguments[0] is SpreadElementExpressionNode;
+                // ECMA-262 13.3.7.1 — any spread argument (...args), in any position,
+                // builds a fully-expanded argument array (iterator protocol) and
+                // dispatches via CallSpread.
+                var hasSpread = false;
+                for (var i = 0; i < call.Arguments.Count; i++)
+                {
+                    if (call.Arguments[i] is SpreadElementExpressionNode)
+                    {
+                        hasSpread = true;
+                        break;
+                    }
+                }
+
                 if (hasSpread)
                 {
-                    var spreadArg = CompileExpression(call.Arguments[0]);
+                    var spreadArg = BuildSpreadArray(call.Arguments);
                     _instructions.Add(new Instruction(
                         OpCode.CallSpread,
                         dest,
@@ -2544,10 +2598,15 @@ public sealed class BytecodeCompiler
 
                 var callLabel = _instructions.Count;
                 PatchJump(jumpIfNotUndefined, callLabel);
-                var hasSpread = optionalCall.Arguments.Count == 1 && optionalCall.Arguments[0] is SpreadElementExpressionNode;
+                var hasSpread = false;
+                for (var i = 0; i < optionalCall.Arguments.Count; i++)
+                {
+                    if (optionalCall.Arguments[i] is SpreadElementExpressionNode) { hasSpread = true; break; }
+                }
+
                 if (hasSpread)
                 {
-                    var spreadArgReg = CompileExpression(optionalCall.Arguments[0]);
+                    var spreadArgReg = BuildSpreadArray(optionalCall.Arguments);
                     _instructions.Add(new Instruction(OpCode.CallSpread, dest, calleeReg, spreadArgReg, 0));
                 }
                 else
@@ -2782,11 +2841,18 @@ public sealed class BytecodeCompiler
                 var calleeReg = CompileExpression(ne.Callee);
                 var dest = AllocateRegister();
 
-                // ECMA-262 13.3.5.1 — spread argument (new F(...args)). Mirrors the
-                // CallSpread path: unpack the single spread array at runtime.
-                if (ne.Arguments.Count == 1 && ne.Arguments[0] is SpreadElementExpressionNode)
+                // ECMA-262 13.3.5.1 — any spread argument (new F(...args), in any
+                // position) builds a fully-expanded argument array (iterator
+                // protocol) and dispatches via ConstructSpread.
+                var newHasSpread = false;
+                for (var i = 0; i < ne.Arguments.Count; i++)
                 {
-                    var spreadArg = CompileExpression(ne.Arguments[0]);
+                    if (ne.Arguments[i] is SpreadElementExpressionNode) { newHasSpread = true; break; }
+                }
+
+                if (newHasSpread)
+                {
+                    var spreadArg = BuildSpreadArray(ne.Arguments);
                     _instructions.Add(new Instruction(OpCode.ConstructSpread, dest, calleeReg, spreadArg));
                     return dest;
                 }
@@ -2899,6 +2965,16 @@ public sealed class BytecodeCompiler
             }
             case ArrayLiteralExpressionNode arr:
             {
+                // Any spread element means runtime expansion via the iterator
+                // protocol; route through the shared builder.
+                for (var i = 0; i < arr.Elements.Count; i++)
+                {
+                    if (arr.Elements[i] is SpreadElementExpressionNode)
+                    {
+                        return BuildSpreadArray(arr.Elements);
+                    }
+                }
+
                 var dest = AllocateRegister();
                 _instructions.Add(new Instruction(OpCode.NewArray, dest, 0, 0));
                 var hasSpread = false;
@@ -3095,6 +3171,28 @@ public sealed class BytecodeCompiler
         }
     }
 
+    // Store an already-computed value into a (non-super) member-expression
+    // reference, e.g. the `x.y` / `x[k]` left-hand side of `for (x.y of it)`.
+    // The object (and computed key) are re-evaluated here so the reference is
+    // resolved per ECMA-262 13.7.5.5 each iteration.
+    private void EmitMemberStore(MemberExpressionNode member, int valueReg)
+    {
+        ThrowIfPrivateMemberAccess(member);
+        var objectReg = CompileExpression(member.Object);
+        if (member.Computed)
+        {
+            var keyReg = CompileExpression(member.PropertyExpression!);
+            _instructions.Add(new Instruction(OpCode.SetElem, objectReg, keyReg, valueReg));
+            return;
+        }
+
+        var nameIndex = GetOrCreatePropertyName(member.Property);
+        var setOp = IsPrivateMangled(member.Property)
+            ? (_compilingClassConstructor ? OpCode.DefinePrivateField : OpCode.SetPrivateField)
+            : OpCode.SetPropByName;
+        _instructions.Add(new Instruction(setOp, objectReg, nameIndex, valueReg));
+    }
+
     private void EmitBindingPatternAssignment(BindingPatternNode pattern, int sourceReg, OpCode storeOp)
     {
         switch (pattern)
@@ -3103,6 +3201,13 @@ public sealed class BytecodeCompiler
             {
                 var slot = GetOrCreateVariableSlot(identifier.Name);
                 _instructions.Add(new Instruction(storeOp, sourceReg, slot, 0));
+                return;
+            }
+            case MemberBindingPatternNode memberTarget:
+            {
+                // `[o.x] = v` etc. — store into the member reference. Only reached
+                // for assignment patterns (declarations never carry member targets).
+                EmitMemberStore(memberTarget.Member, sourceReg);
                 return;
             }
             case ArrayBindingPatternNode array:
@@ -3258,6 +3363,48 @@ public sealed class BytecodeCompiler
         var materializedReg = AllocateRegister();
         _instructions.Add(new Instruction(OpCode.CallMethod1, materializedReg, fromReg, arrayReg, sourceReg));
         return materializedReg;
+    }
+
+    // Build a fresh array from a mixed element list that contains at least one
+    // spread, expanding each spread via the iterator protocol (SpreadAppend).
+    // Used by array literals, call argument lists, and `new` argument lists so a
+    // single mechanism handles `[a, ...b, c]`, `f(a, ...b)`, `new F(...a, b)`.
+    private int BuildSpreadArray(IReadOnlyList<ExpressionNode> elements)
+    {
+        var arr = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.NewArray, arr, 0, 0));
+
+        var idxReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.LoadConst, idxReg, AddConstant(JsValue.FromNumber(0)), 0));
+        var oneReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.LoadConst, oneReg, AddConstant(JsValue.FromNumber(1)), 0));
+
+        foreach (var element in elements)
+        {
+            if (element is ElisionExpressionNode)
+            {
+                // A hole still advances the index; the trailing-length fixup below
+                // makes the absent slot count toward length.
+                _instructions.Add(new Instruction(OpCode.Add, idxReg, idxReg, oneReg));
+                continue;
+            }
+
+            if (element is SpreadElementExpressionNode spread)
+            {
+                var iterableReg = CompileExpression(spread.Argument);
+                _instructions.Add(new Instruction(OpCode.SpreadAppend, arr, idxReg, iterableReg));
+                continue;
+            }
+
+            var valueReg = CompileExpression(element);
+            _instructions.Add(new Instruction(OpCode.SetElem, arr, idxReg, valueReg));
+            _instructions.Add(new Instruction(OpCode.Add, idxReg, idxReg, oneReg));
+        }
+
+        // Pin length to the running index so trailing holes (e.g. `[...a, ,]`) count.
+        var lenNameIdx = GetOrCreatePropertyName("length");
+        _instructions.Add(new Instruction(OpCode.SetPropByName, arr, lenNameIdx, idxReg));
+        return arr;
     }
 
     private int LoadArrayElement(int arrayReg, int index)
