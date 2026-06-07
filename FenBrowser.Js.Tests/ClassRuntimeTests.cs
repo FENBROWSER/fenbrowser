@@ -271,6 +271,30 @@ public sealed class ClassRuntimeTests
     }
 
     [Fact]
+    public void SuperPropertyAssignmentWritesThroughThis()
+    {
+        Assert.Equal(1d, Run(@"
+            class A {}
+            class B extends A { go() { super.makeBugs = 1; return this.makeBugs; } }
+            (new B()).go();
+        ").AsNumber());
+    }
+
+    [Fact]
+    public void BaseClassConstructorSuperPropertyResolvesFromObjectPrototype()
+    {
+        Assert.Equal(1d, Run(@"
+            class A {
+                constructor() { super.toString(); }
+                dontDoThis() { super.makeBugs = 1; }
+            }
+            var a = new A();
+            a.dontDoThis();
+            a.makeBugs;
+        ").AsNumber());
+    }
+
+    [Fact]
     public void SuperOutsideMethodThrowsReferenceError()
     {
         Assert.Throws<JsThrownException>(() =>
@@ -321,6 +345,37 @@ public sealed class ClassRuntimeTests
             class A { constructor() {} }
             class B extends A { constructor() { this.x = 1; super(); } }
             try { new B(); 'no-throw'; } catch (e) { e.name; }
+        ").AsString());
+    }
+
+    [Fact]
+    public void ClassConstructorCannotBeCalledViaApply()
+    {
+        Assert.Equal("TypeError", Run(@"
+            class Base {}
+            class Derived extends Base {}
+            try {
+                Derived.apply({}, []);
+                'no-throw';
+            } catch (e) {
+                e.name;
+            }
+        ").AsString());
+    }
+
+    [Fact]
+    public void ClassMethodUsesRestrictedArgumentsObject()
+    {
+        Assert.Equal("TypeError", Run(@"
+            var D = class extends function() {
+              arguments.callee;
+            } {};
+            try {
+              new D();
+              'no-throw';
+            } catch (e) {
+              e.name;
+            }
         ").AsString());
     }
 

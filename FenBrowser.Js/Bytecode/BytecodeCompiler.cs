@@ -51,6 +51,7 @@ public sealed class BytecodeCompiler
     // Private field writes in this context emit DefinePrivateField instead of SetPrivateField.
     private bool _compilingClassConstructor;
     private bool _isDerivedConstructor;
+    private bool _isClassConstructor;
 
     // Per-function brand tokens for private field access validation.
     private List<long> _brandTokens = new();
@@ -222,6 +223,7 @@ public sealed class BytecodeCompiler
             Kind = _currentFunctionKind,
             IsStrictMode = _isStrictMode,
             IsDerivedConstructor = _isDerivedConstructor,
+            IsClassConstructor = _isClassConstructor,
             Instructions = _instructions.ToArray(),
             Constants = _constants.ToArray(),
             VariableSlots = new Dictionary<string, int>(_variables),
@@ -408,6 +410,8 @@ public sealed class BytecodeCompiler
                 break;
             case ContinueStatementNode continueStmt:
                 CompileContinueStatement(continueStmt.Label);
+                break;
+            case DebuggerStatementNode:
                 break;
             case ThrowStatementNode throwStmt:
                 CompileThrowStatement(throwStmt);
@@ -647,6 +651,10 @@ public sealed class BytecodeCompiler
         IReadOnlyList<ClassMemberNode> members,
         Action<int>? bindNameBeforeStaticBlocks = null)
     {
+        var savedClassStrictMode = _isStrictMode;
+        _isStrictMode = true;
+        try
+        {
         // H.2 - evaluate the base-class expression BEFORE compiling the class body
         // so that class B extends A {} fails fast when A is a TDZ binding (ECMA-
         // 262 15.7.14 ClassDefinitionEvaluation step 7).
@@ -812,15 +820,28 @@ public sealed class BytecodeCompiler
         // H.5: compile constructor with private field brand awareness.
         var savedConstructorContext = _compilingClassConstructor;
         var savedIsDerived = _isDerivedConstructor;
+        var savedIsClassConstructor = _isClassConstructor;
+        var savedStrictMode = _isStrictMode;
+        _isStrictMode = true;
         _compilingClassConstructor = privateMangle.Count > 0;
         _isDerivedConstructor = isDerived;
+        _isClassConstructor = true;
         var classReg = CompileFunctionExpressionToRegister(constructorFn);
         _compilingClassConstructor = savedConstructorContext;
         _isDerivedConstructor = savedIsDerived;
+        _isClassConstructor = savedIsClassConstructor;
+        _isStrictMode = savedStrictMode;
 
-        // Build prototype object.
+        // Build prototype object. A class constructor (FunctionKind.Constructor)
+        // is created with a NON-writable, non-configurable own `prototype` slot
+        // that already points at a fresh ordinary object carrying `constructor`.
+        // Install the class's methods directly on THAT object — reassigning the
+        // slot with a fresh object would be silently rejected by the non-writable
+        // descriptor, dropping every method (ECMA-262 15.7.14: the prototype is
+        // built once and the constructor is created with it via MakeConstructor).
         var protoReg = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.NewObject, protoReg, 0, 0));
+        var protoNameIdx_init = GetOrCreatePropertyName("prototype");
+        _instructions.Add(new Instruction(OpCode.GetPropByName, protoReg, classReg, protoNameIdx_init));
 
         // H.2 - wire the extends prototype chain. The new class's prototype
         // inherits from base.prototype (so instances see inherited methods); the
@@ -852,7 +873,10 @@ public sealed class BytecodeCompiler
             if (member.Kind == ClassMemberKind.StaticBlock) continue;
             if (member.Function is not FunctionExpressionNode methodFn) continue;
 
+            savedStrictMode = _isStrictMode;
+            _isStrictMode = true;
             var methodReg = CompileFunctionExpressionToRegister(methodFn);
+            _isStrictMode = savedStrictMode;
 
             var targetReg = member.IsStatic ? classReg : protoReg;
             // H.3 - record the home object so `super.x` lookups can walk the
@@ -903,8 +927,8 @@ public sealed class BytecodeCompiler
         // the slot during function creation; this overwrites with the class's proto).
         var ctorNameIdx = GetOrCreatePropertyName("constructor");
         _instructions.Add(new Instruction(OpCode.DefineMethod, protoReg, ctorNameIdx, classReg));
-        var protoNameIdx = GetOrCreatePropertyName("prototype");
-        _instructions.Add(new Instruction(OpCode.SetPropByName, classReg, protoNameIdx, protoReg));
+        // `prototype` is already the constructor's own (non-writable) slot — no
+        // reassignment needed; methods above mutated the prototype object in place.
 
         // H.5 - public static fields. Installed on the class itself, before
         // static blocks so the blocks can see them.
@@ -937,13 +961,21 @@ public sealed class BytecodeCompiler
         {
             if (member.Kind != ClassMemberKind.StaticBlock) continue;
             if (member.Function is not FunctionExpressionNode blockFn) continue;
+            savedStrictMode = _isStrictMode;
+            _isStrictMode = true;
             var blockReg = CompileFunctionExpressionToRegister(blockFn);
+            _isStrictMode = savedStrictMode;
             _instructions.Add(new Instruction(OpCode.SetHomeObject, blockReg, classReg, 0));
             var discard = AllocateRegister();
             _instructions.Add(new Instruction(OpCode.CallMethod0, discard, blockReg, classReg));
         }
 
         return classReg;
+        }
+        finally
+        {
+            _isStrictMode = savedClassStrictMode;
+        }
     }
 
     private int CompileFunctionExpressionToRegister(FunctionExpressionNode fnExpr)
@@ -955,7 +987,7 @@ public sealed class BytecodeCompiler
             fnExpr.ParameterBindings,
             out var prologueCount,
             fnExpr.ParameterDefaults);
-        var childCompiler = new BytecodeCompiler { _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _brandTokens = this._brandTokens };
+        var childCompiler = new BytecodeCompiler { _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _isClassConstructor = this._isClassConstructor, _brandTokens = this._brandTokens };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             fnExpr.Parameters,
@@ -963,7 +995,9 @@ public sealed class BytecodeCompiler
             fnExpr.Name,
             hasOwnArgumentsObject: true,
             hasSimpleParameterList: fnExpr.HasSimpleParameterList,
-            functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false),
+            functionKind: _isClassConstructor
+                ? FunctionKind.Constructor
+                : SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false),
             inheritedStrictMode: _isStrictMode,
             captureCompletionValue: false,
             prologueStatementCount: prologueCount,
@@ -2235,8 +2269,26 @@ public sealed class BytecodeCompiler
             case AssignmentExpressionNode assign when assign.Left is MemberExpressionNode member:
             {
                 ThrowIfPrivateMemberAccess(member);
-                var objectReg = CompileExpression(member.Object);
                 var valueReg = CompileExpression(assign.Right);
+                if (member.Object is SuperExpressionNode)
+                {
+                    var thisReg = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.LoadThis, thisReg, 0, 0));
+                    if (member.Computed)
+                    {
+                        var keyReg = CompileExpression(member.PropertyExpression!);
+                        _instructions.Add(new Instruction(OpCode.SetElem, thisReg, keyReg, valueReg));
+                    }
+                    else
+                    {
+                        var nameIndex = GetOrCreatePropertyName(member.Property);
+                        _instructions.Add(new Instruction(OpCode.SetPropByName, thisReg, nameIndex, valueReg));
+                    }
+
+                    return valueReg;
+                }
+
+                var objectReg = CompileExpression(member.Object);
                 if (member.Computed)
                 {
                     var keyReg = CompileExpression(member.PropertyExpression!);

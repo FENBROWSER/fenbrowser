@@ -56,6 +56,11 @@ public sealed class BytecodeFunction
     // Derived constructors must call super() before accessing `this`.
     public bool IsDerivedConstructor { get; init; }
 
+    // True when this function is a class constructor, including base classes.
+    // `super.prop` inside constructors walks the prototype of `class.prototype`,
+    // while `super()` walks the constructor's own [[Prototype]] chain.
+    public bool IsClassConstructor { get; init; }
+
     internal Dictionary<int, PolymorphicInlineCache>? LoadICs { get; set; }
     internal Dictionary<int, PolymorphicInlineCache>? StoreICs { get; set; }
     internal Dictionary<int, CallICEntry>? CallICs { get; set; }

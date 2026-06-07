@@ -2,6 +2,7 @@
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
+using FenBrowser.Js.Environments;
 
 namespace FenBrowser.Js.Interpreter;
 
@@ -131,6 +132,11 @@ public sealed partial class BytecodeInterpreter
 
         if (obj is JsFunctionObject fn)
         {
+            if (fn.Kind == FunctionKind.Constructor)
+            {
+                throw new JsThrownException(CreateTypeError("Class constructor cannot be invoked without 'new'."));
+            }
+
             if (fn.Kind == FunctionKind.Async)
             {
                 var capability = NewPromiseCapability();
@@ -534,6 +540,25 @@ public sealed partial class BytecodeInterpreter
                 }
                 return;
             }
+
+            try
+            {
+                var superResult = ConstructFunction(callee, args, frame.NewTarget);
+                if (superResult.Tag == JsValueTag.Object &&
+                    frame.Environment is FunctionEnvironmentRecord superEnv &&
+                    superEnv.ThisBindingStatus == ThisBindingStatus.Uninitialized)
+                {
+                    _ = superEnv.BindThisValue(superResult);
+                }
+
+                frame.Registers[destinationRegister] = superResult;
+            }
+            catch (JsThrownException ex)
+            {
+                if (frame.CatchHandlers.Count == 0) throw;
+                ThrowOrHandle(frame, ex.Value);
+            }
+            return;
         }
 
         try
@@ -568,7 +593,8 @@ public sealed partial class BytecodeInterpreter
     {
         try
         {
-            frame.Registers[destinationRegister] = ConstructFunction(constructor, args);
+            var constructed = ConstructFunction(constructor, args);
+            frame.Registers[destinationRegister] = constructed;
         }
         catch (JsThrownException ex)
         {
@@ -638,5 +664,3 @@ public sealed partial class BytecodeInterpreter
     }
 
 }
-
-

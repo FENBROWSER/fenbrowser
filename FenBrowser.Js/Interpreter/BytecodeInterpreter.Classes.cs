@@ -284,8 +284,7 @@ public sealed partial class BytecodeInterpreter
             return;
         }
 
-        var homeObj = _heap.GetObject(home);
-        if (homeObj.PrototypeHandle is not { } baseProtoHandle)
+        if (!TryGetSuperPropertyBase(function, home, out var baseProtoHandle))
         {
             frame.Registers[ins.A] = JsValue.Undefined;
             return;
@@ -309,8 +308,7 @@ public sealed partial class BytecodeInterpreter
             return;
         }
 
-        var homeObj = _heap.GetObject(home);
-        if (homeObj.PrototypeHandle is not { } baseProtoHandle)
+        if (!TryGetSuperPropertyBase(frame.Function, home, out var baseProtoHandle))
         {
             frame.Registers[ins.A] = JsValue.Undefined;
             return;
@@ -351,6 +349,39 @@ public sealed partial class BytecodeInterpreter
 
         frame.Registers[ins.A] = JsValue.FromObject(baseHandle);
         frame.SuperConstructorHandle = baseHandle;
+    }
+
+    private bool TryGetSuperPropertyBase(BytecodeFunction function, ObjectHandle home, out ObjectHandle baseProtoHandle)
+    {
+        var homeObj = _heap.GetObject(home);
+        if (function.IsClassConstructor)
+        {
+            if (!TryGetPropertyValue(homeObj, JsValue.FromObject(home), "prototype", out var prototypeValue) ||
+                prototypeValue.Tag != JsValueTag.Object)
+            {
+                baseProtoHandle = default;
+                return false;
+            }
+
+            var prototypeObject = _heap.GetObject(prototypeValue.AsObjectHandle());
+            if (prototypeObject.PrototypeHandle is not { } constructorBaseProtoHandle)
+            {
+                baseProtoHandle = default;
+                return false;
+            }
+
+            baseProtoHandle = constructorBaseProtoHandle;
+            return true;
+        }
+
+        if (homeObj.PrototypeHandle is not { } ordinaryBaseProtoHandle)
+        {
+            baseProtoHandle = default;
+            return false;
+        }
+
+        baseProtoHandle = ordinaryBaseProtoHandle;
+        return true;
     }
 
 }
