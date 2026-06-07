@@ -162,11 +162,12 @@ $EXE --parser-subset --root "$ROOT" --test262 "$ROOT/test/language" --timeout-ms
 
 There are exactly **two canonical runner scripts** (both with a stall-kill watchdog so one wedged test can't hang the run). Use these, don't add more:
 
-- **Full ~53k-test suite** → `scripts/run_full_batched.sh` — one OS process per directory batch so RAM is released between batches; aggregates into `Results/test262/batched/_batched_total.json`. Tune the watchdog with `STALL_TIMEOUT_SEC` (default 30).
+- **Full ~53k-test suite** → `scripts/run_full_batched.sh` (bash) or `scripts/run_full_batched.ps1` (PowerShell twin) — one OS process per directory batch so RAM is released between batches; aggregates into `Results/test262/batched/_batched_total.json`. Tune the watchdog with `STALL_TIMEOUT_SEC` / `-StallTimeoutSec` (default 30).
 - **Category-wise** → `scripts/run-test262-category-resume.ps1` — resumable per-category sweep; splits oversized dirs into buckets; `-StallTimeoutSec` (default 35) kills a wedged bucket; `-Fresh` to ignore prior results.
 
 ```bash
-bash scripts/run_full_batched.sh                              # full suite
+bash scripts/run_full_batched.sh                              # full suite (bash)
+pwsh scripts/run_full_batched.ps1                             # full suite (PowerShell)
 pwsh scripts/run-test262-category-resume.ps1                  # all categories, resumable
 # Single process over the whole tree (heavier on RAM, no watchdog):
 $EXE --runtime-subset --root "$ROOT" --test262 "$ROOT/test" --max 1000000 --timeout-ms 2000 \
