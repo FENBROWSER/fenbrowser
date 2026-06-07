@@ -137,10 +137,23 @@ public sealed partial class BytecodeInterpreter
         while (current is { } cur)
         {
             var obj = _heap.GetObject(cur);
-            var found = isSymbol
-                ? obj.TryGetOwnSymbolProperty(symId, out var desc)
-                : obj.TryGetOwnProperty(name!, out desc);
-            _ = desc;
+            // B.2.2.4 step a: desc be ? O.[[GetOwnProperty]](key). For a Proxy this
+            // MUST invoke the getOwnPropertyDescriptor trap and propagate its abrupt
+            // completion — walking the raw target/prototype skipped the trap, so a
+            // throwing trap was silently swallowed.
+            bool found;
+            JsPropertyDescriptor desc;
+            if (obj is ProxyObject proxy && !isSymbol)
+            {
+                found = ProxyTryGetOwnPropertyDescriptor(proxy, name!, out desc);
+            }
+            else
+            {
+                found = isSymbol
+                    ? obj.TryGetOwnSymbolProperty(symId, out desc)
+                    : obj.TryGetOwnProperty(name!, out desc);
+            }
+
             if (found)
             {
                 if (!desc.IsAccessor)
@@ -152,7 +165,16 @@ public sealed partial class BytecodeInterpreter
                 return half.Tag == JsValueTag.Undefined ? JsValue.Undefined : half;
             }
 
-            current = obj.PrototypeHandle;
+            // B.2.2.4 step c: set O to ? O.[[GetPrototypeOf]]() (trap-aware for Proxy).
+            if (obj is ProxyObject protoProxy)
+            {
+                var proto = ProxyGetPrototypeOf(protoProxy);
+                current = proto.Tag == JsValueTag.Object ? proto.AsObjectHandle() : (ObjectHandle?)null;
+            }
+            else
+            {
+                current = obj.PrototypeHandle;
+            }
         }
 
         return JsValue.Undefined;
