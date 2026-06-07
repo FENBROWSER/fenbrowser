@@ -3928,12 +3928,29 @@ public sealed class JsParser
             }
             else if (IsPunctuator("="))
             {
+                // Cover-initialized name `{ x = init }`: the shorthand target `x`
+                // must be a valid IdentifierReference (12.6.1: a ReservedWord —
+                // including one spelled with escapes — is not an Identifier).
+                if (!IsIdentifierLike(keyToken))
+                {
+                    throw new JsParserException(
+                        $"'{key}' is a reserved word and cannot be a shorthand property{Where()}.");
+                }
+
                 Advance();
                 value = ParseExpression(2);
                 isCoverInitializedName = true;
             }
             else if (!isComputed && key is not null)
             {
+                // Bare shorthand `{ x }` is also an IdentifierReference and must
+                // not be a reserved word (escaped reserved words included).
+                if (!IsIdentifierLike(keyToken))
+                {
+                    throw new JsParserException(
+                        $"'{key}' is a reserved word and cannot be a shorthand property{Where()}.");
+                }
+
                 value = new IdentifierExpressionNode(key, keyToken.Span);
             }
             else
