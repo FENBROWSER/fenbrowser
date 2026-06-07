@@ -263,35 +263,9 @@ $section4Checks.Add([PSCustomObject]@{
     Evidence = To-Evidence -Matches $unsupportedFailureMatches -Fallback "No unsupported-API throw assertions found."
 }) | Out-Null
 
-$engineStatusPath = Join-Path $repoRoot "ENGINE_STATUS.md"
-$engineStatus = ""
-if (Test-Path $engineStatusPath) {
-    $engineStatus = Get-Content -Path $engineStatusPath -Raw
-}
-
-$section4Checks.Add([PSCustomObject]@{
-    Id = "4.19"
-    Name = "Claims are marked experimental/partial when appropriate."
-    Severity = "Medium"
-    Passed = (-not [string]::IsNullOrWhiteSpace($engineStatus) -and $engineStatus -match "\|\s+.*\|\s+(Experimental|Partial|Experimental subset|Usable subset|Mostly complete)\s+\|")
-    Evidence = if (-not [string]::IsNullOrWhiteSpace($engineStatus) -and $engineStatus -match "\|\s+.*\|\s+(Experimental|Partial|Experimental subset|Usable subset|Mostly complete)\s+\|") { "ENGINE_STATUS.md status table includes conservative labels." } else { "ENGINE_STATUS.md is missing conservative status labels." }
-}) | Out-Null
-
-$section4Checks.Add([PSCustomObject]@{
-    Id = "4.20"
-    Name = "Tests or current limitations are referenced."
-    Severity = "High"
-    Passed = (-not [string]::IsNullOrWhiteSpace($engineStatus) -and
-        $engineStatus -match "\|\s*Area\s*\|\s*Status\s*\|\s*Evidence\s*\|\s*Known limitations\s*\|" -and
-        $engineStatus -match "Known limitations")
-    Evidence = if (-not [string]::IsNullOrWhiteSpace($engineStatus) -and
-        $engineStatus -match "\|\s*Area\s*\|\s*Status\s*\|\s*Evidence\s*\|\s*Known limitations\s*\|" -and
-        $engineStatus -match "Known limitations") { "ENGINE_STATUS.md includes Evidence and Known limitations columns." } else { "ENGINE_STATUS.md is missing evidence/limitations references." }
-}) | Out-Null
-
 $marketingMatches = @(Invoke-Ripgrep `
     -Pattern "Fully spec-compliant browser|Production-ready secure browser|Supports modern web standards" `
-    -Paths @("docs", "ENGINE_STATUS.md", "CONTRIBUTING_ENGINE.md", "QUIRKS.md", "TESTING.md", "RISK_REGISTER.md") `
+    -Paths @("docs", "CONTRIBUTING_ENGINE.md", "TESTING.md") `
     -ExtraArgs @("--glob", "!docs/rules/code_cleanup.md"))
 $section4Checks.Add([PSCustomObject]@{
     Id = "4.21"

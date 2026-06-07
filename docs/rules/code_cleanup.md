@@ -572,63 +572,9 @@ Return:
 
 ---
 
-## 8. Feature status discipline
+## 8. Quirk and hack policy
 
-Create and maintain `ENGINE_STATUS.md` in the repo root.
-
-Template:
-
-```markdown
-# FenBrowser Engine Status
-
-Last updated: YYYY-MM-DD
-
-## Rendering pipeline
-
-| Area | Status | Evidence | Known limitations |
-|---|---|---|---|
-| HTML parser | Partial | Tests: ... | ... |
-| DOM tree | Partial | Tests: ... | ... |
-| CSS parser | Partial | Tests: ... | ... |
-| Cascade | Partial | Tests: ... | ... |
-| Computed style | Partial | Tests: ... | ... |
-| Block layout | Partial | Tests: ... | ... |
-| Inline layout | Experimental | Tests: ... | ... |
-| Flexbox | Experimental subset | Tests: ... | ... |
-| Tables | Partial | Tests: ... | ... |
-| Paint | Partial | Tests: ... | ... |
-| Hit testing | Incomplete | Tests: ... | ... |
-| DOM events | Incomplete | Tests: ... | ... |
-| JavaScript engine | Experimental | Tests: ... | ... |
-
-## Known hacks / quirks
-
-| Quirk | Location | Reason | Removal condition |
-|---|---|---|---|
-| ... | ... | ... | ... |
-
-## Things not supported yet
-
-- ...
-```
-
-Status labels:
-
-- Not started
-- Stub only
-- Experimental
-- Partial
-- Usable subset
-- Mostly complete
-- Conformance-backed
-
-Do not use `complete` unless broad tests prove it.
-
----
-
-## 9. Quirk and hack policy
-
-### 9.1 Allowed temporary quirk format
+### 8.1 Allowed temporary quirk format
 
 ```csharp
 // Compatibility quirk: [name]
@@ -639,7 +585,7 @@ Do not use `complete` unless broad tests prove it.
 // Removal condition: [what must be fixed before deleting]
 ```
 
-### 9.2 Disallowed hidden hack examples
+### 8.2 Disallowed hidden hack examples
 
 ```csharp
 if (url.Contains("google")) return BuildFallbackDom();
@@ -657,7 +603,7 @@ These hide the real issue. Use diagnostics and tests instead.
 
 ---
 
-## 10. Refactoring rules
+## 9. Refactoring rules
 
 Refactoring is allowed only when it improves ownership and preserves behavior.
 
@@ -695,7 +641,7 @@ But do this gradually. One extraction per patch.
 
 ---
 
-## 11. Performance rules
+## 10. Performance rules
 
 Correctness comes first, but do not add obvious hot-path problems.
 
@@ -733,7 +679,7 @@ Preferred direction:
 
 ---
 
-## 12. Documentation standards
+## 11. Documentation standards
 
 FenBrowser documentation must be honest and precise.
 
@@ -769,23 +715,11 @@ Those claims require broad evidence.
 
 ---
 
-## 13. Suggested repo files to add
-
-### `ENGINE_STATUS.md`
-
-Truth table of supported, partial, experimental, and missing systems.
-
-Status: Added (2026-05-05).
+## 12. Suggested repo files to add
 
 ### `CONTRIBUTING_ENGINE.md`
 
 Rules for patches, tests, AI use, and browser-engine standards.
-
-Status: Added (2026-05-05).
-
-### `QUIRKS.md`
-
-List of temporary compatibility quirks and removal conditions.
 
 Status: Added (2026-05-05).
 
@@ -795,23 +729,9 @@ How to run unit tests, layout tests, reduced tests, WPT subsets, and screenshot 
 
 Status: Added (2026-05-05).
 
-### `RISK_REGISTER.md`
-
-Known technical debt and severity.
-
-Status: Added (2026-05-05).
-
-Example:
-
-```markdown
-| Risk | Severity | Area | Why it matters | Fix plan |
-|---|---|---|---|---|
-| Hit testing incomplete | High | Input/events | Pages render but cannot interact reliably | Add layout-box-backed hit testing tests |
-```
-
 ---
 
-## 14. Development roadmap
+## 13. Development roadmap
 
 ### Phase 1: Truth and cleanup
 
@@ -819,13 +739,11 @@ Goal: stop fake completeness and make the project understandable.
 
 Tasks:
 
-1. ~~Add `ENGINE_STATUS.md`.~~
-2. ~~Add `QUIRKS.md`.~~
-3. ~~Search and remove AI-note comments.~~
-4. ~~Search for fake tests.~~
-5. ~~Identify god files.~~
-6. ~~Quarantine site-specific logic.~~
-7. ~~Make build/test commands reliable.~~
+1. ~~Search and remove AI-note comments.~~
+2. ~~Search for fake tests.~~
+3. ~~Identify god files.~~
+4. ~~Quarantine site-specific logic.~~
+5. ~~Make build/test commands reliable.~~
 
 ### Phase 2: Rendering core stability
 
@@ -880,7 +798,7 @@ Priority:
 
 ---
 
-## 15. Weekly operating system
+## 14. Weekly operating system
 
 Use this rhythm every week.
 
@@ -910,7 +828,7 @@ Manual website screenshots are allowed only as discovery, not proof.
 
 ---
 
-## 16. Quality gates for pull requests
+## 15. Quality gates for pull requests
 
 A pull request should be rejected if it:
 
@@ -934,7 +852,7 @@ A pull request should be accepted only if it:
 
 ---
 
-## 17. Red flag scanner
+## 16. Red flag scanner
 
 Regularly search the repo for these terms:
 
@@ -961,7 +879,7 @@ Not every match is bad, but every match should be reviewed.
 
 ---
 
-## 18. Personal rule for the maintainer
+## 17. Personal rule for the maintainer
 
 Before merging anything, say this out loud:
 
@@ -977,7 +895,7 @@ If that statement is not true, do not merge.
 
 ---
 
-## 19. The right way to use complex websites
+## 18. The right way to use complex websites
 
 Complex websites are diagnostic tools, not the main proof.
 
@@ -1006,7 +924,7 @@ Website looks broken
 
 ---
 
-## 20. Final standard
+## 19. Final standard
 
 FenBrowser becomes future-ready when every major claim can be answered with:
 
