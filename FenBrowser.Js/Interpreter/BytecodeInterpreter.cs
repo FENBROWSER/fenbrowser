@@ -5693,40 +5693,53 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(new[] { JsValue.FromString(input) }), AllocationSite.Current()));
         }
 
+        // ECMA-262 22.2.6.14 RegExp.prototype[@@split] uses a STICKY splitter: each
+        // step matches only at lastIndex (q). An empty match that ends at the current
+        // split point p is skipped (advance q), but an empty match elsewhere DOES split
+        // — that's how /(?:)/ splits between every character, which the old "skip all
+        // empty matches" logic got wrong (it returned the whole string unsplit).
         var parts = new List<JsValue>();
+        var size = input.Length;
         var p = 0;
         var q = 0;
 
-        while (q < input.Length)
+        while (q < size)
         {
             var m = regexp.Regex.Match(input, q);
-            var e = !m.Success || m.Length == 0 ? -1 : m.Index + m.Length;
-
-            if (e == -1 || e <= q)
+            // Sticky: require the match to start exactly at q; otherwise no match here.
+            if (!m.Success || m.Index != q)
             {
                 q++;
                 continue;
             }
 
-            // Add substring from p to match start
-            if (parts.Count < limit)
+            var e = Math.Min(m.Index + m.Length, size);
+            if (e == p)
             {
-                parts.Add(JsValue.FromString(input.Substring(p, m.Index - p)));
+                // Empty match at the last split point — advance and keep scanning.
+                q++;
+                continue;
             }
-            if (parts.Count >= limit) break;
-            p = e;
 
-            // Interleave capturing group matches (ECMA-262 step 13.h)
-            for (var i = 1; i < m.Groups.Count && parts.Count < limit; i++)
+            parts.Add(JsValue.FromString(input.Substring(p, q - p)));
+            if (parts.Count >= limit)
+                return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(parts), AllocationSite.Current()));
+
+            // Interleave capturing group matches (ECMA-262 step 14.f).
+            for (var i = 1; i < m.Groups.Count; i++)
             {
                 var g = m.Groups[i];
                 parts.Add(g.Success ? JsValue.FromString(g.Value) : JsValue.Undefined);
+                if (parts.Count >= limit)
+                    return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(parts), AllocationSite.Current()));
             }
+
+            p = e;
             q = p;
         }
 
-        // Remaining substring
-        if (p < input.Length && parts.Count < limit)
+        // Final substring S[p..size].
+        if (parts.Count < limit)
         {
             parts.Add(JsValue.FromString(input.Substring(p)));
         }
