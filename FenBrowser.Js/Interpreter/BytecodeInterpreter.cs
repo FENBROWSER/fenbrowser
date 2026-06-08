@@ -10238,9 +10238,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     // ECMA-262 7.3.10 DeletePropertyOrThrow(O, P): throw a TypeError when the
     // delete is refused (a non-configurable element of a frozen/sealed array).
+    // DeleteProperty returns false both for an absent key (vacuously deletable,
+    // [[Delete]] returns true) and a non-configurable own property — only the
+    // latter is a real failure, so disambiguate by re-checking ownership.
     private void DeleteOrThrow(JsObject obj, string key)
     {
-        if (!obj.DeleteProperty(key))
+        if (obj.DeleteProperty(key))
+            return;
+        if (obj.TryGetOwnProperty(key, out _))
             throw new JsThrownException(CreateTypeError($"Cannot delete property '{key}'."));
     }
 
@@ -10881,50 +10886,97 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             present.Add(v);
         }
 
+        // ECMA-262 23.1.3.30 requires a STABLE sort; List<T>.Sort (introsort) is not,
+        // which breaks the stability-* tests, so use an explicit stable merge sort.
+        Comparison<JsValue> cmp;
         if (comparator.HasValue)
         {
             var fn = comparator.Value;
-            present.Sort((a, b) =>
+            cmp = (a, b) =>
             {
-                var r = CallFunction(fn, new[] { a, b }, JsValue.Undefined);
-                var n = ToNumber(r);
+                var n = ToNumber(CallFunction(fn, new[] { a, b }, JsValue.Undefined));
                 if (double.IsNaN(n))
                 {
                     return 0;
                 }
 
                 return n < 0 ? -1 : n > 0 ? 1 : 0;
-            });
+            };
         }
         else
         {
-            present.Sort((a, b) => string.CompareOrdinal(ToStringValue(a), ToStringValue(b)));
+            cmp = (a, b) => string.CompareOrdinal(ToStringValue(a), ToStringValue(b));
         }
 
+        StableMergeSort(present, cmp);
+
         // Write back: present values first, then 'undefined' slots, then holes.
+        // Per spec these are Set(..., true) / DeletePropertyOrThrow, so failures
+        // (frozen array, non-configurable element) surface as a TypeError.
         for (var i = 0; i < present.Count; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            _ = obj.SetProperty(key, present[i]);
-            if (present[i].Tag == JsValueTag.Object)
-            {
-                _heap.WriteBarrier(ownerHandle, present[i].AsObjectHandle());
-            }
+            SetOrThrow(ownerHandle, obj, i.ToString(System.Globalization.CultureInfo.InvariantCulture), present[i]);
         }
 
         for (var i = 0; i < undefinedCount; i++)
         {
-            var key = (present.Count + i).ToString(System.Globalization.CultureInfo.InvariantCulture);
-            _ = obj.SetProperty(key, JsValue.Undefined);
+            SetOrThrow(ownerHandle, obj, (present.Count + i).ToString(System.Globalization.CultureInfo.InvariantCulture), JsValue.Undefined);
         }
 
         for (var i = 0; i < holeCount; i++)
         {
-            var key = (present.Count + undefinedCount + i).ToString(System.Globalization.CultureInfo.InvariantCulture);
-            obj.DeleteProperty(key);
+            DeleteOrThrow(obj, (present.Count + undefinedCount + i).ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
 
         return thisValue;
+    }
+
+    // Bottom-up-free recursive merge sort: stable (equal elements keep their
+    // original order via the `<= 0` merge tie-break) as ECMA-262 sort requires.
+    // The comparison may invoke a user comparator and throw — exceptions propagate
+    // out to the native-method call site, where JS try/catch can observe them.
+    private static void StableMergeSort(List<JsValue> list, Comparison<JsValue> cmp)
+    {
+        if (list.Count < 2)
+        {
+            return;
+        }
+
+        var buffer = new JsValue[list.Count];
+        MergeSortRange(list, buffer, 0, list.Count, cmp);
+    }
+
+    private static void MergeSortRange(List<JsValue> list, JsValue[] buffer, int lo, int hi, Comparison<JsValue> cmp)
+    {
+        if (hi - lo < 2)
+        {
+            return;
+        }
+
+        var mid = lo + ((hi - lo) / 2);
+        MergeSortRange(list, buffer, lo, mid, cmp);
+        MergeSortRange(list, buffer, mid, hi, cmp);
+
+        int i = lo, j = mid, k = lo;
+        while (i < mid && j < hi)
+        {
+            buffer[k++] = cmp(list[i], list[j]) <= 0 ? list[i++] : list[j++];
+        }
+
+        while (i < mid)
+        {
+            buffer[k++] = list[i++];
+        }
+
+        while (j < hi)
+        {
+            buffer[k++] = list[j++];
+        }
+
+        for (var x = lo; x < hi; x++)
+        {
+            list[x] = buffer[x];
+        }
     }
 
     // ECMA-262 23.1.3.17 lastIndexOf. Strict equality, scans backwards from fromIndex
