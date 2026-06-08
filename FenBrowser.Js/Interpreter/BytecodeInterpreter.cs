@@ -13521,7 +13521,7 @@ fallbackArraySpecies:
         // 23.2.3.22 TypedArray.prototype.set(array [, offset])
         DefineNativePrototypeMethod(protoHandle, proto, "set", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var source = args.Count > 0 ? args[0] : JsValue.Undefined;
             var targetOffset = args.Count > 1 ? (int)Math.Max(args[1].AsNumber(), 0) : 0;
             if (source.Tag == JsValueTag.Object && _heap.GetObject(source.AsObjectHandle()) is TypedArrayObject src)
@@ -13536,7 +13536,7 @@ fallbackArraySpecies:
         // 23.2.3.19 TypedArray.prototype.slice(begin, end)
         DefineNativePrototypeMethod(protoHandle, proto, "slice", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var len = self.Length;
             var begin = args.Count > 0 ? (int)Math.Min(Math.Max(args[0].AsNumber(), 0), len) : 0;
             var end = args.Count > 1 ? (int)Math.Min(Math.Max(args[1].AsNumber(), 0), len) : len;
@@ -13552,7 +13552,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "at", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var index = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
             if (index < 0)
             {
@@ -13563,7 +13563,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "copyWithin", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var len = self.Length;
             var target = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
             var start = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
@@ -13586,7 +13586,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "fill", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var value = args.Count > 0 ? args[0] : JsValue.Undefined;
             var len = self.Length;
             var start = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
@@ -13601,7 +13601,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "forEach", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
             if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.forEach callback is not callable."));
             var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
@@ -13612,7 +13612,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "map", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
             if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.map callback is not callable."));
             var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
@@ -13629,7 +13629,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "filter", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
             if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.filter callback is not callable."));
             var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
@@ -13649,7 +13649,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "find", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
             if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.find callback is not callable."));
             var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
@@ -13664,7 +13664,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "findIndex", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
             if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.findIndex callback is not callable."));
             var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
@@ -13679,7 +13679,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "findLast", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
             if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.findLast callback is not callable."));
             var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
@@ -13694,7 +13694,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "findLastIndex", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
             if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.findLastIndex callback is not callable."));
             var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
@@ -13709,7 +13709,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "every", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
             if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.every callback is not callable."));
             var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
@@ -13721,7 +13721,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "some", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
             if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.some callback is not callable."));
             var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
@@ -13733,7 +13733,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "includes", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var search = args.Count > 0 ? args[0] : JsValue.Undefined;
             var from = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
             if (from < 0) from = Math.Max(self.Length + from, 0);
@@ -13744,7 +13744,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "indexOf", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var search = args.Count > 0 ? args[0] : JsValue.Undefined;
             var from = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
             if (from < 0) from = Math.Max(self.Length + from, 0);
@@ -13755,7 +13755,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "lastIndexOf", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var search = args.Count > 0 ? args[0] : JsValue.Undefined;
             var from = args.Count > 1 ? (int)ToNumber(args[1]) : self.Length - 1;
             if (from < 0) from = self.Length + from;
@@ -13767,7 +13767,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "join", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var sep = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? ToStringValue(args[0]) : ",";
             var sb = new System.Text.StringBuilder();
             for (var i = 0; i < self.Length; i++)
@@ -13780,7 +13780,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "keys", (thisValue, _) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var keys = new List<JsValue>(self.Length);
             for (var i = 0; i < self.Length; i++) keys.Add(JsValue.FromNumber(i));
             var arr = CreateArrayObject(keys);
@@ -13790,7 +13790,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "values", (thisValue, _) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var values = new List<JsValue>(self.Length);
             for (var i = 0; i < self.Length; i++) values.Add(self.GetElement(i));
             var arr = CreateArrayObject(values);
@@ -13800,7 +13800,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "entries", (thisValue, _) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var entries = new List<JsValue>(self.Length);
             for (var i = 0; i < self.Length; i++)
             {
@@ -13819,7 +13819,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "reverse", (thisValue, _) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             for (int i = 0, j = self.Length - 1; i < j; i++, j--)
             {
                 var a = self.GetElement(i);
@@ -13832,7 +13832,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "reduce", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
             if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.reduce callback is not callable."));
             var k = 0;
@@ -13851,7 +13851,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "reduceRight", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
             if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.reduceRight callback is not callable."));
             var k = self.Length - 1;
@@ -13869,6 +13869,8 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "subarray", (thisValue, args) =>
         {
+            // 23.2.3.30 subarray does NOT ValidateTypedArray — it tolerates a
+            // detached/out-of-bounds source and produces an empty view.
             var self = RequireTypedArray(thisValue);
             var len = self.Length;
             var begin = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
@@ -13888,7 +13890,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "sort", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var comparer = args.Count > 0 ? args[0] : JsValue.Undefined;
             var values = new List<JsValue>(self.Length);
             for (var i = 0; i < self.Length; i++) values.Add(self.GetElement(i));
@@ -13910,7 +13912,7 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "with", (thisValue, args) =>
         {
-            var self = RequireTypedArray(thisValue);
+            var self = ValidateTypedArray(thisValue);
             var index = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
             if (index < 0) index += self.Length;
             if (index < 0 || index >= self.Length)
@@ -13984,6 +13986,20 @@ fallbackArraySpecies:
     {
         if (value.Tag != JsValueTag.Object || _heap.GetObject(value.AsObjectHandle()) is not TypedArrayObject ta)
             throw new JsThrownException(CreateTypeError("TypedArray.prototype method called on non-TypedArray."));
+        return ta;
+    }
+
+    // ECMA-262 23.2.4.4 ValidateTypedArray(O) — RequireInternalSlot, then throw a
+    // TypeError if the backing buffer is detached or the view is out of bounds (the
+    // latter happens when a resizable buffer has been shrunk below this view's range).
+    // Nearly every TypedArray.prototype method runs this before touching elements.
+    private TypedArrayObject ValidateTypedArray(JsValue value)
+    {
+        var ta = RequireTypedArray(value);
+        if (ta.IsViewDetached)
+            throw new JsThrownException(CreateTypeError("TypedArray operation on a detached ArrayBuffer."));
+        if (ta.IsOutOfBounds())
+            throw new JsThrownException(CreateTypeError("TypedArray is out of bounds of its resized ArrayBuffer."));
         return ta;
     }
 
