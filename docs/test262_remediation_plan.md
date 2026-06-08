@@ -177,3 +177,33 @@ quick wins.
 - Per-category truth: `docs/test262_results.md` (regenerated on each category rerun).
 - Re-rank remaining work: `python scripts/rank_failures.py`.
 - Reason breakdown for a category: `python scripts/analyze_failures.py "built-ins_Object"`.
+
+---
+
+## Progress log
+
+### 2026-06-08 — Tier 0 harness + two bounded engine fixes
+- **Tier 0.2 `assert`** (runner): tests whose own body only referenced `Test262Error`
+  but which pulled a harness include (e.g. `propertyHelper.js`, which calls `assert`
+  internally) were served the *minimal* prelude with no `assert`. `BuildRuntimeHarnessPrelude`
+  now takes `hasIncludes` and uses the full prelude whenever includes are present.
+  `$DONOTEVALUATE` also defined in both preludes. **built-ins/Object 89.8% → 95.5%** (gate cleared).
+- **RegExp prototype accessors** (22.2.6): `dotAll`/`global`/`source`/`flags`/… were
+  per-instance data props; spec wants accessor getters on `%RegExp.prototype%`. Added
+  `InstallRegExpFlagAccessors` + `EscapeRegExpPattern`; stripped instance data props from
+  all construction paths (kept `lastIndex`). **built-ins/RegExp 39.1% → 43.3%**.
+- **Resizable ArrayBuffer** (Tier 2.3, partial): `IsResizable` was derived from
+  `MaxByteLength > ByteLength`, so `new ArrayBuffer(N,{maxByteLength:N})` reported
+  non-resizable and `resize()` threw — breaking the whole `testTypedArray` harness fan-out.
+  Now tracked with an explicit construction-time flag. **built-ins/TypedArray 31.1% → 51.4%**,
+  TypedArrayConstructors 56.2% → 58.7%, ArrayBuffer → 70.6%.
+- **Overall 66.79% → 67.94%.**
+
+**Still open on the `$DONOTEVALUATE` cluster:** defining the global does *not* convert the
+1,373 parse-negative tests — they need the **parser/regex-compiler to actually reject the
+invalid syntax** (then `JsParserException` → pass). That's Tier 2 parser-strictness work.
+
+**Next on TypedArray (703 fails left):** out-of-bounds-after-resize validation (the
+"assert.throws: no error thrown" cluster across set/slice/map/filter — a length-tracking
+view over a shrunk resizable buffer must throw), the `Stale heap handle` GC bug (74,
+Tier 2.4), and BigInt-array harness conversions (83).
