@@ -339,7 +339,9 @@ public sealed class BigIntBuiltin : IBuiltinModule
         return uintN >= signedThreshold ? uintN - modulo : uintN;
     }
 
-    private static bool TryParseStringToBigInt(string text, out BigInteger value)
+    // Exposed to the interpreter for ToBigInt of typed-array element writes
+    // (BigInt64Array/BigUint64Array accept strings via the StringToBigInt grammar).
+    internal static bool TryParseStringToBigInt(string text, out BigInteger value)
     {
         value = BigInteger.Zero;
         if (text is null)

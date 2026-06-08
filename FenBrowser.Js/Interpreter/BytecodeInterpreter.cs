@@ -13446,13 +13446,31 @@ fallbackArraySpecies:
     {
         if (elementType is TypedArrayElementType.BigInt64 or TypedArrayElementType.BigUint64)
         {
-            var primitive = value.Tag == JsValueTag.Object ? ToPrimitive(value, PrimitiveHint.Number) : value;
-            if (primitive.Tag != JsValueTag.BigInt)
-                throw new JsThrownException(CreateTypeError("Cannot convert value to BigInt."));
-            return primitive;
+            return JsValue.FromBigInt(ToBigIntValue(value));
         }
 
         return JsValue.FromNumber(ToNumber(value));
+    }
+
+    // ECMA-262 7.1.13 ToBigInt — used when writing BigInt64Array/BigUint64Array
+    // elements. Accepts BigInt, Boolean, and String (StringToBigInt grammar);
+    // Number/Null/Undefined/Symbol throw TypeError, an invalid String throws SyntaxError.
+    private System.Numerics.BigInteger ToBigIntValue(JsValue value)
+    {
+        var primitive = value.Tag == JsValueTag.Object ? ToPrimitive(value, PrimitiveHint.Number) : value;
+        switch (primitive.Tag)
+        {
+            case JsValueTag.BigInt:
+                return primitive.AsBigInt();
+            case JsValueTag.Boolean:
+                return primitive.AsBoolean() ? System.Numerics.BigInteger.One : System.Numerics.BigInteger.Zero;
+            case JsValueTag.String:
+                if (!Builtins.BigIntBuiltin.TryParseStringToBigInt(primitive.AsString(), out var parsed))
+                    throw new JsThrownException(CreateSyntaxError("Cannot convert string to BigInt."));
+                return parsed;
+            default:
+                throw new JsThrownException(CreateTypeError("Cannot convert value to BigInt."));
+        }
     }
 
     private static TypedArrayObject CreateTypedArrayInstance(TypedArrayElementType elementType, ArrayBufferObject buf, int byteOffset, int byteLength, bool isLengthTracking = false)
