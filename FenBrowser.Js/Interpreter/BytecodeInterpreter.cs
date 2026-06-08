@@ -4926,6 +4926,161 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         DefineRegExpSymbolMethod(prototypeHandle, prototype, "replace", RegExpPrototypeSymbolReplace);
         DefineRegExpSymbolMethod(prototypeHandle, prototype, "split", RegExpPrototypeSymbolSplit);
         DefineRegExpSymbolMethod(prototypeHandle, prototype, "matchAll", RegExpPrototypeSymbolMatchAll);
+        InstallRegExpFlagAccessors(prototypeHandle, prototype);
+    }
+
+    // ECMA-262 22.2.6 — the flag/source/flags getters are accessor properties on
+    // %RegExp.prototype%, NOT data properties on each instance. Each boolean getter
+    // reads the receiver's [[OriginalFlags]] (our RegExpObject.Flags); when called on
+    // %RegExp.prototype% itself it returns undefined; on any other receiver it throws.
+    private void InstallRegExpFlagAccessors(ObjectHandle prototypeHandle, JsObject prototype)
+    {
+        var protoHandle = prototypeHandle;
+
+        void DefineFlagGetter(string name, char flagChar)
+        {
+            var getter = new NativeFunctionObject("get " + name, (thisValue, _) =>
+            {
+                if (thisValue.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError($"RegExp.prototype.{name} getter called on non-object."));
+                }
+
+                if (_heap.GetObject(thisValue.AsObjectHandle()) is RegExpObject re)
+                {
+                    return JsValue.FromBoolean(re.Flags.Contains(flagChar, StringComparison.Ordinal));
+                }
+
+                if (thisValue.AsObjectHandle() == protoHandle)
+                {
+                    return JsValue.Undefined;
+                }
+
+                throw new JsThrownException(CreateTypeError($"RegExp.prototype.{name} getter called on incompatible receiver."));
+            }, length: 0);
+            var getterHandle = _heap.AllocateObject(getter, AllocationSite.Current());
+            _ = prototype.DefineOwnProperty(name, JsPropertyDescriptor.Accessor(
+                JsValue.FromObject(getterHandle), JsValue.Undefined, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(protoHandle, getterHandle);
+        }
+
+        DefineFlagGetter("global", 'g');
+        DefineFlagGetter("ignoreCase", 'i');
+        DefineFlagGetter("multiline", 'm');
+        DefineFlagGetter("dotAll", 's');
+        DefineFlagGetter("unicode", 'u');
+        DefineFlagGetter("unicodeSets", 'v');
+        DefineFlagGetter("sticky", 'y');
+        DefineFlagGetter("hasIndices", 'd');
+
+        // 22.2.6.10 get RegExp.prototype.source — EscapeRegExpPattern of [[OriginalSource]].
+        var sourceGetter = new NativeFunctionObject("get source", (thisValue, _) =>
+        {
+            if (thisValue.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("RegExp.prototype.source getter called on non-object."));
+            }
+
+            if (_heap.GetObject(thisValue.AsObjectHandle()) is RegExpObject re)
+            {
+                return JsValue.FromString(EscapeRegExpPattern(re.Pattern));
+            }
+
+            if (thisValue.AsObjectHandle() == protoHandle)
+            {
+                return JsValue.FromString("(?:)");
+            }
+
+            throw new JsThrownException(CreateTypeError("RegExp.prototype.source getter called on incompatible receiver."));
+        }, length: 0);
+        var sourceGetterHandle = _heap.AllocateObject(sourceGetter, AllocationSite.Current());
+        _ = prototype.DefineOwnProperty("source", JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(sourceGetterHandle), JsValue.Undefined, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, sourceGetterHandle);
+
+        // 22.2.6.4 get RegExp.prototype.flags — generic: reads each flag accessor off
+        // the receiver and concatenates, so subclasses that override a flag getter work.
+        var flagsGetter = new NativeFunctionObject("get flags", (thisValue, _) =>
+        {
+            if (thisValue.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("RegExp.prototype.flags getter called on non-object."));
+            }
+
+            var obj = _heap.GetObject(thisValue.AsObjectHandle());
+            var sb = new System.Text.StringBuilder(8);
+            void Append(string name, char ch)
+            {
+                if (TryGetPropertyValue(obj, thisValue, name, out var v) && IsTruthy(v))
+                {
+                    sb.Append(ch);
+                }
+            }
+
+            Append("hasIndices", 'd');
+            Append("global", 'g');
+            Append("ignoreCase", 'i');
+            Append("multiline", 'm');
+            Append("dotAll", 's');
+            Append("unicode", 'u');
+            Append("unicodeSets", 'v');
+            Append("sticky", 'y');
+            return JsValue.FromString(sb.ToString());
+        }, length: 0);
+        var flagsGetterHandle = _heap.AllocateObject(flagsGetter, AllocationSite.Current());
+        _ = prototype.DefineOwnProperty("flags", JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(flagsGetterHandle), JsValue.Undefined, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, flagsGetterHandle);
+    }
+
+    // ECMA-262 22.2.6.10.1 EscapeRegExpPattern — produce a String that, wrapped in
+    // forward slashes, re-parses to the same pattern. Empty pattern → "(?:)".
+    private static string EscapeRegExpPattern(string pattern)
+    {
+        if (pattern.Length == 0)
+        {
+            return "(?:)";
+        }
+
+        var sb = new System.Text.StringBuilder(pattern.Length + 4);
+        var escaped = false;
+        foreach (var ch in pattern)
+        {
+            if (escaped)
+            {
+                sb.Append(ch);
+                escaped = false;
+                continue;
+            }
+
+            switch (ch)
+            {
+                case '\\':
+                    sb.Append('\\');
+                    escaped = true;
+                    break;
+                case '/':
+                    sb.Append("\\/");
+                    break;
+                case '\n':
+                    sb.Append("\\n");
+                    break;
+                case '\r':
+                    sb.Append("\\r");
+                    break;
+                case '\u2028':
+                    sb.Append("\\u2028");
+                    break;
+                case '\u2029':
+                    sb.Append("\\u2029");
+                    break;
+                default:
+                    sb.Append(ch);
+                    break;
+            }
+        }
+
+        return sb.ToString();
     }
 
     private void DefineRegExpSymbolMethod(
@@ -4988,26 +5143,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // Use the prototype cached from the builtin during
         // InstallPrototypeMethodsOnRegExpPrototype, or resolve from global.
         obj.SetPrototype(_regexpPrototypeHandle ?? GetGlobalPrototype("RegExp"));
-        _ = obj.DefineOwnProperty("source",
-            new JsPropertyDescriptor(JsValue.FromString(pattern), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty("global",
-            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('g', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty("ignoreCase",
-            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('i', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty("multiline",
-            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('m', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty("dotAll",
-            new JsPropertyDescriptor(JsValue.FromBoolean(hasS), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty("unicode",
-            new JsPropertyDescriptor(JsValue.FromBoolean(hasU), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty("unicodeSets",
-            new JsPropertyDescriptor(JsValue.FromBoolean(hasV), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty("sticky",
-            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('y', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty("hasIndices",
-            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('d', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty("flags",
-            new JsPropertyDescriptor(JsValue.FromString(normalizedFlags), Writable: false, Enumerable: false, Configurable: true));
+        // source/flags and the individual flag booleans are accessor properties on
+        // %RegExp.prototype% (see InstallRegExpFlagAccessors); only lastIndex is an
+        // own data property of the instance (22.2.7.1).
         _ = obj.DefineOwnProperty("lastIndex",
             new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
         return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
@@ -5140,36 +5278,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         var obj = new RegExpObject(pattern, normalizedFlags, regex, nativeProgram);
         obj.SetPrototype(GetGlobalPrototype("RegExp"));
-        _ = obj.DefineOwnProperty(
-            "source",
-            new JsPropertyDescriptor(JsValue.FromString(pattern), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty(
-            "global",
-            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('g', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty(
-            "ignoreCase",
-            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('i', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty(
-            "multiline",
-            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('m', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty(
-            "dotAll",
-            new JsPropertyDescriptor(JsValue.FromBoolean(hasS), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty(
-            "unicode",
-            new JsPropertyDescriptor(JsValue.FromBoolean(hasU), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty(
-            "unicodeSets",
-            new JsPropertyDescriptor(JsValue.FromBoolean(hasV), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty(
-            "sticky",
-            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('y', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty(
-            "hasIndices",
-            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('d', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        _ = obj.DefineOwnProperty(
-            "flags",
-            new JsPropertyDescriptor(JsValue.FromString(normalizedFlags), Writable: false, Enumerable: false, Configurable: true));
+        // source/flags and the flag booleans live on %RegExp.prototype% as accessors
+        // (InstallRegExpFlagAccessors); lastIndex is the only own data property (22.2.7.1).
         _ = obj.DefineOwnProperty(
             "lastIndex",
             new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
@@ -5384,27 +5494,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateSyntaxError(ex.Message));
         }
         target.Recompile(newPattern, normalizedFlags, regex);
-        // Refresh externally observable own properties to mirror constructor init.
-        _ = target.DefineOwnProperty("source",
-            new JsPropertyDescriptor(JsValue.FromString(newPattern), Writable: false, Enumerable: false, Configurable: true));
-        _ = target.DefineOwnProperty("global",
-            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('g', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        _ = target.DefineOwnProperty("ignoreCase",
-            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('i', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        _ = target.DefineOwnProperty("multiline",
-            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('m', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        _ = target.DefineOwnProperty("dotAll",
-            new JsPropertyDescriptor(JsValue.FromBoolean(hasS), Writable: false, Enumerable: false, Configurable: true));
-        _ = target.DefineOwnProperty("unicode",
-            new JsPropertyDescriptor(JsValue.FromBoolean(hasU), Writable: false, Enumerable: false, Configurable: true));
-        _ = target.DefineOwnProperty("unicodeSets",
-            new JsPropertyDescriptor(JsValue.FromBoolean(hasV), Writable: false, Enumerable: false, Configurable: true));
-        _ = target.DefineOwnProperty("sticky",
-            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('y', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        _ = target.DefineOwnProperty("hasIndices",
-            new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('d', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        _ = target.DefineOwnProperty("flags",
-            new JsPropertyDescriptor(JsValue.FromString(normalizedFlags), Writable: false, Enumerable: false, Configurable: true));
+        // source/flags/flag-booleans are prototype accessors that read target.Flags
+        // (just updated by Recompile). compile only needs to reset lastIndex to 0.
         _ = target.DefineOwnProperty("lastIndex",
             new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
         return thisValue;

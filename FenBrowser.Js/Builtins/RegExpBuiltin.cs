@@ -164,16 +164,9 @@ public sealed class RegExpBuiltin : IBuiltinModule
 
         var obj = new RegExpObject(pattern, normalizedFlags, regex);
         obj.SetPrototype(protoHandle);
-        obj.DefineOwnProperty("source", new JsPropertyDescriptor(JsValue.FromString(pattern), Writable: false, Enumerable: false, Configurable: true));
-        obj.DefineOwnProperty("global", new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('g', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        obj.DefineOwnProperty("ignoreCase", new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('i', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        obj.DefineOwnProperty("multiline", new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('m', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        obj.DefineOwnProperty("dotAll", new JsPropertyDescriptor(JsValue.FromBoolean(hasS), Writable: false, Enumerable: false, Configurable: true));
-        obj.DefineOwnProperty("unicode", new JsPropertyDescriptor(JsValue.FromBoolean(hasU), Writable: false, Enumerable: false, Configurable: true));
-        obj.DefineOwnProperty("unicodeSets", new JsPropertyDescriptor(JsValue.FromBoolean(hasV), Writable: false, Enumerable: false, Configurable: true));
-        obj.DefineOwnProperty("sticky", new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('y', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        obj.DefineOwnProperty("hasIndices", new JsPropertyDescriptor(JsValue.FromBoolean(normalizedFlags.Contains('d', StringComparison.Ordinal)), Writable: false, Enumerable: false, Configurable: true));
-        obj.DefineOwnProperty("flags", new JsPropertyDescriptor(JsValue.FromString(normalizedFlags), Writable: false, Enumerable: false, Configurable: true));
+        // source/flags and the individual flag booleans are accessor properties on
+        // %RegExp.prototype% (installed by the interpreter's InstallRegExpFlagAccessors);
+        // only lastIndex is an own data property of the instance (ECMA-262 22.2.7.1).
         obj.DefineOwnProperty("lastIndex", new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
         return JsValue.FromObject(ctx.Heap.AllocateObject(obj, AllocationSite.Current()));
     }
