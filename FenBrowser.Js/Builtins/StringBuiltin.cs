@@ -74,6 +74,7 @@ public sealed class StringBuiltin : IBuiltinModule
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "replace", Replace, length: 2);
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "replaceAll", ReplaceAll, length: 2);
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "normalize", Normalize, length: 0);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "localeCompare", LocaleCompare, length: 1);
         DefineIteratorMethod(capturedCtx, heap, prototypeHandle, protoObj);
 
         // Annex B B.2.2 — legacy HTML wrappers. Spec is purely lexical:
@@ -564,6 +565,18 @@ public sealed class StringBuiltin : IBuiltinModule
         }
         sb.Append(s[start..]);
         return JsValue.FromString(sb.ToString());
+    }
+
+    // ECMA-262 22.1.3.10 String.prototype.localeCompare(that). Without a full
+    // ECMA-402 Collator the comparison is implementation-defined; we use an ordinal
+    // comparison normalised to -1 / 0 / +1. RequireString runs RequireObjectCoercible
+    // (throws on null/undefined this) then ToString; the argument is ToString-coerced.
+    private static JsValue LocaleCompare(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = RequireString(ctx, thisValue);
+        var that = ctx.ToStringValue(args.Count > 0 ? args[0] : JsValue.Undefined);
+        var cmp = string.CompareOrdinal(s, that);
+        return JsValue.FromNumber(cmp < 0 ? -1 : cmp > 0 ? 1 : 0);
     }
 
     private static JsValue Match(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
