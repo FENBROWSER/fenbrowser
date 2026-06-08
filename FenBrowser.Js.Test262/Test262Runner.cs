@@ -1888,6 +1888,7 @@ public sealed class Test262Runner
         "nans.js",
         "proxyTrapsHelper.js",
         "testTypedArray.js",
+        "testAtomics.js",
         "propertyHelper.js",
         "regExpUtils.js",
         "testIntl.js",
