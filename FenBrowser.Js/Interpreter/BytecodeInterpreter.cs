@@ -10565,12 +10565,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         for (var i = start; i < end; i++)
         {
-            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            _ = obj.SetProperty(key, value);
-            if (value.Tag == JsValueTag.Object)
-            {
-                _heap.WriteBarrier(ownerHandle, value.AsObjectHandle());
-            }
+            // 23.1.3.7 fill uses Set(...,true): a frozen/non-writable target throws.
+            SetOrThrow(ownerHandle, obj, i.ToString(System.Globalization.CultureInfo.InvariantCulture), value);
         }
 
         return receiver;
@@ -10664,17 +10660,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             var fromKey = from.ToString(System.Globalization.CultureInfo.InvariantCulture);
             var toKey = to.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            // 23.1.3.4 uses Set(...,true) / DeletePropertyOrThrow, so a frozen array,
+            // a throwing setter, or a non-configurable target propagates as a throw.
             if (TryGetPropertyValue(obj, receiver, fromKey, out var v))
             {
-                _ = obj.SetProperty(toKey, v);
-                if (v.Tag == JsValueTag.Object)
-                {
-                    _heap.WriteBarrier(ownerHandle, v.AsObjectHandle());
-                }
+                SetOrThrow(ownerHandle, obj, toKey, v);
             }
             else
             {
-                obj.DeleteProperty(toKey);
+                DeleteOrThrow(obj, toKey);
             }
 
             from += direction;
