@@ -1393,7 +1393,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         };
                         if (taKey != null && IsCanonicalIntegerIndex(taKey, out var taSetIdx))
                         {
-                            taSet.SetElement(taSetIdx, value);
+                            // 23.2.4.3 IntegerIndexedElementSet: coerce via ToNumber /
+                            // ToBigInt (the latter accepts string & boolean, rejects
+                            // number) before writing. The coercion can run user code and
+                            // can throw — keep it inside the try/catch so the throw routes
+                            // through ThrowOrHandle and stays catchable by JS try/catch.
+                            try
+                            {
+                                var coerced = NormalizeTypedArrayElementValue(taSet.ElementType, value);
+                                taSet.SetElement(taSetIdx, coerced);
+                            }
+                            catch (JsThrownException ex)
+                            {
+                                ThrowOrHandle(frame, ex.Value);
+                            }
                             break;
                         }
                     }
