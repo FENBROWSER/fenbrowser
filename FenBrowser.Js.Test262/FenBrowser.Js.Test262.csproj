@@ -8,6 +8,13 @@
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
     <AnalysisLevel>latest</AnalysisLevel>
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <!-- Conformance runs are long-lived single processes that churn a throwaway
+         JsHeap per test. Server GC would grow the working set to fill available
+         RAM (tens of GB over a big directory) before collecting; workstation,
+         non-concurrent GC collects eagerly and hands memory back so the runner
+         stays bounded on ordinary machines. -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\FenBrowser.Js\FenBrowser.Js.csproj" />

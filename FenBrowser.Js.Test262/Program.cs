@@ -15,6 +15,7 @@ var runtimeSubset = false;
 var dashboard = false;
 var verifyGates = false;
 var max = 200;
+var skip = 0;
 var timeoutMs = 5000;
 var engine = "FenJS";
 string? expectationsPath = null;
@@ -74,6 +75,10 @@ for (var i = 0; i < args.Length; i++)
             max = parsed;
             i++;
             break;
+        case "--skip" when i + 1 < args.Length && int.TryParse(args[i + 1], out var parsedSkip):
+            skip = Math.Max(0, parsedSkip);
+            i++;
+            break;
         case "--timeout-ms" when i + 1 < args.Length && int.TryParse(args[i + 1], out var parsedTimeout):
             timeoutMs = parsedTimeout;
             i++;
@@ -106,4 +111,4 @@ if ((list || dryRun || parserSubset || runtimeSubset) && !Directory.Exists(root)
 }
 
 var runner = new Test262Runner();
-return runner.Run(root, list, dryRun, parserSubset, runtimeSubset, dashboard, verifyGates, outPath, max, timeoutMs, engine, expectationsPath, inputPath, previousPath, test262Path, test262File, featuresCsv, supportedFeaturesCsv, test262Shallow);
+return runner.Run(root, list, dryRun, parserSubset, runtimeSubset, dashboard, verifyGates, outPath, max, timeoutMs, engine, expectationsPath, inputPath, previousPath, test262Path, test262File, featuresCsv, supportedFeaturesCsv, test262Shallow, skip);

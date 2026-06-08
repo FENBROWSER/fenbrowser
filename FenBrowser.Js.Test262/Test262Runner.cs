@@ -35,7 +35,8 @@ public sealed class Test262Runner
         string? test262File,
         string? featuresCsv,
         string? supportedFeaturesCsv,
-        bool test262Shallow = false)
+        bool test262Shallow = false,
+        int skip = 0)
     {
         var manifest = new Test262Manifest { RootPath = rootPath };
         var files = manifest.EnumerateTestFiles().OrderBy(p => p, StringComparer.Ordinal).ToList();
@@ -67,12 +68,12 @@ public sealed class Test262Runner
 
         if (parserSubset)
         {
-            RunParserSubset(rootPath, outputPath, files, max, timeoutMs, engine, expectationsPath, expectations, supportedFeaturesCsv);
+            RunParserSubset(rootPath, outputPath, files, max, timeoutMs, engine, expectationsPath, expectations, supportedFeaturesCsv, skip);
         }
 
         if (runtimeSubset)
         {
-            RunRuntimeSubset(rootPath, outputPath, files, max, timeoutMs, engine, expectationsPath, expectations, supportedFeaturesCsv);
+            RunRuntimeSubset(rootPath, outputPath, files, max, timeoutMs, engine, expectationsPath, expectations, supportedFeaturesCsv, skip);
         }
 
         if (dashboard)
@@ -199,13 +200,13 @@ public sealed class Test262Runner
         return filtered;
     }
 
-    private static void RunParserSubset(string rootPath, string outputPath, IReadOnlyList<string> files, int max, int timeoutMs, string engine, string? expectationsPath, Test262Expectations? expectations, string? supportedFeaturesCsv)
+    private static void RunParserSubset(string rootPath, string outputPath, IReadOnlyList<string> files, int max, int timeoutMs, string engine, string? expectationsPath, Test262Expectations? expectations, string? supportedFeaturesCsv, int skip = 0)
     {
         var startedAtUtc = DateTime.UtcNow;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var pinPath = Path.Combine(rootPath, "..", "test262.pin");
         var commit = File.Exists(pinPath) ? File.ReadAllText(pinPath).Trim() : "un-pinned";
-        var subset = files.Take(Math.Max(1, max)).ToList();
+        var subset = files.Skip(Math.Max(0, skip)).Take(Math.Max(1, max)).ToList();
         var supportedFeatures = ParseSupportedFeatures(supportedFeaturesCsv);
 
         var passed = 0;
@@ -722,13 +723,14 @@ public sealed class Test262Runner
         string engine,
         string? expectationsPath,
         Test262Expectations? expectations,
-        string? supportedFeaturesCsv)
+        string? supportedFeaturesCsv,
+        int skip = 0)
     {
         var startedAtUtc = DateTime.UtcNow;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var pinPath = Path.Combine(rootPath, "..", "test262.pin");
         var commit = File.Exists(pinPath) ? File.ReadAllText(pinPath).Trim() : "un-pinned";
-        var subset = files.Take(Math.Max(1, max)).ToList();
+        var subset = files.Skip(Math.Max(0, skip)).Take(Math.Max(1, max)).ToList();
         var supportedFeatures = ParseSupportedFeatures(supportedFeaturesCsv);
 
         var passed = 0;
@@ -1402,6 +1404,18 @@ public sealed class Test262Runner
                     }
 
                     lastProgressElapsed = stopwatch.Elapsed;
+                }
+
+                // Each test allocates a throwaway JsHeap (and the bytecode/objects it
+                // produces). Without an explicit collection the runtime — especially
+                // server GC — defers reclamation and lets the working set climb into
+                // the tens of GB over a large directory. Force a periodic full
+                // collection so a single long-lived process stays bounded. This cannot
+                // reclaim heaps still pinned by a timed-out test's abandoned worker
+                // thread, but it caps the steady-state cost of the common case.
+                if ((completed & 0xFF) == 0)
+                {
+                    GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
                 }
             }
         }
