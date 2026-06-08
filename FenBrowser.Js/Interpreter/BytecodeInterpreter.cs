@@ -10211,24 +10211,57 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                Math.Truncate(value) == value;
     }
 
+    // Max array-like length, 2^53 - 1 (ECMA-262 "integer-index" / safe-integer bound).
+    private const double MaxArrayLikeLength = 9007199254740991.0;
+
+    // ECMA-262 7.3.4 Set(O, P, V, Throw=true): perform [[Set]] and, on failure,
+    // throw a TypeError (e.g. a frozen target, a non-writable "length", or an element
+    // index of a non-extensible array). The Array mutators all use the throwing form.
+    private void SetOrThrow(ObjectHandle ownerHandle, JsObject obj, string key, JsValue value)
+    {
+        // Use the full ordinary [[Set]] so extensibility / non-writable / accessor
+        // semantics are enforced (obj.SetProperty alone does not reject a new index
+        // on a non-extensible array).
+        if (!SetPropertyValue(ownerHandle, obj, key, value, JsValue.FromObject(ownerHandle)))
+            throw new JsThrownException(CreateTypeError($"Cannot assign to read-only property '{key}'."));
+        if (value.Tag == JsValueTag.Object)
+            _heap.WriteBarrier(ownerHandle, value.AsObjectHandle());
+    }
+
+    // Set(O, "length", V, true): throw a TypeError if "length" is non-writable or
+    // the target is frozen. Used by every length-mutating Array method.
+    private void SetLengthOrThrow(ObjectHandle ownerHandle, JsObject obj, double newLength)
+    {
+        if (!SetPropertyValue(ownerHandle, obj, "length", JsValue.FromNumber(newLength), JsValue.FromObject(ownerHandle)))
+            throw new JsThrownException(CreateTypeError("Cannot assign to read-only property 'length'."));
+    }
+
+    // ECMA-262 7.3.10 DeletePropertyOrThrow(O, P): throw a TypeError when the
+    // delete is refused (a non-configurable element of a frozen/sealed array).
+    private void DeleteOrThrow(JsObject obj, string key)
+    {
+        if (!obj.DeleteProperty(key))
+            throw new JsThrownException(CreateTypeError($"Cannot delete property '{key}'."));
+    }
+
     private JsValue ArrayPrototypePush(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
         var obj = _heap.GetObject(ownerHandle);
-        var length = GetArrayLength(obj);
+        var length = GetArrayLengthDouble(obj);
+
+        // 23.1.3.23 step 4: pushing past 2^53-1 is a TypeError, before any write.
+        if (length + args.Count > MaxArrayLikeLength)
+            throw new JsThrownException(CreateTypeError("Pushing onto the array would exceed the maximum array length."));
 
         for (var i = 0; i < args.Count; i++)
         {
-            var key = (length + i).ToString(System.Globalization.CultureInfo.InvariantCulture);
-            _ = obj.SetProperty(key, args[i]);
-            if (args[i].Tag == JsValueTag.Object)
-            {
-                _heap.WriteBarrier(ownerHandle, args[i].AsObjectHandle());
-            }
+            var key = (length + i).ToString("F0", System.Globalization.CultureInfo.InvariantCulture);
+            SetOrThrow(ownerHandle, obj, key, args[i]);
         }
 
         var newLength = length + args.Count;
-        _ = obj.SetProperty("length", JsValue.FromNumber(newLength));
+        SetOrThrow(ownerHandle, obj, "length", JsValue.FromNumber(newLength));
         return JsValue.FromNumber(newLength);
     }
 
@@ -10237,18 +10270,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue ArrayPrototypePop(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
-        var obj = ToObject(thisValue);
+        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
         if (length == 0)
         {
-            _ = obj.SetProperty("length", JsValue.FromNumber(0));
+            SetLengthOrThrow(ownerHandle, obj, 0);
             return JsValue.Undefined;
         }
 
         var lastKey = (length - 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
         TryGetPropertyValue(obj, thisValue, lastKey, out var value);
-        obj.DeleteProperty(lastKey);
-        _ = obj.SetProperty("length", JsValue.FromNumber(length - 1));
+        DeleteOrThrow(obj, lastKey);
+        SetLengthOrThrow(ownerHandle, obj, length - 1);
         return value;
     }
 
@@ -10257,11 +10291,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue ArrayPrototypeShift(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
-        var obj = ToObject(thisValue);
+        var ownerHandle = ToObjectValue(thisValue).AsObjectHandle();
+        var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
         if (length == 0)
         {
-            _ = obj.SetProperty("length", JsValue.FromNumber(0));
+            SetLengthOrThrow(ownerHandle, obj, 0);
             return JsValue.Undefined;
         }
 
@@ -10272,16 +10307,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var toKey = (i - 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
             if (TryGetPropertyValue(obj, thisValue, fromKey, out var v))
             {
-                _ = obj.SetProperty(toKey, v);
+                SetOrThrow(ownerHandle, obj, toKey, v);
             }
             else
             {
-                obj.DeleteProperty(toKey);
+                DeleteOrThrow(obj, toKey);
             }
         }
 
-        obj.DeleteProperty((length - 1).ToString(System.Globalization.CultureInfo.InvariantCulture));
-        _ = obj.SetProperty("length", JsValue.FromNumber(length - 1));
+        DeleteOrThrow(obj, (length - 1).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        SetLengthOrThrow(ownerHandle, obj, length - 1);
         return first;
     }
 
@@ -10293,6 +10328,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var obj = _heap.GetObject(ownerHandle);
         var length = GetArrayLength(obj);
         var insert = args.Count;
+
+        // 23.1.3.34 step 4.a: result length past 2^53-1 is a TypeError before any write.
+        if (insert > 0 && (double)length + insert > MaxArrayLikeLength)
+            throw new JsThrownException(CreateTypeError("Unshifting onto the array would exceed the maximum array length."));
 
         if (insert > 0 && length > 0)
         {
@@ -10314,15 +10353,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         for (var i = 0; i < insert; i++)
         {
             var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            _ = obj.SetProperty(key, args[i]);
-            if (args[i].Tag == JsValueTag.Object)
-            {
-                _heap.WriteBarrier(ownerHandle, args[i].AsObjectHandle());
-            }
+            SetOrThrow(ownerHandle, obj, key, args[i]);
         }
 
         var newLength = length + insert;
-        _ = obj.SetProperty("length", JsValue.FromNumber(newLength));
+        SetLengthOrThrow(ownerHandle, obj, newLength);
         return JsValue.FromNumber(newLength);
     }
 
@@ -10758,17 +10793,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var toKey = (i + insertCount).ToString(System.Globalization.CultureInfo.InvariantCulture);
                 if (TryGetPropertyValue(obj, thisValue, fromKey, out var v))
                 {
-                    _ = obj.SetProperty(toKey, v);
+                    SetOrThrow(ownerHandle, obj, toKey, v);
                 }
                 else
                 {
-                    obj.DeleteProperty(toKey);
+                    DeleteOrThrow(obj, toKey);
                 }
             }
 
             for (var i = newLength; i < length; i++)
             {
-                obj.DeleteProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                DeleteOrThrow(obj, i.ToString(System.Globalization.CultureInfo.InvariantCulture));
             }
         }
         else if (insertCount > deleteCount)
@@ -10780,11 +10815,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var toKey = (i + insertCount).ToString(System.Globalization.CultureInfo.InvariantCulture);
                 if (TryGetPropertyValue(obj, thisValue, fromKey, out var v))
                 {
-                    _ = obj.SetProperty(toKey, v);
+                    SetOrThrow(ownerHandle, obj, toKey, v);
                 }
                 else
                 {
-                    obj.DeleteProperty(toKey);
+                    DeleteOrThrow(obj, toKey);
                 }
             }
         }
@@ -10793,15 +10828,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         for (var i = 0; i < insertCount; i++)
         {
             var key = (start + i).ToString(System.Globalization.CultureInfo.InvariantCulture);
-            var v = args[2 + i];
-            _ = obj.SetProperty(key, v);
-            if (v.Tag == JsValueTag.Object)
-            {
-                _heap.WriteBarrier(ownerHandle, v.AsObjectHandle());
-            }
+            SetOrThrow(ownerHandle, obj, key, args[2 + i]);
         }
 
-        _ = obj.SetProperty("length", JsValue.FromNumber(newLength));
+        SetLengthOrThrow(ownerHandle, obj, newLength);
 
         var resultArr = CreateArrayFromElements(removed);
         return JsValue.FromObject(_heap.AllocateObject(resultArr, AllocationSite.Current()));
