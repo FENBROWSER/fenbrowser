@@ -2488,7 +2488,11 @@ public sealed class JsParser
                 IsAsync: isAsync,
                 IsGenerator: isGenerator,
                 RestParameterIndex: parameterInfo.RestParameterIndex,
-                ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
+                ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults,
+                // Class methods/accessors are MethodDefinitions (no prototype, no
+                // [[Construct]]); the constructor is forced to FunctionKind.Constructor
+                // by the compiler's _isClassConstructor path regardless of this flag.
+                IsMethod: true);
             members.Add(new ClassMemberNode(
                 memberName,
                 kind,
@@ -3793,7 +3797,7 @@ public sealed class JsParser
                     strictMode: strictObjectMethod,
                     rejectSuperCallInBody: true);
                 var accessorFnName = accessorKey ?? accessorKind.Text;
-                var accessorFn = new FunctionExpressionNode(accessorFnName, parameters, body, MergeSpan(accessorKind.Span, body.Span), HasSimpleParameterList: parameterInfo.IsSimple, RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
+                var accessorFn = new FunctionExpressionNode(accessorFnName, parameters, body, MergeSpan(accessorKind.Span, body.Span), HasSimpleParameterList: parameterInfo.IsSimple, RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults, IsMethod: true);
                 var accessorPropKind = accessorKind.Text == "get" ? ObjectPropertyKind.Getter : ObjectPropertyKind.Setter;
                 properties.Add(new ObjectPropertyNode(accessorKey, accessorComputedKey, accessorIsComputed, accessorFn, accessorFn.Span, accessorPropKind));
                 if (IsPunctuator(","))
@@ -3859,7 +3863,7 @@ public sealed class JsParser
                     MergeSpan(asyncStart.Span, body.Span),
                     IsAsync: true,
                     RestParameterIndex: parameterInfo.RestParameterIndex,
-                    ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
+                    ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults, IsMethod: true);
                 properties.Add(new ObjectPropertyNode(methodKey, methodComputedKey, methodIsComputed, asyncMethodFn, asyncMethodFn.Span));
                 if (IsPunctuator(","))
                 {
@@ -3926,7 +3930,7 @@ public sealed class JsParser
                     IsAsync: true,
                     IsGenerator: true,
                     RestParameterIndex: parameterInfo.RestParameterIndex,
-                    ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
+                    ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults, IsMethod: true);
                 properties.Add(new ObjectPropertyNode(methodKey, methodComputedKey, methodIsComputed, asyncMethodFn, asyncMethodFn.Span));
                 if (IsPunctuator(","))
                 {
@@ -3989,7 +3993,7 @@ public sealed class JsParser
                     MergeSpan(methodStart.Span, body.Span),
                     IsGenerator: true,
                     RestParameterIndex: parameterInfo.RestParameterIndex,
-                    ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
+                    ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults, IsMethod: true);
                 properties.Add(new ObjectPropertyNode(methodKey, methodComputedKey, methodIsComputed, methodFn, methodFn.Span));
                 if (IsPunctuator(","))
                 {
@@ -4059,7 +4063,7 @@ public sealed class JsParser
                     forbidYieldIdentifier: false,
                     strictMode: strictObjectMethod,
                     rejectSuperCallInBody: true);
-                value = new FunctionExpressionNode(key, parameters, body, MergeSpan(keyToken.Span, body.Span), HasSimpleParameterList: parameterInfo.IsSimple, RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults);
+                value = new FunctionExpressionNode(key, parameters, body, MergeSpan(keyToken.Span, body.Span), HasSimpleParameterList: parameterInfo.IsSimple, RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults, IsMethod: true);
             }
             else if (IsPunctuator(":"))
             {

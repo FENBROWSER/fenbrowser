@@ -99,7 +99,11 @@ public sealed record FunctionExpressionNode(
     bool HasSimpleParameterList = true,
     int RestParameterIndex = -1,
     IReadOnlyList<BindingPatternNode?>? ParameterBindings = null,
-    IReadOnlyList<ExpressionNode?>? ParameterDefaults = null) : ExpressionNode(Span);
+    IReadOnlyList<ExpressionNode?>? ParameterDefaults = null,
+    // True for concise methods and accessors (`{ m(){} }`, `get x(){}`, class
+    // methods). Per ECMA-262 these are MethodDefinitions: they have no own
+    // `prototype` and no [[Construct]], unlike `{ m: function(){} }`.
+    bool IsMethod = false) : ExpressionNode(Span);
 
 public sealed record NewExpressionNode(ExpressionNode Callee, IReadOnlyList<ExpressionNode> Arguments, SourceSpan Span) : ExpressionNode(Span);
 

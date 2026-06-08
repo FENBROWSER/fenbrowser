@@ -997,7 +997,7 @@ public sealed class BytecodeCompiler
             hasSimpleParameterList: fnExpr.HasSimpleParameterList,
             functionKind: _isClassConstructor
                 ? FunctionKind.Constructor
-                : SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false),
+                : SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false, isMethod: fnExpr.IsMethod),
             inheritedStrictMode: _isStrictMode,
             captureCompletionValue: false,
             prologueStatementCount: prologueCount,
@@ -2839,7 +2839,7 @@ public sealed class BytecodeCompiler
                     fnExprName,
                     hasOwnArgumentsObject: true,
                     hasSimpleParameterList: fnExpr.HasSimpleParameterList,
-                    functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false),
+                    functionKind: SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false, isMethod: fnExpr.IsMethod),
                     inheritedStrictMode: _isStrictMode,
                     captureCompletionValue: false,
                     prologueStatementCount: fnExprPrologueCount,
@@ -3564,7 +3564,7 @@ public sealed class BytecodeCompiler
         _instructions.Add(new Instruction(OpCode.LoadConst, 0, _completionResetConstIndex, 0));
     }
 
-    private static FunctionKind SelectFunctionKind(bool isAsync, bool isGenerator, bool isArrow)
+    private static FunctionKind SelectFunctionKind(bool isAsync, bool isGenerator, bool isArrow, bool isMethod = false)
     {
         if (isAsync && isGenerator)
         {
@@ -3581,7 +3581,14 @@ public sealed class BytecodeCompiler
             return FunctionKind.Generator;
         }
 
-        return isArrow ? FunctionKind.Arrow : FunctionKind.Ordinary;
+        if (isArrow)
+        {
+            return FunctionKind.Arrow;
+        }
+
+        // A concise method / accessor is an ordinary callable with no own
+        // `prototype` and no [[Construct]] (ECMA-262 15.4 MethodDefinition).
+        return isMethod ? FunctionKind.Method : FunctionKind.Ordinary;
     }
 
     private static bool IsDirectEvalCallCallee(ExpressionNode callee)
