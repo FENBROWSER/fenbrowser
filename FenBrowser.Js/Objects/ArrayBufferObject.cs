@@ -10,12 +10,17 @@ namespace FenBrowser.Js.Objects;
 public sealed class ArrayBufferObject : JsObject
 {
     private byte[] _data;
+    private bool _isResizable;
 
-    public ArrayBufferObject(int byteLength, int maxByteLength = 0)
+    // ES2024: a buffer is resizable iff it was constructed with a maxByteLength
+    // option — independent of whether the initial length already equals the max
+    // (e.g. new ArrayBuffer(8, { maxByteLength: 8 }) is resizable and can shrink).
+    public ArrayBufferObject(int byteLength, int maxByteLength = 0, bool resizable = false)
     {
         _data = new byte[byteLength];
         ByteLength = byteLength;
-        MaxByteLength = maxByteLength > 0 ? maxByteLength : byteLength;
+        _isResizable = resizable;
+        MaxByteLength = resizable ? maxByteLength : byteLength;
     }
 
     internal ArrayBufferObject(byte[] data)
@@ -23,6 +28,7 @@ public sealed class ArrayBufferObject : JsObject
         _data = data;
         ByteLength = data.Length;
         MaxByteLength = data.Length;
+        _isResizable = false;
     }
 
     // 25.1.5.1 [[ArrayBufferByteLength]]
@@ -32,7 +38,7 @@ public sealed class ArrayBufferObject : JsObject
     public int MaxByteLength { get; private set; }
 
     // ES2024: whether this buffer was created with maxByteLength (resizable).
-    public bool IsResizable => MaxByteLength > ByteLength || MaxByteLength == 0 ? MaxByteLength > ByteLength : false;
+    public bool IsResizable => _isResizable && !IsDetached;
 
     // 25.1.5.2 [[ArrayBufferData]] — raw byte access.
     public byte[] Data
@@ -55,6 +61,7 @@ public sealed class ArrayBufferObject : JsObject
         _data = Array.Empty<byte>();
         ByteLength = 0;
         MaxByteLength = 0;
+        _isResizable = false;
     }
 
     // ES2024 25.1.5.X ResizeArrayBuffer(newByteLength)

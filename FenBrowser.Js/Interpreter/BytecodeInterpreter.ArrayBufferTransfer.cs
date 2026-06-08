@@ -72,8 +72,8 @@ public sealed partial class BytecodeInterpreter
 
         // A plain transfer preserves resizability (maxByteLength); the
         // fixed-length variant produces a non-resizable buffer.
-        var maxByteLength = fixedLength ? 0 : source.MaxByteLength;
-        var result = new ArrayBufferObject(newByteLength, maxByteLength);
+        var resizable = !fixedLength && source.IsResizable;
+        var result = new ArrayBufferObject(newByteLength, resizable ? source.MaxByteLength : 0, resizable);
         result.SetPrototype(EnsureArrayBufferPrototype());
 
         var copyLength = Math.Min(oldByteLength, newByteLength);

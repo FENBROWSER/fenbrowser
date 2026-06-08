@@ -12700,8 +12700,11 @@ fallbackArraySpecies:
                 var length = args.Count > 0 ? args[0].AsNumber() : 0;
                 if (double.IsNaN(length) || length < 0 || length > int.MaxValue)
                     throw new JsThrownException(CreateRangeError("Invalid ArrayBuffer length."));
-                // ES2024: optional maxByteLength for resizable buffers
+                // ES2024: optional maxByteLength for resizable buffers. Presence of a
+                // valid maxByteLength option makes the buffer resizable even when it
+                // equals the initial length (so it can later shrink and re-grow).
                 var maxByteLen = 0;
+                var resizable = false;
                 if (args.Count > 1 && args[1].Tag == JsValueTag.Object)
                 {
                     var opts = _heap.GetObject(args[1].AsObjectHandle());
@@ -12709,11 +12712,13 @@ fallbackArraySpecies:
                         mblDesc.Value.Tag is JsValueTag.Number or JsValueTag.Int32)
                     {
                         var mbl = mblDesc.Value.AsNumber();
-                        if (mbl >= length && mbl <= int.MaxValue)
-                            maxByteLen = (int)mbl;
+                        if (mbl < length || mbl > int.MaxValue)
+                            throw new JsThrownException(CreateRangeError("Invalid ArrayBuffer maxByteLength."));
+                        maxByteLen = (int)mbl;
+                        resizable = true;
                     }
                 }
-                var buf = new ArrayBufferObject((int)length, maxByteLen);
+                var buf = new ArrayBufferObject((int)length, maxByteLen, resizable);
                 buf.SetPrototype(prototypeHandle);
                 return JsValue.FromObject(_heap.AllocateObject(buf, AllocationSite.Current()));
             },
@@ -12785,7 +12790,7 @@ fallbackArraySpecies:
                 throw new JsThrownException(CreateTypeError("ArrayBuffer.prototype.resize called on non-ArrayBuffer."));
             if (buf.IsDetached)
                 throw new JsThrownException(CreateTypeError("ArrayBuffer is detached."));
-            if (!buf.IsResizable && buf.MaxByteLength == buf.ByteLength)
+            if (!buf.IsResizable)
                 throw new JsThrownException(CreateTypeError("ArrayBuffer is not resizable."));
             var newLen = args.Count > 0 ? (int)args[0].AsNumber() : 0;
             if (newLen < 0 || newLen > buf.MaxByteLength)
