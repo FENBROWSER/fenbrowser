@@ -536,6 +536,16 @@ public sealed class StringBuiltin : IBuiltinModule
         var s = RequireString(ctx, thisValue);
         if (args.Count < 2) return JsValue.FromString(s);
 
+        // 22.1.3.20 step 2.b: a RegExp searchValue must carry the global flag.
+        if (args[0].Tag == JsValueTag.Object &&
+            ctx.Heap.GetObject(args[0].AsObjectHandle()) is RegExpObject &&
+            ctx.TryGetPropertyValue(ctx.Heap.GetObject(args[0].AsObjectHandle()), args[0], "flags", out var flagsValue) &&
+            ctx.ToStringValue(flagsValue).IndexOf('g') < 0)
+        {
+            throw new JsThrownException(ctx.CreateTypeError(
+                "String.prototype.replaceAll called with a non-global RegExp argument."));
+        }
+
         if (TryDispatchToSymbolMethod(ctx, args[0], "replace", JsValue.FromString(s), args[1], out var dispatched))
             return dispatched;
 
@@ -800,7 +810,36 @@ public sealed class StringBuiltin : IBuiltinModule
                 return ctx.ToStringValue(result);
             }
         }
-        return ctx.ToStringValue(replacement);
+
+        // ECMA-262 22.1.3.18.1 GetSubstitution — the $-pattern grammar in a string
+        // replacement. Numbered captures ($n) are RegExp-only and never occur on this
+        // string-search path, so a $n is left literal.
+        var template = ctx.ToStringValue(replacement);
+        if (template.IndexOf('$') < 0)
+        {
+            return template;
+        }
+
+        var sb = new System.Text.StringBuilder(template.Length);
+        for (var i = 0; i < template.Length; i++)
+        {
+            if (template[i] != '$' || i + 1 >= template.Length)
+            {
+                sb.Append(template[i]);
+                continue;
+            }
+
+            switch (template[i + 1])
+            {
+                case '$': sb.Append('$'); i++; break;
+                case '&': sb.Append(matched); i++; break;
+                case '`': sb.Append(source, 0, matchStart); i++; break;
+                case '\'': sb.Append(source, matchStart + matched.Length, source.Length - matchStart - matched.Length); i++; break;
+                default: sb.Append('$'); break;
+            }
+        }
+
+        return sb.ToString();
     }
 
     private static JsValue Normalize(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
