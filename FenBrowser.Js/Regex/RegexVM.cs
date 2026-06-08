@@ -37,7 +37,10 @@ public sealed class RegexVM
     /// </summary>
     public RegexMatchResult Execute(string input, int startIndex = 0)
     {
-        if (string.IsNullOrEmpty(input) && startIndex >= input.Length)
+        input ??= string.Empty;
+        // An empty input is still a valid match target (e.g. /a*/, /^$/ match ""),
+        // so only bail out when startIndex is genuinely past the end.
+        if (startIndex > input.Length)
             return RegexMatchResult.Empty(input);
 
         SetInput(input);

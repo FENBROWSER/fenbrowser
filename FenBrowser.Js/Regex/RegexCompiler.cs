@@ -74,16 +74,17 @@ public static class RegexCompiler
 
         private void PatchJump(int fromIndex, int toIndex)
         {
-            // Relative offset: distance from the instruction AFTER the jump
-            var offset = toIndex - fromIndex - 1;
+            // Relative offset applied directly by the VM as `pc += offset` (no implicit
+            // +1), matching the lookaround offset convention (bodyStart - instrIndex).
+            var offset = toIndex - fromIndex;
             var ins = _instructions[fromIndex];
             _instructions[fromIndex] = new RegexInstruction(ins.OpCode, offset, ins.B, ins.C);
         }
 
         private void PatchSplit(int fromIndex, int toAlt1, int toAlt2)
         {
-            var offset1 = toAlt1 - fromIndex - 1;
-            var offset2 = toAlt2 - fromIndex - 1;
+            var offset1 = toAlt1 - fromIndex;
+            var offset2 = toAlt2 - fromIndex;
             var ins = _instructions[fromIndex];
             _instructions[fromIndex] = new RegexInstruction(ins.OpCode, offset1, offset2, ins.C);
         }
