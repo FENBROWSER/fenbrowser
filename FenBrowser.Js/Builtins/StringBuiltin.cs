@@ -608,6 +608,18 @@ public sealed class StringBuiltin : IBuiltinModule
     {
         var s = RequireString(ctx, thisValue);
         var regexp = args.Count > 0 ? args[0] : JsValue.Undefined;
+
+        // 22.1.3.13 step 2.b: a RegExp argument must carry the global flag, else TypeError
+        // (checked before the @@matchAll dispatch).
+        if (regexp.Tag == JsValueTag.Object &&
+            ctx.Heap.GetObject(regexp.AsObjectHandle()) is RegExpObject &&
+            ctx.TryGetPropertyValue(ctx.Heap.GetObject(regexp.AsObjectHandle()), regexp, "flags", out var flagsValue) &&
+            ctx.ToStringValue(flagsValue).IndexOf('g') < 0)
+        {
+            throw new JsThrownException(ctx.CreateTypeError(
+                "String.prototype.matchAll called with a non-global RegExp argument."));
+        }
+
         if (TryDispatchToSymbolMethod(ctx, regexp, "matchAll", JsValue.FromString(s), out var dispatched))
             return dispatched;
         return CreateArrayResult(ctx, new List<JsValue>());
