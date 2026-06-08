@@ -894,7 +894,7 @@ public sealed class Test262Runner
                 if (frontmatter.Includes.Count > 0 || RequiresRuntimeHarnessSupport(sourceText))
                 {
                     var includePrelude = BuildRuntimeHarnessIncludePrelude(rootPath, frontmatter.Includes);
-                    var prelude = BuildRuntimeHarnessPrelude(sourceText);
+                    var prelude = BuildRuntimeHarnessPrelude(sourceText, frontmatter.Includes.Count > 0);
                     // onlyStrict: "use strict" must be the first statement in the
                     // script to enable strict mode globally. parserInput already has
                     // it prepended via PrepareParserInput, but that puts it AFTER
@@ -1523,12 +1523,18 @@ public sealed class Test262Runner
     // Cached harness prelude strings — built once, reused for every test.
     private static readonly string _cachedMinimalHarnessPrelude = """
                function Test262Error(message) { this.message = message; }
+               function $DONOTEVALUATE() { throw new Test262Error("Test262: This statement should not be evaluated."); }
                """;
     private static readonly string _cachedHarnessPrelude = BuildRuntimeHarnessPreludeRaw();
 
-    private static string BuildRuntimeHarnessPrelude(string sourceText)
+    private static string BuildRuntimeHarnessPrelude(string sourceText, bool hasIncludes = false)
     {
+        // A test that pulls in harness includes (e.g. propertyHelper.js) relies on the
+        // full prelude — those includes call `assert`, `compareArray`, etc. even when the
+        // test body itself only references `Test262Error`. Only the include-free,
+        // Test262Error-only tests are safe to serve the minimal prelude.
         var needsOnlyTest262Error =
+            !hasIncludes &&
             sourceText.Contains("Test262Error", StringComparison.Ordinal) &&
             !sourceText.Contains("assert.", StringComparison.Ordinal) &&
             !sourceText.Contains("assert(", StringComparison.Ordinal) &&
@@ -1543,6 +1549,7 @@ public sealed class Test262Runner
         var prelude = """
 
                function Test262Error(message) { this.message = message; }
+               function $DONOTEVALUATE() { throw new Test262Error("Test262: This statement should not be evaluated."); }
                var assert = function (condition, message) {
                  if (!condition) { throw new Test262Error(message || "assert failed"); }
                };
