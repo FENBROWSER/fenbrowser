@@ -48,7 +48,7 @@ echo "Running $N batches  (per-test 2000ms, stall ${STALL}s)  ->  $OUTDIR"
 i=0
 for b in "${batches[@]}"; do
   i=$((i+1))
-  tag=$(echo "$b" | sed "s#.*/test/##; s#/#_#g; s#_*$##")
+  tag=$(echo "$b" | sed 's#.*/test/##; s#/#_#g; s#_*$##')
   out="$OUTDIR/b_${tag}.json"
   log="$OUTDIR/b_${tag}.log"
 
