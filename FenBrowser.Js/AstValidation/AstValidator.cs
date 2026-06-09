@@ -126,29 +126,84 @@ public sealed class AstValidator
     }
 
     /// <summary>
-    /// Check class members for early errors (ECMA-262 15.7.10).
+    /// Check class members for early errors (ECMA-262 15.7.10, 15.7.1).
     /// </summary>
     private static bool WalkClassMembers(IReadOnlyList<ClassMemberNode> members)
     {
+        // Track private names for duplicate detection
+        var privateNames = new HashSet<string>(StringComparer.Ordinal);
+        bool hasConstructor = false;
+
         foreach (var member in members)
         {
             bool isField = member.Kind == ClassMemberKind.Field;
+            bool isStatic = member.IsStatic;
+            string name = member.Name;
 
+            // ECMA-262 15.7.1 Static Semantics: Early Errors
+            // It is a Syntax Error if ClassBody Contains Multiple occurrences
+            // of the same PrivateIdentifier.
+            if (member.IsPrivate)
+            {
+                if (!privateNames.Add(name))
+                {
+                    throw new JsParserException(
+                        $"Duplicate private name '#{name}' in class body.");
+                }
+            }
+
+            // Constructor cannot be async, generator, getter, or setter.
+            if (name == "constructor" && !isStatic)
+            {
+                if (hasConstructor && member.Kind == ClassMemberKind.Constructor)
+                {
+                    throw new JsParserException(
+                        "A class may only have one constructor.");
+                }
+                if (member.Kind == ClassMemberKind.Constructor)
+                {
+                    hasConstructor = true;
+                    if (member.IsAsync)
+                        throw new JsParserException(
+                            "Class constructor cannot be async.");
+                    if (member.IsGenerator)
+                        throw new JsParserException(
+                            "Class constructor cannot be a generator.");
+                }
+                else if (member.Kind is ClassMemberKind.Getter or ClassMemberKind.Setter)
+                {
+                    throw new JsParserException(
+                        "Class constructor cannot be a getter or setter.");
+                }
+            }
+
+            // Static method named "prototype" is an early error.
+            if (isStatic && name == "prototype" &&
+                member.Kind is ClassMemberKind.Method or ClassMemberKind.Getter or
+                ClassMemberKind.Setter)
+            {
+                throw new JsParserException(
+                    "Static method cannot be named 'prototype'.");
+            }
+
+            // Constructor named "#constructor" (private) is an early error.
+            if (member.IsPrivate && name == "constructor")
+            {
+                throw new JsParserException(
+                    "Private name '#constructor' is not allowed in class body.");
+            }
+
+            // Check for super/arguments/new.target in field initializers.
             if (member.Function is FunctionExpressionNode func)
             {
-                // Walk the body with the field-init context flag
-                if (WalkBlock(func.Body.Statements,
-                        inFieldInit: isField))
+                if (WalkBlock(func.Body.Statements, inFieldInit: isField))
                     return true;
             }
             else if (member.Function is ArrowFunctionExpressionNode arrow)
             {
-                // Arrow function bodies inherit the outer context
                 if (WalkArrowBody(arrow, inFieldInit: isField))
                     return true;
             }
-            // Other member function types: constructor, method, getter, setter
-            // These are always FunctionExpressionNode, not ArrowFunctionExpressionNode
         }
         return false;
     }
