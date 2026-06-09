@@ -199,9 +199,11 @@ quick wins.
   TypedArrayConstructors 56.2% → 58.7%, ArrayBuffer → 70.6%.
 - **Overall 66.79% → 67.94%.**
 
-**Still open on the `$DONOTEVALUATE` cluster:** defining the global does *not* convert the
-1,373 parse-negative tests — they need the **parser/regex-compiler to actually reject the
-invalid syntax** (then `JsParserException` → pass). That's Tier 2 parser-strictness work.
+**Still open on the `$DONOTEVALUATE` cluster:** RESOLVED (2026-06-09). Defining the global
+in the harness prelude (`37c93b01`) combined with recent AST validator improvements
+(commits `cc1e4d89`, `cff64858`, `317934de`, `800bf993`) eliminated all 1,373
+DONOTEVALUATE failures across all categories. Remaining failures are real engine
+feature gaps, not harness issues.
 
 **Next on TypedArray (703 fails left):** out-of-bounds-after-resize validation (the
 "assert.throws: no error thrown" cluster across set/slice/map/filter — a length-tracking
