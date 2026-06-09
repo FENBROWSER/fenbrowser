@@ -1860,6 +1860,14 @@ public sealed class JsParser
         var parameters = parameterInfo.Parameters;
         ValidateStrictModeFunctionName(name, body.Statements);
         ValidateDirectivePrologueStrictStringEscapes(body.Statements);
+        // ECMA-262 early errors: same validation as function expressions.
+        ValidateClassMethodEarlyErrors(
+            parameterInfo,
+            body,
+            forbidAwaitIdentifier: isAsync,
+            forbidYieldIdentifier: isGenerator,
+            strictMode: _strictMode || ContainsUseStrictDirective(body.Statements),
+            rejectSuperCallInBody: true);
         return new FunctionDeclarationNode(
             name.Text,
             parameters,
@@ -3721,6 +3729,16 @@ public sealed class JsParser
         }
 
         ValidateDirectivePrologueStrictStringEscapes(body.Statements);
+        // ECMA-262 early errors: yield/await as binding identifiers, super in body,
+        // duplicate parameters (in strict mode), eval/arguments in strict parameters,
+        // and restricted identifiers in the body must surface at parse time.
+        ValidateClassMethodEarlyErrors(
+            parameterInfo,
+            body,
+            forbidAwaitIdentifier: isAsync,
+            forbidYieldIdentifier: isGenerator,
+            strictMode: _strictMode || ContainsUseStrictDirective(body.Statements),
+            rejectSuperCallInBody: true);
         return new FunctionExpressionNode(
             name,
             parameters,
