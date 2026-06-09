@@ -480,7 +480,25 @@ public sealed partial class BytecodeInterpreter
                 throw new JsThrownException(CreateTypeError("Function is not a constructor."));
             }
 
-            var constructed = native.ConstructWithNewTarget(args, newTarget);
+            // Pin the newTarget and every object-tagged arg as temporary GC roots
+            // for the duration of the native construct call — the same defense the
+            // CallFunction path applies (see comment there). Without this,
+            // auto-MinorCollect triggered inside the native constructor (e.g.
+            // AllocateObject in ConstructTypedArray) can reclaim objects whose only
+            // live reference is the handle we're about to pass the native body,
+            // surfacing as "Stale heap handle." on the next access.
+            var rootMark = _heap.RootCount;
+            JsValue constructed;
+            try
+            {
+                PinIfObject(newTarget);
+                for (var i = 0; i < args.Count; i++) PinIfObject(args[i]);
+                constructed = native.ConstructWithNewTarget(args, newTarget);
+            }
+            finally
+            {
+                _heap.PopRootsTo(rootMark);
+            }
             if (constructed.Tag == JsValueTag.Object &&
                 newTarget.Tag == JsValueTag.Object &&
                 value.Tag == JsValueTag.Object &&

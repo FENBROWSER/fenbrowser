@@ -1,5 +1,7 @@
 using FenBrowser.Js.Runtime;
 
+using FenBrowser.Js.Heap;
+
 namespace FenBrowser.Js.Objects;
 
 // ECMA-262 10.4.1 Bound Function Exotic Objects.
@@ -51,5 +53,19 @@ public sealed class BoundFunctionObject : JsObject
         // This is a best-effort string for the "name" property; spec says
         // "bound " + target.[[Get]]("name", receiver) in 20.2.3.2 step 5.
         return "function";
+    }
+
+    public override void Trace(IHeapTracer tracer)
+    {
+        base.Trace(tracer);
+        if (TargetFunction.Tag == JsValueTag.Object)
+            tracer.Trace(TargetFunction.AsObjectHandle());
+        if (BoundThis.Tag == JsValueTag.Object)
+            tracer.Trace(BoundThis.AsObjectHandle());
+        for (var i = 0; i < BoundArgs.Length; i++)
+        {
+            if (BoundArgs[i].Tag == JsValueTag.Object)
+                tracer.Trace(BoundArgs[i].AsObjectHandle());
+        }
     }
 }
