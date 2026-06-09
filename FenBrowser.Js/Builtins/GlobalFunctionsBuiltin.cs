@@ -260,14 +260,65 @@ public sealed class GlobalFunctionsBuiltin : IBuiltinModule
                 i += 3;
             }
 
-            string decoded;
-            try { decoded = System.Text.Encoding.UTF8.GetString(bytes); }
-            catch (System.Text.DecoderFallbackException)
-            { throw new JsThrownException(ctx.CreateUriError("URI malformed: invalid UTF-8 sequence.")); }
-
-            _ = sb.Append(decoded);
+            // Manual UTF-8 decoding with strict validation (surrogates, overlong,
+            // out-of-range). ECMA-262 19.2.6.3.
+            var cp = DecodeUtf8CodePoint(ctx, bytes);
+            _ = sb.Append(cp <= 0xFFFF
+                ? ((char)cp).ToString()
+                : char.ConvertFromUtf32(cp));
         }
         return sb.ToString();
+    }
+
+    // ECMA-262 19.2.6.3: strict UTF-8 decoding that rejects surrogates,
+    // overlong encodings, and code points beyond U+10FFFF.
+    private static int DecodeUtf8CodePoint(IBuiltinContext ctx, byte[] bytes)
+    {
+        int cp;
+        int expectedLen;
+        if ((bytes[0] & 0x80) == 0)
+        {
+            cp = bytes[0];
+            expectedLen = 1;
+        }
+        else if ((bytes[0] & 0xE0) == 0xC0)
+        {
+            cp = bytes[0] & 0x1F;
+            expectedLen = 2;
+        }
+        else if ((bytes[0] & 0xF0) == 0xE0)
+        {
+            cp = bytes[0] & 0x0F;
+            expectedLen = 3;
+        }
+        else if ((bytes[0] & 0xF8) == 0xF0)
+        {
+            cp = bytes[0] & 0x07;
+            expectedLen = 4;
+        }
+        else
+        {
+            throw new JsThrownException(ctx.CreateUriError("URI malformed: bad UTF-8 leading byte."));
+        }
+        if (bytes.Length != expectedLen)
+            throw new JsThrownException(ctx.CreateUriError("URI malformed: bad UTF-8 length."));
+        for (var j = 1; j < expectedLen; j++)
+        {
+            if ((bytes[j] & 0xC0) != 0x80)
+                throw new JsThrownException(ctx.CreateUriError("URI malformed: bad UTF-8 continuation."));
+            cp = (cp << 6) | (bytes[j] & 0x3F);
+        }
+        // Overlong check
+        if (expectedLen == 2 && cp < 0x80) throw new JsThrownException(ctx.CreateUriError("URI malformed: overlong encoding."));
+        if (expectedLen == 3 && cp < 0x800) throw new JsThrownException(ctx.CreateUriError("URI malformed: overlong encoding."));
+        if (expectedLen == 4 && cp < 0x10000) throw new JsThrownException(ctx.CreateUriError("URI malformed: overlong encoding."));
+        // Surrogate pair range is invalid
+        if (cp is >= 0xD800 and <= 0xDFFF)
+            throw new JsThrownException(ctx.CreateUriError("URI malformed: decoded surrogate."));
+        // Beyond Unicode range
+        if (cp > 0x10FFFF)
+            throw new JsThrownException(ctx.CreateUriError("URI malformed: out-of-range code point."));
+        return cp;
     }
 
     private static byte DecodeHexByte(IBuiltinContext ctx, string text, int percentIndex)
