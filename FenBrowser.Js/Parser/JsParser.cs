@@ -348,6 +348,8 @@ public sealed class JsParser
     private static bool ContainsSuperCallInExpressionCore(ExpressionNode expression) =>
         expression switch
         {
+            // super() and super.property — both are illegal outside method context
+            SuperExpressionNode => true,
             CallExpressionNode { Callee: SuperExpressionNode } => true,
             ParenthesizedExpressionNode parenthesized => ContainsSuperCallInExpression(parenthesized.Expression),
             BinaryExpressionNode binary => ContainsSuperCallInExpression(binary.Left) || ContainsSuperCallInExpression(binary.Right),
@@ -534,7 +536,7 @@ public sealed class JsParser
 
         if (rejectSuperCallInBody && ContainsSuperCallInStatements(body.Statements))
         {
-            throw new JsParserException("super() calls are not allowed in this method context.");
+            throw new JsParserException("super() calls and super.property access are not allowed in this context.");
         }
 
         // The body walk can only ever throw on a `await`/`yield` identifier, so when
