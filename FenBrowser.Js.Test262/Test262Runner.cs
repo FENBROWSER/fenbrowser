@@ -1516,6 +1516,7 @@ public sealed class Test262Runner
         return sourceText.Contains("Test262Error", StringComparison.Ordinal) ||
                sourceText.Contains("assert.", StringComparison.Ordinal) ||
                sourceText.Contains("assert(", StringComparison.Ordinal) ||
+               sourceText.Contains("$DONOTEVALUATE", StringComparison.Ordinal) ||
                sourceText.Contains("$DONE", StringComparison.Ordinal) ||
                sourceText.Contains("$262", StringComparison.Ordinal);
     }
