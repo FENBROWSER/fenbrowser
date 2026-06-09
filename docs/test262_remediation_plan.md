@@ -207,3 +207,25 @@ invalid syntax** (then `JsParserException` → pass). That's Tier 2 parser-stric
 "assert.throws: no error thrown" cluster across set/slice/map/filter — a length-tracking
 view over a shrunk resizable buffer must throw), the `Stale heap handle` GC bug (74,
 Tier 2.4), and BigInt-array harness conversions (83).
+
+### 2026-06-09 — GC safety hardening + TypedArray value normalization
+- **Tier 2.4 GC safety (partial):** `ConstructFunction` for `NativeFunctionObject` now pins
+  `newTarget` and `args` as temporary GC roots (matching the existing `CallFunction` defense).
+  `BoundFunctionObject` now overrides `Trace` to walk `[[TargetFunction]]`, `[[BoundThis]]`,
+  and `[[BoundArguments]]` — internal slots holding ObjectHandles the GC must see. These are
+  correct defensive fixes but **do not resolve the remaining ~77 TypedArray stale-heap-handle
+  failures**; the systemic root cause (likely related to GC rooting during prototype-chain
+  walks inside `OrdinaryHasInstancePrototype`) needs deeper investigation.
+- **TypedArray value normalization:** `fill` and `map` now route user-supplied values through
+  `NormalizeTypedArrayElementValue` before calling `SetElement`, so Symbol/incompatible types
+  surface as TypeError per spec (IntegerIndexedElementSet step 3). Previously `SetElement`
+  called `AsNumber()` directly which silently coerced Symbol to 0.
+- **built-ins/TypedArray 64.7% → 65.7%** (+14 passes). "assert.throws: no error thrown"
+  cluster down from 100 → 98. Stale heap handle still at 77 (2 extra from new test262 tests).
+- **Overall 68.64% → 68.67%** (marginal — TypedArray is one of many categories).
+
+**Diagnostic note on remaining ~77 stale-heap-handle tests:** triggered by 5+ closures +
+`instanceof` inside `assert.throws` callbacks. The error occurs during `OrdinaryHasInstancePrototype`
+prototype-chain walk inside `TryInstanceOf`. 4 or fewer closures per test function do not
+trigger it; standalone `try/catch` without `instanceof` does not trigger it. Likely a GC
+rooting gap during the combined bytecode/native call stack.
