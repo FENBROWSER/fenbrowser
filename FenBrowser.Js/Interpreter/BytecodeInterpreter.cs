@@ -13767,6 +13767,10 @@ fallbackArraySpecies:
         {
             var self = ValidateTypedArray(thisValue);
             var value = args.Count > 0 ? args[0] : JsValue.Undefined;
+            // ECMA-262 %TypedArray%.prototype.fill step 3: normalize the fill
+            // value through ToBigInt (BigInt arrays) or ToNumber (others) so
+            // Symbol / incompatible types surface as TypeError.
+            value = NormalizeTypedArrayElementValue(self.ElementType, value);
             var len = self.Length;
             var start = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
             var end = args.Count > 2 ? (int)ToNumber(args[2]) : len;
@@ -13801,6 +13805,9 @@ fallbackArraySpecies:
             for (var i = 0; i < self.Length; i++)
             {
                 var next = CallFunction(callback, new[] { self.GetElement(i), JsValue.FromNumber(i), thisValue }, thisArg);
+                // ECMA-262: callback result must go through ToBigInt/ToNumber
+                // so Symbol / incompatible types surface as TypeError.
+                next = NormalizeTypedArrayElementValue(self.ElementType, next);
                 mapped.SetElement(i, next);
             }
             return JsValue.FromObject(_heap.AllocateObject(mapped, AllocationSite.Current()));
