@@ -96,12 +96,15 @@ public sealed class BytecodeCompiler
 
     public BytecodeFunction CompileScript(SourceText source)
     {
+        var program = JsParser.ParseScript(source!);
+        // ECMA-262 Static Semantics: Early Error validation.
+        new AstValidator().Validate(program, new Diagnostics.DiagnosticBag());
+
         if (source is not null && BytecodeCache.TryGet(source.Text, strictMode: false, out var cached))
         {
             return cached;
         }
 
-        var program = JsParser.ParseScript(source!);
         var compiled = CompileProgram(program);
         if (source is not null)
         {
