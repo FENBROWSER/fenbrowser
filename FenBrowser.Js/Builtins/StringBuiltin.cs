@@ -25,7 +25,12 @@ public sealed class StringBuiltin : IBuiltinModule
         var capturedProto = prototypeHandle;
         var constructor = new NativeFunctionObject(
             "String",
-            (_, args) => JsValue.FromString(args.Count > 0 ? context.ToStringValue(args[0]) : string.Empty),
+            // ECMA-262 22.1.1.1 String(value): called (not constructed), a Symbol
+            // argument yields SymbolDescriptiveString instead of throwing via ToString.
+            (_, args) => JsValue.FromString(
+                args.Count == 0 ? string.Empty
+                : args[0].Tag == JsValueTag.Symbol ? SymbolDescriptiveString(args[0])
+                : context.ToStringValue(args[0])),
             args =>
             {
                 var obj = new StringObject(args.Count > 0 ? context.ToStringValue(args[0]) : string.Empty);
@@ -75,6 +80,8 @@ public sealed class StringBuiltin : IBuiltinModule
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "replaceAll", ReplaceAll, length: 2);
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "normalize", Normalize, length: 0);
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "localeCompare", LocaleCompare, length: 1);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "isWellFormed", IsWellFormed, length: 0);
+        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "toWellFormed", ToWellFormed, length: 0);
         DefineIteratorMethod(capturedCtx, heap, prototypeHandle, protoObj);
 
         // Annex B B.2.2 — legacy HTML wrappers. Spec is purely lexical:
@@ -185,6 +192,10 @@ public sealed class StringBuiltin : IBuiltinModule
         val = val.Replace("\"", "&quot;");
         return "<" + tag + " " + attr + "=\"" + val + "\">" + s + "</" + tag + ">";
     }
+
+    // ECMA-262 20.4.3.3.1 SymbolDescriptiveString: "Symbol(" + desc + ")".
+    private static string SymbolDescriptiveString(JsValue symbol)
+        => "Symbol(" + (symbol.AsSymbolDescription() ?? string.Empty) + ")";
 
     private static string RequireString(IBuiltinContext ctx, JsValue thisValue)
     {
@@ -577,6 +588,78 @@ public sealed class StringBuiltin : IBuiltinModule
         var that = ctx.ToStringValue(args.Count > 0 ? args[0] : JsValue.Undefined);
         var cmp = string.CompareOrdinal(s, that);
         return JsValue.FromNumber(cmp < 0 ? -1 : cmp > 0 ? 1 : 0);
+    }
+
+    // ECMA-262 22.1.3.8 String.prototype.isWellFormed — true iff the string contains
+    // no lone (unpaired) UTF-16 surrogate code unit.
+    private static JsValue IsWellFormed(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = RequireString(ctx, thisValue);
+        for (var i = 0; i < s.Length; i++)
+        {
+            if (char.IsLowSurrogate(s[i]))
+            {
+                return JsValue.FromBoolean(false);
+            }
+
+            if (char.IsHighSurrogate(s[i]))
+            {
+                if (i + 1 >= s.Length || !char.IsLowSurrogate(s[i + 1]))
+                {
+                    return JsValue.FromBoolean(false);
+                }
+
+                i++;
+            }
+        }
+
+        return JsValue.FromBoolean(true);
+    }
+
+    // ECMA-262 22.1.3.29 String.prototype.toWellFormed — replace each lone surrogate
+    // with U+FFFD (REPLACEMENT CHARACTER), leaving valid pairs intact.
+    private static JsValue ToWellFormed(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var s = RequireString(ctx, thisValue);
+        char[]? buffer = null;
+        for (var i = 0; i < s.Length; i++)
+        {
+            var isLone = false;
+            if (char.IsHighSurrogate(s[i]))
+            {
+                if (i + 1 >= s.Length || !char.IsLowSurrogate(s[i + 1]))
+                {
+                    isLone = true;
+                }
+                else
+                {
+                    if (buffer is not null)
+                    {
+                        buffer[i] = s[i];
+                        buffer[i + 1] = s[i + 1];
+                    }
+
+                    i++;
+                    continue;
+                }
+            }
+            else if (char.IsLowSurrogate(s[i]))
+            {
+                isLone = true;
+            }
+
+            if (isLone && buffer is null)
+            {
+                buffer = s.ToCharArray();
+            }
+
+            if (buffer is not null)
+            {
+                buffer[i] = isLone ? '\uFFFD' : s[i];
+            }
+        }
+
+        return JsValue.FromString(buffer is null ? s : new string(buffer));
     }
 
     private static JsValue Match(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)

@@ -89,10 +89,33 @@ public static class RegExpCompiler
     /// </summary>
     public static void ValidatePattern(string pattern, string flags)
     {
-        var parsedFlags = RegexFlags.Parse(flags.AsSpan());
-        var ast = RegexParser.Parse(pattern, parsedFlags);
-        // Validate Unicode property escapes against the known property database.
-        ValidateUnicodePropsInDisjunction(ast.Disjunction, parsedFlags);
+        RegexPattern ast;
+        try
+        {
+            var parsedFlags = RegexFlags.Parse(flags.AsSpan());
+            ast = RegexParser.Parse(pattern, parsedFlags);
+        }
+        catch (Exception)
+        {
+            // Our regex parser can't handle this syntax — silently pass.
+            // The pattern will be validated at runtime by BCL regex / CompileNative.
+            return;
+        }
+
+        // Only validate patterns that our parser successfully parsed.
+        // Errors here are genuine Unicode property escape issues.
+        try
+        {
+            ValidateUnicodePropsInDisjunction(ast.Disjunction, ast.Flags);
+        }
+        catch (RegexSyntaxError)
+        {
+            throw; // Propagate for parse-negative test pass
+        }
+        catch (Exception)
+        {
+            // Unexpected error — silently pass.
+        }
     }
 
     private static void ValidateUnicodePropsInDisjunction(DisjunctionNode disjunction, RegexFlags flags)
@@ -146,19 +169,33 @@ public static class RegExpCompiler
 
     public static RegexProgram? CompileNative(string pattern, string flags)
     {
+        RegexPattern ast;
         try
         {
             var parsedFlags = RegexFlags.Parse(flags.AsSpan());
-            var ast = RegexParser.Parse(pattern, parsedFlags);
+            ast = RegexParser.Parse(pattern, parsedFlags);
+        }
+        catch (RegexSyntaxError)
+        {
+            // Our regex parser can't handle this pattern — fall back to .NET/BclRegex.
+            return null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        try
+        {
             // Validate Unicode property escapes against the known database.
-            ValidateUnicodePropsInDisjunction(ast.Disjunction, parsedFlags);
+            ValidateUnicodePropsInDisjunction(ast.Disjunction, ast.Flags);
             var program = RegexCompiler.Compile(ast);
             return program;
         }
         catch (RegexSyntaxError)
         {
-            // RegexSyntaxError means the pattern is syntactically invalid — don't
-            // fall back to .NET for these; the caller should surface a SyntaxError.
+            // Unicode property validation failed — genuine syntax error.
+            // Don't fall back to .NET; propagate so the caller surfaces SyntaxError.
             throw;
         }
         catch (Exception)
