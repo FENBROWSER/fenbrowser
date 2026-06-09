@@ -1426,6 +1426,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     try
                     {
                         var ok = SetPropertyValue(ownerHandle, obj, key, value, frame.Registers[ins.A]);
+                        if (!ok)
+                        {
+                            // ECMA-262 12.2.5.2 ArrayAccumulation / CreateDataProperty:
+                            // array literal elements must be created as own data properties
+                            // even when the prototype has a non-writable property at the
+                            // same index. Fall back to DefineOwnProperty for ArrayObject
+                            // canonical integer indices.
+                            if (obj is ArrayObject && IsCanonicalIntegerIndex(key, out _))
+                            {
+                                ok = obj.DefineOwnProperty(key,
+                                    new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+                            }
+                        }
                         if (!ok && function.IsStrictMode)
                         {
                             ThrowOrHandle(frame, CreateTypeError($"Cannot assign to read-only property '{key}'."));
