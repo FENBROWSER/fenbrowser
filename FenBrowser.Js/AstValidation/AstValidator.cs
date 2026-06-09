@@ -204,6 +204,31 @@ public sealed class AstValidator
                 if (WalkArrowBody(arrow, inFieldInit: isField))
                     return true;
             }
+            else if (isField)
+            {
+                // Direct expression initializer (e.g. x = super(), x = arguments)
+                if (WalkExpression(member.Function, inFieldInit: true))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Check if a delete expression targets a private field (always a SyntaxError).
+    /// ECMA-262 13.5.1.2: It is a Syntax Error if the UnaryExpression is contained
+    /// in strict mode code and the derived UnaryExpression is delete PrivateIdentifier.
+    /// </summary>
+    private static bool WalkDeleteTarget(ExpressionNode target)
+    {
+        // Unwrap parens
+        while (target is ParenthesizedExpressionNode paren)
+            target = paren.Expression;
+
+        if (target is MemberExpressionNode member && member.Property.StartsWith("#"))
+        {
+            throw new JsParserException(
+                "Cannot delete private field.");
         }
         return false;
     }
@@ -245,6 +270,12 @@ public sealed class AstValidator
                     throw new JsParserException(
                         "new.target cannot be used in class field initializers.");
                 return inFieldInit;
+
+            // delete of a private field is always a SyntaxError (ECMA-262 13.5.1.2)
+            case UnaryExpressionNode un when un.Operator == "delete":
+                if (WalkDeleteTarget(un.Operand))
+                    return true;
+                return WalkExpression(un.Operand, inFieldInit);
 
             // Class expressions: walk their members for field errors
             case ClassExpressionNode classExpr:
