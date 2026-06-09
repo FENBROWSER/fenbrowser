@@ -82,18 +82,84 @@ public static class RegExpCompiler
     /// This is the preferred path for all new regexes. Falls back to null if the
     /// pattern uses features not yet supported by the native engine.
     /// </summary>
+    /// <summary>
+    /// Validate a regex pattern for syntax errors. Throws RegexSyntaxError if
+    /// the pattern is invalid. Used by the JS parser to reject invalid regex
+    /// literals at parse time (ECMA-262 12.2.8.2 / 22.2.3.1).
+    /// </summary>
+    public static void ValidatePattern(string pattern, string flags)
+    {
+        var parsedFlags = RegexFlags.Parse(flags.AsSpan());
+        var ast = RegexParser.Parse(pattern, parsedFlags);
+        // Validate Unicode property escapes against the known property database.
+        ValidateUnicodePropsInDisjunction(ast.Disjunction, parsedFlags);
+    }
+
+    private static void ValidateUnicodePropsInDisjunction(DisjunctionNode disjunction, RegexFlags flags)
+    {
+        foreach (var alt in disjunction.Alternatives)
+            ValidateUnicodePropsInAlternative(alt, flags);
+    }
+
+    private static void ValidateUnicodePropsInAlternative(AlternativeNode alt, RegexFlags flags)
+    {
+        foreach (var term in alt.Terms)
+            ValidateUnicodePropsInTerm(term, flags);
+    }
+
+    private static void ValidateUnicodePropsInTerm(TermNode term, RegexFlags flags)
+    {
+        switch (term)
+        {
+            case UnicodePropertyNode up:
+            {
+                var body = up.Value is not null
+                    ? $"{up.Property}={up.Value}"
+                    : up.Property;
+                ValidateUnicodePropertyEscapeBody(body, flags, up.Negated);
+                break;
+            }
+            case CharacterClassNode cc:
+                foreach (var item in cc.Items)
+                {
+                    if (item is ClassUnicodeProperty cup)
+                    {
+                        var cupBody = cup.Value is not null
+                            ? $"{cup.Property}={cup.Value}"
+                            : cup.Property;
+                        ValidateUnicodePropertyEscapeBody(cupBody, flags, cup.Negated);
+                    }
+                }
+                break;
+            case QuantifierNode q:
+                ValidateUnicodePropsInTerm(q.Body, flags);
+                break;
+            case GroupNode g:
+                ValidateUnicodePropsInDisjunction(g.Body, flags);
+                break;
+            case AssertionNode a:
+                if (a.Body is not null)
+                    ValidateUnicodePropsInDisjunction(a.Body, flags);
+                break;
+        }
+    }
+
     public static RegexProgram? CompileNative(string pattern, string flags)
     {
         try
         {
             var parsedFlags = RegexFlags.Parse(flags.AsSpan());
             var ast = RegexParser.Parse(pattern, parsedFlags);
+            // Validate Unicode property escapes against the known database.
+            ValidateUnicodePropsInDisjunction(ast.Disjunction, parsedFlags);
             var program = RegexCompiler.Compile(ast);
             return program;
         }
         catch (RegexSyntaxError)
         {
-            return null;
+            // RegexSyntaxError means the pattern is syntactically invalid — don't
+            // fall back to .NET for these; the caller should surface a SyntaxError.
+            throw;
         }
         catch (Exception)
         {
@@ -1000,12 +1066,20 @@ public static class RegExpCompiler
             throw new RegexSyntaxError("Invalid Unicode property escape.");
         }
 
-        if (NonBinaryPropertyNames.Contains(body))
+        // ECMA-262 Table 65: "Is" prefix is a legacy shorthand for binary properties
+        // and General_Category values. Strip it and retry the lookup with the remainder.
+        var lookupBody = body;
+        if (body.StartsWith("Is", StringComparison.Ordinal) && body.Length > 2)
+        {
+            lookupBody = body[2..];
+        }
+
+        if (NonBinaryPropertyNames.Contains(lookupBody))
         {
             throw new RegexSyntaxError("Invalid Unicode property escape.");
         }
 
-        if (StringPropertyNames.Contains(body))
+        if (StringPropertyNames.Contains(lookupBody))
         {
             if (!flags.UnicodeSets || negated)
             {
@@ -1015,9 +1089,9 @@ public static class RegExpCompiler
             return;
         }
 
-        if (!BinaryPropertyNames.Contains(body) &&
-            !StringPropertyNames.Contains(body) &&
-            !GeneralCategoryValues.Contains(body))
+        if (!BinaryPropertyNames.Contains(lookupBody) &&
+            !StringPropertyNames.Contains(lookupBody) &&
+            !GeneralCategoryValues.Contains(lookupBody))
         {
             throw new RegexSyntaxError("Invalid Unicode property escape.");
         }

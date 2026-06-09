@@ -1,6 +1,7 @@
 using FenBrowser.Js.Ast;
 using FenBrowser.Js.AstValidation;
 using FenBrowser.Js.Lexer;
+using FenBrowser.Js.Regex;
 using FenBrowser.Js.Source;
 using System.Globalization;
 using System.Numerics;
@@ -3499,6 +3500,21 @@ public sealed class JsParser
         if (token.Kind == TokenKind.RegularExpression)
         {
             Advance();
+            // ECMA-262 12.2.8.2 / 22.2.3.1: validate the regex literal pattern
+            // at parse time so that invalid regex syntax (e.g. bad Unicode property
+            // escapes) produces a SyntaxError in parse-negative tests.
+            var raw = token.Text; // "/pattern/flags"
+            var lastSlash = raw.LastIndexOf('/');
+            var pattern = raw.Substring(1, lastSlash - 1);
+            var flags = lastSlash + 1 < raw.Length ? raw.Substring(lastSlash + 1) : string.Empty;
+            try
+            {
+                Regex.RegExpCompiler.ValidatePattern(pattern, flags);
+            }
+            catch (Regex.RegexSyntaxError ex)
+            {
+                throw new JsParserException(ex.Message);
+            }
             return new RegexLiteralExpressionNode(token.Text, token.Span);
         }
 

@@ -5163,7 +5163,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateSyntaxError(ex.Message));
         }
 
-        var nativeProgram = RegExpCompiler.CompileNative(pattern, normalizedFlags);
+        RegexProgram? nativeProgram;
+        try
+        {
+            nativeProgram = RegExpCompiler.CompileNative(pattern, normalizedFlags);
+        }
+        catch (RegexSyntaxError ex)
+        {
+            throw new JsThrownException(CreateSyntaxError(ex.Message));
+        }
 
         var obj = new RegExpObject(pattern, normalizedFlags, regex, nativeProgram);
         // Use the prototype cached from the builtin during
@@ -5300,7 +5308,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateSyntaxError(ex.Message));
         }
 
-        var nativeProgram = RegExpCompiler.CompileNative(pattern, normalizedFlags);
+        RegexProgram? nativeProgram;
+        try
+        {
+            nativeProgram = RegExpCompiler.CompileNative(pattern, normalizedFlags);
+        }
+        catch (RegexSyntaxError ex)
+        {
+            throw new JsThrownException(CreateSyntaxError(ex.Message));
+        }
 
         var obj = new RegExpObject(pattern, normalizedFlags, regex, nativeProgram);
         obj.SetPrototype(GetGlobalPrototype("RegExp"));

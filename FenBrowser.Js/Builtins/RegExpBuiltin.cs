@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Objects;
+using FenBrowser.Js.Regex;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Builtins;
@@ -151,6 +152,16 @@ public sealed class RegExpBuiltin : IBuiltinModule
             options |= RegexOptions.Singleline;
         }
 
+        // ECMA-262 22.2.3.1: validate the pattern before creating the object.
+        try
+        {
+            Regex.RegExpCompiler.ValidatePattern(pattern, normalizedFlags);
+        }
+        catch (Regex.RegexSyntaxError ex)
+        {
+            throw new JsThrownException(ctx.CreateSyntaxError(ex.Message));
+        }
+
         var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
         BclRegex regex;
         try
@@ -162,7 +173,17 @@ public sealed class RegExpBuiltin : IBuiltinModule
             throw new JsThrownException(ctx.CreateSyntaxError(ex.Message));
         }
 
-        var obj = new RegExpObject(pattern, normalizedFlags, regex);
+        RegexProgram? nativeProgram;
+        try
+        {
+            nativeProgram = Regex.RegExpCompiler.CompileNative(pattern, normalizedFlags);
+        }
+        catch (Regex.RegexSyntaxError ex)
+        {
+            throw new JsThrownException(ctx.CreateSyntaxError(ex.Message));
+        }
+
+        var obj = new RegExpObject(pattern, normalizedFlags, regex, nativeProgram);
         obj.SetPrototype(protoHandle);
         // source/flags and the individual flag booleans are accessor properties on
         // %RegExp.prototype% (installed by the interpreter's InstallRegExpFlagAccessors);
