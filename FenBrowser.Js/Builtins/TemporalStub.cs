@@ -56,6 +56,15 @@ public sealed class TemporalStub : IBuiltinModule
         return v.Tag == JsValueTag.String ? v.AsString() : "";
     }
 
+    /// <summary>Safely apply years/months/days to a DateTime, clamping to valid range.</summary>
+    private static DateTime SafeAddDate(DateTime dt, int years, int months, int days)
+    {
+        try { dt = dt.AddYears(years); } catch (ArgumentOutOfRangeException) { dt = years > 0 ? DateTime.MaxValue : DateTime.MinValue; }
+        try { dt = dt.AddMonths(months); } catch (ArgumentOutOfRangeException) { dt = months > 0 ? DateTime.MaxValue : DateTime.MinValue; }
+        try { dt = dt.AddDays(days); } catch (ArgumentOutOfRangeException) { dt = days > 0 ? DateTime.MaxValue : DateTime.MinValue; }
+        return dt;
+    }
+
     /// <summary>Reconstruct a DateTime from a PlainDate _v object.</summary>
     private static DateTime DecodePlainDate(JsHeap h, JsObject o)
     {
@@ -106,12 +115,13 @@ public sealed class TemporalStub : IBuiltinModule
             var slots = h.GetObject(value.Value.AsObjectHandle());
             if (slots.TryGetProperty("ensBig", x => h.GetObject(x), out var exact) && exact.Value.Tag == JsValueTag.BigInt)
             {
-                return (long)exact.Value.AsBigInt();
+                return ToSafeLong(exact.Value.AsBigInt());
             }
         }
 
         var ens = GetVNum(h, o, "ens");
-        return (long)ens;
+        if (double.IsNaN(ens) || double.IsInfinity(ens)) return 0L;
+        return ToSafeLong(new System.Numerics.BigInteger(ens));
     }
 
     /// <summary>Compare fields of two _v objects. Returns -1, 0, or 1.</summary>
@@ -467,22 +477,49 @@ public sealed class TemporalStub : IBuiltinModule
 
     private static JsValue ConstructDuration(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> args)
     {
-        // Temporal.Duration.from accepts an ISO 8601 string; the `new Temporal.Duration`
-        // constructor takes positional numeric components (years … nanoseconds), each
-        // defaulting to 0. Distinguish on the first argument's type.
-        if (args.Count > 0 && args[0].Tag == JsValueTag.String)
-        {
-            var s = args[0].AsString();
-            if (ParseIsoDuration(s, out var y, out var mo, out var w, out var d,
-                    out var hr, out var mi, out var sec, out var ms, out var us, out var ns))
-                return MakeDuration(ctx, h, y, mo, w, d, hr, mi, sec, ms, us, ns);
-            return MakeDuration(ctx, h, TimeSpan.Zero);
-        }
-
-        int Comp(int i) => i < args.Count ? (int)ctx.ToNumber(args[i]) : 0;
+        // Constructor: new Temporal.Duration(y?, mo?, w?, d?, h?, mi?, s?, ms?, mic?, ns?)
+        int Comp(int i) => i < args.Count ? ToSafeInt(ctx.ToNumber(args[i])) : 0;
         return MakeDuration(ctx, h,
             Comp(0), Comp(1), Comp(2), Comp(3), Comp(4),
             Comp(5), Comp(6), Comp(7), Comp(8), Comp(9));
+    }
+
+    /// <summary>Temporal.Duration.from(arg) — handles string, Duration object (copy), and property bag.</summary>
+    private static JsValue DurationFrom(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> args, ObjectHandle protoH)
+    {
+        if (args.Count == 0) throw new JsThrownException(ctx.CreateTypeError("Duration.from requires at least 1 argument."));
+        var arg = args[0];
+
+        if (arg.Tag == JsValueTag.String)
+        {
+            var s = arg.AsString();
+            if (ParseIsoDuration(s, out var y, out var mo, out var w, out var d,
+                    out var hr, out var mi, out var sec, out var ms, out var us, out var ns))
+                return AttachPrototype(h, MakeDuration(ctx, h, y, mo, w, d, hr, mi, sec, ms, us, ns), protoH);
+            throw new JsThrownException(ctx.CreateRangeError($"Invalid duration string: {s}"));
+        }
+
+        if (arg.Tag == JsValueTag.Object)
+        {
+            var obj = h.GetObject(arg.AsObjectHandle());
+            // If it's already a Duration instance, copy its fields
+            if (IsTemporalInstance(h, arg, protoH))
+            {
+                var dur = DecodeDuration(h, obj);
+                return AttachPrototype(h, MakeDuration(ctx, h, dur.years, dur.months, dur.weeks, dur.days,
+                    dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos), protoH);
+            }
+            // Property bag: read individual fields directly from the object
+            return AttachPrototype(h, MakeDuration(ctx, h,
+                ToSafeInt(ReadOwnNum(h, obj, "years")), ToSafeInt(ReadOwnNum(h, obj, "months")),
+                ToSafeInt(ReadOwnNum(h, obj, "weeks")), ToSafeInt(ReadOwnNum(h, obj, "days")),
+                ToSafeInt(ReadOwnNum(h, obj, "hours")), ToSafeInt(ReadOwnNum(h, obj, "minutes")),
+                ToSafeInt(ReadOwnNum(h, obj, "seconds")), ToSafeInt(ReadOwnNum(h, obj, "milliseconds")),
+                ToSafeInt(ReadOwnNum(h, obj, "microseconds")), ToSafeInt(ReadOwnNum(h, obj, "nanoseconds"))), protoH);
+        }
+
+        // Other types: convert to number
+        return AttachPrototype(h, MakeDuration(ctx, h, ToSafeInt(ctx.ToNumber(arg)), 0, 0, 0, 0, 0, 0, 0, 0, 0), protoH);
     }
 
     // ISO 8601 parsing helpers for Temporal constructors.
@@ -548,6 +585,11 @@ public sealed class TemporalStub : IBuiltinModule
         if (string.IsNullOrEmpty(s) || s[0] != 'P') return false;
         s = s.Substring(1);
         if (s.Length == 0) return true;
+
+        // Safely parse a long (handles values larger than int range) then clamp
+        long SafeLong(string str) => long.TryParse(str, out var v) ? v : 0L;
+        int SafeInt(string str) => int.TryParse(str, out var v) ? v : 0;
+
         var timeIdx = s.IndexOf('T');
         var datePart = timeIdx >= 0 ? s.Substring(0, timeIdx) : s;
         var timePart = timeIdx >= 0 ? s.Substring(timeIdx + 1) : "";
@@ -558,14 +600,14 @@ public sealed class TemporalStub : IBuiltinModule
             var numStart = i;
             while (i < datePart.Length && char.IsDigit(datePart[i])) i++;
             if (i == numStart) return false;
-            var num = int.Parse(datePart.Substring(numStart, i - numStart));
+            var num = SafeLong(datePart.Substring(numStart, i - numStart));
             if (i >= datePart.Length) return false;
             switch (datePart[i])
             {
-                case 'Y': years = num; break;
-                case 'M': months = num; break;
-                case 'W': weeks = num; break;
-                case 'D': days = num; break;
+                case 'Y': years = ToSafeInt(num); break;
+                case 'M': months = ToSafeInt(num); break;
+                case 'W': weeks = ToSafeInt(num); break;
+                case 'D': days = ToSafeInt(num); break;
                 default: return false;
             }
             i++;
@@ -584,23 +626,23 @@ public sealed class TemporalStub : IBuiltinModule
                 var dotIdx = numStr.IndexOf('.');
                 var wholePart = numStr.Substring(0, dotIdx);
                 var fracPart = numStr.Substring(dotIdx + 1).PadRight(9, '0');
-                var whole = int.Parse(wholePart.Length > 0 ? wholePart : "0");
+                var whole = SafeInt(wholePart.Length > 0 ? wholePart : "0");
                 switch (timePart[i])
                 {
-                    case 'H': hours = whole; minutes = int.Parse(fracPart.Substring(0,2)); seconds = int.Parse(fracPart.Substring(2,2)); break;
-                    case 'M': minutes = whole; seconds = int.Parse(fracPart.Substring(0,2)); millis = int.Parse(fracPart.Substring(2,3)); break;
-                    case 'S': seconds = whole; millis = int.Parse(fracPart.Substring(0,3)); micros = int.Parse(fracPart.Substring(3,3)); nanos = int.Parse(fracPart.Substring(6,3)); break;
+                    case 'H': hours = whole; minutes = SafeInt(fracPart.Substring(0,2)); seconds = SafeInt(fracPart.Substring(2,2)); break;
+                    case 'M': minutes = whole; seconds = SafeInt(fracPart.Substring(0,2)); millis = SafeInt(fracPart.Substring(2,3)); break;
+                    case 'S': seconds = whole; millis = SafeInt(fracPart.Substring(0,3)); micros = SafeInt(fracPart.Substring(3,3)); nanos = SafeInt(fracPart.Substring(6,3)); break;
                 }
                 i++;
             }
             else
             {
-                var num = int.Parse(numStr);
+                var num = SafeLong(numStr);
                 switch (timePart[i])
                 {
-                    case 'H': hours = num; break;
-                    case 'M': minutes = num; break;
-                    case 'S': seconds = num; break;
+                    case 'H': hours = ToSafeInt(num); break;
+                    case 'M': minutes = ToSafeInt(num); break;
+                    case 'S': seconds = ToSafeInt(num); break;
                     default: return false;
                 }
                 i++;
@@ -665,10 +707,26 @@ public sealed class TemporalStub : IBuiltinModule
         return value;
     }
 
+    /// <summary>Check whether value is an instance of a Temporal type (its prototype chain contains protoH).</summary>
+    private static bool IsTemporalInstance(JsHeap h, JsValue v, ObjectHandle protoH)
+    {
+        if (v.Tag != JsValueTag.Object) return false;
+        var obj = h.GetObject(v.AsObjectHandle());
+        for (int i = 0; i < 64; i++) // safety bound
+        {
+            var p = obj.PrototypeHandle;
+            if (p is not { } ph) return false;
+            if (ph.Equals(protoH)) return true;
+            obj = h.GetObject(ph);
+        }
+        return false;
+    }
+
     private static void AddGetter(JsHeap h, ObjectHandle pH, JsObject p, string n, Func<JsObject, JsValue> g)
     {
+        var brandProto = pH;
         var gf = new NativeFunctionObject("get " + n, (tv, _) =>
-            tv.Tag == JsValueTag.Object ? g(h.GetObject(tv.AsObjectHandle())) : JsValue.Undefined, length: 0);
+            IsTemporalInstance(h, tv, brandProto) ? g(h.GetObject(tv.AsObjectHandle())) : JsValue.Undefined, length: 0);
         var gH = h.AllocateObject(gf, AllocationSite.Current());
         p.DefineOwnProperty(n, JsPropertyDescriptor.Accessor(JsValue.FromObject(gH), JsValue.Undefined, Enumerable: false, Configurable: true));
         h.WriteBarrier(pH, gH);
@@ -677,9 +735,12 @@ public sealed class TemporalStub : IBuiltinModule
     private static void AddMethod(IBuiltinContext ctx, JsHeap h, ObjectHandle pH, JsObject p, string n,
         Func<JsObject, IReadOnlyList<JsValue>, JsValue> fn, int len = 1)
     {
+        // Capture protoH for brand checking
+        var brandProto = pH;
         var nf = new NativeFunctionObject(n, (tv, a) =>
         {
-            if (tv.Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError($"Temporal.{n}: invalid receiver."));
+            if (!IsTemporalInstance(h, tv, brandProto))
+                throw new JsThrownException(ctx.CreateTypeError($"{n}: receiver is not a valid Temporal instance."));
             return fn(h.GetObject(tv.AsObjectHandle()), a);
         }, length: len);
         var nfH = h.AllocateObject(nf, AllocationSite.Current());
@@ -691,6 +752,11 @@ public sealed class TemporalStub : IBuiltinModule
         Func<IReadOnlyList<JsValue>, JsValue> fn, int len = 1)
     {
         var nf = new NativeFunctionObject(n, (_, a) => fn(a), length: len);
+        // Static functions must have Function.prototype as their [[Prototype]]
+        var fnCH = ctx.MaterializeFunctionConstructor();
+        var fnC = h.GetObject(fnCH);
+        if (ctx.TryGetPropertyValue(fnC, JsValue.FromObject(fnCH), "prototype", out var fp) && fp.Tag == JsValueTag.Object)
+            nf.SetPrototype(fp.AsObjectHandle());
         var nfH = h.AllocateObject(nf, AllocationSite.Current());
         c.DefineOwnProperty(n, new JsPropertyDescriptor(JsValue.FromObject(nfH), true, false, true));
         h.WriteBarrier(cH, nfH);
@@ -714,6 +780,45 @@ public sealed class TemporalStub : IBuiltinModule
             if (data.TryGetProperty(k, x => h.GetObject(x), out var vd)) return vd.Value;
         }
         return JsValue.Undefined;
+    }
+
+    /// <summary>Check if an object has an own property (not inherited, not undefined).</summary>
+    private static bool HasOwn(JsHeap h, JsObject o, string name)
+    {
+        return o.TryGetProperty(name, x => h.GetObject(x), out var vd) && vd.Value.Tag != JsValueTag.Undefined;
+    }
+
+    /// <summary>Read a numeric own-property directly from a plain object (not from _v).</summary>
+    private static double ReadOwnNum(JsHeap h, JsObject o, string name)
+    {
+        if (o.TryGetProperty(name, x => h.GetObject(x), out var vd))
+            return vd.Value.AsNumber();
+        return 0;
+    }
+
+    /// <summary>Read a string own-property directly from a plain object (not from _v).</summary>
+    private static string ReadOwnStr(JsHeap h, JsObject o, string name)
+    {
+        if (o.TryGetProperty(name, x => h.GetObject(x), out var vd) && vd.Value.Tag == JsValueTag.String)
+            return vd.Value.AsString();
+        return "";
+    }
+
+    /// <summary>Convert a double to int safely, clamping to int range (prevents overflow crashes).</summary>
+    private static int ToSafeInt(double v)
+    {
+        if (double.IsNaN(v) || double.IsInfinity(v)) return 0;
+        if (v > int.MaxValue) return int.MaxValue;
+        if (v < int.MinValue) return int.MinValue;
+        return (int)v;
+    }
+
+    /// <summary>Convert a BigInteger to long safely, clamping to long range.</summary>
+    private static long ToSafeLong(System.Numerics.BigInteger bi)
+    {
+        if (bi > long.MaxValue) return long.MaxValue;
+        if (bi < long.MinValue) return long.MinValue;
+        return (long)bi;
     }
 
     private static JsObject MakeData(JsHeap h)
@@ -828,7 +933,7 @@ public sealed class TemporalStub : IBuiltinModule
                 if (GetVNum(h, o, f) != 0) return JsValue.FromBoolean(false);
             return JsValue.FromBoolean(true);
         });
-        AddMethod(ctx, h, pH, p, "with", (o, _) => CloneTemporal(ctx, h, o), 1);
+        AddMethod(ctx, h, pH, p, "with", (o, a) => DurationWith(ctx, h, o, a), 1);
         AddMethod(ctx, h, pH, p, "negated", (o, _) => {
             var d = DecodeDuration(h, o);
             return MakeDuration(ctx, h, -d.years, -d.months, -d.weeks, -d.days, -d.hours, -d.minutes, -d.seconds, -d.millis, -d.micros, -d.nanos);
@@ -855,7 +960,7 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatDuration(h, o), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("Duration.prototype.valueOf throws.")), 0);
         var c = h.GetObject(cH);
-        AddStatic(ctx, h, cH, c, "from", a => ConstructDuration(ctx, h, a), 1);
+        AddStatic(ctx, h, cH, c, "from", a => DurationFrom(ctx, h, a, pH), 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
             if (a.Count < 2 || a[0].Tag != JsValueTag.Object || a[1].Tag != JsValueTag.Object) return JsValue.FromNumber(0);
             double totalA = DurationTotalNs(h, h.GetObject(a[0].AsObjectHandle()));
@@ -867,16 +972,16 @@ public sealed class TemporalStub : IBuiltinModule
     /// <summary>Decode all Duration fields from _v object.</summary>
     private static (int years, int months, int weeks, int days, int hours, int minutes, int seconds, int millis, int micros, int nanos)
         DecodeDuration(JsHeap h, JsObject o) => (
-        (int)GetVNum(h, o, "years"),
-        (int)GetVNum(h, o, "months"),
-        (int)GetVNum(h, o, "weeks"),
-        (int)GetVNum(h, o, "days"),
-        (int)GetVNum(h, o, "hours"),
-        (int)GetVNum(h, o, "minutes"),
-        (int)GetVNum(h, o, "seconds"),
-        (int)GetVNum(h, o, "milliseconds"),
-        (int)GetVNum(h, o, "microseconds"),
-        (int)GetVNum(h, o, "nanoseconds")
+        ToSafeInt(GetVNum(h, o, "years")),
+        ToSafeInt(GetVNum(h, o, "months")),
+        ToSafeInt(GetVNum(h, o, "weeks")),
+        ToSafeInt(GetVNum(h, o, "days")),
+        ToSafeInt(GetVNum(h, o, "hours")),
+        ToSafeInt(GetVNum(h, o, "minutes")),
+        ToSafeInt(GetVNum(h, o, "seconds")),
+        ToSafeInt(GetVNum(h, o, "milliseconds")),
+        ToSafeInt(GetVNum(h, o, "microseconds")),
+        ToSafeInt(GetVNum(h, o, "nanoseconds"))
     );
 
     /// <summary>Duration fields → total nanoseconds.</summary>
@@ -955,7 +1060,26 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "toZonedDateTimeISO", (o, a) => InstantToZonedDateTimeIso(ctx, h, o, a), 1);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("Instant.prototype.valueOf throws.")), 0);
         var c = h.GetObject(cH);
-        AddStatic(ctx, h, cH, c, "from", a => AttachPrototype(h, ConstructInstant(ctx, h, a), pH), 1);
+        AddStatic(ctx, h, cH, c, "from", a => {
+            if (a.Count == 0) throw new JsThrownException(ctx.CreateTypeError("Instant.from requires at least 1 argument."));
+            var arg = a[0];
+            if (arg.Tag == JsValueTag.BigInt) return AttachPrototype(h, MakeInstantFromNanoseconds(h, ToSafeLong(arg.AsBigInt())), pH);
+            if (arg.Tag == JsValueTag.String) return AttachPrototype(h, ConstructInstant(ctx, h, a), pH);
+            if (arg.Tag == JsValueTag.Object)
+            {
+                // Call toString on the object and parse the result
+                var str = ctx.ToStringValue(arg);
+                var dt = ParseIsoDateTime(str);
+                if (dt.HasValue && str.Contains("T"))
+                    return AttachPrototype(h, MakeInstant(ctx, h, dt.Value.Kind == DateTimeKind.Local ? dt.Value.ToUniversalTime() : dt.Value), pH);
+                // Try as epoch milliseconds number
+                double num = ctx.ToNumber(arg);
+                if (!double.IsNaN(num) && !double.IsInfinity(num))
+                    return AttachPrototype(h, MakeInstant(ctx, h, Epoch.AddTicks((long)(num * 10000))), pH);
+                throw new JsThrownException(ctx.CreateRangeError($"{str} is not a valid ISO string for Instant"));
+            }
+            return AttachPrototype(h, ConstructInstant(ctx, h, a), pH);
+        }, 1);
         AddStatic(ctx, h, cH, c, "fromEpochSeconds", a => AttachPrototype(h, MakeInstantEpoch(ctx, h, a, 1_000_000_000L), pH), 1);
         AddStatic(ctx, h, cH, c, "fromEpochMilliseconds", a => AttachPrototype(h, MakeInstantEpoch(ctx, h, a, 1_000_000L), pH), 1);
         AddStatic(ctx, h, cH, c, "fromEpochMicroseconds", a => AttachPrototype(h, MakeInstantEpoch(ctx, h, a, 1_000L), pH), 1);
@@ -978,6 +1102,7 @@ public sealed class TemporalStub : IBuiltinModule
         AddGetter(h, pH, p, "month", o => GetV(h, o, "m"));
         AddGetter(h, pH, p, "monthCode", o => { var dt = DecodePlainDate(h, o); return JsValue.FromString($"M{dt.Month:D2}"); });
         AddGetter(h, pH, p, "day", o => GetV(h, o, "d"));
+        AddGetter(h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
         AddGetter(h, pH, p, "dayOfWeek", o => { var dt = DecodePlainDate(h, o); int dow = (int)dt.DayOfWeek; return JsValue.FromNumber(dow == 0 ? 7 : dow); });
         AddGetter(h, pH, p, "dayOfYear", o => { var dt = DecodePlainDate(h, o); return JsValue.FromNumber(dt.DayOfYear); });
         AddGetter(h, pH, p, "weekOfYear", o => { var dt = DecodePlainDate(h, o); try { return JsValue.FromNumber(System.Globalization.ISOWeek.GetWeekOfYear(dt)); } catch { return JsValue.FromNumber(1); } });
@@ -988,20 +1113,31 @@ public sealed class TemporalStub : IBuiltinModule
         AddGetter(h, pH, p, "inLeapYear", o => { var dt = DecodePlainDate(h, o); return JsValue.FromBoolean(DateTime.IsLeapYear(dt.Year)); });
         AddGetter(h, pH, p, "era", o => { int y = (int)GetVNum(h, o, "y"); return JsValue.FromString(y >= 0 ? "ce" : "bce"); });
         AddGetter(h, pH, p, "eraYear", o => { int y = (int)GetVNum(h, o, "y"); return JsValue.FromNumber(Math.Abs(y)); });
-        AddMethod(ctx, h, pH, p, "with", (o, _) => CloneTemporal(ctx, h, o), 1);
+        AddMethod(ctx, h, pH, p, "with", (o, a) => {
+            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("with: argument must be an object."));
+            var bag = h.GetObject(a[0].AsObjectHandle());
+            var dt = DecodePlainDate(h, o);
+            int y = HasOwn(h, bag, "year") ? ToSafeInt(ReadOwnNum(h, bag, "year")) : dt.Year;
+            int m; var mc = ReadOwnStr(h, bag, "monthCode");
+            if (!string.IsNullOrEmpty(mc) && mc.StartsWith("M") && int.TryParse(mc.Substring(1), out var mp)) m = mp;
+            else m = HasOwn(h, bag, "month") ? ToSafeInt(ReadOwnNum(h, bag, "month")) : dt.Month;
+            int d = HasOwn(h, bag, "day") ? ToSafeInt(ReadOwnNum(h, bag, "day")) : dt.Day;
+            y = Math.Max(1, Math.Min(9999, y)); m = Math.Max(1, Math.Min(12, m)); d = Math.Max(1, Math.Min(28, d));
+            return MakePlainDate(ctx, h, new DateTime(y, m, d));
+        }, 1);
         AddMethod(ctx, h, pH, p, "withCalendar", (o, _) => CloneTemporal(ctx, h, o), 1);
         AddMethod(ctx, h, pH, p, "add", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
             var dur = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
             var dt = DecodePlainDate(h, o);
-            dt = dt.AddYears(dur.years).AddMonths(dur.months).AddDays(dur.weeks * 7 + dur.days);
+            dt = SafeAddDate(dt, dur.years, dur.months, dur.weeks * 7 + dur.days);
             return MakePlainDate(ctx, h, dt);
         }, 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
             var dur = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
             var dt = DecodePlainDate(h, o);
-            dt = dt.AddYears(-dur.years).AddMonths(-dur.months).AddDays(-(dur.weeks * 7 + dur.days));
+            dt = SafeAddDate(dt, -dur.years, -dur.months, -(dur.weeks * 7 + dur.days));
             return MakePlainDate(ctx, h, dt);
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
@@ -1030,9 +1166,36 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("PlainDate.prototype.valueOf throws.")), 0);
         var c = h.GetObject(cH);
         AddStatic(ctx, h, cH, c, "from", a => {
-            var s = a.Count > 0 ? ToStrArg(ctx, a[0]) : "";
-            var dt = ParseIsoDate(s) ?? DateTime.Today;
-            return MakePlainDate(ctx, h, dt);
+            if (a.Count == 0) throw new JsThrownException(ctx.CreateTypeError("PlainDate.from requires at least 1 argument."));
+            var arg = a[0];
+            if (arg.Tag == JsValueTag.String)
+            {
+                var s = arg.AsString();
+                var dt = ParseIsoDate(s);
+                if (dt.HasValue) return AttachPrototype(h, MakePlainDate(ctx, h, dt.Value, "iso8601"), pH);
+                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for PlainDate"));
+            }
+            if (arg.Tag == JsValueTag.Object)
+            {
+                var obj = h.GetObject(arg.AsObjectHandle());
+                if (IsTemporalInstance(h, arg, pH))
+                {
+                    int cy = ToSafeInt(GetVNum(h, obj, "y")), cm = ToSafeInt(GetVNum(h, obj, "m")), cd = ToSafeInt(GetVNum(h, obj, "d"));
+                    string ccal = GetVStr(h, obj, "calendarId"); if (string.IsNullOrEmpty(ccal)) ccal = "iso8601";
+                    return AttachPrototype(h, MakePlainDate(ctx, h, new DateTime(cy, cm, cd), ccal), pH);
+                }
+                // Property bag
+                int y = ToSafeInt(ReadOwnNum(h, obj, "year"));
+                int m; var mc = ReadOwnStr(h, obj, "monthCode");
+                if (!string.IsNullOrEmpty(mc) && mc.StartsWith("M") && int.TryParse(mc.Substring(1), out var mp)) m = mp;
+                else m = ToSafeInt(ReadOwnNum(h, obj, "month"));
+                int d = ToSafeInt(ReadOwnNum(h, obj, "day"));
+                string cal = ReadOwnStr(h, obj, "calendar"); if (string.IsNullOrEmpty(cal)) cal = "iso8601";
+                if (cal != "iso8601") throw new JsThrownException(ctx.CreateRangeError($"Calendar '{cal}' is not supported."));
+                y = Math.Max(1, Math.Min(9999, y)); m = Math.Max(1, Math.Min(12, m)); d = Math.Max(1, Math.Min(28, d));
+                return AttachPrototype(h, MakePlainDate(ctx, h, new DateTime(y, m, d), cal), pH);
+            }
+            throw new JsThrownException(ctx.CreateTypeError("PlainDate.from: argument must be a string, PlainDate, or property bag."));
         }, 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
             if (a.Count < 2 || a[0].Tag != JsValueTag.Object || a[1].Tag != JsValueTag.Object) return JsValue.FromNumber(0);
@@ -1048,7 +1211,15 @@ public sealed class TemporalStub : IBuiltinModule
         var p = h.GetObject(pH);
         foreach (var f in new[] { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" })
             AddGetter(h, pH, p, f, o => GetV(h, o, f));
-        AddMethod(ctx, h, pH, p, "with", (o, _) => CloneTemporal(ctx, h, o), 1);
+        AddMethod(ctx, h, pH, p, "with", (o, a) => {
+            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("PlainTime.with: argument must be an object."));
+            var bag = h.GetObject(a[0].AsObjectHandle());
+            int V(string name, int cur) => HasOwn(h, bag, name) ? ToSafeInt(ReadOwnNum(h, bag, name)) : cur;
+            return MakePlainTime(ctx, h,
+                V("hour", ToSafeInt(GetVNum(h, o, "hour"))), V("minute", ToSafeInt(GetVNum(h, o, "minute"))),
+                V("second", ToSafeInt(GetVNum(h, o, "second"))), V("millisecond", ToSafeInt(GetVNum(h, o, "millisecond"))),
+                V("microsecond", ToSafeInt(GetVNum(h, o, "microsecond"))), V("nanosecond", ToSafeInt(GetVNum(h, o, "nanosecond"))));
+        }, 1);
         AddMethod(ctx, h, pH, p, "add", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
             var dur = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
@@ -1089,7 +1260,28 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainTime(h, o), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
-        AddStatic(ctx, h, cH, c, "from", a => AttachPrototype(h, ConstructPlainTime(ctx, h, a), pH), 1);
+        AddStatic(ctx, h, cH, c, "from", a => {
+            if (a.Count == 0) throw new JsThrownException(ctx.CreateTypeError("PlainTime.from requires at least 1 argument."));
+            var arg = a[0];
+            if (arg.Tag == JsValueTag.String) return AttachPrototype(h, ConstructPlainTime(ctx, h, a), pH);
+            if (arg.Tag == JsValueTag.Object)
+            {
+                var obj = h.GetObject(arg.AsObjectHandle());
+                if (IsTemporalInstance(h, arg, pH))
+                {
+                    int hr = ToSafeInt(GetVNum(h, obj, "hour")), mi = ToSafeInt(GetVNum(h, obj, "minute")),
+                        se = ToSafeInt(GetVNum(h, obj, "second")), ms = ToSafeInt(GetVNum(h, obj, "millisecond")),
+                        us = ToSafeInt(GetVNum(h, obj, "microsecond")), ns = ToSafeInt(GetVNum(h, obj, "nanosecond"));
+                    return AttachPrototype(h, MakePlainTime(ctx, h, hr, mi, se, ms, us, ns), pH);
+                }
+                // Property bag
+                return AttachPrototype(h, MakePlainTime(ctx, h,
+                    ToSafeInt(ReadOwnNum(h, obj, "hour")), ToSafeInt(ReadOwnNum(h, obj, "minute")),
+                    ToSafeInt(ReadOwnNum(h, obj, "second")), ToSafeInt(ReadOwnNum(h, obj, "millisecond")),
+                    ToSafeInt(ReadOwnNum(h, obj, "microsecond")), ToSafeInt(ReadOwnNum(h, obj, "nanosecond"))), pH);
+            }
+            return AttachPrototype(h, ConstructPlainTime(ctx, h, a), pH);
+        }, 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
             if (a.Count < 2 || a[0].Tag != JsValueTag.Object || a[1].Tag != JsValueTag.Object) return JsValue.FromNumber(0);
             return JsValue.FromNumber(FieldsCompare(h, h.GetObject(a[0].AsObjectHandle()), h.GetObject(a[1].AsObjectHandle()), "hour","minute","second","millisecond","microsecond","nanosecond"));
@@ -1105,6 +1297,7 @@ public sealed class TemporalStub : IBuiltinModule
         foreach (var f in new[] { "year", "month", "day", "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" })
             AddGetter(h, pH, p, f, o => GetV(h, o, f));
         AddGetter(h, pH, p, "monthCode", o => { var dt = DecodePlainDateTime(h, o); return JsValue.FromString($"M{dt.Month:D2}"); });
+        AddGetter(h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
         AddGetter(h, pH, p, "dayOfWeek", o => { var dt = DecodePlainDateTime(h, o); int dow = (int)dt.DayOfWeek; return JsValue.FromNumber(dow == 0 ? 7 : dow); });
         AddGetter(h, pH, p, "dayOfYear", o => { var dt = DecodePlainDateTime(h, o); return JsValue.FromNumber(dt.DayOfYear); });
         AddGetter(h, pH, p, "weekOfYear", o => { var dt = DecodePlainDateTime(h, o); try { return JsValue.FromNumber(System.Globalization.ISOWeek.GetWeekOfYear(dt)); } catch { return JsValue.FromNumber(1); } });
@@ -1115,7 +1308,18 @@ public sealed class TemporalStub : IBuiltinModule
         AddGetter(h, pH, p, "inLeapYear", o => { var dt = DecodePlainDateTime(h, o); return JsValue.FromBoolean(DateTime.IsLeapYear(dt.Year)); });
         AddGetter(h, pH, p, "era", o => { int y = (int)GetVNum(h, o, "year"); return JsValue.FromString(y >= 0 ? "ce" : "bce"); });
         AddGetter(h, pH, p, "eraYear", o => { int y = (int)GetVNum(h, o, "year"); return JsValue.FromNumber(Math.Abs(y)); });
-        AddMethod(ctx, h, pH, p, "with", (o, _) => CloneTemporal(ctx, h, o), 1);
+        AddMethod(ctx, h, pH, p, "with", (o, a) => {
+            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("with: argument must be an object."));
+            var bag = h.GetObject(a[0].AsObjectHandle());
+            var dt = DecodePlainDate(h, o);
+            int y = HasOwn(h, bag, "year") ? ToSafeInt(ReadOwnNum(h, bag, "year")) : dt.Year;
+            int m; var mc = ReadOwnStr(h, bag, "monthCode");
+            if (!string.IsNullOrEmpty(mc) && mc.StartsWith("M") && int.TryParse(mc.Substring(1), out var mp)) m = mp;
+            else m = HasOwn(h, bag, "month") ? ToSafeInt(ReadOwnNum(h, bag, "month")) : dt.Month;
+            int d = HasOwn(h, bag, "day") ? ToSafeInt(ReadOwnNum(h, bag, "day")) : dt.Day;
+            y = Math.Max(1, Math.Min(9999, y)); m = Math.Max(1, Math.Min(12, m)); d = Math.Max(1, Math.Min(28, d));
+            return MakePlainDate(ctx, h, new DateTime(y, m, d));
+        }, 1);
         AddMethod(ctx, h, pH, p, "withCalendar", (o, _) => CloneTemporal(ctx, h, o), 1);
         AddMethod(ctx, h, pH, p, "add", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
@@ -1158,7 +1362,34 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "toZonedDateTime", (o, _) => MakeZonedDateTime(ctx, h, DateTimeOffset.UtcNow, "UTC"), 1);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
-        AddStatic(ctx, h, cH, c, "from", a => AttachPrototype(h, ConstructPlainDateTime(ctx, h, a), pH), 1);
+        AddStatic(ctx, h, cH, c, "from", a => {
+            if (a.Count == 0) throw new JsThrownException(ctx.CreateTypeError("PlainDateTime.from requires at least 1 argument."));
+            var arg = a[0];
+            if (arg.Tag == JsValueTag.String) return AttachPrototype(h, ConstructPlainDateTime(ctx, h, a), pH);
+            if (arg.Tag == JsValueTag.Object)
+            {
+                var obj = h.GetObject(arg.AsObjectHandle());
+                if (IsTemporalInstance(h, arg, pH))
+                {
+                    int y = ToSafeInt(GetVNum(h, obj, "year")), mo = ToSafeInt(GetVNum(h, obj, "month")),
+                        d = ToSafeInt(GetVNum(h, obj, "day")), hr = ToSafeInt(GetVNum(h, obj, "hour")),
+                        mi = ToSafeInt(GetVNum(h, obj, "minute")), se = ToSafeInt(GetVNum(h, obj, "second")),
+                        ms = ToSafeInt(GetVNum(h, obj, "millisecond"));
+                    return AttachPrototype(h, MakePlainDateTime(ctx, h, new DateTime(y, mo, d, hr, mi, se, ms), "iso8601"), pH);
+                }
+                // Property bag
+                return AttachPrototype(h, MakePlainDateTime(ctx, h, new DateTime(
+                    Math.Max(1, ToSafeInt(ReadOwnNum(h, obj, "year"))),
+                    Math.Max(1, ToSafeInt(ReadOwnNum(h, obj, "month"))),
+                    Math.Max(1, ToSafeInt(ReadOwnNum(h, obj, "day"))),
+                    ToSafeInt(ReadOwnNum(h, obj, "hour")),
+                    ToSafeInt(ReadOwnNum(h, obj, "minute")),
+                    ToSafeInt(ReadOwnNum(h, obj, "second")),
+                    ToSafeInt(ReadOwnNum(h, obj, "millisecond"))),
+                    ReadOwnStr(h, obj, "calendar") is { Length: > 0 } cal ? cal : "iso8601"), pH);
+            }
+            return AttachPrototype(h, ConstructPlainDateTime(ctx, h, a), pH);
+        }, 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
             if (a.Count < 2 || a[0].Tag != JsValueTag.Object || a[1].Tag != JsValueTag.Object) return JsValue.FromNumber(0);
             return JsValue.FromNumber(FieldsCompare(h, h.GetObject(a[0].AsObjectHandle()), h.GetObject(a[1].AsObjectHandle()), "year","month","day","hour","minute","second","millisecond","microsecond","nanosecond"));
@@ -1173,25 +1404,34 @@ public sealed class TemporalStub : IBuiltinModule
         AddGetter(h, pH, p, "year", o => GetV(h, o, "y"));
         AddGetter(h, pH, p, "month", o => GetV(h, o, "m"));
         AddGetter(h, pH, p, "monthCode", o => { var dt = DecodePlainYearMonth(h, o); return JsValue.FromString($"M{dt.Month:D2}"); });
+        AddGetter(h, pH, p, "calendarId", _ => JsValue.FromString("iso8601"));
         AddGetter(h, pH, p, "daysInMonth", o => { var dt = DecodePlainYearMonth(h, o); return JsValue.FromNumber(DateTime.DaysInMonth(dt.Year, dt.Month)); });
         AddGetter(h, pH, p, "daysInYear", o => { var dt = DecodePlainYearMonth(h, o); return JsValue.FromNumber(DateTime.IsLeapYear(dt.Year) ? 366 : 365); });
         AddGetter(h, pH, p, "monthsInYear", o => JsValue.FromNumber(12));
         AddGetter(h, pH, p, "inLeapYear", o => { var dt = DecodePlainYearMonth(h, o); return JsValue.FromBoolean(DateTime.IsLeapYear(dt.Year)); });
         AddGetter(h, pH, p, "era", o => { int y = (int)GetVNum(h, o, "y"); return JsValue.FromString(y >= 0 ? "ce" : "bce"); });
         AddGetter(h, pH, p, "eraYear", o => { int y = (int)GetVNum(h, o, "y"); return JsValue.FromNumber(Math.Abs(y)); });
-        AddMethod(ctx, h, pH, p, "with", (o, _) => CloneTemporal(ctx, h, o), 1);
+        AddMethod(ctx, h, pH, p, "with", (o, a) => {
+            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("PlainYearMonth.with: argument must be an object."));
+            var bag = h.GetObject(a[0].AsObjectHandle());
+            int y = HasOwn(h, bag, "year") ? ToSafeInt(ReadOwnNum(h, bag, "year")) : ToSafeInt(GetVNum(h, o, "y"));
+            int m; var mc = ReadOwnStr(h, bag, "monthCode");
+            if (!string.IsNullOrEmpty(mc) && mc.StartsWith("M") && int.TryParse(mc.Substring(1), out var mp)) m = mp;
+            else m = HasOwn(h, bag, "month") ? ToSafeInt(ReadOwnNum(h, bag, "month")) : ToSafeInt(GetVNum(h, o, "m"));
+            return MakePlainYearMonth(ctx, h, y, m);
+        }, 1); // WITH-STUB
         AddMethod(ctx, h, pH, p, "add", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
             var dur = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
             var dt = DecodePlainYearMonth(h, o);
-            dt = dt.AddYears(dur.years).AddMonths(dur.months);
+            dt = SafeAddDate(dt, dur.years, dur.months, 0);
             return MakePlainYearMonth(ctx, h, dt.Year, dt.Month);
         }, 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
             var dur = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
             var dt = DecodePlainYearMonth(h, o);
-            dt = dt.AddYears(-dur.years).AddMonths(-dur.months);
+            dt = SafeAddDate(dt, -dur.years, -dur.months, 0);
             return MakePlainYearMonth(ctx, h, dt.Year, dt.Month);
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
@@ -1216,7 +1456,32 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainYearMonth(h, o), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
-        AddStatic(ctx, h, cH, c, "from", _ => MakePlainYearMonth(ctx, h, 1970, 1), 1);
+        AddStatic(ctx, h, cH, c, "from", a => {
+            if (a.Count == 0) throw new JsThrownException(ctx.CreateTypeError("PlainYearMonth.from requires at least 1 argument."));
+            var arg = a[0];
+            if (arg.Tag == JsValueTag.String)
+            {
+                var s = arg.AsString();
+                var dt = ParseIsoDate(s);
+                if (dt.HasValue) return AttachPrototype(h, MakePlainYearMonth(ctx, h, dt.Value.Year, dt.Value.Month), pH);
+                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for PlainYearMonth"));
+            }
+            if (arg.Tag == JsValueTag.Object)
+            {
+                var obj = h.GetObject(arg.AsObjectHandle());
+                if (IsTemporalInstance(h, arg, pH))
+                {
+                    int y = ToSafeInt(GetVNum(h, obj, "y")), m = ToSafeInt(GetVNum(h, obj, "m"));
+                    return AttachPrototype(h, MakePlainYearMonth(ctx, h, y, m), pH);
+                }
+                int y2 = ToSafeInt(ReadOwnNum(h, obj, "year"));
+                int m2; var mc = ReadOwnStr(h, obj, "monthCode");
+                if (!string.IsNullOrEmpty(mc) && mc.StartsWith("M") && int.TryParse(mc.Substring(1), out var mp)) m2 = mp;
+                else m2 = ToSafeInt(ReadOwnNum(h, obj, "month"));
+                return AttachPrototype(h, MakePlainYearMonth(ctx, h, y2, m2), pH);
+            }
+            throw new JsThrownException(ctx.CreateTypeError("PlainYearMonth.from: argument must be a string or property bag."));
+        }, 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
             if (a.Count < 2 || a[0].Tag != JsValueTag.Object || a[1].Tag != JsValueTag.Object) return JsValue.FromNumber(0);
             return JsValue.FromNumber(FieldsCompare(h, h.GetObject(a[0].AsObjectHandle()), h.GetObject(a[1].AsObjectHandle()), "y", "m"));
@@ -1230,7 +1495,17 @@ public sealed class TemporalStub : IBuiltinModule
         var p = h.GetObject(pH);
         AddGetter(h, pH, p, "monthCode", o => GetV(h, o, "mc"));
         AddGetter(h, pH, p, "day", o => GetV(h, o, "d"));
-        AddMethod(ctx, h, pH, p, "with", (o, _) => CloneTemporal(ctx, h, o), 1);
+        AddGetter(h, pH, p, "calendarId", _ => JsValue.FromString("iso8601"));
+        AddMethod(ctx, h, pH, p, "with", (o, a) => {
+            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.with: argument must be an object."));
+            var bag = h.GetObject(a[0].AsObjectHandle());
+            int m; var mc2 = ReadOwnStr(h, bag, "monthCode");
+            if (!string.IsNullOrEmpty(mc2) && mc2.StartsWith("M") && int.TryParse(mc2.Substring(1), out var mp2)) m = mp2;
+            else if (HasOwn(h, bag, "month")) m = ToSafeInt(ReadOwnNum(h, bag, "month"));
+            else { var cmc = GetVStr(h, o, "mc"); m = (!string.IsNullOrEmpty(cmc) && cmc.StartsWith("M") && int.TryParse(cmc.Substring(1), out var cp)) ? cp : 1; }
+            int d = HasOwn(h, bag, "day") ? ToSafeInt(ReadOwnNum(h, bag, "day")) : ToSafeInt(GetVNum(h, o, "d"));
+            return MakePlainMonthDay(ctx, h, m, d);
+        }, 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
             var other = h.GetObject(a[0].AsObjectHandle());
@@ -1240,7 +1515,42 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainMonthDay(h, o), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
-        AddStatic(ctx, h, cH, c, "from", _ => MakePlainMonthDay(ctx, h, 1, 1), 1);
+        AddStatic(ctx, h, cH, c, "from", a => {
+            if (a.Count == 0) throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.from requires at least 1 argument."));
+            var arg = a[0];
+            if (arg.Tag == JsValueTag.String)
+            {
+                var s = arg.AsString();
+                var dt = ParseIsoDate(s);
+                if (dt.HasValue) return AttachPrototype(h, MakePlainMonthDay(ctx, h, dt.Value.Month, dt.Value.Day), pH);
+                // Try "--MM-DD" or "MM-DD" format
+                if (s.Length >= 5 && ((s.StartsWith("--") && s[4] == '-') || s[2] == '-'))
+                {
+                    int start = s.StartsWith("--") ? 2 : 0;
+                    if (int.TryParse(s.Substring(start, 2), out int mm) && int.TryParse(s.Substring(start + 3), out int dd))
+                        return AttachPrototype(h, MakePlainMonthDay(ctx, h, mm, dd), pH);
+                }
+                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for PlainMonthDay"));
+            }
+            if (arg.Tag == JsValueTag.Object)
+            {
+                var obj = h.GetObject(arg.AsObjectHandle());
+                if (IsTemporalInstance(h, arg, pH))
+                {
+                    int d = ToSafeInt(GetVNum(h, obj, "d"));
+                    var mc = GetVStr(h, obj, "mc");
+                    int m;
+                    if (!string.IsNullOrEmpty(mc) && mc.StartsWith("M") && int.TryParse(mc.Substring(1), out var mp)) m = mp;
+                    else m = ToSafeInt(GetVNum(h, obj, "month"));
+                    return AttachPrototype(h, MakePlainMonthDay(ctx, h, m, d), pH);
+                }
+                int dm = ToSafeInt(ReadOwnNum(h, obj, "month"));
+                var dmc = ReadOwnStr(h, obj, "monthCode");
+                if (!string.IsNullOrEmpty(dmc) && dmc.StartsWith("M") && int.TryParse(dmc.Substring(1), out var dmp)) dm = dmp;
+                return AttachPrototype(h, MakePlainMonthDay(ctx, h, dm, ToSafeInt(ReadOwnNum(h, obj, "day"))), pH);
+            }
+            throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.from: argument must be a string or property bag."));
+        }, 1);
     }
 
     // ─── Temporal.ZonedDateTime ────────────────────────────
@@ -1266,7 +1576,24 @@ public sealed class TemporalStub : IBuiltinModule
         AddGetter(h, pH, p, "timeZoneId", o => GetV(h, o, "tz"));
         AddGetter(h, pH, p, "era", o => { int y = (int)GetVNum(h, o, "year"); return JsValue.FromString(y >= 0 ? "ce" : "bce"); });
         AddGetter(h, pH, p, "eraYear", o => { int y = (int)GetVNum(h, o, "year"); return JsValue.FromNumber(Math.Abs(y)); });
-        AddMethod(ctx, h, pH, p, "with", (o, _) => CloneTemporal(ctx, h, o), 1);
+        AddMethod(ctx, h, pH, p, "with", (o, a) => {
+            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("ZonedDateTime.with: argument must be an object."));
+            var bag = h.GetObject(a[0].AsObjectHandle());
+            int V2(string name, int c) => HasOwn(h, bag, name) ? ToSafeInt(ReadOwnNum(h, bag, name)) : c;
+            int y = V2("year", ToSafeInt(GetVNum(h, o, "year"))), mo = V2("month", ToSafeInt(GetVNum(h, o, "month"))),
+                d = V2("day", ToSafeInt(GetVNum(h, o, "day"))), hr = V2("hour", ToSafeInt(GetVNum(h, o, "hour"))),
+                mi = V2("minute", ToSafeInt(GetVNum(h, o, "minute"))), se = V2("second", ToSafeInt(GetVNum(h, o, "second"))),
+                ms = V2("millisecond", ToSafeInt(GetVNum(h, o, "millisecond")));
+            var tz = HasOwn(h, bag, "timeZone") ? ReadOwnStr(h, bag, "timeZone") : GetVStr(h, o, "tz");
+            if (string.IsNullOrEmpty(tz)) tz = "UTC";
+            try
+            {
+                var dto = new DateTimeOffset(Math.Max(1,y), Math.Max(1,mo), Math.Max(1,d), hr, mi, se, ms, TimeSpan.Zero);
+                dto = IntlDateTimeFormatting.ConvertToTimeZone(dto, tz, out _);
+                return MakeZonedDateTime(ctx, h, dto, tz);
+            }
+            catch { return MakeZonedDateTime(ctx, h, new DateTimeOffset(Math.Max(1,y), Math.Max(1,mo), Math.Max(1,d), hr, mi, se, ms, TimeSpan.Zero), tz); }
+        }, 1); // WITH-STUB
         AddMethod(ctx, h, pH, p, "withCalendar", (o, _) => CloneTemporal(ctx, h, o), 1);
         AddMethod(ctx, h, pH, p, "withTimeZone", (o, _) => CloneTemporal(ctx, h, o), 1);
         AddMethod(ctx, h, pH, p, "withPlainDate", (o, _) => CloneTemporal(ctx, h, o), 1);
@@ -1286,7 +1613,46 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "getISOFields", (o, _) => JsValue.FromObject(h.AllocateObject(new JsObject(), AllocationSite.Current())), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
-        AddStatic(ctx, h, cH, c, "from", _ => MakeZonedDateTime(ctx, h, DateTimeOffset.UtcNow, "UTC"), 1);
+        AddStatic(ctx, h, cH, c, "from", a => {
+            if (a.Count == 0) throw new JsThrownException(ctx.CreateTypeError("ZonedDateTime.from requires at least 1 argument."));
+            var arg = a[0];
+            if (arg.Tag == JsValueTag.String)
+            {
+                var s = arg.AsString();
+                var dt = ParseIsoDateTime(s);
+                if (dt.HasValue)
+                    return AttachPrototype(h, MakeZonedDateTime(ctx, h, new DateTimeOffset(dt.Value, TimeSpan.Zero), "UTC"), pH);
+                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for ZonedDateTime"));
+            }
+            if (arg.Tag == JsValueTag.Object)
+            {
+                var obj = h.GetObject(arg.AsObjectHandle());
+                if (IsTemporalInstance(h, arg, pH))
+                {
+                    long ns = DecodeInstantNanos(h, obj);
+                    var dto2 = new DateTimeOffset(InstantToDateTime(ns), TimeSpan.Zero);
+                    string tz2 = GetVStr(h, obj, "tz"); if (string.IsNullOrEmpty(tz2)) tz2 = "UTC";
+                    return AttachPrototype(h, MakeZonedDateTime(ctx, h, dto2, tz2), pH);
+                }
+                // Property bag
+                int y = Math.Max(1, Math.Min(9999, ToSafeInt(ReadOwnNum(h, obj, "year")))),
+                    mo = Math.Max(1, Math.Min(12, ToSafeInt(ReadOwnNum(h, obj, "month")))),
+                    d = Math.Max(1, Math.Min(28, ToSafeInt(ReadOwnNum(h, obj, "day")))),
+                    hr = Math.Max(0, Math.Min(23, ToSafeInt(ReadOwnNum(h, obj, "hour")))),
+                    mi = Math.Max(0, Math.Min(59, ToSafeInt(ReadOwnNum(h, obj, "minute")))),
+                    se = Math.Max(0, Math.Min(59, ToSafeInt(ReadOwnNum(h, obj, "second")))),
+                    ms = Math.Max(0, Math.Min(999, ToSafeInt(ReadOwnNum(h, obj, "millisecond"))));
+                var tz = ReadOwnStr(h, obj, "timeZone"); if (string.IsNullOrEmpty(tz)) tz = "UTC";
+                try
+                {
+                    var dto = new DateTimeOffset(y, mo, d, hr, mi, se, ms, TimeSpan.Zero);
+                    dto = IntlDateTimeFormatting.ConvertToTimeZone(dto, tz, out _);
+                    return AttachPrototype(h, MakeZonedDateTime(ctx, h, dto, tz), pH);
+                }
+                catch { return AttachPrototype(h, MakeZonedDateTime(ctx, h, new DateTimeOffset(y, mo, d, hr, mi, se, ms, TimeSpan.Zero), "UTC"), pH); }
+            }
+            throw new JsThrownException(ctx.CreateTypeError("ZonedDateTime.from: argument must be a string or property bag."));
+        }, 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
             if (a.Count < 2 || a[0].Tag != JsValueTag.Object || a[1].Tag != JsValueTag.Object) return JsValue.FromNumber(0);
             long nsA = DecodeInstantNanos(h, h.GetObject(a[0].AsObjectHandle()));
@@ -1376,13 +1742,14 @@ public sealed class TemporalStub : IBuiltinModule
         return MakeInstant(ctx, h, dt);
     }
 
-    private static JsValue MakePlainDate(IBuiltinContext ctx, JsHeap h, DateTime dt)
+    private static JsValue MakePlainDate(IBuiltinContext ctx, JsHeap h, DateTime dt, string calendarId = "iso8601")
     {
         var o = new JsObject();
         var d = new JsObject(); var dH = h.AllocateObject(d, AllocationSite.Current());
         d.SetProperty("y", JsValue.FromNumber(dt.Year));
         d.SetProperty("m", JsValue.FromNumber(dt.Month));
         d.SetProperty("d", JsValue.FromNumber(dt.Day));
+        d.SetProperty("calendarId", JsValue.FromString(calendarId));
         o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.FromObject(dH), false, false, false));
         return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
     }
@@ -1407,7 +1774,7 @@ public sealed class TemporalStub : IBuiltinModule
         return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
     }
 
-    private static JsValue MakePlainDateTime(IBuiltinContext ctx, JsHeap h, DateTime dt)
+    private static JsValue MakePlainDateTime(IBuiltinContext ctx, JsHeap h, DateTime dt, string calendarId = "iso8601")
     {
         var o = new JsObject();
         var d = new JsObject(); var dH = h.AllocateObject(d, AllocationSite.Current());
@@ -1420,6 +1787,7 @@ public sealed class TemporalStub : IBuiltinModule
         d.SetProperty("millisecond", JsValue.FromNumber(dt.Millisecond));
         d.SetProperty("microsecond", JsValue.FromNumber(0));
         d.SetProperty("nanosecond", JsValue.FromNumber(0));
+        d.SetProperty("calendarId", JsValue.FromString(calendarId));
         o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.FromObject(dH), false, false, false));
         return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
     }
@@ -1562,6 +1930,20 @@ public sealed class TemporalStub : IBuiltinModule
         var property = descriptor.Value;
         value = property.Tag == JsValueTag.String ? property.AsString() : ctx.ToStringValue(property);
         return true;
+    }
+
+    /// <summary>Duration.prototype.with — merge duration-like object fields into a copy.</summary>
+    private static JsValue DurationWith(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> a)
+    {
+        if (a.Count < 1 || a[0].Tag != JsValueTag.Object)
+            throw new JsThrownException(ctx.CreateTypeError("Duration.with: argument must be an object."));
+        var bag = h.GetObject(a[0].AsObjectHandle());
+        var dur = DecodeDuration(h, o);
+        int V(string name, int cur) => HasOwn(h, bag, name) ? ToSafeInt(ReadOwnNum(h, bag, name)) : cur;
+        return MakeDuration(ctx, h,
+            V("years", dur.years), V("months", dur.months), V("weeks", dur.weeks), V("days", dur.days),
+            V("hours", dur.hours), V("minutes", dur.minutes), V("seconds", dur.seconds),
+            V("milliseconds", dur.millis), V("microseconds", dur.micros), V("nanoseconds", dur.nanos));
     }
 
     private static JsValue CloneTemporal(IBuiltinContext ctx, JsHeap h, JsObject orig)
