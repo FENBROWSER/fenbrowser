@@ -224,10 +224,17 @@ public sealed partial class BytecodeInterpreter
             var obj = _heap.GetObject(source.AsObjectHandle());
             var iterId = GetWellKnownSymbolId("iterator");
             if (iterId != 0 &&
-                obj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) &&
-                iterDesc.Value.Tag == JsValueTag.Object)
+                obj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc))
             {
-                var iter = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), source);
+                // ECMA-262 7.3.9 GetMethod: invoke getter (if accessor) via GetV.
+                // This propagates any error thrown by the @@iterator accessor.
+                var iterMethod = GetDescriptorValue(iterDesc, source);
+                if (iterMethod.Tag != JsValueTag.Object || !IsCallable(iterMethod))
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Spread syntax requires an iterable with a callable @@iterator."));
+                }
+                var iter = CallFunction(iterMethod, Array.Empty<JsValue>(), source);
                 DrainIteratorIntoList(iter, values);
                 return values;
             }
