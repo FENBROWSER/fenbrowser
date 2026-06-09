@@ -717,7 +717,12 @@ public sealed class BytecodeCompiler
                         newBody,
                         fn.Span,
                         IsAsync: fn.IsAsync,
-                        IsGenerator: fn.IsGenerator);
+                        IsGenerator: fn.IsGenerator,
+                        HasSimpleParameterList: fn.HasSimpleParameterList,
+                        RestParameterIndex: fn.RestParameterIndex,
+                        ParameterBindings: fn.ParameterBindings,
+                        ParameterDefaults: fn.ParameterDefaults,
+                        IsMethod: fn.IsMethod);
                 }
                 else
                 {
