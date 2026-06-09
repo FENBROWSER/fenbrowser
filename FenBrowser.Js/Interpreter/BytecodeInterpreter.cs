@@ -9883,6 +9883,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
 
+        // ECMA-262 23.1.2.2 get Array[@@species] — returns the this value.
+        var speciesId = GetWellKnownSymbolId("species");
+        if (speciesId != 0)
+        {
+            var speciesGetter = new NativeFunctionObject("get [Symbol.species]", (thisValue, _args) => thisValue, length: 0);
+            var speciesGetterHandle = _heap.AllocateObject(speciesGetter, AllocationSite.Current());
+            _ = constructor.DefineOwnSymbolProperty(
+                speciesId,
+                JsPropertyDescriptor.Accessor(
+                    JsValue.FromObject(speciesGetterHandle),
+                    JsValue.Undefined,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(constructorHandle, speciesGetterHandle);
+        }
+
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "push", ArrayPrototypePush, length: 1);
@@ -10845,8 +10861,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         SetLengthOrThrow(ownerHandle, obj, newLength);
 
-        var resultArr = CreateArrayFromElements(removed);
-        return JsValue.FromObject(_heap.AllocateObject(resultArr, AllocationSite.Current()));
+        // ECMA-262 23.1.3.31 step 11: ArraySpeciesCreate(O, actualDeleteCount)
+        return ArraySpeciesCreate(thisValue, removed);
     }
 
     // ECMA-262 23.1.3.30 Array.prototype.sort([compareFn]). Default comparator
@@ -11032,8 +11048,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             : 1;
         var items = new List<JsValue>();
         FlattenInto(obj, thisValue, depth, items);
-        var arr = CreateArrayObject(items);
-        return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+        // ECMA-262 23.1.3.9 step 5: ArraySpeciesCreate
+        return ArraySpeciesCreate(thisValue, items);
     }
 
     private void FlattenInto(JsObject source, JsValue receiver, int depth, List<JsValue> sink)
@@ -11091,8 +11107,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
         }
 
-        var arr = CreateArrayObject(items);
-        return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+        // ECMA-262 23.1.3.10a step 6: ArraySpeciesCreate
+        return ArraySpeciesCreate(thisValue, items);
     }
 
     // ECMA-262 23.1.3.6 every: returns true iff callback returns truthy for every
@@ -11616,7 +11632,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     for (var i = 0; i < items.Count; i++)
                     {
                         var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                        resultObj.SetProperty(key, items[i]);
+                        // ECMA-262 7.3.7 CreateDataPropertyOrThrow:
+                        //   Let success be ? CreateDataProperty(O, P, V).
+                        //   If success is false, throw a TypeError exception.
+                        //
+                        // CreateDataProperty (7.3.5) uses [[DefineOwnProperty]] with
+                        // {Writable:true, Enumerable:true, Configurable:true}, which
+                        // overwrites non-writable configurable properties. SetProperty
+                        // alone fails for those, so we fall back to DefineOwnProperty.
+                        if (!resultObj.SetProperty(key, items[i]) &&
+                            !resultObj.DefineOwnProperty(key,
+                                new JsPropertyDescriptor(items[i], Writable: true, Enumerable: true, Configurable: true)))
+                        {
+                            throw new JsThrownException(CreateTypeError(
+                                "Cannot create property on species-constructed array."));
+                        }
                     }
                     if (resultObj is ArrayObject) resultObj.SetProperty("length", JsValue.FromNumber(items.Count));
                     return result;
@@ -16793,7 +16823,18 @@ fallbackArraySpecies:
             // toString/valueOf ordering (and skips non-callable hooks); the
             // resulting primitive is then formatted.
             var primitive = ToPrimitive(value, PrimitiveHint.String);
+            if (primitive.Tag == JsValueTag.Symbol)
+            {
+                throw new JsThrownException(CreateTypeError("Cannot convert a Symbol value to a string."));
+            }
+
             return FormatPrimitiveForString(primitive);
+        }
+
+        // ECMA-262 7.1.17 ToString: a Symbol argument throws a TypeError.
+        if (value.Tag == JsValueTag.Symbol)
+        {
+            throw new JsThrownException(CreateTypeError("Cannot convert a Symbol value to a string."));
         }
 
         return FormatPrimitiveForString(value);
