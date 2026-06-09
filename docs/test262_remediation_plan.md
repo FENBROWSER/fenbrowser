@@ -229,3 +229,24 @@ Tier 2.4), and BigInt-array harness conversions (83).
 prototype-chain walk inside `TryInstanceOf`. 4 or fewer closures per test function do not
 trigger it; standalone `try/catch` without `instanceof` does not trigger it. Likely a GC
 rooting gap during the combined bytecode/native call stack.
+
+### 2026-06-09 (session 2) — Parser function validation + super.property detection
+- **Restricted identifier validation for function expressions/declarations:** `ValidateClassMethodEarlyErrors`
+  is now called after parsing function expressions and declarations (previously only class methods
+  got this validation). This catches yield/await as binding identifiers, super calls/properties
+  in body, duplicate parameters (strict mode), eval/arguments in strict params, and restricted
+  identifiers in body statements — all at parse time per ECMA-262 early errors. Resolved ALL
+  DONOTEVALUATE failures across 8 function-related categories.
+- **Super.property detection:** `ContainsSuperCallInExpressionCore` now matches
+  `SuperExpressionNode` directly, catching `super.property` access in addition to `super()`
+  calls. Fixed the remaining 2 DONOTEVALUATE tests in `language/statements/async-function`.
+- **5 categories cleared the 95% gate:**
+  - `language/expressions/async-generator`: 89.9% → 96.6% (+42)
+  - `language/statements/async-generator`: 91.7% → 97.0% (+16)
+  - `language/expressions/async-function`: 69.9% → 95.7% (+26)
+  - `language/statements/async-function`: 71.6% → 97.3% (+18, including super.property fix)
+  - Plus improvements: generators +20, function +10, etc.
+- **Overall 68.67% → 68.94%** (+~150 tests across all fixes this session).
+- Near-gate categories: `language/expressions/new` (94.9%, 3 fails), `built-ins/decodeURIComponent`
+  (94.6%, 3 fails), `language/expressions/logical-and` (94.4%, 1 fail), `language/statements/return`
+  (93.8%, 1 fail), `built-ins/Array` (93.1%, 214 fails).
