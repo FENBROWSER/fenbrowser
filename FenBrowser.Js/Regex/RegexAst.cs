@@ -204,6 +204,22 @@ public sealed class GroupNode : AtomNode
     }
 }
 
+/// <summary>A modifier group (?ims-ims: Disjunction) per the regexp-modifiers proposal.</summary>
+[DebuggerDisplay("ModifierGroup: +{AddFlags} -{RemoveFlags}")]
+public sealed class ModifierGroupNode : AtomNode
+{
+    public readonly DisjunctionNode Body;
+    public readonly string AddFlags;     // subset of "ims"
+    public readonly string RemoveFlags;  // subset of "ims"
+
+    public ModifierGroupNode(DisjunctionNode body, string addFlags, string removeFlags)
+    {
+        Body = body;
+        AddFlags = addFlags;
+        RemoveFlags = removeFlags;
+    }
+}
+
 // ─── Quantifier ──────────────────────────────────────────────────
 
 /// <summary>A quantifier applied to an atom: * + ? {n} {n,} {n,m}.</summary>

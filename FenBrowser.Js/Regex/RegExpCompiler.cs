@@ -160,6 +160,9 @@ public static class RegExpCompiler
             case GroupNode g:
                 ValidateUnicodePropsInDisjunction(g.Body, flags);
                 break;
+            case ModifierGroupNode mg:
+                ValidateUnicodePropsInDisjunction(mg.Body, flags);
+                break;
             case AssertionNode a:
                 if (a.Body is not null)
                     ValidateUnicodePropsInDisjunction(a.Body, flags);
@@ -1349,7 +1352,7 @@ public static class RegExpCompiler
         return alias;
     }
 
-    private static string RewriteUnicodeCodePointEscapes(string pattern)
+    internal static string RewriteUnicodeCodePointEscapes(string pattern)
     {
         if (string.IsNullOrEmpty(pattern))
         {

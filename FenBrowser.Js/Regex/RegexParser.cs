@@ -1091,15 +1091,9 @@ public static class RegexParser
             var body = ParseDisjunction();
             Expect(')');
 
-            // The modifier group is syntactic sugar — it affects compilation
-            // of its body. For the AST, we represent it as a non-capturing group
-            // with modifier metadata attached.
             _groupCount++;
             _groupPositions.Add(-1);
-            var node = new GroupNode(GroupKind.NonCapturing, body, 0);
-            // Modifier info would be attached during compilation.
-            // For now, store on a custom node or handle in the compiler.
-            return node;
+            return new ModifierGroupNode(body, addFlags, removeFlags ?? string.Empty);
         }
 
         private string ParseOptionalModifierFlags()

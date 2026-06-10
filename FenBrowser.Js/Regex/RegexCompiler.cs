@@ -48,16 +48,29 @@ public static class RegexCompiler
         // Pending jumps that need address resolution (position → target label)
         private readonly Dictionary<int, int> _pendingJumps = new();
 
+        // Current modifier state — the pattern flags, possibly overridden inside
+        // (?ims-ims:...) modifier groups (regexp-modifiers proposal, UpdateModifiers).
+        private bool _ignoreCase;
+        private bool _multiline;
+        private bool _dotAll;
+
         public CompilerState(RegexFlags flags, int captureCount)
         {
             _flags = flags;
             _captureCount = captureCount;
+            _ignoreCase = flags.IgnoreCase;
+            _multiline = flags.Multiline;
+            _dotAll = flags.DotAll;
         }
 
         private bool IsUnicode => _flags.Unicode || _flags.UnicodeSets;
-        private bool IgnoreCase => _flags.IgnoreCase;
-        private bool Multiline => _flags.Multiline;
-        private bool DotAll => _flags.DotAll;
+        private bool IgnoreCase => _ignoreCase;
+        private bool Multiline => _multiline;
+        private bool DotAll => _dotAll;
+
+        // \w and \b extend to the case-fold extras (U+017F, U+212A) only when
+        // both unicode and ignoreCase are in effect (ECMA-262 WordCharacters).
+        private int WordFoldOperand => IsUnicode && IgnoreCase ? 1 : 0;
 
         // ─── Instruction emission ─────────────────────────
 
@@ -206,10 +219,10 @@ public static class RegexCompiler
                     Emit(RegexOpCode.Eol, Multiline ? 1 : 0);
                     break;
                 case AssertionKind.WordBoundary:
-                    Emit(RegexOpCode.WordBoundary);
+                    Emit(RegexOpCode.WordBoundary, WordFoldOperand);
                     break;
                 case AssertionKind.NonWordBoundary:
-                    Emit(RegexOpCode.NonWordBoundary);
+                    Emit(RegexOpCode.NonWordBoundary, WordFoldOperand);
                     break;
                 case AssertionKind.Lookahead:
                 case AssertionKind.NegativeLookahead:
@@ -392,7 +405,31 @@ public static class RegexCompiler
                 case GroupNode g:
                     EmitGroup(g);
                     break;
+                case ModifierGroupNode mg:
+                    EmitModifierGroup(mg);
+                    break;
             }
+        }
+
+        private void EmitModifierGroup(ModifierGroupNode mg)
+        {
+            var (savedIgnoreCase, savedMultiline, savedDotAll) = (_ignoreCase, _multiline, _dotAll);
+            foreach (var f in mg.AddFlags)
+            {
+                if (f == 'i') _ignoreCase = true;
+                else if (f == 'm') _multiline = true;
+                else if (f == 's') _dotAll = true;
+            }
+
+            foreach (var f in mg.RemoveFlags)
+            {
+                if (f == 'i') _ignoreCase = false;
+                else if (f == 'm') _multiline = false;
+                else if (f == 's') _dotAll = false;
+            }
+
+            EmitDisjunction(mg.Body);
+            (_ignoreCase, _multiline, _dotAll) = (savedIgnoreCase, savedMultiline, savedDotAll);
         }
 
         private void EmitChar(int codePoint)
@@ -434,34 +471,16 @@ public static class RegexCompiler
         }
 
         /// <summary>
-        /// For /i mode, emit the case-folded counterpart of a character range.
-        /// ASCII-only for now (A-Z ↔ a-z).
+        /// For /i mode, return the case-folded counterpart of an ASCII letter
+        /// range, or null when the range has no simple folded twin.
         /// </summary>
-        private void EmitCaseFoldedRange(int start, int end)
+        private static (int Start, int End)? CaseFoldedRange(int start, int end)
         {
-            // Only fold pure ASCII letter ranges for now
             if (start is >= 'A' and <= 'Z' && end is >= 'A' and <= 'Z')
-            {
-                // Uppercase range → also emit lowercase range
-                Emit(RegexOpCode.CharRange, start + 32, end + 32);
-            }
-            else if (start is >= 'a' and <= 'z' && end is >= 'a' and <= 'z')
-            {
-                // Lowercase range → also emit uppercase range
-                Emit(RegexOpCode.CharRange, start - 32, end - 32);
-            }
-            else
-            {
-                // For non-ASCII ranges, emit individual folded chars
-                // (simplified: only fold if start==end, i.e. single char)
-                if (start == end)
-                {
-                    var folded = SimpleCaseFold(start);
-                    if (folded != start)
-                        Emit(RegexOpCode.Char, folded);
-                }
-                // Otherwise skip — full Unicode case folding is complex
-            }
+                return (start + 32, end + 32);
+            if (start is >= 'a' and <= 'z' && end is >= 'a' and <= 'z')
+                return (start - 32, end - 32);
+            return null;
         }
 
         private void EmitClassEscape(char kind)
@@ -476,7 +495,7 @@ public static class RegexCompiler
                 'S' => CharClassKind.NotSpace,
                 _ => throw new InvalidOperationException($"Unknown class escape: {kind}")
             };
-            Emit(RegexOpCode.CharClass, (int)classKind);
+            Emit(RegexOpCode.CharClass, (int)classKind, b: WordFoldOperand);
         }
 
         private void EmitUnicodeProp(UnicodePropertyNode up)
@@ -486,10 +505,12 @@ public static class RegexCompiler
                 ? up.Property + "=" + up.Value
                 : up.Property;
             // Store the body in the program's property table and emit its index.
-            // Operand A = negated flag. Operand B = index into UnicodePropertyBodies.
+            // Operand A is a bitfield: bit 0 = negated, bit 1 = case-fold the
+            // input before the set test (/i). Operand B = property-table index.
             var index = _unicodePropertyBodies.Count;
             _unicodePropertyBodies.Add(body);
-            Emit(RegexOpCode.UnicodeProp, up.Negated ? 1 : 0, index, 0);
+            var opA = (up.Negated ? 1 : 0) | (IgnoreCase ? 2 : 0);
+            Emit(RegexOpCode.UnicodeProp, opA, index, 0);
         }
 
         private void EmitCharacterClass(CharacterClassNode cc)
@@ -497,21 +518,26 @@ public static class RegexCompiler
             if (cc.Negated)
             {
                 // Negated class [^...]: match any char NOT in the set.
-                // Strategy: peek-negate each item (B=peek, C=negated).
-                // If any item matches the current char → backtrack.
-                // If no item matches → consume one char via Dot.
+                // Strategy: peek-negate each item (C=1): if any item matches
+                // the current char → backtrack; if none match → consume one
+                // char. The consume is unconditional (a negated class matches
+                // line terminators too).
                 foreach (var item in cc.Items)
                 {
                     switch (item)
                     {
                         case ClassLiteralChar lc:
-                            Emit(RegexOpCode.Char, lc.Value, c: 1);
+                            Emit(RegexOpCode.Char, lc.Value, b: IgnoreCase ? 1 : 0, c: 1);
                             break;
                         case ClassRange cr:
                             Emit(RegexOpCode.CharRange, cr.Start, cr.End, c: 1);
+                            if (IgnoreCase && CaseFoldedRange(cr.Start, cr.End) is { } folded)
+                            {
+                                Emit(RegexOpCode.CharRange, folded.Start, folded.End, c: 1);
+                            }
                             break;
                         case ClassEscape ce:
-                            Emit(RegexOpCode.Char, ce.CodePoint, c: 1);
+                            Emit(RegexOpCode.Char, ce.CodePoint, b: IgnoreCase ? 1 : 0, c: 1);
                             break;
                         case ClassClassEscape cce:
                             EmitClassEscapePeekNegated(cce.Kind);
@@ -531,37 +557,78 @@ public static class RegexCompiler
                     }
                 }
 
-                // No item matched — consume one character
-                Emit(RegexOpCode.Dot, DotAll ? 1 : 0);
+                Emit(RegexOpCode.Dot, 1);
                 return;
             }
 
-            // Positive class [abc...]: original behaviour — match any item, consume cp
+            // Positive class [abc...]: a class matches ONE char that is in any
+            // item's set, so compile it as an alternation over the items
+            // (Split-chained like a disjunction), each alternative consuming
+            // the code point.
+            var emitters = new List<Action>();
             foreach (var item in cc.Items)
             {
                 switch (item)
                 {
                     case ClassLiteralChar lc:
-                        EmitChar(lc.Value);
+                        emitters.Add(() => EmitChar(lc.Value));
                         break;
                     case ClassRange cr:
-                        Emit(RegexOpCode.CharRange, cr.Start, cr.End);
-                        // With /i, also emit the case-folded range for ASCII letter ranges
-                        if (IgnoreCase)
+                        emitters.Add(() => Emit(RegexOpCode.CharRange, cr.Start, cr.End));
+                        if (IgnoreCase && CaseFoldedRange(cr.Start, cr.End) is { } folded)
                         {
-                            EmitCaseFoldedRange(cr.Start, cr.End);
+                            emitters.Add(() => Emit(RegexOpCode.CharRange, folded.Start, folded.End));
                         }
                         break;
                     case ClassEscape ce:
-                        EmitChar(ce.CodePoint);
+                        emitters.Add(() => EmitChar(ce.CodePoint));
                         break;
                     case ClassClassEscape cce:
-                        EmitClassEscape(cce.Kind);
+                        emitters.Add(() => EmitClassEscape(cce.Kind));
                         break;
                     case ClassUnicodeProperty cup:
-                        EmitUnicodeProp(new UnicodePropertyNode(cup.Property, cup.Value, cup.Negated));
+                        emitters.Add(() => EmitUnicodeProp(new UnicodePropertyNode(cup.Property, cup.Value, cup.Negated)));
                         break;
                 }
+            }
+
+            if (emitters.Count == 0)
+            {
+                // [] matches nothing: an impossible range always fails.
+                Emit(RegexOpCode.CharRange, 1, 0);
+                return;
+            }
+
+            if (emitters.Count == 1)
+            {
+                emitters[0]();
+                return;
+            }
+
+            var splitPositions = new List<int>();
+            for (int i = 0; i < emitters.Count - 1; i++)
+            {
+                splitPositions.Add(ReserveSplit());
+            }
+
+            var altStarts = new int[emitters.Count];
+            var altJumps = new int[emitters.Count];
+            for (int i = 0; i < emitters.Count; i++)
+            {
+                altStarts[i] = CurrentPos;
+                emitters[i]();
+                if (i < emitters.Count - 1)
+                {
+                    altJumps[i] = ReserveJump();
+                }
+            }
+
+            var endPos = CurrentPos;
+            for (int i = 0; i < emitters.Count - 1; i++)
+            {
+                var nextPos = i + 1 < splitPositions.Count ? splitPositions[i + 1] : altStarts[i + 1];
+                PatchSplit(splitPositions[i], altStarts[i], nextPos);
+                PatchJump(altJumps[i], endPos);
             }
         }
 
@@ -581,8 +648,8 @@ public static class RegexCompiler
                 _ => throw new InvalidOperationException($"Unknown class escape: {kind}")
             };
             // For [^\d]: char IS digit → fail. CharClassKind.Digit succeeds for digits.
-            // B=1 (peek), C=1 (negate result)
-            Emit(RegexOpCode.CharClass, (int)classKind, c: 1);
+            // C=1 marks peek+negate.
+            Emit(RegexOpCode.CharClass, (int)classKind, b: WordFoldOperand, c: 1);
         }
 
         private void EmitGroup(GroupNode group)

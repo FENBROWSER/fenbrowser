@@ -121,7 +121,7 @@ public sealed class RegexVM
                         break;
 
                     case RegexOpCode.CharClass:
-                        matched = cp < _cpLen && MatchCharClass(_codePoints[cp], (CharClassKind)ins.A);
+                        matched = cp < _cpLen && MatchCharClass(_codePoints[cp], (CharClassKind)ins.A, ins.B == 1);
                         if (ins.C == 1) { matched = !matched; }
                         if (matched) { if (ins.C == 0) cp++; pc++; }
                         else { pc = -1; }
@@ -134,7 +134,8 @@ public sealed class RegexVM
                         break;
 
                     case RegexOpCode.UnicodeProp:
-                        matched = cp < _cpLen && MatchUnicodeProperty(_codePoints[cp], ins.B, ins.A != 0);
+                        matched = cp < _cpLen &&
+                                  MatchUnicodeProperty(_codePoints[cp], ins.B, (ins.A & 1) != 0, (ins.A & 2) != 0);
                         if (ins.C == 1) { matched = !matched; }
                         if (matched) { if (ins.C == 0) cp++; pc++; }
                         else { pc = -1; }
@@ -171,13 +172,13 @@ public sealed class RegexVM
                         break;
 
                     case RegexOpCode.WordBoundary:
-                        matched = IsWordBoundary(cp);
+                        matched = IsWordBoundary(cp, ins.A == 1);
                         if (matched) pc++;
                         else { pc = -1; }
                         break;
 
                     case RegexOpCode.NonWordBoundary:
-                        matched = !IsWordBoundary(cp);
+                        matched = !IsWordBoundary(cp, ins.A == 1);
                         if (matched) pc++;
                         else { pc = -1; }
                         break;
@@ -275,10 +276,13 @@ public sealed class RegexVM
         var cpList = new List<int>(input.Length);
         var offsetList = new List<int>(input.Length);
 
+        // Without /u or /v, matching operates on UTF-16 code units, so a
+        // surrogate pair is two separate "characters" (ECMA-262 22.2.2.1).
+        var pairSurrogates = _program.Flags.Unicode || _program.Flags.UnicodeSets;
         for (int i = 0; i < input.Length; i++)
         {
             offsetList.Add(i);
-            if (char.IsHighSurrogate(input[i]) && i + 1 < input.Length &&
+            if (pairSurrogates && char.IsHighSurrogate(input[i]) && i + 1 < input.Length &&
                 char.IsLowSurrogate(input[i + 1]))
             {
                 cpList.Add(char.ConvertToUtf32(input[i], input[i + 1]));
@@ -325,23 +329,27 @@ public sealed class RegexVM
         return cp is not ('\n' or '\r' or 0x2028 or 0x2029);
     }
 
-    private static bool MatchCharClass(int cp, CharClassKind kind)
+    private static bool MatchCharClass(int cp, CharClassKind kind, bool wordFold = false)
     {
         return kind switch
         {
             CharClassKind.Digit => cp is >= '0' and <= '9',
             CharClassKind.NotDigit => cp is < '0' or > '9',
-            CharClassKind.Word => IsWordChar(cp),
-            CharClassKind.NotWord => !IsWordChar(cp),
+            CharClassKind.Word => IsWordChar(cp, wordFold),
+            CharClassKind.NotWord => !IsWordChar(cp, wordFold),
             CharClassKind.Space => IsSpaceChar(cp),
             CharClassKind.NotSpace => !IsSpaceChar(cp),
             _ => false
         };
     }
 
-    private static bool IsWordChar(int cp)
+    private static bool IsWordChar(int cp, bool wordFold = false)
     {
-        return cp is (>= 'A' and <= 'Z') or (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_';
+        if (cp is (>= 'A' and <= 'Z') or (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_')
+            return true;
+        // With unicode + ignoreCase, WordCharacters (ECMA-262 22.2.2.3) also
+        // includes U+017F (ſ) and U+212A (K), whose simple case folds are ASCII.
+        return wordFold && cp is 0x017F or 0x212A;
     }
 
     /// <summary>
@@ -385,11 +393,57 @@ public sealed class RegexVM
 
     // ─── Unicode property matching ────────────────────────
 
-    private bool MatchUnicodeProperty(int cp, int propIndex, bool negated)
+    private bool MatchUnicodeProperty(int cp, int propIndex, bool negated, bool foldCase = false)
     {
         var bodies = _program.UnicodePropertyBodies;
         if (bodies is null || propIndex < 0 || propIndex >= bodies.Length)
             return negated;
+
+        if (!foldCase)
+        {
+            var inSet = UnicodePropertyContains(cp, propIndex);
+            return negated ? !inSet : inSet;
+        }
+
+        // /i: the matcher tests whether any member of the (possibly
+        // complemented) set canonicalizes to the same character as the input
+        // (ECMA-262 CharacterSetMatcher + Canonicalize). Equivalently: some
+        // case variant of the input is in the set — and for \P{...} the
+        // complement applies before canonicalization, so the test is whether
+        // some case variant is OUTSIDE the property set.
+        var upper = ToCaseVariant(cp, toUpper: true);
+        var lower = ToCaseVariant(cp, toUpper: false);
+        Span<int> variants = stackalloc int[] { cp, upper, lower };
+        for (var i = 0; i < variants.Length; i++)
+        {
+            var v = variants[i];
+            if (i == 1 && v == cp) continue;
+            if (i == 2 && (v == cp || v == upper)) continue;
+            var contains = UnicodePropertyContains(v, propIndex);
+            if (negated ? !contains : contains)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static int ToCaseVariant(int cp, bool toUpper)
+    {
+        try
+        {
+            var rune = new Rune((uint)cp);
+            var variant = toUpper ? Rune.ToUpperInvariant(rune) : Rune.ToLowerInvariant(rune);
+            return variant.Value;
+        }
+        catch
+        {
+            return cp;
+        }
+    }
+
+    private bool UnicodePropertyContains(int cp, int propIndex)
+    {
+        var bodies = _program.UnicodePropertyBodies!;
 
         // Resolve the body's ranges once per program; per-character dictionary
         // lookups dominated matching time on long inputs.
@@ -397,15 +451,14 @@ public sealed class RegexVM
         var ranges = cache[propIndex] ??= UnicodePropertyEscapeData.ResolveRanges(bodies[propIndex]);
         if (ranges.Length > 0)
         {
-            var inRanges = UnicodePropertyEscapeData.IsInRanges(cp, ranges);
-            return negated ? !inRanges : inRanges;
+            return UnicodePropertyEscapeData.IsInRanges(cp, ranges);
         }
 
         var body = bodies[propIndex];
         if (UnicodePropertyEscapeData.TryHasPropertyCodePoint(body, cp, out var hasProperty))
-            return negated ? !hasProperty : hasProperty;
+            return hasProperty;
 
-        return negated; // unknown → \p{} matches nothing, \P{} matches everything
+        return false; // unknown → \p{} matches nothing
     }
 
     // ─── Position assertions ──────────────────────────────
@@ -423,10 +476,10 @@ public sealed class RegexVM
         return _codePoints[cp] is '\n' or '\r' or 0x2028 or 0x2029;
     }
 
-    private bool IsWordBoundary(int cp)
+    private bool IsWordBoundary(int cp, bool wordFold = false)
     {
-        var prevIsWord = cp > 0 && cp <= _cpLen && IsWordChar(_codePoints[cp - 1]);
-        var nextIsWord = cp < _cpLen && IsWordChar(_codePoints[cp]);
+        var prevIsWord = cp > 0 && cp <= _cpLen && IsWordChar(_codePoints[cp - 1], wordFold);
+        var nextIsWord = cp < _cpLen && IsWordChar(_codePoints[cp], wordFold);
         return prevIsWord != nextIsWord;
     }
 
@@ -566,13 +619,14 @@ public sealed class RegexVM
                         else { pc = -1; }
                         break;
                     case RegexOpCode.CharClass:
-                        matched = cp < _cpLen && MatchCharClass(_codePoints[cp], (CharClassKind)ins.A);
+                        matched = cp < _cpLen && MatchCharClass(_codePoints[cp], (CharClassKind)ins.A, ins.B == 1);
                         if (ins.C == 1) { matched = !matched; }
                         if (matched) { if (ins.C == 0) cp++; pc++; }
                         else { pc = -1; }
                         break;
                     case RegexOpCode.UnicodeProp:
-                        matched = cp < _cpLen && MatchUnicodeProperty(_codePoints[cp], ins.B, ins.A != 0);
+                        matched = cp < _cpLen &&
+                                  MatchUnicodeProperty(_codePoints[cp], ins.B, (ins.A & 1) != 0, (ins.A & 2) != 0);
                         if (ins.C == 1) { matched = !matched; }
                         if (matched) { if (ins.C == 0) cp++; pc++; }
                         else { pc = -1; }
