@@ -737,13 +737,23 @@ public sealed class BytecodeCompiler
     // ECMA-262 IsAnonymousFunctionDefinition: an anonymous function expression,
     // arrow function, or anonymous class expression — the forms that adopt a name
     // via NamedEvaluation when they appear on the RHS of a binding/assignment.
-    private static bool IsAnonymousFunctionDefinition(ExpressionNode expr) => expr switch
+    private static bool IsAnonymousFunctionDefinition(ExpressionNode expr)
     {
-        FunctionExpressionNode f => f.Name is null,
-        ArrowFunctionExpressionNode => true,
-        ClassExpressionNode c => c.Name is null,
-        _ => false,
-    };
+        // The check looks through the cover grammar: `(function () {})` is still
+        // an anonymous function definition, while `(0, function () {})` is not.
+        while (expr is ParenthesizedExpressionNode paren)
+        {
+            expr = paren.Expression;
+        }
+
+        return expr switch
+        {
+            FunctionExpressionNode f => f.Name is null,
+            ArrowFunctionExpressionNode => true,
+            ClassExpressionNode c => c.Name is null,
+            _ => false,
+        };
+    }
 
     // Compile an initializer expression, threading `name` into it via NamedEvaluation
     // when the expression is an anonymous function definition. Other expressions are
