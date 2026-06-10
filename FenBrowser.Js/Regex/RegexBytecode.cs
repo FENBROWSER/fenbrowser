@@ -83,6 +83,12 @@ public sealed class RegexProgram
     // Used by CharClass instruction at runtime.
     public int[][]? CharClassRanges { get; init; }
 
+    // Lazily-resolved codepoint ranges per UnicodePropertyBodies entry, filled
+    // by the VM on first use so membership checks are a binary search instead
+    // of a dictionary lookup per character. Empty array = not in the table
+    // (fall back to the per-codepoint API). Benign race: idempotent fill.
+    internal uint[]?[]? ResolvedPropertyRanges;
+
     public RegexProgram(
         RegexInstruction[] instructions,
         int captureCount,

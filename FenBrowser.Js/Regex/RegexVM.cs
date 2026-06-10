@@ -20,9 +20,11 @@ public sealed class RegexVM
     // Backtracking stack
     private Stack<ThreadState>? _stack;
 
-    // Backtrack limit to prevent exponential blowup (DoS protection)
+    // Backtrack limit to prevent exponential blowup (DoS protection).
+    // The effective limit grows with input length (see ExecuteFrom).
     private const int MaxBacktracks = 50000;
     private int _backtrackCount;
+    private int _maxBacktracks = MaxBacktracks;
 
     public RegexVM(RegexProgram program)
     {
@@ -60,7 +62,11 @@ public sealed class RegexVM
 
         // Try each starting position from startCp to end.
         // Per ECMAScript, the regex is not anchored unless it starts with ^.
+        // Budget scales with input: unwinding a failed greedy loop and probing
+        // every start position are both O(input) legitimate work; the cap only
+        // exists to stop exponential blowup.
         _backtrackCount = 0;
+        _maxBacktracks = MaxBacktracks + 4 * _cpLen;
         for (int tryCp = startCp; tryCp <= _cpLen; tryCp++)
         {
             var stack = new Stack<ThreadState>(64);
@@ -77,7 +83,7 @@ public sealed class RegexVM
 
         while (stack.Count > 0)
         {
-            if (++_backtrackCount > MaxBacktracks)
+            if (++_backtrackCount > _maxBacktracks)
             {
                 _stack = null;
                 return RegexMatchResult.Empty(_input);
@@ -139,9 +145,13 @@ public sealed class RegexVM
                         break;
 
                     case RegexOpCode.Split:
-                        PushState(stack, pc + ins.B, cp, captures); // path 2
-                        PushState(stack, pc + ins.A, cp, captures); // path 1 (popped first)
-                        goto backtrack; // continue from new stack top
+                        // Push only the alternative; continue path 1 inline so
+                        // forward progress never consumes backtrack budget
+                        // (a greedy loop over N chars is N splits — treating
+                        // those as backtracks made long inputs silently fail).
+                        PushState(stack, pc + ins.B, cp, captures); // path 2 (on backtrack)
+                        pc += ins.A;                                // path 1
+                        break;
 
                     case RegexOpCode.Accept:
                         captures[1] = _charOffsets[cp]; // full match end
@@ -377,11 +387,21 @@ public sealed class RegexVM
 
     private bool MatchUnicodeProperty(int cp, int propIndex, bool negated)
     {
-        if (_program.UnicodePropertyBodies is null ||
-            propIndex < 0 || propIndex >= _program.UnicodePropertyBodies.Length)
+        var bodies = _program.UnicodePropertyBodies;
+        if (bodies is null || propIndex < 0 || propIndex >= bodies.Length)
             return negated;
 
-        var body = _program.UnicodePropertyBodies[propIndex];
+        // Resolve the body's ranges once per program; per-character dictionary
+        // lookups dominated matching time on long inputs.
+        var cache = _program.ResolvedPropertyRanges ??= new uint[]?[bodies.Length];
+        var ranges = cache[propIndex] ??= UnicodePropertyEscapeData.ResolveRanges(bodies[propIndex]);
+        if (ranges.Length > 0)
+        {
+            var inRanges = UnicodePropertyEscapeData.IsInRanges(cp, ranges);
+            return negated ? !inRanges : inRanges;
+        }
+
+        var body = bodies[propIndex];
         if (UnicodePropertyEscapeData.TryHasPropertyCodePoint(body, cp, out var hasProperty))
             return negated ? !hasProperty : hasProperty;
 
@@ -565,9 +585,9 @@ public sealed class RegexVM
                         pc += ins.A;
                         break;
                     case RegexOpCode.Split:
-                        PushState(subStack, pc + ins.B, cp, caps);
-                        PushState(subStack, pc + ins.A, cp, caps);
-                        goto subBacktrack;
+                        PushState(subStack, pc + ins.B, cp, caps); // alternative (on backtrack)
+                        pc += ins.A;                               // path 1 continues inline
+                        break;
                     case RegexOpCode.Accept:
                         return cp; // success — return ending code point
                     case RegexOpCode.Bol:
