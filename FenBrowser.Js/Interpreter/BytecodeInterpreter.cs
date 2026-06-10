@@ -630,15 +630,29 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // declarative record chained to it so free identifier references walk the
         // lexical scope chain through env records. Otherwise, fall back to the
         // detached fresh env that InterpreterFrame would have allocated on its own.
-        // ECMA-262 10.2.1.3 OrdinaryCallBindThis: a non-strict ordinary function called
-        // with a null/undefined receiver binds `this` to the realm's global object.
+        // ECMA-262 10.2.1.3 OrdinaryCallBindThis:
+        //   Strict functions: `this` is passed through as-is (step 5).
+        //   Non-strict functions: null/undefined → global object (step 6),
+        //     any other primitive → boxed with ToObject (step 7).
         // Arrow functions have no own `this`; derived constructors bind it via super().
-        if (!function.IsStrictMode
-            && function.Kind != FunctionKind.Arrow
-            && !function.IsDerivedConstructor
-            && thisValue.Tag is JsValueTag.Undefined or JsValueTag.Null)
+        if (function.Kind != FunctionKind.Arrow
+            && !function.IsDerivedConstructor)
         {
-            thisValue = JsValue.FromObject(EnsureGlobalObject());
+            if (function.IsStrictMode)
+            {
+                // Strict: pass through (including primitives).
+            }
+            else if (thisValue.Tag is JsValueTag.Undefined or JsValueTag.Null)
+            {
+                thisValue = JsValue.FromObject(EnsureGlobalObject());
+            }
+            else if (thisValue.Tag != JsValueTag.Object)
+            {
+                // Non-strict with a primitive (number, string, boolean, symbol, bigint):
+                // ECMA-262 10.2.1.3 step 7 — box it via ToObject so the receiver is
+                // always an object in sloppy mode.
+                thisValue = CreateObjectFromValue(thisValue);
+            }
         }
 
         EnvironmentRecord? frameEnv;
@@ -8740,10 +8754,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // undefined yields an empty argument list per step 3-4.
     private JsValue FunctionPrototypeApply(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        // ECMA-262 20.2.3.1 step 1: coerce null/undefined thisArg to global object.
-        var thisArgument = args.Count > 0 && args[0].Tag != JsValueTag.Null && args[0].Tag != JsValueTag.Undefined
-            ? args[0]
-            : JsValue.FromObject(EnsureGlobalObject());
+        // ECMA-262 20.2.3.1 step 3: null/undefined thisArg is passed through to
+        // [[Call]]; OrdinaryCallBindThis (in ExecuteInternalCore) handles the
+        // null/undefined → global-object coercion for non-strict functions and
+        // passes primitives through for strict functions.
+        var thisArgument = args.Count > 0 ? args[0] : JsValue.Undefined;
         var argsArray = args.Count > 1 ? args[1] : JsValue.Undefined;
 
         JsValue[] callArgs;
