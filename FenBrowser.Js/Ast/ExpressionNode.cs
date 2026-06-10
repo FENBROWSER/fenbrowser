@@ -112,3 +112,8 @@ public sealed record RegexLiteralExpressionNode(string RawText, SourceSpan Span)
 public sealed record TemplateLiteralExpressionNode(IReadOnlyList<string> Quasis, IReadOnlyList<ExpressionNode> Expressions, SourceSpan Span) : ExpressionNode(Span);
 
 public sealed record TaggedTemplateExpressionNode(ExpressionNode Tag, TemplateLiteralExpressionNode Template, SourceSpan Span) : ExpressionNode(Span);
+
+// Synthesised by the bytecode compiler prologue when a default parameter initializer
+// references a parameter that is still in the TDZ (the parameter itself or a later one).
+// Lowers to a throw ReferenceError at compile time. ECMA-262 10.2.1.3 step 25.c.i.2.
+public sealed record TdzReferenceErrorExpressionNode(string ParameterName, SourceSpan Span) : ExpressionNode(Span);

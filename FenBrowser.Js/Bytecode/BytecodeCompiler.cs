@@ -559,6 +559,18 @@ public sealed class BytecodeCompiler
                 : null;
             if (defaultExpr is not null)
             {
+                // ECMA-262 10.2.1.3 step 25.c.i.2: when evaluating the default
+                // initializer for parameter i, parameters i..n-1 are still
+                // uninitialized (TDZ). Replace any identifier references to them
+                // with a node that emits a throw ReferenceError at runtime.
+                if (i < count - 1 || defaultExpr is IdentifierExpressionNode idSelf && idSelf.Name == parameterNames[i])
+                {
+                    var tdzParams = new HashSet<string>(StringComparer.Ordinal);
+                    for (var j = i; j < count; j++)
+                        tdzParams.Add(parameterNames[j]);
+                    defaultExpr = ReplaceTdzParameterReferences(defaultExpr, tdzParams);
+                }
+
                 var parameterName = parameterNames[i];
                 var span = defaultExpr.Span;
                 var undefinedRef = new IdentifierExpressionNode("undefined", span);
@@ -589,6 +601,111 @@ public sealed class BytecodeCompiler
         statements.AddRange(bodyStatements);
         prologueStatementCount = prelude.Count;
         return new ProgramNode(ProgramKind.Script, statements, bodySpan);
+    }
+
+    /// <summary>
+    /// Walk an expression tree and replace every <see cref="IdentifierExpressionNode"/>
+    /// whose name is in <paramref name="tdzParameterNames"/> with a
+    /// <see cref="TdzReferenceErrorExpressionNode"/>. This enforces ECMA-262 10.2.1.3
+    /// step 25.c.i.2: a default initializer must throw ReferenceError when it accesses
+    /// a parameter that is still uninitialized (the parameter itself or a later one).
+    /// </summary>
+    private static ExpressionNode ReplaceTdzParameterReferences(ExpressionNode expr, HashSet<string> tdzParameterNames)
+    {
+        return expr switch
+        {
+            IdentifierExpressionNode id when tdzParameterNames.Contains(id.Name) =>
+                new TdzReferenceErrorExpressionNode(id.Name, id.Span),
+
+            // Recursively walk compound expressions
+            BinaryExpressionNode bin =>
+                new BinaryExpressionNode(bin.Operator,
+                    ReplaceTdzParameterReferences(bin.Left, tdzParameterNames),
+                    ReplaceTdzParameterReferences(bin.Right, tdzParameterNames),
+                    bin.Span),
+
+            UnaryExpressionNode un =>
+                new UnaryExpressionNode(un.Operator,
+                    ReplaceTdzParameterReferences(un.Operand, tdzParameterNames),
+                    un.Span),
+
+            ConditionalExpressionNode cond =>
+                new ConditionalExpressionNode(
+                    ReplaceTdzParameterReferences(cond.Test, tdzParameterNames),
+                    ReplaceTdzParameterReferences(cond.Consequent, tdzParameterNames),
+                    ReplaceTdzParameterReferences(cond.Alternate, tdzParameterNames),
+                    cond.Span),
+
+            AssignmentExpressionNode assign =>
+                new AssignmentExpressionNode(
+                    ReplaceTdzParameterReferences(assign.Left, tdzParameterNames),
+                    ReplaceTdzParameterReferences(assign.Right, tdzParameterNames),
+                    assign.Span),
+
+            CallExpressionNode call =>
+                new CallExpressionNode(
+                    ReplaceTdzParameterReferences(call.Callee, tdzParameterNames),
+                    call.Arguments.Select(a => ReplaceTdzParameterReferences(a, tdzParameterNames)).ToList(),
+                    call.Span),
+
+            MemberExpressionNode member =>
+                new MemberExpressionNode(
+                    ReplaceTdzParameterReferences(member.Object, tdzParameterNames),
+                    member.Property,
+                    member.Computed,
+                    member.PropertyExpression is not null
+                        ? ReplaceTdzParameterReferences(member.PropertyExpression, tdzParameterNames)
+                        : null,
+                    member.Span),
+
+            ParenthesizedExpressionNode paren =>
+                new ParenthesizedExpressionNode(
+                    ReplaceTdzParameterReferences(paren.Expression, tdzParameterNames),
+                    paren.Span),
+
+            ArrayLiteralExpressionNode arr =>
+                new ArrayLiteralExpressionNode(
+                    arr.Elements.Select(e => ReplaceTdzParameterReferences(e, tdzParameterNames)).ToList(),
+                    arr.Span),
+
+            ObjectLiteralExpressionNode obj =>
+                new ObjectLiteralExpressionNode(
+                    obj.Properties.Select(p =>
+                        new ObjectPropertyNode(
+                            p.Key, p.ComputedKey,
+                            p.IsComputed,
+                            ReplaceTdzParameterReferences(p.Value, tdzParameterNames),
+                            p.Span,
+                            p.Kind,
+                            p.IsCoverInitializedName)).ToList(),
+                    obj.Span),
+
+            SpreadElementExpressionNode spread =>
+                new SpreadElementExpressionNode(
+                    ReplaceTdzParameterReferences(spread.Argument, tdzParameterNames),
+                    spread.Span),
+
+            NewExpressionNode ne =>
+                new NewExpressionNode(
+                    ReplaceTdzParameterReferences(ne.Callee, tdzParameterNames),
+                    ne.Arguments.Select(a => ReplaceTdzParameterReferences(a, tdzParameterNames)).ToList(),
+                    ne.Span),
+
+            TemplateLiteralExpressionNode tmpl =>
+                new TemplateLiteralExpressionNode(
+                    tmpl.Quasis,
+                    tmpl.Expressions.Select(e => ReplaceTdzParameterReferences(e, tdzParameterNames)).ToList(),
+                    tmpl.Span),
+
+            TaggedTemplateExpressionNode tagged =>
+                new TaggedTemplateExpressionNode(
+                    ReplaceTdzParameterReferences(tagged.Tag, tdzParameterNames),
+                    (TemplateLiteralExpressionNode)ReplaceTdzParameterReferences(tagged.Template, tdzParameterNames),
+                    tagged.Span),
+
+            // For simple leaf nodes (literals, this, super, etc.), return unchanged.
+            _ => expr,
+        };
     }
 
     // Lower a class declaration into ordinary CreateFunction + NewObject +
@@ -2240,6 +2357,18 @@ public sealed class BytecodeCompiler
                 var slot = GetOrCreateVariableSlot(id.Name);
                 _instructions.Add(new Instruction(OpCode.LoadVar, reg, slot, 0));
                 return reg;
+            }
+            case TdzReferenceErrorExpressionNode tdz:
+            {
+                // ECMA-262 10.2.1.3 step 25.c.i.2: accessing a parameter that is
+                // still in the TDZ during default-initializer evaluation throws a
+                // ReferenceError. Add "Cannot access" so the message matches what
+                // test262 expects.
+                EmitRuntimeReferenceError($"Cannot access '{tdz.ParameterName}' before initialization");
+                // The throw is unconditional — control never reaches here.
+                // Return a dummy register so the expression pipeline stays
+                // well-formed (callers expect a register index).
+                return AllocateRegister();
             }
             case ThisExpressionNode:
             {
