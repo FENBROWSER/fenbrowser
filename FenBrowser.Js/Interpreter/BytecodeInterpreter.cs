@@ -17100,6 +17100,11 @@ fallbackArraySpecies:
         }
 
         var targetPrototype = prototypeValue.AsObjectHandle();
+        // Pin the prototype handle across the prototype-chain walk. The walk
+        // triggers property resolution on each prototype object, which can
+        // allocate (e.g. boxing the "constructor" property) and trigger a
+        // MinorCollect that would invalidate unrooted handles.
+        PinIfObject(prototypeValue);
         try
         {
             result = OrdinaryHasInstancePrototype(left, targetPrototype);
