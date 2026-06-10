@@ -1565,7 +1565,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     // user-code-invoking opcodes.
                     try
                     {
-                        frame.Registers[ins.A] = CreateForOfIteratorState(frame.Registers[ins.B]);
+                        // C=1: strict GetIterator (destructuring) — array-likes
+                        // without @@iterator throw instead of falling back.
+                        frame.Registers[ins.A] = CreateForOfIteratorState(frame.Registers[ins.B], requireIterable: ins.C == 1);
                     }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
@@ -1591,9 +1593,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.IteratorClose:
                 {
-                    // ECMA-262 7.4.11 — emitted on the for-of break exit path. The
-                    // iterator's return() method (and the not-an-object TypeError)
-                    // must be observable by an enclosing try.
+                    // ECMA-262 7.4.11 — emitted on the for-of break exit path and by
+                    // destructuring patterns. The iterator's return() method (and the
+                    // not-an-object TypeError) must be observable by an enclosing try.
+                    // C=1 is the throw-completion form (7.4.11 step 6: when closing
+                    // because of an existing abrupt completion, errors from return()
+                    // and a non-object result are swallowed so the original exception
+                    // wins).
                     try
                     {
                         if (ResolveObject(frame.Registers[ins.B]) is ForOfIteratorObject closing)
@@ -1601,7 +1607,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             CloseForOfIteratorState(closing);
                         }
                     }
-                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
+                    catch (JsThrownException ex)
+                    {
+                        if (ins.C != 1)
+                        {
+                            ThrowOrHandle(frame, ex.Value);
+                        }
+                    }
                     break;
                 }
                 case OpCode.ForInNext:

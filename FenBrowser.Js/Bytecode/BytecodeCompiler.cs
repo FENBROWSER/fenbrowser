@@ -3418,34 +3418,7 @@ public sealed class BytecodeCompiler
             }
             case ArrayBindingPatternNode array:
             {
-                var arraySourceReg = MaterializeArrayBindingSource(sourceReg);
-                var index = 0;
-                foreach (var element in array.Elements)
-                {
-                    if (element.Target is null)
-                    {
-                        index++;
-                        continue;
-                    }
-
-                    if (element.IsRest)
-                    {
-                        var restReg = BuildArrayRest(arraySourceReg, index);
-                        EmitBindingPatternAssignment(element.Target, restReg, storeOp);
-                        continue;
-                    }
-
-                    var valueReg = LoadArrayElement(arraySourceReg, index);
-                    if (element.Initializer is not null)
-                    {
-                        var elemName = element.Target is IdentifierBindingPatternNode elemId ? elemId.Name : null;
-                        valueReg = ApplyDefaultInitializerIfUndefined(valueReg, element.Initializer, elemName);
-                    }
-
-                    EmitBindingPatternAssignment(element.Target, valueReg, storeOp);
-                    index++;
-                }
-
+                EmitArrayPatternIteratorAssignment(array, sourceReg, storeOp);
                 return;
             }
             case ObjectBindingPatternNode obj:
@@ -3553,22 +3526,86 @@ public sealed class BytecodeCompiler
         }
     }
 
-    private int MaterializeArrayBindingSource(int sourceReg)
+    // ECMA-262 8.6.2 IteratorBindingInitialization / 13.15.5.5
+    // IteratorDestructuringAssignmentEvaluation. Steps the RHS iterator lazily —
+    // exactly one next() per element (none once exhausted; ForOfStepDone latches
+    // Done), elisions step-and-discard, rest drains the remainder — and closes
+    // the iterator per 7.4.11 IteratorClose: on the normal path when the pattern
+    // finishes before exhaustion (loud — return() errors propagate), and on
+    // abrupt completion quietly (the original exception wins).
+    private void EmitArrayPatternIteratorAssignment(ArrayBindingPatternNode array, int sourceReg, OpCode storeOp)
     {
-        // Assignment/Binding patterns over arrays are iterator-based in spec terms.
-        // Materialize through Array.from so array-destructuring consumes iterable
-        // values rather than treating the RHS as an index-only array-like object.
-        var arrayReg = AllocateRegister();
-        var arraySlot = GetOrCreateVariableSlot("Array");
-        _instructions.Add(new Instruction(OpCode.LoadVar, arrayReg, arraySlot, 0));
+        var iterReg = AllocateRegister();
+        // C=1: strict GetIterator — destructuring requires a real iterable.
+        _instructions.Add(new Instruction(OpCode.EnumerateValues, iterReg, sourceReg, 1));
 
-        var fromReg = AllocateRegister();
-        var fromNameIndex = GetOrCreatePropertyName("from");
-        _instructions.Add(new Instruction(OpCode.GetPropByName, fromReg, arrayReg, fromNameIndex));
+        var pushHandlerIndex = EmitPlaceholder(OpCode.PushHandler);
 
-        var materializedReg = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.CallMethod1, materializedReg, fromReg, arrayReg, sourceReg));
-        return materializedReg;
+        var undefinedReg = LoadUndefinedConstant();
+        foreach (var element in array.Elements)
+        {
+            if (element.IsRest && element.Target is not null)
+            {
+                var restReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.NewArray, restReg, 0, 0));
+                var writeIndexReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.LoadConst, writeIndexReg, AddConstant(JsValue.FromNumber(0)), 0));
+                var oneReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.LoadConst, oneReg, AddConstant(JsValue.FromNumber(1)), 0));
+
+                var restValueReg = AllocateRegister();
+                var loopStart = _instructions.Count;
+                var restNextIndex = _instructions.Count;
+                _instructions.Add(new Instruction(OpCode.ForOfNext, restValueReg, iterReg, -1));
+                _instructions.Add(new Instruction(OpCode.SetElem, restReg, writeIndexReg, restValueReg));
+                var bumpedReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.Add, bumpedReg, writeIndexReg, oneReg));
+                _instructions.Add(new Instruction(OpCode.Move, writeIndexReg, bumpedReg, 0));
+                _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
+                _instructions[restNextIndex] = _instructions[restNextIndex] with { C = _instructions.Count };
+
+                EmitBindingPatternAssignment(element.Target, restReg, storeOp);
+                continue;
+            }
+
+            // Elision and plain elements both advance the iterator one step;
+            // an exhausted iterator leaves the value as undefined (ForOfNext
+            // jumps without writing the destination register).
+            var valueReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.Move, valueReg, undefinedReg, 0));
+            var nextIndex = _instructions.Count;
+            _instructions.Add(new Instruction(OpCode.ForOfNext, valueReg, iterReg, -1));
+            _instructions[nextIndex] = _instructions[nextIndex] with { C = _instructions.Count };
+
+            if (element.Target is null)
+            {
+                continue;
+            }
+
+            if (element.Initializer is not null)
+            {
+                var elemName = element.Target is IdentifierBindingPatternNode elemId ? elemId.Name : null;
+                valueReg = ApplyDefaultInitializerIfUndefined(valueReg, element.Initializer, elemName);
+            }
+
+            EmitBindingPatternAssignment(element.Target, valueReg, storeOp);
+        }
+
+        _instructions.Add(new Instruction(OpCode.PopHandler, 0, 0, 0));
+        // Normal completion: close (no-op if the iterator was exhausted).
+        _instructions.Add(new Instruction(OpCode.IteratorClose, 0, iterReg, 0));
+        var jumpPastHandler = EmitPlaceholder(OpCode.Jump);
+
+        // Abrupt completion: the dispatched exception arrives in register 0.
+        // Copy it out before closing (the close may run user code), close
+        // quietly, and rethrow the original exception.
+        PatchJump(pushHandlerIndex, _instructions.Count);
+        var exceptionReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.Move, exceptionReg, 0, 0));
+        _instructions.Add(new Instruction(OpCode.IteratorClose, 0, iterReg, 1));
+        _instructions.Add(new Instruction(OpCode.Throw, exceptionReg, 0, 0));
+
+        PatchJump(jumpPastHandler, _instructions.Count);
     }
 
     // Build a fresh array from a mixed element list that contains at least one
@@ -3611,54 +3648,6 @@ public sealed class BytecodeCompiler
         var lenNameIdx = GetOrCreatePropertyName("length");
         _instructions.Add(new Instruction(OpCode.SetPropByName, arr, lenNameIdx, idxReg));
         return arr;
-    }
-
-    private int LoadArrayElement(int arrayReg, int index)
-    {
-        var indexReg = AllocateRegister();
-        var indexConst = AddConstant(JsValue.FromNumber(index));
-        _instructions.Add(new Instruction(OpCode.LoadConst, indexReg, indexConst, 0));
-        var valueReg = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.GetElem, valueReg, arrayReg, indexReg));
-        return valueReg;
-    }
-
-    private int BuildArrayRest(int sourceReg, int startIndex)
-    {
-        var restReg = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.NewArray, restReg, 0, 0));
-
-        var indexReg = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.LoadConst, indexReg, AddConstant(JsValue.FromNumber(startIndex)), 0));
-        var writeIndexReg = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.LoadConst, writeIndexReg, AddConstant(JsValue.FromNumber(0)), 0));
-
-        var oneReg = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.LoadConst, oneReg, AddConstant(JsValue.FromNumber(1)), 0));
-
-        var lengthReg = AllocateRegister();
-        var lengthNameIndex = GetOrCreatePropertyName("length");
-        _instructions.Add(new Instruction(OpCode.GetPropByName, lengthReg, sourceReg, lengthNameIndex));
-
-        var loopStart = _instructions.Count;
-        var hasNextReg = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.Lt, hasNextReg, indexReg, lengthReg));
-        var jumpEnd = EmitPlaceholder(OpCode.JumpIfFalse, hasNextReg);
-
-        var elementReg = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.GetElem, elementReg, sourceReg, indexReg));
-        _instructions.Add(new Instruction(OpCode.SetElem, restReg, writeIndexReg, elementReg));
-
-        var nextIndexReg = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.Add, nextIndexReg, indexReg, oneReg));
-        _instructions.Add(new Instruction(OpCode.Move, indexReg, nextIndexReg, 0));
-        var nextWriteReg = AllocateRegister();
-        _instructions.Add(new Instruction(OpCode.Add, nextWriteReg, writeIndexReg, oneReg));
-        _instructions.Add(new Instruction(OpCode.Move, writeIndexReg, nextWriteReg, 0));
-
-        _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
-        PatchJump(jumpEnd, _instructions.Count);
-        return restReg;
     }
 
     private int ApplyDefaultInitializerIfUndefined(int valueReg, ExpressionNode initializer, string? nameHint = null)

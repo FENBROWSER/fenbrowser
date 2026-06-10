@@ -13,7 +13,7 @@ public sealed partial class BytecodeInterpreter
     // if the source object exposes a callable Symbol.iterator, call it and drive
     // the returned iterator via .next() until done. Strings, Arrays, and array-
     // likes fall through to fast in-place iteration over their indexed slots.
-    private JsValue CreateForOfIterator(JsValue source)
+    private JsValue CreateForOfIterator(JsValue source, bool requireIterable = false)
     {
         var values = new List<JsValue>();
 
@@ -30,6 +30,15 @@ public sealed partial class BytecodeInterpreter
                 DrainIteratorIntoList(iter, values);
                 var producer = new ForOfIteratorObject(values);
                 return JsValue.FromObject(_heap.AllocateObject(producer, AllocationSite.Current()));
+            }
+
+            // 7.4.3 GetIterator: no callable @@iterator means not iterable.
+            // Destructuring (requireIterable) must throw; the for-of head keeps
+            // the legacy array-like fallback below for engine-internal callers.
+            if (requireIterable)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Value is not iterable (no Symbol.iterator method)."));
             }
 
             if (obj is ArrayObject)
@@ -87,7 +96,7 @@ public sealed partial class BytecodeInterpreter
     // many direct callers still rely on TryMoveNext). Pulling lazily is what
     // makes `for (x of infiniteIterator) break;` terminate and lets the loop run
     // IteratorClose on the break.
-    private JsValue CreateForOfIteratorState(JsValue source)
+    private JsValue CreateForOfIteratorState(JsValue source, bool requireIterable = false)
     {
         if (source.Tag == JsValueTag.Object)
         {
@@ -119,7 +128,7 @@ public sealed partial class BytecodeInterpreter
 
         // Arrays, strings, array-likes, and the not-iterable error paths keep the
         // existing eager buffering semantics.
-        return CreateForOfIterator(source);
+        return CreateForOfIterator(source, requireIterable);
     }
 
     // Advances a for-of iterator state by one step. Returns true when the
