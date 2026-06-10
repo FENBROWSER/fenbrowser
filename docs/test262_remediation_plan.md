@@ -264,3 +264,50 @@ rooting gap during the combined bytecode/native call stack.
   "is not defined" errors are real engine feature gaps (Annex B block-scoping in eval, etc.).
 - **Date category:** 435/594 (73.2%). The 6 former harness-gap tests are now real semantic
   failures (Date constructor producing wrong millisecond values for certain year/month/day combos).
+
+### 2026-06-10 (session 2) — Tier 1: default-params TDZ + near-gate cleanup
+- **Tier 1 default-parameter TDZ fix:** added `TdzReferenceErrorExpressionNode` to the AST
+  and `ReplaceTdzParameterReferences` to the BytecodeCompiler. Default initializers that
+  reference a parameter still in the TDZ (the parameter itself or a later one) now throw
+  `ReferenceError: Cannot access 'x' before initialization` per ECMA-262 10.2.1.3 step
+  25.c.i.2. Previously all parameters were initialized with `undefined` before the prologue
+  ran, so self-references like `x = x` silently evaluated to `undefined`.
+- **9 categories cleared to ≥95% or 100%** in this session:
+  - `language/expressions/class/gen-method`: 93.5% → 100%
+  - `language/expressions/class/gen-method-static`: 93.5% → 100%
+  - `language/statements/class/gen-method`: 93.5% → 100%
+  - `language/statements/class/gen-method-static`: 93.5% → 100%
+  - `language/expressions/class/method`: 90.0% → 100%
+  - `language/expressions/class/method-static`: 90.0% → 100%
+  - `language/statements/class/method`: 90.0% → 100%
+  - `language/statements/class/method-static`: 90.0% → 100%
+  - `built-ins/eval`: 90.0% → 100% (stale results re-run; assert fix already resolved)
+- **Tier 1 categories already at ≥95%** (pre-existing, verified current):
+  - `built-ins/Object`: 95.5%, `built-ins/Uint8Array`: 95.7%,
+    `language/expressions/async-function`: 95.7%, `language/statements/labeled`: 95.8%
+- **Still below 95% with fixable root causes identified:**
+  - `language_types` (94.7%, 6): cross-realm `$262.createRealm()` gaps (2), primitive-`this`
+    strict-mode bug (1), negative-parse parser gaps (2), `__ref` Sputnik (1)
+  - `language_function-code` (94.5%, 12): `this`-binding bugs in strict-mode `.call`/`.apply`
+    — boxes primitives when it shouldn't, and global-`this` detection is wrong
+  - `language_expressions/logical-and` (94.4%, 1): TCO — needs tail-call optimization
+  - `language_expressions/logical-or` (94.4%, 1): TCO
+  - `language_statements/return` (93.8%, 1): TCO
+  - `language_expressions/new.target` (92.9%, 1): parser must reject escaped `new.t\\u0061rget`
+  - `language_identifier-resolution` (92.9%, 1): PutValue/unresolvable-reference check races
+    with RHS side-effect that creates the global property — needs reference-preservation fix
+  - `language_statements/if` (92.8%, 5): 3 labelled-fn-stmt parser gaps + 2 TCO
+  - `language_statements/while` (92.1%, 3): 1 TCO + 1 Annex B + 1 labelled-fn-stmt
+  - `language_statements/do-while` (91.7%, 3): 1 TCO + 1 Annex B + 1 labelled-fn-stmt
+  - `language_expressions/array` (92.3%, 4): 2 Sputnik hasOwnProperty + 2 spread-err
+  - `language_expressions/assignmenttargettype` (92.6%, 24): parser early-error detection
+    for invalid assignment targets (all negative-parse tests)
+- **Systemic blockers for remaining Tier 1 categories:**
+  - **TCO** (6 categories stuck at 93-95%): need tail-call optimization or explicit
+    unsupported-feature handling
+  - **Parser early-error gaps**: `new.target` escaped identifier rejection, labelled
+    function statements, assignment-target validation
+  - **Strict-mode `this` binding**: `.call`/`.apply` boxing primitives, global-`this`
+    detection in strict functions
+  - **Cross-realm**: `$262.createRealm()` returns a non-functional realm — property
+    access on realm objects throws TypeError
