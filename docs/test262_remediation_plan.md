@@ -252,3 +252,15 @@ rooting gap during the combined bytecode/native call stack.
 - Near-gate categories: `language/expressions/new` (94.9%, 3 fails), `built-ins/decodeURIComponent`
   (94.6%, 3 fails), `language/expressions/logical-and` (94.4%, 1 fail), `language/statements/return`
   (93.8%, 1 fail), `built-ins/Array` (93.1%, 214 fails).
+
+### 2026-06-10 — Tier 0 closed: assertRelativeDateMs harness include
+- **Tier 0.3 `assertRelativeDateMs`** (runner): `assertRelativeDateMs.js` was listed in the
+  known-includes array but missing from `_loadableHarnessIncludes`, so
+  `BuildRuntimeHarnessIncludePrelude` skipped it. Added to the loadable set. All 6 Date
+  tests now fail with real engine errors (Date UTC value computation) instead of
+  `ReferenceError: assertRelativeDateMs is not defined`.
+- **Tier 0 is now fully complete** — all three harness gaps ($DONOTEVALUATE, assert callable,
+  assertRelativeDateMs) are resolved. No harness "not defined" failures remain; all remaining
+  "is not defined" errors are real engine feature gaps (Annex B block-scoping in eval, etc.).
+- **Date category:** 435/594 (73.2%). The 6 former harness-gap tests are now real semantic
+  failures (Date constructor producing wrong millisecond values for certain year/month/day combos).

@@ -1882,20 +1882,21 @@ public sealed class Test262Runner
     // or has been observed to cause regressions when re-loaded.
     private static readonly HashSet<string> _loadableHarnessIncludes = new(StringComparer.Ordinal)
     {
+        "assertRelativeDateMs.js",
         "byteConversionValues.js",
         "compareArray.js",
         "decimalToHexString.js",
         "detachArrayBuffer.js",
-        "nans.js",
-        "proxyTrapsHelper.js",
-        "testTypedArray.js",
-        "testAtomics.js",
-        "propertyHelper.js",
-        "regExpUtils.js",
-        "testIntl.js",
-        "temporalHelpers.js",
-        "tcoHelper.js",
         "iteratorZipUtils.js",
+        "nans.js",
+        "propertyHelper.js",
+        "proxyTrapsHelper.js",
+        "regExpUtils.js",
+        "tcoHelper.js",
+        "temporalHelpers.js",
+        "testAtomics.js",
+        "testIntl.js",
+        "testTypedArray.js",
     };
 
     private static readonly ConcurrentDictionary<string, string> _includeFileCache = new(StringComparer.Ordinal);
