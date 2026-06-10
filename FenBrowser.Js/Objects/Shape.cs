@@ -11,8 +11,14 @@ namespace FenBrowser.Js.Objects;
 // Transitions are stored in a ConcurrentDictionary<key, WeakReference<Shape>>
 // so shapes whose objects have all been GC'd are themselves collectible.
 //
-// A lazy flat map (name→slot) is built on first lookup and cached, making
-// subsequent TryGetSlot calls O(1) after the first miss per shape.
+// Name→slot lookup uses a chain map shared by every shape along a linear
+// transition chain. Appending a property extends the shared map in place
+// (O(1)); only branch points copy. A shape sharing a map of N entries owns
+// exactly the entries with slot < PropertyCount — entries past that belong to
+// deeper shapes on the chain — so lookups validate the slot against
+// PropertyCount. The previous design materialized a fresh flat map per shape
+// on first lookup, which made growing an object by N properties O(N²) (the
+// "first big array in the process takes seconds" pathology).
 public class Shape
 {
     private static readonly Shape _root = new();
@@ -27,7 +33,17 @@ public class Shape
     public string AddedProperty => _addedProperty!;
     public int AddedSlot => _addedSlot;
 
-    private volatile Dictionary<string, int>? _flatMap;
+    // Shared along a linear transition chain. Tail tracks how many entries
+    // represent the chain so far; a shape may append only when its parent is
+    // the current tail (Tail == parent.PropertyCount), so every entry with
+    // slot < PropertyCount is guaranteed to belong to this shape's lineage.
+    private sealed class ChainMap
+    {
+        public readonly ConcurrentDictionary<string, int> Map = new(StringComparer.Ordinal);
+        public int Tail;
+    }
+
+    private readonly ChainMap _chain;
     private readonly ConcurrentDictionary<string, WeakReference<Shape>> _transitions = new();
 
     public int PropertyCount { get; }
@@ -36,7 +52,7 @@ public class Shape
     {
         PropertyCount = 0;
         _addedSlot = -1;
-        _flatMap = new Dictionary<string, int>();
+        _chain = new ChainMap();
     }
 
     private Shape(Shape parent, string property)
@@ -45,6 +61,26 @@ public class Shape
         _addedProperty = property;
         _addedSlot = parent.PropertyCount;
         PropertyCount = parent.PropertyCount + 1;
+
+        var parentChain = parent._chain;
+        if (Volatile.Read(ref parentChain.Tail) == parent.PropertyCount &&
+            parentChain.Map.TryAdd(property, _addedSlot))
+        {
+            Interlocked.Increment(ref parentChain.Tail);
+            _chain = parentChain;
+            return;
+        }
+
+        // Branch point (or a stale entry from a dead sibling chain): build a
+        // private map for this new chain by walking the lineage once.
+        var chain = new ChainMap { Tail = PropertyCount };
+        chain.Map[property] = _addedSlot;
+        for (Shape? s = parent; s != null && s != _root; s = s._parent)
+        {
+            chain.Map.TryAdd(s._addedProperty!, s._addedSlot);
+        }
+
+        _chain = chain;
     }
 
     // Returns the child shape reached by adding `property` to this shape.
@@ -70,27 +106,12 @@ public class Shape
     // property is absent from this shape's lineage.
     public bool TryGetSlot(string property, out int slot)
     {
-        var map = _flatMap;
-        if (map != null)
-            return map.TryGetValue(property, out slot);
+        if (_chain.Map.TryGetValue(property, out slot) && slot < PropertyCount)
+        {
+            return true;
+        }
 
-        // Materialize the flat map on first miss.
-        map = BuildFlatMap();
-        _flatMap = map;
-        return map.TryGetValue(property, out slot);
-    }
-
-    // Builds a full name→slot dictionary by walking the parent chain once.
-    private Dictionary<string, int> BuildFlatMap()
-    {
-        var chain = new List<Shape>();
-        for (Shape? s = this; s != null && s != _root; s = s._parent)
-            chain.Add(s);
-        chain.Reverse();
-
-        var map = new Dictionary<string, int>(chain.Count, StringComparer.Ordinal);
-        foreach (var shape in chain)
-            map[shape._addedProperty!] = shape._addedSlot;
-        return map;
+        slot = 0;
+        return false;
     }
 }
