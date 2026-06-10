@@ -311,3 +311,36 @@ rooting gap during the combined bytecode/native call stack.
     detection in strict functions
   - **Cross-realm**: `$262.createRealm()` returns a non-functional realm — property
     access on realm objects throws TypeError
+
+### 2026-06-10 (session 3) — Tier 1 this-binding fix + Tier 2 GC pinning
+- **Tier 1 this-binding fix:** `OrdinaryCallBindThis` now boxes primitive `this` values
+  for non-strict functions per ECMA-262 10.2.1.3 step 7 (e.g., `foo.call(1)` where `foo`
+  is non-strict now correctly returns `typeof(this) === 'object'` because `1` is boxed
+  to `Number(1)`). Also fixed `Function.prototype.apply` to pass the raw `thisArgument`
+  through — the boxing belongs in `OrdinaryCallBindThis`, not in `apply`/`call`.
+  **language/function-code: 94.5% → 99.1%** (gate cleared).
+- **Tier 2.4 GC safety:** `TryInstanceOf` now pins the prototype handle across
+  `OrdinaryHasInstancePrototype` so GC during the prototype-chain walk doesn't
+  invalidate it. Addresses the "Stale heap handle" cluster (77 tests, TypedArray).
+  Exact impact TBD pending re-run.
+- **Tier 1 final tally — 10 categories cleared to ≥95%:**
+  - class gen-method / gen-method-static (expr + stmt): 93.5% → 100%
+  - class method / method-static (expr + stmt): 90.0% → 100%
+  - built-ins/eval: 90.0% → 100% (stale re-run)
+  - language/function-code: 94.5% → 99.1%
+- **Tier 2.2 (RegExp \p{}) diagnosed but deferred:** Unicode property validation uses
+  case/underscore-sensitive hash sets; tests use `\p{IsASCIIHexDigit}` but the set
+  has `ASCII_Hex_Digit`. `NormalizePropertyName` helper added; lookup normalization
+  still needs wiring through `ValidateUnicodePropertyEscapeBody` and
+  `TryRewriteUnicodePropertyBodyForDotNet`.
+- **Remaining systemic blockers (Tiers 2-4):**
+  - TCO: 6 categories stuck at 93-95% (needs tail-call optimization)
+  - Parser early-error gaps: `new.target` escaped identifiers, labelled function
+    statements, assignment-target validation
+  - RegExp \p{}: validation needs underscore normalization (infrastructure exists)
+  - Stale heap handle: prototype-chain pinning applied; full impact pending re-run
+  - Resizable ArrayBuffer: OOB-after-resize validation on length-tracking views
+  - Class destructuring: ~700 tests across c002-c007 chunks
+  - Temporal: ~3,653 tests (uniformly ~20%, needs incremental type-by-type build)
+  - Intl402: ~2,852 tests (per-object build-out)
+  - Runner thread-abandon fix: live-memory leak behind 25 GB runs
