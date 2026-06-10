@@ -13670,16 +13670,44 @@ fallbackArraySpecies:
             return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
         }
 
-        // new X(ArrayBuffer [, byteOffset [, length]])
+        // new X(ArrayBuffer [, byteOffset [, length]]) — ECMA-262 23.2.5.1 step 6.b
+        // InitializeTypedArrayFromArrayBuffer: byteOffset and length route through
+        // ToIndex (TypeError for Symbol/BigInt, RangeError for negative/too-large),
+        // the offset must be element-aligned, and the buffer must not be detached
+        // (the ToIndex coercions can run user code that detaches it).
         if (arg0.Tag == JsValueTag.Object && _heap.GetObject(arg0.AsObjectHandle()) is ArrayBufferObject ab)
         {
-            var byteOffset = args.Count > 1 ? (int)Math.Max(args[1].AsNumber(), 0) : 0;
+            var byteOffset = args.Count > 1
+                ? ToIndexForView(args[1], "TypedArray: invalid byteOffset.")
+                : 0;
             if (byteOffset % elementSize != 0)
-                throw new JsThrownException(CreateRangeError($"{nameof(TypedArrayElementType)}: byteOffset must be a multiple of {elementSize}."));
-            var isLengthTracking = args.Count <= 2;
-            var byteLength = args.Count > 2 ? (int)args[2].AsNumber() * elementSize : ab.ByteLength - byteOffset;
-            if (byteOffset + byteLength > ab.ByteLength)
-                throw new JsThrownException(CreateRangeError("TypedArray: offset + length exceeds ArrayBuffer bounds."));
+                throw new JsThrownException(CreateRangeError($"TypedArray: byteOffset must be a multiple of {elementSize}."));
+
+            var hasExplicitLength = args.Count > 2 && args[2].Tag != JsValueTag.Undefined;
+            var explicitLength = hasExplicitLength
+                ? ValidateTypedArrayLength(ToIntegerOrInfinity(args[2]), elementSize)
+                : 0;
+
+            if (ab.IsDetached)
+                throw new JsThrownException(CreateTypeError("TypedArray: ArrayBuffer is detached."));
+
+            var isLengthTracking = !hasExplicitLength;
+            int byteLength;
+            if (hasExplicitLength)
+            {
+                byteLength = explicitLength * elementSize;
+                if (byteOffset + (long)byteLength > ab.ByteLength)
+                    throw new JsThrownException(CreateRangeError("TypedArray: offset + length exceeds ArrayBuffer bounds."));
+            }
+            else
+            {
+                if (!ab.IsResizable && ab.ByteLength % elementSize != 0)
+                    throw new JsThrownException(CreateRangeError($"TypedArray: buffer length must be a multiple of {elementSize}."));
+                if (byteOffset > ab.ByteLength)
+                    throw new JsThrownException(CreateRangeError("TypedArray: byteOffset exceeds ArrayBuffer bounds."));
+                byteLength = ab.ByteLength - byteOffset;
+            }
+
             var view = CreateTypedArrayInstance(elementType, ab, byteOffset, byteLength, isLengthTracking);
             view.SetPrototype(protoHandle);
             return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
@@ -13862,17 +13890,61 @@ fallbackArraySpecies:
             JsValue.Undefined, Enumerable: false, Configurable: true));
 
         // 23.2.3.22 TypedArray.prototype.set(array [, offset])
+        // 23.2.3.24 %TypedArray%.prototype.set(source [, offset])
         DefineNativePrototypeMethod(protoHandle, proto, "set", (thisValue, args) =>
         {
             var self = ValidateTypedArray(thisValue);
             var source = args.Count > 0 ? args[0] : JsValue.Undefined;
-            var targetOffset = args.Count > 1 ? (int)Math.Max(args[1].AsNumber(), 0) : 0;
+
+            // Step 4-7: ToIntegerOrInfinity(offset) — TypeError for Symbol,
+            // RangeError when negative.
+            var offsetNumber = args.Count > 1 ? ToIntegerOrInfinity(args[1]) : 0;
+            if (offsetNumber < 0)
+                throw new JsThrownException(CreateRangeError("TypedArray.prototype.set: offset is negative."));
+            var targetOffset = double.IsPositiveInfinity(offsetNumber) || offsetNumber > int.MaxValue
+                ? int.MaxValue
+                : (int)offsetNumber;
+
+            var selfIsBigInt = self.ElementType is TypedArrayElementType.BigInt64 or TypedArrayElementType.BigUint64;
             if (source.Tag == JsValueTag.Object && _heap.GetObject(source.AsObjectHandle()) is TypedArrayObject src)
             {
-                var count = Math.Min(src.Length, self.Length - targetOffset);
-                for (var i = 0; i < count; i++)
+                // 23.2.3.24.2 SetTypedArrayFromTypedArray: content types must
+                // match and the source must fit.
+                var srcIsBigInt = src.ElementType is TypedArrayElementType.BigInt64 or TypedArrayElementType.BigUint64;
+                if (srcIsBigInt != selfIsBigInt)
+                    throw new JsThrownException(CreateTypeError("TypedArray.prototype.set: source and target content types differ."));
+                if (src.Length + (long)targetOffset > self.Length)
+                    throw new JsThrownException(CreateRangeError("TypedArray.prototype.set: source is too large for the target offset."));
+                for (var i = 0; i < src.Length; i++)
                     self.SetElement(targetOffset + i, src.GetElement(i));
+                return JsValue.Undefined;
             }
+
+            // 23.2.3.24.1 SetTypedArrayFromArrayLike: read length (propagating
+            // getter throws), bounds-check, then convert each element through
+            // ToBigInt/ToNumber so Symbols and mismatched types throw.
+            if (source.Tag is JsValueTag.Undefined or JsValueTag.Null)
+                throw new JsThrownException(CreateTypeError("TypedArray.prototype.set: source is not an object."));
+
+            var sourceValue = ToObjectValue(source);
+            var sourceObj = _heap.GetObject(sourceValue.AsObjectHandle());
+            if (!TryGetPropertyValue(sourceObj, sourceValue, "length", out var lengthValue))
+                lengthValue = JsValue.Undefined;
+            // 7.1.20 ToLength: clamp to [0, 2^53-1].
+            var srcLengthDouble = ToIntegerOrInfinity(lengthValue);
+            if (double.IsNaN(srcLengthDouble) || srcLengthDouble < 0) srcLengthDouble = 0;
+            var srcLength = srcLengthDouble > int.MaxValue ? int.MaxValue : (int)srcLengthDouble;
+            if (srcLength > self.Length - (long)targetOffset)
+                throw new JsThrownException(CreateRangeError("TypedArray.prototype.set: source is too large for the target offset."));
+
+            for (var i = 0; i < srcLength; i++)
+            {
+                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if (!TryGetPropertyValue(sourceObj, sourceValue, key, out var element))
+                    element = JsValue.Undefined;
+                self.SetElement(targetOffset + i, NormalizeTypedArrayElementValue(self.ElementType, element));
+            }
+
             return JsValue.Undefined;
         }, length: 2);
 
