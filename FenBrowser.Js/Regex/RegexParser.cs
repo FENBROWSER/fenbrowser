@@ -1054,15 +1054,37 @@ public static class RegexParser
 
         private AtomNode ParseModifierGroup()
         {
-            // Parse: (?flags1-flags2: ... )
-            // flags can be i, m, s
-            var addFlags = ParseModifierFlags();
+            // Parse: (?flags1-flags2: ... ) — flags can be i, m, s.
+            // The add side may be empty when a '-' side follows ((?-i:...)).
+            var addFlags = ParseOptionalModifierFlags();
             string? removeFlags = null;
 
             if (!AtEnd && Peek == '-')
             {
                 Advance();
-                removeFlags = ParseModifierFlags();
+                removeFlags = ParseOptionalModifierFlags();
+            }
+
+            // Early errors per the regexp-modifiers proposal (Atom ::
+            // ( ? RegularExpressionFlags - RegularExpressionFlags : Disjunction )):
+            // at least one side must be non-empty, no flag may repeat within a
+            // side, and no flag may appear on both sides.
+            if (addFlags.Length == 0 && (removeFlags is null || removeFlags.Length == 0))
+            {
+                throw new RegexSyntaxError("Empty regular expression modifiers", _pos);
+            }
+
+            ThrowIfDuplicateModifierFlags(addFlags);
+            if (removeFlags is not null)
+            {
+                ThrowIfDuplicateModifierFlags(removeFlags);
+                foreach (var flag in addFlags)
+                {
+                    if (removeFlags.Contains(flag))
+                    {
+                        throw new RegexSyntaxError($"Modifier flag '{flag}' cannot be both added and removed", _pos);
+                    }
+                }
             }
 
             Expect(':');
@@ -1080,16 +1102,27 @@ public static class RegexParser
             return node;
         }
 
-        private string ParseModifierFlags()
+        private string ParseOptionalModifierFlags()
         {
             var start = _pos;
             while (!AtEnd && (Peek == 'i' || Peek == 'm' || Peek == 's'))
                 Advance();
 
-            if (_pos == start)
-                throw new RegexSyntaxError("Expected modifier flags", _pos);
-
             return _pattern[start.._pos];
+        }
+
+        private void ThrowIfDuplicateModifierFlags(string flags)
+        {
+            for (var i = 0; i < flags.Length; i++)
+            {
+                for (var j = i + 1; j < flags.Length; j++)
+                {
+                    if (flags[i] == flags[j])
+                    {
+                        throw new RegexSyntaxError($"Duplicate modifier flag '{flags[i]}'", _pos);
+                    }
+                }
+            }
         }
 
         // ─── Quantifier ────────────────────────────────────────
