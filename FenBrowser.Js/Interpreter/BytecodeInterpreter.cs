@@ -5178,6 +5178,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (normalizedFlags.Contains('m', StringComparison.Ordinal)) options |= RegexOptions.Multiline;
         if (hasS) options |= RegexOptions.Singleline;
         var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
+        if (hasU || hasV)
+        {
+            dotNetPattern = RegExpCompiler.RewriteUnicodeCodePointEscapes(dotNetPattern);
+        }
         dotNetPattern = RegExpCompiler.RewriteUnicodePropertyEscapesForDotNet(dotNetPattern);
 
         BclRegex regex;
@@ -5323,6 +5327,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         if (hasS) options |= RegexOptions.Singleline;
         var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
+        if (hasU || hasV)
+        {
+            dotNetPattern = RegExpCompiler.RewriteUnicodeCodePointEscapes(dotNetPattern);
+        }
         dotNetPattern = RegExpCompiler.RewriteUnicodePropertyEscapesForDotNet(dotNetPattern);
 
         BclRegex regex;

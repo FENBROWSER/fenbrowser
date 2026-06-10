@@ -165,6 +165,7 @@ public sealed class RegExpBuiltin : IBuiltinModule
         var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
         if (hasU || hasV)
         {
+            dotNetPattern = Regex.RegExpCompiler.RewriteUnicodeCodePointEscapes(dotNetPattern);
             dotNetPattern = Regex.RegExpCompiler.RewriteUnicodePropertyEscapesForDotNet(dotNetPattern);
         }
 
