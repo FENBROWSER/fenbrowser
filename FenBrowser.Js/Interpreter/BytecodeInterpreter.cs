@@ -13773,6 +13773,64 @@ fallbackArraySpecies:
         }
     }
 
+    // ECMA-262 23.2.4.7 TypedArraySpeciesCreate(exemplar, argumentList):
+    // SpeciesConstructor(exemplar, defaultConstructor) → construct → validate
+    // the result is a compatible typed array. The default path reuses
+    // ConstructTypedArray with the exemplar's element type. When a single
+    // numeric length argument is supplied, the created array must be at least
+    // that long (23.2.4.6 TypedArrayCreate step 3).
+    private JsValue TypedArraySpeciesCreate(
+        JsValue exemplarValue,
+        TypedArrayObject exemplar,
+        int exemplarElementSize,
+        ObjectHandle defaultProtoHandle,
+        IReadOnlyList<JsValue> ctorArgs,
+        out TypedArrayObject created)
+    {
+        JsValue species = JsValue.Undefined;
+        if (TryGetPropertyValue(exemplar, exemplarValue, "constructor", out var ctor) &&
+            ctor.Tag != JsValueTag.Undefined)
+        {
+            if (ctor.Tag != JsValueTag.Object)
+                throw new JsThrownException(CreateTypeError("TypedArray species: constructor is not an object."));
+
+            var speciesId = GetWellKnownSymbolId("species");
+            if (speciesId != 0)
+            {
+                species = GetReceiverSymbolProperty(ctor, speciesId);
+            }
+
+            if (species.Tag == JsValueTag.Null)
+                species = JsValue.Undefined;
+        }
+
+        if (species.Tag == JsValueTag.Undefined)
+        {
+            var result = ConstructTypedArray(exemplar.ElementType, exemplarElementSize, defaultProtoHandle, ctorArgs);
+            created = (TypedArrayObject)_heap.GetObject(result.AsObjectHandle());
+            return result;
+        }
+
+        var constructed = ConstructFunction(species, ctorArgs);
+        if (constructed.Tag != JsValueTag.Object ||
+            _heap.GetObject(constructed.AsObjectHandle()) is not TypedArrayObject typedResult)
+            throw new JsThrownException(CreateTypeError("TypedArray species constructor did not return a typed array."));
+        if (typedResult.Buffer.IsDetached)
+            throw new JsThrownException(CreateTypeError("TypedArray species constructor returned a detached typed array."));
+
+        var exemplarIsBigInt = exemplar.ElementType is TypedArrayElementType.BigInt64 or TypedArrayElementType.BigUint64;
+        var resultIsBigInt = typedResult.ElementType is TypedArrayElementType.BigInt64 or TypedArrayElementType.BigUint64;
+        if (exemplarIsBigInt != resultIsBigInt)
+            throw new JsThrownException(CreateTypeError("TypedArray species constructor returned an incompatible content type."));
+
+        if (ctorArgs.Count == 1 && ctorArgs[0].Tag is JsValueTag.Number or JsValueTag.Int32 &&
+            typedResult.Length < ctorArgs[0].AsNumber())
+            throw new JsThrownException(CreateTypeError("TypedArray species constructor returned a too-small typed array."));
+
+        created = typedResult;
+        return constructed;
+    }
+
     // ECMA-262 7.1.22 ToIndex + the array-length allocation limit. Rejects
     // non-integer-index / infinite / negative / > 2^53-1 lengths, and lengths whose
     // byte size would overflow the int-addressed backing store, with a RangeError
@@ -13948,21 +14006,31 @@ fallbackArraySpecies:
             return JsValue.Undefined;
         }, length: 2);
 
-        // 23.2.3.19 TypedArray.prototype.slice(begin, end)
+        // 23.2.3.19 TypedArray.prototype.slice(begin, end): relative indices via
+        // ToIntegerOrInfinity (Symbol → TypeError, negatives count from the end),
+        // result allocated through TypedArraySpeciesCreate.
         DefineNativePrototypeMethod(protoHandle, proto, "slice", (thisValue, args) =>
         {
             var self = ValidateTypedArray(thisValue);
             var len = self.Length;
-            var begin = args.Count > 0 ? (int)Math.Min(Math.Max(args[0].AsNumber(), 0), len) : 0;
-            var end = args.Count > 1 ? (int)Math.Min(Math.Max(args[1].AsNumber(), 0), len) : len;
+            var relBegin = args.Count > 0 ? ToIntegerOrInfinity(args[0]) : 0;
+            var relEnd = args.Count > 1 && args[1].Tag != JsValueTag.Undefined ? ToIntegerOrInfinity(args[1]) : len;
+            var begin = relBegin < 0 ? (int)Math.Max(len + relBegin, 0) : (int)Math.Min(relBegin, len);
+            var end = relEnd < 0 ? (int)Math.Max(len + relEnd, 0) : (int)Math.Min(relEnd, len);
             if (end < begin) end = begin;
             var newLen = end - begin;
-            var buf = new ArrayBufferObject(newLen * self.ElementSize);
-            var sliced = CreateTypedArrayInstance(self.ElementType, buf, 0, newLen * self.ElementSize);
+            var slicedValue = TypedArraySpeciesCreate(
+                thisValue, self, elementSize, protoHandle,
+                new[] { JsValue.FromNumber(newLen) }, out var sliced);
+            var sameContentType = sliced.ElementType == self.ElementType ||
+                (sliced.ElementType is TypedArrayElementType.BigInt64 or TypedArrayElementType.BigUint64) ==
+                (self.ElementType is TypedArrayElementType.BigInt64 or TypedArrayElementType.BigUint64);
             for (var i = 0; i < newLen; i++)
-                sliced.SetElement(i, self.GetElement(begin + i));
-            sliced.SetPrototype(protoHandle);
-            return JsValue.FromObject(_heap.AllocateObject(sliced, AllocationSite.Current()));
+            {
+                var v = self.GetElement(begin + i);
+                sliced.SetElement(i, sameContentType ? v : NormalizeTypedArrayElementValue(sliced.ElementType, v));
+            }
+            return slicedValue;
         }, length: 2);
 
         DefineNativePrototypeMethod(protoHandle, proto, "at", (thisValue, args) =>
@@ -14035,18 +14103,19 @@ fallbackArraySpecies:
             var callback = args.Count > 0 ? args[0] : JsValue.Undefined;
             if (!IsCallable(callback)) throw new JsThrownException(CreateTypeError("TypedArray.prototype.map callback is not callable."));
             var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
-            var buf = new ArrayBufferObject(self.Length * self.ElementSize);
-            var mapped = CreateTypedArrayInstance(self.ElementType, buf, 0, self.Length * self.ElementSize);
-            mapped.SetPrototype(protoHandle);
-            for (var i = 0; i < self.Length; i++)
+            var length = self.Length;
+            var mappedValue = TypedArraySpeciesCreate(
+                thisValue, self, elementSize, protoHandle,
+                new[] { JsValue.FromNumber(length) }, out var mapped);
+            for (var i = 0; i < length; i++)
             {
                 var next = CallFunction(callback, new[] { self.GetElement(i), JsValue.FromNumber(i), thisValue }, thisArg);
                 // ECMA-262: callback result must go through ToBigInt/ToNumber
                 // so Symbol / incompatible types surface as TypeError.
-                next = NormalizeTypedArrayElementValue(self.ElementType, next);
+                next = NormalizeTypedArrayElementValue(mapped.ElementType, next);
                 mapped.SetElement(i, next);
             }
-            return JsValue.FromObject(_heap.AllocateObject(mapped, AllocationSite.Current()));
+            return mappedValue;
         }, length: 1);
 
         DefineNativePrototypeMethod(protoHandle, proto, "filter", (thisValue, args) =>
@@ -14062,11 +14131,11 @@ fallbackArraySpecies:
                 var keep = CallFunction(callback, new[] { value, JsValue.FromNumber(i), thisValue }, thisArg);
                 if (IsTruthy(keep)) selected.Add(value);
             }
-            var buf = new ArrayBufferObject(selected.Count * self.ElementSize);
-            var filtered = CreateTypedArrayInstance(self.ElementType, buf, 0, selected.Count * self.ElementSize);
-            filtered.SetPrototype(protoHandle);
+            var filteredValue = TypedArraySpeciesCreate(
+                thisValue, self, elementSize, protoHandle,
+                new[] { JsValue.FromNumber(selected.Count) }, out var filtered);
             for (var i = 0; i < selected.Count; i++) filtered.SetElement(i, selected[i]);
-            return JsValue.FromObject(_heap.AllocateObject(filtered, AllocationSite.Current()));
+            return filteredValue;
         }, length: 1);
 
         DefineNativePrototypeMethod(protoHandle, proto, "find", (thisValue, args) =>
@@ -14304,10 +14373,14 @@ fallbackArraySpecies:
             if (end < begin) end = begin;
             var newLen = end - begin;
             var byteOffset = self.ByteOffset + begin * self.ElementSize;
-            var byteLength = newLen * self.ElementSize;
-            var view = CreateTypedArrayInstance(self.ElementType, self.Buffer, byteOffset, byteLength);
-            view.SetPrototype(protoHandle);
-            return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
+            // 23.2.3.30 step 13: the subarray shares the source's buffer and is
+            // allocated through TypedArraySpeciesCreate(O, « buffer, byteOffset, newLen »).
+            var bufferValue = self.Buffer.OwnerHandle is { } bufHandle
+                ? JsValue.FromObject(bufHandle)
+                : JsValue.FromObject(_heap.AllocateObject(self.Buffer, AllocationSite.Current()));
+            return TypedArraySpeciesCreate(
+                thisValue, self, elementSize, protoHandle,
+                new[] { bufferValue, JsValue.FromNumber(byteOffset), JsValue.FromNumber(newLen) }, out _);
         }, length: 2);
 
         DefineNativePrototypeMethod(protoHandle, proto, "sort", (thisValue, args) =>
