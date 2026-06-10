@@ -48,6 +48,39 @@ public sealed partial class BytecodeInterpreter
     }
 
 
+    // Route a return completion (generator .return() injected at a yield) to the
+    // innermost finally block. Catch-only handlers are skipped — a return
+    // completion is not catchable. Returns true when a finally was entered (the
+    // dispatch loop continues there); false when no finally covers the position
+    // and the caller should complete the function with the value.
+    private static bool TryRouteReturnThroughFinally(InterpreterFrame frame, JsValue value)
+    {
+        while (frame.CatchHandlers.Count > 0)
+        {
+            _ = frame.CatchHandlers.Pop();
+            var finallyIp = frame.FinallyHandlers.Pop();
+            EnvironmentRecord? handlerEnv = null;
+            if (frame.HandlerEnvironments.Count > 0)
+            {
+                handlerEnv = frame.HandlerEnvironments.Pop();
+            }
+
+            if (finallyIp >= 0)
+            {
+                if (handlerEnv is not null)
+                {
+                    frame.Environment = handlerEnv;
+                }
+
+                frame.PendingReturn = value;
+                frame.InstructionPointer = finallyIp;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private void ThrowOrHandle(InterpreterFrame frame, JsValue value)
     {
         if (frame.CatchHandlers.Count > 0)

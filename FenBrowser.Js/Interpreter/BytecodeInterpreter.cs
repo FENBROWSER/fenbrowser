@@ -394,6 +394,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 		gen.SavedFinallyHandlers = frame.FinallyHandlers.ToArray();
 		gen.SavedHandlerEnvironments = frame.HandlerEnvironments.ToArray();
 		gen.PendingException = frame.PendingException;
+		gen.PendingReturn = frame.PendingReturn;
     }
 
     // ECMA-262 27.5.1.2 — execute (or resume) a generator function body.
@@ -737,6 +738,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 frame.HandlerEnvironments.Push(savedHandlerEnvs[i]);
             }
             frame.PendingException = ownerGenerator.PendingException;
+            frame.PendingReturn = ownerGenerator.PendingReturn;
         }
         else if (asyncContext != null && asyncContext.InstructionPointer > 0)
         {
@@ -852,6 +854,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 {
                     genFrame.CompletionMode = GeneratorCompletionMode.Normal;
                     ThrowOrHandle(frame, genFrame.SentValue);
+                    continue;
+                }
+            }
+
+            // ECMA-262 27.5.3.3 GeneratorResumeAbrupt — inject a return-mode
+            // completion at the suspended yield. The body must NOT keep executing;
+            // only finally blocks covering the yield run (catch handlers never see
+            // a return completion). With no covering finally the generator
+            // completes immediately with the .return() argument.
+            if (frame.OwnerGenerator is { } genReturn && genReturn.CompletionMode == GeneratorCompletionMode.Return)
+            {
+                var nextIns = function.Instructions[frame.InstructionPointer];
+                if (nextIns.OpCode != OpCode.YieldStar)
+                {
+                    genReturn.CompletionMode = GeneratorCompletionMode.Normal;
+                    var returnValue = genReturn.SentValue;
+                    if (!TryRouteReturnThroughFinally(frame, returnValue))
+                    {
+                        return returnValue;
+                    }
+
                     continue;
                 }
             }
@@ -1088,12 +1111,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         gen.CompletionMode = GeneratorCompletionMode.Normal;
                         methodName = "return";
                         methodArg = gen.SentValue;
-                        // If the inner iterator has no .return(), complete delegation
-                        // with the return value (ECMA-262 15.5.5 step 5.d).
+                        // If the inner iterator has no .return(), the outer
+                        // generator itself completes with a return completion
+                        // (ECMA-262 27.5.3.3 / yield* step 7.c.iii): run finally
+                        // blocks covering the yield*, then finish with the value.
                         if (!iterObj.TryGetProperty(methodName, h => _heap.GetObject(h), out _))
                         {
                             gen.YieldStarIterator = null;
-                            frame.Registers[ins.A] = methodArg;
+                            if (!TryRouteReturnThroughFinally(frame, methodArg))
+                            {
+                                return methodArg;
+                            }
+
                             break;
                         }
                     }
@@ -1156,9 +1185,26 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     {
                         // Delegation complete (ECMA-262 15.5.5 step 5.d / 5.e).
                         gen.YieldStarIterator = null;
-                        frame.Registers[ins.A] = resultObj.TryGetOwnProperty("value", out var vd)
+                        var innerValue = resultObj.TryGetOwnProperty("value", out var vd)
                             ? vd.Value
                             : JsValue.Undefined;
+
+                        // yield* step 7.c.viii: when the resume was a return
+                        // completion and the inner iterator finished, the OUTER
+                        // generator completes with a return completion of the
+                        // inner value — its body must not keep executing past
+                        // the yield* (only covering finally blocks run).
+                        if (methodName == "return")
+                        {
+                            if (!TryRouteReturnThroughFinally(frame, innerValue))
+                            {
+                                return innerValue;
+                            }
+
+                            break;
+                        }
+
+                        frame.Registers[ins.A] = innerValue;
                         break;
                     }
 
@@ -1230,6 +1276,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         frame.PendingException = null;
                         ThrowOrHandle(frame, pending);
                     }
+                    else if (frame.PendingReturn is { } pendingReturn)
+                    {
+                        // A return completion finished this finally — forward it
+                        // to the next enclosing finally, or complete the function.
+                        frame.PendingReturn = null;
+                        if (!TryRouteReturnThroughFinally(frame, pendingReturn))
+                        {
+                            return pendingReturn;
+                        }
+                    }
+
                     break;
                 }
                 case OpCode.Await:
@@ -5191,7 +5248,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         catch (ArgumentException ex)
         {
-            throw new JsThrownException(CreateSyntaxError(ex.Message));
+            // .NET rejects some valid ECMAScript constructs (e.g. property names
+            // it doesn't know after the \p{} rewrite). When the pattern uses
+            // property escapes, fall back to a neutral BCL regex and let the
+            // native program do the matching, mirroring RegExpCompiler.Compile.
+            if (RegExpCompiler.ContainsUnicodePropertyEscape(pattern))
+            {
+                regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
+            }
+            else
+            {
+                throw new JsThrownException(CreateSyntaxError(ex.Message));
+            }
         }
 
         RegexProgram? nativeProgram;
@@ -5340,7 +5408,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         catch (ArgumentException ex)
         {
-            throw new JsThrownException(CreateSyntaxError(ex.Message));
+            // .NET rejects some valid ECMAScript constructs (e.g. property names
+            // it doesn't know after the \p{} rewrite). When the pattern uses
+            // property escapes, fall back to a neutral BCL regex and let the
+            // native program do the matching, mirroring RegExpCompiler.Compile.
+            if (RegExpCompiler.ContainsUnicodePropertyEscape(pattern))
+            {
+                regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
+            }
+            else
+            {
+                throw new JsThrownException(CreateSyntaxError(ex.Message));
+            }
         }
 
         RegexProgram? nativeProgram;
@@ -5563,6 +5642,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var dotNetPattern = RewriteEcmaCharacterClassEscapes(newPattern);
         if (hasU || hasV)
         {
+            dotNetPattern = RegExpCompiler.RewriteUnicodeCodePointEscapes(dotNetPattern);
             dotNetPattern = RegExpCompiler.RewriteUnicodePropertyEscapesForDotNet(dotNetPattern);
         }
 
@@ -5573,7 +5653,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         catch (ArgumentException ex)
         {
-            throw new JsThrownException(CreateSyntaxError(ex.Message));
+            // .NET rejects some valid ECMAScript constructs (e.g. property names
+            // it doesn't know after the \p{} rewrite). When the pattern uses
+            // property escapes, fall back to a neutral BCL regex and let the
+            // native program do the matching, mirroring RegExpCompiler.Compile.
+            if (RegExpCompiler.ContainsUnicodePropertyEscape(newPattern))
+            {
+                regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
+            }
+            else
+            {
+                throw new JsThrownException(CreateSyntaxError(ex.Message));
+            }
         }
         target.Recompile(newPattern, normalizedFlags, regex);
         // source/flags/flag-booleans are prototype accessors that read target.Flags

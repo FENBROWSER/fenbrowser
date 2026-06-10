@@ -67,24 +67,12 @@ public sealed class GeneratorBuiltin : IBuiltinModule
             g.State = GeneratorState.Executing;
             try
             {
-                var result = interpreter.ExecuteGenerator(g, returnValue);
-                if (g.State == GeneratorState.Suspended)
-                {
-                    // If yield* is active, the YieldStar handler forwarded
-                    // .return() to the inner iterator and yielded its result
-                    // (ECMA-262 15.5.5 step 5.d). Return the inner iterator's
-                    // yield as-is — do NOT override.
-                    if (g.YieldStarIterator != null)
-                        return result;
-
-                    // Regular yield (e.g. inside a finally block). Override
-                    // with the .return() value per ECMA-262 27.5.1.3 step 12.
-                    g.State = GeneratorState.Completed;
-                    return CreateResult(ctx, heap, returnValue, done: true);
-                }
-                // Generator completed normally — result is already
-                // {value, done: true} from ExecuteGenerator wrapping.
-                return result;
+                // The interpreter injects the return completion at the suspended
+                // yield (ECMA-262 27.5.3.3): finally blocks covering the yield run,
+                // and a yield inside such a finally (or a yield* forward) legitimately
+                // re-suspends the generator with that yield's result. Otherwise the
+                // generator completed and the result is already {value, done: true}.
+                return interpreter.ExecuteGenerator(g, returnValue);
             }
             catch (JsThrownException)
             {

@@ -23,6 +23,7 @@ public sealed class GeneratorObject : JsObject
 	public int[] SavedFinallyHandlers { get; set; } = Array.Empty<int>();
 	public FenBrowser.Js.Environments.EnvironmentRecord[] SavedHandlerEnvironments { get; set; } = Array.Empty<FenBrowser.Js.Environments.EnvironmentRecord>();
 	public JsValue? PendingException { get; set; }
+	public JsValue? PendingReturn { get; set; }
 
 	public ObjectHandle? YieldStarIterator { get; set; }
     public bool IsAsyncGenerator { get; set; }

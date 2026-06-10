@@ -41,6 +41,12 @@ public sealed class InterpreterFrame
 
 	public JsValue? PendingException { get; set; }
 
+	// A return completion travelling through finally blocks (generator .return()
+	// injected at a yield, ECMA-262 27.5.3.3 GeneratorResumeAbrupt). Unlike
+	// PendingException it is not observable by catch handlers; EndFinally either
+	// forwards it to the next enclosing finally or completes the function with it.
+	public JsValue? PendingReturn { get; set; }
+
 	public int InstructionPointer { get; set; }
 
 	public JsFunctionObject? CalleeFunctionObject { get; set; }
