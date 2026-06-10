@@ -44,6 +44,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         public void Dispose() => _stack.Pop();
     }
 
+    // All cached ObjectHandle fields of the interpreter (lazily-built builtin
+    // prototypes, constructors, intrinsic functions). These caches must be GC
+    // roots for the lifetime of the interpreter, but they were pinned with
+    // heap.PushRoot — and the root set is a *stack*: any scoped pin window
+    // (PushRoot … PopRootsTo) active while a lazy Ensure* ran would pop the
+    // "permanent" root with its own, leaving the cached handle dangling. The
+    // next minor GC then swept the still-cached prototype and every object
+    // created from the cache afterwards had a stale [[Prototype]]. Tracing the
+    // fields directly removes any dependence on PushRoot ordering.
+    private static readonly System.Reflection.FieldInfo[] CachedHandleFields = BuildCachedHandleFieldTable();
+
+    private static System.Reflection.FieldInfo[] BuildCachedHandleFieldTable()
+    {
+        return typeof(BytecodeInterpreter)
+            .GetFields(System.Reflection.BindingFlags.Instance |
+                       System.Reflection.BindingFlags.NonPublic |
+                       System.Reflection.BindingFlags.Public)
+            .Where(f => f.FieldType == typeof(ObjectHandle) || f.FieldType == typeof(ObjectHandle?))
+            .ToArray();
+    }
+
     void IHeapRootSource.TraceRoots(IHeapTracer tracer)
     {
         foreach (var frame in _activeFrames)
@@ -57,7 +78,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (frame.NewTarget.Tag == JsValueTag.Object) tracer.Trace(frame.NewTarget.AsObjectHandle());
             if (frame.PendingException is { } pe && pe.Tag == JsValueTag.Object)
                 tracer.Trace(pe.AsObjectHandle());
+            if (frame.PendingReturn is { } pr && pr.Tag == JsValueTag.Object)
+                tracer.Trace(pr.AsObjectHandle());
             frame.Environment?.Trace(tracer);
+        }
+
+        foreach (var field in CachedHandleFields)
+        {
+            var raw = field.GetValue(this);
+            if (raw is ObjectHandle handle)
+            {
+                tracer.Trace(handle);
+            }
         }
     }
     double IBuiltinContext.ToNumber(JsValue value) => ToNumber(value);

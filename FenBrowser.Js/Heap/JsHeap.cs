@@ -41,6 +41,9 @@ public sealed class JsHeap
     private readonly bool _verifyHeapBeforeGc;
     private readonly bool _verifyHeapAfterGc;
     private readonly HeapVerifier _verifier = new();
+    // Diagnostic breadcrumbs: last sweep record per cell index, so a stale
+    // handle error can say which collection freed the cell it points at.
+    private readonly Dictionary<int, string> _sweepLog = new();
 
     public JsHeap(
         GcStressMode stressMode = GcStressMode.None,
@@ -218,7 +221,9 @@ public sealed class JsHeap
         var cell = _cells[index];
         if (cell is null || cell.Generation != generation)
         {
-            throw new JsEngineFatalException("Stale heap handle.");
+            var sweepInfo = _sweepLog.TryGetValue(index, out var info) ? info : "no-sweep-record";
+            throw new JsEngineFatalException(
+                $"Stale heap handle. idx={index} wantGen={generation} cell={(cell is null ? "null" : $"gen{cell.Generation}/{cell.Kind}")} sweep[{sweepInfo}] minor#{_minorGcCount} major#{_gcCollectionCount}");
         }
 
         if (cell.Kind != expectedKind)
@@ -324,6 +329,7 @@ public sealed class JsHeap
             }
             else
             {
+                _sweepLog[i] = $"gen{cell.Generation}/{cell.Kind} minorGc#{_minorGcCount}";
                 _cells[i] = null;
                 _lastMinorSwept++;
                 if (!_isFree[i])
@@ -429,6 +435,7 @@ public sealed class JsHeap
                 continue;
             }
 
+            _sweepLog[i] = $"gen{cell.Generation}/{cell.Kind} majorGc#{_gcCollectionCount}";
             _cells[i] = null;
             _lastGcSweptCells++;
             if (!_isFree[i])
@@ -616,33 +623,39 @@ public sealed class JsHeap
     private sealed class MarkingTracer : IHeapTracer
     {
         private readonly JsHeap _heap;
-        // Tier 4 #22: when true, mark traversal stops at Old cells. The
-        // remembered set is responsible for keeping any reachable Young
-        // children of those Old cells alive. Major collections set this
-        // false and mark everything.
+
+        // Minor collections used to STOP traversal at Old cells and rely on the
+        // remembered set for every Old→Young edge. That is only sound when every
+        // such edge goes through a write barrier — but internal slots (generator
+        // state, typed-array buffers, Map/Set backing stores, bound-function
+        // slots) and closure-captured environment bindings are written directly
+        // in native code with no barrier, so live Young cells reachable only
+        // through an Old owner were swept ("Stale heap handle."). Minor mode now
+        // marks straight through Old cells too — mark bits stop revisits, and
+        // the minor sweep still frees only unmarked Young cells, so the only
+        // cost is a full-heap mark instead of a young-only mark. The remembered
+        // set remains as a redundant (harmless) root source.
         private readonly bool _minorMode;
 
         public MarkingTracer(JsHeap heap, bool minorMode = false)
         {
             _heap = heap;
             _minorMode = minorMode;
+            _ = _minorMode;
         }
 
         public void Trace(ObjectHandle handle)
         {
-            if (_minorMode && _heap.IsOld(handle.Index)) return;
             _heap.Mark(handle);
         }
 
         public void Trace(StringHandle handle)
         {
-            if (_minorMode && _heap.IsOld(handle.Index)) return;
             _heap.Mark(handle);
         }
 
         public void Trace(SymbolHandle handle)
         {
-            if (_minorMode && _heap.IsOld(handle.Index)) return;
             _heap.Mark(handle);
         }
     }

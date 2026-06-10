@@ -240,7 +240,14 @@ public sealed partial class BytecodeInterpreter
 
         if (obj.PrototypeHandle is { } prototypeHandle)
         {
-            return TryGetPropertyValue(_heap.GetObject(prototypeHandle), receiver, key, out value);
+            JsObject protoObj;
+            try { protoObj = _heap.GetObject(prototypeHandle); }
+            catch (FenBrowser.Js.Heap.JsEngineFatalException ex)
+            {
+                throw new FenBrowser.Js.Heap.JsEngineFatalException(
+                    $"{ex.Message} [protoWalk owner={obj.GetType().Name} key={key}]");
+            }
+            return TryGetPropertyValue(protoObj, receiver, key, out value);
         }
 
         // ECMA-262 10.3.3: callable native objects whose [[Prototype]] was never
