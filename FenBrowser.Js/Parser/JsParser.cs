@@ -460,6 +460,30 @@ public sealed class JsParser
         return names;
     }
 
+    // ECMA-262 15.4.1 MethodDefinition early errors: a getter takes no
+    // parameters; a setter takes exactly one, and it must not be a rest
+    // parameter. Applies to class accessors and object-literal accessors.
+    private static void ValidateAccessorArity(bool isGetter, bool isSetter, ParameterListInfo parameterInfo)
+    {
+        if (isGetter && parameterInfo.Parameters.Count != 0)
+        {
+            throw new JsParserException("A getter cannot have parameters.");
+        }
+
+        if (isSetter)
+        {
+            if (parameterInfo.Parameters.Count != 1)
+            {
+                throw new JsParserException("A setter must have exactly one parameter.");
+            }
+
+            if (parameterInfo.RestParameterIndex >= 0)
+            {
+                throw new JsParserException("A setter cannot have a rest parameter.");
+            }
+        }
+    }
+
     private static void ValidateClassMethodEarlyErrors(
         ParameterListInfo parameterInfo,
         BlockStatementNode body,
@@ -2491,6 +2515,7 @@ public sealed class JsParser
                 forbidYieldIdentifier: isGenerator,
                 strictMode: true,
                 rejectSuperCallInBody: kind != ClassMemberKind.Constructor);
+            ValidateAccessorArity(kind == ClassMemberKind.Getter, kind == ClassMemberKind.Setter, parameterInfo);
             var fn = new FunctionExpressionNode(
                 memberName,
                 parameters,
@@ -3832,6 +3857,7 @@ public sealed class JsParser
                     forbidYieldIdentifier: false,
                     strictMode: strictObjectMethod,
                     rejectSuperCallInBody: true);
+                ValidateAccessorArity(accessorKind.Text == "get", accessorKind.Text == "set", parameterInfo);
                 var accessorFnName = accessorKey ?? accessorKind.Text;
                 var accessorFn = new FunctionExpressionNode(accessorFnName, parameters, body, MergeSpan(accessorKind.Span, body.Span), HasSimpleParameterList: parameterInfo.IsSimple, RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults, IsMethod: true);
                 var accessorPropKind = accessorKind.Text == "get" ? ObjectPropertyKind.Getter : ObjectPropertyKind.Setter;

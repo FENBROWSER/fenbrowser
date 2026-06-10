@@ -130,8 +130,10 @@ public sealed class AstValidator
     /// </summary>
     private static bool WalkClassMembers(IReadOnlyList<ClassMemberNode> members)
     {
-        // Track private names for duplicate detection
-        var privateNames = new HashSet<string>(StringComparer.Ordinal);
+        // Track private names for duplicate detection. ECMA-262 15.7.1: duplicate
+        // private names are a Syntax Error, EXCEPT exactly one getter/setter pair
+        // with the same placement (both static or both non-static).
+        var privateNames = new Dictionary<string, (bool IsStatic, bool HasGetter, bool HasSetter, bool HasOther)>(StringComparer.Ordinal);
         bool hasConstructor = false;
 
         foreach (var member in members)
@@ -140,15 +142,26 @@ public sealed class AstValidator
             bool isStatic = member.IsStatic;
             string name = member.Name;
 
-            // ECMA-262 15.7.1 Static Semantics: Early Errors
-            // It is a Syntax Error if ClassBody Contains Multiple occurrences
-            // of the same PrivateIdentifier.
             if (member.IsPrivate)
             {
-                if (!privateNames.Add(name))
+                var isGetter = member.Kind == ClassMemberKind.Getter;
+                var isSetter = member.Kind == ClassMemberKind.Setter;
+                if (privateNames.TryGetValue(name, out var seen))
                 {
-                    throw new JsParserException(
-                        $"Duplicate private name '#{name}' in class body.");
+                    var legalPair = !seen.HasOther && seen.IsStatic == isStatic &&
+                                    ((isGetter && !seen.HasGetter && seen.HasSetter) ||
+                                     (isSetter && !seen.HasSetter && seen.HasGetter));
+                    if (!legalPair)
+                    {
+                        throw new JsParserException(
+                            $"Duplicate private name '{name}' in class body.");
+                    }
+
+                    privateNames[name] = (seen.IsStatic, seen.HasGetter || isGetter, seen.HasSetter || isSetter, seen.HasOther);
+                }
+                else
+                {
+                    privateNames[name] = (isStatic, isGetter, isSetter, !isGetter && !isSetter);
                 }
             }
 
