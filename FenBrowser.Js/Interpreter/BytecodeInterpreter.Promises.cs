@@ -42,18 +42,58 @@ public sealed partial class BytecodeInterpreter
         _ = prototype.SetProperty("constructor", JsValue.FromObject(constructorHandle));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
-        // 27.2.4.6 Promise.resolve(value).
-        DefineIntrinsicFunction(constructorHandle, constructor, "resolve", (_, args) =>
+        // 27.2.4.4 get Promise [ @@species ] — returns the this value so
+        // subclasses default to constructing instances of themselves.
+        var speciesId = GetWellKnownSymbolId("species");
+        if (speciesId != 0)
+        {
+            var speciesGetter = new NativeFunctionObject("get [Symbol.species]", (tv, _) => tv, length: 0);
+            var speciesGetterHandle = _heap.AllocateObject(speciesGetter, AllocationSite.Current());
+            _ = constructor.DefineOwnSymbolProperty(
+                speciesId,
+                JsPropertyDescriptor.Accessor(
+                    JsValue.FromObject(speciesGetterHandle),
+                    JsValue.Undefined,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(constructorHandle, speciesGetterHandle);
+        }
+
+        // 27.2.4.6 Promise.resolve(value): C is the this value; an existing
+        // promise whose .constructor is C round-trips unchanged, anything else
+        // goes through NewPromiseCapability(C).
+        DefineIntrinsicFunction(constructorHandle, constructor, "resolve", (thisValue, args) =>
         {
             var value = args.Count > 0 ? args[0] : JsValue.Undefined;
-            return PromiseResolveStatic(value);
+            if (thisValue.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Promise.resolve called on a non-object receiver."));
+            }
+
+            if (value.Tag == JsValueTag.Object &&
+                _heap.GetObject(value.AsObjectHandle()) is PromiseInstance &&
+                GetReceiverProperty(value, "constructor") is { } valueCtor &&
+                valueCtor.Tag == JsValueTag.Object &&
+                valueCtor.AsObjectHandle() == thisValue.AsObjectHandle())
+            {
+                return value;
+            }
+
+            var capability = NewPromiseCapability(thisValue);
+            _ = CallFunction(capability.Resolve, new[] { value }, JsValue.Undefined);
+            return capability.Promise;
         }, length: 1);
 
-        // 27.2.4.5 Promise.reject(reason).
-        DefineIntrinsicFunction(constructorHandle, constructor, "reject", (_, args) =>
+        // 27.2.4.5 Promise.reject(reason) — uses NewPromiseCapability(this).
+        DefineIntrinsicFunction(constructorHandle, constructor, "reject", (thisValue, args) =>
         {
             var reason = args.Count > 0 ? args[0] : JsValue.Undefined;
-            var capability = NewPromiseCapability();
+            if (thisValue.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Promise.reject called on a non-object receiver."));
+            }
+
+            var capability = NewPromiseCapability(thisValue);
             _ = CallFunction(capability.Reject, new[] { reason }, JsValue.Undefined);
             return capability.Promise;
         }, length: 1);
@@ -81,31 +121,31 @@ public sealed partial class BytecodeInterpreter
         }, length: 1);
 
         // 27.2.4.1 Promise.all(iterable).
-        DefineIntrinsicFunction(constructorHandle, constructor, "all", (_, args) =>
+        DefineIntrinsicFunction(constructorHandle, constructor, "all", (thisValue, args) =>
         {
             var iterable = args.Count > 0 ? args[0] : JsValue.Undefined;
-            return PromiseAll(iterable);
+            return PromiseAll(thisValue, iterable);
         }, length: 1);
 
         // 27.2.4.2 Promise.allSettled(iterable).
-        DefineIntrinsicFunction(constructorHandle, constructor, "allSettled", (_, args) =>
+        DefineIntrinsicFunction(constructorHandle, constructor, "allSettled", (thisValue, args) =>
         {
             var iterable = args.Count > 0 ? args[0] : JsValue.Undefined;
-            return PromiseAllSettled(iterable);
+            return PromiseAllSettled(thisValue, iterable);
         }, length: 1);
 
         // 27.2.4.3 Promise.any(iterable).
-        DefineIntrinsicFunction(constructorHandle, constructor, "any", (_, args) =>
+        DefineIntrinsicFunction(constructorHandle, constructor, "any", (thisValue, args) =>
         {
             var iterable = args.Count > 0 ? args[0] : JsValue.Undefined;
-            return PromiseAny(iterable);
+            return PromiseAny(thisValue, iterable);
         }, length: 1);
 
         // 27.2.4.5 Promise.race(iterable).
-        DefineIntrinsicFunction(constructorHandle, constructor, "race", (_, args) =>
+        DefineIntrinsicFunction(constructorHandle, constructor, "race", (thisValue, args) =>
         {
             var iterable = args.Count > 0 ? args[0] : JsValue.Undefined;
-            return PromiseRace(iterable);
+            return PromiseRace(thisValue, iterable);
         }, length: 1);
 
         _promiseConstructorHandle = constructorHandle;
@@ -137,40 +177,82 @@ public sealed partial class BytecodeInterpreter
 
     // 27.2.4.1.1 PerformPromiseAll. Returns a promise that fulfills with an
     // Array of values once every input promise fulfills, or rejects with the
-    // first rejection.
-    private JsValue PromiseAll(JsValue iterable)
+    // first rejection. The receiver C supplies the capability (NewPromiseCapability(C)),
+    // per-item resolution (C.resolve), and subscription (Invoke(next, "then", ...)).
+    private JsValue PromiseAll(JsValue thisValue, JsValue iterable)
     {
-        var capability = NewPromiseCapability();
-        List<JsValue> sources;
+        if (!TryPreparePromiseCombinator(thisValue, out var capability, out var promiseResolve))
+        {
+            return capability.Promise;
+        }
+
         try
         {
-            sources = DrainIterableToList(iterable, "Promise.all");
+            var sources = DrainIterableToList(iterable, "Promise.all");
+            if (sources.Count == 0)
+            {
+                var emptyArr = CreateArrayFromElements(Array.Empty<JsValue>());
+                var emptyHandle = _heap.AllocateObject(emptyArr, AllocationSite.Current());
+                _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(emptyHandle) }, JsValue.Undefined);
+                return capability.Promise;
+            }
+
+            var slots = new JsValue[sources.Count];
+            for (var i = 0; i < slots.Length; i++) slots[i] = JsValue.Undefined;
+            var remaining = new[] { sources.Count };
+
+            for (var i = 0; i < sources.Count; i++)
+            {
+                var index = i;
+                var child = CallFunction(promiseResolve, new[] { sources[i] }, thisValue);
+                var onFulfilled = AllocateNativeCallback((_, fnArgs) =>
+                {
+                    slots[index] = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
+                    remaining[0]--;
+                    if (remaining[0] == 0)
+                    {
+                        var arr = CreateArrayFromElements(slots);
+                        var handle = _heap.AllocateObject(arr, AllocationSite.Current());
+                        _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(handle) }, JsValue.Undefined);
+                    }
+                    return JsValue.Undefined;
+                });
+                InvokePromiseThen(child, onFulfilled, capability.Reject);
+            }
         }
         catch (JsThrownException ex)
         {
             _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
+        }
+
+        return capability.Promise;
+    }
+
+    // 27.2.4.2.1 PerformPromiseAllSettled.
+    private JsValue PromiseAllSettled(JsValue thisValue, JsValue iterable)
+    {
+        if (!TryPreparePromiseCombinator(thisValue, out var capability, out var promiseResolve))
+        {
             return capability.Promise;
         }
 
-        if (sources.Count == 0)
+        try
         {
-            var emptyArr = CreateArrayFromElements(Array.Empty<JsValue>());
-            var emptyHandle = _heap.AllocateObject(emptyArr, AllocationSite.Current());
-            _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(emptyHandle) }, JsValue.Undefined);
-            return capability.Promise;
-        }
-
-        var slots = new JsValue[sources.Count];
-        for (var i = 0; i < slots.Length; i++) slots[i] = JsValue.Undefined;
-        var remaining = new[] { sources.Count };
-
-        for (var i = 0; i < sources.Count; i++)
-        {
-            var index = i;
-            var child = PromiseResolveStatic(sources[i]);
-            var onFulfilled = AllocateNativeCallback((_, fnArgs) =>
+            var sources = DrainIterableToList(iterable, "Promise.allSettled");
+            if (sources.Count == 0)
             {
-                slots[index] = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
+                var emptyArr = CreateArrayFromElements(Array.Empty<JsValue>());
+                var emptyHandle = _heap.AllocateObject(emptyArr, AllocationSite.Current());
+                _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(emptyHandle) }, JsValue.Undefined);
+                return capability.Promise;
+            }
+
+            var slots = new JsValue[sources.Count];
+            for (var i = 0; i < slots.Length; i++) slots[i] = JsValue.Undefined;
+            var remaining = new[] { sources.Count };
+
+            void TrySettleAggregate()
+            {
                 remaining[0]--;
                 if (remaining[0] == 0)
                 {
@@ -178,71 +260,32 @@ public sealed partial class BytecodeInterpreter
                     var handle = _heap.AllocateObject(arr, AllocationSite.Current());
                     _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(handle) }, JsValue.Undefined);
                 }
-                return JsValue.Undefined;
-            });
-            _ = PromisePrototypeThen(child, onFulfilled, capability.Reject);
-        }
+            }
 
-        return capability.Promise;
-    }
-
-    // 27.2.4.2.1 PerformPromiseAllSettled.
-    private JsValue PromiseAllSettled(JsValue iterable)
-    {
-        var capability = NewPromiseCapability();
-        List<JsValue> sources;
-        try
-        {
-            sources = DrainIterableToList(iterable, "Promise.allSettled");
+            for (var i = 0; i < sources.Count; i++)
+            {
+                var index = i;
+                var child = CallFunction(promiseResolve, new[] { sources[i] }, thisValue);
+                var onFulfilled = AllocateNativeCallback((_, fnArgs) =>
+                {
+                    var v = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
+                    slots[index] = MakeSettledRecord("fulfilled", "value", v);
+                    TrySettleAggregate();
+                    return JsValue.Undefined;
+                });
+                var onRejected = AllocateNativeCallback((_, fnArgs) =>
+                {
+                    var r = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
+                    slots[index] = MakeSettledRecord("rejected", "reason", r);
+                    TrySettleAggregate();
+                    return JsValue.Undefined;
+                });
+                InvokePromiseThen(child, onFulfilled, onRejected);
+            }
         }
         catch (JsThrownException ex)
         {
             _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
-            return capability.Promise;
-        }
-
-        if (sources.Count == 0)
-        {
-            var emptyArr = CreateArrayFromElements(Array.Empty<JsValue>());
-            var emptyHandle = _heap.AllocateObject(emptyArr, AllocationSite.Current());
-            _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(emptyHandle) }, JsValue.Undefined);
-            return capability.Promise;
-        }
-
-        var slots = new JsValue[sources.Count];
-        for (var i = 0; i < slots.Length; i++) slots[i] = JsValue.Undefined;
-        var remaining = new[] { sources.Count };
-
-        void TrySettleAggregate()
-        {
-            remaining[0]--;
-            if (remaining[0] == 0)
-            {
-                var arr = CreateArrayFromElements(slots);
-                var handle = _heap.AllocateObject(arr, AllocationSite.Current());
-                _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(handle) }, JsValue.Undefined);
-            }
-        }
-
-        for (var i = 0; i < sources.Count; i++)
-        {
-            var index = i;
-            var child = PromiseResolveStatic(sources[i]);
-            var onFulfilled = AllocateNativeCallback((_, fnArgs) =>
-            {
-                var v = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
-                slots[index] = MakeSettledRecord("fulfilled", "value", v);
-                TrySettleAggregate();
-                return JsValue.Undefined;
-            });
-            var onRejected = AllocateNativeCallback((_, fnArgs) =>
-            {
-                var r = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
-                slots[index] = MakeSettledRecord("rejected", "reason", r);
-                TrySettleAggregate();
-                return JsValue.Undefined;
-            });
-            _ = PromisePrototypeThen(child, onFulfilled, onRejected);
         }
 
         return capability.Promise;
@@ -261,47 +304,48 @@ public sealed partial class BytecodeInterpreter
 
     // 27.2.4.3.1 PerformPromiseAny - aggregates rejections into an AggregateError
     // when every input rejects; fulfills with the first fulfillment otherwise.
-    private JsValue PromiseAny(JsValue iterable)
+    private JsValue PromiseAny(JsValue thisValue, JsValue iterable)
     {
-        var capability = NewPromiseCapability();
-        List<JsValue> sources;
+        if (!TryPreparePromiseCombinator(thisValue, out var capability, out var promiseResolve))
+        {
+            return capability.Promise;
+        }
+
         try
         {
-            sources = DrainIterableToList(iterable, "Promise.any");
+            var sources = DrainIterableToList(iterable, "Promise.any");
+            if (sources.Count == 0)
+            {
+                _ = CallFunction(capability.Reject,
+                    new[] { BuildAggregateError(Array.Empty<JsValue>()) },
+                    JsValue.Undefined);
+                return capability.Promise;
+            }
+
+            var errors = new JsValue[sources.Count];
+            for (var i = 0; i < errors.Length; i++) errors[i] = JsValue.Undefined;
+            var remaining = new[] { sources.Count };
+
+            for (var i = 0; i < sources.Count; i++)
+            {
+                var index = i;
+                var child = CallFunction(promiseResolve, new[] { sources[i] }, thisValue);
+                var onRejected = AllocateNativeCallback((_, fnArgs) =>
+                {
+                    errors[index] = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
+                    remaining[0]--;
+                    if (remaining[0] == 0)
+                    {
+                        _ = CallFunction(capability.Reject, new[] { BuildAggregateError(errors) }, JsValue.Undefined);
+                    }
+                    return JsValue.Undefined;
+                });
+                InvokePromiseThen(child, capability.Resolve, onRejected);
+            }
         }
         catch (JsThrownException ex)
         {
             _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
-            return capability.Promise;
-        }
-
-        if (sources.Count == 0)
-        {
-            _ = CallFunction(capability.Reject,
-                new[] { BuildAggregateError(Array.Empty<JsValue>()) },
-                JsValue.Undefined);
-            return capability.Promise;
-        }
-
-        var errors = new JsValue[sources.Count];
-        for (var i = 0; i < errors.Length; i++) errors[i] = JsValue.Undefined;
-        var remaining = new[] { sources.Count };
-
-        for (var i = 0; i < sources.Count; i++)
-        {
-            var index = i;
-            var child = PromiseResolveStatic(sources[i]);
-            var onRejected = AllocateNativeCallback((_, fnArgs) =>
-            {
-                errors[index] = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
-                remaining[0]--;
-                if (remaining[0] == 0)
-                {
-                    _ = CallFunction(capability.Reject, new[] { BuildAggregateError(errors) }, JsValue.Undefined);
-                }
-                return JsValue.Undefined;
-            });
-            _ = PromisePrototypeThen(child, capability.Resolve, onRejected);
         }
 
         return capability.Promise;
@@ -324,25 +368,26 @@ public sealed partial class BytecodeInterpreter
     }
 
     // 27.2.4.5.1 PerformPromiseRace - settles with the first input that settles.
-    private JsValue PromiseRace(JsValue iterable)
+    private JsValue PromiseRace(JsValue thisValue, JsValue iterable)
     {
-        var capability = NewPromiseCapability();
-        List<JsValue> sources;
+        if (!TryPreparePromiseCombinator(thisValue, out var capability, out var promiseResolve))
+        {
+            return capability.Promise;
+        }
+
         try
         {
-            sources = DrainIterableToList(iterable, "Promise.race");
+            var sources = DrainIterableToList(iterable, "Promise.race");
+            // Empty iterable returns a never-settling promise per spec.
+            foreach (var source in sources)
+            {
+                var child = CallFunction(promiseResolve, new[] { source }, thisValue);
+                InvokePromiseThen(child, capability.Resolve, capability.Reject);
+            }
         }
         catch (JsThrownException ex)
         {
             _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
-            return capability.Promise;
-        }
-
-        // Empty iterable returns a never-settling promise per spec.
-        foreach (var source in sources)
-        {
-            var child = PromiseResolveStatic(source);
-            _ = PromisePrototypeThen(child, capability.Resolve, capability.Reject);
         }
 
         return capability.Promise;
@@ -416,6 +461,123 @@ public sealed partial class BytecodeInterpreter
     {
         var capability = NewPromiseCapability();
         return (capability.Promise, capability.Resolve, capability.Reject);
+    }
+
+    // 7.3.22 SpeciesConstructor(O, %Promise%): read O.constructor, then its
+    // @@species; undefined/null fall back to the native %Promise%.
+    private JsValue PromiseSpeciesConstructor(JsValue promiseValue)
+    {
+        var defaultCtor = JsValue.FromObject(EnsurePromiseConstructor());
+        var ctor = GetReceiverProperty(promiseValue, "constructor");
+        if (ctor.Tag == JsValueTag.Undefined)
+        {
+            return defaultCtor;
+        }
+
+        if (ctor.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Promise constructor property is not an object."));
+        }
+
+        var speciesId = GetWellKnownSymbolId("species");
+        var species = speciesId != 0 ? GetReceiverSymbolProperty(ctor, speciesId) : JsValue.Undefined;
+        if (species.Tag is JsValueTag.Undefined or JsValueTag.Null)
+        {
+            return defaultCtor;
+        }
+
+        return species;
+    }
+
+    // 27.2.1.5 NewPromiseCapability(C) for an arbitrary constructor: run
+    // `new C(executor)` with an executor that captures the (resolve, reject)
+    // pair, so Promise subclasses observe their constructor and executor
+    // exactly as the spec prescribes. The native %Promise% takes the fast path.
+    private PromiseCapability NewPromiseCapability(JsValue constructor)
+    {
+        if (_promiseConstructorHandle is { } nativeCtor &&
+            constructor.Tag == JsValueTag.Object &&
+            constructor.AsObjectHandle() == nativeCtor)
+        {
+            return NewPromiseCapability();
+        }
+
+        if (constructor.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Promise capability requires a constructor."));
+        }
+
+        var captured = new JsValue[] { JsValue.Undefined, JsValue.Undefined };
+        var calledOnce = new bool[1];
+        var executor = new NativeFunctionObject("", (_, exArgs) =>
+        {
+            // 27.2.1.5.1 GetCapabilitiesExecutor: a second call (or pre-set
+            // slots) is a TypeError.
+            if (calledOnce[0])
+            {
+                throw new JsThrownException(CreateTypeError("Promise executor has already been invoked."));
+            }
+
+            calledOnce[0] = true;
+            captured[0] = exArgs.Count > 0 ? exArgs[0] : JsValue.Undefined;
+            captured[1] = exArgs.Count > 1 ? exArgs[1] : JsValue.Undefined;
+            return JsValue.Undefined;
+        }, length: 2);
+        var executorHandle = _heap.AllocateObject(executor, AllocationSite.Current());
+
+        var promise = ConstructFunction(constructor, new[] { JsValue.FromObject(executorHandle) });
+        if (!IsCallable(captured[0]) || !IsCallable(captured[1]))
+        {
+            throw new JsThrownException(CreateTypeError("Promise constructor did not supply callable resolve/reject functions."));
+        }
+
+        return new PromiseCapability(promise, captured[0], captured[1]);
+    }
+
+    // 27.2.4.1.1-style prologue shared by the combinators: validate the receiver,
+    // build the capability from it, and fetch C.resolve (IfAbruptRejectPromise:
+    // a bad C.resolve rejects the capability rather than throwing).
+    private bool TryPreparePromiseCombinator(
+        JsValue thisValue,
+        out PromiseCapability capability,
+        out JsValue promiseResolve)
+    {
+        if (thisValue.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Promise combinator called on a non-object receiver."));
+        }
+
+        capability = NewPromiseCapability(thisValue);
+        promiseResolve = JsValue.Undefined;
+        try
+        {
+            var ctorObj = _heap.GetObject(thisValue.AsObjectHandle());
+            if (!TryGetPropertyValue(ctorObj, thisValue, "resolve", out promiseResolve) ||
+                !IsCallable(promiseResolve))
+            {
+                throw new JsThrownException(CreateTypeError("Promise combinator requires a callable 'resolve'."));
+            }
+        }
+        catch (JsThrownException ex)
+        {
+            _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
+            return false;
+        }
+
+        return true;
+    }
+
+    // Invoke(nextPromise, "then", handlers) — the spec goes through the value's
+    // own (possibly overridden) then, not %Promise.prototype.then% directly.
+    private void InvokePromiseThen(JsValue nextPromise, JsValue onFulfilled, JsValue onRejected)
+    {
+        var then = GetReceiverProperty(nextPromise, "then");
+        if (!IsCallable(then))
+        {
+            throw new JsThrownException(CreateTypeError("Promise combinator: resolved value has no callable 'then'."));
+        }
+
+        _ = CallFunction(then, new[] { onFulfilled, onRejected }, nextPromise);
     }
 
     // 27.2.1.5 NewPromiseCapability(%Promise%). Bundles a fresh promise with its
@@ -574,7 +736,10 @@ public sealed partial class BytecodeInterpreter
 
         var fulfillHandler = IsCallable(onFulfilled) ? onFulfilled : JsValue.Undefined;
         var rejectHandler = IsCallable(onRejected) ? onRejected : JsValue.Undefined;
-        var resultCapability = NewPromiseCapability();
+        // 27.2.5.4 step 3: the result promise comes from
+        // SpeciesConstructor(promise, %Promise%) so subclasses chain into their
+        // own type.
+        var resultCapability = NewPromiseCapability(PromiseSpeciesConstructor(thisValue));
         return PerformPromiseThen(thisValue.AsObjectHandle(), instance.Promise,
             fulfillHandler, rejectHandler, resultCapability);
     }
