@@ -1413,7 +1413,11 @@ public sealed class Test262Runner
                 // collection so a single long-lived process stays bounded. This cannot
                 // reclaim heaps still pinned by a timed-out test's abandoned worker
                 // thread, but it caps the steady-state cost of the common case.
-                if ((completed & 0xFF) == 0)
+                // Every 32 tests: chunked runs (CHUNK=100..250) never reached the
+                // previous 256-test cadence, so a single chunk of allocation-heavy
+                // tests (e.g. RegExp property-escapes building 1M-element arrays)
+                // deferred 10+ GB before process exit.
+                if ((completed & 0x1F) == 0)
                 {
                     GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
                 }
