@@ -207,7 +207,7 @@ public static class RegExpCompiler
         }
     }
 
-    private static bool ContainsUnicodePropertyEscape(string pattern)
+    internal static bool ContainsUnicodePropertyEscape(string pattern)
     {
         for (var i = 0; i + 3 < pattern.Length; i++)
         {

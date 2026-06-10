@@ -67,6 +67,7 @@ public sealed class RegexVM
         // exists to stop exponential blowup.
         _backtrackCount = 0;
         _maxBacktracks = MaxBacktracks + 4 * _cpLen;
+        _stackExhausted = false;
         for (int tryCp = startCp; tryCp <= _cpLen; tryCp++)
         {
             var stack = new Stack<ThreadState>(64);
@@ -76,14 +77,15 @@ public sealed class RegexVM
             {
                 PC = 0,
                 CP = tryCp,
-                Captures = AllocateCaptures(captureSlots)
+                Captures = AllocateCaptures(captureSlots),
+                OwnsCaptures = true
             };
             initialState.Captures[0] = _charOffsets[tryCp]; // full match start
             stack.Push(initialState);
 
         while (stack.Count > 0)
         {
-            if (++_backtrackCount > _maxBacktracks)
+            if (++_backtrackCount > _maxBacktracks || _stackExhausted)
             {
                 _stack = null;
                 return RegexMatchResult.Empty(_input);
@@ -92,6 +94,7 @@ public sealed class RegexVM
             var pc = state.PC;
             var cp = state.CP;
             var captures = state.Captures;
+            var ownsCaptures = state.OwnsCaptures;
 
             while (true)
             {
@@ -151,6 +154,7 @@ public sealed class RegexVM
                         // (a greedy loop over N chars is N splits — treating
                         // those as backtracks made long inputs silently fail).
                         PushState(stack, pc + ins.B, cp, captures); // path 2 (on backtrack)
+                        ownsCaptures = false;                       // now shared with path 2
                         pc += ins.A;                                // path 1
                         break;
 
@@ -184,6 +188,11 @@ public sealed class RegexVM
                         break;
 
                     case RegexOpCode.Save:
+                        if (!ownsCaptures)
+                        {
+                            captures = (int[])captures.Clone();
+                            ownsCaptures = true;
+                        }
                         captures[ins.A] = _charOffsets[cp];
                         pc++;
                         break;
@@ -252,11 +261,25 @@ public sealed class RegexVM
         return captures;
     }
 
-    private static void PushState(Stack<ThreadState> stack, int pc, int cp, int[] captures)
+    // Hard cap on saved backtrack states. A greedy loop over an N-char input
+    // legitimately pushes N states, but anything past this is a runaway that
+    // would otherwise OOM the process; we abandon the match instead.
+    private const int MaxStackEntries = 6_000_000;
+    private bool _stackExhausted;
+
+    private void PushState(Stack<ThreadState> stack, int pc, int cp, int[] captures)
     {
-        var copy = new int[captures.Length];
-        Array.Copy(captures, copy, captures.Length);
-        stack.Push(new ThreadState { PC = pc, CP = cp, Captures = copy });
+        if (stack.Count >= MaxStackEntries)
+        {
+            _stackExhausted = true;
+            return;
+        }
+
+        // The captures array is shared with the pusher (copy-on-write): the
+        // pusher drops ownership after this call and both sides clone before
+        // their next Save write. Greedy loops push one state per iteration,
+        // so per-push copies dominated both time and memory on long inputs.
+        stack.Push(new ThreadState { PC = pc, CP = cp, Captures = captures, OwnsCaptures = false });
     }
 
     private struct ThreadState
@@ -264,6 +287,7 @@ public sealed class RegexVM
         public int PC;
         public int CP;
         public int[] Captures;
+        public bool OwnsCaptures;
     }
 
     // ─── Input conversion ─────────────────────────────────
@@ -582,16 +606,20 @@ public sealed class RegexVM
         {
             PC = startPc,
             CP = startCp,
-            Captures = AllocateCaptures(captures.Length)
+            Captures = AllocateCaptures(captures.Length),
+            OwnsCaptures = true
         };
         subStack.Push(initialState);
 
         while (subStack.Count > 0)
         {
+            if (_stackExhausted)
+                return -1;
             var state = subStack.Pop();
             var pc = state.PC;
             var cp = state.CP;
             var caps = state.Captures;
+            var ownsCaps = state.OwnsCaptures;
 
             while (true)
             {
@@ -640,6 +668,7 @@ public sealed class RegexVM
                         break;
                     case RegexOpCode.Split:
                         PushState(subStack, pc + ins.B, cp, caps); // alternative (on backtrack)
+                        ownsCaps = false;                          // now shared with the alternative
                         pc += ins.A;                               // path 1 continues inline
                         break;
                     case RegexOpCode.Accept:
@@ -650,6 +679,11 @@ public sealed class RegexVM
                         if (matched) pc++; else { pc = -1; }
                         break;
                     case RegexOpCode.Save:
+                        if (!ownsCaps)
+                        {
+                            caps = (int[])caps.Clone();
+                            ownsCaps = true;
+                        }
                         caps[ins.A] = _charOffsets[cp];
                         pc++;
                         break;

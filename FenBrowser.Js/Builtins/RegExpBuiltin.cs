@@ -176,7 +176,18 @@ public sealed class RegExpBuiltin : IBuiltinModule
         }
         catch (ArgumentException ex)
         {
-            throw new JsThrownException(ctx.CreateSyntaxError(ex.Message));
+            // .NET rejects some valid ECMAScript constructs (e.g. property names
+            // it doesn't know after the \p{} rewrite). When the pattern uses
+            // property escapes, fall back to a neutral BCL regex and let the
+            // native program do the matching, mirroring RegExpCompiler.Compile.
+            if (Regex.RegExpCompiler.ContainsUnicodePropertyEscape(pattern))
+            {
+                regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
+            }
+            else
+            {
+                throw new JsThrownException(ctx.CreateSyntaxError(ex.Message));
+            }
         }
 
         RegexProgram? nativeProgram;
