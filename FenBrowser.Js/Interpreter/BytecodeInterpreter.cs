@@ -828,14 +828,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // Plan §14.2: instruction budget and interrupt check.
             if (InstructionBudget > 0 && ++_instructionCount > InstructionBudget)
                 throw new JsThrownException(CreateRangeError("Maximum instruction budget exceeded."));
-            if (InterruptCallback is { } cb && !cb())
-                throw new JsThrownException(CreateRangeError("Execution interrupted."));
-            // Tier 5 #27: wall-clock deadline. Sampled every N instructions to
-            // amortize the TickCount64 read.
-            if (_wallClockDeadlineTicks != 0 && --_wallClockCheckCountdown <= 0)
+            // Tier 5 #27: interrupt + wall-clock deadline, sampled every N
+            // instructions to amortize the delegate invocation and TickCount64
+            // read (a per-instruction delegate call is measurable on hot loops).
+            if (--_wallClockCheckCountdown <= 0)
             {
                 _wallClockCheckCountdown = WallClockCheckInterval;
-                if (System.Environment.TickCount64 >= _wallClockDeadlineTicks)
+                if (InterruptCallback is { } cb && !cb())
+                    throw new JsThrownException(CreateRangeError("Execution interrupted."));
+                if (_wallClockDeadlineTicks != 0 && System.Environment.TickCount64 >= _wallClockDeadlineTicks)
                     throw new JsThrownException(CreateRangeError("Script wall-clock timeout exceeded."));
             }
 
@@ -5540,6 +5541,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (normalizedFlags.Contains('m', StringComparison.Ordinal)) options |= RegexOptions.Multiline;
         if (hasS) options |= RegexOptions.Singleline;
         var dotNetPattern = RewriteEcmaCharacterClassEscapes(newPattern);
+        if (hasU || hasV)
+        {
+            dotNetPattern = RegExpCompiler.RewriteUnicodePropertyEscapesForDotNet(dotNetPattern);
+        }
+
         BclRegex regex;
         try
         {

@@ -48,7 +48,9 @@ public class InterpreterControlTests
     public void InterruptCallback_StopsExecution()
     {
         var compiler = new BytecodeCompiler();
-        var fn = compiler.CompileScript(new SourceText("var x=0; while(x<1000){x=x+1;} x;"));
+        // The interrupt callback is sampled every ~1024 instructions, so the
+        // loop must run long enough to produce 50+ samples.
+        var fn = compiler.CompileScript(new SourceText("var x=0; while(x<1000000){x=x+1;} x;"));
         new BytecodeVerifier().Verify(fn);
         var interpreter = new BytecodeInterpreter();
         var calls = 0;
