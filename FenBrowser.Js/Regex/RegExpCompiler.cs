@@ -1089,6 +1089,14 @@ public static class RegExpCompiler
             {
                 throw new RegexSyntaxError("Invalid Unicode property escape.");
             }
+            else if (UnicodePropertyEscapeData.EnsureLoaded() == null &&
+                     UnicodePropertyEscapeData.GetRanges("Script=" + value) == null)
+            {
+                // sc/scx values must match the spec's script list exactly
+                // (UnicodeMatchPropertyValue); the generated table holds every
+                // canonical name and alias.
+                throw new RegexSyntaxError("Invalid Unicode property escape.");
+            }
 
             if ((name is "scx" or "Script_Extensions") && StringPropertyNames.Contains(value) && !flags.UnicodeSets)
             {
@@ -1103,13 +1111,10 @@ public static class RegExpCompiler
             throw new RegexSyntaxError("Invalid Unicode property escape.");
         }
 
-        // ECMA-262 Table 65: "Is" prefix is a legacy shorthand for binary properties
-        // and General_Category values. Strip it and retry the lookup with the remainder.
+        // ECMA-262 22.2.1 (UnicodeMatchProperty): names must match the spec tables
+        // exactly — no loose matching, and no "Is"/"In" grammar extensions
+        // (property-escapes/grammar-extension-Is-prefix-*.js requires SyntaxError).
         var lookupBody = body;
-        if (body.StartsWith("Is", StringComparison.Ordinal) && body.Length > 2)
-        {
-            lookupBody = body[2..];
-        }
 
         if (NonBinaryPropertyNames.Contains(lookupBody))
         {
@@ -1406,6 +1411,7 @@ public static class RegExpCompiler
         }
 
         var rewritten = new StringBuilder(pattern.Length + 16);
+        var inCharClass = false;
         for (var i = 0; i < pattern.Length; i++)
         {
             var ch = pattern[i];
@@ -1420,6 +1426,14 @@ public static class RegExpCompiler
                 if (close > bodyStart)
                 {
                     var body = pattern[bodyStart..close];
+                    // Exact codepoint ranges from the generated Unicode tables
+                    // beat any .NET category/block approximation.
+                    if (TryRangeBasedPropertyRewrite(body, negated, inCharClass, out var exact))
+                    {
+                        rewritten.Append(exact);
+                        i = close;
+                        continue;
+                    }
                     if (TryRewriteUnicodePropertyBodyForDotNet(body, negated, out var replacement))
                     {
                         rewritten.Append(replacement);
@@ -1440,10 +1454,238 @@ public static class RegExpCompiler
                 }
             }
 
+            if (ch == '\\' && i + 1 < pattern.Length)
+            {
+                rewritten.Append(ch);
+                rewritten.Append(pattern[i + 1]);
+                i++;
+                continue;
+            }
+
+            if (ch == '[' && !inCharClass)
+            {
+                inCharClass = true;
+            }
+            else if (ch == ']' && inCharClass)
+            {
+                inCharClass = false;
+            }
+
             rewritten.Append(ch);
         }
 
         return rewritten.ToString();
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Body, bool Negated, bool InClass), string?> s_propertyRewriteCache = new();
+
+    /// <summary>
+    /// Rewrite a \p{...}/\P{...} body into a .NET pattern fragment using the exact
+    /// codepoint ranges from the generated Unicode tables. BMP codepoints become a
+    /// character class; supplementary-plane codepoints become surrogate-pair
+    /// alternatives (tried first so pairs win over lone surrogates, matching /u
+    /// code-point semantics).
+    /// </summary>
+    private static bool TryRangeBasedPropertyRewrite(string body, bool negated, bool inCharClass, out string replacement)
+    {
+        replacement = string.Empty;
+        var cached = s_propertyRewriteCache.GetOrAdd((body, negated, inCharClass), static key =>
+        {
+            var ranges = UnicodePropertyEscapeData.GetRanges(key.Body);
+            if (ranges == null && key.Body.StartsWith("gc=", StringComparison.Ordinal))
+            {
+                ranges = UnicodePropertyEscapeData.GetRanges(key.Body[3..]);
+            }
+
+            if (ranges == null || ranges.Length % 2 != 0)
+            {
+                return null;
+            }
+
+            var effective = key.Negated ? ComplementRanges(ranges) : ranges;
+            return BuildDotNetPatternFromRanges(effective, key.InClass);
+        });
+
+        if (cached == null)
+        {
+            return false;
+        }
+
+        replacement = cached;
+        return true;
+    }
+
+    /// <summary>Complement sorted, disjoint [start,end] codepoint pairs over U+0000..U+10FFFF.</summary>
+    private static uint[] ComplementRanges(uint[] ranges)
+    {
+        var result = new List<uint>(ranges.Length + 2);
+        uint next = 0;
+        for (var i = 0; i < ranges.Length; i += 2)
+        {
+            var start = ranges[i];
+            var end = ranges[i + 1];
+            if (start > next)
+            {
+                result.Add(next);
+                result.Add(start - 1);
+            }
+
+            if (end >= next)
+            {
+                next = end + 1;
+            }
+
+            if (next > 0x10FFFF)
+            {
+                return result.ToArray();
+            }
+        }
+
+        result.Add(next);
+        result.Add(0x10FFFF);
+        return result.ToArray();
+    }
+
+    private static string BuildDotNetPatternFromRanges(uint[] ranges, bool inCharClass)
+    {
+        var bmpItems = new StringBuilder();
+        var astralAlts = new List<string>();
+        for (var i = 0; i < ranges.Length; i += 2)
+        {
+            var start = ranges[i];
+            var end = Math.Min(ranges[i + 1], 0x10FFFFu);
+            if (start > end)
+            {
+                continue;
+            }
+
+            if (start <= 0xFFFF)
+            {
+                var bmpEnd = Math.Min(end, 0xFFFFu);
+                AppendBmpClassRange(bmpItems, (char)start, (char)bmpEnd);
+            }
+
+            if (end >= 0x10000)
+            {
+                AppendAstralAlternatives(astralAlts, Math.Max(start, 0x10000u), end);
+            }
+        }
+
+        if (inCharClass)
+        {
+            // Inside an enclosing class only BMP units can be expressed;
+            // supplementary codepoints cannot form surrogate pairs in a class.
+            return bmpItems.ToString();
+        }
+
+        if (bmpItems.Length == 0 && astralAlts.Count == 0)
+        {
+            return @"[^\s\S]";
+        }
+
+        if (astralAlts.Count == 0)
+        {
+            return "[" + bmpItems + "]";
+        }
+
+        var sb = new StringBuilder("(?:");
+        for (var i = 0; i < astralAlts.Count; i++)
+        {
+            if (i > 0)
+            {
+                sb.Append('|');
+            }
+
+            sb.Append(astralAlts[i]);
+        }
+
+        if (bmpItems.Length > 0)
+        {
+            sb.Append("|[").Append(bmpItems).Append(']');
+        }
+
+        sb.Append(')');
+        return sb.ToString();
+    }
+
+    private static void AppendBmpClassRange(StringBuilder sb, char start, char end)
+    {
+        AppendClassUnit(sb, start);
+        if (end > start)
+        {
+            if (end > start + 1)
+            {
+                sb.Append('-');
+            }
+
+            AppendClassUnit(sb, end);
+        }
+    }
+
+    private static void AppendClassUnit(StringBuilder sb, char unit)
+    {
+        sb.Append(@"\u");
+        sb.Append(((int)unit).ToString("X4", System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    private static void AppendAstralAlternatives(List<string> alts, uint start, uint end)
+    {
+        var hiStart = (char)(0xD800 + ((start - 0x10000) >> 10));
+        var loStart = (char)(0xDC00 + ((start - 0x10000) & 0x3FF));
+        var hiEnd = (char)(0xD800 + ((end - 0x10000) >> 10));
+        var loEnd = (char)(0xDC00 + ((end - 0x10000) & 0x3FF));
+
+        if (hiStart == hiEnd)
+        {
+            alts.Add(BuildSurrogatePairAlternative(hiStart, hiStart, loStart, loEnd));
+            return;
+        }
+
+        if (loStart != 0xDC00)
+        {
+            alts.Add(BuildSurrogatePairAlternative(hiStart, hiStart, loStart, '\uDFFF'));
+            hiStart++;
+        }
+
+        var hiTail = hiEnd;
+        if (loEnd != 0xDFFF)
+        {
+            alts.Add(BuildSurrogatePairAlternative(hiEnd, hiEnd, '\uDC00', loEnd));
+            hiTail--;
+        }
+
+        if (hiStart <= hiTail)
+        {
+            alts.Add(BuildSurrogatePairAlternative(hiStart, hiTail, '\uDC00', '\uDFFF'));
+        }
+    }
+
+    private static string BuildSurrogatePairAlternative(char hiStart, char hiEnd, char loStart, char loEnd)
+    {
+        var sb = new StringBuilder(24);
+        if (hiStart == hiEnd)
+        {
+            AppendClassUnit(sb, hiStart);
+        }
+        else
+        {
+            sb.Append('[');
+            AppendBmpClassRange(sb, hiStart, hiEnd);
+            sb.Append(']');
+        }
+
+        if (loStart == loEnd)
+        {
+            AppendClassUnit(sb, loStart);
+        }
+        else
+        {
+            sb.Append('[');
+            AppendBmpClassRange(sb, loStart, loEnd);
+            sb.Append(']');
+        }
+
+        return sb.ToString();
     }
 
     private static bool TryHardcodedPropertyRewrite(string body, bool negated, out string replacement)

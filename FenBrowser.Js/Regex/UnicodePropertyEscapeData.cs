@@ -49,6 +49,34 @@ internal static class UnicodePropertyEscapeData
     private static readonly Lazy<Dictionary<string, uint[]>> s_data =
         new(Load, LazyThreadSafetyMode.ExecutionAndPublication);
 
+    /// <summary>
+    /// Resolve a property body to its codepoint ranges once (e.g. for caching on
+    /// a compiled regex program). Mirrors the lookup order of
+    /// <see cref="TryHasPropertyCodePoint"/>: exact key, then the value after
+    /// a "name=" prefix. Returns an empty array when the table has no entry —
+    /// callers should fall back to the per-codepoint API for those.
+    /// </summary>
+    public static uint[] ResolveRanges(string body)
+    {
+        var ranges = GetRanges(body);
+        if (ranges is null)
+        {
+            var eqIdx = body.IndexOf('=');
+            if (eqIdx > 0 && eqIdx < body.Length - 1)
+            {
+                ranges = GetRanges(body[(eqIdx + 1)..]);
+            }
+        }
+
+        return ranges ?? Array.Empty<uint>();
+    }
+
+    /// <summary>Binary-search membership over [start,end] codepoint pairs.</summary>
+    public static bool IsInRanges(int codePoint, uint[] ranges)
+    {
+        return codePoint >= 0 && InRanges((uint)codePoint, ranges);
+    }
+
     public static bool TryHasPropertyCodePoint(string body, int codePoint, out bool hasProperty)
     {
         hasProperty = false;
