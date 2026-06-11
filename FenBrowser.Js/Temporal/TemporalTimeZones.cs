@@ -1,0 +1,196 @@
+namespace FenBrowser.Js.Temporal;
+
+// Temporal time zone support: identifier validation/canonicalization,
+// offset lookup at an instant, and wall-clock → epoch resolution
+// (tc39.es/proposal-temporal sec-temporal-timezone-abstract-ops).
+//
+// Offset identifiers ("+05:30") are exact. Named zones resolve through
+// System.TimeZoneInfo (IANA ids via ICU); instants outside DateTimeOffset's
+// year 1-9999 window use the offset clamped at the nearest representable
+// instant, which is exact for fixed-offset zones and the modern era.
+internal static class TemporalTimeZones
+{
+    private const long NsPerDay = 86_400_000_000_000L;
+
+    /// <summary>
+    /// Validate and canonicalize a time zone identifier. Returns false for
+    /// unknown identifiers. Offset identifiers normalize to "±HH:MM" and
+    /// report their fixed offset via <paramref name="fixedOffsetNs"/>
+    /// (null for named zones).
+    /// </summary>
+    public static bool TryCanonicalize(string id, out string canonical, out long? fixedOffsetNs)
+    {
+        canonical = "";
+        fixedOffsetNs = null;
+        if (string.IsNullOrEmpty(id))
+        {
+            return false;
+        }
+
+        // Offset time zone: sign HH[:MM] — minute precision only.
+        if (id[0] == '+' || id[0] == '-')
+        {
+            int i = 0;
+            string err = "";
+            if (!TemporalIsoParser.TryParseUtcOffset(id, ref i, subMinutePrecision: false, out var offsetNs, ref err)
+                || i != id.Length)
+            {
+                return false;
+            }
+
+            long minutes = offsetNs / 60_000_000_000L;
+            long absMinutes = Math.Abs(minutes);
+            canonical = $"{(minutes < 0 ? "-" : "+")}{absMinutes / 60:D2}:{absMinutes % 60:D2}";
+            fixedOffsetNs = offsetNs;
+            return true;
+        }
+
+        if (string.Equals(id, "UTC", StringComparison.OrdinalIgnoreCase))
+        {
+            canonical = "UTC";
+            return true;
+        }
+
+        // A bare "Z" or a date-time string is not a time zone identifier.
+        if (!IsIanaNameShape(id))
+        {
+            return false;
+        }
+
+        try
+        {
+            var zone = TimeZoneInfo.FindSystemTimeZoneById(id);
+            // Preserve the IANA capitalization the lookup matched; .NET keeps
+            // the request's casing in Id, so prefer the canonical-cased form
+            // only when the match was case-insensitive.
+            canonical = string.Equals(zone.Id, id, StringComparison.OrdinalIgnoreCase) ? zone.Id : id;
+            return true;
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return false;
+        }
+        catch (InvalidTimeZoneException)
+        {
+            return false;
+        }
+    }
+
+    // TZLeadingChar TZChar* components separated by '/'; rejects strings
+    // with 'T', digits-only starts, etc. so date-time strings don't pass.
+    private static bool IsIanaNameShape(string id)
+    {
+        foreach (var part in id.Split('/'))
+        {
+            if (part.Length == 0)
+            {
+                return false;
+            }
+
+            char c0 = part[0];
+            if (!(char.IsAsciiLetter(c0) || c0 == '.' || c0 == '_'))
+            {
+                return false;
+            }
+
+            for (int k = 1; k < part.Length; k++)
+            {
+                char c = part[k];
+                if (!(char.IsAsciiLetterOrDigit(c) || c == '.' || c == '-' || c == '_' || c == '+'))
+                {
+                    return false;
+                }
+            }
+        }
+
+        // Single-component names must not be bare offsets-like or 'Z'.
+        return !string.Equals(id, "Z", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>GetOffsetNanosecondsFor: UTC offset of the zone at an epoch instant.</summary>
+    public static long GetOffsetNs(string canonicalId, long epochNs)
+    {
+        if (canonicalId.Length > 0 && (canonicalId[0] == '+' || canonicalId[0] == '-'))
+        {
+            int i = 0;
+            string err = "";
+            _ = TemporalIsoParser.TryParseUtcOffset(canonicalId, ref i, subMinutePrecision: false, out var offsetNs, ref err);
+            return offsetNs;
+        }
+
+        if (canonicalId == "UTC")
+        {
+            return 0;
+        }
+
+        try
+        {
+            var zone = TimeZoneInfo.FindSystemTimeZoneById(canonicalId);
+            return zone.GetUtcOffset(EpochNsToDateTimeOffsetClamped(epochNs)).Ticks * 100L;
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return 0;
+        }
+        catch (InvalidTimeZoneException)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// GetEpochNanosecondsFor with disambiguation "compatible": resolve a
+    /// wall-clock date/time in the zone to an epoch instant.
+    /// </summary>
+    public static long EpochNsFromWall(string canonicalId, IsoDate date, IsoTime time)
+    {
+        // long holds ±106,751,991 days of nanoseconds; clamp wall instants
+        // beyond that (they exceed any zone's transition data anyway).
+        long days = Math.Clamp(IsoMath.ToEpochDays(date), -106_751_990L, 106_751_990L);
+        long wallNs = days * NsPerDay + time.ToNanosecondsOfDay();
+        long offset1 = GetOffsetNs(canonicalId, wallNs);
+        long candidate = wallNs - offset1;
+        long offset2 = GetOffsetNs(canonicalId, candidate);
+        if (offset2 == offset1)
+        {
+            return candidate;
+        }
+
+        // Around a transition: re-resolve once with the candidate's offset.
+        // For a gap this lands after the transition (compatible behavior);
+        // for an overlap it picks the earlier offset's instant.
+        return wallNs - offset2;
+    }
+
+    /// <summary>Split an epoch instant into wall-clock date/time at the given offset.</summary>
+    public static (IsoDate Date, IsoTime Time) WallFromEpochNs(long epochNs, long offsetNs)
+    {
+        long local = epochNs + offsetNs;
+        long days = (long)Math.Floor(local / (double)NsPerDay);
+        long timeNs = local - days * NsPerDay;
+        var date = IsoMath.EpochDaysToCivil(days);
+        var time = new IsoTime(
+            (int)(timeNs / 3_600_000_000_000L), (int)(timeNs / 60_000_000_000L % 60), (int)(timeNs / 1_000_000_000L % 60),
+            (int)(timeNs / 1_000_000L % 1000), (int)(timeNs / 1_000L % 1000), (int)(timeNs % 1000));
+        return (date, time);
+    }
+
+    /// <summary>"±HH:MM" display form of an offset (rounded toward zero to minutes).</summary>
+    public static string FormatOffset(long offsetNs)
+    {
+        long minutes = offsetNs / 60_000_000_000L;
+        long absMinutes = Math.Abs(minutes);
+        return $"{(offsetNs < 0 ? "-" : "+")}{absMinutes / 60:D2}:{absMinutes % 60:D2}";
+    }
+
+    private static DateTimeOffset EpochNsToDateTimeOffsetClamped(long epochNs)
+    {
+        // DateTimeOffset covers years 1-9999; clamp outside instants so named
+        // zone lookups stay valid (fixed-offset behavior at the extremes).
+        const long minTicks = 0;
+        long ticks = epochNs / 100L + DateTime.UnixEpoch.Ticks;
+        long maxTicks = DateTime.MaxValue.Ticks - TimeSpan.TicksPerDay;
+        ticks = Math.Clamp(ticks, minTicks + TimeSpan.TicksPerDay, maxTicks);
+        return new DateTimeOffset(ticks, TimeSpan.Zero);
+    }
+}
