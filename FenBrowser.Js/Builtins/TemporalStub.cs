@@ -900,6 +900,64 @@ public sealed class TemporalStub : IBuiltinModule
         "second" => 1_000_000_000L, "millisecond" => 1_000_000L, "microsecond" => 1_000L, _ => 1L,
     };
 
+    /// <summary>
+    /// Temporal.Instant.prototype.round: validate smallestUnit (hour..nanosecond only),
+    /// roundingIncrement (must divide its day-relative maximum), and roundingMode, then
+    /// round the epoch nanoseconds to the increment.
+    /// </summary>
+    private static long RoundInstantNs(IBuiltinContext ctx, JsHeap h, long epochNs, IReadOnlyList<JsValue> a)
+    {
+        if (a.Count == 0 || a[0].Tag == JsValueTag.Undefined)
+            throw new JsThrownException(ctx.CreateTypeError("round requires a unit or options argument."));
+        string smallest;
+        double increment = 1;
+        string mode = "halfExpand";
+        if (a[0].Tag == JsValueTag.String)
+        {
+            smallest = NormalizeUnitName(ctx, a[0].AsString());
+        }
+        else if (a[0].Tag == JsValueTag.Object)
+        {
+            if (TryGetField(ctx, h, a[0], "roundingIncrement", out var iv))
+            {
+                increment = ToIntegerWithTruncation(ctx, iv);
+                if (increment < 1 || increment > 1_000_000_000)
+                    throw new JsThrownException(ctx.CreateRangeError("roundingIncrement out of range."));
+            }
+            if (TryGetField(ctx, h, a[0], "roundingMode", out var mv))
+            {
+                mode = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
+                if (mode is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
+                    throw new JsThrownException(ctx.CreateRangeError($"'{mode}' is not a valid rounding mode."));
+            }
+            if (!TryGetField(ctx, h, a[0], "smallestUnit", out var sv) || sv.Tag == JsValueTag.Undefined)
+                throw new JsThrownException(ctx.CreateRangeError("smallestUnit is required."));
+            smallest = NormalizeUnitName(ctx, sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv));
+        }
+        else
+        {
+            throw new JsThrownException(ctx.CreateTypeError("round argument must be a string or options object."));
+        }
+
+        // Instant supports only hour and smaller; calendar/day units are out of range.
+        long maximum = smallest switch
+        {
+            "hour" => 24L,
+            "minute" => 1440L,
+            "second" => 86_400L,
+            "millisecond" => 86_400_000L,
+            "microsecond" => 86_400_000_000L,
+            "nanosecond" => 86_400_000_000_000L,
+            _ => throw new JsThrownException(ctx.CreateRangeError($"'{smallest}' is not a valid smallestUnit for Instant.round.")),
+        };
+        // ValidateTemporalRoundingIncrement with inclusive maximum.
+        if (increment > maximum || maximum % (long)increment != 0)
+            throw new JsThrownException(ctx.CreateRangeError("roundingIncrement does not divide evenly into the maximum."));
+
+        long incrementNs = (long)increment * UnitNs(smallest);
+        return RoundNsToIncrement(ctx, epochNs, incrementNs, mode);
+    }
+
     /// <summary>Total nanoseconds of the day/time portion (caller has excluded calendar units).</summary>
     private static long DurationDayTimeNs((int years, int months, int weeks, int days, int hours, int minutes, int seconds, int millis, int micros, int nanos) d)
         => DurationToNanos(d.days, d.hours, d.minutes, d.seconds, d.millis, d.micros, d.nanos);
@@ -1767,7 +1825,8 @@ public sealed class TemporalStub : IBuiltinModule
             RequireOptionsObject(ctx, a, 1);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNs(ctx, h, DecodeInstantNanos(h, o) - otherNs));
         }, 1);
-        AddMethod(ctx, h, pH, p, "round", (o, _) => CloneTemporal(ctx, h, o), 1);
+        AddMethod(ctx, h, pH, p, "round", (o, a) =>
+            AttachPrototype(h, MakeInstantFromNanoseconds(h, RoundInstantNs(ctx, h, DecodeInstantNanos(h, o), a)), pH), 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
             long otherNs = ToInstantNs(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             return JsValue.FromBoolean(DecodeInstantNanos(h, o) == otherNs);
