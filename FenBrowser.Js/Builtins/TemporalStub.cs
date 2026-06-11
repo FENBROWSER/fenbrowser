@@ -1396,11 +1396,24 @@ public sealed class TemporalStub : IBuiltinModule
         return false;
     }
 
-    private static void AddGetter(JsHeap h, ObjectHandle pH, JsObject p, string n, Func<JsObject, JsValue> g)
+    /// <summary>
+    /// Built-in functions that are not constructors must have Function.prototype as their
+    /// [[Prototype]] (ECMA-262 ch.17). Apply it to a freshly-created native function object.
+    /// </summary>
+    private static void ApplyFunctionPrototype(IBuiltinContext ctx, JsHeap h, NativeFunctionObject nf)
+    {
+        var fnCH = ctx.MaterializeFunctionConstructor();
+        var fnC = h.GetObject(fnCH);
+        if (ctx.TryGetPropertyValue(fnC, JsValue.FromObject(fnCH), "prototype", out var fp) && fp.Tag == JsValueTag.Object)
+            nf.SetPrototype(fp.AsObjectHandle());
+    }
+
+    private static void AddGetter(IBuiltinContext ctx, JsHeap h, ObjectHandle pH, JsObject p, string n, Func<JsObject, JsValue> g)
     {
         var brandProto = pH;
         var gf = new NativeFunctionObject("get " + n, (tv, _) =>
             IsTemporalInstance(h, tv, brandProto) ? g(h.GetObject(tv.AsObjectHandle())) : JsValue.Undefined, length: 0);
+        ApplyFunctionPrototype(ctx, h, gf);
         var gH = h.AllocateObject(gf, AllocationSite.Current());
         p.DefineOwnProperty(n, JsPropertyDescriptor.Accessor(JsValue.FromObject(gH), JsValue.Undefined, Enumerable: false, Configurable: true));
         h.WriteBarrier(pH, gH);
@@ -1417,6 +1430,7 @@ public sealed class TemporalStub : IBuiltinModule
                 throw new JsThrownException(ctx.CreateTypeError($"{n}: receiver is not a valid Temporal instance."));
             return fn(h.GetObject(tv.AsObjectHandle()), a);
         }, length: len);
+        ApplyFunctionPrototype(ctx, h, nf);
         var nfH = h.AllocateObject(nf, AllocationSite.Current());
         p.DefineOwnProperty(n, new JsPropertyDescriptor(JsValue.FromObject(nfH), true, false, true));
         h.WriteBarrier(pH, nfH);
@@ -1427,10 +1441,7 @@ public sealed class TemporalStub : IBuiltinModule
     {
         var nf = new NativeFunctionObject(n, (_, a) => fn(a), length: len);
         // Static functions must have Function.prototype as their [[Prototype]]
-        var fnCH = ctx.MaterializeFunctionConstructor();
-        var fnC = h.GetObject(fnCH);
-        if (ctx.TryGetPropertyValue(fnC, JsValue.FromObject(fnCH), "prototype", out var fp) && fp.Tag == JsValueTag.Object)
-            nf.SetPrototype(fp.AsObjectHandle());
+        ApplyFunctionPrototype(ctx, h, nf);
         var nfH = h.AllocateObject(nf, AllocationSite.Current());
         c.DefineOwnProperty(n, new JsPropertyDescriptor(JsValue.FromObject(nfH), true, false, true));
         h.WriteBarrier(cH, nfH);
@@ -1531,6 +1542,7 @@ public sealed class TemporalStub : IBuiltinModule
         Func<IReadOnlyList<JsValue>, JsValue> fn)
     {
         var nf = new NativeFunctionObject(n, (_, a) => fn(a), length: 0);
+        ApplyFunctionPrototype(ctx, h, nf);
         var nfH = h.AllocateObject(nf, AllocationSite.Current());
         o.DefineOwnProperty(n, new JsPropertyDescriptor(JsValue.FromObject(nfH), true, false, true));
         h.WriteBarrier(oH, nfH);
@@ -1596,14 +1608,14 @@ public sealed class TemporalStub : IBuiltinModule
             (cctx, hh, a) => ConstructDuration(cctx, hh, a));
         var p = h.GetObject(pH);
         foreach (var f in new[] { "years", "months", "weeks", "days", "hours", "minutes", "seconds", "milliseconds", "microseconds", "nanoseconds" })
-            AddGetter(h, pH, p, f, o => GetV(h, o, f));
-        AddGetter(h, pH, p, "sign", o => {
+            AddGetter(ctx, h, pH, p, f, o => GetV(h, o, f));
+        AddGetter(ctx, h, pH, p, "sign", o => {
             double sum = 0;
             foreach (var f in new[]{"years","months","weeks","days","hours","minutes","seconds","milliseconds","microseconds","nanoseconds"})
                 sum += GetVNum(h, o, f);
             return JsValue.FromNumber(sum > 0 ? 1 : sum < 0 ? -1 : 0);
         });
-        AddGetter(h, pH, p, "blank", o => {
+        AddGetter(ctx, h, pH, p, "blank", o => {
             foreach (var f in new[]{"years","months","weeks","days","hours","minutes","seconds","milliseconds","microseconds","nanoseconds"})
                 if (GetVNum(h, o, f) != 0) return JsValue.FromBoolean(false);
             return JsValue.FromBoolean(true);
@@ -1701,10 +1713,10 @@ public sealed class TemporalStub : IBuiltinModule
         var (cH, pH) = MakeCtor(ctx, h, t, tH, "Instant", 1, true,
             (cctx, hh, a) => ConstructInstant(cctx, hh, a));
         var p = h.GetObject(pH);
-        AddGetter(h, pH, p, "epochSeconds", o => GetV(h, o, "es"));
-        AddGetter(h, pH, p, "epochMilliseconds", o => GetV(h, o, "ems"));
-        AddGetter(h, pH, p, "epochMicroseconds", o => GetV(h, o, "eus"));
-        AddGetter(h, pH, p, "epochNanoseconds", o => GetV(h, o, "ensBig"));
+        AddGetter(ctx, h, pH, p, "epochSeconds", o => GetV(h, o, "es"));
+        AddGetter(ctx, h, pH, p, "epochMilliseconds", o => GetV(h, o, "ems"));
+        AddGetter(ctx, h, pH, p, "epochMicroseconds", o => GetV(h, o, "eus"));
+        AddGetter(ctx, h, pH, p, "epochNanoseconds", o => GetV(h, o, "ensBig"));
         AddMethod(ctx, h, pH, p, "add", (o, a) => {
             var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             if (dur.years != 0 || dur.months != 0 || dur.weeks != 0 || dur.days != 0)
@@ -1778,23 +1790,23 @@ public sealed class TemporalStub : IBuiltinModule
         var (cH, pH) = MakeCtor(ctx, h, t, tH, "PlainDate", 3, true,
             (cctx, hh, a) => ConstructPlainDate(cctx, hh, a));
         var p = h.GetObject(pH);
-        AddGetter(h, pH, p, "year", o => GetV(h, o, "y"));
-        AddGetter(h, pH, p, "month", o => GetV(h, o, "m"));
-        AddGetter(h, pH, p, "monthCode", o => JsValue.FromString($"M{(int)GetVNum(h, o, "m"):D2}"));
-        AddGetter(h, pH, p, "day", o => GetV(h, o, "d"));
-        AddGetter(h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
-        AddGetter(h, pH, p, "dayOfWeek", o => JsValue.FromNumber(IsoMath.DayOfWeek(DecodeIsoDate(h, o))));
-        AddGetter(h, pH, p, "dayOfYear", o => JsValue.FromNumber(IsoMath.DayOfYear(DecodeIsoDate(h, o))));
-        AddGetter(h, pH, p, "weekOfYear", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDate(h, o)).Week));
-        AddGetter(h, pH, p, "yearOfWeek", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDate(h, o)).Year));
-        AddGetter(h, pH, p, "daysInWeek", o => JsValue.FromNumber(7));
-        AddGetter(h, pH, p, "daysInMonth", o => { var dt = DecodeIsoDate(h, o); return JsValue.FromNumber(IsoMath.DaysInMonth(dt.Year, dt.Month)); });
-        AddGetter(h, pH, p, "daysInYear", o => JsValue.FromNumber(IsoMath.DaysInYear(DecodeIsoDate(h, o).Year)));
-        AddGetter(h, pH, p, "monthsInYear", o => JsValue.FromNumber(12));
-        AddGetter(h, pH, p, "inLeapYear", o => JsValue.FromBoolean(IsoMath.IsLeapYear(DecodeIsoDate(h, o).Year)));
+        AddGetter(ctx, h, pH, p, "year", o => GetV(h, o, "y"));
+        AddGetter(ctx, h, pH, p, "month", o => GetV(h, o, "m"));
+        AddGetter(ctx, h, pH, p, "monthCode", o => JsValue.FromString($"M{(int)GetVNum(h, o, "m"):D2}"));
+        AddGetter(ctx, h, pH, p, "day", o => GetV(h, o, "d"));
+        AddGetter(ctx, h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
+        AddGetter(ctx, h, pH, p, "dayOfWeek", o => JsValue.FromNumber(IsoMath.DayOfWeek(DecodeIsoDate(h, o))));
+        AddGetter(ctx, h, pH, p, "dayOfYear", o => JsValue.FromNumber(IsoMath.DayOfYear(DecodeIsoDate(h, o))));
+        AddGetter(ctx, h, pH, p, "weekOfYear", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDate(h, o)).Week));
+        AddGetter(ctx, h, pH, p, "yearOfWeek", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDate(h, o)).Year));
+        AddGetter(ctx, h, pH, p, "daysInWeek", o => JsValue.FromNumber(7));
+        AddGetter(ctx, h, pH, p, "daysInMonth", o => { var dt = DecodeIsoDate(h, o); return JsValue.FromNumber(IsoMath.DaysInMonth(dt.Year, dt.Month)); });
+        AddGetter(ctx, h, pH, p, "daysInYear", o => JsValue.FromNumber(IsoMath.DaysInYear(DecodeIsoDate(h, o).Year)));
+        AddGetter(ctx, h, pH, p, "monthsInYear", o => JsValue.FromNumber(12));
+        AddGetter(ctx, h, pH, p, "inLeapYear", o => JsValue.FromBoolean(IsoMath.IsLeapYear(DecodeIsoDate(h, o).Year)));
         // era/eraYear are undefined for the iso8601 calendar.
-        AddGetter(h, pH, p, "era", _ => JsValue.Undefined);
-        AddGetter(h, pH, p, "eraYear", _ => JsValue.Undefined);
+        AddGetter(ctx, h, pH, p, "era", _ => JsValue.Undefined);
+        AddGetter(ctx, h, pH, p, "eraYear", _ => JsValue.Undefined);
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("with: argument must be an object."));
             var bagValue = a[0];
@@ -1957,7 +1969,7 @@ public sealed class TemporalStub : IBuiltinModule
             (cctx, hh, a) => ConstructPlainTime(cctx, hh, a));
         var p = h.GetObject(pH);
         foreach (var f in new[] { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" })
-            AddGetter(h, pH, p, f, o => GetV(h, o, f));
+            AddGetter(ctx, h, pH, p, f, o => GetV(h, o, f));
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("PlainTime.with: argument must be an object."));
             var bagValue = a[0];
@@ -2100,21 +2112,21 @@ public sealed class TemporalStub : IBuiltinModule
             (cctx, hh, a) => ConstructPlainDateTime(cctx, hh, a));
         var p = h.GetObject(pH);
         foreach (var f in new[] { "year", "month", "day", "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" })
-            AddGetter(h, pH, p, f, o => GetV(h, o, f));
-        AddGetter(h, pH, p, "monthCode", o => JsValue.FromString($"M{(int)GetVNum(h, o, "month"):D2}"));
-        AddGetter(h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
-        AddGetter(h, pH, p, "dayOfWeek", o => JsValue.FromNumber(IsoMath.DayOfWeek(DecodeIsoDateLong(h, o))));
-        AddGetter(h, pH, p, "dayOfYear", o => JsValue.FromNumber(IsoMath.DayOfYear(DecodeIsoDateLong(h, o))));
-        AddGetter(h, pH, p, "weekOfYear", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDateLong(h, o)).Week));
-        AddGetter(h, pH, p, "yearOfWeek", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDateLong(h, o)).Year));
-        AddGetter(h, pH, p, "daysInWeek", o => JsValue.FromNumber(7));
-        AddGetter(h, pH, p, "daysInMonth", o => { var dt = DecodeIsoDateLong(h, o); return JsValue.FromNumber(IsoMath.DaysInMonth(dt.Year, dt.Month)); });
-        AddGetter(h, pH, p, "daysInYear", o => JsValue.FromNumber(IsoMath.DaysInYear(DecodeIsoDateLong(h, o).Year)));
-        AddGetter(h, pH, p, "monthsInYear", o => JsValue.FromNumber(12));
-        AddGetter(h, pH, p, "inLeapYear", o => JsValue.FromBoolean(IsoMath.IsLeapYear(DecodeIsoDateLong(h, o).Year)));
+            AddGetter(ctx, h, pH, p, f, o => GetV(h, o, f));
+        AddGetter(ctx, h, pH, p, "monthCode", o => JsValue.FromString($"M{(int)GetVNum(h, o, "month"):D2}"));
+        AddGetter(ctx, h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
+        AddGetter(ctx, h, pH, p, "dayOfWeek", o => JsValue.FromNumber(IsoMath.DayOfWeek(DecodeIsoDateLong(h, o))));
+        AddGetter(ctx, h, pH, p, "dayOfYear", o => JsValue.FromNumber(IsoMath.DayOfYear(DecodeIsoDateLong(h, o))));
+        AddGetter(ctx, h, pH, p, "weekOfYear", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDateLong(h, o)).Week));
+        AddGetter(ctx, h, pH, p, "yearOfWeek", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDateLong(h, o)).Year));
+        AddGetter(ctx, h, pH, p, "daysInWeek", o => JsValue.FromNumber(7));
+        AddGetter(ctx, h, pH, p, "daysInMonth", o => { var dt = DecodeIsoDateLong(h, o); return JsValue.FromNumber(IsoMath.DaysInMonth(dt.Year, dt.Month)); });
+        AddGetter(ctx, h, pH, p, "daysInYear", o => JsValue.FromNumber(IsoMath.DaysInYear(DecodeIsoDateLong(h, o).Year)));
+        AddGetter(ctx, h, pH, p, "monthsInYear", o => JsValue.FromNumber(12));
+        AddGetter(ctx, h, pH, p, "inLeapYear", o => JsValue.FromBoolean(IsoMath.IsLeapYear(DecodeIsoDateLong(h, o).Year)));
         // era/eraYear are undefined for the iso8601 calendar.
-        AddGetter(h, pH, p, "era", _ => JsValue.Undefined);
-        AddGetter(h, pH, p, "eraYear", _ => JsValue.Undefined);
+        AddGetter(ctx, h, pH, p, "era", _ => JsValue.Undefined);
+        AddGetter(ctx, h, pH, p, "eraYear", _ => JsValue.Undefined);
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("with: argument must be an object."));
             var bagValue = a[0];
@@ -2326,17 +2338,17 @@ public sealed class TemporalStub : IBuiltinModule
         var (cH, pH) = MakeCtor(ctx, h, t, tH, "PlainYearMonth", 2, true,
             (cctx, hh, a) => ConstructPlainYearMonth(cctx, hh, a));
         var p = h.GetObject(pH);
-        AddGetter(h, pH, p, "year", o => GetV(h, o, "y"));
-        AddGetter(h, pH, p, "month", o => GetV(h, o, "m"));
-        AddGetter(h, pH, p, "monthCode", o => JsValue.FromString($"M{(int)GetVNum(h, o, "m"):D2}"));
-        AddGetter(h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
-        AddGetter(h, pH, p, "daysInMonth", o => JsValue.FromNumber(IsoMath.DaysInMonth((int)GetVNum(h, o, "y"), Math.Clamp((int)GetVNum(h, o, "m"), 1, 12))));
-        AddGetter(h, pH, p, "daysInYear", o => JsValue.FromNumber(IsoMath.DaysInYear((int)GetVNum(h, o, "y"))));
-        AddGetter(h, pH, p, "monthsInYear", o => JsValue.FromNumber(12));
-        AddGetter(h, pH, p, "inLeapYear", o => JsValue.FromBoolean(IsoMath.IsLeapYear((int)GetVNum(h, o, "y"))));
+        AddGetter(ctx, h, pH, p, "year", o => GetV(h, o, "y"));
+        AddGetter(ctx, h, pH, p, "month", o => GetV(h, o, "m"));
+        AddGetter(ctx, h, pH, p, "monthCode", o => JsValue.FromString($"M{(int)GetVNum(h, o, "m"):D2}"));
+        AddGetter(ctx, h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
+        AddGetter(ctx, h, pH, p, "daysInMonth", o => JsValue.FromNumber(IsoMath.DaysInMonth((int)GetVNum(h, o, "y"), Math.Clamp((int)GetVNum(h, o, "m"), 1, 12))));
+        AddGetter(ctx, h, pH, p, "daysInYear", o => JsValue.FromNumber(IsoMath.DaysInYear((int)GetVNum(h, o, "y"))));
+        AddGetter(ctx, h, pH, p, "monthsInYear", o => JsValue.FromNumber(12));
+        AddGetter(ctx, h, pH, p, "inLeapYear", o => JsValue.FromBoolean(IsoMath.IsLeapYear((int)GetVNum(h, o, "y"))));
         // era/eraYear are undefined for the iso8601 calendar.
-        AddGetter(h, pH, p, "era", _ => JsValue.Undefined);
-        AddGetter(h, pH, p, "eraYear", _ => JsValue.Undefined);
+        AddGetter(ctx, h, pH, p, "era", _ => JsValue.Undefined);
+        AddGetter(ctx, h, pH, p, "eraYear", _ => JsValue.Undefined);
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("PlainYearMonth.with: argument must be an object."));
             var bagValue = a[0];
@@ -2478,9 +2490,9 @@ public sealed class TemporalStub : IBuiltinModule
         var (cH, pH) = MakeCtor(ctx, h, t, tH, "PlainMonthDay", 2, true,
             (cctx, hh, a) => ConstructPlainMonthDay(cctx, hh, a));
         var p = h.GetObject(pH);
-        AddGetter(h, pH, p, "monthCode", o => GetV(h, o, "mc"));
-        AddGetter(h, pH, p, "day", o => GetV(h, o, "d"));
-        AddGetter(h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
+        AddGetter(ctx, h, pH, p, "monthCode", o => GetV(h, o, "mc"));
+        AddGetter(ctx, h, pH, p, "day", o => GetV(h, o, "d"));
+        AddGetter(ctx, h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.with: argument must be an object."));
             var bag = h.GetObject(a[0].AsObjectHandle());
@@ -2725,15 +2737,15 @@ public sealed class TemporalStub : IBuiltinModule
         var p = h.GetObject(pH);
         foreach (var f in new[] { "year", "month", "day", "hour", "minute", "second", "millisecond", "microsecond", "nanosecond",
             "epochSeconds", "epochMilliseconds", "epochMicroseconds", "offsetNanoseconds" })
-            AddGetter(h, pH, p, f, o => GetV(h, o, f));
-        AddGetter(h, pH, p, "epochNanoseconds", o => GetV(h, o, "ensBig"));
-        AddGetter(h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
-        AddGetter(h, pH, p, "monthCode", o => JsValue.FromString($"M{(int)GetVNum(h, o, "month"):D2}"));
-        AddGetter(h, pH, p, "dayOfWeek", o => JsValue.FromNumber(IsoMath.DayOfWeek(DecodeIsoDateLong(h, o))));
-        AddGetter(h, pH, p, "dayOfYear", o => JsValue.FromNumber(IsoMath.DayOfYear(DecodeIsoDateLong(h, o))));
-        AddGetter(h, pH, p, "weekOfYear", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDateLong(h, o)).Week));
-        AddGetter(h, pH, p, "yearOfWeek", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDateLong(h, o)).Year));
-        AddGetter(h, pH, p, "hoursInDay", o => {
+            AddGetter(ctx, h, pH, p, f, o => GetV(h, o, f));
+        AddGetter(ctx, h, pH, p, "epochNanoseconds", o => GetV(h, o, "ensBig"));
+        AddGetter(ctx, h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
+        AddGetter(ctx, h, pH, p, "monthCode", o => JsValue.FromString($"M{(int)GetVNum(h, o, "month"):D2}"));
+        AddGetter(ctx, h, pH, p, "dayOfWeek", o => JsValue.FromNumber(IsoMath.DayOfWeek(DecodeIsoDateLong(h, o))));
+        AddGetter(ctx, h, pH, p, "dayOfYear", o => JsValue.FromNumber(IsoMath.DayOfYear(DecodeIsoDateLong(h, o))));
+        AddGetter(ctx, h, pH, p, "weekOfYear", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDateLong(h, o)).Week));
+        AddGetter(ctx, h, pH, p, "yearOfWeek", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDateLong(h, o)).Year));
+        AddGetter(ctx, h, pH, p, "hoursInDay", o => {
             var date = DecodeIsoDateLong(h, o);
             string tz = GetVStr(h, o, "tz");
             long start = TemporalTimeZones.EpochNsFromWall(tz, date, IsoTime.Midnight);
@@ -2741,16 +2753,16 @@ public sealed class TemporalStub : IBuiltinModule
             long end = TemporalTimeZones.EpochNsFromWall(tz, IsoMath.EpochDaysToCivil(nextDays), IsoTime.Midnight);
             return JsValue.FromNumber((end - start) / 3_600_000_000_000.0);
         });
-        AddGetter(h, pH, p, "daysInWeek", o => JsValue.FromNumber(7));
-        AddGetter(h, pH, p, "daysInMonth", o => { var dt = DecodeIsoDateLong(h, o); return JsValue.FromNumber(IsoMath.DaysInMonth(dt.Year, dt.Month)); });
-        AddGetter(h, pH, p, "daysInYear", o => JsValue.FromNumber(IsoMath.DaysInYear(DecodeIsoDateLong(h, o).Year)));
-        AddGetter(h, pH, p, "monthsInYear", o => JsValue.FromNumber(12));
-        AddGetter(h, pH, p, "inLeapYear", o => JsValue.FromBoolean(IsoMath.IsLeapYear(DecodeIsoDateLong(h, o).Year)));
-        AddGetter(h, pH, p, "offset", o => JsValue.FromString(TemporalTimeZones.FormatOffset((long)GetVNum(h, o, "offsetNanoseconds"))));
-        AddGetter(h, pH, p, "timeZoneId", o => GetV(h, o, "tz"));
+        AddGetter(ctx, h, pH, p, "daysInWeek", o => JsValue.FromNumber(7));
+        AddGetter(ctx, h, pH, p, "daysInMonth", o => { var dt = DecodeIsoDateLong(h, o); return JsValue.FromNumber(IsoMath.DaysInMonth(dt.Year, dt.Month)); });
+        AddGetter(ctx, h, pH, p, "daysInYear", o => JsValue.FromNumber(IsoMath.DaysInYear(DecodeIsoDateLong(h, o).Year)));
+        AddGetter(ctx, h, pH, p, "monthsInYear", o => JsValue.FromNumber(12));
+        AddGetter(ctx, h, pH, p, "inLeapYear", o => JsValue.FromBoolean(IsoMath.IsLeapYear(DecodeIsoDateLong(h, o).Year)));
+        AddGetter(ctx, h, pH, p, "offset", o => JsValue.FromString(TemporalTimeZones.FormatOffset((long)GetVNum(h, o, "offsetNanoseconds"))));
+        AddGetter(ctx, h, pH, p, "timeZoneId", o => GetV(h, o, "tz"));
         // era/eraYear are undefined for the iso8601 calendar.
-        AddGetter(h, pH, p, "era", _ => JsValue.Undefined);
-        AddGetter(h, pH, p, "eraYear", _ => JsValue.Undefined);
+        AddGetter(ctx, h, pH, p, "era", _ => JsValue.Undefined);
+        AddGetter(ctx, h, pH, p, "eraYear", _ => JsValue.Undefined);
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("ZonedDateTime.with: argument must be an object."));
             var bagValue = a[0];
@@ -2992,7 +3004,7 @@ public sealed class TemporalStub : IBuiltinModule
     {
         var (cH, pH) = MakeCtor(ctx, h, t, tH, "Calendar", 1, true);
         var p = h.GetObject(pH);
-        AddGetter(h, pH, p, "id", o => JsValue.FromString("iso8601"));
+        AddGetter(ctx, h, pH, p, "id", o => JsValue.FromString("iso8601"));
         AddMethod(ctx, h, pH, p, "toString", (o, _) => JsValue.FromString("iso8601"), 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => JsValue.FromString("iso8601"), 0);
         var c = h.GetObject(cH);
@@ -3004,7 +3016,7 @@ public sealed class TemporalStub : IBuiltinModule
     {
         var (cH, pH) = MakeCtor(ctx, h, t, tH, "TimeZone", 1, true);
         var p = h.GetObject(pH);
-        AddGetter(h, pH, p, "id", o => JsValue.FromString("UTC"));
+        AddGetter(ctx, h, pH, p, "id", o => JsValue.FromString("UTC"));
         AddMethod(ctx, h, pH, p, "getOffsetNanosecondsFor", (o, _) => JsValue.FromNumber(0), 1);
         AddMethod(ctx, h, pH, p, "getNextTransition", (o, _) => JsValue.Null, 1);
         AddMethod(ctx, h, pH, p, "getPreviousTransition", (o, _) => JsValue.Null, 1);
