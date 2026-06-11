@@ -243,11 +243,13 @@ public sealed class TemporalStub : IBuiltinModule
         }
     }
 
-    /// <summary>Format a Duration as ISO 8601 string (e.g. "P1Y2M3DT4H5M6S").</summary>
+    /// <summary>Format a Duration as ISO 8601 string (e.g. "P1Y2M3DT4H5M6S", "-PT1H").</summary>
     private static JsValue FormatDuration(JsHeap h, JsObject o)
     {
         var d = DecodeDuration(h, o);
-        var sb = new System.Text.StringBuilder("P");
+        bool negative = d.years < 0 || d.months < 0 || d.weeks < 0 || d.days < 0 || d.hours < 0
+            || d.minutes < 0 || d.seconds < 0 || d.millis < 0 || d.micros < 0 || d.nanos < 0;
+        var sb = new System.Text.StringBuilder(negative ? "-P" : "P");
         if (d.years != 0) sb.Append($"{Math.Abs(d.years)}Y");
         if (d.months != 0) sb.Append($"{Math.Abs(d.months)}M");
         if (d.weeks != 0) sb.Append($"{Math.Abs(d.weeks)}W");
@@ -613,20 +615,22 @@ public sealed class TemporalStub : IBuiltinModule
                 return DecodeDuration(h, obj);
 
             string[] fields = { "years", "months", "weeks", "days", "hours", "minutes", "seconds", "milliseconds", "microseconds", "nanoseconds" };
-            var values = new int[fields.Length];
+            var values = new double[fields.Length];
             bool any = false;
             for (int fi = 0; fi < fields.Length; fi++)
             {
                 if (TryGetField(ctx, h, arg, fields[fi], out var fv))
                 {
-                    values[fi] = ToSafeInt(ToIntegerWithTruncation(ctx, fv));
+                    values[fi] = ToIntegerIfIntegral(ctx, fv);
                     any = true;
                 }
             }
 
             if (!any)
                 throw new JsThrownException(ctx.CreateTypeError("At least one duration field is required."));
-            return (values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7], values[8], values[9]);
+            ValidateDurationSigns(ctx, values);
+            return (ToSafeInt(values[0]), ToSafeInt(values[1]), ToSafeInt(values[2]), ToSafeInt(values[3]), ToSafeInt(values[4]),
+                ToSafeInt(values[5]), ToSafeInt(values[6]), ToSafeInt(values[7]), ToSafeInt(values[8]), ToSafeInt(values[9]));
         }
 
         throw new JsThrownException(ctx.CreateTypeError("Cannot convert value to a Temporal duration."));
@@ -768,6 +772,115 @@ public sealed class TemporalStub : IBuiltinModule
         throw new JsThrownException(ctx.CreateTypeError("Cannot convert value to a Temporal year-month."));
     }
 
+    /// <summary>ToIntegerIfIntegral: RangeError unless the value converts to a finite integer.</summary>
+    private static double ToIntegerIfIntegral(IBuiltinContext ctx, JsValue v)
+    {
+        if (v.Tag == JsValueTag.Undefined) return 0;
+        var n = ctx.ToNumber(v);
+        if (!double.IsFinite(n) || n != Math.Truncate(n))
+            throw new JsThrownException(ctx.CreateRangeError("Duration components must be finite integers."));
+        return n + 0.0; // normalize -0 to +0
+    }
+
+    /// <summary>IsValidDuration sign check: all components share one sign.</summary>
+    private static void ValidateDurationSigns(IBuiltinContext ctx, params double[] components)
+    {
+        int sign = 0;
+        foreach (var c in components)
+        {
+            if (c == 0) continue;
+            int s = c < 0 ? -1 : 1;
+            if (sign == 0) sign = s;
+            else if (s != sign)
+                throw new JsThrownException(ctx.CreateRangeError("Mixed-sign durations are invalid."));
+        }
+    }
+
+    /// <summary>Singular unit name; plurals accepted; RangeError on anything else.</summary>
+    private static string NormalizeUnitName(IBuiltinContext ctx, string unit, bool allowAuto = false)
+    {
+        var s = unit switch
+        {
+            "years" => "year", "months" => "month", "weeks" => "week", "days" => "day",
+            "hours" => "hour", "minutes" => "minute", "seconds" => "second",
+            "milliseconds" => "millisecond", "microseconds" => "microsecond", "nanoseconds" => "nanosecond",
+            _ => unit,
+        };
+        bool ok = s is "year" or "month" or "week" or "day" or "hour" or "minute" or "second"
+            or "millisecond" or "microsecond" or "nanosecond" || (allowAuto && s == "auto");
+        if (!ok)
+            throw new JsThrownException(ctx.CreateRangeError($"'{unit}' is not a valid unit."));
+        return s;
+    }
+
+    private static bool IsCalendarUnit(string? unit) => unit is "year" or "month" or "week";
+
+    // Rank 0 = day (largest supported without relativeTo) … 6 = nanosecond.
+    private static int UnitRank(string unit) => unit switch
+    {
+        "day" => 0, "hour" => 1, "minute" => 2, "second" => 3,
+        "millisecond" => 4, "microsecond" => 5, _ => 6,
+    };
+
+    private static long UnitNs(string unit) => unit switch
+    {
+        "day" => NsPerDay, "hour" => 3_600_000_000_000L, "minute" => 60_000_000_000L,
+        "second" => 1_000_000_000L, "millisecond" => 1_000_000L, "microsecond" => 1_000L, _ => 1L,
+    };
+
+    /// <summary>Total nanoseconds of the day/time portion (caller has excluded calendar units).</summary>
+    private static long DurationDayTimeNs((int years, int months, int weeks, int days, int hours, int minutes, int seconds, int millis, int micros, int nanos) d)
+        => DurationToNanos(d.days, d.hours, d.minutes, d.seconds, d.millis, d.micros, d.nanos);
+
+    /// <summary>DefaultTemporalLargestUnit for day/time durations.</summary>
+    private static string DefaultLargestUnit((int years, int months, int weeks, int days, int hours, int minutes, int seconds, int millis, int micros, int nanos) d)
+        => d.days != 0 ? "day" : d.hours != 0 ? "hour" : d.minutes != 0 ? "minute" : d.seconds != 0 ? "second"
+            : d.millis != 0 ? "millisecond" : d.micros != 0 ? "microsecond" : d.nanos != 0 ? "nanosecond" : "second";
+
+    /// <summary>RoundNumberToIncrement over integer nanoseconds.</summary>
+    private static long RoundNsToIncrement(IBuiltinContext ctx, long total, long increment, string mode)
+    {
+        if (increment <= 0)
+            throw new JsThrownException(ctx.CreateRangeError("roundingIncrement must be positive."));
+        long t = total / increment;
+        long r = total % increment;
+        if (r == 0) return total;
+        long lower = r > 0 ? t : t - 1;
+        long upper = r > 0 ? t + 1 : t;
+        long absR2 = Math.Abs(r) * 2;
+        long nearer = absR2 < increment ? (r > 0 ? lower : upper) : (r > 0 ? upper : lower);
+        long result = mode switch
+        {
+            "ceil" => upper,
+            "floor" => lower,
+            "trunc" => t,
+            "expand" => total > 0 ? upper : lower,
+            "halfCeil" => absR2 == increment ? upper : nearer,
+            "halfFloor" => absR2 == increment ? lower : nearer,
+            "halfTrunc" => absR2 == increment ? t : nearer,
+            "halfEven" => absR2 == increment ? (lower % 2 == 0 ? lower : upper) : nearer,
+            _ => absR2 == increment ? (total > 0 ? upper : lower) : nearer, // halfExpand (default)
+        };
+        return result * increment;
+    }
+
+    /// <summary>Balance signed nanoseconds into a Duration capped at largestUnit.</summary>
+    private static JsValue MakeDurationBalancedNs(IBuiltinContext ctx, JsHeap h, long ns, string largestUnit)
+    {
+        int sign = ns < 0 ? -1 : 1;
+        long n = Math.Abs(ns);
+        int rank = UnitRank(largestUnit);
+        long days = 0, hr = 0, mi = 0, se = 0, ms = 0, us = 0;
+        if (rank <= 0) { days = n / NsPerDay; n %= NsPerDay; }
+        if (rank <= 1) { hr = n / 3_600_000_000_000L; n %= 3_600_000_000_000L; }
+        if (rank <= 2) { mi = n / 60_000_000_000L; n %= 60_000_000_000L; }
+        if (rank <= 3) { se = n / 1_000_000_000L; n %= 1_000_000_000L; }
+        if (rank <= 4) { ms = n / 1_000_000L; n %= 1_000_000L; }
+        if (rank <= 5) { us = n / 1_000L; n %= 1_000L; }
+        return MakeDuration(ctx, h, 0, 0, 0, sign * (int)days, sign * (int)hr, sign * (int)mi, sign * (int)se,
+            sign * (int)ms, sign * (int)us, sign * (int)n);
+    }
+
     /// <summary>AddDurationToDateTime: time-of-day arithmetic with day carry, then AddISODate.</summary>
     private static JsValue AddDurationToPlainDateTime(IBuiltinContext ctx, JsHeap h, JsObject t, JsObject o,
         IReadOnlyList<JsValue> a, ObjectHandle pH, int sign)
@@ -902,11 +1015,15 @@ public sealed class TemporalStub : IBuiltinModule
 
     private static JsValue ConstructDuration(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> args)
     {
-        // Constructor: new Temporal.Duration(y?, mo?, w?, d?, h?, mi?, s?, ms?, mic?, ns?)
-        int Comp(int i) => i < args.Count ? ToSafeInt(ctx.ToNumber(args[i])) : 0;
+        // new Temporal.Duration(y?, mo?, w?, d?, h?, mi?, s?, ms?, µs?, ns?) —
+        // ToIntegerIfIntegral each component, then IsValidDuration sign check.
+        var v = new double[10];
+        for (int i = 0; i < 10; i++)
+            v[i] = ToIntegerIfIntegral(ctx, i < args.Count ? args[i] : JsValue.Undefined);
+        ValidateDurationSigns(ctx, v);
         return MakeDuration(ctx, h,
-            Comp(0), Comp(1), Comp(2), Comp(3), Comp(4),
-            Comp(5), Comp(6), Comp(7), Comp(8), Comp(9));
+            ToSafeInt(v[0]), ToSafeInt(v[1]), ToSafeInt(v[2]), ToSafeInt(v[3]), ToSafeInt(v[4]),
+            ToSafeInt(v[5]), ToSafeInt(v[6]), ToSafeInt(v[7]), ToSafeInt(v[8]), ToSafeInt(v[9]));
     }
 
     /// <summary>Temporal.Duration.from(arg) — handles string, Duration object (copy), and property bag.</summary>
@@ -934,17 +1051,13 @@ public sealed class TemporalStub : IBuiltinModule
                 return AttachPrototype(h, MakeDuration(ctx, h, dur.years, dur.months, dur.weeks, dur.days,
                     dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos), protoH);
             }
-            // Property bag: read individual fields directly from the object
-            return AttachPrototype(h, MakeDuration(ctx, h,
-                ToSafeInt(ReadOwnNum(h, obj, "years")), ToSafeInt(ReadOwnNum(h, obj, "months")),
-                ToSafeInt(ReadOwnNum(h, obj, "weeks")), ToSafeInt(ReadOwnNum(h, obj, "days")),
-                ToSafeInt(ReadOwnNum(h, obj, "hours")), ToSafeInt(ReadOwnNum(h, obj, "minutes")),
-                ToSafeInt(ReadOwnNum(h, obj, "seconds")), ToSafeInt(ReadOwnNum(h, obj, "milliseconds")),
-                ToSafeInt(ReadOwnNum(h, obj, "microseconds")), ToSafeInt(ReadOwnNum(h, obj, "nanoseconds"))), protoH);
+            // Property bag with ToIntegerIfIntegral + sign validation.
+            var r = ToTemporalDurationRecord(ctx, h, arg);
+            return AttachPrototype(h, MakeDuration(ctx, h, r.years, r.months, r.weeks, r.days,
+                r.hours, r.minutes, r.seconds, r.millis, r.micros, r.nanos), protoH);
         }
 
-        // Other types: convert to number
-        return AttachPrototype(h, MakeDuration(ctx, h, ToSafeInt(ctx.ToNumber(arg)), 0, 0, 0, 0, 0, 0, 0, 0, 0), protoH);
+        throw new JsThrownException(ctx.CreateTypeError("Duration.from: argument must be a string, Duration, or property bag."));
     }
 
     /// <summary>Parse an ISO 8601 duration string like "P1Y2M3DT4H5M6S".</summary>
@@ -1321,29 +1434,38 @@ public sealed class TemporalStub : IBuiltinModule
                 if (GetVNum(h, o, f) != 0) return JsValue.FromBoolean(false);
             return JsValue.FromBoolean(true);
         });
-        AddMethod(ctx, h, pH, p, "with", (o, a) => DurationWith(ctx, h, o, a), 1);
+        AddMethod(ctx, h, pH, p, "with", (o, a) => AttachPrototype(h, DurationWith(ctx, h, o, a), pH), 1);
         AddMethod(ctx, h, pH, p, "negated", (o, _) => {
             var d = DecodeDuration(h, o);
-            return MakeDuration(ctx, h, -d.years, -d.months, -d.weeks, -d.days, -d.hours, -d.minutes, -d.seconds, -d.millis, -d.micros, -d.nanos);
+            return AttachPrototype(h, MakeDuration(ctx, h, -d.years, -d.months, -d.weeks, -d.days, -d.hours, -d.minutes, -d.seconds, -d.millis, -d.micros, -d.nanos), pH);
         }, 0);
         AddMethod(ctx, h, pH, p, "abs", (o, _) => {
             var d = DecodeDuration(h, o);
-            return MakeDuration(ctx, h, Math.Abs(d.years), Math.Abs(d.months), Math.Abs(d.weeks), Math.Abs(d.days), Math.Abs(d.hours), Math.Abs(d.minutes), Math.Abs(d.seconds), Math.Abs(d.millis), Math.Abs(d.micros), Math.Abs(d.nanos));
+            return AttachPrototype(h, MakeDuration(ctx, h, Math.Abs(d.years), Math.Abs(d.months), Math.Abs(d.weeks), Math.Abs(d.days), Math.Abs(d.hours), Math.Abs(d.minutes), Math.Abs(d.seconds), Math.Abs(d.millis), Math.Abs(d.micros), Math.Abs(d.nanos)), pH);
         }, 0);
         AddMethod(ctx, h, pH, p, "add", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
             var self = DecodeDuration(h, o);
-            var other = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
-            return MakeDuration(ctx, h, self.years+other.years, self.months+other.months, self.weeks+other.weeks, self.days+other.days, self.hours+other.hours, self.minutes+other.minutes, self.seconds+other.seconds, self.millis+other.millis, self.micros+other.micros, self.nanos+other.nanos);
+            var other = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            // AddDurations: calendar units are not allowed without relativeTo.
+            if (self.years != 0 || self.months != 0 || self.weeks != 0
+                || other.years != 0 || other.months != 0 || other.weeks != 0)
+                throw new JsThrownException(ctx.CreateRangeError("Duration.add does not support calendar units."));
+            string largest = UnitRank(DefaultLargestUnit(self)) <= UnitRank(DefaultLargestUnit(other))
+                ? DefaultLargestUnit(self) : DefaultLargestUnit(other);
+            return AttachPrototype(h, MakeDurationBalancedNs(ctx, h, DurationDayTimeNs(self) + DurationDayTimeNs(other), largest), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
             var self = DecodeDuration(h, o);
-            var other = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
-            return MakeDuration(ctx, h, self.years-other.years, self.months-other.months, self.weeks-other.weeks, self.days-other.days, self.hours-other.hours, self.minutes-other.minutes, self.seconds-other.seconds, self.millis-other.millis, self.micros-other.micros, self.nanos-other.nanos);
+            var other = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            if (self.years != 0 || self.months != 0 || self.weeks != 0
+                || other.years != 0 || other.months != 0 || other.weeks != 0)
+                throw new JsThrownException(ctx.CreateRangeError("Duration.subtract does not support calendar units."));
+            string largest = UnitRank(DefaultLargestUnit(self)) <= UnitRank(DefaultLargestUnit(other))
+                ? DefaultLargestUnit(self) : DefaultLargestUnit(other);
+            return AttachPrototype(h, MakeDurationBalancedNs(ctx, h, DurationDayTimeNs(self) - DurationDayTimeNs(other), largest), pH);
         }, 1);
-        AddMethod(ctx, h, pH, p, "round", (o, _) => CloneTemporal(ctx, h, o), 1);
-        AddMethod(ctx, h, pH, p, "total", (o, _) => JsValue.FromNumber(0), 1);
+        AddMethod(ctx, h, pH, p, "round", (o, a) => AttachPrototype(h, DurationRound(ctx, h, o, a), pH), 1);
+        AddMethod(ctx, h, pH, p, "total", (o, a) => DurationTotal(ctx, h, o, a), 1);
         AddMethod(ctx, h, pH, p, "toString", (o, _) => FormatDuration(h, o), 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatDuration(h, o), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("Duration.prototype.valueOf throws.")), 0);
@@ -2670,13 +2792,117 @@ public sealed class TemporalStub : IBuiltinModule
     {
         if (a.Count < 1 || a[0].Tag != JsValueTag.Object)
             throw new JsThrownException(ctx.CreateTypeError("Duration.with: argument must be an object."));
-        var bag = h.GetObject(a[0].AsObjectHandle());
+        var bagValue = a[0];
         var dur = DecodeDuration(h, o);
-        int V(string name, int cur) => HasOwn(h, bag, name) ? ToSafeInt(ReadOwnNum(h, bag, name)) : cur;
+        var current = new double[] { dur.years, dur.months, dur.weeks, dur.days, dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos };
+        string[] fields = { "years", "months", "weeks", "days", "hours", "minutes", "seconds", "milliseconds", "microseconds", "nanoseconds" };
+        bool any = false;
+        for (int fi = 0; fi < fields.Length; fi++)
+        {
+            if (TryGetField(ctx, h, bagValue, fields[fi], out var fv))
+            {
+                current[fi] = ToIntegerIfIntegral(ctx, fv);
+                any = true;
+            }
+        }
+
+        if (!any)
+            throw new JsThrownException(ctx.CreateTypeError("with: at least one duration field is required."));
+        ValidateDurationSigns(ctx, current);
         return MakeDuration(ctx, h,
-            V("years", dur.years), V("months", dur.months), V("weeks", dur.weeks), V("days", dur.days),
-            V("hours", dur.hours), V("minutes", dur.minutes), V("seconds", dur.seconds),
-            V("milliseconds", dur.millis), V("microseconds", dur.micros), V("nanoseconds", dur.nanos));
+            ToSafeInt(current[0]), ToSafeInt(current[1]), ToSafeInt(current[2]), ToSafeInt(current[3]), ToSafeInt(current[4]),
+            ToSafeInt(current[5]), ToSafeInt(current[6]), ToSafeInt(current[7]), ToSafeInt(current[8]), ToSafeInt(current[9]));
+    }
+
+    /// <summary>Duration.prototype.round for day/time units (relativeTo unsupported → RangeError on calendar units).</summary>
+    private static JsValue DurationRound(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> a)
+    {
+        if (a.Count == 0 || a[0].Tag == JsValueTag.Undefined)
+            throw new JsThrownException(ctx.CreateTypeError("round requires a unit or options argument."));
+        string? smallest = null;
+        string? largest = null;
+        double increment = 1;
+        string mode = "halfExpand";
+        if (a[0].Tag == JsValueTag.String)
+        {
+            smallest = NormalizeUnitName(ctx, a[0].AsString());
+        }
+        else if (a[0].Tag == JsValueTag.Object)
+        {
+            // Option reads in alphabetical order per GetRoundingIncrementOption et al.
+            if (TryGetField(ctx, h, a[0], "largestUnit", out var lv))
+                largest = NormalizeUnitName(ctx, lv.Tag == JsValueTag.String ? lv.AsString() : ctx.ToStringValue(lv), allowAuto: true);
+            if (TryGetField(ctx, h, a[0], "roundingIncrement", out var iv))
+            {
+                increment = ToIntegerWithTruncation(ctx, iv);
+                if (increment < 1 || increment > 1_000_000_000)
+                    throw new JsThrownException(ctx.CreateRangeError("roundingIncrement out of range."));
+            }
+            if (TryGetField(ctx, h, a[0], "roundingMode", out var mv))
+            {
+                mode = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
+                if (mode is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
+                    throw new JsThrownException(ctx.CreateRangeError($"'{mode}' is not a valid rounding mode."));
+            }
+            if (TryGetField(ctx, h, a[0], "smallestUnit", out var sv))
+                smallest = NormalizeUnitName(ctx, sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv));
+            if (smallest is null && (largest is null || largest == "auto"))
+                throw new JsThrownException(ctx.CreateRangeError("round requires smallestUnit or largestUnit."));
+            if (TryGetField(ctx, h, a[0], "relativeTo", out _))
+                throw new JsThrownException(ctx.CreateRangeError("relativeTo is not supported."));
+        }
+        else
+        {
+            throw new JsThrownException(ctx.CreateTypeError("round argument must be a string or options object."));
+        }
+
+        var dur = DecodeDuration(h, o);
+        if (dur.years != 0 || dur.months != 0 || dur.weeks != 0 || IsCalendarUnit(smallest) || (largest is not null && largest != "auto" && IsCalendarUnit(largest)))
+            throw new JsThrownException(ctx.CreateRangeError("Calendar units require relativeTo (not supported)."));
+        smallest ??= "nanosecond";
+        string largestEff = largest is null or "auto"
+            ? (UnitRank(DefaultLargestUnit(dur)) <= UnitRank(smallest) ? DefaultLargestUnit(dur) : smallest)
+            : largest;
+        if (UnitRank(smallest) < UnitRank(largestEff))
+            throw new JsThrownException(ctx.CreateRangeError("smallestUnit is larger than largestUnit."));
+        if (smallest != "day")
+        {
+            long maxInc = smallest == "hour" ? 24 : smallest is "minute" or "second" ? 60 : 1000;
+            if (increment >= maxInc || maxInc % (long)increment != 0)
+                throw new JsThrownException(ctx.CreateRangeError("roundingIncrement does not divide evenly."));
+        }
+
+        long rounded = RoundNsToIncrement(ctx, DurationDayTimeNs(dur), (long)increment * UnitNs(smallest), mode);
+        return MakeDurationBalancedNs(ctx, h, rounded, largestEff);
+    }
+
+    /// <summary>Duration.prototype.total for day/time units.</summary>
+    private static JsValue DurationTotal(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> a)
+    {
+        if (a.Count == 0 || a[0].Tag == JsValueTag.Undefined)
+            throw new JsThrownException(ctx.CreateTypeError("total requires a unit or options argument."));
+        string unit;
+        if (a[0].Tag == JsValueTag.String)
+        {
+            unit = NormalizeUnitName(ctx, a[0].AsString());
+        }
+        else if (a[0].Tag == JsValueTag.Object)
+        {
+            if (TryGetField(ctx, h, a[0], "relativeTo", out _))
+                throw new JsThrownException(ctx.CreateRangeError("relativeTo is not supported."));
+            if (!TryGetField(ctx, h, a[0], "unit", out var uv))
+                throw new JsThrownException(ctx.CreateRangeError("total requires a unit."));
+            unit = NormalizeUnitName(ctx, uv.Tag == JsValueTag.String ? uv.AsString() : ctx.ToStringValue(uv));
+        }
+        else
+        {
+            throw new JsThrownException(ctx.CreateTypeError("total argument must be a string or options object."));
+        }
+
+        var dur = DecodeDuration(h, o);
+        if (dur.years != 0 || dur.months != 0 || dur.weeks != 0 || IsCalendarUnit(unit))
+            throw new JsThrownException(ctx.CreateRangeError("Calendar units require relativeTo (not supported)."));
+        return JsValue.FromNumber(DurationDayTimeNs(dur) / (double)UnitNs(unit));
     }
 
     private static JsValue CloneTemporal(IBuiltinContext ctx, JsHeap h, JsObject orig)
