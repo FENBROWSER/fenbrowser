@@ -484,8 +484,10 @@ public sealed class TemporalStub : IBuiltinModule
     /// <summary>Resolve the month from a field bag's month/monthCode (ISO semantics).</summary>
     private static double GetMonthFromFields(IBuiltinContext ctx, JsHeap h, JsValue bagValue)
     {
-        bool hasMonth = TryGetField(ctx, h, bagValue, "month", out var monthValue);
-        bool hasCode = TryGetField(ctx, h, bagValue, "monthCode", out var codeValue);
+        // A field that is present but undefined is treated as absent (spec reads each
+        // field with Get and falls back when the result is undefined).
+        bool hasMonth = TryGetField(ctx, h, bagValue, "month", out var monthValue) && monthValue.Tag != JsValueTag.Undefined;
+        bool hasCode = TryGetField(ctx, h, bagValue, "monthCode", out var codeValue) && codeValue.Tag != JsValueTag.Undefined;
         if (hasCode)
         {
             if (codeValue.Tag != JsValueTag.String)
@@ -1965,6 +1967,15 @@ public sealed class TemporalStub : IBuiltinModule
                     int cy = ToSafeInt(GetVNum(h, obj, "y")), cm = ToSafeInt(GetVNum(h, obj, "m")), cd = ToSafeInt(GetVNum(h, obj, "d"));
                     string ccal = GetVStr(h, obj, "calendarId"); if (string.IsNullOrEmpty(ccal)) ccal = "iso8601";
                     return AttachPrototype(h, MakePlainDateYmd(ctx, h, cy, cm, cd, ccal), pH);
+                }
+                // ToTemporalDate step 2.b: a PlainDateTime instance yields its ISO date from
+                // internal slots — never via observable getters.
+                if (TryGetInternalData(h, obj, out var idata) && HasOwn(h, idata, "year") && HasOwn(h, idata, "day"))
+                {
+                    _ = GetOverflowOption(ctx, h, a, 1);
+                    var iso = DecodeIsoDateLong(h, obj);
+                    string ical = GetVStr(h, obj, "calendarId"); if (string.IsNullOrEmpty(ical)) ical = "iso8601";
+                    return AttachPrototype(h, MakePlainDateYmd(ctx, h, iso.Year, iso.Month, iso.Day, ical), pH);
                 }
                 // Property bag: year + (month|monthCode) + day required.
                 string cal = GetCalendarFromFields(ctx, h, arg);
