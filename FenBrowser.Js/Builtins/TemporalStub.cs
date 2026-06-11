@@ -1378,6 +1378,10 @@ public sealed class TemporalStub : IBuiltinModule
         f.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(protoH), false, false, false));
         var cH = h.AllocateObject(f, AllocationSite.Current()); h.PushRoot(cH); h.WriteBarrier(cH, protoH);
         proto.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(cH), true, false, true));
+        // <Type>.prototype[@@toStringTag] = "Temporal.<Type>" (non-writable, non-enumerable, configurable).
+        var toStringTag = ctx.CreateWellKnownSymbol("toStringTag");
+        proto.DefineOwnSymbolProperty(toStringTag.AsSymbolId(), new JsPropertyDescriptor(
+            JsValue.FromString($"Temporal.{name}"), Writable: false, Enumerable: false, Configurable: true));
         h.WriteBarrier(protoH, cH);
         parent.DefineOwnProperty(name, new JsPropertyDescriptor(JsValue.FromObject(cH), true, false, true));
         h.WriteBarrier(pH, cH);
@@ -1536,6 +1540,10 @@ public sealed class TemporalStub : IBuiltinModule
         var nH = h.AllocateObject(now, AllocationSite.Current()); h.PushRoot(nH);
         t.DefineOwnProperty("Now", new JsPropertyDescriptor(JsValue.FromObject(nH), true, false, true));
         h.WriteBarrier(tH, nH);
+        // Temporal.Now[@@toStringTag] = "Temporal.Now".
+        var nowTag = ctx.CreateWellKnownSymbol("toStringTag");
+        now.DefineOwnSymbolProperty(nowTag.AsSymbolId(), new JsPropertyDescriptor(
+            JsValue.FromString("Temporal.Now"), Writable: false, Enumerable: false, Configurable: true));
 
         AddNowStatic(ctx, h, nH, now, "timeZoneId", _ => JsValue.FromString(TimeZoneInfo.Local.Id));
         AddNowStatic(ctx, h, nH, now, "instant", _ => MakeInstant(ctx, h, DateTime.UtcNow));
