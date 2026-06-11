@@ -381,9 +381,39 @@ public sealed class TemporalStub : IBuiltinModule
     private static string CanonicalizeCalendarId(IBuiltinContext ctx, string id)
     {
         var canonical = TemporalCalendars.Canonicalize(id);
-        if (canonical is null)
-            throw new JsThrownException(ctx.CreateRangeError($"'{id}' is not a valid calendar identifier."));
-        return canonical;
+        if (canonical is not null)
+            return canonical;
+
+        // ParseTemporalCalendarString: an ISO date-time string also names a
+        // calendar - its [u-ca] annotation, defaulting to iso8601.
+        if (TemporalIsoParser.TryParseDateTime(id, out var parsed, out _))
+        {
+            if (parsed.Calendar is null)
+                return "iso8601";
+            canonical = TemporalCalendars.Canonicalize(parsed.Calendar);
+            if (canonical is not null)
+                return canonical;
+        }
+
+        throw new JsThrownException(ctx.CreateRangeError($"'{id}' is not a valid calendar identifier."));
+    }
+
+    /// <summary>ToTemporalCalendarIdentifier: a string, or a Temporal instance carrying a calendar.</summary>
+    private static string ToCalendarIdentifier(IBuiltinContext ctx, JsHeap h, JsValue v)
+    {
+        if (v.Tag == JsValueTag.String)
+            return CanonicalizeCalendarId(ctx, v.AsString());
+        if (v.Tag == JsValueTag.Object)
+        {
+            var obj = h.GetObject(v.AsObjectHandle());
+            if (TryGetInternalData(h, obj, out var data) && HasOwn(h, data, "calendarId"))
+            {
+                var cid = GetVStr(h, obj, "calendarId");
+                return string.IsNullOrEmpty(cid) ? "iso8601" : cid;
+            }
+        }
+
+        throw new JsThrownException(ctx.CreateTypeError("calendar must be a string."));
     }
 
     /// <summary>Optional calendar argument: undefined → iso8601; non-string → TypeError.</summary>
@@ -471,13 +501,11 @@ public sealed class TemporalStub : IBuiltinModule
         return ToIntegerWithTruncation(ctx, monthValue);
     }
 
-    /// <summary>Calendar from a field bag ("calendar" property): non-string → TypeError, unknown → RangeError.</summary>
+    /// <summary>Calendar from a field bag ("calendar" property): TypeError/RangeError per ToTemporalCalendarIdentifier.</summary>
     private static string GetCalendarFromFields(IBuiltinContext ctx, JsHeap h, JsValue bagValue)
     {
         if (!TryGetField(ctx, h, bagValue, "calendar", out var calValue)) return "iso8601";
-        if (calValue.Tag != JsValueTag.String)
-            throw new JsThrownException(ctx.CreateTypeError("calendar must be a string."));
-        return CanonicalizeCalendarId(ctx, calValue.AsString());
+        return ToCalendarIdentifier(ctx, h, calValue);
     }
 
     /// <summary>RegulateISODate: constrain/reject then ISODateWithinLimits range-check.</summary>
@@ -1655,7 +1683,7 @@ public sealed class TemporalStub : IBuiltinModule
             return AttachPrototype(h, MakePlainDateRegulated(ctx, h, y, m, d, string.IsNullOrEmpty(cal) ? "iso8601" : cal, GetOverflowOption(ctx, h, a, 1)), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "withCalendar", (o, a) => {
-            var cal = CalendarArg(ctx, a, 0);
+            var cal = ToCalendarIdentifier(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             var cur = DecodeIsoDate(h, o);
             return AttachPrototype(h, MakePlainDateYmd(ctx, h, cur.Year, cur.Month, cur.Day, cal), pH);
         }, 1);
@@ -1986,7 +2014,7 @@ public sealed class TemporalStub : IBuiltinModule
                 GetVStr(h, o, "calendarId")), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "withCalendar", (o, a) => {
-            var cal = CalendarArg(ctx, a, 0);
+            var cal = ToCalendarIdentifier(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             var cur = DecodeIsoDateLong(h, o);
             return AttachPrototype(h, MakePlainDateTimeParts(ctx, h, cur.Year, cur.Month, cur.Day,
                 (int)GetVNum(h, o, "hour"), (int)GetVNum(h, o, "minute"), (int)GetVNum(h, o, "second"),
@@ -2593,7 +2621,7 @@ public sealed class TemporalStub : IBuiltinModule
                 TemporalTimeZones.EpochNsFromWall(tz, date, time), tz, GetVStr(h, o, "calendarId")), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "withCalendar", (o, a) => {
-            var cal = CalendarArg(ctx, a, 0);
+            var cal = ToCalendarIdentifier(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             return AttachPrototype(h, MakeZonedDateTimeNs(ctx, h, DecodeInstantNanos(h, o), GetVStr(h, o, "tz"), cal), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "withTimeZone", (o, a) => {
