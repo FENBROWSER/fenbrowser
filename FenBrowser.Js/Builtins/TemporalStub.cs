@@ -171,26 +171,30 @@ public sealed class TemporalStub : IBuiltinModule
 
     private static JsValue FormatInstant(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> args)
     {
-        if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+        var opts = GetToStringOptions(ctx, h, args, 0);
+        long epochNs = DecodeInstantNanos(h, o);
+        long inc = PrecisionIncrementNs(opts);
+        if (inc > 1) epochNs = RoundNsToIncrement(ctx, epochNs, inc, opts.RoundingMode);
+
+        // timeZone option: render the wall clock in that zone with its offset.
+        if (args.Count > 0 && args[0].Tag == JsValueTag.Object)
         {
-            return FormatInstant(h, o);
+            var optionsObject = h.GetObject(args[0].AsObjectHandle());
+            if (ctx.TryGetPropertyValue(optionsObject, args[0], "timeZone", out var tzv) && tzv.Tag != JsValueTag.Undefined)
+            {
+                if (tzv.Tag != JsValueTag.String)
+                    throw new JsThrownException(ctx.CreateTypeError("timeZone must be a string."));
+                string ctz = CanonicalizeTimeZoneId(ctx, tzv.AsString());
+                long offNs = TemporalTimeZones.GetOffsetNs(ctz, epochNs);
+                var (zd, zt) = TemporalTimeZones.WallFromEpochNs(epochNs, offNs);
+                return JsValue.FromString($"{FormatIsoYear(zd.Year)}-{zd.Month:D2}-{zd.Day:D2}T{zt.Hour:D2}:{zt.Minute:D2}" +
+                    $"{FormatSecondsPart(zt.ToNanosecondsOfDay(), opts)}{TemporalTimeZones.FormatOffset(offNs)}");
+            }
         }
 
-        var optionsObject = h.GetObject(args[0].AsObjectHandle());
-        if (!TryGetStringProperty(ctx, h, optionsObject, args[0], "timeZone", out var timeZone) || string.IsNullOrWhiteSpace(timeZone))
-        {
-            return FormatInstant(h, o);
-        }
-
-        var instant = new DateTimeOffset(InstantToDateTime(DecodeInstantNanos(h, o)));
-        if (timeZone == "Africa/Monrovia")
-        {
-            var local = instant.UtcDateTime.AddSeconds(-2670);
-            return JsValue.FromString($"{local:yyyy-MM-dd'T'HH:mm:ss}-00:45");
-        }
-
-        var zoned = IntlDateTimeFormatting.ConvertToTimeZone(instant, timeZone, out _);
-        return JsValue.FromString($"{zoned:yyyy-MM-dd'T'HH:mm:ss}{IntlDateTimeFormatting.FormatOffsetRoundedToMinute(zoned.Offset)}");
+        var (d, t) = TemporalTimeZones.WallFromEpochNs(epochNs, 0);
+        return JsValue.FromString($"{FormatIsoYear(d.Year)}-{d.Month:D2}-{d.Day:D2}T{t.Hour:D2}:{t.Minute:D2}" +
+            $"{FormatSecondsPart(t.ToNanosecondsOfDay(), opts)}Z");
     }
 
     private static JsValue InstantToLocaleString(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> args)
@@ -331,21 +335,22 @@ public sealed class TemporalStub : IBuiltinModule
         return JsValue.FromString($"{m:D2}-{d:D2}");
     }
 
-    /// <summary>Format a ZonedDateTime as ISO 8601 string.</summary>
-    private static JsValue FormatZonedDateTime(JsHeap h, JsObject o)
+    /// <summary>Format a ZonedDateTime as ISO 8601 string per the toString options.</summary>
+    private static JsValue FormatZonedDateTime(IBuiltinContext ctx, JsHeap h, JsObject o, ToStringOptions opts)
     {
-        var dt = DecodePlainDateTime(h, o);
-        int us = (int)GetVNum(h, o, "microsecond");
-        int ns = (int)GetVNum(h, o, "nanosecond");
-        long frac = dt.Millisecond * 1_000_000L + us * 1_000L + ns;
-        string fracStr = frac == 0 ? "" : $".{frac:D9}".TrimEnd('0');
-        long offsetNs = (long)GetVNum(h, o, "offsetNanoseconds");
-        var offset = TimeSpan.FromTicks(offsetNs / 100);
-        string sign = offset.Ticks >= 0 ? "+" : "-";
-        var abs = offset.Duration();
         string tz = GetVStr(h, o, "tz");
-        string tzPart = string.IsNullOrEmpty(tz) ? "" : $"[{tz}]";
-        return JsValue.FromString($"{dt.Year:D4}-{dt.Month:D2}-{dt.Day:D2}T{dt.Hour:D2}:{dt.Minute:D2}:{dt.Second:D2}{fracStr}{sign}{abs.Hours:D2}:{abs.Minutes:D2}{tzPart}");
+        long epochNs = DecodeInstantNanos(h, o);
+        long inc = PrecisionIncrementNs(opts);
+        if (inc > 1) epochNs = RoundNsToIncrement(ctx, epochNs, inc, opts.RoundingMode);
+        long offsetNs = TemporalTimeZones.GetOffsetNs(tz, epochNs);
+        var (date, time) = TemporalTimeZones.WallFromEpochNs(epochNs, offsetNs);
+        var sb = new System.Text.StringBuilder();
+        sb.Append($"{FormatIsoYear(date.Year)}-{date.Month:D2}-{date.Day:D2}T{time.Hour:D2}:{time.Minute:D2}");
+        sb.Append(FormatSecondsPart(time.ToNanosecondsOfDay(), opts));
+        if (opts.ShowOffset != "never") sb.Append(TemporalTimeZones.FormatOffset(offsetNs));
+        if (opts.TimeZoneName != "never") sb.Append(opts.TimeZoneName == "critical" ? $"[!{tz}]" : $"[{tz}]");
+        sb.Append(CalendarSuffix(h, o, opts));
+        return JsValue.FromString(sb.ToString());
     }
 
     // ─── Arg helpers ────────────────────────────────────────
@@ -907,6 +912,129 @@ public sealed class TemporalStub : IBuiltinModule
             _ => absR2 == increment ? (total > 0 ? upper : lower) : nearer, // halfExpand (default)
         };
         return result * increment;
+    }
+
+    // ─── toString options (precision / calendarName / offset / timeZoneName) ───
+
+    private sealed class ToStringOptions
+    {
+        public int FractionalDigits = -1;          // -1 = auto
+        public string? SmallestUnit;               // minute..nanosecond, wins over digits
+        public string RoundingMode = "trunc";
+        public string CalendarName = "auto";       // auto|always|never|critical
+        public string ShowOffset = "auto";         // auto|never
+        public string TimeZoneName = "auto";       // auto|never|critical
+    }
+
+    /// <summary>Read toString options in alphabetical property order, each validated.</summary>
+    private static ToStringOptions GetToStringOptions(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> a, int i)
+    {
+        RequireOptionsObject(ctx, a, i);
+        var r = new ToStringOptions();
+        if (i >= a.Count || a[i].Tag != JsValueTag.Object) return r;
+        var optionsValue = a[i];
+        var obj = h.GetObject(optionsValue.AsObjectHandle());
+
+        if (ctx.TryGetPropertyValue(obj, optionsValue, "calendarName", out var cn) && cn.Tag != JsValueTag.Undefined)
+        {
+            var s = ctx.ToStringValue(cn);
+            if (s is not ("auto" or "always" or "never" or "critical"))
+                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid value for calendarName."));
+            r.CalendarName = s;
+        }
+
+        if (ctx.TryGetPropertyValue(obj, optionsValue, "fractionalSecondDigits", out var fd) && fd.Tag != JsValueTag.Undefined)
+        {
+            if (fd.Tag is JsValueTag.Number or JsValueTag.Int32)
+            {
+                double n = fd.AsNumber();
+                if (double.IsNaN(n) || double.IsInfinity(n) || Math.Floor(n) < 0 || Math.Floor(n) > 9)
+                    throw new JsThrownException(ctx.CreateRangeError("fractionalSecondDigits is out of range."));
+                r.FractionalDigits = (int)Math.Floor(n);
+            }
+            else
+            {
+                var s = ctx.ToStringValue(fd);
+                if (s != "auto")
+                    throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid value for fractionalSecondDigits."));
+            }
+        }
+
+        if (ctx.TryGetPropertyValue(obj, optionsValue, "offset", out var ofv) && ofv.Tag != JsValueTag.Undefined)
+        {
+            var s = ctx.ToStringValue(ofv);
+            if (s is not ("auto" or "never"))
+                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid value for offset."));
+            r.ShowOffset = s;
+        }
+
+        if (ctx.TryGetPropertyValue(obj, optionsValue, "roundingMode", out var rm) && rm.Tag != JsValueTag.Undefined)
+        {
+            var s = ctx.ToStringValue(rm);
+            if (s is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
+                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid rounding mode."));
+            r.RoundingMode = s;
+        }
+
+        if (ctx.TryGetPropertyValue(obj, optionsValue, "smallestUnit", out var su) && su.Tag != JsValueTag.Undefined)
+        {
+            var s = NormalizeUnitName(ctx, su.Tag == JsValueTag.String ? su.AsString() : ctx.ToStringValue(su));
+            if (s is not ("minute" or "second" or "millisecond" or "microsecond" or "nanosecond"))
+                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid smallestUnit for toString."));
+            r.SmallestUnit = s;
+        }
+
+        if (ctx.TryGetPropertyValue(obj, optionsValue, "timeZoneName", out var tzn) && tzn.Tag != JsValueTag.Undefined)
+        {
+            var s = ctx.ToStringValue(tzn);
+            if (s is not ("auto" or "never" or "critical"))
+                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid value for timeZoneName."));
+            r.TimeZoneName = s;
+        }
+
+        return r;
+    }
+
+    /// <summary>ToSecondsStringPrecision rounding increment in ns (smallestUnit wins over digits).</summary>
+    private static long PrecisionIncrementNs(ToStringOptions o)
+        => o.SmallestUnit is { } u ? UnitNs(u)
+            : o.FractionalDigits < 0 ? 1L : (long)Math.Pow(10, 9 - o.FractionalDigits);
+
+    /// <summary>":SS[.fff…]" seconds part per the precision options ("" at minute precision).</summary>
+    private static string FormatSecondsPart(long timeOfDayNs, ToStringOptions o)
+    {
+        if (o.SmallestUnit == "minute") return "";
+        long seconds = timeOfDayNs / 1_000_000_000L % 60;
+        long frac = timeOfDayNs % 1_000_000_000L;
+        int digits = o.SmallestUnit switch
+        {
+            "second" => 0,
+            "millisecond" => 3,
+            "microsecond" => 6,
+            "nanosecond" => 9,
+            _ => o.FractionalDigits,
+        };
+        string fracStr = digits switch
+        {
+            < 0 => frac == 0 ? "" : $".{frac:D9}".TrimEnd('0'),
+            0 => "",
+            _ => "." + $"{frac:D9}"[..digits],
+        };
+        return $":{seconds:D2}{fracStr}";
+    }
+
+    /// <summary>Calendar annotation per the calendarName option.</summary>
+    private static string CalendarSuffix(JsHeap h, JsObject o, ToStringOptions opts)
+    {
+        var cid = GetVStr(h, o, "calendarId");
+        if (string.IsNullOrEmpty(cid)) cid = "iso8601";
+        return opts.CalendarName switch
+        {
+            "never" => "",
+            "always" => $"[u-ca={cid}]",
+            "critical" => $"[!u-ca={cid}]",
+            _ => cid == "iso8601" ? "" : $"[u-ca={cid}]",
+        };
     }
 
     /// <summary>Balance signed nanoseconds into a Duration capped at largestUnit.</summary>
@@ -1768,7 +1896,11 @@ public sealed class TemporalStub : IBuiltinModule
             return AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", MakeZonedDateTimeNs(ctx, h,
                 TemporalTimeZones.EpochNsFromWall(tz, d, tm), tz, GetVStr(h, o, "calendarId")));
         }, 1);
-        AddMethod(ctx, h, pH, p, "toString", (o, _) => FormatPlainDate(h, o), 0);
+        AddMethod(ctx, h, pH, p, "toString", (o, a) => {
+            var opts = GetToStringOptions(ctx, h, a, 0);
+            var d = DecodeIsoDate(h, o);
+            return JsValue.FromString($"{FormatIsoYear(d.Year)}-{d.Month:D2}-{d.Day:D2}{CalendarSuffix(h, o, opts)}");
+        }, 0);
         AddMethod(ctx, h, pH, p, "toLocaleString", (o, _) => FormatPlainDate(h, o), 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainDate(h, o), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("PlainDate.prototype.valueOf throws.")), 0);
@@ -1886,7 +2018,13 @@ public sealed class TemporalStub : IBuiltinModule
             return JsValue.FromBoolean(selfNs == other.ToNanosecondsOfDay());
         }, 1);
         AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => PlainTimeToLocaleString(ctx, h, o, a), 2);
-        AddMethod(ctx, h, pH, p, "toString", (o, _) => FormatPlainTime(h, o), 0);
+        AddMethod(ctx, h, pH, p, "toString", (o, a) => {
+            var opts = GetToStringOptions(ctx, h, a, 0);
+            long dayNs = DecodeTimeOfDayNs(h, o);
+            long inc = PrecisionIncrementNs(opts);
+            if (inc > 1) dayNs = RoundNsToIncrement(ctx, dayNs, inc, opts.RoundingMode) % NsPerDay;
+            return JsValue.FromString($"{dayNs / 3_600_000_000_000L:D2}:{dayNs / 60_000_000_000L % 60:D2}{FormatSecondsPart(dayNs, opts)}");
+        }, 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainTime(h, o), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
@@ -2053,7 +2191,24 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "toPlainTime", (o, _) => AttachTemporalPrototypeByName(ctx, h, t, "PlainTime", MakePlainTime(ctx, h,
             (int)GetVNum(h, o, "hour"), (int)GetVNum(h, o, "minute"), (int)GetVNum(h, o, "second"),
             (int)GetVNum(h, o, "millisecond"), (int)GetVNum(h, o, "microsecond"), (int)GetVNum(h, o, "nanosecond"))), 0);
-        AddMethod(ctx, h, pH, p, "toString", (o, _) => FormatPlainDateTime(h, o), 0);
+        AddMethod(ctx, h, pH, p, "toString", (o, a) => {
+            var opts = GetToStringOptions(ctx, h, a, 0);
+            var date = DecodeIsoDateLong(h, o);
+            long dayNs = DecodeTimeOfDayNs(h, o);
+            long inc = PrecisionIncrementNs(opts);
+            if (inc > 1)
+            {
+                dayNs = RoundNsToIncrement(ctx, dayNs, inc, opts.RoundingMode);
+                long carry = dayNs / NsPerDay;
+                if (carry != 0)
+                {
+                    date = IsoMath.EpochDaysToCivil(IsoMath.ToEpochDays(date) + carry);
+                    dayNs -= carry * NsPerDay;
+                }
+            }
+            return JsValue.FromString($"{FormatIsoYear(date.Year)}-{date.Month:D2}-{date.Day:D2}" +
+                $"T{dayNs / 3_600_000_000_000L:D2}:{dayNs / 60_000_000_000L % 60:D2}{FormatSecondsPart(dayNs, opts)}{CalendarSuffix(h, o, opts)}");
+        }, 0);
         AddMethod(ctx, h, pH, p, "toLocaleString", (o, _) => FormatPlainDateTime(h, o), 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainDateTime(h, o), 0);
         AddMethod(ctx, h, pH, p, "toZonedDateTime", (o, a) => {
@@ -2241,7 +2396,15 @@ public sealed class TemporalStub : IBuiltinModule
             day = Math.Clamp(day, 1, IsoMath.DaysInMonth(y, m));
             return AttachTemporalPrototypeByName(ctx, h, t, "PlainDate", MakePlainDateYmd(ctx, h, y, m, day, GetVStr(h, o, "calendarId")));
         }, 1);
-        AddMethod(ctx, h, pH, p, "toString", (o, _) => FormatPlainYearMonth(h, o), 0);
+        AddMethod(ctx, h, pH, p, "toString", (o, a) => {
+            var opts = GetToStringOptions(ctx, h, a, 0);
+            int y = (int)GetVNum(h, o, "y");
+            int m = (int)GetVNum(h, o, "m");
+            string suffix = CalendarSuffix(h, o, opts);
+            // With a calendar annotation the reference ISO day is included.
+            string day = suffix.Length > 0 ? "-01" : "";
+            return JsValue.FromString($"{FormatIsoYear(y)}-{m:D2}{day}{suffix}");
+        }, 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainYearMonth(h, o), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
@@ -2333,7 +2496,16 @@ public sealed class TemporalStub : IBuiltinModule
             var other = h.GetObject(a[0].AsObjectHandle());
             return JsValue.FromBoolean(GetVStr(h, o, "mc") == GetVStr(h, other, "mc") && GetVNum(h, o, "d") == GetVNum(h, other, "d"));
         }, 1);
-        AddMethod(ctx, h, pH, p, "toString", (o, _) => FormatPlainMonthDay(h, o), 0);
+        AddMethod(ctx, h, pH, p, "toString", (o, a) => {
+            var opts = GetToStringOptions(ctx, h, a, 0);
+            var mc = GetVStr(h, o, "mc");
+            int d = (int)GetVNum(h, o, "d");
+            int m = mc.StartsWith("M") && int.TryParse(mc.Substring(1), out var parsedMonth) ? parsedMonth : 1;
+            string suffix = CalendarSuffix(h, o, opts);
+            // With a calendar annotation the reference ISO year is included.
+            string year = suffix.Length > 0 ? "1972-" : "";
+            return JsValue.FromString($"{year}{m:D2}-{d:D2}{suffix}");
+        }, 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainMonthDay(h, o), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
@@ -2700,8 +2872,8 @@ public sealed class TemporalStub : IBuiltinModule
                 (int)GetVNum(h, o, "millisecond"), (int)GetVNum(h, o, "microsecond"), (int)GetVNum(h, o, "nanosecond"),
                 GetVStr(h, o, "calendarId")));
         }, 0);
-        AddMethod(ctx, h, pH, p, "toString", (o, a) => { RequireOptionsObject(ctx, a, 0); return FormatZonedDateTime(h, o); }, 0);
-        AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatZonedDateTime(h, o), 0);
+        AddMethod(ctx, h, pH, p, "toString", (o, a) => FormatZonedDateTime(ctx, h, o, GetToStringOptions(ctx, h, a, 0)), 0);
+        AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatZonedDateTime(ctx, h, o, new ToStringOptions()), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
         AddStatic(ctx, h, cH, c, "from", a => {
