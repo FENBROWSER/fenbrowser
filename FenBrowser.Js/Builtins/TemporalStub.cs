@@ -3,7 +3,7 @@ using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Intl;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
-using System.Text.RegularExpressions;
+using FenBrowser.Js.Temporal;
 
 namespace FenBrowser.Js.Builtins;
 
@@ -272,11 +272,11 @@ public sealed class TemporalStub : IBuiltinModule
         return JsValue.FromString(sb.ToString());
     }
 
-    /// <summary>Format a PlainDate as ISO 8601 string (e.g. "2024-01-15").</summary>
+    /// <summary>Format a PlainDate as ISO 8601 string (e.g. "2024-01-15", extended years signed 6-digit).</summary>
     private static JsValue FormatPlainDate(JsHeap h, JsObject o)
     {
-        var dt = DecodePlainDate(h, o);
-        return JsValue.FromString($"{dt.Year:D4}-{dt.Month:D2}-{dt.Day:D2}");
+        var dt = DecodeIsoDate(h, o);
+        return JsValue.FromString($"{FormatIsoYear(dt.Year)}-{dt.Month:D2}-{dt.Day:D2}{CalendarSuffix(h, o)}");
     }
 
     /// <summary>Format a PlainTime as ISO 8601 string (e.g. "12:00:00.123").</summary>
@@ -296,12 +296,16 @@ public sealed class TemporalStub : IBuiltinModule
     /// <summary>Format a PlainDateTime as ISO 8601 string (e.g. "2024-01-15T12:00:00").</summary>
     private static JsValue FormatPlainDateTime(JsHeap h, JsObject o)
     {
-        var dt = DecodePlainDateTime(h, o);
+        var date = DecodeIsoDateLong(h, o);
+        int hr = (int)GetVNum(h, o, "hour");
+        int mi = (int)GetVNum(h, o, "minute");
+        int se = (int)GetVNum(h, o, "second");
+        int ms = (int)GetVNum(h, o, "millisecond");
         int us = (int)GetVNum(h, o, "microsecond");
         int ns = (int)GetVNum(h, o, "nanosecond");
-        long frac = dt.Millisecond * 1_000_000L + us * 1_000L + ns;
+        long frac = ms * 1_000_000L + us * 1_000L + ns;
         string fracStr = frac == 0 ? "" : $".{frac:D9}".TrimEnd('0');
-        return JsValue.FromString($"{dt.Year:D4}-{dt.Month:D2}-{dt.Day:D2}T{dt.Hour:D2}:{dt.Minute:D2}:{dt.Second:D2}{fracStr}");
+        return JsValue.FromString($"{FormatIsoYear(date.Year)}-{date.Month:D2}-{date.Day:D2}T{hr:D2}:{mi:D2}:{se:D2}{fracStr}{CalendarSuffix(h, o)}");
     }
 
     /// <summary>Format a PlainYearMonth as ISO 8601 string (e.g. "2024-01").</summary>
@@ -309,7 +313,7 @@ public sealed class TemporalStub : IBuiltinModule
     {
         int y = (int)GetVNum(h, o, "y");
         int m = (int)GetVNum(h, o, "m");
-        return JsValue.FromString($"{y:D4}-{m:D2}");
+        return JsValue.FromString($"{FormatIsoYear(y)}-{m:D2}{CalendarSuffix(h, o)}");
     }
 
     /// <summary>Format a PlainMonthDay as ISO 8601 string (e.g. "01-15").</summary>
@@ -350,129 +354,550 @@ public sealed class TemporalStub : IBuiltinModule
         return ctx.ToStringValue(v);
     }
 
+    // ─── Spec validation helpers (backed by FenBrowser.Js.Temporal) ───
+
+    /// <summary>ECMA-262 ToIntegerWithTruncation: RangeError on NaN/±Infinity.</summary>
+    private static double ToIntegerWithTruncation(IBuiltinContext ctx, JsValue v)
+    {
+        var n = ctx.ToNumber(v);
+        if (double.IsNaN(n) || double.IsInfinity(n))
+            throw new JsThrownException(ctx.CreateRangeError("Value must be a finite number."));
+        return Math.Truncate(n);
+    }
+
+    /// <summary>Required integer argument (undefined → NaN → RangeError per spec).</summary>
+    private static double ArgInt(IBuiltinContext ctx, IReadOnlyList<JsValue> a, int i)
+        => ToIntegerWithTruncation(ctx, i < a.Count ? a[i] : JsValue.Undefined);
+
+    /// <summary>Optional integer argument with a default for undefined.</summary>
+    private static double ArgIntOr(IBuiltinContext ctx, IReadOnlyList<JsValue> a, int i, double dflt)
+        => i >= a.Count || a[i].Tag == JsValueTag.Undefined ? dflt : ToIntegerWithTruncation(ctx, a[i]);
+
+    /// <summary>Canonicalize a calendar identifier; RangeError when unsupported.</summary>
+    private static string CanonicalizeCalendarId(IBuiltinContext ctx, string id)
+    {
+        var canonical = TemporalCalendars.Canonicalize(id);
+        if (canonical is null)
+            throw new JsThrownException(ctx.CreateRangeError($"'{id}' is not a valid calendar identifier."));
+        return canonical;
+    }
+
+    /// <summary>Optional calendar argument: undefined → iso8601; non-string → TypeError.</summary>
+    private static string CalendarArg(IBuiltinContext ctx, IReadOnlyList<JsValue> a, int i)
+    {
+        if (i >= a.Count || a[i].Tag == JsValueTag.Undefined) return "iso8601";
+        if (a[i].Tag != JsValueTag.String)
+            throw new JsThrownException(ctx.CreateTypeError("calendar must be a string."));
+        return CanonicalizeCalendarId(ctx, a[i].AsString());
+    }
+
+    /// <summary>Calendar from a parsed ISO string annotation (null → iso8601).</summary>
+    private static string CalendarFromAnnotation(IBuiltinContext ctx, string? annotation)
+        => annotation is null ? "iso8601" : CanonicalizeCalendarId(ctx, annotation);
+
+    /// <summary>GetOptionsObject: options must be undefined or an object.</summary>
+    private static void RequireOptionsObject(IBuiltinContext ctx, IReadOnlyList<JsValue> a, int i)
+    {
+        if (i < a.Count && a[i].Tag != JsValueTag.Undefined && a[i].Tag != JsValueTag.Object)
+            throw new JsThrownException(ctx.CreateTypeError("options must be an object or undefined."));
+    }
+
+    /// <summary>ToTemporalOverflow: "constrain" (default) or "reject"; validates options shape.</summary>
+    private static string GetOverflowOption(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> a, int i)
+    {
+        RequireOptionsObject(ctx, a, i);
+        if (i >= a.Count || a[i].Tag != JsValueTag.Object) return "constrain";
+        var optionsValue = a[i];
+        var obj = h.GetObject(optionsValue.AsObjectHandle());
+        if (!ctx.TryGetPropertyValue(obj, optionsValue, "overflow", out var v) || v.Tag == JsValueTag.Undefined)
+            return "constrain";
+        var s = ctx.ToStringValue(v);
+        if (s is not ("constrain" or "reject"))
+            throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid value for overflow."));
+        return s;
+    }
+
+    /// <summary>Read a property through the full Get protocol (triggers accessors); false when absent/undefined.</summary>
+    private static bool TryGetField(IBuiltinContext ctx, JsHeap h, JsValue bagValue, string name, out JsValue value)
+    {
+        var obj = h.GetObject(bagValue.AsObjectHandle());
+        if (ctx.TryGetPropertyValue(obj, bagValue, name, out value) && value.Tag != JsValueTag.Undefined)
+            return true;
+        value = JsValue.Undefined;
+        return false;
+    }
+
+    /// <summary>Resolve the month from a field bag's month/monthCode (ISO semantics).</summary>
+    private static double GetMonthFromFields(IBuiltinContext ctx, JsHeap h, JsValue bagValue)
+    {
+        bool hasMonth = TryGetField(ctx, h, bagValue, "month", out var monthValue);
+        bool hasCode = TryGetField(ctx, h, bagValue, "monthCode", out var codeValue);
+        if (hasCode)
+        {
+            if (codeValue.Tag != JsValueTag.String)
+                throw new JsThrownException(ctx.CreateTypeError("monthCode must be a string."));
+            var mc = codeValue.AsString();
+            if (mc.Length != 3 || mc[0] != 'M' || !char.IsAsciiDigit(mc[1]) || !char.IsAsciiDigit(mc[2]))
+                throw new JsThrownException(ctx.CreateRangeError($"'{mc}' is not a valid monthCode."));
+            int m = (mc[1] - '0') * 10 + (mc[2] - '0');
+            if (m < 1 || m > 12)
+                throw new JsThrownException(ctx.CreateRangeError($"'{mc}' is not a valid monthCode for the iso8601 calendar."));
+            if (hasMonth && ToIntegerWithTruncation(ctx, monthValue) != m)
+                throw new JsThrownException(ctx.CreateRangeError("month and monthCode conflict."));
+            return m;
+        }
+
+        if (!hasMonth)
+            throw new JsThrownException(ctx.CreateTypeError("month or monthCode is required."));
+        return ToIntegerWithTruncation(ctx, monthValue);
+    }
+
+    /// <summary>Calendar from a field bag ("calendar" property): non-string → TypeError, unknown → RangeError.</summary>
+    private static string GetCalendarFromFields(IBuiltinContext ctx, JsHeap h, JsValue bagValue)
+    {
+        if (!TryGetField(ctx, h, bagValue, "calendar", out var calValue)) return "iso8601";
+        if (calValue.Tag != JsValueTag.String)
+            throw new JsThrownException(ctx.CreateTypeError("calendar must be a string."));
+        return CanonicalizeCalendarId(ctx, calValue.AsString());
+    }
+
+    /// <summary>RegulateISODate: constrain/reject then ISODateWithinLimits range-check.</summary>
+    private static IsoDate RegulateIsoDate(IBuiltinContext ctx, double y, double m, double d, string overflow)
+    {
+        if (y is < -999_999 or > 999_999)
+            throw new JsThrownException(ctx.CreateRangeError("Year is out of the supported range."));
+        int year = (int)y;
+        int month;
+        int day;
+        if (overflow == "constrain")
+        {
+            month = (int)Math.Clamp(m, 1, 12);
+            day = (int)Math.Clamp(d, 1, IsoMath.DaysInMonth(year, month));
+        }
+        else
+        {
+            if (m is < 1 or > 12 || d is < 1 or > 31 || !IsoMath.IsValidIsoDate(year, (int)m, (int)d))
+                throw new JsThrownException(ctx.CreateRangeError("Invalid ISO date."));
+            month = (int)m;
+            day = (int)d;
+        }
+
+        if (!IsoMath.IsoDateWithinLimits(new IsoDate(year, month, day)))
+            throw new JsThrownException(ctx.CreateRangeError("Date is outside the supported Temporal range."));
+        return new IsoDate(year, month, day);
+    }
+
+    /// <summary>RegulateISODate + CreateTemporalDate.</summary>
+    private static JsValue MakePlainDateRegulated(IBuiltinContext ctx, JsHeap h, double y, double m, double d, string calendar, string overflow)
+    {
+        var date = RegulateIsoDate(ctx, y, m, d, overflow);
+        return MakePlainDateYmd(ctx, h, date.Year, date.Month, date.Day, calendar);
+    }
+
+    /// <summary>The internal _v data object, when the value is one of our Temporal instances.</summary>
+    private static bool TryGetInternalData(JsHeap h, JsObject o, out JsObject data)
+    {
+        if (o.TryGetProperty("_v", x => h.GetObject(x), out var dd) && dd.Value.Tag == JsValueTag.Object)
+        {
+            data = h.GetObject(dd.Value.AsObjectHandle());
+            return true;
+        }
+
+        data = null!;
+        return false;
+    }
+
+    /// <summary>ToTemporalDate: PlainDate/PlainDateTime/ZonedDateTime instance, ISO string, or property bag → ISO date + calendar.</summary>
+    private static (IsoDate Date, string Calendar) ToTemporalDateRecord(IBuiltinContext ctx, JsHeap h, JsValue arg)
+    {
+        if (arg.Tag == JsValueTag.String)
+        {
+            var s = arg.AsString();
+            if (!TemporalIsoParser.TryParseDateTime(s, out var parsed, out var parseError) || parsed.HasUtcDesignator)
+                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO date string: {parseError}"));
+            var cal = CalendarFromAnnotation(ctx, parsed.Calendar);
+            var date = new IsoDate(parsed.Year, parsed.Month, parsed.Day);
+            if (!IsoMath.IsoDateWithinLimits(date))
+                throw new JsThrownException(ctx.CreateRangeError("Date is outside the supported Temporal range."));
+            return (date, cal);
+        }
+
+        if (arg.Tag == JsValueTag.Object)
+        {
+            var obj = h.GetObject(arg.AsObjectHandle());
+            if (TryGetInternalData(h, obj, out var data))
+            {
+                if (HasOwn(h, data, "y") && HasOwn(h, data, "d"))
+                    return (DecodeIsoDate(h, obj), GetVStr(h, obj, "calendarId"));
+                if (HasOwn(h, data, "year") && HasOwn(h, data, "day"))
+                    return (DecodeIsoDateLong(h, obj), GetVStr(h, obj, "calendarId"));
+                throw new JsThrownException(ctx.CreateTypeError("Cannot convert this Temporal object to a date."));
+            }
+
+            string bagCal = GetCalendarFromFields(ctx, h, arg);
+            if (!TryGetField(ctx, h, arg, "year", out var yearValue))
+                throw new JsThrownException(ctx.CreateTypeError("year is required."));
+            double y = ToIntegerWithTruncation(ctx, yearValue);
+            double m = GetMonthFromFields(ctx, h, arg);
+            if (!TryGetField(ctx, h, arg, "day", out var dayValue))
+                throw new JsThrownException(ctx.CreateTypeError("day is required."));
+            double d = ToIntegerWithTruncation(ctx, dayValue);
+            return (RegulateIsoDate(ctx, y, m, d, "constrain"), bagCal);
+        }
+
+        throw new JsThrownException(ctx.CreateTypeError("Cannot convert value to a Temporal date."));
+    }
+
+    /// <summary>ToTemporalTime: PlainTime/PlainDateTime instance, ISO time string, or property bag → wall-clock time.</summary>
+    private static IsoTime ToTemporalTimeRecord(IBuiltinContext ctx, JsHeap h, JsValue arg)
+    {
+        if (arg.Tag == JsValueTag.String)
+        {
+            var s = arg.AsString();
+            if (!TemporalIsoParser.TryParseTime(s, out var parsed, out var parseError) || parsed.HasUtcDesignator)
+                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO time string: {parseError}"));
+            _ = CalendarFromAnnotation(ctx, parsed.Calendar);
+            return parsed.Time;
+        }
+
+        if (arg.Tag == JsValueTag.Object)
+        {
+            var obj = h.GetObject(arg.AsObjectHandle());
+            if (TryGetInternalData(h, obj, out var data))
+            {
+                if (HasOwn(h, data, "hour"))
+                    return new IsoTime((int)GetVNum(h, obj, "hour"), (int)GetVNum(h, obj, "minute"), (int)GetVNum(h, obj, "second"),
+                        (int)GetVNum(h, obj, "millisecond"), (int)GetVNum(h, obj, "microsecond"), (int)GetVNum(h, obj, "nanosecond"));
+                throw new JsThrownException(ctx.CreateTypeError("Cannot convert this Temporal object to a time."));
+            }
+
+            string[] fields = { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" };
+            var values = new double[fields.Length];
+            bool any = false;
+            for (int fi = 0; fi < fields.Length; fi++)
+            {
+                if (TryGetField(ctx, h, arg, fields[fi], out var fv))
+                {
+                    values[fi] = ToIntegerWithTruncation(ctx, fv);
+                    any = true;
+                }
+            }
+
+            if (!any)
+                throw new JsThrownException(ctx.CreateTypeError("At least one time field is required."));
+            return new IsoTime(
+                (int)Math.Clamp(values[0], 0, 23), (int)Math.Clamp(values[1], 0, 59), (int)Math.Clamp(values[2], 0, 59),
+                (int)Math.Clamp(values[3], 0, 999), (int)Math.Clamp(values[4], 0, 999), (int)Math.Clamp(values[5], 0, 999));
+        }
+
+        throw new JsThrownException(ctx.CreateTypeError("Cannot convert value to a Temporal time."));
+    }
+
+    /// <summary>ToTemporalDuration: Duration instance, ISO duration string, or property bag.</summary>
+    private static (int years, int months, int weeks, int days, int hours, int minutes, int seconds, int millis, int micros, int nanos)
+        ToTemporalDurationRecord(IBuiltinContext ctx, JsHeap h, JsValue arg)
+    {
+        if (arg.Tag == JsValueTag.String)
+        {
+            var s = arg.AsString();
+            if (ParseIsoDuration(s, out var y, out var mo, out var w, out var d,
+                    out var hr, out var mi, out var sec, out var ms, out var us, out var ns))
+                return (y, mo, w, d, hr, mi, sec, ms, us, ns);
+            throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO duration string."));
+        }
+
+        if (arg.Tag == JsValueTag.Object)
+        {
+            var obj = h.GetObject(arg.AsObjectHandle());
+            if (TryGetInternalData(h, obj, out var data) && HasOwn(h, data, "years"))
+                return DecodeDuration(h, obj);
+
+            string[] fields = { "years", "months", "weeks", "days", "hours", "minutes", "seconds", "milliseconds", "microseconds", "nanoseconds" };
+            var values = new int[fields.Length];
+            bool any = false;
+            for (int fi = 0; fi < fields.Length; fi++)
+            {
+                if (TryGetField(ctx, h, arg, fields[fi], out var fv))
+                {
+                    values[fi] = ToSafeInt(ToIntegerWithTruncation(ctx, fv));
+                    any = true;
+                }
+            }
+
+            if (!any)
+                throw new JsThrownException(ctx.CreateTypeError("At least one duration field is required."));
+            return (values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7], values[8], values[9]);
+        }
+
+        throw new JsThrownException(ctx.CreateTypeError("Cannot convert value to a Temporal duration."));
+    }
+
+    private static long DecodeTimeOfDayNs(JsHeap h, JsObject o)
+        => new IsoTime((int)GetVNum(h, o, "hour"), (int)GetVNum(h, o, "minute"), (int)GetVNum(h, o, "second"),
+            (int)GetVNum(h, o, "millisecond"), (int)GetVNum(h, o, "microsecond"), (int)GetVNum(h, o, "nanosecond")).ToNanosecondsOfDay();
+
+    /// <summary>ToTemporalDateTime: instance, ISO string, or property bag → ISO date + wall-clock time.</summary>
+    private static (IsoDate Date, IsoTime Time) ToTemporalDateTimeRecord(IBuiltinContext ctx, JsHeap h, JsValue arg)
+    {
+        if (arg.Tag == JsValueTag.String)
+        {
+            var s = arg.AsString();
+            if (!TemporalIsoParser.TryParseDateTime(s, out var parsed, out var parseError) || parsed.HasUtcDesignator)
+                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO date-time string: {parseError}"));
+            _ = CalendarFromAnnotation(ctx, parsed.Calendar);
+            var date = new IsoDate(parsed.Year, parsed.Month, parsed.Day);
+            if (!IsoMath.IsoDateWithinLimits(date))
+                throw new JsThrownException(ctx.CreateRangeError("Date is outside the supported Temporal range."));
+            return (date, parsed.HasTime ? parsed.Time : IsoTime.Midnight);
+        }
+
+        if (arg.Tag == JsValueTag.Object)
+        {
+            var obj = h.GetObject(arg.AsObjectHandle());
+            if (TryGetInternalData(h, obj, out var data))
+            {
+                if (HasOwn(h, data, "year") && HasOwn(h, data, "day"))
+                    return (DecodeIsoDateLong(h, obj), new IsoTime(
+                        (int)GetVNum(h, obj, "hour"), (int)GetVNum(h, obj, "minute"), (int)GetVNum(h, obj, "second"),
+                        (int)GetVNum(h, obj, "millisecond"), (int)GetVNum(h, obj, "microsecond"), (int)GetVNum(h, obj, "nanosecond")));
+                if (HasOwn(h, data, "y") && HasOwn(h, data, "d"))
+                    return (DecodeIsoDate(h, obj), IsoTime.Midnight);
+                throw new JsThrownException(ctx.CreateTypeError("Cannot convert this Temporal object to a date-time."));
+            }
+
+            _ = GetCalendarFromFields(ctx, h, arg);
+            if (!TryGetField(ctx, h, arg, "year", out var yearValue))
+                throw new JsThrownException(ctx.CreateTypeError("year is required."));
+            double y = ToIntegerWithTruncation(ctx, yearValue);
+            double m = GetMonthFromFields(ctx, h, arg);
+            if (!TryGetField(ctx, h, arg, "day", out var dayValue))
+                throw new JsThrownException(ctx.CreateTypeError("day is required."));
+            double d = ToIntegerWithTruncation(ctx, dayValue);
+            var bagDate = RegulateIsoDate(ctx, y, m, d, "constrain");
+            string[] timeFields = { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" };
+            var tv = new double[timeFields.Length];
+            for (int fi = 0; fi < timeFields.Length; fi++)
+            {
+                if (TryGetField(ctx, h, arg, timeFields[fi], out var fv))
+                    tv[fi] = ToIntegerWithTruncation(ctx, fv);
+            }
+            return (bagDate, new IsoTime(
+                (int)Math.Clamp(tv[0], 0, 23), (int)Math.Clamp(tv[1], 0, 59), (int)Math.Clamp(tv[2], 0, 59),
+                (int)Math.Clamp(tv[3], 0, 999), (int)Math.Clamp(tv[4], 0, 999), (int)Math.Clamp(tv[5], 0, 999)));
+        }
+
+        throw new JsThrownException(ctx.CreateTypeError("Cannot convert value to a Temporal date-time."));
+    }
+
+    private const long NsPerDay = 86_400_000_000_000L;
+
+    /// <summary>DifferenceISODateTime with largestUnit=day: days + balanced time, uniform sign.</summary>
+    private static JsValue DifferencePlainDateTimes(IBuiltinContext ctx, JsHeap h, IsoDate d1, long t1Ns, IsoDate d2, long t2Ns)
+    {
+        long days = IsoMath.ToEpochDays(d2) - IsoMath.ToEpochDays(d1);
+        long ns = t2Ns - t1Ns;
+        if (days > 0 && ns < 0) { days--; ns += NsPerDay; }
+        else if (days < 0 && ns > 0) { days++; ns -= NsPerDay; }
+        int sign = ns < 0 ? -1 : 1;
+        long absNs = Math.Abs(ns);
+        return MakeDuration(ctx, h, 0, 0, 0, ToSafeInt(days),
+            sign * (int)(absNs / 3_600_000_000_000L), sign * (int)(absNs / 60_000_000_000L % 60), sign * (int)(absNs / 1_000_000_000L % 60),
+            sign * (int)(absNs / 1_000_000L % 1000), sign * (int)(absNs / 1_000L % 1000), sign * (int)(absNs % 1000));
+    }
+
+    /// <summary>ToTemporalInstant for method arguments: Instant/ZonedDateTime instance or ISO string → epoch ns.</summary>
+    private static long ToInstantNs(IBuiltinContext ctx, JsHeap h, JsValue arg)
+    {
+        if (arg.Tag == JsValueTag.Object)
+        {
+            var obj = h.GetObject(arg.AsObjectHandle());
+            if (TryGetInternalData(h, obj, out var data))
+            {
+                if (HasOwn(h, data, "ens") || HasOwn(h, data, "ensBig"))
+                    return DecodeInstantNanos(h, obj);
+                if (HasOwn(h, data, "epochNanoseconds"))
+                    return ToSafeLong(new System.Numerics.BigInteger(GetVNum(h, obj, "epochNanoseconds")));
+            }
+
+            arg = JsValue.FromString(ctx.ToStringValue(arg));
+        }
+
+        if (arg.Tag != JsValueTag.String)
+            throw new JsThrownException(ctx.CreateTypeError("Cannot convert value to a Temporal instant."));
+        var s = arg.AsString();
+        if (!TemporalIsoParser.TryParseInstant(s, out var parsed, out var parseError))
+            throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for Instant: {parseError}"));
+        _ = CalendarFromAnnotation(ctx, parsed.Calendar);
+        var epochDays = IsoMath.CivilToEpochDays(parsed.Year, parsed.Month, parsed.Day);
+        var ns = new System.Numerics.BigInteger(epochDays) * NsPerDay
+                 + parsed.Time.ToNanosecondsOfDay()
+                 - (parsed.HasUtcDesignator ? 0L : parsed.OffsetNanoseconds);
+        if (System.Numerics.BigInteger.Abs(ns) > MaxInstantNs)
+            throw new JsThrownException(ctx.CreateRangeError("Instant is outside the supported range."));
+        return ToSafeLong(ns);
+    }
+
+    /// <summary>ToTemporalYearMonth: instance, ISO string, or property bag.</summary>
+    private static (int Year, int Month, string Calendar) ToTemporalYearMonthRecord(IBuiltinContext ctx, JsHeap h, JsValue arg)
+    {
+        if (arg.Tag == JsValueTag.String)
+        {
+            var s = arg.AsString();
+            if (!TemporalIsoParser.TryParseYearMonth(s, out var parsed, out var parseError) || parsed.HasUtcDesignator)
+                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO year-month string: {parseError}"));
+            var cal = CalendarFromAnnotation(ctx, parsed.Calendar);
+            return (parsed.Year, parsed.Month, cal);
+        }
+
+        if (arg.Tag == JsValueTag.Object)
+        {
+            var obj = h.GetObject(arg.AsObjectHandle());
+            if (TryGetInternalData(h, obj, out var data) && HasOwn(h, data, "y"))
+                return ((int)GetVNum(h, obj, "y"), (int)GetVNum(h, obj, "m"), GetVStr(h, obj, "calendarId"));
+
+            string bagCal = GetCalendarFromFields(ctx, h, arg);
+            if (!TryGetField(ctx, h, arg, "year", out var yearValue))
+                throw new JsThrownException(ctx.CreateTypeError("year is required."));
+            double y = ToIntegerWithTruncation(ctx, yearValue);
+            double m = GetMonthFromFields(ctx, h, arg);
+            if (y is < -999_999 or > 999_999)
+                throw new JsThrownException(ctx.CreateRangeError("Year is out of the supported range."));
+            return ((int)y, (int)Math.Clamp(m, 1, 12), bagCal);
+        }
+
+        throw new JsThrownException(ctx.CreateTypeError("Cannot convert value to a Temporal year-month."));
+    }
+
+    /// <summary>AddDurationToDateTime: time-of-day arithmetic with day carry, then AddISODate.</summary>
+    private static JsValue AddDurationToPlainDateTime(IBuiltinContext ctx, JsHeap h, JsObject t, JsObject o,
+        IReadOnlyList<JsValue> a, ObjectHandle pH, int sign)
+    {
+        var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+        _ = GetOverflowOption(ctx, h, a, 1);
+        var date = DecodeIsoDateLong(h, o);
+        long total = DecodeTimeOfDayNs(h, o)
+            + sign * DurationToNanos(0, dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos);
+        long dayCarry = (long)Math.Floor(total / (double)NsPerDay);
+        long timeNs = total - dayCarry * NsPerDay;
+        var result = IsoMath.AddIsoDate(date, sign * dur.years, sign * dur.months, sign * dur.weeks,
+            sign * (double)dur.days + dayCarry, constrainIntermediate: true, out var invalid);
+        if (invalid || !IsoMath.IsoDateWithinLimits(result))
+            throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range."));
+        return AttachPrototype(h, MakePlainDateTimeParts(ctx, h, result.Year, result.Month, result.Day,
+            (int)(timeNs / 3_600_000_000_000L), (int)(timeNs / 60_000_000_000L % 60), (int)(timeNs / 1_000_000_000L % 60),
+            (int)(timeNs / 1_000_000L % 1000), (int)(timeNs / 1_000L % 1000), (int)(timeNs % 1000),
+            GetVStr(h, o, "calendarId")), pH);
+    }
+
+    /// <summary>IsValidTime check → RangeError (all components integral and in range).</summary>
+    private static void ValidateTime(IBuiltinContext ctx, double hr, double mi, double se, double ms, double us, double ns)
+    {
+        if (hr is < 0 or > 23 || mi is < 0 or > 59 || se is < 0 or > 59
+            || ms is < 0 or > 999 || us is < 0 or > 999 || ns is < 0 or > 999)
+            throw new JsThrownException(ctx.CreateRangeError("Invalid time component."));
+    }
+
+    /// <summary>Decode a PlainDate's stored fields as an IsoDate (no DateTime clamping).</summary>
+    private static IsoDate DecodeIsoDate(JsHeap h, JsObject o)
+    {
+        int y = (int)GetVNum(h, o, "y");
+        int m = Math.Max(1, (int)GetVNum(h, o, "m"));
+        int d = Math.Max(1, (int)GetVNum(h, o, "d"));
+        return new IsoDate(y, Math.Min(m, 12), Math.Min(d, IsoMath.DaysInMonth(y, Math.Min(m, 12))));
+    }
+
+    /// <summary>Decode a PlainDateTime/ZonedDateTime's stored date fields as an IsoDate.</summary>
+    private static IsoDate DecodeIsoDateLong(JsHeap h, JsObject o)
+    {
+        int y = (int)GetVNum(h, o, "year");
+        int m = Math.Max(1, (int)GetVNum(h, o, "month"));
+        int d = Math.Max(1, (int)GetVNum(h, o, "day"));
+        return new IsoDate(y, Math.Min(m, 12), Math.Min(d, IsoMath.DaysInMonth(y, Math.Min(m, 12))));
+    }
+
+    /// <summary>Format an ISO year: 4 digits, or signed 6 digits outside 0000-9999.</summary>
+    private static string FormatIsoYear(int y)
+        => y is >= 0 and <= 9999 ? y.ToString("D4") : (y < 0 ? "-" : "+") + Math.Abs(y).ToString("D6");
+
+    /// <summary>Calendar annotation suffix for toString ([u-ca=x] for non-ISO calendars).</summary>
+    private static string CalendarSuffix(JsHeap h, JsObject o)
+    {
+        var cid = GetVStr(h, o, "calendarId");
+        return string.IsNullOrEmpty(cid) || cid == "iso8601" ? "" : $"[u-ca={cid}]";
+    }
+
     // ─── Constructor factories ──────────────────────────────
 
     private static JsValue ConstructPlainDate(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> args)
     {
-        int y = 1970, m = 1, d = 1;
-        if (args.Count > 0)
-        {
-            var s = ToStrArg(ctx, args[0]);
-            var dt = ParseIsoDate(s);
-            if (dt.HasValue) { y = dt.Value.Year; m = dt.Value.Month; d = dt.Value.Day; }
-            else
-            {
-                // Numeric args: new PlainDate(year, month, day)
-                y = args.Count > 0 ? (int)args[0].AsNumber() : 1970;
-                m = args.Count > 1 ? (int)args[1].AsNumber() : 1;
-                d = args.Count > 2 ? (int)args[2].AsNumber() : 1;
-                if (y < 1) y = 1; if (m < 1) m = 1; if (d < 1) d = 1;
-            }
-        }
-        return MakePlainDate(ctx, h, new DateTime(Math.Min(y, 9999), Math.Min(m, 12), Math.Min(d, DateTime.DaysInMonth(Math.Min(y, 9999), Math.Min(m, 12)))));
+        // new Temporal.PlainDate(year, month, day [, calendar]) — numeric args
+        // via ToIntegerWithTruncation, then IsValidISODate/limits reject.
+        double y = ArgInt(ctx, args, 0);
+        double m = ArgInt(ctx, args, 1);
+        double d = ArgInt(ctx, args, 2);
+        string cal = CalendarArg(ctx, args, 3);
+        return MakePlainDateRegulated(ctx, h, y, m, d, cal, "reject");
     }
+
+    private static readonly System.Numerics.BigInteger MaxInstantNs =
+        System.Numerics.BigInteger.Parse("8640000000000000000000"); // nsMaxInstant = 8.64e21
 
     private static JsValue ConstructInstant(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> args)
     {
-        if (args.Count > 0)
-        {
-            if (args[0].Tag == JsValueTag.BigInt)
-            {
-                var ns = (long)args[0].AsBigInt();
-                return MakeInstantFromNanoseconds(h, ns);
-            }
+        // new Temporal.Instant(epochNanoseconds) — exactly one BigInt argument.
+        if (args.Count == 0 || args[0].Tag != JsValueTag.BigInt)
+            throw new JsThrownException(ctx.CreateTypeError("Instant constructor requires a BigInt epochNanoseconds argument."));
+        var ns = args[0].AsBigInt();
+        if (System.Numerics.BigInteger.Abs(ns) > MaxInstantNs)
+            throw new JsThrownException(ctx.CreateRangeError("Instant is outside the supported range."));
+        return MakeInstantFromNanoseconds(h, ToSafeLong(ns));
+    }
 
-            var s = ToStrArg(ctx, args[0]);
-            var dt = ParseIsoDateTime(s);
-            if (dt.HasValue && dt.Value.Kind != DateTimeKind.Unspecified)
-                return MakeInstant(ctx, h, dt.Value.Kind == DateTimeKind.Local ? dt.Value.ToUniversalTime() : dt.Value);
-            // Try as epoch nanoseconds
-            var num = args[0].AsNumber();
-            if (!double.IsNaN(num))
-            {
-                var ns = (long)(num * 1_000_000); // assume milliseconds
-                return MakeInstant(ctx, h, Epoch.AddTicks(ns / 100));
-            }
-        }
-        return MakeInstant(ctx, h, DateTime.UtcNow);
+    /// <summary>CreateTemporalInstant from a parsed ISO string (offset/Z applied), range-checked.</summary>
+    private static JsValue MakeInstantFromParsed(IBuiltinContext ctx, JsHeap h, ParsedIsoString p)
+    {
+        var epochDays = IsoMath.CivilToEpochDays(p.Year, p.Month, p.Day);
+        var ns = new System.Numerics.BigInteger(epochDays) * 86_400_000_000_000L
+                 + p.Time.ToNanosecondsOfDay()
+                 - (p.HasUtcDesignator ? 0L : p.OffsetNanoseconds);
+        if (System.Numerics.BigInteger.Abs(ns) > MaxInstantNs)
+            throw new JsThrownException(ctx.CreateRangeError("Instant is outside the supported range."));
+        return MakeInstantFromNanoseconds(h, ToSafeLong(ns));
     }
 
     private static JsValue ConstructPlainTime(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> args)
     {
-        int hr = 0, mi = 0, s = 0, ms = 0, us = 0, ns = 0;
-        if (args.Count > 0)
-        {
-            if (args[0].Tag == JsValueTag.String)
-            {
-                var str = args[0].AsString();
-                var ts = ParseIsoTime(str);
-                if (!ts.HasValue && str.Contains('T'))
-                {
-                    var timePart = str[(str.IndexOf('T') + 1)..];
-                    var zoneStart = timePart.IndexOfAny(new[] { 'Z', '+', '-' });
-                    if (zoneStart > 0)
-                    {
-                        timePart = timePart[..zoneStart];
-                    }
-
-                    var bracketStart = timePart.IndexOf('[');
-                    if (bracketStart >= 0)
-                    {
-                        timePart = timePart[..bracketStart];
-                    }
-
-                    ts = ParseIsoTime(timePart);
-                }
-
-                if (ts.HasValue)
-                {
-                    hr = ts.Value.Hours; mi = ts.Value.Minutes; s = ts.Value.Seconds;
-                    ms = ts.Value.Milliseconds;
-                    us = (int)((ts.Value.Ticks % TimeSpan.TicksPerMillisecond) / 10) % 1000;
-                }
-                else
-                {
-                    hr = (int)ctx.ToNumber(args[0]);
-                    mi = args.Count > 1 ? (int)ctx.ToNumber(args[1]) : 0;
-                    s = args.Count > 2 ? (int)ctx.ToNumber(args[2]) : 0;
-                    ms = args.Count > 3 ? (int)ctx.ToNumber(args[3]) : 0;
-                    us = args.Count > 4 ? (int)ctx.ToNumber(args[4]) : 0;
-                    ns = args.Count > 5 ? (int)ctx.ToNumber(args[5]) : 0;
-                }
-            }
-            else
-            {
-                hr = args.Count > 0 ? (int)ctx.ToNumber(args[0]) : 0;
-                mi = args.Count > 1 ? (int)ctx.ToNumber(args[1]) : 0;
-                s = args.Count > 2 ? (int)ctx.ToNumber(args[2]) : 0;
-                ms = args.Count > 3 ? (int)ctx.ToNumber(args[3]) : 0;
-                us = args.Count > 4 ? (int)ctx.ToNumber(args[4]) : 0;
-                ns = args.Count > 5 ? (int)ctx.ToNumber(args[5]) : 0;
-            }
-        }
-        return MakePlainTime(ctx, h, hr, mi, s, ms, us, ns);
+        // new Temporal.PlainTime(h?, m?, s?, ms?, µs?, ns?) — each component
+        // defaults to 0, ToIntegerWithTruncation, then IsValidTime reject.
+        double hr = ArgIntOr(ctx, args, 0, 0);
+        double mi = ArgIntOr(ctx, args, 1, 0);
+        double se = ArgIntOr(ctx, args, 2, 0);
+        double ms = ArgIntOr(ctx, args, 3, 0);
+        double us = ArgIntOr(ctx, args, 4, 0);
+        double ns = ArgIntOr(ctx, args, 5, 0);
+        ValidateTime(ctx, hr, mi, se, ms, us, ns);
+        return MakePlainTime(ctx, h, (int)hr, (int)mi, (int)se, (int)ms, (int)us, (int)ns);
     }
 
     private static JsValue ConstructPlainDateTime(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> args)
     {
-        if (args.Count > 0)
-        {
-            var s = ToStrArg(ctx, args[0]);
-            var dt = ParseIsoDateTime(s);
-            if (dt.HasValue)
-                return MakePlainDateTime(ctx, h, dt.Value);
-            // Numeric fields
-            int y = (int)args[0].AsNumber();
-            int mo = args.Count > 1 ? (int)args[1].AsNumber() : 1;
-            int dy = args.Count > 2 ? (int)args[2].AsNumber() : 1;
-            int hr = args.Count > 3 ? (int)args[3].AsNumber() : 0;
-            int mi = args.Count > 4 ? (int)args[4].AsNumber() : 0;
-            int se = args.Count > 5 ? (int)args[5].AsNumber() : 0;
-            int ms = args.Count > 6 ? (int)args[6].AsNumber() : 0;
-            if (y < 1) y = 1; if (mo < 1) mo = 1; if (dy < 1) dy = 1;
-            return MakePlainDateTime(ctx, h, new DateTime(Math.Min(y, 9999), Math.Min(mo, 12), Math.Min(dy, 28), hr, mi, se, ms));
-        }
-        return MakePlainDateTime(ctx, h, DateTime.UtcNow);
+        // new Temporal.PlainDateTime(y, mo, d, h?, mi?, s?, ms?, µs?, ns? [, calendar])
+        double y = ArgInt(ctx, args, 0);
+        double mo = ArgInt(ctx, args, 1);
+        double d = ArgInt(ctx, args, 2);
+        double hr = ArgIntOr(ctx, args, 3, 0);
+        double mi = ArgIntOr(ctx, args, 4, 0);
+        double se = ArgIntOr(ctx, args, 5, 0);
+        double ms = ArgIntOr(ctx, args, 6, 0);
+        double us = ArgIntOr(ctx, args, 7, 0);
+        double ns = ArgIntOr(ctx, args, 8, 0);
+        string cal = CalendarArg(ctx, args, 9);
+        if (y is < -999_999 or > 999_999 || mo is < 1 or > 12 || d is < 1 or > 31
+            || !IsoMath.IsValidIsoDate((int)y, (int)mo, (int)d)
+            || !IsoMath.IsoDateWithinLimits(new IsoDate((int)y, (int)mo, (int)d)))
+            throw new JsThrownException(ctx.CreateRangeError("Invalid ISO date."));
+        ValidateTime(ctx, hr, mi, se, ms, us, ns);
+        return MakePlainDateTimeParts(ctx, h, (int)y, (int)mo, (int)d, (int)hr, (int)mi, (int)se, (int)ms, (int)us, (int)ns, cal);
     }
 
     private static JsValue ConstructDuration(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> args)
@@ -522,69 +947,32 @@ public sealed class TemporalStub : IBuiltinModule
         return AttachPrototype(h, MakeDuration(ctx, h, ToSafeInt(ctx.ToNumber(arg)), 0, 0, 0, 0, 0, 0, 0, 0, 0), protoH);
     }
 
-    // ISO 8601 parsing helpers for Temporal constructors.
-
-    /// <summary>Parse an ISO 8601 date string like "2024-01-15" or "20240115".</summary>
-    private static DateTime? ParseIsoDate(string s)
-    {
-        if (string.IsNullOrEmpty(s)) return null;
-        // Try ISO format with dashes
-        if (DateTime.TryParseExact(s, new[]{"yyyy-MM-dd","yyyyMMdd","yyyy-M-d"},
-                System.Globalization.CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.None, out var dt))
-            return dt;
-        // Try plain date with possible time portion
-        if (DateTime.TryParse(s, System.Globalization.CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.None, out dt))
-            return dt;
-        return null;
-    }
-
-    /// <summary>Parse an ISO 8601 datetime string like "2024-01-15T12:00:00".</summary>
-    private static DateTime? ParseIsoDateTime(string s)
-    {
-        if (string.IsNullOrEmpty(s)) return null;
-        // Strip timezone annotation [TZ] and offset suffix
-        var cleaned = s;
-        var bracketIdx = cleaned.IndexOf('[');
-        if (bracketIdx >= 0) cleaned = cleaned.Substring(0, bracketIdx);
-        // Try ISO 8601 formats
-        if (DateTime.TryParseExact(cleaned, new[]{
-                "yyyy-MM-ddTHH:mm:ss", "yyyy-MM-ddTHH:mm:ss.FFFFFFF",
-                "yyyy-MM-ddTHH:mm", "yyyyMMddTHHmmss",
-                "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm"
-            }, System.Globalization.CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.None, out var dt))
-            return dt;
-        if (DateTime.TryParse(cleaned, System.Globalization.CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.None, out dt))
-            return dt;
-        return null;
-    }
-
-    /// <summary>Parse an ISO 8601 time string like "12:00:00" or "12:00:00.123456789".</summary>
-    private static TimeSpan? ParseIsoTime(string s)
-    {
-        if (string.IsNullOrEmpty(s)) return null;
-        if (TimeSpan.TryParseExact(s, new[]{
-                "hh\\:mm\\:ss", "hh\\:mm\\:ss\\.FFFFFFF",
-                "hh\\:mm", "hhmmss"
-            }, System.Globalization.CultureInfo.InvariantCulture, out var ts))
-            return ts;
-        if (TimeSpan.TryParse(s, System.Globalization.CultureInfo.InvariantCulture, out ts))
-            return ts;
-        return null;
-    }
-
     /// <summary>Parse an ISO 8601 duration string like "P1Y2M3DT4H5M6S".</summary>
     private static bool ParseIsoDuration(string s, out int years, out int months, out int weeks, out int days,
         out int hours, out int minutes, out int seconds, out int millis, out int micros, out int nanos)
     {
         years = months = weeks = days = hours = minutes = seconds = millis = 0;
         micros = nanos = 0;
-        if (string.IsNullOrEmpty(s) || s[0] != 'P') return false;
-        s = s.Substring(1);
-        if (s.Length == 0) return true;
+        if (string.IsNullOrEmpty(s)) return false;
+        // Optional ASCII sign; duration designators are case-insensitive.
+        int sign = 1;
+        int start = 0;
+        if (s[0] == '+') start = 1;
+        else if (s[0] == '-') { sign = -1; start = 1; }
+        if (start >= s.Length || (s[start] != 'P' && s[start] != 'p')) return false;
+        s = s[(start + 1)..].ToUpperInvariant();
+        if (s.Length == 0) return false;
+        if (sign < 0)
+        {
+            // Parse the absolute value, then negate every component below.
+            if (!ParseIsoDuration("P" + s, out years, out months, out weeks, out days,
+                    out hours, out minutes, out seconds, out millis, out micros, out nanos))
+                return false;
+            years = -years; months = -months; weeks = -weeks; days = -days;
+            hours = -hours; minutes = -minutes; seconds = -seconds;
+            millis = -millis; micros = -micros; nanos = -nanos;
+            return true;
+        }
 
         // Safely parse a long (handles values larger than int range) then clamp
         long SafeLong(string str) => long.TryParse(str, out var v) ? v : 0L;
@@ -1020,39 +1408,35 @@ public sealed class TemporalStub : IBuiltinModule
         AddGetter(h, pH, p, "epochSeconds", o => GetV(h, o, "es"));
         AddGetter(h, pH, p, "epochMilliseconds", o => GetV(h, o, "ems"));
         AddGetter(h, pH, p, "epochMicroseconds", o => GetV(h, o, "eus"));
-        AddGetter(h, pH, p, "epochNanoseconds", o => GetV(h, o, "ens"));
+        AddGetter(h, pH, p, "epochNanoseconds", o => GetV(h, o, "ensBig"));
         AddMethod(ctx, h, pH, p, "add", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
-            var dur = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
-            long totalNs = DurationToNanos(dur.days + dur.weeks * 7, dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos);
-            return MakeInstant(ctx, h, Epoch.AddTicks((DecodeInstantNanos(h, o) + totalNs) / 100));
+            var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            if (dur.years != 0 || dur.months != 0 || dur.weeks != 0 || dur.days != 0)
+                throw new JsThrownException(ctx.CreateRangeError("Instant arithmetic does not support calendar units."));
+            long totalNs = DurationToNanos(0, dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos);
+            return AttachPrototype(h, MakeInstantFromNanoseconds(h, DecodeInstantNanos(h, o) + totalNs), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
-            var dur = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
-            long totalNs = DurationToNanos(dur.days + dur.weeks * 7, dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos);
-            return MakeInstant(ctx, h, Epoch.AddTicks((DecodeInstantNanos(h, o) - totalNs) / 100));
+            var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            if (dur.years != 0 || dur.months != 0 || dur.weeks != 0 || dur.days != 0)
+                throw new JsThrownException(ctx.CreateRangeError("Instant arithmetic does not support calendar units."));
+            long totalNs = DurationToNanos(0, dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos);
+            return AttachPrototype(h, MakeInstantFromNanoseconds(h, DecodeInstantNanos(h, o) - totalNs), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return MakeDuration(ctx, h, TimeSpan.Zero);
-            long selfNs = DecodeInstantNanos(h, o);
-            long otherNs = DecodeInstantNanos(h, h.GetObject(a[0].AsObjectHandle()));
-            long diffNs = otherNs - selfNs;
-            var ts = TimeSpan.FromTicks(diffNs / 100);
-            return MakeDuration(ctx, h, ts);
+            long otherNs = ToInstantNs(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            RequireOptionsObject(ctx, a, 1);
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNs(ctx, h, otherNs - DecodeInstantNanos(h, o)));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return MakeDuration(ctx, h, TimeSpan.Zero);
-            long selfNs = DecodeInstantNanos(h, o);
-            long otherNs = DecodeInstantNanos(h, h.GetObject(a[0].AsObjectHandle()));
-            long diffNs = selfNs - otherNs;
-            var ts = TimeSpan.FromTicks(diffNs / 100);
-            return MakeDuration(ctx, h, ts);
+            long otherNs = ToInstantNs(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            RequireOptionsObject(ctx, a, 1);
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNs(ctx, h, DecodeInstantNanos(h, o) - otherNs));
         }, 1);
         AddMethod(ctx, h, pH, p, "round", (o, _) => CloneTemporal(ctx, h, o), 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
-            return JsValue.FromBoolean(DecodeInstantNanos(h, o) == DecodeInstantNanos(h, h.GetObject(a[0].AsObjectHandle())));
+            long otherNs = ToInstantNs(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            return JsValue.FromBoolean(DecodeInstantNanos(h, o) == otherNs);
         }, 1);
         AddMethod(ctx, h, pH, p, "toString", (o, a) => FormatInstant(ctx, h, o, a), 0);
         AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => InstantToLocaleString(ctx, h, o, a), 2);
@@ -1061,33 +1445,32 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("Instant.prototype.valueOf throws.")), 0);
         var c = h.GetObject(cH);
         AddStatic(ctx, h, cH, c, "from", a => {
+            // ToTemporalInstant: Instant/ZonedDateTime copy, else string parse;
+            // numbers and other primitives are a TypeError.
             if (a.Count == 0) throw new JsThrownException(ctx.CreateTypeError("Instant.from requires at least 1 argument."));
             var arg = a[0];
-            if (arg.Tag == JsValueTag.BigInt) return AttachPrototype(h, MakeInstantFromNanoseconds(h, ToSafeLong(arg.AsBigInt())), pH);
-            if (arg.Tag == JsValueTag.String) return AttachPrototype(h, ConstructInstant(ctx, h, a), pH);
             if (arg.Tag == JsValueTag.Object)
             {
-                // Call toString on the object and parse the result
-                var str = ctx.ToStringValue(arg);
-                var dt = ParseIsoDateTime(str);
-                if (dt.HasValue && str.Contains("T"))
-                    return AttachPrototype(h, MakeInstant(ctx, h, dt.Value.Kind == DateTimeKind.Local ? dt.Value.ToUniversalTime() : dt.Value), pH);
-                // Try as epoch milliseconds number
-                double num = ctx.ToNumber(arg);
-                if (!double.IsNaN(num) && !double.IsInfinity(num))
-                    return AttachPrototype(h, MakeInstant(ctx, h, Epoch.AddTicks((long)(num * 10000))), pH);
-                throw new JsThrownException(ctx.CreateRangeError($"{str} is not a valid ISO string for Instant"));
+                var obj = h.GetObject(arg.AsObjectHandle());
+                if (IsTemporalInstance(h, arg, pH))
+                    return AttachPrototype(h, MakeInstantFromNanoseconds(h, DecodeInstantNanos(h, obj)), pH);
+                arg = JsValue.FromString(ctx.ToStringValue(arg));
             }
-            return AttachPrototype(h, ConstructInstant(ctx, h, a), pH);
+            if (arg.Tag != JsValueTag.String)
+                throw new JsThrownException(ctx.CreateTypeError("Instant.from requires a string or a Temporal instant-like object."));
+            var s = arg.AsString();
+            if (!TemporalIsoParser.TryParseInstant(s, out var parsed, out var parseError))
+                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for Instant: {parseError}"));
+            _ = CalendarFromAnnotation(ctx, parsed.Calendar);
+            return AttachPrototype(h, MakeInstantFromParsed(ctx, h, parsed), pH);
         }, 1);
         AddStatic(ctx, h, cH, c, "fromEpochSeconds", a => AttachPrototype(h, MakeInstantEpoch(ctx, h, a, 1_000_000_000L), pH), 1);
         AddStatic(ctx, h, cH, c, "fromEpochMilliseconds", a => AttachPrototype(h, MakeInstantEpoch(ctx, h, a, 1_000_000L), pH), 1);
         AddStatic(ctx, h, cH, c, "fromEpochMicroseconds", a => AttachPrototype(h, MakeInstantEpoch(ctx, h, a, 1_000L), pH), 1);
         AddStatic(ctx, h, cH, c, "fromEpochNanoseconds", a => AttachPrototype(h, MakeInstantEpoch(ctx, h, a, 1L), pH), 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
-            if (a.Count < 2 || a[0].Tag != JsValueTag.Object || a[1].Tag != JsValueTag.Object) return JsValue.FromNumber(0);
-            long nsA = DecodeInstantNanos(h, h.GetObject(a[0].AsObjectHandle()));
-            long nsB = DecodeInstantNanos(h, h.GetObject(a[1].AsObjectHandle()));
+            long nsA = ToInstantNs(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            long nsB = ToInstantNs(ctx, h, a.Count > 1 ? a[1] : JsValue.Undefined);
             return JsValue.FromNumber(nsA < nsB ? -1 : nsA > nsB ? 1 : 0);
         }, 2);
     }
@@ -1100,66 +1483,132 @@ public sealed class TemporalStub : IBuiltinModule
         var p = h.GetObject(pH);
         AddGetter(h, pH, p, "year", o => GetV(h, o, "y"));
         AddGetter(h, pH, p, "month", o => GetV(h, o, "m"));
-        AddGetter(h, pH, p, "monthCode", o => { var dt = DecodePlainDate(h, o); return JsValue.FromString($"M{dt.Month:D2}"); });
+        AddGetter(h, pH, p, "monthCode", o => JsValue.FromString($"M{(int)GetVNum(h, o, "m"):D2}"));
         AddGetter(h, pH, p, "day", o => GetV(h, o, "d"));
         AddGetter(h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
-        AddGetter(h, pH, p, "dayOfWeek", o => { var dt = DecodePlainDate(h, o); int dow = (int)dt.DayOfWeek; return JsValue.FromNumber(dow == 0 ? 7 : dow); });
-        AddGetter(h, pH, p, "dayOfYear", o => { var dt = DecodePlainDate(h, o); return JsValue.FromNumber(dt.DayOfYear); });
-        AddGetter(h, pH, p, "weekOfYear", o => { var dt = DecodePlainDate(h, o); try { return JsValue.FromNumber(System.Globalization.ISOWeek.GetWeekOfYear(dt)); } catch { return JsValue.FromNumber(1); } });
+        AddGetter(h, pH, p, "dayOfWeek", o => JsValue.FromNumber(IsoMath.DayOfWeek(DecodeIsoDate(h, o))));
+        AddGetter(h, pH, p, "dayOfYear", o => JsValue.FromNumber(IsoMath.DayOfYear(DecodeIsoDate(h, o))));
+        AddGetter(h, pH, p, "weekOfYear", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDate(h, o)).Week));
+        AddGetter(h, pH, p, "yearOfWeek", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDate(h, o)).Year));
         AddGetter(h, pH, p, "daysInWeek", o => JsValue.FromNumber(7));
-        AddGetter(h, pH, p, "daysInMonth", o => { var dt = DecodePlainDate(h, o); return JsValue.FromNumber(DateTime.DaysInMonth(dt.Year, dt.Month)); });
-        AddGetter(h, pH, p, "daysInYear", o => { var dt = DecodePlainDate(h, o); return JsValue.FromNumber(DateTime.IsLeapYear(dt.Year) ? 366 : 365); });
+        AddGetter(h, pH, p, "daysInMonth", o => { var dt = DecodeIsoDate(h, o); return JsValue.FromNumber(IsoMath.DaysInMonth(dt.Year, dt.Month)); });
+        AddGetter(h, pH, p, "daysInYear", o => JsValue.FromNumber(IsoMath.DaysInYear(DecodeIsoDate(h, o).Year)));
         AddGetter(h, pH, p, "monthsInYear", o => JsValue.FromNumber(12));
-        AddGetter(h, pH, p, "inLeapYear", o => { var dt = DecodePlainDate(h, o); return JsValue.FromBoolean(DateTime.IsLeapYear(dt.Year)); });
-        AddGetter(h, pH, p, "era", o => { int y = (int)GetVNum(h, o, "y"); return JsValue.FromString(y >= 0 ? "ce" : "bce"); });
-        AddGetter(h, pH, p, "eraYear", o => { int y = (int)GetVNum(h, o, "y"); return JsValue.FromNumber(Math.Abs(y)); });
+        AddGetter(h, pH, p, "inLeapYear", o => JsValue.FromBoolean(IsoMath.IsLeapYear(DecodeIsoDate(h, o).Year)));
+        // era/eraYear are undefined for the iso8601 calendar.
+        AddGetter(h, pH, p, "era", _ => JsValue.Undefined);
+        AddGetter(h, pH, p, "eraYear", _ => JsValue.Undefined);
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("with: argument must be an object."));
-            var bag = h.GetObject(a[0].AsObjectHandle());
-            var dt = DecodePlainDate(h, o);
-            int y = HasOwn(h, bag, "year") ? ToSafeInt(ReadOwnNum(h, bag, "year")) : dt.Year;
-            int m; var mc = ReadOwnStr(h, bag, "monthCode");
-            if (!string.IsNullOrEmpty(mc) && mc.StartsWith("M") && int.TryParse(mc.Substring(1), out var mp)) m = mp;
-            else m = HasOwn(h, bag, "month") ? ToSafeInt(ReadOwnNum(h, bag, "month")) : dt.Month;
-            int d = HasOwn(h, bag, "day") ? ToSafeInt(ReadOwnNum(h, bag, "day")) : dt.Day;
-            y = Math.Max(1, Math.Min(9999, y)); m = Math.Max(1, Math.Min(12, m)); d = Math.Max(1, Math.Min(28, d));
-            return MakePlainDate(ctx, h, new DateTime(y, m, d));
+            var bagValue = a[0];
+            var cur = DecodeIsoDate(h, o);
+            bool hasYear = TryGetField(ctx, h, bagValue, "year", out var yearValue);
+            bool hasMonth = TryGetField(ctx, h, bagValue, "month", out _) || TryGetField(ctx, h, bagValue, "monthCode", out _);
+            bool hasDay = TryGetField(ctx, h, bagValue, "day", out var dayValue);
+            if (!hasYear && !hasMonth && !hasDay)
+                throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
+            double y = hasYear ? ToIntegerWithTruncation(ctx, yearValue) : cur.Year;
+            double m = hasMonth ? GetMonthFromFields(ctx, h, bagValue) : cur.Month;
+            double d = hasDay ? ToIntegerWithTruncation(ctx, dayValue) : cur.Day;
+            string cal = GetVStr(h, o, "calendarId");
+            return AttachPrototype(h, MakePlainDateRegulated(ctx, h, y, m, d, string.IsNullOrEmpty(cal) ? "iso8601" : cal, GetOverflowOption(ctx, h, a, 1)), pH);
         }, 1);
-        AddMethod(ctx, h, pH, p, "withCalendar", (o, _) => CloneTemporal(ctx, h, o), 1);
+        AddMethod(ctx, h, pH, p, "withCalendar", (o, a) => {
+            var cal = CalendarArg(ctx, a, 0);
+            var cur = DecodeIsoDate(h, o);
+            return AttachPrototype(h, MakePlainDateYmd(ctx, h, cur.Year, cur.Month, cur.Day, cal), pH);
+        }, 1);
         AddMethod(ctx, h, pH, p, "add", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
-            var dur = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
-            var dt = DecodePlainDate(h, o);
-            dt = SafeAddDate(dt, dur.years, dur.months, dur.weeks * 7 + dur.days);
-            return MakePlainDate(ctx, h, dt);
+            var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            _ = GetOverflowOption(ctx, h, a, 1);
+            var result = IsoMath.AddIsoDate(DecodeIsoDate(h, o), dur.years, dur.months, dur.weeks,
+                dur.days + (dur.hours * 3600L + dur.minutes * 60L + dur.seconds) / 86_400.0, constrainIntermediate: true, out var invalid);
+            if (invalid || !IsoMath.IsoDateWithinLimits(result))
+                throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range."));
+            return AttachPrototype(h, MakePlainDateYmd(ctx, h, result.Year, result.Month, result.Day, GetVStr(h, o, "calendarId")), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
-            var dur = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
-            var dt = DecodePlainDate(h, o);
-            dt = SafeAddDate(dt, -dur.years, -dur.months, -(dur.weeks * 7 + dur.days));
-            return MakePlainDate(ctx, h, dt);
+            var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            _ = GetOverflowOption(ctx, h, a, 1);
+            var result = IsoMath.AddIsoDate(DecodeIsoDate(h, o), -dur.years, -dur.months, -dur.weeks,
+                -(dur.days + (dur.hours * 3600L + dur.minutes * 60L + dur.seconds) / 86_400.0), constrainIntermediate: true, out var invalid);
+            if (invalid || !IsoMath.IsoDateWithinLimits(result))
+                throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range."));
+            return AttachPrototype(h, MakePlainDateYmd(ctx, h, result.Year, result.Month, result.Day, GetVStr(h, o, "calendarId")), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return MakeDuration(ctx, h, TimeSpan.Zero);
-            var self = DecodePlainDate(h, o);
-            var other = DecodePlainDate(h, h.GetObject(a[0].AsObjectHandle()));
-            var diff = other - self;
-            return MakeDuration(ctx, h, new TimeSpan(Math.Abs((int)diff.TotalDays), 0, 0, 0));
+            var (other, _) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            RequireOptionsObject(ctx, a, 1);
+            long days = IsoMath.ToEpochDays(other) - IsoMath.ToEpochDays(DecodeIsoDate(h, o));
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
+                MakeDuration(ctx, h, 0, 0, 0, ToSafeInt(days), 0, 0, 0, 0, 0, 0));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return MakeDuration(ctx, h, TimeSpan.Zero);
-            var self = DecodePlainDate(h, o);
-            var other = DecodePlainDate(h, h.GetObject(a[0].AsObjectHandle()));
-            var diff = self - other;
-            return MakeDuration(ctx, h, new TimeSpan(Math.Abs((int)diff.TotalDays), 0, 0, 0));
+            var (other, _) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            RequireOptionsObject(ctx, a, 1);
+            long days = IsoMath.ToEpochDays(DecodeIsoDate(h, o)) - IsoMath.ToEpochDays(other);
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
+                MakeDuration(ctx, h, 0, 0, 0, ToSafeInt(days), 0, 0, 0, 0, 0, 0));
         }, 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
-            return JsValue.FromBoolean(FieldsEqual(h, o, h.GetObject(a[0].AsObjectHandle()), "y", "m", "d"));
+            var (other, otherCal) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var self = DecodeIsoDate(h, o);
+            var selfCal = GetVStr(h, o, "calendarId");
+            bool calsEqual = (string.IsNullOrEmpty(selfCal) ? "iso8601" : selfCal) == (string.IsNullOrEmpty(otherCal) ? "iso8601" : otherCal);
+            return JsValue.FromBoolean(IsoMath.Compare(self, other) == 0 && calsEqual);
         }, 1);
-        AddMethod(ctx, h, pH, p, "toPlainDateTime", (o, _) => MakePlainDateTime(ctx, h, DateTime.UtcNow), 1);
-        AddMethod(ctx, h, pH, p, "toZonedDateTime", (o, _) => MakeZonedDateTime(ctx, h, DateTimeOffset.UtcNow, "UTC"), 1);
+        AddMethod(ctx, h, pH, p, "toPlainDateTime", (o, a) => {
+            var d = DecodeIsoDate(h, o);
+            var tm = a.Count > 0 && a[0].Tag != JsValueTag.Undefined ? ToTemporalTimeRecord(ctx, h, a[0]) : IsoTime.Midnight;
+            return AttachTemporalPrototypeByName(ctx, h, t, "PlainDateTime", MakePlainDateTimeParts(ctx, h,
+                d.Year, d.Month, d.Day, tm.Hour, tm.Minute, tm.Second, tm.Millisecond, tm.Microsecond, tm.Nanosecond,
+                GetVStr(h, o, "calendarId")));
+        }, 1);
+        AddMethod(ctx, h, pH, p, "toPlainYearMonth", (o, _) => {
+            var d = DecodeIsoDate(h, o);
+            return AttachTemporalPrototypeByName(ctx, h, t, "PlainYearMonth", MakePlainYearMonth(ctx, h, d.Year, d.Month, GetVStr(h, o, "calendarId")));
+        }, 0);
+        AddMethod(ctx, h, pH, p, "toPlainMonthDay", (o, _) => {
+            var d = DecodeIsoDate(h, o);
+            return AttachTemporalPrototypeByName(ctx, h, t, "PlainMonthDay", MakePlainMonthDay(ctx, h, d.Month, d.Day, GetVStr(h, o, "calendarId")));
+        }, 0);
+        AddMethod(ctx, h, pH, p, "toZonedDateTime", (o, a) => {
+            // Argument: time zone string, or { timeZone, plainTime? }.
+            var d = DecodeIsoDate(h, o);
+            string tz = "UTC";
+            var tm = IsoTime.Midnight;
+            if (a.Count > 0 && a[0].Tag == JsValueTag.String) tz = a[0].AsString();
+            else if (a.Count > 0 && a[0].Tag == JsValueTag.Object)
+            {
+                if (TryGetField(ctx, h, a[0], "timeZone", out var tzv))
+                {
+                    tz = tzv.Tag == JsValueTag.String ? tzv.AsString() : ctx.ToStringValue(tzv);
+                    if (TryGetField(ctx, h, a[0], "plainTime", out var ptv))
+                        tm = ToTemporalTimeRecord(ctx, h, ptv);
+                }
+                else
+                {
+                    tz = ctx.ToStringValue(a[0]);
+                }
+            }
+            else if (a.Count > 0)
+            {
+                throw new JsThrownException(ctx.CreateTypeError("toZonedDateTime: time zone is required."));
+            }
+            int zy = Math.Clamp(d.Year, 1, 9999);
+            try
+            {
+                var local = new DateTimeOffset(zy, d.Month, Math.Min(d.Day, DateTime.DaysInMonth(zy, d.Month)),
+                    tm.Hour, tm.Minute, tm.Second, tm.Millisecond, TimeSpan.Zero);
+                var zoned = IntlDateTimeFormatting.ConvertToTimeZone(local, tz, out var resolvedTz);
+                return AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", MakeZonedDateTime(ctx, h, zoned, resolvedTz));
+            }
+            catch (JsThrownException) { throw; }
+            catch
+            {
+                throw new JsThrownException(ctx.CreateRangeError($"'{tz}' is not a valid time zone."));
+            }
+        }, 1);
         AddMethod(ctx, h, pH, p, "toString", (o, _) => FormatPlainDate(h, o), 0);
         AddMethod(ctx, h, pH, p, "toLocaleString", (o, _) => FormatPlainDate(h, o), 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainDate(h, o), 0);
@@ -1171,35 +1620,42 @@ public sealed class TemporalStub : IBuiltinModule
             if (arg.Tag == JsValueTag.String)
             {
                 var s = arg.AsString();
-                var dt = ParseIsoDate(s);
-                if (dt.HasValue) return AttachPrototype(h, MakePlainDate(ctx, h, dt.Value, "iso8601"), pH);
-                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for PlainDate"));
+                // ToTemporalDate: AnnotatedDateTime without UTC designator.
+                if (!TemporalIsoParser.TryParseDateTime(s, out var parsed, out var parseError) || parsed.HasUtcDesignator)
+                    throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for PlainDate: {parseError}"));
+                var parsedCal = CalendarFromAnnotation(ctx, parsed.Calendar);
+                _ = GetOverflowOption(ctx, h, a, 1);
+                if (!IsoMath.IsoDateWithinLimits(new IsoDate(parsed.Year, parsed.Month, parsed.Day)))
+                    throw new JsThrownException(ctx.CreateRangeError("Date is outside the supported Temporal range."));
+                return AttachPrototype(h, MakePlainDateYmd(ctx, h, parsed.Year, parsed.Month, parsed.Day, parsedCal), pH);
             }
             if (arg.Tag == JsValueTag.Object)
             {
                 var obj = h.GetObject(arg.AsObjectHandle());
                 if (IsTemporalInstance(h, arg, pH))
                 {
+                    _ = GetOverflowOption(ctx, h, a, 1);
                     int cy = ToSafeInt(GetVNum(h, obj, "y")), cm = ToSafeInt(GetVNum(h, obj, "m")), cd = ToSafeInt(GetVNum(h, obj, "d"));
                     string ccal = GetVStr(h, obj, "calendarId"); if (string.IsNullOrEmpty(ccal)) ccal = "iso8601";
-                    return AttachPrototype(h, MakePlainDate(ctx, h, new DateTime(cy, cm, cd), ccal), pH);
+                    return AttachPrototype(h, MakePlainDateYmd(ctx, h, cy, cm, cd, ccal), pH);
                 }
-                // Property bag
-                int y = ToSafeInt(ReadOwnNum(h, obj, "year"));
-                int m; var mc = ReadOwnStr(h, obj, "monthCode");
-                if (!string.IsNullOrEmpty(mc) && mc.StartsWith("M") && int.TryParse(mc.Substring(1), out var mp)) m = mp;
-                else m = ToSafeInt(ReadOwnNum(h, obj, "month"));
-                int d = ToSafeInt(ReadOwnNum(h, obj, "day"));
-                string cal = ReadOwnStr(h, obj, "calendar"); if (string.IsNullOrEmpty(cal)) cal = "iso8601";
-                if (cal != "iso8601") throw new JsThrownException(ctx.CreateRangeError($"Calendar '{cal}' is not supported."));
-                y = Math.Max(1, Math.Min(9999, y)); m = Math.Max(1, Math.Min(12, m)); d = Math.Max(1, Math.Min(28, d));
-                return AttachPrototype(h, MakePlainDate(ctx, h, new DateTime(y, m, d), cal), pH);
+                // Property bag: year + (month|monthCode) + day required.
+                string cal = GetCalendarFromFields(ctx, h, arg);
+                if (!TryGetField(ctx, h, arg, "year", out var yearValue))
+                    throw new JsThrownException(ctx.CreateTypeError("PlainDate.from: year is required."));
+                double y = ToIntegerWithTruncation(ctx, yearValue);
+                double m = GetMonthFromFields(ctx, h, arg);
+                if (!TryGetField(ctx, h, arg, "day", out var dayValue))
+                    throw new JsThrownException(ctx.CreateTypeError("PlainDate.from: day is required."));
+                double d = ToIntegerWithTruncation(ctx, dayValue);
+                return AttachPrototype(h, MakePlainDateRegulated(ctx, h, y, m, d, cal, GetOverflowOption(ctx, h, a, 1)), pH);
             }
             throw new JsThrownException(ctx.CreateTypeError("PlainDate.from: argument must be a string, PlainDate, or property bag."));
         }, 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
-            if (a.Count < 2 || a[0].Tag != JsValueTag.Object || a[1].Tag != JsValueTag.Object) return JsValue.FromNumber(0);
-            return JsValue.FromNumber(FieldsCompare(h, h.GetObject(a[0].AsObjectHandle()), h.GetObject(a[1].AsObjectHandle()), "y", "m", "d"));
+            var (one, _) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var (two, _) = ToTemporalDateRecord(ctx, h, a.Count > 1 ? a[1] : JsValue.Undefined);
+            return JsValue.FromNumber(IsoMath.Compare(one, two));
         }, 2);
     }
 
@@ -1213,47 +1669,62 @@ public sealed class TemporalStub : IBuiltinModule
             AddGetter(h, pH, p, f, o => GetV(h, o, f));
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("PlainTime.with: argument must be an object."));
-            var bag = h.GetObject(a[0].AsObjectHandle());
-            int V(string name, int cur) => HasOwn(h, bag, name) ? ToSafeInt(ReadOwnNum(h, bag, name)) : cur;
-            return MakePlainTime(ctx, h,
-                V("hour", ToSafeInt(GetVNum(h, o, "hour"))), V("minute", ToSafeInt(GetVNum(h, o, "minute"))),
-                V("second", ToSafeInt(GetVNum(h, o, "second"))), V("millisecond", ToSafeInt(GetVNum(h, o, "millisecond"))),
-                V("microsecond", ToSafeInt(GetVNum(h, o, "microsecond"))), V("nanosecond", ToSafeInt(GetVNum(h, o, "nanosecond"))));
+            var bagValue = a[0];
+            string[] fields = { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" };
+            var values = new double[fields.Length];
+            bool any = false;
+            for (int fi = 0; fi < fields.Length; fi++)
+            {
+                if (TryGetField(ctx, h, bagValue, fields[fi], out var fv))
+                {
+                    values[fi] = ToIntegerWithTruncation(ctx, fv);
+                    any = true;
+                }
+                else
+                {
+                    values[fi] = GetVNum(h, o, fields[fi]);
+                }
+            }
+            if (!any)
+                throw new JsThrownException(ctx.CreateTypeError("with: at least one time field is required."));
+            var overflow = GetOverflowOption(ctx, h, a, 1);
+            if (overflow == "reject")
+                ValidateTime(ctx, values[0], values[1], values[2], values[3], values[4], values[5]);
+            return AttachPrototype(h, MakePlainTime(ctx, h,
+                (int)Math.Clamp(values[0], 0, 23), (int)Math.Clamp(values[1], 0, 59), (int)Math.Clamp(values[2], 0, 59),
+                (int)Math.Clamp(values[3], 0, 999), (int)Math.Clamp(values[4], 0, 999), (int)Math.Clamp(values[5], 0, 999)), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "add", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
-            var dur = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
+            var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             long totalNs = DurationToNanos(dur.days + dur.weeks * 7, dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos);
             var selfNs = DurationToNanos(0, (int)GetVNum(h,o,"hour"), (int)GetVNum(h,o,"minute"), (int)GetVNum(h,o,"second"), (int)GetVNum(h,o,"millisecond"), (int)GetVNum(h,o,"microsecond"), (int)GetVNum(h,o,"nanosecond"));
-            long resultNs = selfNs + totalNs;
-            var ts = TimeSpan.FromTicks(resultNs / 100);
-            return MakePlainTime(ctx, h, ts.Hours, ts.Minutes, ts.Seconds, ts.Milliseconds, (int)((resultNs % 1_000_000_000) / 1_000) % 1000, (int)(resultNs % 1_000));
+            long resultNs = ((selfNs + totalNs) % 86_400_000_000_000L + 86_400_000_000_000L) % 86_400_000_000_000L;
+            return AttachPrototype(h, MakePlainTimeFromDayNs(ctx, h, resultNs), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
-            var dur = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
+            var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             long totalNs = DurationToNanos(dur.days + dur.weeks * 7, dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos);
             var selfNs = DurationToNanos(0, (int)GetVNum(h,o,"hour"), (int)GetVNum(h,o,"minute"), (int)GetVNum(h,o,"second"), (int)GetVNum(h,o,"millisecond"), (int)GetVNum(h,o,"microsecond"), (int)GetVNum(h,o,"nanosecond"));
-            long resultNs = selfNs - totalNs;
-            var ts = TimeSpan.FromTicks(resultNs / 100);
-            return MakePlainTime(ctx, h, ts.Hours, ts.Minutes, ts.Seconds, ts.Milliseconds, (int)((resultNs % 1_000_000_000) / 1_000) % 1000, (int)(resultNs % 1_000));
+            long resultNs = ((selfNs - totalNs) % 86_400_000_000_000L + 86_400_000_000_000L) % 86_400_000_000_000L;
+            return AttachPrototype(h, MakePlainTimeFromDayNs(ctx, h, resultNs), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return MakeDuration(ctx, h, TimeSpan.Zero);
+            var other = ToTemporalTimeRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            RequireOptionsObject(ctx, a, 1);
             var selfNs = DurationToNanos(0, (int)GetVNum(h,o,"hour"), (int)GetVNum(h,o,"minute"), (int)GetVNum(h,o,"second"), (int)GetVNum(h,o,"millisecond"), (int)GetVNum(h,o,"microsecond"), (int)GetVNum(h,o,"nanosecond"));
-            var otherNs = DurationToNanos(0, (int)GetVNum(h, h.GetObject(a[0].AsObjectHandle()),"hour"), (int)GetVNum(h, h.GetObject(a[0].AsObjectHandle()),"minute"), (int)GetVNum(h, h.GetObject(a[0].AsObjectHandle()),"second"), (int)GetVNum(h, h.GetObject(a[0].AsObjectHandle()),"millisecond"), (int)GetVNum(h, h.GetObject(a[0].AsObjectHandle()),"microsecond"), (int)GetVNum(h, h.GetObject(a[0].AsObjectHandle()),"nanosecond"));
-            return MakeDuration(ctx, h, TimeSpan.FromTicks((otherNs - selfNs) / 100));
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNs(ctx, h, other.ToNanosecondsOfDay() - selfNs));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return MakeDuration(ctx, h, TimeSpan.Zero);
+            var other = ToTemporalTimeRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            RequireOptionsObject(ctx, a, 1);
             var selfNs = DurationToNanos(0, (int)GetVNum(h,o,"hour"), (int)GetVNum(h,o,"minute"), (int)GetVNum(h,o,"second"), (int)GetVNum(h,o,"millisecond"), (int)GetVNum(h,o,"microsecond"), (int)GetVNum(h,o,"nanosecond"));
-            var otherNs = DurationToNanos(0, (int)GetVNum(h, h.GetObject(a[0].AsObjectHandle()),"hour"), (int)GetVNum(h, h.GetObject(a[0].AsObjectHandle()),"minute"), (int)GetVNum(h, h.GetObject(a[0].AsObjectHandle()),"second"), (int)GetVNum(h, h.GetObject(a[0].AsObjectHandle()),"millisecond"), (int)GetVNum(h, h.GetObject(a[0].AsObjectHandle()),"microsecond"), (int)GetVNum(h, h.GetObject(a[0].AsObjectHandle()),"nanosecond"));
-            return MakeDuration(ctx, h, TimeSpan.FromTicks((selfNs - otherNs) / 100));
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNs(ctx, h, selfNs - other.ToNanosecondsOfDay()));
         }, 1);
         AddMethod(ctx, h, pH, p, "round", (o, _) => CloneTemporal(ctx, h, o), 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
-            return JsValue.FromBoolean(FieldsEqual(h, o, h.GetObject(a[0].AsObjectHandle()), "hour","minute","second","millisecond","microsecond","nanosecond"));
+            var other = ToTemporalTimeRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var selfNs = DurationToNanos(0, (int)GetVNum(h,o,"hour"), (int)GetVNum(h,o,"minute"), (int)GetVNum(h,o,"second"), (int)GetVNum(h,o,"millisecond"), (int)GetVNum(h,o,"microsecond"), (int)GetVNum(h,o,"nanosecond"));
+            return JsValue.FromBoolean(selfNs == other.ToNanosecondsOfDay());
         }, 1);
         AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => PlainTimeToLocaleString(ctx, h, o, a), 2);
         AddMethod(ctx, h, pH, p, "toString", (o, _) => FormatPlainTime(h, o), 0);
@@ -1263,28 +1734,65 @@ public sealed class TemporalStub : IBuiltinModule
         AddStatic(ctx, h, cH, c, "from", a => {
             if (a.Count == 0) throw new JsThrownException(ctx.CreateTypeError("PlainTime.from requires at least 1 argument."));
             var arg = a[0];
-            if (arg.Tag == JsValueTag.String) return AttachPrototype(h, ConstructPlainTime(ctx, h, a), pH);
+            if (arg.Tag == JsValueTag.String)
+            {
+                var s = arg.AsString();
+                // ToTemporalTime: time string without UTC designator.
+                if (!TemporalIsoParser.TryParseTime(s, out var parsed, out var parseError) || parsed.HasUtcDesignator)
+                    throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for PlainTime: {parseError}"));
+                _ = CalendarFromAnnotation(ctx, parsed.Calendar);
+                _ = GetOverflowOption(ctx, h, a, 1);
+                var tm = parsed.Time;
+                return AttachPrototype(h, MakePlainTime(ctx, h, tm.Hour, tm.Minute, tm.Second, tm.Millisecond, tm.Microsecond, tm.Nanosecond), pH);
+            }
             if (arg.Tag == JsValueTag.Object)
             {
                 var obj = h.GetObject(arg.AsObjectHandle());
                 if (IsTemporalInstance(h, arg, pH))
                 {
+                    _ = GetOverflowOption(ctx, h, a, 1);
                     int hr = ToSafeInt(GetVNum(h, obj, "hour")), mi = ToSafeInt(GetVNum(h, obj, "minute")),
                         se = ToSafeInt(GetVNum(h, obj, "second")), ms = ToSafeInt(GetVNum(h, obj, "millisecond")),
                         us = ToSafeInt(GetVNum(h, obj, "microsecond")), ns = ToSafeInt(GetVNum(h, obj, "nanosecond"));
                     return AttachPrototype(h, MakePlainTime(ctx, h, hr, mi, se, ms, us, ns), pH);
                 }
-                // Property bag
+                // Property bag: at least one time field required; overflow regulates.
+                string[] fields = { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" };
+                var values = new double[fields.Length];
+                bool any = false;
+                for (int fi = 0; fi < fields.Length; fi++)
+                {
+                    if (TryGetField(ctx, h, arg, fields[fi], out var fv))
+                    {
+                        values[fi] = ToIntegerWithTruncation(ctx, fv);
+                        any = true;
+                    }
+                }
+                if (!any)
+                    throw new JsThrownException(ctx.CreateTypeError("PlainTime.from: at least one time field is required."));
+                var overflow = GetOverflowOption(ctx, h, a, 1);
+                if (overflow == "constrain")
+                {
+                    values[0] = Math.Clamp(values[0], 0, 23);
+                    values[1] = Math.Clamp(values[1], 0, 59);
+                    values[2] = Math.Clamp(values[2], 0, 59);
+                    values[3] = Math.Clamp(values[3], 0, 999);
+                    values[4] = Math.Clamp(values[4], 0, 999);
+                    values[5] = Math.Clamp(values[5], 0, 999);
+                }
+                else
+                {
+                    ValidateTime(ctx, values[0], values[1], values[2], values[3], values[4], values[5]);
+                }
                 return AttachPrototype(h, MakePlainTime(ctx, h,
-                    ToSafeInt(ReadOwnNum(h, obj, "hour")), ToSafeInt(ReadOwnNum(h, obj, "minute")),
-                    ToSafeInt(ReadOwnNum(h, obj, "second")), ToSafeInt(ReadOwnNum(h, obj, "millisecond")),
-                    ToSafeInt(ReadOwnNum(h, obj, "microsecond")), ToSafeInt(ReadOwnNum(h, obj, "nanosecond"))), pH);
+                    (int)values[0], (int)values[1], (int)values[2], (int)values[3], (int)values[4], (int)values[5]), pH);
             }
-            return AttachPrototype(h, ConstructPlainTime(ctx, h, a), pH);
+            throw new JsThrownException(ctx.CreateTypeError("PlainTime.from: argument must be a string, PlainTime, or property bag."));
         }, 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
-            if (a.Count < 2 || a[0].Tag != JsValueTag.Object || a[1].Tag != JsValueTag.Object) return JsValue.FromNumber(0);
-            return JsValue.FromNumber(FieldsCompare(h, h.GetObject(a[0].AsObjectHandle()), h.GetObject(a[1].AsObjectHandle()), "hour","minute","second","millisecond","microsecond","nanosecond"));
+            long one = ToTemporalTimeRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined).ToNanosecondsOfDay();
+            long two = ToTemporalTimeRecord(ctx, h, a.Count > 1 ? a[1] : JsValue.Undefined).ToNanosecondsOfDay();
+            return JsValue.FromNumber(one < two ? -1 : one > two ? 1 : 0);
         }, 2);
     }
 
@@ -1296,161 +1804,293 @@ public sealed class TemporalStub : IBuiltinModule
         var p = h.GetObject(pH);
         foreach (var f in new[] { "year", "month", "day", "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" })
             AddGetter(h, pH, p, f, o => GetV(h, o, f));
-        AddGetter(h, pH, p, "monthCode", o => { var dt = DecodePlainDateTime(h, o); return JsValue.FromString($"M{dt.Month:D2}"); });
+        AddGetter(h, pH, p, "monthCode", o => JsValue.FromString($"M{(int)GetVNum(h, o, "month"):D2}"));
         AddGetter(h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
-        AddGetter(h, pH, p, "dayOfWeek", o => { var dt = DecodePlainDateTime(h, o); int dow = (int)dt.DayOfWeek; return JsValue.FromNumber(dow == 0 ? 7 : dow); });
-        AddGetter(h, pH, p, "dayOfYear", o => { var dt = DecodePlainDateTime(h, o); return JsValue.FromNumber(dt.DayOfYear); });
-        AddGetter(h, pH, p, "weekOfYear", o => { var dt = DecodePlainDateTime(h, o); try { return JsValue.FromNumber(System.Globalization.ISOWeek.GetWeekOfYear(dt)); } catch { return JsValue.FromNumber(1); } });
+        AddGetter(h, pH, p, "dayOfWeek", o => JsValue.FromNumber(IsoMath.DayOfWeek(DecodeIsoDateLong(h, o))));
+        AddGetter(h, pH, p, "dayOfYear", o => JsValue.FromNumber(IsoMath.DayOfYear(DecodeIsoDateLong(h, o))));
+        AddGetter(h, pH, p, "weekOfYear", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDateLong(h, o)).Week));
+        AddGetter(h, pH, p, "yearOfWeek", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDateLong(h, o)).Year));
         AddGetter(h, pH, p, "daysInWeek", o => JsValue.FromNumber(7));
-        AddGetter(h, pH, p, "daysInMonth", o => { var dt = DecodePlainDateTime(h, o); return JsValue.FromNumber(DateTime.DaysInMonth(dt.Year, dt.Month)); });
-        AddGetter(h, pH, p, "daysInYear", o => { var dt = DecodePlainDateTime(h, o); return JsValue.FromNumber(DateTime.IsLeapYear(dt.Year) ? 366 : 365); });
+        AddGetter(h, pH, p, "daysInMonth", o => { var dt = DecodeIsoDateLong(h, o); return JsValue.FromNumber(IsoMath.DaysInMonth(dt.Year, dt.Month)); });
+        AddGetter(h, pH, p, "daysInYear", o => JsValue.FromNumber(IsoMath.DaysInYear(DecodeIsoDateLong(h, o).Year)));
         AddGetter(h, pH, p, "monthsInYear", o => JsValue.FromNumber(12));
-        AddGetter(h, pH, p, "inLeapYear", o => { var dt = DecodePlainDateTime(h, o); return JsValue.FromBoolean(DateTime.IsLeapYear(dt.Year)); });
-        AddGetter(h, pH, p, "era", o => { int y = (int)GetVNum(h, o, "year"); return JsValue.FromString(y >= 0 ? "ce" : "bce"); });
-        AddGetter(h, pH, p, "eraYear", o => { int y = (int)GetVNum(h, o, "year"); return JsValue.FromNumber(Math.Abs(y)); });
+        AddGetter(h, pH, p, "inLeapYear", o => JsValue.FromBoolean(IsoMath.IsLeapYear(DecodeIsoDateLong(h, o).Year)));
+        // era/eraYear are undefined for the iso8601 calendar.
+        AddGetter(h, pH, p, "era", _ => JsValue.Undefined);
+        AddGetter(h, pH, p, "eraYear", _ => JsValue.Undefined);
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("with: argument must be an object."));
-            var bag = h.GetObject(a[0].AsObjectHandle());
-            var dt = DecodePlainDate(h, o);
-            int y = HasOwn(h, bag, "year") ? ToSafeInt(ReadOwnNum(h, bag, "year")) : dt.Year;
-            int m; var mc = ReadOwnStr(h, bag, "monthCode");
-            if (!string.IsNullOrEmpty(mc) && mc.StartsWith("M") && int.TryParse(mc.Substring(1), out var mp)) m = mp;
-            else m = HasOwn(h, bag, "month") ? ToSafeInt(ReadOwnNum(h, bag, "month")) : dt.Month;
-            int d = HasOwn(h, bag, "day") ? ToSafeInt(ReadOwnNum(h, bag, "day")) : dt.Day;
-            y = Math.Max(1, Math.Min(9999, y)); m = Math.Max(1, Math.Min(12, m)); d = Math.Max(1, Math.Min(28, d));
-            return MakePlainDate(ctx, h, new DateTime(y, m, d));
+            var bagValue = a[0];
+            var curDate = DecodeIsoDateLong(h, o);
+            bool hasYear = TryGetField(ctx, h, bagValue, "year", out var yearValue);
+            bool hasMonth = TryGetField(ctx, h, bagValue, "month", out _) || TryGetField(ctx, h, bagValue, "monthCode", out _);
+            bool hasDay = TryGetField(ctx, h, bagValue, "day", out var dayValue);
+            string[] timeFields = { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" };
+            var timeValues = new double[timeFields.Length];
+            bool anyTime = false;
+            for (int fi = 0; fi < timeFields.Length; fi++)
+            {
+                if (TryGetField(ctx, h, bagValue, timeFields[fi], out var fv))
+                {
+                    timeValues[fi] = ToIntegerWithTruncation(ctx, fv);
+                    anyTime = true;
+                }
+                else
+                {
+                    timeValues[fi] = GetVNum(h, o, timeFields[fi]);
+                }
+            }
+            if (!hasYear && !hasMonth && !hasDay && !anyTime)
+                throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
+            double y = hasYear ? ToIntegerWithTruncation(ctx, yearValue) : curDate.Year;
+            double m = hasMonth ? GetMonthFromFields(ctx, h, bagValue) : curDate.Month;
+            double d = hasDay ? ToIntegerWithTruncation(ctx, dayValue) : curDate.Day;
+            var overflow = GetOverflowOption(ctx, h, a, 1);
+            var date = RegulateIsoDate(ctx, y, m, d, overflow);
+            if (overflow == "reject")
+                ValidateTime(ctx, timeValues[0], timeValues[1], timeValues[2], timeValues[3], timeValues[4], timeValues[5]);
+            return AttachPrototype(h, MakePlainDateTimeParts(ctx, h, date.Year, date.Month, date.Day,
+                (int)Math.Clamp(timeValues[0], 0, 23), (int)Math.Clamp(timeValues[1], 0, 59), (int)Math.Clamp(timeValues[2], 0, 59),
+                (int)Math.Clamp(timeValues[3], 0, 999), (int)Math.Clamp(timeValues[4], 0, 999), (int)Math.Clamp(timeValues[5], 0, 999),
+                GetVStr(h, o, "calendarId")), pH);
         }, 1);
-        AddMethod(ctx, h, pH, p, "withCalendar", (o, _) => CloneTemporal(ctx, h, o), 1);
-        AddMethod(ctx, h, pH, p, "add", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
-            var dur = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
-            var dt = DecodePlainDateTime(h, o);
-            dt = dt.AddYears(dur.years).AddMonths(dur.months).AddDays(dur.weeks * 7 + dur.days)
-                .AddHours(dur.hours).AddMinutes(dur.minutes).AddSeconds(dur.seconds)
-                .AddMilliseconds(dur.millis);
-            return MakePlainDateTime(ctx, h, dt);
+        AddMethod(ctx, h, pH, p, "withCalendar", (o, a) => {
+            var cal = CalendarArg(ctx, a, 0);
+            var cur = DecodeIsoDateLong(h, o);
+            return AttachPrototype(h, MakePlainDateTimeParts(ctx, h, cur.Year, cur.Month, cur.Day,
+                (int)GetVNum(h, o, "hour"), (int)GetVNum(h, o, "minute"), (int)GetVNum(h, o, "second"),
+                (int)GetVNum(h, o, "millisecond"), (int)GetVNum(h, o, "microsecond"), (int)GetVNum(h, o, "nanosecond"), cal), pH);
         }, 1);
-        AddMethod(ctx, h, pH, p, "subtract", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
-            var dur = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
-            var dt = DecodePlainDateTime(h, o);
-            dt = dt.AddYears(-dur.years).AddMonths(-dur.months).AddDays(-(dur.weeks * 7 + dur.days))
-                .AddHours(-dur.hours).AddMinutes(-dur.minutes).AddSeconds(-dur.seconds)
-                .AddMilliseconds(-dur.millis);
-            return MakePlainDateTime(ctx, h, dt);
+        AddMethod(ctx, h, pH, p, "withPlainTime", (o, a) => {
+            var tm = a.Count > 0 && a[0].Tag != JsValueTag.Undefined ? ToTemporalTimeRecord(ctx, h, a[0]) : IsoTime.Midnight;
+            var cur = DecodeIsoDateLong(h, o);
+            return AttachPrototype(h, MakePlainDateTimeParts(ctx, h, cur.Year, cur.Month, cur.Day,
+                tm.Hour, tm.Minute, tm.Second, tm.Millisecond, tm.Microsecond, tm.Nanosecond, GetVStr(h, o, "calendarId")), pH);
         }, 1);
+        AddMethod(ctx, h, pH, p, "add", (o, a) => AddDurationToPlainDateTime(ctx, h, t, o, a, pH, 1), 1);
+        AddMethod(ctx, h, pH, p, "subtract", (o, a) => AddDurationToPlainDateTime(ctx, h, t, o, a, pH, -1), 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return MakeDuration(ctx, h, TimeSpan.Zero);
-            var self = DecodePlainDateTime(h, o);
-            var other = DecodePlainDateTime(h, h.GetObject(a[0].AsObjectHandle()));
-            return MakeDuration(ctx, h, other - self);
+            var (otherDate, otherTime) = ToTemporalDateTimeRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            RequireOptionsObject(ctx, a, 1);
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
+                DifferencePlainDateTimes(ctx, h, DecodeIsoDateLong(h, o), DecodeTimeOfDayNs(h, o), otherDate, otherTime.ToNanosecondsOfDay()));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return MakeDuration(ctx, h, TimeSpan.Zero);
-            var self = DecodePlainDateTime(h, o);
-            var other = DecodePlainDateTime(h, h.GetObject(a[0].AsObjectHandle()));
-            return MakeDuration(ctx, h, self - other);
+            var (otherDate, otherTime) = ToTemporalDateTimeRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            RequireOptionsObject(ctx, a, 1);
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
+                DifferencePlainDateTimes(ctx, h, otherDate, otherTime.ToNanosecondsOfDay(), DecodeIsoDateLong(h, o), DecodeTimeOfDayNs(h, o)));
         }, 1);
         AddMethod(ctx, h, pH, p, "round", (o, _) => CloneTemporal(ctx, h, o), 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
-            return JsValue.FromBoolean(FieldsEqual(h, o, h.GetObject(a[0].AsObjectHandle()), "year","month","day","hour","minute","second","millisecond","microsecond","nanosecond"));
+            var (otherDate, otherTime) = ToTemporalDateTimeRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            return JsValue.FromBoolean(IsoMath.Compare(DecodeIsoDateLong(h, o), otherDate) == 0
+                && DecodeTimeOfDayNs(h, o) == otherTime.ToNanosecondsOfDay());
         }, 1);
+        AddMethod(ctx, h, pH, p, "toPlainDate", (o, _) => {
+            var cur = DecodeIsoDateLong(h, o);
+            return AttachTemporalPrototypeByName(ctx, h, t, "PlainDate", MakePlainDateYmd(ctx, h, cur.Year, cur.Month, cur.Day, GetVStr(h, o, "calendarId")));
+        }, 0);
+        AddMethod(ctx, h, pH, p, "toPlainTime", (o, _) => AttachTemporalPrototypeByName(ctx, h, t, "PlainTime", MakePlainTime(ctx, h,
+            (int)GetVNum(h, o, "hour"), (int)GetVNum(h, o, "minute"), (int)GetVNum(h, o, "second"),
+            (int)GetVNum(h, o, "millisecond"), (int)GetVNum(h, o, "microsecond"), (int)GetVNum(h, o, "nanosecond"))), 0);
         AddMethod(ctx, h, pH, p, "toString", (o, _) => FormatPlainDateTime(h, o), 0);
         AddMethod(ctx, h, pH, p, "toLocaleString", (o, _) => FormatPlainDateTime(h, o), 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainDateTime(h, o), 0);
-        AddMethod(ctx, h, pH, p, "toZonedDateTime", (o, _) => MakeZonedDateTime(ctx, h, DateTimeOffset.UtcNow, "UTC"), 1);
+        AddMethod(ctx, h, pH, p, "toZonedDateTime", (o, a) => {
+            if (a.Count == 0 || (a[0].Tag != JsValueTag.String && a[0].Tag != JsValueTag.Object))
+                throw new JsThrownException(ctx.CreateTypeError("toZonedDateTime: time zone is required."));
+            string tz = a[0].Tag == JsValueTag.String ? a[0].AsString() : ctx.ToStringValue(a[0]);
+            var cur = DecodeIsoDateLong(h, o);
+            int zy = Math.Clamp(cur.Year, 1, 9999);
+            try
+            {
+                var local = new DateTimeOffset(zy, cur.Month, Math.Min(cur.Day, DateTime.DaysInMonth(zy, cur.Month)),
+                    (int)GetVNum(h, o, "hour"), (int)GetVNum(h, o, "minute"), (int)GetVNum(h, o, "second"),
+                    (int)GetVNum(h, o, "millisecond"), TimeSpan.Zero);
+                var zoned = IntlDateTimeFormatting.ConvertToTimeZone(local, tz, out var resolvedTz);
+                return AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", MakeZonedDateTime(ctx, h, zoned, resolvedTz));
+            }
+            catch (JsThrownException) { throw; }
+            catch
+            {
+                throw new JsThrownException(ctx.CreateRangeError($"'{tz}' is not a valid time zone."));
+            }
+        }, 1);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
         AddStatic(ctx, h, cH, c, "from", a => {
             if (a.Count == 0) throw new JsThrownException(ctx.CreateTypeError("PlainDateTime.from requires at least 1 argument."));
             var arg = a[0];
-            if (arg.Tag == JsValueTag.String) return AttachPrototype(h, ConstructPlainDateTime(ctx, h, a), pH);
+            if (arg.Tag == JsValueTag.String)
+            {
+                var s = arg.AsString();
+                // ToTemporalDateTime: AnnotatedDateTime without UTC designator;
+                // the time part is optional (midnight when absent).
+                if (!TemporalIsoParser.TryParseDateTime(s, out var parsed, out var parseError) || parsed.HasUtcDesignator)
+                    throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for PlainDateTime: {parseError}"));
+                var parsedCal = CalendarFromAnnotation(ctx, parsed.Calendar);
+                _ = GetOverflowOption(ctx, h, a, 1);
+                if (!IsoMath.IsoDateWithinLimits(new IsoDate(parsed.Year, parsed.Month, parsed.Day)))
+                    throw new JsThrownException(ctx.CreateRangeError("Date is outside the supported Temporal range."));
+                var tm = parsed.HasTime ? parsed.Time : IsoTime.Midnight;
+                return AttachPrototype(h, MakePlainDateTimeParts(ctx, h, parsed.Year, parsed.Month, parsed.Day,
+                    tm.Hour, tm.Minute, tm.Second, tm.Millisecond, tm.Microsecond, tm.Nanosecond, parsedCal), pH);
+            }
             if (arg.Tag == JsValueTag.Object)
             {
                 var obj = h.GetObject(arg.AsObjectHandle());
                 if (IsTemporalInstance(h, arg, pH))
                 {
-                    int y = ToSafeInt(GetVNum(h, obj, "year")), mo = ToSafeInt(GetVNum(h, obj, "month")),
-                        d = ToSafeInt(GetVNum(h, obj, "day")), hr = ToSafeInt(GetVNum(h, obj, "hour")),
-                        mi = ToSafeInt(GetVNum(h, obj, "minute")), se = ToSafeInt(GetVNum(h, obj, "second")),
-                        ms = ToSafeInt(GetVNum(h, obj, "millisecond"));
-                    return AttachPrototype(h, MakePlainDateTime(ctx, h, new DateTime(y, mo, d, hr, mi, se, ms), "iso8601"), pH);
+                    _ = GetOverflowOption(ctx, h, a, 1);
+                    return AttachPrototype(h, MakePlainDateTimeParts(ctx, h,
+                        ToSafeInt(GetVNum(h, obj, "year")), ToSafeInt(GetVNum(h, obj, "month")), ToSafeInt(GetVNum(h, obj, "day")),
+                        ToSafeInt(GetVNum(h, obj, "hour")), ToSafeInt(GetVNum(h, obj, "minute")), ToSafeInt(GetVNum(h, obj, "second")),
+                        ToSafeInt(GetVNum(h, obj, "millisecond")), ToSafeInt(GetVNum(h, obj, "microsecond")), ToSafeInt(GetVNum(h, obj, "nanosecond")),
+                        GetVStr(h, obj, "calendarId")), pH);
                 }
-                // Property bag
-                return AttachPrototype(h, MakePlainDateTime(ctx, h, new DateTime(
-                    Math.Max(1, ToSafeInt(ReadOwnNum(h, obj, "year"))),
-                    Math.Max(1, ToSafeInt(ReadOwnNum(h, obj, "month"))),
-                    Math.Max(1, ToSafeInt(ReadOwnNum(h, obj, "day"))),
-                    ToSafeInt(ReadOwnNum(h, obj, "hour")),
-                    ToSafeInt(ReadOwnNum(h, obj, "minute")),
-                    ToSafeInt(ReadOwnNum(h, obj, "second")),
-                    ToSafeInt(ReadOwnNum(h, obj, "millisecond"))),
-                    ReadOwnStr(h, obj, "calendar") is { Length: > 0 } cal ? cal : "iso8601"), pH);
+                // Property bag: year + (month|monthCode) + day required; time fields optional.
+                string cal = GetCalendarFromFields(ctx, h, arg);
+                if (!TryGetField(ctx, h, arg, "year", out var yearValue))
+                    throw new JsThrownException(ctx.CreateTypeError("PlainDateTime.from: year is required."));
+                double y = ToIntegerWithTruncation(ctx, yearValue);
+                double mo = GetMonthFromFields(ctx, h, arg);
+                if (!TryGetField(ctx, h, arg, "day", out var dayValue))
+                    throw new JsThrownException(ctx.CreateTypeError("PlainDateTime.from: day is required."));
+                double d = ToIntegerWithTruncation(ctx, dayValue);
+                double hr = TryGetField(ctx, h, arg, "hour", out var hv) ? ToIntegerWithTruncation(ctx, hv) : 0;
+                double mi = TryGetField(ctx, h, arg, "minute", out var miv) ? ToIntegerWithTruncation(ctx, miv) : 0;
+                double se = TryGetField(ctx, h, arg, "second", out var sev) ? ToIntegerWithTruncation(ctx, sev) : 0;
+                double ms = TryGetField(ctx, h, arg, "millisecond", out var msv) ? ToIntegerWithTruncation(ctx, msv) : 0;
+                double us = TryGetField(ctx, h, arg, "microsecond", out var usv) ? ToIntegerWithTruncation(ctx, usv) : 0;
+                double ns = TryGetField(ctx, h, arg, "nanosecond", out var nsv) ? ToIntegerWithTruncation(ctx, nsv) : 0;
+                var overflow = GetOverflowOption(ctx, h, a, 1);
+                if (y is < -999_999 or > 999_999)
+                    throw new JsThrownException(ctx.CreateRangeError("Year is out of the supported range."));
+                int year = (int)y;
+                int month;
+                int day;
+                if (overflow == "constrain")
+                {
+                    month = (int)Math.Clamp(mo, 1, 12);
+                    day = (int)Math.Clamp(d, 1, IsoMath.DaysInMonth(year, month));
+                    hr = Math.Clamp(hr, 0, 23); mi = Math.Clamp(mi, 0, 59); se = Math.Clamp(se, 0, 59);
+                    ms = Math.Clamp(ms, 0, 999); us = Math.Clamp(us, 0, 999); ns = Math.Clamp(ns, 0, 999);
+                }
+                else
+                {
+                    if (mo is < 1 or > 12 || d is < 1 or > 31 || !IsoMath.IsValidIsoDate(year, (int)mo, (int)d))
+                        throw new JsThrownException(ctx.CreateRangeError("Invalid ISO date."));
+                    ValidateTime(ctx, hr, mi, se, ms, us, ns);
+                    month = (int)mo;
+                    day = (int)d;
+                }
+                if (!IsoMath.IsoDateWithinLimits(new IsoDate(year, month, day)))
+                    throw new JsThrownException(ctx.CreateRangeError("Date is outside the supported Temporal range."));
+                return AttachPrototype(h, MakePlainDateTimeParts(ctx, h, year, month, day,
+                    (int)hr, (int)mi, (int)se, (int)ms, (int)us, (int)ns, cal), pH);
             }
-            return AttachPrototype(h, ConstructPlainDateTime(ctx, h, a), pH);
+            throw new JsThrownException(ctx.CreateTypeError("PlainDateTime.from: argument must be a string, PlainDateTime, or property bag."));
         }, 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
-            if (a.Count < 2 || a[0].Tag != JsValueTag.Object || a[1].Tag != JsValueTag.Object) return JsValue.FromNumber(0);
-            return JsValue.FromNumber(FieldsCompare(h, h.GetObject(a[0].AsObjectHandle()), h.GetObject(a[1].AsObjectHandle()), "year","month","day","hour","minute","second","millisecond","microsecond","nanosecond"));
+            var (d1, t1) = ToTemporalDateTimeRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var (d2, t2) = ToTemporalDateTimeRecord(ctx, h, a.Count > 1 ? a[1] : JsValue.Undefined);
+            int dateCmp = IsoMath.Compare(d1, d2);
+            if (dateCmp != 0) return JsValue.FromNumber(dateCmp);
+            long n1 = t1.ToNanosecondsOfDay(), n2 = t2.ToNanosecondsOfDay();
+            return JsValue.FromNumber(n1 < n2 ? -1 : n1 > n2 ? 1 : 0);
         }, 2);
     }
 
     // ─── Temporal.PlainYearMonth ───────────────────────────
+    private static JsValue ConstructPlainYearMonth(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> args)
+    {
+        // new Temporal.PlainYearMonth(year, month [, calendar [, referenceISODay]])
+        double y = ArgInt(ctx, args, 0);
+        double m = ArgInt(ctx, args, 1);
+        string cal = CalendarArg(ctx, args, 2);
+        double refDay = ArgIntOr(ctx, args, 3, 1);
+        if (y is < -999_999 or > 999_999 || m is < 1 or > 12 || refDay is < 1 or > 31
+            || !IsoMath.IsValidIsoDate((int)y, (int)m, (int)refDay)
+            || !IsoMath.IsoDateWithinLimits(new IsoDate((int)y, (int)m, (int)refDay)))
+            throw new JsThrownException(ctx.CreateRangeError("Invalid ISO year-month."));
+        return MakePlainYearMonth(ctx, h, (int)y, (int)m, cal);
+    }
+
     private void InstallPlainYearMonth(IBuiltinContext ctx, JsObject t, ObjectHandle tH, JsHeap h)
     {
-        var (cH, pH) = MakeCtor(ctx, h, t, tH, "PlainYearMonth", 2, true);
+        var (cH, pH) = MakeCtor(ctx, h, t, tH, "PlainYearMonth", 2, true,
+            (cctx, hh, a) => ConstructPlainYearMonth(cctx, hh, a));
         var p = h.GetObject(pH);
         AddGetter(h, pH, p, "year", o => GetV(h, o, "y"));
         AddGetter(h, pH, p, "month", o => GetV(h, o, "m"));
-        AddGetter(h, pH, p, "monthCode", o => { var dt = DecodePlainYearMonth(h, o); return JsValue.FromString($"M{dt.Month:D2}"); });
-        AddGetter(h, pH, p, "calendarId", _ => JsValue.FromString("iso8601"));
-        AddGetter(h, pH, p, "daysInMonth", o => { var dt = DecodePlainYearMonth(h, o); return JsValue.FromNumber(DateTime.DaysInMonth(dt.Year, dt.Month)); });
-        AddGetter(h, pH, p, "daysInYear", o => { var dt = DecodePlainYearMonth(h, o); return JsValue.FromNumber(DateTime.IsLeapYear(dt.Year) ? 366 : 365); });
+        AddGetter(h, pH, p, "monthCode", o => JsValue.FromString($"M{(int)GetVNum(h, o, "m"):D2}"));
+        AddGetter(h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
+        AddGetter(h, pH, p, "daysInMonth", o => JsValue.FromNumber(IsoMath.DaysInMonth((int)GetVNum(h, o, "y"), Math.Clamp((int)GetVNum(h, o, "m"), 1, 12))));
+        AddGetter(h, pH, p, "daysInYear", o => JsValue.FromNumber(IsoMath.DaysInYear((int)GetVNum(h, o, "y"))));
         AddGetter(h, pH, p, "monthsInYear", o => JsValue.FromNumber(12));
-        AddGetter(h, pH, p, "inLeapYear", o => { var dt = DecodePlainYearMonth(h, o); return JsValue.FromBoolean(DateTime.IsLeapYear(dt.Year)); });
-        AddGetter(h, pH, p, "era", o => { int y = (int)GetVNum(h, o, "y"); return JsValue.FromString(y >= 0 ? "ce" : "bce"); });
-        AddGetter(h, pH, p, "eraYear", o => { int y = (int)GetVNum(h, o, "y"); return JsValue.FromNumber(Math.Abs(y)); });
+        AddGetter(h, pH, p, "inLeapYear", o => JsValue.FromBoolean(IsoMath.IsLeapYear((int)GetVNum(h, o, "y"))));
+        // era/eraYear are undefined for the iso8601 calendar.
+        AddGetter(h, pH, p, "era", _ => JsValue.Undefined);
+        AddGetter(h, pH, p, "eraYear", _ => JsValue.Undefined);
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("PlainYearMonth.with: argument must be an object."));
-            var bag = h.GetObject(a[0].AsObjectHandle());
-            int y = HasOwn(h, bag, "year") ? ToSafeInt(ReadOwnNum(h, bag, "year")) : ToSafeInt(GetVNum(h, o, "y"));
-            int m; var mc = ReadOwnStr(h, bag, "monthCode");
-            if (!string.IsNullOrEmpty(mc) && mc.StartsWith("M") && int.TryParse(mc.Substring(1), out var mp)) m = mp;
-            else m = HasOwn(h, bag, "month") ? ToSafeInt(ReadOwnNum(h, bag, "month")) : ToSafeInt(GetVNum(h, o, "m"));
-            return MakePlainYearMonth(ctx, h, y, m);
-        }, 1); // WITH-STUB
+            var bagValue = a[0];
+            bool hasYear = TryGetField(ctx, h, bagValue, "year", out var yearValue);
+            bool hasMonth = TryGetField(ctx, h, bagValue, "month", out _) || TryGetField(ctx, h, bagValue, "monthCode", out _);
+            if (!hasYear && !hasMonth)
+                throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
+            double y = hasYear ? ToIntegerWithTruncation(ctx, yearValue) : GetVNum(h, o, "y");
+            double m = hasMonth ? GetMonthFromFields(ctx, h, bagValue) : GetVNum(h, o, "m");
+            var overflow = GetOverflowOption(ctx, h, a, 1);
+            if (y is < -999_999 or > 999_999)
+                throw new JsThrownException(ctx.CreateRangeError("Year is out of the supported range."));
+            if (overflow == "reject" && m is < 1 or > 12)
+                throw new JsThrownException(ctx.CreateRangeError("Invalid ISO year-month."));
+            return AttachPrototype(h, MakePlainYearMonth(ctx, h, (int)y, (int)Math.Clamp(m, 1, 12), GetVStr(h, o, "calendarId")), pH);
+        }, 1);
         AddMethod(ctx, h, pH, p, "add", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
-            var dur = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
+            var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            _ = GetOverflowOption(ctx, h, a, 1);
             var dt = DecodePlainYearMonth(h, o);
             dt = SafeAddDate(dt, dur.years, dur.months, 0);
-            return MakePlainYearMonth(ctx, h, dt.Year, dt.Month);
+            return AttachPrototype(h, MakePlainYearMonth(ctx, h, dt.Year, dt.Month, GetVStr(h, o, "calendarId")), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return CloneTemporal(ctx, h, o);
-            var dur = DecodeDuration(h, h.GetObject(a[0].AsObjectHandle()));
+            var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            _ = GetOverflowOption(ctx, h, a, 1);
             var dt = DecodePlainYearMonth(h, o);
             dt = SafeAddDate(dt, -dur.years, -dur.months, 0);
-            return MakePlainYearMonth(ctx, h, dt.Year, dt.Month);
+            return AttachPrototype(h, MakePlainYearMonth(ctx, h, dt.Year, dt.Month, GetVStr(h, o, "calendarId")), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return MakeDuration(ctx, h, TimeSpan.Zero);
-            var self = DecodePlainYearMonth(h, o);
-            var other = DecodePlainYearMonth(h, h.GetObject(a[0].AsObjectHandle()));
-            int totalMonths = (other.Year - self.Year) * 12 + (other.Month - self.Month);
-            return MakeDuration(ctx, h, totalMonths / 12, totalMonths % 12, 0, 0, 0, 0, 0, 0, 0, 0);
+            var (oy, om, _) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            RequireOptionsObject(ctx, a, 1);
+            int totalMonths = (oy - (int)GetVNum(h, o, "y")) * 12 + (om - (int)GetVNum(h, o, "m"));
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
+                MakeDuration(ctx, h, totalMonths / 12, totalMonths % 12, 0, 0, 0, 0, 0, 0, 0, 0));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return MakeDuration(ctx, h, TimeSpan.Zero);
-            var self = DecodePlainYearMonth(h, o);
-            var other = DecodePlainYearMonth(h, h.GetObject(a[0].AsObjectHandle()));
-            int totalMonths = (self.Year - other.Year) * 12 + (self.Month - other.Month);
-            return MakeDuration(ctx, h, totalMonths / 12, totalMonths % 12, 0, 0, 0, 0, 0, 0, 0, 0);
+            var (oy, om, _) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            RequireOptionsObject(ctx, a, 1);
+            int totalMonths = ((int)GetVNum(h, o, "y") - oy) * 12 + ((int)GetVNum(h, o, "m") - om);
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
+                MakeDuration(ctx, h, totalMonths / 12, totalMonths % 12, 0, 0, 0, 0, 0, 0, 0, 0));
         }, 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
-            if (a.Count < 1 || a[0].Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
-            return JsValue.FromBoolean(FieldsEqual(h, o, h.GetObject(a[0].AsObjectHandle()), "y", "m"));
+            var (oy, om, ocal) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var selfCal = GetVStr(h, o, "calendarId");
+            bool calsEqual = (string.IsNullOrEmpty(selfCal) ? "iso8601" : selfCal) == (string.IsNullOrEmpty(ocal) ? "iso8601" : ocal);
+            return JsValue.FromBoolean((int)GetVNum(h, o, "y") == oy && (int)GetVNum(h, o, "m") == om && calsEqual);
+        }, 1);
+        AddMethod(ctx, h, pH, p, "toPlainDate", (o, a) => {
+            int day = 1;
+            if (a.Count > 0 && a[0].Tag == JsValueTag.Object && TryGetField(ctx, h, a[0], "day", out var dv))
+                day = ToSafeInt(ToIntegerWithTruncation(ctx, dv));
+            int y = (int)GetVNum(h, o, "y");
+            int m = Math.Clamp((int)GetVNum(h, o, "m"), 1, 12);
+            day = Math.Clamp(day, 1, IsoMath.DaysInMonth(y, m));
+            return AttachTemporalPrototypeByName(ctx, h, t, "PlainDate", MakePlainDateYmd(ctx, h, y, m, day, GetVStr(h, o, "calendarId")));
         }, 1);
         AddMethod(ctx, h, pH, p, "toString", (o, _) => FormatPlainYearMonth(h, o), 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainYearMonth(h, o), 0);
@@ -1462,40 +2102,73 @@ public sealed class TemporalStub : IBuiltinModule
             if (arg.Tag == JsValueTag.String)
             {
                 var s = arg.AsString();
-                var dt = ParseIsoDate(s);
-                if (dt.HasValue) return AttachPrototype(h, MakePlainYearMonth(ctx, h, dt.Value.Year, dt.Value.Month), pH);
-                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for PlainYearMonth"));
+                if (!TemporalIsoParser.TryParseYearMonth(s, out var parsed, out var parseError) || parsed.HasUtcDesignator)
+                    throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for PlainYearMonth: {parseError}"));
+                var parsedCal = CalendarFromAnnotation(ctx, parsed.Calendar);
+                _ = GetOverflowOption(ctx, h, a, 1);
+                if (!IsoMath.IsoDateWithinLimits(new IsoDate(parsed.Year, parsed.Month, 1)))
+                    throw new JsThrownException(ctx.CreateRangeError("Year-month is outside the supported Temporal range."));
+                return AttachPrototype(h, MakePlainYearMonth(ctx, h, parsed.Year, parsed.Month, parsedCal), pH);
             }
             if (arg.Tag == JsValueTag.Object)
             {
                 var obj = h.GetObject(arg.AsObjectHandle());
                 if (IsTemporalInstance(h, arg, pH))
                 {
+                    _ = GetOverflowOption(ctx, h, a, 1);
                     int y = ToSafeInt(GetVNum(h, obj, "y")), m = ToSafeInt(GetVNum(h, obj, "m"));
-                    return AttachPrototype(h, MakePlainYearMonth(ctx, h, y, m), pH);
+                    return AttachPrototype(h, MakePlainYearMonth(ctx, h, y, m, GetVStr(h, obj, "calendarId")), pH);
                 }
-                int y2 = ToSafeInt(ReadOwnNum(h, obj, "year"));
-                int m2; var mc = ReadOwnStr(h, obj, "monthCode");
-                if (!string.IsNullOrEmpty(mc) && mc.StartsWith("M") && int.TryParse(mc.Substring(1), out var mp)) m2 = mp;
-                else m2 = ToSafeInt(ReadOwnNum(h, obj, "month"));
-                return AttachPrototype(h, MakePlainYearMonth(ctx, h, y2, m2), pH);
+                // Property bag: year + (month|monthCode) required.
+                string cal = GetCalendarFromFields(ctx, h, arg);
+                if (!TryGetField(ctx, h, arg, "year", out var yearValue))
+                    throw new JsThrownException(ctx.CreateTypeError("PlainYearMonth.from: year is required."));
+                double y2 = ToIntegerWithTruncation(ctx, yearValue);
+                double m2 = GetMonthFromFields(ctx, h, arg);
+                var overflow = GetOverflowOption(ctx, h, a, 1);
+                if (y2 is < -999_999 or > 999_999)
+                    throw new JsThrownException(ctx.CreateRangeError("Year is out of the supported range."));
+                int month2;
+                if (overflow == "constrain")
+                    month2 = (int)Math.Clamp(m2, 1, 12);
+                else if (m2 is < 1 or > 12)
+                    throw new JsThrownException(ctx.CreateRangeError("Invalid ISO year-month."));
+                else
+                    month2 = (int)m2;
+                return AttachPrototype(h, MakePlainYearMonth(ctx, h, (int)y2, month2, cal), pH);
             }
             throw new JsThrownException(ctx.CreateTypeError("PlainYearMonth.from: argument must be a string or property bag."));
         }, 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
-            if (a.Count < 2 || a[0].Tag != JsValueTag.Object || a[1].Tag != JsValueTag.Object) return JsValue.FromNumber(0);
-            return JsValue.FromNumber(FieldsCompare(h, h.GetObject(a[0].AsObjectHandle()), h.GetObject(a[1].AsObjectHandle()), "y", "m"));
+            var (y1, m1, _) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var (y2, m2, _) = ToTemporalYearMonthRecord(ctx, h, a.Count > 1 ? a[1] : JsValue.Undefined);
+            int c1 = y1 != y2 ? (y1 < y2 ? -1 : 1) : m1 != m2 ? (m1 < m2 ? -1 : 1) : 0;
+            return JsValue.FromNumber(c1);
         }, 2);
     }
 
     // ─── Temporal.PlainMonthDay ────────────────────────────
+    private static JsValue ConstructPlainMonthDay(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> args)
+    {
+        // new Temporal.PlainMonthDay(month, day [, calendar [, referenceISOYear]])
+        double m = ArgInt(ctx, args, 0);
+        double d = ArgInt(ctx, args, 1);
+        string cal = CalendarArg(ctx, args, 2);
+        double refYear = ArgIntOr(ctx, args, 3, 1972);
+        if (refYear is < -999_999 or > 999_999 || m is < 1 or > 12 || d is < 1 or > 31
+            || !IsoMath.IsValidIsoDate((int)refYear, (int)m, (int)d))
+            throw new JsThrownException(ctx.CreateRangeError("Invalid ISO month-day."));
+        return MakePlainMonthDay(ctx, h, (int)m, (int)d, cal);
+    }
+
     private void InstallPlainMonthDay(IBuiltinContext ctx, JsObject t, ObjectHandle tH, JsHeap h)
     {
-        var (cH, pH) = MakeCtor(ctx, h, t, tH, "PlainMonthDay", 2, true);
+        var (cH, pH) = MakeCtor(ctx, h, t, tH, "PlainMonthDay", 2, true,
+            (cctx, hh, a) => ConstructPlainMonthDay(cctx, hh, a));
         var p = h.GetObject(pH);
         AddGetter(h, pH, p, "monthCode", o => GetV(h, o, "mc"));
         AddGetter(h, pH, p, "day", o => GetV(h, o, "d"));
-        AddGetter(h, pH, p, "calendarId", _ => JsValue.FromString("iso8601"));
+        AddGetter(h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.with: argument must be an object."));
             var bag = h.GetObject(a[0].AsObjectHandle());
@@ -1521,33 +2194,51 @@ public sealed class TemporalStub : IBuiltinModule
             if (arg.Tag == JsValueTag.String)
             {
                 var s = arg.AsString();
-                var dt = ParseIsoDate(s);
-                if (dt.HasValue) return AttachPrototype(h, MakePlainMonthDay(ctx, h, dt.Value.Month, dt.Value.Day), pH);
-                // Try "--MM-DD" or "MM-DD" format
-                if (s.Length >= 5 && ((s.StartsWith("--") && s[4] == '-') || s[2] == '-'))
-                {
-                    int start = s.StartsWith("--") ? 2 : 0;
-                    if (int.TryParse(s.Substring(start, 2), out int mm) && int.TryParse(s.Substring(start + 3), out int dd))
-                        return AttachPrototype(h, MakePlainMonthDay(ctx, h, mm, dd), pH);
-                }
-                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for PlainMonthDay"));
+                if (!TemporalIsoParser.TryParseMonthDay(s, out var parsed, out var parseError) || parsed.HasUtcDesignator)
+                    throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for PlainMonthDay: {parseError}"));
+                var parsedCal = CalendarFromAnnotation(ctx, parsed.Calendar);
+                _ = GetOverflowOption(ctx, h, a, 1);
+                return AttachPrototype(h, MakePlainMonthDay(ctx, h, parsed.Month, parsed.Day, parsedCal), pH);
             }
             if (arg.Tag == JsValueTag.Object)
             {
                 var obj = h.GetObject(arg.AsObjectHandle());
                 if (IsTemporalInstance(h, arg, pH))
                 {
+                    _ = GetOverflowOption(ctx, h, a, 1);
                     int d = ToSafeInt(GetVNum(h, obj, "d"));
                     var mc = GetVStr(h, obj, "mc");
-                    int m;
-                    if (!string.IsNullOrEmpty(mc) && mc.StartsWith("M") && int.TryParse(mc.Substring(1), out var mp)) m = mp;
-                    else m = ToSafeInt(GetVNum(h, obj, "month"));
-                    return AttachPrototype(h, MakePlainMonthDay(ctx, h, m, d), pH);
+                    int m = mc.Length == 3 && mc[0] == 'M' && int.TryParse(mc[1..], out var mp) ? mp : 1;
+                    return AttachPrototype(h, MakePlainMonthDay(ctx, h, m, d, GetVStr(h, obj, "calendarId")), pH);
                 }
-                int dm = ToSafeInt(ReadOwnNum(h, obj, "month"));
-                var dmc = ReadOwnStr(h, obj, "monthCode");
-                if (!string.IsNullOrEmpty(dmc) && dmc.StartsWith("M") && int.TryParse(dmc.Substring(1), out var dmp)) dm = dmp;
-                return AttachPrototype(h, MakePlainMonthDay(ctx, h, dm, ToSafeInt(ReadOwnNum(h, obj, "day"))), pH);
+                // Property bag: day + (monthCode | month-with-year) required.
+                string cal = GetCalendarFromFields(ctx, h, arg);
+                if (!TryGetField(ctx, h, arg, "day", out var dayValue))
+                    throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.from: day is required."));
+                double d2 = ToIntegerWithTruncation(ctx, dayValue);
+                bool hasCode = TryGetField(ctx, h, arg, "monthCode", out _);
+                if (!hasCode && TryGetField(ctx, h, arg, "month", out _) && !TryGetField(ctx, h, arg, "year", out _))
+                    throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.from: month requires year (or use monthCode)."));
+                double m2 = GetMonthFromFields(ctx, h, arg);
+                double refYear = TryGetField(ctx, h, arg, "year", out var yv) && !hasCode ? ToIntegerWithTruncation(ctx, yv) : 1972;
+                var overflow = GetOverflowOption(ctx, h, a, 1);
+                int month2;
+                int day2;
+                if (refYear is < -999_999 or > 999_999)
+                    throw new JsThrownException(ctx.CreateRangeError("Year is out of the supported range."));
+                if (overflow == "constrain")
+                {
+                    month2 = (int)Math.Clamp(m2, 1, 12);
+                    day2 = (int)Math.Clamp(d2, 1, IsoMath.DaysInMonth((int)refYear, month2));
+                }
+                else
+                {
+                    if (m2 is < 1 or > 12 || d2 is < 1 or > 31 || !IsoMath.IsValidIsoDate((int)refYear, (int)m2, (int)d2))
+                        throw new JsThrownException(ctx.CreateRangeError("Invalid ISO month-day."));
+                    month2 = (int)m2;
+                    day2 = (int)d2;
+                }
+                return AttachPrototype(h, MakePlainMonthDay(ctx, h, month2, day2, cal), pH);
             }
             throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.from: argument must be a string or property bag."));
         }, 1);
@@ -1619,10 +2310,26 @@ public sealed class TemporalStub : IBuiltinModule
             if (arg.Tag == JsValueTag.String)
             {
                 var s = arg.AsString();
-                var dt = ParseIsoDateTime(s);
-                if (dt.HasValue)
-                    return AttachPrototype(h, MakeZonedDateTime(ctx, h, new DateTimeOffset(dt.Value, TimeSpan.Zero), "UTC"), pH);
-                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for ZonedDateTime"));
+                // ToTemporalZonedDateTime: a time zone annotation is required.
+                if (!TemporalIsoParser.TryParseDateTime(s, out var parsed, out var parseError))
+                    throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for ZonedDateTime: {parseError}"));
+                if (parsed.TimeZoneAnnotation is null)
+                    throw new JsThrownException(ctx.CreateRangeError($"'{s}' has no time zone annotation; required for ZonedDateTime."));
+                _ = CalendarFromAnnotation(ctx, parsed.Calendar);
+                var tm = parsed.HasTime ? parsed.Time : IsoTime.Midnight;
+                int zy = Math.Clamp(parsed.Year, 1, 9999);
+                try
+                {
+                    var local = new DateTimeOffset(zy, parsed.Month, Math.Min(parsed.Day, DateTime.DaysInMonth(zy, parsed.Month)),
+                        tm.Hour, tm.Minute, tm.Second, tm.Millisecond, TimeSpan.Zero);
+                    var zoned = IntlDateTimeFormatting.ConvertToTimeZone(local, parsed.TimeZoneAnnotation, out var resolvedTz);
+                    return AttachPrototype(h, MakeZonedDateTime(ctx, h, zoned, resolvedTz), pH);
+                }
+                catch (JsThrownException) { throw; }
+                catch
+                {
+                    throw new JsThrownException(ctx.CreateRangeError($"'{parsed.TimeZoneAnnotation}' is not a valid time zone."));
+                }
             }
             if (arg.Tag == JsValueTag.Object)
             {
@@ -1743,13 +2450,16 @@ public sealed class TemporalStub : IBuiltinModule
     }
 
     private static JsValue MakePlainDate(IBuiltinContext ctx, JsHeap h, DateTime dt, string calendarId = "iso8601")
+        => MakePlainDateYmd(ctx, h, dt.Year, dt.Month, dt.Day, calendarId);
+
+    private static JsValue MakePlainDateYmd(IBuiltinContext ctx, JsHeap h, int y, int m, int d, string calendarId = "iso8601")
     {
         var o = new JsObject();
-        var d = new JsObject(); var dH = h.AllocateObject(d, AllocationSite.Current());
-        d.SetProperty("y", JsValue.FromNumber(dt.Year));
-        d.SetProperty("m", JsValue.FromNumber(dt.Month));
-        d.SetProperty("d", JsValue.FromNumber(dt.Day));
-        d.SetProperty("calendarId", JsValue.FromString(calendarId));
+        var data = new JsObject(); var dH = h.AllocateObject(data, AllocationSite.Current());
+        data.SetProperty("y", JsValue.FromNumber(y));
+        data.SetProperty("m", JsValue.FromNumber(m));
+        data.SetProperty("d", JsValue.FromNumber(d));
+        data.SetProperty("calendarId", JsValue.FromString(string.IsNullOrEmpty(calendarId) ? "iso8601" : calendarId));
         o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.FromObject(dH), false, false, false));
         return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
     }
@@ -1757,6 +2467,23 @@ public sealed class TemporalStub : IBuiltinModule
     private static JsValue MakePlainTime(IBuiltinContext ctx, JsHeap h, TimeSpan ts)
     {
         return MakePlainTime(ctx, h, ts.Hours, ts.Minutes, ts.Seconds, ts.Milliseconds, 0, 0);
+    }
+
+    private static JsValue MakePlainTimeFromDayNs(IBuiltinContext ctx, JsHeap h, long dayNs)
+    {
+        return MakePlainTime(ctx, h,
+            (int)(dayNs / 3_600_000_000_000L), (int)(dayNs / 60_000_000_000L % 60), (int)(dayNs / 1_000_000_000L % 60),
+            (int)(dayNs / 1_000_000L % 1000), (int)(dayNs / 1_000L % 1000), (int)(dayNs % 1000));
+    }
+
+    /// <summary>Balance a signed nanosecond total into an hours..nanoseconds Duration.</summary>
+    private static JsValue MakeDurationFromNs(IBuiltinContext ctx, JsHeap h, long totalNs)
+    {
+        int sign = totalNs < 0 ? -1 : 1;
+        long absNs = Math.Abs(totalNs);
+        return MakeDuration(ctx, h, 0, 0, 0, 0,
+            sign * (int)(absNs / 3_600_000_000_000L), sign * (int)(absNs / 60_000_000_000L % 60), sign * (int)(absNs / 1_000_000_000L % 60),
+            sign * (int)(absNs / 1_000_000L % 1000), sign * (int)(absNs / 1_000L % 1000), sign * (int)(absNs % 1000));
     }
 
     private static JsValue MakePlainTime(IBuiltinContext ctx, JsHeap h,
@@ -1775,39 +2502,45 @@ public sealed class TemporalStub : IBuiltinModule
     }
 
     private static JsValue MakePlainDateTime(IBuiltinContext ctx, JsHeap h, DateTime dt, string calendarId = "iso8601")
+        => MakePlainDateTimeParts(ctx, h, dt.Year, dt.Month, dt.Day, dt.Hour, dt.Minute, dt.Second, dt.Millisecond, 0, 0, calendarId);
+
+    private static JsValue MakePlainDateTimeParts(IBuiltinContext ctx, JsHeap h,
+        int y, int mo, int d, int hr, int mi, int se, int ms, int us, int ns, string calendarId = "iso8601")
     {
         var o = new JsObject();
-        var d = new JsObject(); var dH = h.AllocateObject(d, AllocationSite.Current());
-        d.SetProperty("year", JsValue.FromNumber(dt.Year));
-        d.SetProperty("month", JsValue.FromNumber(dt.Month));
-        d.SetProperty("day", JsValue.FromNumber(dt.Day));
-        d.SetProperty("hour", JsValue.FromNumber(dt.Hour));
-        d.SetProperty("minute", JsValue.FromNumber(dt.Minute));
-        d.SetProperty("second", JsValue.FromNumber(dt.Second));
-        d.SetProperty("millisecond", JsValue.FromNumber(dt.Millisecond));
-        d.SetProperty("microsecond", JsValue.FromNumber(0));
-        d.SetProperty("nanosecond", JsValue.FromNumber(0));
-        d.SetProperty("calendarId", JsValue.FromString(calendarId));
+        var data = new JsObject(); var dH = h.AllocateObject(data, AllocationSite.Current());
+        data.SetProperty("year", JsValue.FromNumber(y));
+        data.SetProperty("month", JsValue.FromNumber(mo));
+        data.SetProperty("day", JsValue.FromNumber(d));
+        data.SetProperty("hour", JsValue.FromNumber(hr));
+        data.SetProperty("minute", JsValue.FromNumber(mi));
+        data.SetProperty("second", JsValue.FromNumber(se));
+        data.SetProperty("millisecond", JsValue.FromNumber(ms));
+        data.SetProperty("microsecond", JsValue.FromNumber(us));
+        data.SetProperty("nanosecond", JsValue.FromNumber(ns));
+        data.SetProperty("calendarId", JsValue.FromString(string.IsNullOrEmpty(calendarId) ? "iso8601" : calendarId));
         o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.FromObject(dH), false, false, false));
         return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
     }
 
-    private static JsValue MakePlainYearMonth(IBuiltinContext ctx, JsHeap h, int y, int m)
+    private static JsValue MakePlainYearMonth(IBuiltinContext ctx, JsHeap h, int y, int m, string calendarId = "iso8601")
     {
         var o = new JsObject();
         var d = new JsObject(); var dH = h.AllocateObject(d, AllocationSite.Current());
         d.SetProperty("y", JsValue.FromNumber(y));
         d.SetProperty("m", JsValue.FromNumber(m));
+        d.SetProperty("calendarId", JsValue.FromString(string.IsNullOrEmpty(calendarId) ? "iso8601" : calendarId));
         o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.FromObject(dH), false, false, false));
         return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
     }
 
-    private static JsValue MakePlainMonthDay(IBuiltinContext ctx, JsHeap h, int m, int d)
+    private static JsValue MakePlainMonthDay(IBuiltinContext ctx, JsHeap h, int m, int d, string calendarId = "iso8601")
     {
         var o = new JsObject();
         var dd = new JsObject(); var ddH = h.AllocateObject(dd, AllocationSite.Current());
         dd.SetProperty("mc", JsValue.FromString($"M{m:D2}"));
         dd.SetProperty("d", JsValue.FromNumber(d));
+        dd.SetProperty("calendarId", JsValue.FromString(string.IsNullOrEmpty(calendarId) ? "iso8601" : calendarId));
         o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.FromObject(ddH), false, false, false));
         return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
     }
