@@ -1425,7 +1425,9 @@ public sealed class TemporalStub : IBuiltinModule
     {
         var brandProto = pH;
         var gf = new NativeFunctionObject("get " + n, (tv, _) =>
-            IsTemporalInstance(h, tv, brandProto) ? g(h.GetObject(tv.AsObjectHandle())) : JsValue.Undefined, length: 0);
+            IsTemporalInstance(h, tv, brandProto)
+                ? g(h.GetObject(tv.AsObjectHandle()))
+                : throw new JsThrownException(ctx.CreateTypeError($"get {n}: receiver is not a valid Temporal instance.")), length: 0);
         ApplyFunctionPrototype(ctx, h, gf);
         var gH = h.AllocateObject(gf, AllocationSite.Current());
         p.DefineOwnProperty(n, JsPropertyDescriptor.Accessor(JsValue.FromObject(gH), JsValue.Undefined, Enumerable: false, Configurable: true));
