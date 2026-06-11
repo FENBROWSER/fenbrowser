@@ -1016,6 +1016,74 @@ public sealed class TemporalStub : IBuiltinModule
         return RoundNsToIncrement(ctx, timeNs, incrementNs, mode);
     }
 
+    /// <summary>
+    /// Temporal.PlainDateTime.prototype.round time component: validate smallestUnit
+    /// (day..nanosecond), roundingIncrement, and roundingMode, then round the time-of-day
+    /// nanoseconds. Returns the carry in whole days plus the rounded time-of-day ns.
+    /// </summary>
+    private static (long DayCarry, long TimeNs) RoundPlainDateTimeTime(IBuiltinContext ctx, JsHeap h, long timeNs, IReadOnlyList<JsValue> a)
+    {
+        if (a.Count == 0 || a[0].Tag == JsValueTag.Undefined)
+            throw new JsThrownException(ctx.CreateTypeError("round requires a unit or options argument."));
+        string smallest;
+        double increment = 1;
+        string mode = "halfExpand";
+        if (a[0].Tag == JsValueTag.String)
+        {
+            smallest = NormalizeUnitName(ctx, a[0].AsString());
+        }
+        else if (a[0].Tag == JsValueTag.Object)
+        {
+            if (TryGetField(ctx, h, a[0], "roundingIncrement", out var iv))
+            {
+                increment = ToIntegerWithTruncation(ctx, iv);
+                if (increment < 1 || increment > 1_000_000_000)
+                    throw new JsThrownException(ctx.CreateRangeError("roundingIncrement out of range."));
+            }
+            if (TryGetField(ctx, h, a[0], "roundingMode", out var mv))
+            {
+                mode = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
+                if (mode is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
+                    throw new JsThrownException(ctx.CreateRangeError($"'{mode}' is not a valid rounding mode."));
+            }
+            if (!TryGetField(ctx, h, a[0], "smallestUnit", out var sv) || sv.Tag == JsValueTag.Undefined)
+                throw new JsThrownException(ctx.CreateRangeError("smallestUnit is required."));
+            smallest = NormalizeUnitName(ctx, sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv));
+        }
+        else
+        {
+            throw new JsThrownException(ctx.CreateTypeError("round argument must be a string or options object."));
+        }
+
+        if (smallest == "day")
+        {
+            // day rounding requires an increment of exactly 1; round to the nearest midnight.
+            if (increment != 1)
+                throw new JsThrownException(ctx.CreateRangeError("roundingIncrement must be 1 for day rounding."));
+            long carry = RoundNsToIncrement(ctx, timeNs, NsPerDay, mode) / NsPerDay;
+            return (carry, 0L);
+        }
+
+        long maximum = smallest switch
+        {
+            "hour" => 24L,
+            "minute" => 60L,
+            "second" => 60L,
+            "millisecond" => 1000L,
+            "microsecond" => 1000L,
+            "nanosecond" => 1000L,
+            _ => throw new JsThrownException(ctx.CreateRangeError($"'{smallest}' is not a valid smallestUnit for PlainDateTime.round.")),
+        };
+        if (increment >= maximum || maximum % (long)increment != 0)
+            throw new JsThrownException(ctx.CreateRangeError("roundingIncrement does not divide evenly into the maximum."));
+
+        long rounded = RoundNsToIncrement(ctx, timeNs, (long)increment * UnitNs(smallest), mode);
+        long dayCarry = rounded / NsPerDay;
+        long timeOfDay = rounded % NsPerDay;
+        if (timeOfDay < 0) { timeOfDay += NsPerDay; dayCarry -= 1; }
+        return (dayCarry, timeOfDay);
+    }
+
     /// <summary>Total nanoseconds of the day/time portion (caller has excluded calendar units).</summary>
     private static long DurationDayTimeNs((int years, int months, int weeks, int days, int hours, int minutes, int seconds, int millis, int micros, int nanos) d)
         => DurationToNanos(d.days, d.hours, d.minutes, d.seconds, d.millis, d.micros, d.nanos);
@@ -2352,7 +2420,21 @@ public sealed class TemporalStub : IBuiltinModule
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
                 DifferencePlainDateTimes(ctx, h, otherDate, otherTime.ToNanosecondsOfDay(), DecodeIsoDateLong(h, o), DecodeTimeOfDayNs(h, o)));
         }, 1);
-        AddMethod(ctx, h, pH, p, "round", (o, _) => CloneTemporal(ctx, h, o), 1);
+        AddMethod(ctx, h, pH, p, "round", (o, a) => {
+            var date = DecodeIsoDateLong(h, o);
+            long timeNs = DecodeTimeOfDayNs(h, o);
+            var (dayCarry, roundedTimeNs) = RoundPlainDateTimeTime(ctx, h, timeNs, a);
+            var resultDate = IsoMath.EpochDaysToCivil(IsoMath.ToEpochDays(date) + dayCarry);
+            int hr = (int)(roundedTimeNs / 3_600_000_000_000L);
+            int mi = (int)(roundedTimeNs / 60_000_000_000L % 60);
+            int se = (int)(roundedTimeNs / 1_000_000_000L % 60);
+            int ms = (int)(roundedTimeNs / 1_000_000L % 1000);
+            int us = (int)(roundedTimeNs / 1_000L % 1000);
+            int ns = (int)(roundedTimeNs % 1000);
+            string cal = GetVStr(h, o, "calendarId"); if (string.IsNullOrEmpty(cal)) cal = "iso8601";
+            return AttachPrototype(h, MakePlainDateTimeParts(ctx, h, resultDate.Year, resultDate.Month, resultDate.Day,
+                hr, mi, se, ms, us, ns, cal), pH);
+        }, 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
             var (otherDate, otherTime) = ToTemporalDateTimeRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             return JsValue.FromBoolean(IsoMath.Compare(DecodeIsoDateLong(h, o), otherDate) == 0
