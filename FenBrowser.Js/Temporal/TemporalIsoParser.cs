@@ -15,6 +15,7 @@ internal sealed class ParsedIsoString
     public bool HasUtcDesignator;          // 'Z' / 'z'
     public bool HasOffset;                  // numeric UTC offset
     public long OffsetNanoseconds;
+    public bool OffsetSubMinuteSyntax;      // offset written with seconds (invalid as a tz id)
 
     public string? TimeZoneAnnotation;      // contents of the first [..] bracket
     public string? Calendar;                // first u-ca annotation value
@@ -62,6 +63,7 @@ internal static class TemporalIsoParser
             }
             else if (i < s.Length && (s[i] == '+' || s[i] == '-'))
             {
+                int offsetStart = i;
                 if (!TryParseUtcOffset(s, ref i, subMinutePrecision: true, out var offsetNs, ref error))
                 {
                     return false;
@@ -69,6 +71,14 @@ internal static class TemporalIsoParser
 
                 result.HasOffset = true;
                 result.OffsetNanoseconds = offsetNs;
+                // More than sign+HH+MM digits means a seconds component was written.
+                int offsetDigits = 0;
+                for (int k = offsetStart; k < i; k++)
+                {
+                    if (IsDigit(s[k])) offsetDigits++;
+                }
+
+                result.OffsetSubMinuteSyntax = offsetDigits > 4;
             }
         }
 
@@ -233,6 +243,7 @@ internal static class TemporalIsoParser
             }
             else if (i < s.Length && (s[i] == '+' || s[i] == '-'))
             {
+                int offsetStart = i;
                 if (!TryParseUtcOffset(s, ref i, subMinutePrecision: true, out var offsetNs, ref error))
                 {
                     return false;
@@ -240,6 +251,14 @@ internal static class TemporalIsoParser
 
                 result.HasOffset = true;
                 result.OffsetNanoseconds = offsetNs;
+                // More than sign+HH+MM digits means a seconds component was written.
+                int offsetDigits = 0;
+                for (int k = offsetStart; k < i; k++)
+                {
+                    if (IsDigit(s[k])) offsetDigits++;
+                }
+
+                result.OffsetSubMinuteSyntax = offsetDigits > 4;
             }
 
             if (TryParseAnnotations(s, ref i, result, ref error) && i == s.Length)

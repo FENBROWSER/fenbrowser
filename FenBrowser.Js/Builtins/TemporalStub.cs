@@ -214,10 +214,12 @@ public sealed class TemporalStub : IBuiltinModule
 
     private static JsValue InstantToZonedDateTimeIso(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> args)
     {
-        var timeZoneLike = args.Count > 0 ? ToStrArg(ctx, args[0]) : "UTC";
-        var instant = new DateTimeOffset(InstantToDateTime(DecodeInstantNanos(h, o)));
-        var zoned = IntlDateTimeFormatting.ConvertToTimeZone(instant, timeZoneLike, out var resolvedTimeZoneId);
-        return MakeZonedDateTime(ctx, h, zoned, resolvedTimeZoneId);
+        // sec-temporal.instant.prototype.tozoneddatetimeiso: the time zone
+        // argument is required and must be a string (identifier or ISO string).
+        if (args.Count == 0 || args[0].Tag != JsValueTag.String)
+            throw new JsThrownException(ctx.CreateTypeError("toZonedDateTimeISO requires a time zone string."));
+        string tz = CanonicalizeTimeZoneId(ctx, args[0].AsString());
+        return MakeZonedDateTimeNs(ctx, h, DecodeInstantNanos(h, o), tz, "iso8601");
     }
 
     private static JsValue PlainTimeToLocaleString(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> args)
@@ -416,6 +418,21 @@ public sealed class TemporalStub : IBuiltinModule
         var s = ctx.ToStringValue(v);
         if (s is not ("constrain" or "reject"))
             throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid value for overflow."));
+        return s;
+    }
+
+    /// <summary>GetTemporalDisambiguationOption: options.disambiguation, validated.</summary>
+    private static string GetDisambiguationOption(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> a, int i)
+    {
+        RequireOptionsObject(ctx, a, i);
+        if (i >= a.Count || a[i].Tag != JsValueTag.Object) return "compatible";
+        var optionsValue = a[i];
+        var obj = h.GetObject(optionsValue.AsObjectHandle());
+        if (!ctx.TryGetPropertyValue(obj, optionsValue, "disambiguation", out var v) || v.Tag == JsValueTag.Undefined)
+            return "compatible";
+        var s = ctx.ToStringValue(v);
+        if (s is not ("compatible" or "earlier" or "later" or "reject"))
+            throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid value for disambiguation."));
         return s;
     }
 
@@ -1348,9 +1365,9 @@ public sealed class TemporalStub : IBuiltinModule
             return AttachTemporalPrototypeByName(ctx, h, t, "PlainDateTime", MakePlainDateTime(ctx, h, DateTime.UtcNow));
         });
         AddNowStatic(ctx, h, nH, now, "zonedDateTimeISO", a => {
-            var timeZone = NormalizeNowTimeZoneArg(ctx, a);
-            var zoned = IntlDateTimeFormatting.ConvertToTimeZone(DateTimeOffset.UtcNow, timeZone, out var resolvedTimeZoneId);
-            return AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", MakeZonedDateTime(ctx, h, zoned, resolvedTimeZoneId));
+            string tz = CanonicalizeTimeZoneId(ctx, NormalizeNowTimeZoneArg(ctx, a));
+            long ns = (DateTime.UtcNow.Ticks - Epoch.Ticks) * 100L;
+            return AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", MakeZonedDateTimeNs(ctx, h, ns, tz, "iso8601"));
         });
     }
 
@@ -1564,7 +1581,8 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "toString", (o, a) => FormatInstant(ctx, h, o, a), 0);
         AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => InstantToLocaleString(ctx, h, o, a), 2);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatInstant(h, o), 0);
-        AddMethod(ctx, h, pH, p, "toZonedDateTimeISO", (o, a) => InstantToZonedDateTimeIso(ctx, h, o, a), 1);
+        AddMethod(ctx, h, pH, p, "toZonedDateTimeISO", (o, a) =>
+            AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", InstantToZonedDateTimeIso(ctx, h, o, a)), 1);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("Instant.prototype.valueOf throws.")), 0);
         var c = h.GetObject(cH);
         AddStatic(ctx, h, cH, c, "from", a => {
@@ -1698,39 +1716,29 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "toZonedDateTime", (o, a) => {
             // Argument: time zone string, or { timeZone, plainTime? }.
             var d = DecodeIsoDate(h, o);
-            string tz = "UTC";
+            string tzRaw;
             var tm = IsoTime.Midnight;
-            if (a.Count > 0 && a[0].Tag == JsValueTag.String) tz = a[0].AsString();
+            if (a.Count > 0 && a[0].Tag == JsValueTag.String)
+            {
+                tzRaw = a[0].AsString();
+            }
             else if (a.Count > 0 && a[0].Tag == JsValueTag.Object)
             {
-                if (TryGetField(ctx, h, a[0], "timeZone", out var tzv))
-                {
-                    tz = tzv.Tag == JsValueTag.String ? tzv.AsString() : ctx.ToStringValue(tzv);
-                    if (TryGetField(ctx, h, a[0], "plainTime", out var ptv))
-                        tm = ToTemporalTimeRecord(ctx, h, ptv);
-                }
-                else
-                {
-                    tz = ctx.ToStringValue(a[0]);
-                }
+                if (!TryGetField(ctx, h, a[0], "timeZone", out var tzv) || tzv.Tag == JsValueTag.Undefined)
+                    throw new JsThrownException(ctx.CreateTypeError("toZonedDateTime: timeZone is required."));
+                if (tzv.Tag != JsValueTag.String)
+                    throw new JsThrownException(ctx.CreateTypeError("toZonedDateTime: timeZone must be a string."));
+                tzRaw = tzv.AsString();
+                if (TryGetField(ctx, h, a[0], "plainTime", out var ptv) && ptv.Tag != JsValueTag.Undefined)
+                    tm = ToTemporalTimeRecord(ctx, h, ptv);
             }
-            else if (a.Count > 0)
+            else
             {
                 throw new JsThrownException(ctx.CreateTypeError("toZonedDateTime: time zone is required."));
             }
-            int zy = Math.Clamp(d.Year, 1, 9999);
-            try
-            {
-                var local = new DateTimeOffset(zy, d.Month, Math.Min(d.Day, DateTime.DaysInMonth(zy, d.Month)),
-                    tm.Hour, tm.Minute, tm.Second, tm.Millisecond, TimeSpan.Zero);
-                var zoned = IntlDateTimeFormatting.ConvertToTimeZone(local, tz, out var resolvedTz);
-                return AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", MakeZonedDateTime(ctx, h, zoned, resolvedTz));
-            }
-            catch (JsThrownException) { throw; }
-            catch
-            {
-                throw new JsThrownException(ctx.CreateRangeError($"'{tz}' is not a valid time zone."));
-            }
+            string tz = CanonicalizeTimeZoneId(ctx, tzRaw);
+            return AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", MakeZonedDateTimeNs(ctx, h,
+                TemporalTimeZones.EpochNsFromWall(tz, d, tm), tz, GetVStr(h, o, "calendarId")));
         }, 1);
         AddMethod(ctx, h, pH, p, "toString", (o, _) => FormatPlainDate(h, o), 0);
         AddMethod(ctx, h, pH, p, "toLocaleString", (o, _) => FormatPlainDate(h, o), 0);
@@ -2021,24 +2029,14 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "toLocaleString", (o, _) => FormatPlainDateTime(h, o), 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainDateTime(h, o), 0);
         AddMethod(ctx, h, pH, p, "toZonedDateTime", (o, a) => {
-            if (a.Count == 0 || (a[0].Tag != JsValueTag.String && a[0].Tag != JsValueTag.Object))
-                throw new JsThrownException(ctx.CreateTypeError("toZonedDateTime: time zone is required."));
-            string tz = a[0].Tag == JsValueTag.String ? a[0].AsString() : ctx.ToStringValue(a[0]);
-            var cur = DecodeIsoDateLong(h, o);
-            int zy = Math.Clamp(cur.Year, 1, 9999);
-            try
-            {
-                var local = new DateTimeOffset(zy, cur.Month, Math.Min(cur.Day, DateTime.DaysInMonth(zy, cur.Month)),
-                    (int)GetVNum(h, o, "hour"), (int)GetVNum(h, o, "minute"), (int)GetVNum(h, o, "second"),
-                    (int)GetVNum(h, o, "millisecond"), TimeSpan.Zero);
-                var zoned = IntlDateTimeFormatting.ConvertToTimeZone(local, tz, out var resolvedTz);
-                return AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", MakeZonedDateTime(ctx, h, zoned, resolvedTz));
-            }
-            catch (JsThrownException) { throw; }
-            catch
-            {
-                throw new JsThrownException(ctx.CreateRangeError($"'{tz}' is not a valid time zone."));
-            }
+            if (a.Count == 0 || a[0].Tag != JsValueTag.String)
+                throw new JsThrownException(ctx.CreateTypeError("toZonedDateTime requires a time zone string."));
+            _ = GetDisambiguationOption(ctx, h, a, 1);
+            string tz = CanonicalizeTimeZoneId(ctx, a[0].AsString());
+            var time = new IsoTime((int)GetVNum(h, o, "hour"), (int)GetVNum(h, o, "minute"), (int)GetVNum(h, o, "second"),
+                (int)GetVNum(h, o, "millisecond"), (int)GetVNum(h, o, "microsecond"), (int)GetVNum(h, o, "nanosecond"));
+            return AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", MakeZonedDateTimeNs(ctx, h,
+                TemporalTimeZones.EpochNsFromWall(tz, DecodeIsoDateLong(h, o), time), tz, GetVStr(h, o, "calendarId")));
         }, 1);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
@@ -2388,7 +2386,7 @@ public sealed class TemporalStub : IBuiltinModule
             {
                 return "UTC";
             }
-            else if (parsed.HasOffset && parsed.OffsetNanoseconds % 60_000_000_000L == 0)
+            else if (parsed.HasOffset && !parsed.OffsetSubMinuteSyntax)
             {
                 return TemporalTimeZones.FormatOffset(parsed.OffsetNanoseconds);
             }
@@ -2416,12 +2414,12 @@ public sealed class TemporalStub : IBuiltinModule
             long epochNs;
             if (parsed.HasUtcDesignator)
             {
-                long days = Math.Clamp(IsoMath.ToEpochDays(date), -106_751_990L, 106_751_990L);
+                long days = Math.Clamp(IsoMath.ToEpochDays(date), -106_751L, 106_751L);
                 epochNs = days * NsPerDay + time.ToNanosecondsOfDay();
             }
             else if (parsed.HasOffset)
             {
-                long days = Math.Clamp(IsoMath.ToEpochDays(date), -106_751_990L, 106_751_990L);
+                long days = Math.Clamp(IsoMath.ToEpochDays(date), -106_751L, 106_751L);
                 epochNs = days * NsPerDay + time.ToNanosecondsOfDay() - parsed.OffsetNanoseconds;
             }
             else
@@ -2683,6 +2681,7 @@ public sealed class TemporalStub : IBuiltinModule
             RequireOptionsObject(ctx, a, 1);
             var (ns, tz, cal) = ToTemporalZonedRecord(ctx, h, a[0]);
             _ = GetOverflowOption(ctx, h, a, 1);
+            _ = GetDisambiguationOption(ctx, h, a, 1);
             return AttachPrototype(h, MakeZonedDateTimeNs(ctx, h, ns, tz, cal), pH);
         }, 1);
         AddStatic(ctx, h, cH, c, "compare", a => {

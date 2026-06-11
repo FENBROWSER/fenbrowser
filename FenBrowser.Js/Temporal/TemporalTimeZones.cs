@@ -144,9 +144,9 @@ internal static class TemporalTimeZones
     /// </summary>
     public static long EpochNsFromWall(string canonicalId, IsoDate date, IsoTime time)
     {
-        // long holds ±106,751,991 days of nanoseconds; clamp wall instants
-        // beyond that (they exceed any zone's transition data anyway).
-        long days = Math.Clamp(IsoMath.ToEpochDays(date), -106_751_990L, 106_751_990L);
+        // long holds ±106,751 days of nanoseconds (~±292 years); clamp wall
+        // instants beyond that so the day multiply below cannot overflow.
+        long days = Math.Clamp(IsoMath.ToEpochDays(date), -106_751L, 106_751L);
         long wallNs = days * NsPerDay + time.ToNanosecondsOfDay();
         long offset1 = GetOffsetNs(canonicalId, wallNs);
         long candidate = wallNs - offset1;
