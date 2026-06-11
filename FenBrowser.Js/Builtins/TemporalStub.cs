@@ -781,7 +781,8 @@ public sealed class TemporalStub : IBuiltinModule
         var s = arg.AsString();
         if (!TemporalIsoParser.TryParseInstant(s, out var parsed, out var parseError))
             throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for Instant: {parseError}"));
-        _ = CalendarFromAnnotation(ctx, parsed.Calendar);
+        // Temporal.Instant has no calendar: any [u-ca=...] annotation (even critical, even
+        // an unknown value) is parsed and ignored, never validated.
         var epochDays = IsoMath.CivilToEpochDays(parsed.Year, parsed.Month, parsed.Day);
         var ns = new System.Numerics.BigInteger(epochDays) * NsPerDay
                  + parsed.Time.ToNanosecondsOfDay()
