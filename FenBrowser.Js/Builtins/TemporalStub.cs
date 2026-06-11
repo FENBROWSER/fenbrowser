@@ -678,7 +678,7 @@ public sealed class TemporalStub : IBuiltinModule
 
             if (!any)
                 throw new JsThrownException(ctx.CreateTypeError("At least one duration field is required."));
-            ValidateDurationSigns(ctx, values);
+            ValidateDuration(ctx, values);
             return (ToSafeInt(values[0]), ToSafeInt(values[1]), ToSafeInt(values[2]), ToSafeInt(values[3]), ToSafeInt(values[4]),
                 ToSafeInt(values[5]), ToSafeInt(values[6]), ToSafeInt(values[7]), ToSafeInt(values[8]), ToSafeInt(values[9]));
         }
@@ -844,6 +844,25 @@ public sealed class TemporalStub : IBuiltinModule
             else if (s != sign)
                 throw new JsThrownException(ctx.CreateRangeError("Mixed-sign durations are invalid."));
         }
+    }
+
+    /// <summary>
+    /// IsValidDuration (Temporal spec): sign consistency plus the range limits —
+    /// abs(years|months|weeks) &lt; 2^32 and the days-through-nanoseconds part, expressed
+    /// in seconds, has abs &lt; 2^53. Components are in canonical order
+    /// [years, months, weeks, days, hours, minutes, seconds, ms, µs, ns].
+    /// </summary>
+    private static void ValidateDuration(IBuiltinContext ctx, double[] v)
+    {
+        ValidateDurationSigns(ctx, v);
+        const double twoTo32 = 4294967296.0;       // 2^32
+        const double twoTo53 = 9007199254740992.0; // 2^53
+        if (Math.Abs(v[0]) >= twoTo32 || Math.Abs(v[1]) >= twoTo32 || Math.Abs(v[2]) >= twoTo32)
+            throw new JsThrownException(ctx.CreateRangeError("Duration years, months, or weeks out of range."));
+        double seconds = v[3] * 86400.0 + v[4] * 3600.0 + v[5] * 60.0 + v[6]
+            + v[7] / 1e3 + v[8] / 1e6 + v[9] / 1e9;
+        if (!(Math.Abs(seconds) < twoTo53))
+            throw new JsThrownException(ctx.CreateRangeError("Duration time fields out of range."));
     }
 
     /// <summary>Singular unit name; plurals accepted; RangeError on anything else.</summary>
@@ -1193,7 +1212,7 @@ public sealed class TemporalStub : IBuiltinModule
         var v = new double[10];
         for (int i = 0; i < 10; i++)
             v[i] = ToIntegerIfIntegral(ctx, i < args.Count ? args[i] : JsValue.Undefined);
-        ValidateDurationSigns(ctx, v);
+        ValidateDuration(ctx, v);
         return MakeDuration(ctx, h,
             ToSafeInt(v[0]), ToSafeInt(v[1]), ToSafeInt(v[2]), ToSafeInt(v[3]), ToSafeInt(v[4]),
             ToSafeInt(v[5]), ToSafeInt(v[6]), ToSafeInt(v[7]), ToSafeInt(v[8]), ToSafeInt(v[9]));
@@ -1337,14 +1356,8 @@ public sealed class TemporalStub : IBuiltinModule
         if (ctor)
         {
             f = new NativeFunctionObject(name,
-                (_, _a) =>
-                {
-                    if (constructFactory != null)
-                        return AttachPrototype(h, constructFactory(ctx, h, _a), protoH);
-                    var o = new JsObject(); o.SetPrototype(protoH);
-                    o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.Undefined, false, false, false));
-                    return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
-                },
+                // Called as a plain function (NewTarget undefined): Temporal constructors require `new`.
+                (_, _a) => throw new JsThrownException(ctx.CreateTypeError($"Temporal.{name} must be called with new.")),
                 _a =>
                 {
                     if (constructFactory != null)
