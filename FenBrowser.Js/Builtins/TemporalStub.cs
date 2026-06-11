@@ -958,6 +958,64 @@ public sealed class TemporalStub : IBuiltinModule
         return RoundNsToIncrement(ctx, epochNs, incrementNs, mode);
     }
 
+    /// <summary>
+    /// Temporal.PlainTime.prototype.round: validate smallestUnit (hour..nanosecond),
+    /// roundingIncrement (must divide its next-larger-unit maximum, exclusive), and
+    /// roundingMode, then round the time-of-day nanoseconds to the increment.
+    /// </summary>
+    private static long RoundPlainTimeNs(IBuiltinContext ctx, JsHeap h, long timeNs, IReadOnlyList<JsValue> a)
+    {
+        if (a.Count == 0 || a[0].Tag == JsValueTag.Undefined)
+            throw new JsThrownException(ctx.CreateTypeError("round requires a unit or options argument."));
+        string smallest;
+        double increment = 1;
+        string mode = "halfExpand";
+        if (a[0].Tag == JsValueTag.String)
+        {
+            smallest = NormalizeUnitName(ctx, a[0].AsString());
+        }
+        else if (a[0].Tag == JsValueTag.Object)
+        {
+            if (TryGetField(ctx, h, a[0], "roundingIncrement", out var iv))
+            {
+                increment = ToIntegerWithTruncation(ctx, iv);
+                if (increment < 1 || increment > 1_000_000_000)
+                    throw new JsThrownException(ctx.CreateRangeError("roundingIncrement out of range."));
+            }
+            if (TryGetField(ctx, h, a[0], "roundingMode", out var mv))
+            {
+                mode = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
+                if (mode is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
+                    throw new JsThrownException(ctx.CreateRangeError($"'{mode}' is not a valid rounding mode."));
+            }
+            if (!TryGetField(ctx, h, a[0], "smallestUnit", out var sv) || sv.Tag == JsValueTag.Undefined)
+                throw new JsThrownException(ctx.CreateRangeError("smallestUnit is required."));
+            smallest = NormalizeUnitName(ctx, sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv));
+        }
+        else
+        {
+            throw new JsThrownException(ctx.CreateTypeError("round argument must be a string or options object."));
+        }
+
+        // PlainTime supports hour and smaller; day and calendar units are out of range.
+        long maximum = smallest switch
+        {
+            "hour" => 24L,
+            "minute" => 60L,
+            "second" => 60L,
+            "millisecond" => 1000L,
+            "microsecond" => 1000L,
+            "nanosecond" => 1000L,
+            _ => throw new JsThrownException(ctx.CreateRangeError($"'{smallest}' is not a valid smallestUnit for PlainTime.round.")),
+        };
+        // ValidateTemporalRoundingIncrement with exclusive maximum.
+        if (increment >= maximum || maximum % (long)increment != 0)
+            throw new JsThrownException(ctx.CreateRangeError("roundingIncrement does not divide evenly into the maximum."));
+
+        long incrementNs = (long)increment * UnitNs(smallest);
+        return RoundNsToIncrement(ctx, timeNs, incrementNs, mode);
+    }
+
     /// <summary>Total nanoseconds of the day/time portion (caller has excluded calendar units).</summary>
     private static long DurationDayTimeNs((int years, int months, int weeks, int days, int hours, int minutes, int seconds, int millis, int micros, int nanos) d)
         => DurationToNanos(d.days, d.hours, d.minutes, d.seconds, d.millis, d.micros, d.nanos);
@@ -2117,7 +2175,17 @@ public sealed class TemporalStub : IBuiltinModule
             var selfNs = DurationToNanos(0, (int)GetVNum(h,o,"hour"), (int)GetVNum(h,o,"minute"), (int)GetVNum(h,o,"second"), (int)GetVNum(h,o,"millisecond"), (int)GetVNum(h,o,"microsecond"), (int)GetVNum(h,o,"nanosecond"));
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNs(ctx, h, selfNs - other.ToNanosecondsOfDay()));
         }, 1);
-        AddMethod(ctx, h, pH, p, "round", (o, _) => CloneTemporal(ctx, h, o), 1);
+        AddMethod(ctx, h, pH, p, "round", (o, a) => {
+            long dayNs = RoundPlainTimeNs(ctx, h, DecodeTimeOfDayNs(h, o), a) % NsPerDay;
+            if (dayNs < 0) dayNs += NsPerDay;
+            int hr = (int)(dayNs / 3_600_000_000_000L);
+            int mi = (int)(dayNs / 60_000_000_000L % 60);
+            int se = (int)(dayNs / 1_000_000_000L % 60);
+            int ms = (int)(dayNs / 1_000_000L % 1000);
+            int us = (int)(dayNs / 1_000L % 1000);
+            int ns = (int)(dayNs % 1000);
+            return AttachPrototype(h, MakePlainTime(ctx, h, hr, mi, se, ms, us, ns), pH);
+        }, 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
             var other = ToTemporalTimeRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             var selfNs = DurationToNanos(0, (int)GetVNum(h,o,"hour"), (int)GetVNum(h,o,"minute"), (int)GetVNum(h,o,"second"), (int)GetVNum(h,o,"millisecond"), (int)GetVNum(h,o,"microsecond"), (int)GetVNum(h,o,"nanosecond"));
