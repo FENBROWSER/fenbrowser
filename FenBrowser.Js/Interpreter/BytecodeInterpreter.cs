@@ -2690,13 +2690,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         DefineNativePrototypeMethod(prototypeHandle, prototype, "union", (thisValue, args) =>
         {
             var self = RequireSet(thisValue);
+            var rec = GetSetRecord(args);
             var result = CreateFreshSet(out var resultHandle, thisValue.AsObjectHandle());
             foreach (var v in self.Snapshot())
             {
                 result.Add(v);
                 if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
             }
-            foreach (var v in IterateSetLike(args))
+            foreach (var v in IterateSetRecordKeys(rec))
             {
                 result.Add(v);
                 if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
@@ -2704,69 +2705,88 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromObject(resultHandle);
         }, length: 1);
 
-        // ECMA-262 24.2.3 (Set Methods, ES2025) intersection. Spec optimisation:
-        // walk the smaller side so the result is bounded by min(|this|, |other|).
-        // We don't have other.size cheaply for arbitrary iterables, so we drain
-        // the argument into a temporary set and walk whichever is smaller.
+        // ECMA-262 24.2.4.8 intersection. Walk the smaller side: if |this| <=
+        // other.size, probe each element of this with other.has; otherwise iterate
+        // other.keys() and keep those present in this.
         DefineNativePrototypeMethod(prototypeHandle, prototype, "intersection", (thisValue, args) =>
         {
             var self = RequireSet(thisValue);
-            var other = new SetObject();
-            foreach (var v in IterateSetLike(args)) other.Add(v);
-
+            var rec = GetSetRecord(args);
             var result = CreateFreshSet(out var resultHandle, thisValue.AsObjectHandle());
-            var (small, large) = self.Count <= other.Count ? (self, other) : (other, self);
-            foreach (var v in small.Snapshot())
+            if (self.Count <= rec.Size)
             {
-                if (large.Has(v))
+                foreach (var v in self.Snapshot())
                 {
-                    result.Add(v);
-                    if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
+                    if (CallSetHas(rec, v) && self.Has(v) && !result.Has(v))
+                    {
+                        result.Add(v);
+                        if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
+                    }
+                }
+            }
+            else
+            {
+                foreach (var v in IterateSetRecordKeys(rec))
+                {
+                    if (self.Has(v) && !result.Has(v))
+                    {
+                        result.Add(v);
+                        if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
+                    }
                 }
             }
             return JsValue.FromObject(resultHandle);
         }, length: 1);
 
-        // ECMA-262 24.2.3 (Set Methods, ES2025) difference. Result = entries of
-        // this not present in other.
+        // ECMA-262 24.2.4.5 difference. Result = entries of this not present in
+        // other; probe via other.has or other.keys() depending on relative size.
         DefineNativePrototypeMethod(prototypeHandle, prototype, "difference", (thisValue, args) =>
         {
             var self = RequireSet(thisValue);
-            var other = new SetObject();
-            foreach (var v in IterateSetLike(args)) other.Add(v);
-
+            var rec = GetSetRecord(args);
             var result = CreateFreshSet(out var resultHandle, thisValue.AsObjectHandle());
             foreach (var v in self.Snapshot())
             {
-                if (!other.Has(v))
+                result.Add(v);
+                if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
+            }
+            if (self.Count <= rec.Size)
+            {
+                foreach (var v in self.Snapshot())
                 {
-                    result.Add(v);
-                    if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
+                    if (CallSetHas(rec, v)) result.Remove(v);
+                }
+            }
+            else
+            {
+                foreach (var v in IterateSetRecordKeys(rec))
+                {
+                    result.Remove(v);
                 }
             }
             return JsValue.FromObject(resultHandle);
         }, length: 1);
 
-        // ECMA-262 24.2.3 (Set Methods, ES2025) symmetricDifference. Result =
-        // entries present in exactly one operand.
+        // ECMA-262 24.2.4.14 symmetricDifference. Entries present in exactly one
+        // operand: iterate other.keys(), removing shared entries from a clone of
+        // this and adding entries unique to other.
         DefineNativePrototypeMethod(prototypeHandle, prototype, "symmetricDifference", (thisValue, args) =>
         {
             var self = RequireSet(thisValue);
-            var other = new SetObject();
-            foreach (var v in IterateSetLike(args)) other.Add(v);
-
+            var rec = GetSetRecord(args);
             var result = CreateFreshSet(out var resultHandle, thisValue.AsObjectHandle());
             foreach (var v in self.Snapshot())
             {
-                if (!other.Has(v))
-                {
-                    result.Add(v);
-                    if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
-                }
+                result.Add(v);
+                if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
             }
-            foreach (var v in other.Snapshot())
+            foreach (var v in IterateSetRecordKeys(rec))
             {
-                if (!self.Has(v))
+                if (self.Has(v))
+                {
+                    result.Remove(v);
+                }
+                else
                 {
                     result.Add(v);
                     if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
@@ -2781,37 +2801,47 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         DefineNativePrototypeMethod(prototypeHandle, prototype, "isSubsetOf", (thisValue, args) =>
         {
             var self = RequireSet(thisValue);
-            var other = new SetObject();
-            foreach (var v in IterateSetLike(args)) other.Add(v);
-            if (self.Count > other.Count) return JsValue.FromBoolean(false);
+            var rec = GetSetRecord(args);
+            if (self.Count > rec.Size) return JsValue.FromBoolean(false);
             foreach (var v in self.Snapshot())
             {
-                if (!other.Has(v)) return JsValue.FromBoolean(false);
+                if (!CallSetHas(rec, v)) return JsValue.FromBoolean(false);
             }
             return JsValue.FromBoolean(true);
         }, length: 1);
 
-        // ECMA-262 24.2.3 isSupersetOf - every entry of other must be in this.
+        // ECMA-262 24.2.4.12 isSupersetOf - every entry of other must be in this.
         DefineNativePrototypeMethod(prototypeHandle, prototype, "isSupersetOf", (thisValue, args) =>
         {
             var self = RequireSet(thisValue);
-            var other = new SetObject();
-            foreach (var v in IterateSetLike(args)) other.Add(v);
-            if (other.Count > self.Count) return JsValue.FromBoolean(false);
-            foreach (var v in other.Snapshot())
+            var rec = GetSetRecord(args);
+            if (self.Count < rec.Size) return JsValue.FromBoolean(false);
+            foreach (var v in IterateSetRecordKeys(rec))
             {
                 if (!self.Has(v)) return JsValue.FromBoolean(false);
             }
             return JsValue.FromBoolean(true);
         }, length: 1);
 
-        // ECMA-262 24.2.3 isDisjointFrom - no entry shared with other.
+        // ECMA-262 24.2.4.7 isDisjointFrom - no entry shared with other. Probe via
+        // other.has or other.keys() depending on relative size.
         DefineNativePrototypeMethod(prototypeHandle, prototype, "isDisjointFrom", (thisValue, args) =>
         {
             var self = RequireSet(thisValue);
-            foreach (var v in IterateSetLike(args))
+            var rec = GetSetRecord(args);
+            if (self.Count <= rec.Size)
             {
-                if (self.Has(v)) return JsValue.FromBoolean(false);
+                foreach (var v in self.Snapshot())
+                {
+                    if (CallSetHas(rec, v)) return JsValue.FromBoolean(false);
+                }
+            }
+            else
+            {
+                foreach (var v in IterateSetRecordKeys(rec))
+                {
+                    if (self.Has(v)) return JsValue.FromBoolean(false);
+                }
             }
             return JsValue.FromBoolean(true);
         }, length: 1);
@@ -3153,6 +3183,95 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         return set;
     }
+
+    // ECMA-262 24.2.1.2 Set Record: a Set-like operand is described by its own
+    // size / has / keys, NOT by the iterable protocol. Captured once per call.
+    private readonly record struct SetRecord(JsValue Obj, double Size, JsValue Has, JsValue Keys);
+
+    // ECMA-262 24.2.1.2 GetSetRecord(obj): validate the Set-like argument.
+    private SetRecord GetSetRecord(IReadOnlyList<JsValue> args)
+    {
+        var other = args.Count > 0 ? args[0] : JsValue.Undefined;
+        if (other.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Set method argument must be an object."));
+        }
+
+        var obj = _heap.GetObject(other.AsObjectHandle());
+        TryGetPropertyValue(obj, other, "size", out var rawSize);
+        var numSize = ToNumber(rawSize);
+        // ECMA-262 24.2.1.2 step 4: a NaN size (including an undefined "size", e.g.
+        // when an Array is passed) is a TypeError — not a RangeError.
+        if (double.IsNaN(numSize))
+        {
+            throw new JsThrownException(CreateTypeError("Set method: 'size' must not be NaN."));
+        }
+
+        var intSize = ToIntegerOrInfinity(JsValue.FromNumber(numSize));
+        if (intSize < 0)
+        {
+            throw new JsThrownException(CreateRangeError("Set method: 'size' must not be negative."));
+        }
+
+        if (!TryGetPropertyValue(obj, other, "has", out var has) || !IsCallable(has))
+        {
+            throw new JsThrownException(CreateTypeError("Set method: argument must have a callable 'has'."));
+        }
+
+        if (!TryGetPropertyValue(obj, other, "keys", out var keys) || !IsCallable(keys))
+        {
+            throw new JsThrownException(CreateTypeError("Set method: argument must have a callable 'keys'."));
+        }
+
+        return new SetRecord(other, intSize, has, keys);
+    }
+
+    // Drain a Set Record's keys() iterator (24.2.1.2 step 12 callers): call keys()
+    // with the Set-like as receiver, then iterate via next()/done/value.
+    private IEnumerable<JsValue> IterateSetRecordKeys(SetRecord rec)
+    {
+        var iter = CallFunction(rec.Keys, Array.Empty<JsValue>(), rec.Obj);
+        if (iter.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Set method: keys() did not return an iterator object."));
+        }
+
+        var iterObj = _heap.GetObject(iter.AsObjectHandle());
+        if (!TryGetPropertyValue(iterObj, iter, "next", out var next) || !IsCallable(next))
+        {
+            throw new JsThrownException(CreateTypeError("Set method: keys() iterator has no callable 'next'."));
+        }
+
+        while (true)
+        {
+            var res = CallFunction(next, Array.Empty<JsValue>(), iter);
+            if (res.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Set method: iterator result is not an object."));
+            }
+
+            var resObj = _heap.GetObject(res.AsObjectHandle());
+            TryGetPropertyValue(resObj, res, "done", out var doneVal);
+            if (IsTruthy(doneVal))
+            {
+                yield break;
+            }
+
+            TryGetPropertyValue(resObj, res, "value", out var val);
+            // 24.2.1.2: -0𝔽 keys are normalized to +0𝔽 before use.
+            yield return NormalizeSetValue(val);
+        }
+    }
+
+    // ECMA-262 invokes the Set-like's own [[Has]] on individual elements.
+    private bool CallSetHas(SetRecord rec, JsValue element)
+        => IsTruthy(CallFunction(rec.Has, new[] { element }, rec.Obj));
+
+    // -0𝔽 collapses to +0𝔽 for storage in a Set's [[SetData]].
+    private static JsValue NormalizeSetValue(JsValue v)
+        => v.Tag == JsValueTag.Number && v.AsNumber() == 0.0 && double.IsNegative(v.AsNumber())
+            ? JsValue.FromNumber(0.0)
+            : v;
 
     // Set / Map iterator wrappers reuse %ArrayIteratorPrototype% since the only
     // shape it exposes is .next() returning {value, done}; .next reads the source

@@ -22,21 +22,23 @@ public sealed class SetUnionTests
     }
 
     [Fact]
-    public void UnionAcceptsArray()
+    public void UnionRejectsArray()
     {
-        Assert.Equal(3d, Run("new Set([1,2]).union([2,3]).size;").AsNumber());
+        // ECMA-262 24.2.1.2 GetSetRecord: a plain Array is not Set-like (its `size`
+        // is undefined → NaN, no callable `has`/`keys`), so union must throw.
+        Assert.Throws<JsThrownException>(() => Run("new Set([1,2]).union([2,3]);"));
     }
 
     [Fact]
     public void UnionIsFreshSet()
     {
-        Assert.False(Run("var a=new Set([1]); a.union([2]) === a;").AsBoolean());
+        Assert.False(Run("var a=new Set([1]); a.union(new Set([2])) === a;").AsBoolean());
     }
 
     [Fact]
     public void UnionPreservesOriginal()
     {
-        Assert.Equal(1d, Run("var a=new Set([1]); a.union([2]); a.size;").AsNumber());
+        Assert.Equal(1d, Run("var a=new Set([1]); a.union(new Set([2])); a.size;").AsNumber());
     }
 
     [Fact]

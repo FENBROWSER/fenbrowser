@@ -35,8 +35,9 @@ public sealed class SetDifferenceTests
     }
 
     [Fact]
-    public void DifferenceAcceptsArray()
+    public void DifferenceRejectsArray()
     {
-        Assert.Equal(1d, Run("new Set([1,2]).difference([2,3]).size;").AsNumber());
+        // ECMA-262 24.2.1.2 GetSetRecord: an Array is not Set-like, so difference throws.
+        Assert.Throws<JsThrownException>(() => Run("new Set([1,2]).difference([2,3]);"));
     }
 }

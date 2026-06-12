@@ -29,14 +29,15 @@ public sealed class SetIntersectionTests
     }
 
     [Fact]
-    public void AcceptsArrayLike()
+    public void RejectsArray()
     {
-        Assert.Equal(2d, Run("new Set([1,2,3]).intersection([2,3,4,5]).size;").AsNumber());
+        // ECMA-262 24.2.1.2 GetSetRecord: an Array is not Set-like, so intersection throws.
+        Assert.Throws<JsThrownException>(() => Run("new Set([1,2,3]).intersection([2,3,4,5]);"));
     }
 
     [Fact]
     public void IsFreshSet()
     {
-        Assert.False(Run("var a=new Set([1]); a.intersection([1]) === a;").AsBoolean());
+        Assert.False(Run("var a=new Set([1]); a.intersection(new Set([1])) === a;").AsBoolean());
     }
 }
