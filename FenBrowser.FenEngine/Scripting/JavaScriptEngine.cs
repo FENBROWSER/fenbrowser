@@ -2234,6 +2234,43 @@ namespace FenBrowser.FenEngine.Scripting
             Volatile.Write(ref _visualRectProvider, provider);
         }
 
+        // --- Scroll-into-view bridge ---
+        // The host (BrowserIntegration) owns the document scroll offset and the
+        // canvas translation, so JS scrollIntoView()/scrollTo() must signal it
+        // rather than mutate scroll state the renderer ignores. Mirrors the
+        // visual-rect provider pattern: a static hook the Host installs.
+        private static Action<Element> _scrollToElementProvider;
+
+        public static void SetScrollToElementProvider(Action<Element> provider)
+        {
+            Volatile.Write(ref _scrollToElementProvider, provider);
+        }
+
+        public static bool InvokeScrollToElement(Element node)
+        {
+            if (node == null)
+            {
+                return false;
+            }
+
+            var provider = Volatile.Read(ref _scrollToElementProvider);
+            if (provider == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                provider(node);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Warn($"[JavaScriptEngine] ScrollToElement provider failed: {ex.Message}", LogCategory.JavaScript);
+                return false;
+            }
+        }
+
         public static bool TryGetVisualRect(Element node, out double x, out double y, out double w, out double h)
         {
             x = y = w = h = 0;

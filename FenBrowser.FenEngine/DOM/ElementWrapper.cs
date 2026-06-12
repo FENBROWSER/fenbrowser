@@ -3586,8 +3586,13 @@ namespace FenBrowser.FenEngine.DOM
 
         private FenValue ScrollIntoViewMethod(FenValue[] args, FenValue thisVal)
         {
-            // Minimal compatibility method presence; geometry-sensitive scrolling is
-            // handled by host/layout-driven WebDriver interactability paths.
+            // Scroll the document so this element is brought into the viewport.
+            // The host (BrowserIntegration) owns the scroll offset and canvas
+            // translation, so route through its static provider. This is what
+            // makes fragment-style / scrollIntoView() reveal off-screen content
+            // (e.g. Acid2 assembles its face only after #top.scrollIntoView()).
+            FenBrowser.FenEngine.Scripting.JavaScriptEngine.InvokeScrollToElement(_element);
+            _context?.RequestRender?.Invoke();
             return FenValue.Undefined;
         }
 

@@ -173,6 +173,28 @@ public class BrowserIntegration
         // creates its own stale renderer that never has layout data.
         _browser.Engine.SetExternalRenderer(_renderer);
 
+        // Let JS scrollIntoView() drive the document scroll the host owns.
+        // scrollIntoView() defaults to block:"start" (align the element's top to
+        // the viewport top), unlike ScrollToElement's nearest/bottom policy, so
+        // resolve the element rect and scroll its top to the top of the viewport.
+        FenBrowser.FenEngine.Scripting.JavaScriptEngine.SetScrollToElementProvider(element =>
+        {
+            if (element == null)
+            {
+                return;
+            }
+
+            var rect = GetElementRect(element);
+            if (rect.HasValue)
+            {
+                ScrollToY(rect.Value.Top);
+            }
+            else
+            {
+                ScrollToElement(element);
+            }
+        });
+
         // Wire browser events
         _browser.Navigated += (s, e) => 
         {
