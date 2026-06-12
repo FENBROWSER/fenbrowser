@@ -3496,14 +3496,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var wm = RequireWeakMap(thisValue);
             var key = args.Count > 0 ? args[0] : JsValue.Undefined;
             var val = args.Count > 1 ? args[1] : JsValue.Undefined;
-            if (key.Tag != JsValueTag.Object)
+            if (!CanBeHeldWeakly(key))
             {
                 throw new JsThrownException(CreateTypeError("Invalid value used as weak map key."));
             }
 
-            wm.Set(key.AsObjectHandle(), val);
-            _heap.WriteBarrier(thisValue.AsObjectHandle(), key.AsObjectHandle());
-            if (val.Tag == JsValueTag.Object) _heap.WriteBarrier(thisValue.AsObjectHandle(), val.AsObjectHandle());
+            WeakMapSet(thisValue.AsObjectHandle(), wm, key, val);
             return thisValue;
         }, length: 2);
 
@@ -3511,8 +3509,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             var wm = RequireWeakMap(thisValue);
             var key = args.Count > 0 ? args[0] : JsValue.Undefined;
-            if (key.Tag != JsValueTag.Object) return JsValue.Undefined;
-            return wm.TryGet(key.AsObjectHandle(), out var v) ? v : JsValue.Undefined;
+            return WeakMapTryGet(wm, key, out var v) ? v : JsValue.Undefined;
         }, length: 1);
 
         // WeakMap.prototype.getOrInsert(key, value) — Upsert proposal.
@@ -3521,14 +3518,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var wm = RequireWeakMap(thisValue);
             var key = args.Count > 0 ? args[0] : JsValue.Undefined;
             var val = args.Count > 1 ? args[1] : JsValue.Undefined;
-            if (key.Tag != JsValueTag.Object)
+            if (!CanBeHeldWeakly(key))
             {
                 throw new JsThrownException(CreateTypeError("Invalid value used as weak map key."));
             }
-            if (wm.TryGet(key.AsObjectHandle(), out var existing)) return existing;
-            wm.Set(key.AsObjectHandle(), val);
-            _heap.WriteBarrier(thisValue.AsObjectHandle(), key.AsObjectHandle());
-            if (val.Tag == JsValueTag.Object) _heap.WriteBarrier(thisValue.AsObjectHandle(), val.AsObjectHandle());
+            if (WeakMapTryGet(wm, key, out var existing)) return existing;
+            WeakMapSet(thisValue.AsObjectHandle(), wm, key, val);
             return val;
         }, length: 2);
 
@@ -3540,7 +3535,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var wm = RequireWeakMap(thisValue);
             var key = args.Count > 0 ? args[0] : JsValue.Undefined;
             var callback = args.Count > 1 ? args[1] : JsValue.Undefined;
-            if (key.Tag != JsValueTag.Object)
+            if (!CanBeHeldWeakly(key))
             {
                 throw new JsThrownException(CreateTypeError("Invalid value used as weak map key."));
             }
@@ -3549,11 +3544,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 throw new JsThrownException(CreateTypeError(
                     "WeakMap.prototype.getOrInsertComputed: callbackfn is not callable."));
             }
-            if (wm.TryGet(key.AsObjectHandle(), out var existing)) return existing;
+            if (WeakMapTryGet(wm, key, out var existing)) return existing;
             var val = CallFunction(callback, new[] { key }, JsValue.Undefined);
-            wm.Set(key.AsObjectHandle(), val);
-            _heap.WriteBarrier(thisValue.AsObjectHandle(), key.AsObjectHandle());
-            if (val.Tag == JsValueTag.Object) _heap.WriteBarrier(thisValue.AsObjectHandle(), val.AsObjectHandle());
+            WeakMapSet(thisValue.AsObjectHandle(), wm, key, val);
             return val;
         }, length: 2);
 
@@ -3561,16 +3554,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             var wm = RequireWeakMap(thisValue);
             var key = args.Count > 0 ? args[0] : JsValue.Undefined;
-            if (key.Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
-            return JsValue.FromBoolean(wm.Has(key.AsObjectHandle()));
+            return JsValue.FromBoolean(WeakMapHas(wm, key));
         }, length: 1);
 
         DefineNativePrototypeMethod(prototypeHandle, prototype, "delete", (thisValue, args) =>
         {
             var wm = RequireWeakMap(thisValue);
             var key = args.Count > 0 ? args[0] : JsValue.Undefined;
-            if (key.Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
-            return JsValue.FromBoolean(wm.Remove(key.AsObjectHandle()));
+            return JsValue.FromBoolean(WeakMapRemove(wm, key));
         }, length: 1);
 
         _weakMapPrototypeHandle = prototypeHandle;
@@ -3593,6 +3584,49 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         return wm;
+    }
+
+    // ECMA-262 CanBeHeldWeakly(v): an Object can always be held weakly; a Symbol
+    // can be held weakly only when it is NOT in the GlobalSymbolRegistry (i.e. not
+    // produced by Symbol.for). Used as the key/target validity test for WeakMap,
+    // WeakSet, WeakRef and FinalizationRegistry.
+    private bool CanBeHeldWeakly(JsValue v)
+    {
+        if (v.Tag == JsValueTag.Object) return true;
+        if (v.Tag == JsValueTag.Symbol) return !_symbolRegistryById.ContainsKey(v.AsSymbolId());
+        return false;
+    }
+
+    // Object- or Symbol-keyed access helpers for a WeakMap (callers validate the
+    // key with CanBeHeldWeakly first).
+    private static bool WeakMapTryGet(WeakMapObject wm, JsValue key, out JsValue value)
+    {
+        if (key.Tag == JsValueTag.Object) return wm.TryGet(key.AsObjectHandle(), out value);
+        if (key.Tag == JsValueTag.Symbol) return wm.TryGetSymbol(key.AsSymbolId(), out value);
+        value = JsValue.Undefined;
+        return false;
+    }
+
+    private static bool WeakMapHas(WeakMapObject wm, JsValue key)
+        => key.Tag == JsValueTag.Object ? wm.Has(key.AsObjectHandle())
+         : key.Tag == JsValueTag.Symbol && wm.HasSymbol(key.AsSymbolId());
+
+    private static bool WeakMapRemove(WeakMapObject wm, JsValue key)
+        => key.Tag == JsValueTag.Object ? wm.Remove(key.AsObjectHandle())
+         : key.Tag == JsValueTag.Symbol && wm.RemoveSymbol(key.AsSymbolId());
+
+    private void WeakMapSet(ObjectHandle wmHandle, WeakMapObject wm, JsValue key, JsValue val)
+    {
+        if (key.Tag == JsValueTag.Object)
+        {
+            wm.Set(key.AsObjectHandle(), val);
+            _heap.WriteBarrier(wmHandle, key.AsObjectHandle());
+        }
+        else
+        {
+            wm.SetSymbol(key.AsSymbolId(), val);
+        }
+        if (val.Tag == JsValueTag.Object) _heap.WriteBarrier(wmHandle, val.AsObjectHandle());
     }
 
     private ObjectHandle EnsureWeakSetConstructor()
@@ -3649,13 +3683,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             var ws = RequireWeakSet(thisValue);
             var value = args.Count > 0 ? args[0] : JsValue.Undefined;
-            if (value.Tag != JsValueTag.Object)
+            if (!CanBeHeldWeakly(value))
             {
                 throw new JsThrownException(CreateTypeError("Invalid value used in weak set."));
             }
 
-            ws.Add(value.AsObjectHandle());
-            _heap.WriteBarrier(thisValue.AsObjectHandle(), value.AsObjectHandle());
+            if (value.Tag == JsValueTag.Object)
+            {
+                ws.Add(value.AsObjectHandle());
+                _heap.WriteBarrier(thisValue.AsObjectHandle(), value.AsObjectHandle());
+            }
+            else
+            {
+                ws.AddSymbol(value.AsSymbolId());
+            }
             return thisValue;
         }, length: 1);
 
@@ -3663,16 +3704,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             var ws = RequireWeakSet(thisValue);
             var value = args.Count > 0 ? args[0] : JsValue.Undefined;
-            if (value.Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
-            return JsValue.FromBoolean(ws.Has(value.AsObjectHandle()));
+            var present = value.Tag == JsValueTag.Object ? ws.Has(value.AsObjectHandle())
+                        : value.Tag == JsValueTag.Symbol && ws.HasSymbol(value.AsSymbolId());
+            return JsValue.FromBoolean(present);
         }, length: 1);
 
         DefineNativePrototypeMethod(prototypeHandle, prototype, "delete", (thisValue, args) =>
         {
             var ws = RequireWeakSet(thisValue);
             var value = args.Count > 0 ? args[0] : JsValue.Undefined;
-            if (value.Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
-            return JsValue.FromBoolean(ws.Remove(value.AsObjectHandle()));
+            var removed = value.Tag == JsValueTag.Object ? ws.Remove(value.AsObjectHandle())
+                        : value.Tag == JsValueTag.Symbol && ws.RemoveSymbol(value.AsSymbolId());
+            return JsValue.FromBoolean(removed);
         }, length: 1);
 
         _weakSetPrototypeHandle = prototypeHandle;
@@ -3700,18 +3743,28 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private sealed class WeakMapObject : JsObject
     {
         private readonly Dictionary<ObjectHandle, JsValue> _entries = new();
+        // ECMA-262: a non-registered Symbol can also be held weakly.
+        private readonly Dictionary<long, JsValue> _symbolEntries = new();
         public void Set(ObjectHandle key, JsValue value) => _entries[key] = value;
         public bool TryGet(ObjectHandle key, out JsValue value) => _entries.TryGetValue(key, out value);
         public bool Has(ObjectHandle key) => _entries.ContainsKey(key);
         public bool Remove(ObjectHandle key) => _entries.Remove(key);
+        public void SetSymbol(long id, JsValue value) => _symbolEntries[id] = value;
+        public bool TryGetSymbol(long id, out JsValue value) => _symbolEntries.TryGetValue(id, out value);
+        public bool HasSymbol(long id) => _symbolEntries.ContainsKey(id);
+        public bool RemoveSymbol(long id) => _symbolEntries.Remove(id);
     }
 
     private sealed class WeakSetObject : JsObject
     {
         private readonly HashSet<ObjectHandle> _entries = new();
+        private readonly HashSet<long> _symbolEntries = new();
         public void Add(ObjectHandle key) => _entries.Add(key);
         public bool Has(ObjectHandle key) => _entries.Contains(key);
         public bool Remove(ObjectHandle key) => _entries.Remove(key);
+        public void AddSymbol(long id) => _symbolEntries.Add(id);
+        public bool HasSymbol(long id) => _symbolEntries.Contains(id);
+        public bool RemoveSymbol(long id) => _symbolEntries.Remove(id);
     }
 
     // ECMA-262 28.1 The Reflect Object. Most members are thin wrappers over the
@@ -13018,8 +13071,9 @@ fallbackArraySpecies:
 
     private sealed class WeakRefObject : JsObject
     {
-        public WeakRefObject(ObjectHandle target) { Target = target; }
-        public ObjectHandle Target { get; }
+        // Target may be an Object or a (non-registered) Symbol — both can be held weakly.
+        public WeakRefObject(JsValue target) { Target = target; }
+        public JsValue Target { get; }
     }
 
     // ECMA-262 26.1 WeakRef(target). The engine has no incremental GC tier that
@@ -13045,16 +13099,16 @@ fallbackArraySpecies:
                 "Constructor WeakRef requires 'new'.")),
             args =>
             {
-                if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+                var target = args.Count > 0 ? args[0] : JsValue.Undefined;
+                if (!CanBeHeldWeakly(target))
                 {
                     throw new JsThrownException(CreateTypeError(
-                        "WeakRef: target must be an object."));
+                        "WeakRef: target must be an object or a non-registered symbol."));
                 }
-                var targetHandle = args[0].AsObjectHandle();
-                var wr = new WeakRefObject(targetHandle);
+                var wr = new WeakRefObject(target);
                 wr.SetPrototype(prototypeHandle);
                 var handle = _heap.AllocateObject(wr, AllocationSite.Current());
-                _heap.WriteBarrier(handle, targetHandle);
+                if (target.Tag == JsValueTag.Object) _heap.WriteBarrier(handle, target.AsObjectHandle());
                 return JsValue.FromObject(handle);
             },
             length: 1);
@@ -13072,7 +13126,7 @@ fallbackArraySpecies:
                 throw new JsThrownException(CreateTypeError(
                     "WeakRef.prototype.deref called on non-WeakRef receiver."));
             }
-            return JsValue.FromObject(wr.Target);
+            return wr.Target;
         });
 
         _weakRefPrototypeHandle = prototypeHandle;
@@ -13082,7 +13136,8 @@ fallbackArraySpecies:
 
     private sealed class FinalizationRegistryObject : JsObject
     {
-        public sealed record Entry(ObjectHandle Target, JsValue HeldValue, JsValue UnregisterToken);
+        // Target may be an Object or a (non-registered) Symbol.
+        public sealed record Entry(JsValue Target, JsValue HeldValue, JsValue UnregisterToken);
         public ObjectHandle Callback { get; }
         public List<Entry> Entries { get; } = new();
         public FinalizationRegistryObject(ObjectHandle callback) { Callback = callback; }
@@ -13135,29 +13190,42 @@ fallbackArraySpecies:
         DefineNativePrototypeMethod(prototypeHandle, prototype, "register", (thisValue, args) =>
         {
             var reg = RequireFinalizationRegistry(thisValue);
-            if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+            var target = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (!CanBeHeldWeakly(target))
             {
                 throw new JsThrownException(CreateTypeError(
-                    "FinalizationRegistry.prototype.register: target must be an object."));
+                    "FinalizationRegistry.prototype.register: target must be an object or non-registered symbol."));
             }
             var held = args.Count > 1 ? args[1] : JsValue.Undefined;
             var token = args.Count > 2 ? args[2] : JsValue.Undefined;
-            reg.Entries.Add(new FinalizationRegistryObject.Entry(args[0].AsObjectHandle(), held, token));
+            // ECMA-262 26.2.3.2 step 4: target and heldValue must differ.
+            if (SameValue(target, held))
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "FinalizationRegistry.prototype.register: target and heldValue must not be the same."));
+            }
+            // step 5: an unregister token, when present, must itself be weak-holdable.
+            if (token.Tag != JsValueTag.Undefined && !CanBeHeldWeakly(token))
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "FinalizationRegistry.prototype.register: unregisterToken must be an object or non-registered symbol."));
+            }
+            reg.Entries.Add(new FinalizationRegistryObject.Entry(target, held, token));
             return JsValue.Undefined;
         }, length: 2);
 
         DefineNativePrototypeMethod(prototypeHandle, prototype, "unregister", (thisValue, args) =>
         {
             var reg = RequireFinalizationRegistry(thisValue);
-            if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+            var token = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (!CanBeHeldWeakly(token))
             {
                 throw new JsThrownException(CreateTypeError(
-                    "FinalizationRegistry.prototype.unregister: token must be an object."));
+                    "FinalizationRegistry.prototype.unregister: unregisterToken must be an object or non-registered symbol."));
             }
-            var tokenHandle = args[0].AsObjectHandle();
             var removed = reg.Entries.RemoveAll(e =>
-                e.UnregisterToken.Tag == JsValueTag.Object &&
-                e.UnregisterToken.AsObjectHandle() == tokenHandle);
+                e.UnregisterToken.Tag != JsValueTag.Undefined &&
+                SameValue(e.UnregisterToken, token));
             return JsValue.FromBoolean(removed > 0);
         }, length: 1);
 
