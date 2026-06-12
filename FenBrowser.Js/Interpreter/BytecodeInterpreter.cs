@@ -1536,8 +1536,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             // array literal elements must be created as own data properties
                             // even when the prototype has a non-writable property at the
                             // same index. Fall back to DefineOwnProperty for ArrayObject
-                            // canonical integer indices.
-                            if (obj is ArrayObject && IsCanonicalIntegerIndex(key, out _))
+                            // canonical integer indices — but ONLY when the index is not
+                            // already an own property. A plain assignment to an existing
+                            // non-writable own element must fail (and throw in strict mode),
+                            // not silently overwrite it back to a writable data property.
+                            if (obj is ArrayObject && IsCanonicalIntegerIndex(key, out _) &&
+                                !obj.TryGetOwnProperty(key, out _))
                             {
                                 ok = obj.DefineOwnProperty(key,
                                     new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
