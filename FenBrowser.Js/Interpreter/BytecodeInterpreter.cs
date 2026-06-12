@@ -2939,6 +2939,46 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return map.TryGet(key, out var v) ? v : JsValue.Undefined;
         }, length: 1);
 
+        // Map.prototype.getOrInsert(key, value) — Upsert proposal. Returns the
+        // existing value for key, otherwise inserts (key, value) and returns value.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "getOrInsert", (thisValue, args) =>
+        {
+            var map = RequireMap(thisValue);
+            var key = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var value = args.Count > 1 ? args[1] : JsValue.Undefined;
+            if (map.TryGet(key, out var existing)) return existing;
+            var normKey = NormalizeSetValue(key);
+            map.Set(normKey, value);
+            if (normKey.Tag == JsValueTag.Object) _heap.WriteBarrier(thisValue.AsObjectHandle(), normKey.AsObjectHandle());
+            if (value.Tag == JsValueTag.Object) _heap.WriteBarrier(thisValue.AsObjectHandle(), value.AsObjectHandle());
+            return value;
+        }, length: 2);
+
+        // Map.prototype.getOrInsertComputed(key, callbackfn) — Upsert proposal.
+        // Returns the existing value, otherwise calls callbackfn(key) (with the
+        // canonicalized key), inserts the result and returns it. The callback runs
+        // before any mutation, so a throwing callback leaves the map unchanged.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "getOrInsertComputed", (thisValue, args) =>
+        {
+            var map = RequireMap(thisValue);
+            var key = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var callback = args.Count > 1 ? args[1] : JsValue.Undefined;
+            if (!IsCallable(callback))
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Map.prototype.getOrInsertComputed: callbackfn is not callable."));
+            }
+            if (map.TryGet(key, out var existing)) return existing;
+            var normKey = NormalizeSetValue(key);
+            var value = CallFunction(callback, new[] { normKey }, JsValue.Undefined);
+            // The callback may have populated the key; Map.Set updates it in place
+            // (re-check step) or appends a fresh entry otherwise.
+            map.Set(normKey, value);
+            if (normKey.Tag == JsValueTag.Object) _heap.WriteBarrier(thisValue.AsObjectHandle(), normKey.AsObjectHandle());
+            if (value.Tag == JsValueTag.Object) _heap.WriteBarrier(thisValue.AsObjectHandle(), value.AsObjectHandle());
+            return value;
+        }, length: 2);
+
         // 24.1.3.7 has.
         DefineNativePrototypeMethod(prototypeHandle, prototype, "has", (thisValue, args) =>
         {
