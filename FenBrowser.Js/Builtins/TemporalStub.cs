@@ -885,6 +885,140 @@ public sealed class TemporalStub : IBuiltinModule
         return s;
     }
 
+    /// <summary>Map a unit name (singular or plural) to its singular form, or null if unknown.</summary>
+    private static string? TryNormalizeUnit(string unit)
+    {
+        var s = unit switch
+        {
+            "years" => "year", "months" => "month", "weeks" => "week", "days" => "day",
+            "hours" => "hour", "minutes" => "minute", "seconds" => "second",
+            "milliseconds" => "millisecond", "microseconds" => "microsecond", "nanoseconds" => "nanosecond",
+            _ => unit,
+        };
+        return s is "year" or "month" or "week" or "day" or "hour" or "minute" or "second"
+            or "millisecond" or "microsecond" or "nanosecond" ? s : null;
+    }
+
+    // Allowed difference units per Temporal type (for since/until largestUnit/smallestUnit).
+    private static readonly string[] TimeDiffUnits = { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" };
+    private static readonly string[] DateTimeDiffUnits = { "year", "month", "week", "day", "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" };
+    private static readonly string[] DateDiffUnits = { "year", "month", "week", "day" };
+    private static readonly string[] YearMonthDiffUnits = { "year", "month" };
+
+    /// <summary>Settings produced by <see cref="GetDifferenceSettings"/> for since()/until().</summary>
+    private struct DiffSettings
+    {
+        public string Smallest;
+        public string Largest;
+        public int Increment;
+        public string Mode;
+    }
+
+    /// <summary>Total ordering of all ten Temporal units; rank 0 = year (largest) … 9 = nanosecond.</summary>
+    private static int DiffUnitRank(string unit) => unit switch
+    {
+        "year" => 0, "month" => 1, "week" => 2, "day" => 3, "hour" => 4, "minute" => 5,
+        "second" => 6, "millisecond" => 7, "microsecond" => 8, "nanosecond" => 9, _ => 9,
+    };
+
+    /// <summary>MaximumTemporalDurationRoundingIncrement: dividend for a smallestUnit, or 0 if unbounded.</summary>
+    private static long MaxDurationRoundingIncrement(string unit) => unit switch
+    {
+        "hour" => 24, "minute" => 60, "second" => 60,
+        "millisecond" => 1000, "microsecond" => 1000, "nanosecond" => 1000,
+        _ => 0, // year/month/week/day: no maximum
+    };
+
+    private const string ValidRoundingModes = "ceil floor expand trunc halfCeil halfFloor halfExpand halfTrunc halfEven";
+
+    /// <summary>
+    /// GetDifferenceSettings for since()/until(): reads largestUnit, roundingIncrement,
+    /// roundingMode, smallestUnit (in that spec order) and fully validates each, resolving
+    /// "auto" largestUnit and checking the largest≥smallest constraint and the increment maximum.
+    /// </summary>
+    private static DiffSettings GetDifferenceSettings(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> a, int i,
+        string[] allowed, string fallbackSmallest, string defaultLargest)
+    {
+        RequireOptionsObject(ctx, a, i);
+        var s = new DiffSettings { Smallest = fallbackSmallest, Largest = "auto", Increment = 1, Mode = "trunc" };
+        if (i >= a.Count || a[i].Tag != JsValueTag.Object)
+        {
+            s.Largest = DiffUnitRank(defaultLargest) <= DiffUnitRank(fallbackSmallest) ? defaultLargest : fallbackSmallest;
+            return s;
+        }
+        var opt = a[i];
+
+        // 1. largestUnit (may be "auto").
+        if (TryGetField(ctx, h, opt, "largestUnit", out var lv) && lv.Tag != JsValueTag.Undefined)
+        {
+            var ls = lv.Tag == JsValueTag.String ? lv.AsString() : ctx.ToStringValue(lv);
+            if (ls != "auto")
+            {
+                var norm = TryNormalizeUnit(ls);
+                if (norm is null || Array.IndexOf(allowed, norm) < 0)
+                    throw new JsThrownException(ctx.CreateRangeError($"'{ls}' is not a valid value for largestUnit."));
+                s.Largest = norm;
+            }
+        }
+
+        // 2. roundingIncrement (ToTemporalRoundingIncrement: finite, integer-truncated, in [1,1e9]).
+        if (TryGetField(ctx, h, opt, "roundingIncrement", out var iv) && iv.Tag != JsValueTag.Undefined)
+        {
+            double inc = ctx.ToNumber(iv);
+            if (double.IsNaN(inc) || double.IsInfinity(inc))
+                throw new JsThrownException(ctx.CreateRangeError("roundingIncrement must be a finite number."));
+            double trunc = Math.Truncate(inc);
+            if (trunc < 1 || trunc > 1_000_000_000)
+                throw new JsThrownException(ctx.CreateRangeError("roundingIncrement out of range."));
+            s.Increment = (int)trunc;
+        }
+
+        // 3. roundingMode (default trunc).
+        if (TryGetField(ctx, h, opt, "roundingMode", out var mv) && mv.Tag != JsValueTag.Undefined)
+        {
+            var ms = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
+            if (Array.IndexOf(ValidRoundingModes.Split(' '), ms) < 0)
+                throw new JsThrownException(ctx.CreateRangeError($"'{ms}' is not a valid rounding mode."));
+            s.Mode = ms;
+        }
+
+        // 4. smallestUnit (default fallbackSmallest).
+        if (TryGetField(ctx, h, opt, "smallestUnit", out var sv) && sv.Tag != JsValueTag.Undefined)
+        {
+            var ss = sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv);
+            var norm = TryNormalizeUnit(ss);
+            if (norm is null || Array.IndexOf(allowed, norm) < 0)
+                throw new JsThrownException(ctx.CreateRangeError($"'{ss}' is not a valid value for smallestUnit."));
+            s.Smallest = norm;
+        }
+
+        // 5/6. Resolve "auto" largestUnit to the larger of defaultLargest and smallestUnit.
+        if (s.Largest == "auto")
+            s.Largest = DiffUnitRank(defaultLargest) <= DiffUnitRank(s.Smallest) ? defaultLargest : s.Smallest;
+
+        // 7. largestUnit must not be smaller than smallestUnit.
+        if (DiffUnitRank(s.Largest) > DiffUnitRank(s.Smallest))
+            throw new JsThrownException(ctx.CreateRangeError("largestUnit cannot be smaller than smallestUnit."));
+
+        // 8/9. ValidateTemporalRoundingIncrement against the smallestUnit's exclusive maximum.
+        long max = MaxDurationRoundingIncrement(s.Smallest);
+        if (max != 0 && (s.Increment >= max || max % s.Increment != 0))
+            throw new JsThrownException(ctx.CreateRangeError("roundingIncrement does not divide evenly into the maximum."));
+        return s;
+    }
+
+    /// <summary>
+    /// Round a signed nanosecond difference to the increment of smallestUnit, then balance the
+    /// result into a Duration whose largest field is <paramref name="largest"/> (time units only).
+    /// </summary>
+    private static JsValue MakeDiffDuration(IBuiltinContext ctx, JsHeap h, long diffNs, DiffSettings s)
+    {
+        long unitNs = UnitNs(s.Smallest);
+        long incNs = unitNs * s.Increment;
+        if (incNs > 1) diffNs = RoundNsToIncrement(ctx, diffNs, incNs, s.Mode);
+        return MakeDurationFromNsBalanced(ctx, h, diffNs, s.Largest);
+    }
+
     private static bool IsCalendarUnit(string? unit) => unit is "year" or "month" or "week";
 
     // Rank 0 = day (largest supported without relativeTo) … 6 = nanosecond.
@@ -1943,13 +2077,13 @@ public sealed class TemporalStub : IBuiltinModule
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
             long otherNs = ToInstantNs(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            RequireOptionsObject(ctx, a, 1);
-            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNs(ctx, h, otherNs - DecodeInstantNanos(h, o)));
+            var s = GetDifferenceSettings(ctx, h, a, 1, TimeDiffUnits, "nanosecond", "second");
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDiffDuration(ctx, h, otherNs - DecodeInstantNanos(h, o), s));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
             long otherNs = ToInstantNs(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            RequireOptionsObject(ctx, a, 1);
-            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNs(ctx, h, DecodeInstantNanos(h, o) - otherNs));
+            var s = GetDifferenceSettings(ctx, h, a, 1, TimeDiffUnits, "nanosecond", "second");
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDiffDuration(ctx, h, DecodeInstantNanos(h, o) - otherNs, s));
         }, 1);
         AddMethod(ctx, h, pH, p, "round", (o, a) =>
             AttachPrototype(h, MakeInstantFromNanoseconds(h, RoundInstantNs(ctx, h, DecodeInstantNanos(h, o), a)), pH), 1);
@@ -2058,14 +2192,14 @@ public sealed class TemporalStub : IBuiltinModule
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
             var (other, _) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            RequireOptionsObject(ctx, a, 1);
+            GetDifferenceSettings(ctx, h, a, 1, DateDiffUnits, "day", "day");
             long days = IsoMath.ToEpochDays(other) - IsoMath.ToEpochDays(DecodeIsoDate(h, o));
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
                 MakeDuration(ctx, h, 0, 0, 0, ToSafeInt(days), 0, 0, 0, 0, 0, 0));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
             var (other, _) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            RequireOptionsObject(ctx, a, 1);
+            GetDifferenceSettings(ctx, h, a, 1, DateDiffUnits, "day", "day");
             long days = IsoMath.ToEpochDays(DecodeIsoDate(h, o)) - IsoMath.ToEpochDays(other);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
                 MakeDuration(ctx, h, 0, 0, 0, ToSafeInt(days), 0, 0, 0, 0, 0, 0));
@@ -2233,15 +2367,15 @@ public sealed class TemporalStub : IBuiltinModule
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
             var other = ToTemporalTimeRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            RequireOptionsObject(ctx, a, 1);
+            var s = GetDifferenceSettings(ctx, h, a, 1, TimeDiffUnits, "nanosecond", "hour");
             var selfNs = DurationToNanos(0, (int)GetVNum(h,o,"hour"), (int)GetVNum(h,o,"minute"), (int)GetVNum(h,o,"second"), (int)GetVNum(h,o,"millisecond"), (int)GetVNum(h,o,"microsecond"), (int)GetVNum(h,o,"nanosecond"));
-            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNs(ctx, h, other.ToNanosecondsOfDay() - selfNs));
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDiffDuration(ctx, h, other.ToNanosecondsOfDay() - selfNs, s));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
             var other = ToTemporalTimeRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            RequireOptionsObject(ctx, a, 1);
+            var s = GetDifferenceSettings(ctx, h, a, 1, TimeDiffUnits, "nanosecond", "hour");
             var selfNs = DurationToNanos(0, (int)GetVNum(h,o,"hour"), (int)GetVNum(h,o,"minute"), (int)GetVNum(h,o,"second"), (int)GetVNum(h,o,"millisecond"), (int)GetVNum(h,o,"microsecond"), (int)GetVNum(h,o,"nanosecond"));
-            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNs(ctx, h, selfNs - other.ToNanosecondsOfDay()));
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDiffDuration(ctx, h, selfNs - other.ToNanosecondsOfDay(), s));
         }, 1);
         AddMethod(ctx, h, pH, p, "round", (o, a) => {
             long dayNs = RoundPlainTimeNs(ctx, h, DecodeTimeOfDayNs(h, o), a) % NsPerDay;
@@ -2410,13 +2544,13 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => AddDurationToPlainDateTime(ctx, h, t, o, a, pH, -1), 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
             var (otherDate, otherTime) = ToTemporalDateTimeRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            RequireOptionsObject(ctx, a, 1);
+            GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "day");
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
                 DifferencePlainDateTimes(ctx, h, DecodeIsoDateLong(h, o), DecodeTimeOfDayNs(h, o), otherDate, otherTime.ToNanosecondsOfDay()));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
             var (otherDate, otherTime) = ToTemporalDateTimeRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            RequireOptionsObject(ctx, a, 1);
+            GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "day");
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
                 DifferencePlainDateTimes(ctx, h, otherDate, otherTime.ToNanosecondsOfDay(), DecodeIsoDateLong(h, o), DecodeTimeOfDayNs(h, o)));
         }, 1);
@@ -2625,14 +2759,14 @@ public sealed class TemporalStub : IBuiltinModule
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
             var (oy, om, _) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            RequireOptionsObject(ctx, a, 1);
+            GetDifferenceSettings(ctx, h, a, 1, YearMonthDiffUnits, "month", "year");
             int totalMonths = (oy - (int)GetVNum(h, o, "y")) * 12 + (om - (int)GetVNum(h, o, "m"));
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
                 MakeDuration(ctx, h, totalMonths / 12, totalMonths % 12, 0, 0, 0, 0, 0, 0, 0, 0));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
             var (oy, om, _) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            RequireOptionsObject(ctx, a, 1);
+            GetDifferenceSettings(ctx, h, a, 1, YearMonthDiffUnits, "month", "year");
             int totalMonths = ((int)GetVNum(h, o, "y") - oy) * 12 + ((int)GetVNum(h, o, "m") - om);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
                 MakeDuration(ctx, h, totalMonths / 12, totalMonths % 12, 0, 0, 0, 0, 0, 0, 0, 0));
@@ -3076,12 +3210,12 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => AddDurationToZoned(ctx, h, o, a, pH, -1), 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
             var (otherNs, _, _) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            RequireOptionsObject(ctx, a, 1);
+            GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "hour");
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNs(ctx, h, otherNs - DecodeInstantNanos(h, o)));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
             var (otherNs, _, _) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            RequireOptionsObject(ctx, a, 1);
+            GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "hour");
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNs(ctx, h, DecodeInstantNanos(h, o) - otherNs));
         }, 1);
         AddMethod(ctx, h, pH, p, "round", (o, a) => ZonedRound(ctx, h, o, a, pH), 1);
@@ -3349,6 +3483,70 @@ public sealed class TemporalStub : IBuiltinModule
         return MakePlainTime(ctx, h,
             (int)(dayNs / 3_600_000_000_000L), (int)(dayNs / 60_000_000_000L % 60), (int)(dayNs / 1_000_000_000L % 60),
             (int)(dayNs / 1_000_000L % 1000), (int)(dayNs / 1_000L % 1000), (int)(dayNs % 1000));
+    }
+
+    /// <summary>
+    /// Balance a signed nanosecond total into a time-only Duration whose largest populated field
+    /// is <paramref name="largest"/> (one of hour, minute, second, millisecond, microsecond,
+    /// nanosecond). Components are emitted as doubles so a large second/millisecond count that
+    /// overflows int is preserved exactly.
+    /// </summary>
+    private static JsValue MakeDurationFromNsBalanced(IBuiltinContext ctx, JsHeap h, long totalNs, string largest)
+    {
+        if (totalNs == long.MinValue) totalNs = long.MinValue + 1;
+        double sign = totalNs < 0 ? -1 : 1;
+        long abs = Math.Abs(totalNs);
+        double hours = 0, minutes = 0, seconds = 0, millis = 0, micros = 0, nanos = 0;
+        switch (largest)
+        {
+            case "hour":
+                hours = abs / 3_600_000_000_000L; abs %= 3_600_000_000_000L;
+                minutes = abs / 60_000_000_000L; abs %= 60_000_000_000L;
+                seconds = abs / 1_000_000_000L; abs %= 1_000_000_000L;
+                millis = abs / 1_000_000L; abs %= 1_000_000L; micros = abs / 1_000L; nanos = abs % 1_000L;
+                break;
+            case "minute":
+                minutes = abs / 60_000_000_000L; abs %= 60_000_000_000L;
+                seconds = abs / 1_000_000_000L; abs %= 1_000_000_000L;
+                millis = abs / 1_000_000L; abs %= 1_000_000L; micros = abs / 1_000L; nanos = abs % 1_000L;
+                break;
+            case "second":
+                seconds = abs / 1_000_000_000L; abs %= 1_000_000_000L;
+                millis = abs / 1_000_000L; abs %= 1_000_000L; micros = abs / 1_000L; nanos = abs % 1_000L;
+                break;
+            case "millisecond":
+                millis = abs / 1_000_000L; abs %= 1_000_000L; micros = abs / 1_000L; nanos = abs % 1_000L;
+                break;
+            case "microsecond":
+                micros = abs / 1_000L; nanos = abs % 1_000L;
+                break;
+            default: // nanosecond
+                nanos = abs;
+                break;
+        }
+        return MakeDurationD(ctx, h, 0, 0, 0, 0,
+            sign * hours, sign * minutes, sign * seconds, sign * millis, sign * micros, sign * nanos);
+    }
+
+    /// <summary>Build a Duration from double-valued fields (avoids int overflow on large totals).</summary>
+    private static JsValue MakeDurationD(IBuiltinContext ctx, JsHeap h,
+        double years, double months, double weeks, double days,
+        double hours, double minutes, double seconds, double millis, double micros, double nanos)
+    {
+        var o = new JsObject();
+        var d = new JsObject(); var dH = h.AllocateObject(d, AllocationSite.Current());
+        d.SetProperty("years", JsValue.FromNumber(years));
+        d.SetProperty("months", JsValue.FromNumber(months));
+        d.SetProperty("weeks", JsValue.FromNumber(weeks));
+        d.SetProperty("days", JsValue.FromNumber(days));
+        d.SetProperty("hours", JsValue.FromNumber(hours));
+        d.SetProperty("minutes", JsValue.FromNumber(minutes));
+        d.SetProperty("seconds", JsValue.FromNumber(seconds));
+        d.SetProperty("milliseconds", JsValue.FromNumber(millis));
+        d.SetProperty("microseconds", JsValue.FromNumber(micros));
+        d.SetProperty("nanoseconds", JsValue.FromNumber(nanos));
+        o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.FromObject(dH), false, false, false));
+        return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
     }
 
     /// <summary>Balance a signed nanosecond total into an hours..nanoseconds Duration.</summary>
