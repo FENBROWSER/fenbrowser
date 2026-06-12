@@ -87,6 +87,40 @@ public sealed partial class BytecodeInterpreter
     }
 
 
+    // ECMA-262 10.2.9 SetFunctionName. Stamps an accessor/method's `name` own
+    // property to "<prefix> <key>" (e.g. "get id", "set [test262]"). For a Symbol
+    // key the base name is "" when the description is undefined, else "[desc]".
+    // The prefix (and the joining space) is always present for get/set accessors.
+    private void ApplyFunctionName(JsValue fnValue, JsValue keyValue, string? prefix)
+    {
+        if (fnValue.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var fn = _heap.GetObject(fnValue.AsObjectHandle());
+        if (fn is not JsFunctionObject)
+        {
+            return;
+        }
+
+        string baseName;
+        if (keyValue.Tag == JsValueTag.Symbol)
+        {
+            var desc = keyValue.AsSymbolDescription();
+            baseName = desc is null ? string.Empty : "[" + desc + "]";
+        }
+        else
+        {
+            baseName = ToPropertyKey(keyValue);
+        }
+
+        var full = prefix is null ? baseName : prefix + " " + baseName;
+        _ = fn.DefineOwnProperty(
+            "name",
+            new JsPropertyDescriptor(JsValue.FromString(full), Writable: false, Enumerable: false, Configurable: true));
+    }
+
     internal void HandleDefineAccessor(InterpreterFrame frame, BytecodeFunction function, Instruction ins)
     {
         // H.4 - install or update an accessor descriptor on the target object
@@ -116,10 +150,12 @@ public sealed partial class BytecodeInterpreter
         if (ins.OpCode == OpCode.DefineGetter)
         {
             getValue = accessorFnValue;
+            ApplyFunctionName(accessorFnValue, JsValue.FromString(accessorName), "get");
         }
         else
         {
             setValue = accessorFnValue;
+            ApplyFunctionName(accessorFnValue, JsValue.FromString(accessorName), "set");
         }
 
         // D=1 (set by the object-literal compiler path) => enumerable accessor;
@@ -164,10 +200,12 @@ public sealed partial class BytecodeInterpreter
             if (ins.OpCode == OpCode.DefineGetterByReg)
             {
                 getValue = accessorFnValue;
+                ApplyFunctionName(accessorFnValue, keyValue, "get");
             }
             else
             {
                 setValue = accessorFnValue;
+                ApplyFunctionName(accessorFnValue, keyValue, "set");
             }
 
             _ = targetObj.DefineOwnSymbolProperty(symbolId,
@@ -190,10 +228,12 @@ public sealed partial class BytecodeInterpreter
         if (ins.OpCode == OpCode.DefineGetterByReg)
         {
             getValue = accessorFnValue;
+            ApplyFunctionName(accessorFnValue, keyValue, "get");
         }
         else
         {
             setValue = accessorFnValue;
+            ApplyFunctionName(accessorFnValue, keyValue, "set");
         }
 
         _ = targetObj.DefineOwnProperty(accessorName,
@@ -242,6 +282,10 @@ public sealed partial class BytecodeInterpreter
         var targetObj = _heap.GetObject(targetHandle);
         var keyValue = frame.Registers[ins.B];
         var fnValue = frame.Registers[ins.C];
+
+        // ECMA-262 SetFunctionName for a computed concise method (always anonymous):
+        // the name is the property key (Symbol keys render as "[description]").
+        ApplyFunctionName(fnValue, keyValue, prefix: null);
 
         if (keyValue.Tag == JsValueTag.Symbol)
         {
