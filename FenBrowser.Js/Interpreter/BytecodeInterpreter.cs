@@ -119,6 +119,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     JsValue IBuiltinContext.SymbolFor(string key) => SymbolFor(key);
     JsValue IBuiltinContext.SymbolKeyFor(long id) => SymbolKeyFor(id);
     void IBuiltinContext.InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto) => InstallPrototypeMethodsOnDatePrototype(protoHandle, proto);
+    JsValue IBuiltinContext.ConstructDate(IReadOnlyList<JsValue> args) => ConstructDate(args);
     void IBuiltinContext.InstallRegExpPrototypeMethods(ObjectHandle protoHandle, JsObject proto) => InstallPrototypeMethodsOnRegExpPrototype(protoHandle, proto);
     JsValue IBuiltinContext.Eval(IReadOnlyList<JsValue> args) => Eval(args);
     void IBuiltinContext.EnqueueMicrotask(JsValue callback) => _pendingMicrotasks.Enqueue(callback);
@@ -4814,8 +4815,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         var constructor = new NativeFunctionObject(
             "Date",
-            (_, args) => CreateDateObject(args.Count > 0 ? ToNumber(args[0]) : 0d),
-            args => CreateDateObject(args.Count > 0 ? ToNumber(args[0]) : 0d),
+            // `Date(...)` called as a function returns a string for the current time;
+            // the spec ignores the arguments. Reuse Date.prototype.toString on a fresh
+            // "now" instance so the format matches the constructed-object form.
+            (_, _) => DatePrototypeToString(CreateDateObject(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()), System.Array.Empty<JsValue>()),
+            ConstructDate,
             length: 7);
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
@@ -5260,6 +5264,71 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             "{0}-{1:D2}-{2:D2}T{3:D2}:{4:D2}:{5:D2}.{6:D3}Z",
             yearStr, DateMath.MonthFromTime(t) + 1, DateMath.DateFromTime(t),
             DateMath.HoursFromTime(t), DateMath.MinFromTime(t), DateMath.SecFromTime(t), DateMath.MsFromTime(t)));
+    }
+
+    // ECMA-262 21.4.2.1 Date constructor (new). Handles the four argument shapes:
+    // 0 args = now; 1 arg = copy a Date's time value, else ToPrimitive then parse a
+    // string or TimeClip a number; 2+ args = component form (year 0-99 maps to
+    // 1900+year). LocalTZA is 0 in this engine, so the component form needs no
+    // local-to-UTC adjustment.
+    private JsValue ConstructDate(IReadOnlyList<JsValue> args)
+    {
+        double timeValue;
+        if (args.Count == 0)
+        {
+            timeValue = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        }
+        else if (args.Count == 1)
+        {
+            var v = args[0];
+            if (v.Tag == JsValueTag.Object && _heap.GetObject(v.AsObjectHandle()) is DateObject existing)
+            {
+                timeValue = existing.TimeValue;
+            }
+            else
+            {
+                var prim = ToPrimitive(v, PrimitiveHint.Default);
+                if (prim.Tag == JsValueTag.String)
+                {
+                    timeValue = ParseDateValue(ToStringValue(prim));
+                }
+                else
+                {
+                    timeValue = DateMath.TimeClip(ToNumber(prim));
+                }
+            }
+        }
+        else
+        {
+            var year = ToNumber(args[0]);
+            var month = ToNumber(args[1]);
+            var day = args.Count > 2 ? ToNumber(args[2]) : 1;
+            var hours = args.Count > 3 ? ToNumber(args[3]) : 0;
+            var minutes = args.Count > 4 ? ToNumber(args[4]) : 0;
+            var seconds = args.Count > 5 ? ToNumber(args[5]) : 0;
+            var ms = args.Count > 6 ? ToNumber(args[6]) : 0;
+            if (double.IsFinite(year) && year >= 0 && year <= 99)
+            {
+                year += 1900;
+            }
+            var v = DateMath.MakeDate(DateMath.MakeDay(year, month, day), DateMath.MakeTime(hours, minutes, seconds, ms));
+            timeValue = DateMath.TimeClip(v);
+        }
+
+        return CreateDateObject(timeValue);
+    }
+
+    // ECMA-262 21.4.3.2 Date.parse semantics: ISO-8601 and the looser forms .NET
+    // already understands; NaN on failure.
+    private static double ParseDateValue(string text)
+    {
+        if (DateTimeOffset.TryParse(text, System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                out var parsed))
+        {
+            return parsed.ToUnixTimeMilliseconds();
+        }
+        return double.NaN;
     }
 
     private JsValue CreateDateObject(double timeValue)

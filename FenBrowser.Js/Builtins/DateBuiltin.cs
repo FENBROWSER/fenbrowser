@@ -23,18 +23,10 @@ public sealed class DateBuiltin : IBuiltinModule
         var capturedProto = prototypeHandle;
         var constructor = new NativeFunctionObject(
             "Date",
-            (_, args) =>
-            {
-                var d = new DateObject(args.Count > 0 ? capturedCtx.ToNumber(args[0]) : double.NaN);
-                d.SetPrototype(capturedProto);
-                return JsValue.FromObject(heap.AllocateObject(d, AllocationSite.Current()));
-            },
-            args =>
-            {
-                var d = new DateObject(args.Count > 0 ? capturedCtx.ToNumber(args[0]) : double.NaN);
-                d.SetPrototype(capturedProto);
-                return JsValue.FromObject(heap.AllocateObject(d, AllocationSite.Current()));
-            },
+            // Called as a function: return a string for "now" (arguments ignored).
+            (_, _) => JsValue.FromString(DateTimeOffset.UtcNow.ToString("ddd MMM dd yyyy HH:mm:ss 'GMT+0000 (Coordinated Universal Time)'", System.Globalization.CultureInfo.InvariantCulture)),
+            // Called with new: full ECMA-262 21.4.2.1 argument handling.
+            args => capturedCtx.ConstructDate(args),
             length: 7);
         constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = heap.AllocateObject(constructor, AllocationSite.Current());

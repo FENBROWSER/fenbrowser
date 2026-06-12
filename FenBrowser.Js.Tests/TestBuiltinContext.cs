@@ -133,6 +133,9 @@ internal sealed class TestBuiltinContext : IBuiltinContext
     public void InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto)
         => throw new NotSupportedException("InstallDatePrototypeMethods is not supported in TestBuiltinContext.");
 
+    public JsValue ConstructDate(IReadOnlyList<JsValue> args)
+        => throw new NotSupportedException("ConstructDate is not supported in TestBuiltinContext.");
+
     public void InstallRegExpPrototypeMethods(ObjectHandle protoHandle, JsObject proto)
         => throw new NotSupportedException("InstallRegExpPrototypeMethods is not supported in TestBuiltinContext.");
 

@@ -115,5 +115,9 @@ public interface IBuiltinContext
     // Install prototype methods on already-created prototypes (for builtins that
     // create their own prototypes and need the interpreter to install methods).
     void InstallDatePrototypeMethods(ObjectHandle protoHandle, JsObject proto);
+
+    // ECMA-262 21.4.2.1 Date(...) [[Construct]]: builds a DateObject from the full
+    // range of argument shapes (now / time value / string / component form).
+    JsValue ConstructDate(IReadOnlyList<JsValue> args);
     void InstallRegExpPrototypeMethods(ObjectHandle protoHandle, JsObject proto);
 }
