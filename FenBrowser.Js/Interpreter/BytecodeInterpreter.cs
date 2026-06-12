@@ -1398,7 +1398,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var obj = _heap.GetObject(ownerHandle);
                     if (obj is ProxyObject proxySet)
                     {
-                        try { _ = ProxySet(proxySet, receiverValue, prop, value); }
+                        // ECMA-262 6.2.5.4 PutValue: a [[Set]] that returns false (here
+                        // the proxy "set" trap returned a falsy value) throws a TypeError
+                        // in strict-mode code, exactly like the ordinary-object path below.
+                        try
+                        {
+                            var proxyOk = ProxySet(proxySet, receiverValue, prop, value);
+                            if (!proxyOk && function.IsStrictMode)
+                            {
+                                ThrowOrHandle(frame, CreateTypeError($"Cannot assign to read-only property '{prop}'."));
+                            }
+                        }
                         catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                         break;
                     }
@@ -3545,7 +3555,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var obj = _heap.GetObject(targetHandle);
             var key = ToPropertyKey(args.Count > 1 ? args[1] : JsValue.Undefined);
             var value = args.Count > 2 ? args[2] : JsValue.Undefined;
-            return JsValue.FromBoolean(obj.SetProperty(key, value));
+            // ECMA-262 28.1.13 Reflect.set(target, key, V, receiver): receiver
+            // defaults to target. A Proxy target routes through its "set" trap so
+            // the boolean trap result (and its invariants) are observed.
+            var receiver = args.Count > 3 ? args[3] : args[0];
+            if (obj is ProxyObject reflectProxy)
+            {
+                return JsValue.FromBoolean(ProxySet(reflectProxy, receiver, key, value));
+            }
+            return JsValue.FromBoolean(SetPropertyValue(targetHandle, obj, key, value, receiver));
         }, length: 3);
 
         // 28.1.4 deleteProperty
@@ -6318,7 +6336,31 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var result = CallFunction(trap.Value,
                 new[] { target, propVal, value, receiver },
                 JsValue.FromObject(proxy.HandlerHandle!.Value));
-            return ValueToBooleanProxy(result);
+            if (!ValueToBooleanProxy(result))
+            {
+                return false;
+            }
+
+            // ECMA-262 10.5.9 [[Set]] invariant: a successful trap cannot contradict a
+            // non-configurable own property on the target — a non-writable data property
+            // must keep its value, and an accessor with no setter cannot be written.
+            if (TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out var targetDesc) &&
+                !targetDesc.Configurable)
+            {
+                if (!targetDesc.IsAccessor && !targetDesc.Writable && !SameValue(value, targetDesc.Value))
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Proxy set trap reported success for a non-configurable, non-writable own property with a different value."));
+                }
+
+                if (targetDesc.IsAccessor && targetDesc.Set.Tag is JsValueTag.Undefined)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Proxy set trap reported success for a non-configurable accessor own property with no setter."));
+                }
+            }
+
+            return true;
         }
         var targetObj = _heap.GetObject(proxy.TargetHandle);
         if (targetObj is ProxyObject nestedProxy)
