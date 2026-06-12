@@ -4901,10 +4901,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         int yearArgIndex = 0, int monthArgIndex = 1, int dayArgIndex = 2)
     {
         var date = RequireDate(thisValue, method);
+
+        // ECMA-262 21.4.4.21/.20/.19: the [[DateValue]] is read FIRST (step 3), then
+        // every provided argument is ToNumber-coerced in argument order. So a NaN
+        // Date still observes each valueOf once, and a callback that mutates the Date
+        // mid-coercion does not change the captured time the result is built from.
+        var capturedT = date.TimeValue;
+        double? yearArg = hasYear ? ToNumber(args[yearArgIndex]) : null;
+        double? monthArg = hasMonth ? ToNumber(args[monthArgIndex]) : null;
+        double? dayArg = hasDay ? ToNumber(args[dayArgIndex]) : null;
+
         double baseT;
-        if (double.IsFinite(date.TimeValue))
+        if (double.IsFinite(capturedT))
         {
-            baseT = date.TimeValue;
+            baseT = capturedT;
         }
         else if (hasYear)
         {
@@ -4918,15 +4928,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromNumber(double.NaN);
         }
 
-        // ECMA-262 21.4.4.21/.20/.19: read the untouched portions from the current
-        // time, overwrite the requested ones from args (ToNumber in argument order),
-        // then recompose via MakeDay/MakeDate. MakeDay overflow handles Feb 30 etc.
-        double year = DateMath.YearFromTime(baseT);
-        double month = DateMath.MonthFromTime(baseT);
-        double day = DateMath.DateFromTime(baseT);
-        if (hasYear) { year = ToNumber(args[yearArgIndex]); }
-        if (hasMonth) { month = ToNumber(args[monthArgIndex]); }
-        if (hasDay) { day = ToNumber(args[dayArgIndex]); }
+        // Read the untouched portions from the current time; overwrite the requested
+        // ones with the already-coerced argument values, then recompose via
+        // MakeDay/MakeDate. MakeDay overflow handles Feb 30 etc.
+        double year = yearArg ?? DateMath.YearFromTime(baseT);
+        double month = monthArg ?? DateMath.MonthFromTime(baseT);
+        double day = dayArg ?? DateMath.DateFromTime(baseT);
 
         var newDay = DateMath.MakeDay(year, month, day);
         date.TimeValue = DateMath.TimeClip(DateMath.MakeDate(newDay, DateMath.TimeWithinDay(baseT)));
@@ -4940,21 +4947,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue SetTimeField(JsValue thisValue, string method, IReadOnlyList<JsValue> args, int startIndex)
     {
         var date = RequireDate(thisValue, method);
-        if (!double.IsFinite(date.TimeValue))
+        // ECMA-262 21.4.4.34/.33/.32/.31: read the [[DateValue]] FIRST, then ToNumber
+        // every provided argument in argument order (so a NaN Date still observes each
+        // valueOf once, and a callback mutating the Date can't change the captured time).
+        var t0 = date.TimeValue;
+        var provided = new double[4];
+        var has = new bool[4];
+        for (var i = 0; i < args.Count && startIndex + i < 4; i++)
+        {
+            provided[startIndex + i] = ToNumber(args[i]);
+            has[startIndex + i] = true;
+        }
+        if (!double.IsFinite(t0))
         {
             return JsValue.FromNumber(double.NaN);
         }
-        var t0 = date.TimeValue;
-        // Untouched portions keep their current value; provided args overwrite from
-        // startIndex (0=hour..3=ms), ToNumber in argument order (21.4.4.34/.33/.32/.31).
+        // Untouched portions keep their current value; provided args overwrite from startIndex.
         var components = new double[]
         {
             DateMath.HoursFromTime(t0), DateMath.MinFromTime(t0),
             DateMath.SecFromTime(t0), DateMath.MsFromTime(t0)
         };
-        for (var i = 0; i < args.Count && startIndex + i < 4; i++)
+        for (var i = 0; i < 4; i++)
         {
-            components[startIndex + i] = ToNumber(args[i]);
+            if (has[i]) components[i] = provided[i];
         }
         var time = DateMath.MakeTime(components[0], components[1], components[2], components[3]);
         date.TimeValue = DateMath.TimeClip(DateMath.MakeDate(DateMath.Day(t0), time));
