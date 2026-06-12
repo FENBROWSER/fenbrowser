@@ -7,6 +7,13 @@ public sealed class BytecodeFunction
 {
     public string? Name { get; init; }
 
+    // The exact source text of this function (from `function`/parameter list
+    // through the closing brace, or the full arrow). Populated by the compiler
+    // when the original source is available so Function.prototype.toString can
+    // return the real source per ECMA-262 20.2.3.5. Null for functions with no
+    // recoverable source (Function constructor, synthesised constructors).
+    public string? SourceText { get; internal set; }
+
     public required IReadOnlyList<Instruction> Instructions { get; init; }
 
     public required IReadOnlyList<JsValue> Constants { get; init; }

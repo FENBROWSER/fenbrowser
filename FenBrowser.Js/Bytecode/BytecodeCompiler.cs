@@ -83,6 +83,11 @@ public sealed class BytecodeCompiler
     // their bindings instead.
     private readonly Stack<HashSet<string>> _blockScopedNameStack = new();
     private string? _name;
+    // The full original source text, when available. Used to slice exact function
+    // source for Function.prototype.toString. Propagated to child compilers so
+    // nested-function spans (which are absolute offsets into this same text)
+    // resolve at any depth. Not reset by CompileProgramCore.
+    internal string? _rawSource;
     private int _nextRegister = 1;
     private FunctionKind _currentFunctionKind = FunctionKind.Ordinary;
     private bool _isStrictMode;
@@ -97,6 +102,7 @@ public sealed class BytecodeCompiler
     public BytecodeFunction CompileScript(SourceText source)
     {
         var program = JsParser.ParseScript(source!);
+        _rawSource = source?.Text;
         // ECMA-262 Static Semantics: Early Error validation.
         new AstValidator().Validate(program, new Diagnostics.DiagnosticBag());
 
@@ -245,6 +251,21 @@ public sealed class BytecodeCompiler
             BrandTokens = _brandTokens.ToArray(),
             PrologueEndIp = prologueEndIp,
         };
+    }
+
+    // Slice the exact source text for a function node from the original source,
+    // and propagate the source to the child compiler that produced `nested` so
+    // deeper-nested functions resolve too. `span` is an absolute offset into
+    // `_rawSource`. Returns the function unchanged for fluent use.
+    private BytecodeFunction AttachSource(BytecodeFunction nested, BytecodeCompiler child, SourceSpan span)
+    {
+        child._rawSource = _rawSource;
+        if (_rawSource is not null && span.Start >= 0 && span.Length > 0 &&
+            span.Start + span.Length <= _rawSource.Length)
+        {
+            nested.SourceText = _rawSource.Substring(span.Start, span.Length);
+        }
+        return nested;
     }
 
     private void CompileStatement(StatementNode stmt)
@@ -510,6 +531,7 @@ public sealed class BytecodeCompiler
             captureCompletionValue: false,
             prologueStatementCount: prologueCount,
             parameterDefaults: functionDecl.ParameterDefaults);
+        AttachSource(nestedFunction, childCompiler, functionDecl.Span);
         var nestedIndex = _nestedFunctions.Count;
         _nestedFunctions.Add(nestedFunction);
 
@@ -1137,6 +1159,7 @@ public sealed class BytecodeCompiler
             captureCompletionValue: false,
             prologueStatementCount: prologueCount,
             parameterDefaults: fnExpr.ParameterDefaults);
+        AttachSource(nestedFunction, childCompiler, fnExpr.Span);
         var nestedIndex = _nestedFunctions.Count;
         _nestedFunctions.Add(nestedFunction);
         var dest = AllocateRegister();
@@ -2993,6 +3016,7 @@ public sealed class BytecodeCompiler
                     parameterDefaults: fnExpr.ParameterDefaults,
                     // A named function expression binds its own name inside its body.
                     bindOwnNameInBody: fnExpr.Name is { Length: > 0 });
+                AttachSource(nestedFunction, childCompiler, fnExpr.Span);
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();
@@ -3046,6 +3070,7 @@ public sealed class BytecodeCompiler
                     captureCompletionValue: false,
                     prologueStatementCount: arrowPrologueCount,
                     parameterDefaults: arrow.ParameterDefaults);
+                AttachSource(nestedFunction, childCompiler, arrow.Span);
                 var nestedIndex = _nestedFunctions.Count;
                 _nestedFunctions.Add(nestedFunction);
                 var dest = AllocateRegister();

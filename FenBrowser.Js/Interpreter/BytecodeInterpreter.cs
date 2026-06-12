@@ -8980,7 +8980,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return obj switch
         {
             NativeFunctionObject nfo => JsValue.FromString($"function {nfo.Name}() {{ [native code] }}"),
-            JsFunctionObject jfo => JsValue.FromString($"function {(jfo.Function.Name ?? string.Empty)}() {{ [bytecode] }}"),
+            // ECMA-262 20.2.3.5: return the exact source text when the compiler
+            // captured it; otherwise fall back to native-code syntax (e.g. for the
+            // Function constructor or synthesised class constructors).
+            JsFunctionObject jfo => JsValue.FromString(
+                jfo.Function.SourceText
+                ?? $"function {(jfo.Function.Name ?? string.Empty)}() {{ [native code] }}"),
             BoundFunctionObject => JsValue.FromString("function bound() { [native code] }"),
             _ => throw new JsThrownException(CreateTypeError("Function.prototype.toString called on non-function."))
         };
