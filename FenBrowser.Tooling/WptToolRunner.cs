@@ -119,7 +119,22 @@ namespace FenBrowser.Tooling
             });
 
             arguments.AddRange(options.Tests);
-            return new WptCommand("python", arguments);
+
+            // Invoke the WPT venv's interpreter directly. The bare "python" on PATH
+            // may be an unrelated environment lacking wptrunner deps (mozlog etc.);
+            // wpt.py imports those before it activates --venv, so the launching
+            // interpreter itself must already have them.
+            var pythonExe = "python";
+            if (!string.IsNullOrWhiteSpace(options.VenvPath))
+            {
+                var venvPython = Path.Combine(options.VenvPath, "Scripts", "python.exe");
+                if (File.Exists(venvPython))
+                {
+                    pythonExe = venvPython;
+                }
+            }
+
+            return new WptCommand(pythonExe, arguments);
         }
 
         private static async Task<WptProcessResult> RunProcessAsync(string workingDirectory, WptCommand command, string stdoutPath, string stderrPath, int timeoutSeconds)
@@ -258,8 +273,8 @@ namespace FenBrowser.Tooling
             {
                 WptRoot = @"C:\Users\udayk\Videos\wpt",
                 BrowserBinary = FindFirstExisting(
-                    Path.Combine(repoRoot, "FenBrowser.Host", "bin", "Debug", "net8.0", "FenBrowser.Host.exe"),
-                    Path.Combine(repoRoot, "FenBrowser.Host", "bin", "Release", "net8.0", "FenBrowser.Host.exe")),
+                    Path.Combine(repoRoot, "FenBrowser.Host", "bin", "Release", "net10.0", "FenBrowser.Host.exe"),
+                    Path.Combine(repoRoot, "FenBrowser.Host", "bin", "Debug", "net10.0", "FenBrowser.Host.exe")),
                 WebDriverBinary = Path.Combine(repoRoot, "scripts", "wpt-webdriver-launcher.cmd"),
                 OutputDir = Path.Combine(repoRoot, "Results", $"wpt_{DateTime.UtcNow:yyyyMMdd_HHmmss}"),
                 Processes = DefaultProcesses,
