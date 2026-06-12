@@ -46,23 +46,18 @@ public sealed class DateBuiltin : IBuiltinModule
         context.DefineIntrinsicFunction(constructorHandle, constructor, "UTC", (_, args) =>
         {
             if (args.Count == 0) return JsValue.FromNumber(double.NaN);
-            var year = (int)context.ToNumber(args[0]);
-            if (year >= 0 && year <= 99) year += 1900;
-            var month = args.Count > 1 ? (int)context.ToNumber(args[1]) : 0;
-            var day = args.Count > 2 ? (int)context.ToNumber(args[2]) : 1;
-            var hours = args.Count > 3 ? (int)context.ToNumber(args[3]) : 0;
-            var minutes = args.Count > 4 ? (int)context.ToNumber(args[4]) : 0;
-            var seconds = args.Count > 5 ? (int)context.ToNumber(args[5]) : 0;
-            var ms = args.Count > 6 ? (int)context.ToNumber(args[6]) : 0;
-            try
-            {
-                var dt = new DateTimeOffset(year, month + 1, day, hours, minutes, seconds, ms, TimeSpan.Zero);
-                return JsValue.FromNumber(dt.ToUnixTimeMilliseconds());
-            }
-            catch (ArgumentOutOfRangeException)
-            {
-                return JsValue.FromNumber(double.NaN);
-            }
+            // ECMA-262 21.4.3.4: ToNumber every component (full double precision, not
+            // an int cast), map a 0-99 year to 1900+year, then compose via MakeDate.
+            var year = context.ToNumber(args[0]);
+            if (double.IsFinite(year) && year >= 0 && year <= 99) year += 1900;
+            var month = args.Count > 1 ? context.ToNumber(args[1]) : 0;
+            var day = args.Count > 2 ? context.ToNumber(args[2]) : 1;
+            var hours = args.Count > 3 ? context.ToNumber(args[3]) : 0;
+            var minutes = args.Count > 4 ? context.ToNumber(args[4]) : 0;
+            var seconds = args.Count > 5 ? context.ToNumber(args[5]) : 0;
+            var ms = args.Count > 6 ? context.ToNumber(args[6]) : 0;
+            var v = DateMath.MakeDate(DateMath.MakeDay(year, month, day), DateMath.MakeTime(hours, minutes, seconds, ms));
+            return JsValue.FromNumber(DateMath.TimeClip(v));
         }, length: 7);
 
         // Date.parse(string)

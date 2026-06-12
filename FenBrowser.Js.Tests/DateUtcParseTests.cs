@@ -48,10 +48,13 @@ public sealed class DateUtcParseTests
     }
 
     [Fact]
-    public void UtcWithInvalidComponentsIsNaN()
+    public void UtcWithNonFiniteComponentIsNaN()
     {
-        // month 99 is out of range -> ArgumentOutOfRangeException -> NaN.
-        Assert.True(double.IsNaN(RunNum("Date.UTC(2000, 99, 1);")));
+        // ECMA-262 21.4.3.4 MakeTime/MakeDate: a non-finite component yields NaN.
+        // (An out-of-range-but-finite component such as month 99 is *not* invalid —
+        // MakeDay normalizes the overflow, so Date.UTC(2000, 99, 1) is a valid date.)
+        Assert.True(double.IsNaN(RunNum("Date.UTC(2000, Infinity, 1);")));
+        Assert.False(double.IsNaN(RunNum("Date.UTC(2000, 99, 1);")));
     }
 
     [Fact]
