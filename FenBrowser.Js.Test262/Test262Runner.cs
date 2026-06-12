@@ -1893,6 +1893,7 @@ public sealed class Test262Runner
         "detachArrayBuffer.js",
         "iteratorZipUtils.js",
         "nans.js",
+        "nativeFunctionMatcher.js",
         "propertyHelper.js",
         "proxyTrapsHelper.js",
         "regExpUtils.js",
