@@ -280,6 +280,63 @@ public sealed class TemporalStub : IBuiltinModule
         return JsValue.FromString(sb.ToString());
     }
 
+    /// <summary>
+    /// Temporal.Duration.prototype.toString: format the duration applying the precision options
+    /// (smallestUnit / fractionalSecondDigits / roundingMode). The fractional-seconds part is
+    /// rounded to the requested precision, carrying any whole second into the seconds field.
+    /// </summary>
+    private static JsValue FormatDurationOpts(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> a)
+    {
+        var opts = GetToStringOptions(ctx, h, a, 0);
+        // Duration toString does not accept "minute" as smallestUnit.
+        if (opts.SmallestUnit == "minute")
+            throw new JsThrownException(ctx.CreateRangeError("'minute' is not a valid smallestUnit for Duration.toString."));
+
+        var d = DecodeDuration(h, o);
+        bool negative = d.years < 0 || d.months < 0 || d.weeks < 0 || d.days < 0 || d.hours < 0
+            || d.minutes < 0 || d.seconds < 0 || d.millis < 0 || d.micros < 0 || d.nanos < 0;
+
+        // Combine sub-second fields and the seconds field, then round the fraction to the precision.
+        long secs = d.seconds;
+        long fracNs = (long)d.millis * 1_000_000L + (long)d.micros * 1_000L + d.nanos;
+        secs += fracNs / 1_000_000_000L; fracNs %= 1_000_000_000L;
+        long inc = PrecisionIncrementNs(opts);
+        if (inc > 1) fracNs = RoundNsToIncrement(ctx, fracNs, inc, opts.RoundingMode);
+        secs += fracNs / 1_000_000_000L; fracNs %= 1_000_000_000L;
+
+        int digits = opts.SmallestUnit switch
+        {
+            "second" => 0, "millisecond" => 3, "microsecond" => 6, "nanosecond" => 9, _ => opts.FractionalDigits,
+        };
+        long absFrac = Math.Abs(fracNs);
+        string fracStr = digits switch
+        {
+            < 0 => absFrac == 0 ? "" : $".{absFrac:D9}".TrimEnd('0'),
+            0 => "",
+            _ => "." + $"{absFrac:D9}"[..digits],
+        };
+
+        var sb = new System.Text.StringBuilder(negative ? "-P" : "P");
+        if (d.years != 0) sb.Append($"{Math.Abs(d.years)}Y");
+        if (d.months != 0) sb.Append($"{Math.Abs(d.months)}M");
+        if (d.weeks != 0) sb.Append($"{Math.Abs(d.weeks)}W");
+        if (d.days != 0) sb.Append($"{Math.Abs(d.days)}D");
+        bool emitSeconds = secs != 0 || fracNs != 0 || digits >= 0;
+        bool emitTime = d.hours != 0 || d.minutes != 0 || emitSeconds;
+        if (emitTime)
+        {
+            sb.Append('T');
+            if (d.hours != 0) sb.Append($"{Math.Abs(d.hours)}H");
+            if (d.minutes != 0) sb.Append($"{Math.Abs(d.minutes)}M");
+            if (emitSeconds) sb.Append($"{Math.Abs(secs)}{fracStr}S");
+        }
+        else if (sb.Length == 1)
+        {
+            sb.Append("T0S");
+        }
+        return JsValue.FromString(sb.ToString());
+    }
+
     /// <summary>Format a PlainDate as ISO 8601 string (e.g. "2024-01-15", extended years signed 6-digit).</summary>
     private static JsValue FormatPlainDate(JsHeap h, JsObject o)
     {
@@ -2009,7 +2066,7 @@ public sealed class TemporalStub : IBuiltinModule
         }, 1);
         AddMethod(ctx, h, pH, p, "round", (o, a) => AttachPrototype(h, DurationRound(ctx, h, o, a), pH), 1);
         AddMethod(ctx, h, pH, p, "total", (o, a) => DurationTotal(ctx, h, o, a), 1);
-        AddMethod(ctx, h, pH, p, "toString", (o, _) => FormatDuration(h, o), 0);
+        AddMethod(ctx, h, pH, p, "toString", (o, a) => FormatDurationOpts(ctx, h, o, a), 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatDuration(h, o), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("Duration.prototype.valueOf throws.")), 0);
         var c = h.GetObject(cH);
