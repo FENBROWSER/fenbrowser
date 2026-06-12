@@ -1745,6 +1745,23 @@ public sealed class Test262Runner
                        return fn;
                      }
                    };
+                   // FenJS has no true multi-realm isolation: createRealm() returns a
+                   // facade whose global delegates to the shared global realm. Expose
+                   // eval plus the remaining standard intrinsics so cross-realm tests
+                   // that read `realm.global.<Ctor>` / `realm.global.eval(...)` work.
+                   realmGlobal.eval = function (s) { return eval(s); };
+                   ['Proxy','Reflect','RegExp','String','Date','Map','Set','WeakMap','WeakSet',
+                    'WeakRef','Promise','Error','RangeError','SyntaxError','ReferenceError',
+                    'EvalError','URIError','AggregateError','Int8Array','Uint8Array',
+                    'Uint8ClampedArray','Int16Array','Uint16Array','Int32Array','Uint32Array',
+                    'Float16Array','Float32Array','Float64Array','BigInt64Array','BigUint64Array',
+                    'ArrayBuffer','SharedArrayBuffer','DataView','Math','JSON','Date',
+                    'parseInt','parseFloat','isNaN','isFinite','encodeURI','decodeURI',
+                    'encodeURIComponent','decodeURIComponent'].forEach(function (n) {
+                     if (realmGlobal[n] === undefined && typeof globalThis[n] !== 'undefined') {
+                       realmGlobal[n] = globalThis[n];
+                     }
+                   });
                    return { global: realmGlobal };
                  },
                  detachArrayBuffer: function (buffer) {
