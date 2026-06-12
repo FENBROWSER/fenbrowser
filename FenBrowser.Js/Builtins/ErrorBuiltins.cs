@@ -21,6 +21,11 @@ public sealed class ErrorBuiltins : IBuiltinModule
         var errorCtor = CreateErrorConstructor(context, errorProtoHandle, "Error");
         bindings.Add(BuiltinBinding.NonEnumerable("Error", JsValue.FromObject(errorCtor)));
 
+        // ECMA-262 (ES2025) Error.isError(arg): true iff arg has an [[ErrorData]]
+        // internal slot, which FenJS brands as the Error tag slot. A fake error
+        // (Error.prototype + @@toStringTag but no slot) correctly returns false.
+        DefineProtoMethod(context, heap, errorCtor, heap.GetObject(errorCtor), "isError", IsError, length: 1);
+
         // Store Error.prototype in a place subclasses can reach
         var errorProto = errorProtoHandle;
 
@@ -130,6 +135,15 @@ public sealed class ErrorBuiltins : IBuiltinModule
         _ = err.DefineOwnProperty("stack",
             new Objects.JsPropertyDescriptor(JsValue.FromString(ctx.CaptureCallStack(name, msg)), Writable: true, Enumerable: false, Configurable: true));
         return JsValue.FromObject(ctx.Heap.AllocateObject(err, AllocationSite.Current()));
+    }
+
+    private static JsValue IsError(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        _ = thisValue;
+        var arg = args.Count > 0 ? args[0] : JsValue.Undefined;
+        if (arg.Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
+        var obj = ctx.Heap.GetObject(arg.AsObjectHandle());
+        return JsValue.FromBoolean(obj.ToStringTagSlot == BuiltinTagSlot.Error);
     }
 
     private static JsValue ErrorToString(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)

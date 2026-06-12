@@ -13032,6 +13032,7 @@ fallbackArraySpecies:
             var errorsArrHandle = _heap.AllocateObject(errorsArrObj, AllocationSite.Current());
 
             var err = new JsObject();
+            err.ToStringTagSlot = BuiltinTagSlot.Error;  // [[ErrorData]] — also gates Error.isError
             err.SetPrototype(EnsureAggregateErrorPrototype());
             // ECMA-262 20.5.7.1.1 AggregateError ( errors, message ):
             //   message via CreateMethodProperty -> { w:t, e:f, c:t }
