@@ -291,6 +291,101 @@ namespace FenBrowser.FenEngine.Rendering
             Action<string> log = null,
             FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
+            var result = await ComputeWithResultCoreAsync(
+                root, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, log, deadline)
+                .ConfigureAwait(false);
+
+            // Nested browsing contexts (iframes) hold their own Document with its own
+            // author stylesheets. The cascade above only flattens Element nodes, so it
+            // never descends into the attached child Document — and even if it did, the
+            // parent StyleSet does not contain the iframe's <style>/<link> rules. Without
+            // this pass the iframe renders with UA defaults only (e.g. Acid2 needs the
+            // frame's own 100em margins to position the face). Style each subdocument
+            // against its own sheets. The recursive call re-enters this wrapper, which
+            // re-acquires the compute gate sequentially (no nesting → no deadlock) and
+            // also handles iframes nested inside iframes.
+            try
+            {
+                await StyleIframeSubdocumentsAsync(
+                    root, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight, log, deadline, result.Computed)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Log(log, "[CssLoader] iframe subdocument styling failed: " + ex.Message);
+            }
+
+            return result;
+        }
+
+        private static async Task StyleIframeSubdocumentsAsync(
+            Element root,
+            Uri baseUri,
+            Func<Uri, Task<string>> fetchExternalCssAsync,
+            double? viewportWidth,
+            double? viewportHeight,
+            Action<string> log,
+            FenBrowser.Core.Deadlines.FrameDeadline deadline,
+            Dictionary<Node, CssComputed> aggregate)
+        {
+            if (root == null)
+            {
+                return;
+            }
+
+            // Collect iframe elements in the just-cascaded tree.
+            var frames = root.Descendants().OfType<Element>()
+                .Where(static e => string.Equals(e.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (root is Element rootEl &&
+                string.Equals(rootEl.TagName, "iframe", StringComparison.OrdinalIgnoreCase))
+            {
+                frames.Insert(0, rootEl);
+            }
+
+            foreach (var frame in frames)
+            {
+                var frameDoc = frame.ChildNodes.OfType<Document>().FirstOrDefault();
+                if (frameDoc == null)
+                {
+                    FenBrowser.FenEngine.DOM.ElementWrapper.TryGetCachedIframeDocument(frame, out frameDoc);
+                }
+
+                var frameRoot = frameDoc?.DocumentElement;
+                if (frameRoot == null)
+                {
+                    continue;
+                }
+
+                // The frame's viewport drives its media queries and viewport units. Use the
+                // iframe element's computed content box when available, falling back to the
+                // parent viewport so em/percentage-free layouts (Acid2) still resolve.
+                double? frameVw = (frame.ComputedStyle?.Width is double w && w > 0) ? w : viewportWidth;
+                double? frameVh = (frame.ComputedStyle?.Height is double h && h > 0) ? h : viewportHeight;
+
+                var nested = await ComputeWithResultAsync(
+                    frameRoot, baseUri, fetchExternalCssAsync, frameVw, frameVh, log, deadline)
+                    .ConfigureAwait(false);
+
+                if (nested?.Computed != null && aggregate != null)
+                {
+                    foreach (var kvp in nested.Computed)
+                    {
+                        aggregate[kvp.Key] = kvp.Value;
+                    }
+                }
+            }
+        }
+
+        private static async Task<CssLoadResult> ComputeWithResultCoreAsync(
+            Element root,
+            Uri baseUri,
+            Func<Uri, Task<string>> fetchExternalCssAsync,
+            double? viewportWidth = null,
+            double? viewportHeight = null,
+            Action<string> log = null,
+            FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
+        {
             await _globalComputeGate.WaitAsync().ConfigureAwait(false);
             try
             {
