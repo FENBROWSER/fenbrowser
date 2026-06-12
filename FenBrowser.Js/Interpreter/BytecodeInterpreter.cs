@@ -3515,6 +3515,48 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return wm.TryGet(key.AsObjectHandle(), out var v) ? v : JsValue.Undefined;
         }, length: 1);
 
+        // WeakMap.prototype.getOrInsert(key, value) — Upsert proposal.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "getOrInsert", (thisValue, args) =>
+        {
+            var wm = RequireWeakMap(thisValue);
+            var key = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var val = args.Count > 1 ? args[1] : JsValue.Undefined;
+            if (key.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Invalid value used as weak map key."));
+            }
+            if (wm.TryGet(key.AsObjectHandle(), out var existing)) return existing;
+            wm.Set(key.AsObjectHandle(), val);
+            _heap.WriteBarrier(thisValue.AsObjectHandle(), key.AsObjectHandle());
+            if (val.Tag == JsValueTag.Object) _heap.WriteBarrier(thisValue.AsObjectHandle(), val.AsObjectHandle());
+            return val;
+        }, length: 2);
+
+        // WeakMap.prototype.getOrInsertComputed(key, callbackfn) — Upsert proposal.
+        // The key is validated before the callback; a throwing callback leaves the
+        // map unchanged.
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "getOrInsertComputed", (thisValue, args) =>
+        {
+            var wm = RequireWeakMap(thisValue);
+            var key = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var callback = args.Count > 1 ? args[1] : JsValue.Undefined;
+            if (key.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Invalid value used as weak map key."));
+            }
+            if (!IsCallable(callback))
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "WeakMap.prototype.getOrInsertComputed: callbackfn is not callable."));
+            }
+            if (wm.TryGet(key.AsObjectHandle(), out var existing)) return existing;
+            var val = CallFunction(callback, new[] { key }, JsValue.Undefined);
+            wm.Set(key.AsObjectHandle(), val);
+            _heap.WriteBarrier(thisValue.AsObjectHandle(), key.AsObjectHandle());
+            if (val.Tag == JsValueTag.Object) _heap.WriteBarrier(thisValue.AsObjectHandle(), val.AsObjectHandle());
+            return val;
+        }, length: 2);
+
         DefineNativePrototypeMethod(prototypeHandle, prototype, "has", (thisValue, args) =>
         {
             var wm = RequireWeakMap(thisValue);
