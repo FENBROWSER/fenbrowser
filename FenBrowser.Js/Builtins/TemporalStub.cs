@@ -389,9 +389,13 @@ public sealed class TemporalStub : IBuiltinModule
         if (canonical is not null)
             return canonical;
 
-        // ParseTemporalCalendarString: an ISO date-time string also names a
-        // calendar - its [u-ca] annotation, defaulting to iso8601.
-        if (TemporalIsoParser.TryParseDateTime(id, out var parsed, out _))
+        // ParseTemporalCalendarString: any ISO date/time string also names a
+        // calendar via its optional [u-ca] annotation, defaulting to iso8601.
+        // Accept date-time, year-month, month-day and time-only productions.
+        if (TemporalIsoParser.TryParseDateTime(id, out var parsed, out _)
+            || TemporalIsoParser.TryParseYearMonth(id, out parsed, out _)
+            || TemporalIsoParser.TryParseMonthDay(id, out parsed, out _)
+            || TemporalIsoParser.TryParseTime(id, out parsed, out _))
         {
             if (parsed.Calendar is null)
                 return "iso8601";
@@ -430,9 +434,18 @@ public sealed class TemporalStub : IBuiltinModule
         return CanonicalizeCalendarId(ctx, a[i].AsString());
     }
 
-    /// <summary>Calendar from a parsed ISO string annotation (null → iso8601).</summary>
+    /// <summary>
+    /// Calendar from a parsed ISO string's [u-ca] annotation (null → iso8601). The annotation
+    /// value must itself be a valid calendar identifier — it is never re-parsed as a date, so a
+    /// date-shaped value such as "11111111" or "1111-11-11" is a RangeError, not iso8601.
+    /// </summary>
     private static string CalendarFromAnnotation(IBuiltinContext ctx, string? annotation)
-        => annotation is null ? "iso8601" : CanonicalizeCalendarId(ctx, annotation);
+    {
+        if (annotation is null) return "iso8601";
+        var canonical = TemporalCalendars.Canonicalize(annotation);
+        if (canonical is not null) return canonical;
+        throw new JsThrownException(ctx.CreateRangeError($"'{annotation}' is not a valid calendar identifier."));
+    }
 
     /// <summary>GetOptionsObject: options must be undefined or an object.</summary>
     private static void RequireOptionsObject(IBuiltinContext ctx, IReadOnlyList<JsValue> a, int i)
