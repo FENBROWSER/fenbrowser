@@ -3535,6 +3535,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             RequireObjectTarget(args, "Reflect.has");
             var obj = _heap.GetObject(args[0].AsObjectHandle());
             var key = ToPropertyKey(args.Count > 1 ? args[1] : JsValue.Undefined);
+            // ECMA-262 28.1.9 Reflect.has → target.[[HasProperty]]: a Proxy must run
+            // its "has" trap rather than a plain ordinary lookup.
+            if (obj is ProxyObject hasProxy)
+            {
+                return JsValue.FromBoolean(ProxyHas(hasProxy, key));
+            }
             return JsValue.FromBoolean(obj.TryGetProperty(key, h => _heap.GetObject(h), out var __));
         }, length: 2);
 
@@ -3572,6 +3578,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             RequireObjectTarget(args, "Reflect.deleteProperty");
             var obj = _heap.GetObject(args[0].AsObjectHandle());
             var key = ToPropertyKey(args.Count > 1 ? args[1] : JsValue.Undefined);
+            // ECMA-262 28.1.4 Reflect.deleteProperty → target.[[Delete]]: a Proxy must
+            // run its "deleteProperty" trap rather than deleting on the target directly.
+            if (obj is ProxyObject deleteProxy)
+            {
+                return JsValue.FromBoolean(ProxyDelete(deleteProxy, key));
+            }
             return JsValue.FromBoolean(obj.DeleteProperty(key));
         }, length: 2);
 
