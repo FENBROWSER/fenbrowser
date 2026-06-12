@@ -10244,7 +10244,11 @@ window.Set("navigation", FenValue.FromObject(navigation));
             documentPrototype.Set("getElementsByTagNameNS", FenValue.FromFunction(CreatePrototypeForwarder("getElementsByTagNameNS", "getElementsByTagNameNS")));
             var documentCtorVal = CreateInterfaceConstructor("Document", documentPrototype, (args, thisVal) =>
             {
-                var wrapperVal = DomWrapperFactory.Wrap(new Document(), _context);
+                // DOM §4.5: the `new Document()` constructor creates a document whose
+                // content type is "application/xml" — i.e. an XML (non-HTML) document.
+                // It must NOT be flagged as an HTML document, or operations that are
+                // gated on that (e.g. createCDATASection) would wrongly throw.
+                var wrapperVal = DomWrapperFactory.Wrap(Document.CreateXmlDocument(), _context);
                 if (wrapperVal.IsObject)
                 {
                     wrapperVal.AsObject().SetPrototype(documentPrototype);

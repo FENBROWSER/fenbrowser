@@ -103,6 +103,9 @@ namespace FenBrowser.FenEngine.DOM
                 case "createcomment":
                     return FenValue.FromFunction(new FenFunction("createComment", CreateComment));
 
+                case "createcdatasection":
+                    return FenValue.FromFunction(new FenFunction("createCDATASection", CreateCDATASection));
+
                 case "createattribute":
                     return FenValue.FromFunction(new FenFunction("createAttribute", CreateAttribute));
 
@@ -723,6 +726,32 @@ namespace FenBrowser.FenEngine.DOM
             var namespaceUri = args.Length > 0 && !args[0].IsNull && !args[0].IsUndefined ? args[0].ToString() : null;
             var qualifiedName = args.Length > 1 ? args[1].ToString() : string.Empty;
             return WrapAttribute(new Attr(namespaceUri, qualifiedName, string.Empty));
+        }
+
+        private FenValue CreateCDATASection(FenValue[] args, FenValue thisVal)
+        {
+            // DOM §4.5.1 Document.createCDATASection(data):
+            //   1. If this is an HTML document, throw a "NotSupportedError" DOMException.
+            //   2. If data contains "]]>", throw an "InvalidCharacterError" DOMException.
+            //   3. Return a new CDATASection node with the given data.
+            // The core DOM has no first-class CDATASection type, so (like
+            // createProcessingInstruction) the node is backed by Text. That is enough
+            // for tests that build and range over the node; the CDATA-specific nodeType
+            // (4) is the known limitation of this backing.
+            var doc = _root as Document ?? _root.OwnerDocument;
+            if (doc != null && string.Equals(doc.ContentType, "text/html", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new DomException("NotSupportedError", "createCDATASection is not supported in HTML documents");
+            }
+
+            var data = args.Length > 0 ? args[0].ToString() : "";
+            if (data.Contains("]]>", StringComparison.Ordinal))
+            {
+                throw new DomException("InvalidCharacterError", "CDATA section data must not contain ']]>'");
+            }
+
+            var node = doc != null ? doc.CreateTextNode(data) : new Text(data);
+            return DomWrapperFactory.Wrap(node, _context);
         }
 
         private FenValue CreateProcessingInstruction(FenValue[] args, FenValue thisVal)
