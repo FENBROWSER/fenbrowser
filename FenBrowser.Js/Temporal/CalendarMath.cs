@@ -155,7 +155,7 @@ internal abstract class CalendarSystem
 
         ToNative(one, out int y1, out int m1, out int d1);
         int years = 0, months = 0;
-        if (largestUnit is "year" or "month")
+        if (largestUnit == "year")
         {
             ToNative(two, out int y2, out _, out _);
             int candidateYears = y2 - y1;
@@ -165,7 +165,13 @@ internal abstract class CalendarSystem
                 years = candidateYears;
                 candidateYears += sign;
             }
+        }
 
+        if (largestUnit is "year" or "month")
+        {
+            // Count whole calendar months from the (one + years) anchor. Because
+            // BalanceYearMonth honours each year's month count (12 or 13), this
+            // naturally yields the ordinal month span across lunisolar leap years.
             int candidateMonths = sign;
             var inter = BalanceYearMonth(y1 + years, m1 + candidateMonths);
             while (!Surpasses(sign, inter, d1, two))
@@ -173,13 +179,6 @@ internal abstract class CalendarSystem
                 months = candidateMonths;
                 candidateMonths += sign;
                 inter = BalanceYearMonth(inter.Year, inter.Month + sign);
-            }
-
-            if (largestUnit == "month")
-            {
-                // Constant months-per-year for the calendars handled here.
-                months += years * MonthsInYear(y1);
-                years = 0;
             }
         }
 
