@@ -7843,10 +7843,29 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
             else
             {
+                // 25.5.1.1: keys = ? EnumerableOwnProperties(val, key). For a Proxy this
+                // is the [[OwnPropertyKeys]] trap (filtered by [[GetOwnProperty]]
+                // enumerability), which throws on a revoked proxy — that abrupt
+                // completion must propagate out of JSON.parse.
                 var keys = new List<string>();
-                foreach (var pair in valueObj.EnumerateOwnProperties())
+                if (valueObj is ProxyObject proxyValue)
                 {
-                    keys.Add(pair.Key);
+                    foreach (var pk in ProxyOwnKeys(proxyValue))
+                    {
+                        if (pk.Tag == JsValueTag.String &&
+                            ProxyTryGetOwnPropertyDescriptor(proxyValue, pk.AsString(), out var pd) &&
+                            pd.Enumerable)
+                        {
+                            keys.Add(pk.AsString());
+                        }
+                    }
+                }
+                else
+                {
+                    foreach (var pair in valueObj.EnumerateOwnProperties())
+                    {
+                        keys.Add(pair.Key);
+                    }
                 }
 
                 foreach (var k in keys)
@@ -7854,7 +7873,23 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var newValue = InternalizeJsonProperty(valueHandle, k, reviver);
                     if (newValue.Tag == JsValueTag.Undefined)
                     {
-                        valueObj.DeleteProperty(k);
+                        if (valueObj is ProxyObject proxyDelete)
+                        {
+                            if (!ProxyDelete(proxyDelete, k))
+                            {
+                                throw new JsThrownException(CreateTypeError(
+                                    $"JSON.parse reviver: cannot delete property '{k}'."));
+                            }
+                        }
+                        else
+                        {
+                            valueObj.DeleteProperty(k);
+                        }
+                    }
+                    else if (valueObj is ProxyObject proxyDefine)
+                    {
+                        // CreateDataProperty through the [[DefineOwnProperty]] trap.
+                        _ = ProxyDefineProperty(proxyDefine, k, BuildDataPropertyDescriptorObject(newValue));
                     }
                     else
                     {
@@ -10121,6 +10156,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // throwing) when an existing non-configurable property or a non-extensible
     // object rejects the definition. Ordinary-object path only (callers that may
     // see a Proxy must route through the trap separately).
+    // Build a fully-populated data property-descriptor object
+    // { value, writable: true, enumerable: true, configurable: true } for passing
+    // to a Proxy [[DefineOwnProperty]] trap (CreateDataProperty semantics).
+    private JsValue BuildDataPropertyDescriptorObject(JsValue value)
+    {
+        var desc = CreateOrdinaryObject();
+        var handle = _heap.AllocateObject(desc, AllocationSite.Current());
+        _ = desc.DefineOwnProperty("value", new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+        if (value.Tag == JsValueTag.Object)
+        {
+            _heap.WriteBarrier(handle, value.AsObjectHandle());
+        }
+
+        _ = desc.DefineOwnProperty("writable", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+        _ = desc.DefineOwnProperty("enumerable", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+        _ = desc.DefineOwnProperty("configurable", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+        return JsValue.FromObject(handle);
+    }
+
     private bool CreateDataProperty(ObjectHandle handle, JsObject obj, string key, JsValue value)
     {
         var hasExisting = obj.TryGetOwnProperty(key, out var existing);
