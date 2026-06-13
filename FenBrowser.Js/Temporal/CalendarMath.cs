@@ -234,6 +234,7 @@ internal static class CalendarMath
             new IslamicCalendarSystem("islamic-civil", civilEpoch: true),
             new IslamicCalendarSystem("islamic-tbla", civilEpoch: false),
             new PersianCalendarSystem(),
+            new HebrewCalendarSystem(),
         };
         var map = new Dictionary<string, CalendarSystem>(StringComparer.Ordinal);
         foreach (var c in list) map[c.Id] = c;

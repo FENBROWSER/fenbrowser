@@ -499,3 +499,146 @@ internal sealed class PersianCalendarSystem : CalendarSystem
         return r;
     }
 }
+
+// Hebrew (lunisolar) calendar, Dershowitz & Reingold arithmetic. Internally
+// months use the Dershowitz numbering (Nisan = 1 … Adar = 12, Adar II = 13 in a
+// leap year). Temporal exposes ordinals counted from Tishri and the stable
+// month codes M01..M12 with the leap month Adar I as M05L; this class maps
+// between them. Single era "am" (Anno Mundi).
+internal sealed class HebrewCalendarSystem : CalendarSystem
+{
+    private const long HebrewEpochRd = -1373427;
+
+    public override string Id => "hebrew";
+
+    private static bool LeapYear(int year) => Mod(7L * year + 1, 19) < 7;
+    private static int LastMonth(int year) => LeapYear(year) ? 13 : 12;
+    public override int MonthsInYear(int year) => LeapYear(year) ? 13 : 12;
+    public override bool InLeapYear(int year) => LeapYear(year);
+
+    private static long ElapsedDays(int year)
+    {
+        long monthsElapsed = FloorDiv(235L * year - 234, 19);
+        long partsElapsed = 12084 + 13753 * monthsElapsed;
+        long day = monthsElapsed * 29 + FloorDiv(partsElapsed, 25920);
+        return Mod(3 * (day + 1), 7) < 3 ? day + 1 : day;
+    }
+
+    private static long NewYearRd(int year)
+    {
+        long ny0 = ElapsedDays(year - 1), ny1 = ElapsedDays(year), ny2 = ElapsedDays(year + 1);
+        int correction = ny2 - ny1 == 356 ? 2 : ny1 - ny0 == 382 ? 1 : 0;
+        return HebrewEpochRd + ElapsedDays(year) + correction;
+    }
+
+    private static int HebDaysInYear(int year) => (int)(NewYearRd(year + 1) - NewYearRd(year));
+    private static bool LongMarheshvan(int year) => HebDaysInYear(year) is 355 or 385;
+    private static bool ShortKislev(int year) => HebDaysInYear(year) is 353 or 383;
+
+    // last day of a Dershowitz month (Nisan=1 … Adar/Adar II = 12/13).
+    private static int LastDayOfMonthD(int year, int dm)
+    {
+        if (dm is 2 or 4 or 6 or 10 or 13) return 29;
+        if (dm == 12 && !LeapYear(year)) return 29;
+        if (dm == 8 && !LongMarheshvan(year)) return 29;
+        if (dm == 9 && ShortKislev(year)) return 29;
+        return 30;
+    }
+
+    private long FixedFromHebrewD(int year, int dm, int day)
+    {
+        long rd = NewYearRd(year) + day - 1;
+        if (dm < 7)
+        {
+            for (int m = 7; m <= LastMonth(year); m++) rd += LastDayOfMonthD(year, m);
+            for (int m = 1; m < dm; m++) rd += LastDayOfMonthD(year, m);
+        }
+        else
+        {
+            for (int m = 7; m < dm; m++) rd += LastDayOfMonthD(year, m);
+        }
+
+        return rd;
+    }
+
+    // Temporal ordinal (Tishri=1) ↔ Dershowitz month (Nisan=1).
+    private static int OrdinalToD(int year, int ord)
+    {
+        int last = LastMonth(year);
+        return ord <= last - 6 ? ord + 6 : ord - (last - 6);
+    }
+
+    private static int DToOrdinal(int year, int dm)
+    {
+        int last = LastMonth(year);
+        return dm >= 7 ? dm - 6 : dm + (last - 6);
+    }
+
+    public override int DaysInMonthOrdinal(int year, int month)
+        => LastDayOfMonthD(year, OrdinalToD(year, month));
+
+    public override long ToFixed(int year, int month, int day)
+        => FixedFromHebrewD(year, OrdinalToD(year, month), day) - RataDieToEpoch;
+
+    public override void FromFixed(long epochDay, out int year, out int month, out int day)
+    {
+        long date = epochDay + RataDieToEpoch;
+        int y = (int)(FloorDiv(98496L * (date - HebrewEpochRd), 35975351) + 1);
+        while (NewYearRd(y + 1) <= date) y++;
+        while (NewYearRd(y) > date) y--;
+        int dm = date < FixedFromHebrewD(y, 1, 1) ? 7 : 1;
+        while (date > FixedFromHebrewD(y, dm, LastDayOfMonthD(y, dm))) dm++;
+        year = y;
+        month = DToOrdinal(y, dm);
+        day = (int)(date - FixedFromHebrewD(y, dm, 1) + 1);
+    }
+
+    public override (string?, int?) EraFor(int year, long epochDay) => ("am", year);
+    public override bool YearFromEra(string era, int eraYear, out int year)
+    {
+        if (era == "am") { year = eraYear; return true; }
+        year = 0;
+        return false;
+    }
+
+    public override string MonthCodeFor(int year, int month)
+    {
+        if (!LeapYear(year)) return $"M{month:D2}";
+        if (month <= 5) return $"M{month:D2}";
+        if (month == 6) return "M05L";          // Adar I
+        return $"M{month - 1:D2}";              // Adar II .. Elul
+    }
+
+    public override bool MonthFromCode(int year, string code, out int month, out bool existsInYear)
+    {
+        existsInYear = false;
+        if (!ParseSimpleMonthCode(code, out int nn, out bool leap) || nn > 12) { month = 0; return false; }
+        bool isLeap = LeapYear(year);
+        if (leap)
+        {
+            // Only Adar I (M05L) exists, and only in a leap year.
+            month = 6;
+            existsInYear = isLeap && nn == 5;
+            return nn == 5;
+        }
+
+        if (!isLeap) { month = nn; existsInYear = nn is >= 1 and <= 12; return true; }
+        month = nn <= 5 ? nn : nn + 1; // shift past Adar I in leap years
+        existsInYear = nn is >= 1 and <= 12;
+        return true;
+    }
+
+    private static long FloorDiv(long a, long b)
+    {
+        long q = a / b;
+        if (a % b != 0 && (a < 0) != (b < 0)) q--;
+        return q;
+    }
+
+    private static long Mod(long a, long b)
+    {
+        long r = a % b;
+        if (r != 0 && (r < 0) != (b < 0)) r += b;
+        return r;
+    }
+}
