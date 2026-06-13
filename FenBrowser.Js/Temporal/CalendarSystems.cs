@@ -723,7 +723,7 @@ internal sealed class HebrewCalendarSystem : CalendarSystem
             // Adar I = M05L is the only leap month code; others are invalid.
             if (nn != 5) { month = 0; return false; }
             if (isLeap) { month = 6; existsInYear = true; return true; }
-            month = 5; // common year: constrain M05L → Adar (M05)
+            month = 6; // common year: constrain M05L → Adar (ordinal 6 = M06)
             existsInYear = false;
             return true;
         }

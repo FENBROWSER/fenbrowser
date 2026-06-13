@@ -3558,13 +3558,13 @@ public sealed class TemporalStub : IBuiltinModule
             var (otherNs, _, otherCal) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             RequireMatchingCalendar(ctx, CalId(h, o), otherCal);
             var s = GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "hour");
-            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNsBalanced(ctx, h, otherNs - DecodeInstantNanos(h, o), s.Largest));
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", ZdtDiff(ctx, h, o, otherNs, s.Largest, 1));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
             var (otherNs, _, otherCal) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             RequireMatchingCalendar(ctx, CalId(h, o), otherCal);
             var s = GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "hour");
-            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNsBalanced(ctx, h, DecodeInstantNanos(h, o) - otherNs, s.Largest));
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", ZdtDiff(ctx, h, o, otherNs, s.Largest, -1));
         }, 1);
         AddMethod(ctx, h, pH, p, "round", (o, a) => ZonedRound(ctx, h, o, a, pH), 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
@@ -3839,6 +3839,50 @@ public sealed class TemporalStub : IBuiltinModule
     /// nanosecond). Components are emitted as doubles so a large second/millisecond count that
     /// overflows int is preserved exactly.
     /// </summary>
+    /// <summary>ZonedDateTime diff: calendar-aware for year/month/week/day, ns-balanced below.</summary>
+    private static JsValue ZdtDiff(IBuiltinContext ctx, JsHeap h, JsObject self, long otherNs, string largest, int sign)
+    {
+        long selfNs = DecodeInstantNanos(h, self);
+        long diffNs = (sign > 0 ? otherNs - selfNs : selfNs - otherNs);
+        if (diffNs == long.MinValue) diffNs = long.MinValue + 1;
+        // Sub-day units: pure ns balancing.
+        if (largest is "nanosecond" or "microsecond" or "millisecond" or "second" or "minute" or "hour")
+            return MakeDurationFromNsBalanced(ctx, h, diffNs, largest);
+
+        // Day-or-above: extract wall dates, diff via calendar, then time remainder.
+        const long DayNs = 86_400_000_000_000L;
+        long selfDay = selfNs >= 0 ? selfNs / DayNs : (selfNs + 1) / DayNs - 1;
+        long otherDay = otherNs >= 0 ? otherNs / DayNs : (otherNs + 1) / DayNs - 1;
+        var selfDate = DecodeIsoDateLong(h, self);
+        var otherDate = IsoMath.EpochDaysToCivil(otherDay);
+
+        var sys = CalendarMath.Get(CalId(h, self));
+        IsoDate d1 = sign > 0 ? selfDate : otherDate;
+        IsoDate d2 = sign > 0 ? otherDate : selfDate;
+        (int y, int m, int w, long d) datePart;
+        if (sys != null && largest is "year" or "month")
+            datePart = sys.Difference(d1, d2, largest);
+        else
+        {
+            long ed1 = IsoMath.ToEpochDays(d1), ed2 = IsoMath.ToEpochDays(d2);
+            long dDiff = ed2 - ed1;
+            datePart = largest == "week" ? (0, 0, (int)(dDiff / 7), dDiff % 7) : (0, 0, 0, dDiff);
+        }
+
+        // Time-of-day remainder.
+        long selfTimeNs = selfNs - IsoMath.ToEpochDays(selfDate) * DayNs;
+        long otherTimeNs = otherNs - otherDay * DayNs;
+        long timeR = sign > 0 ? otherTimeNs - selfTimeNs : selfTimeNs - otherTimeNs;
+        long tDays = datePart.d + timeR / DayNs;
+        long rem = timeR % DayNs;
+        if (rem < 0) { rem += DayNs; tDays--; }
+
+        return MakeDuration(ctx, h, datePart.y, datePart.m, datePart.w, (int)tDays,
+            (int)(rem / 3_600_000_000_000L), (int)(rem / 60_000_000_000L % 60),
+            (int)(rem / 1_000_000_000L % 60), (int)(rem / 1_000_000L % 1000),
+            (int)(rem / 1_000L % 1000), (int)(rem % 1000));
+    }
+
     private static JsValue MakeDurationFromNsBalanced(IBuiltinContext ctx, JsHeap h, long totalNs, string largest)
     {
         if (totalNs == long.MinValue) totalNs = long.MinValue + 1;
