@@ -264,3 +264,238 @@ internal sealed class EthioaaCalendarSystem : CopticLikeCalendar
         return false;
     }
 }
+
+// Indian national calendar (Saka). 12 months: Chaitra (30, or 31 in a leap year),
+// then five months of 31 and six of 30. The year begins on Chaitra 1 = Gregorian
+// March 22 (March 21 when Gregorian year S+78 is leap); leap years track Gregorian.
+internal sealed class IndianCalendarSystem : CalendarSystem
+{
+    public override string Id => "indian";
+    public override int MonthsInYear(int year) => 12;
+    public override bool InLeapYear(int year) => IsoMath.IsLeapYear(year + 78);
+
+    private static long YearStart(int sakaYear)
+    {
+        int g = sakaYear + 78;
+        return IsoMath.CivilToEpochDays(g, 3, IsoMath.IsLeapYear(g) ? 21 : 22);
+    }
+
+    public override int DaysInMonthOrdinal(int year, int month)
+        => month == 1 ? (InLeapYear(year) ? 31 : 30) : (month <= 6 ? 31 : 30);
+
+    public override long ToFixed(int year, int month, int day)
+    {
+        long start = YearStart(year);
+        int chaitra = InLeapYear(year) ? 31 : 30;
+        long before = month == 1 ? 0
+            : month <= 6 ? chaitra + 31L * (month - 2)
+            : chaitra + 31L * 5 + 30L * (month - 7);
+        return start + before + (day - 1);
+    }
+
+    public override void FromFixed(long epochDay, out int year, out int month, out int day)
+    {
+        int g = IsoMath.EpochDaysToCivil(epochDay).Year;
+        int saka = g - 78;
+        long start = YearStart(saka);
+        if (epochDay < start) { saka -= 1; start = YearStart(saka); }
+        long doy = epochDay - start;
+        year = saka;
+        int chaitra = InLeapYear(saka) ? 31 : 30;
+        if (doy < chaitra) { month = 1; day = (int)doy + 1; return; }
+        doy -= chaitra;
+        if (doy < 31 * 5) { month = 2 + (int)(doy / 31); day = (int)(doy % 31) + 1; return; }
+        doy -= 31 * 5;
+        month = 7 + (int)(doy / 30);
+        day = (int)(doy % 30) + 1;
+    }
+
+    public override (string?, int?) EraFor(int year, long epochDay) => ("shaka", year);
+    public override bool YearFromEra(string era, int eraYear, out int year)
+    {
+        if (era == "shaka") { year = eraYear; return true; }
+        year = 0;
+        return false;
+    }
+
+    public override string MonthCodeFor(int year, int month) => $"M{month:D2}";
+    public override bool MonthFromCode(int year, string code, out int month, out bool existsInYear)
+    {
+        existsInYear = false;
+        if (!ParseSimpleMonthCode(code, out int ord, out bool leap) || leap || ord > 12) { month = 0; return false; }
+        month = ord;
+        existsInYear = ord is >= 1 and <= 12;
+        return true;
+    }
+}
+
+// Tabular Islamic calendar (islamic-civil and islamic-tbla). 12 alternating
+// months of 30/29 days; the 30-year cycle has 11 leap years (extra day in the
+// 12th month). islamic-civil and islamic-tbla differ only by epoch (Fri/Thu).
+internal sealed class IslamicCalendarSystem : CalendarSystem
+{
+    private readonly string _id;
+    private readonly long _epochRd;
+
+    public IslamicCalendarSystem(string id, bool civilEpoch)
+    {
+        _id = id;
+        _epochRd = civilEpoch ? 227015 : 227014;
+    }
+
+    public override string Id => _id;
+    public override int MonthsInYear(int year) => 12;
+    public override bool InLeapYear(int year) => Mod(14 + 11L * year, 30) < 11;
+
+    public override int DaysInMonthOrdinal(int year, int month)
+    {
+        if (month == 12) return InLeapYear(year) ? 30 : 29;
+        return month % 2 == 1 ? 30 : 29;
+    }
+
+    public override long ToFixed(int year, int month, int day)
+    {
+        long rd = _epochRd - 1 + (year - 1L) * 354 + FloorDiv(3 + 11L * year, 30)
+                  + 29L * (month - 1) + FloorDiv(month, 2) + day;
+        return rd - RataDieToEpoch;
+    }
+
+    public override void FromFixed(long epochDay, out int year, out int month, out int day)
+    {
+        long date = epochDay + RataDieToEpoch;
+        long y = FloorDiv(30 * (date - _epochRd) + 10646, 10631);
+        long priorDays = date - (ToFixed((int)y, 1, 1) + RataDieToEpoch);
+        long m = Math.Min(12, FloorDiv(11 * priorDays + 330, 325));
+        long monthStart = ToFixed((int)y, (int)m, 1) + RataDieToEpoch;
+        long d = date - monthStart + 1;
+        year = (int)y;
+        month = (int)m;
+        day = (int)d;
+    }
+
+    public override (string?, int?) EraFor(int year, long epochDay)
+        => year >= 1 ? ("ah", year) : ("bh", 1 - year);
+    public override bool YearFromEra(string era, int eraYear, out int year)
+    {
+        switch (era)
+        {
+            case "ah": year = eraYear; return true;
+            case "bh": year = 1 - eraYear; return true;
+            default: year = 0; return false;
+        }
+    }
+
+    public override string MonthCodeFor(int year, int month) => $"M{month:D2}";
+    public override bool MonthFromCode(int year, string code, out int month, out bool existsInYear)
+    {
+        existsInYear = false;
+        if (!ParseSimpleMonthCode(code, out int ord, out bool leap) || leap || ord > 12) { month = 0; return false; }
+        month = ord;
+        existsInYear = ord is >= 1 and <= 12;
+        return true;
+    }
+
+    private static long FloorDiv(long a, long b)
+    {
+        long q = a / b;
+        if (a % b != 0 && (a < 0) != (b < 0)) q--;
+        return q;
+    }
+
+    private static long Mod(long a, long b)
+    {
+        long r = a % b;
+        if (r != 0 && (r < 0) != (b < 0)) r += b;
+        return r;
+    }
+}
+
+// Arithmetic Persian (Solar Hijri) calendar, 2820-year cycle (Dershowitz &
+// Reingold), matching ICU. Months 1-6 have 31 days, 7-11 have 30, month 12 has
+// 29 (30 in a leap year). Single era "ap".
+internal sealed class PersianCalendarSystem : CalendarSystem
+{
+    private const long PersianEpochRd = 226896;
+
+    public override string Id => "persian";
+    public override int MonthsInYear(int year) => 12;
+
+    public override long ToFixed(int year, int month, int day)
+    {
+        long yPrime = year > 0 ? year - 474 : year - 473;
+        long yearInCycle = Mod(yPrime, 2820) + 474;
+        long rd = PersianEpochRd - 1
+                  + 1029983 * FloorDiv(yPrime, 2820)
+                  + 365 * (yearInCycle - 1)
+                  + FloorDiv(31 * yearInCycle - 5, 128)
+                  + (month <= 7 ? 31L * (month - 1) : 30L * (month - 1) + 6)
+                  + day;
+        return rd - RataDieToEpoch;
+    }
+
+    private long YearFromFixed(long date)
+    {
+        long d0 = date - (ToFixed(475, 1, 1) + RataDieToEpoch);
+        long n2820 = FloorDiv(d0, 1029983);
+        long d1 = Mod(d0, 1029983);
+        long y2820 = d1 == 1029982 ? 2820 : FloorDiv(2816 * d1 + 1031337, 1028522);
+        long year = 474 + 2820 * n2820 + y2820;
+        return year > 0 ? year : year - 1;
+    }
+
+    public override void FromFixed(long epochDay, out int year, out int month, out int day)
+    {
+        long date = epochDay + RataDieToEpoch;
+        long y = YearFromFixed(date);
+        long dayOfYear = 1 + date - (ToFixed((int)y, 1, 1) + RataDieToEpoch);
+        long m = dayOfYear <= 186 ? CeilDiv(dayOfYear, 31) : CeilDiv(dayOfYear - 6, 30);
+        long monthStart = ToFixed((int)y, (int)m, 1) + RataDieToEpoch;
+        year = (int)y;
+        month = (int)m;
+        day = (int)(date - monthStart + 1);
+    }
+
+    public override int DaysInMonthOrdinal(int year, int month)
+    {
+        if (month <= 6) return 31;
+        if (month <= 11) return 30;
+        return InLeapYear(year) ? 30 : 29;
+    }
+
+    public override bool InLeapYear(int year)
+        => ToFixed(year + 1, 1, 1) - ToFixed(year, 1, 1) == 366;
+
+    public override (string?, int?) EraFor(int year, long epochDay) => ("ap", year);
+    public override bool YearFromEra(string era, int eraYear, out int year)
+    {
+        if (era == "ap") { year = eraYear; return true; }
+        year = 0;
+        return false;
+    }
+
+    public override string MonthCodeFor(int year, int month) => $"M{month:D2}";
+    public override bool MonthFromCode(int year, string code, out int month, out bool existsInYear)
+    {
+        existsInYear = false;
+        if (!ParseSimpleMonthCode(code, out int ord, out bool leap) || leap || ord > 12) { month = 0; return false; }
+        month = ord;
+        existsInYear = ord is >= 1 and <= 12;
+        return true;
+    }
+
+    private static long FloorDiv(long a, long b)
+    {
+        long q = a / b;
+        if (a % b != 0 && (a < 0) != (b < 0)) q--;
+        return q;
+    }
+
+    private static long CeilDiv(long a, long b) => FloorDiv(a + b - 1, b);
+
+    private static long Mod(long a, long b)
+    {
+        long r = a % b;
+        if (r != 0 && (r < 0) != (b < 0)) r += b;
+        return r;
+    }
+}

@@ -230,6 +230,10 @@ internal static class CalendarMath
             new CopticCalendarSystem(),
             new EthiopicCalendarSystem(),
             new EthioaaCalendarSystem(),
+            new IndianCalendarSystem(),
+            new IslamicCalendarSystem("islamic-civil", civilEpoch: true),
+            new IslamicCalendarSystem("islamic-tbla", civilEpoch: false),
+            new PersianCalendarSystem(),
         };
         var map = new Dictionary<string, CalendarSystem>(StringComparer.Ordinal);
         foreach (var c in list) map[c.Id] = c;
