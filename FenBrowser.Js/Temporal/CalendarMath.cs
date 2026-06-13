@@ -168,13 +168,12 @@ internal abstract class CalendarSystem
             {
                 int cy = y1 + candidateYears;
                 int co = OrdinalOfCode(cy, code1);
-                // If the source month code does not exist in the candidate year
-                // (e.g. a leap month constrained to a regular month), and we are
-                // moving toward the target year, the year boundary is crossed.
-                MonthFromCode(cy, code1, out _, out bool existsInCandidate);
-                bool pastTarget = sign > 0 ? cy >= y2 : cy <= y2;
                 if (Surpasses(sign, (cy, co), d1, two)) break;
-                if (!existsInCandidate && pastTarget) break;
+                // If the source month code does not exist in this candidate year
+                // (leap→common), and this year is at or past the target, stop.
+                MonthFromCode(cy, code1, out _, out bool existsInCandidate);
+                bool atOrPastTarget = sign > 0 ? cy >= y2 : cy <= y2;
+                if (!existsInCandidate && atOrPastTarget) break;
                 years = candidateYears;
                 candidateYears += sign;
             }

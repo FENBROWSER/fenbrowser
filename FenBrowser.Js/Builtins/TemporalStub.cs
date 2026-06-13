@@ -635,6 +635,14 @@ public sealed class TemporalStub : IBuiltinModule
             throw new JsThrownException(ctx.CreateRangeError("cannot use until/since with PDTs having different calendars"));
     }
 
+    private static void RequireMatchingTimeZone(IBuiltinContext ctx, string self, string other)
+    {
+        string a = CanonicalizeTimeZoneId(ctx, self);
+        string b = CanonicalizeTimeZoneId(ctx, other);
+        if (!string.Equals(a, b, StringComparison.OrdinalIgnoreCase))
+            throw new JsThrownException(ctx.CreateRangeError("cannot use until/since with ZonedDateTimes having different time zones"));
+    }
+
     private static void RequireNoTimeStyle(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> a)
     {
         if (a.Count > 0 && a[0].Tag == JsValueTag.Object && TryGetField(ctx, h, a[0], "timeStyle", out _))
@@ -3555,14 +3563,16 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "add", (o, a) => AddDurationToZoned(ctx, h, o, a, pH, 1), 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => AddDurationToZoned(ctx, h, o, a, pH, -1), 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
-            var (otherNs, _, otherCal) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var (otherNs, otherTz, otherCal) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             RequireMatchingCalendar(ctx, CalId(h, o), otherCal);
+            RequireMatchingTimeZone(ctx, GetVStr(h, o, "tz"), otherTz);
             var s = GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "hour");
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration", ZdtDiff(ctx, h, o, otherNs, s.Largest, 1));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
-            var (otherNs, _, otherCal) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var (otherNs, otherTz, otherCal) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             RequireMatchingCalendar(ctx, CalId(h, o), otherCal);
+            RequireMatchingTimeZone(ctx, GetVStr(h, o, "tz"), otherTz);
             var s = GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "hour");
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration", ZdtDiff(ctx, h, o, otherNs, s.Largest, -1));
         }, 1);

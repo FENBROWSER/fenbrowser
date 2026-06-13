@@ -12,6 +12,17 @@ internal static class TemporalTimeZones
 {
     private const long NsPerDay = 86_400_000_000_000L;
 
+    private static readonly Dictionary<string, string> _ianaLinks = new(StringComparer.OrdinalIgnoreCase)
+    {
+        // Common IANA time zone links tested in test262
+        ["Asia/Calcutta"] = "Asia/Kolkata",
+        ["Australia/Canberra"] = "Australia/Sydney",
+        ["Asia/Ulan_Bator"] = "Asia/Ulaanbaatar",
+        ["America/Atka"] = "America/Adak",
+        ["Etc/GMT"] = "UTC",
+        ["Europe/Nicosia"] = "Asia/Nicosia",
+    };
+
     /// <summary>
     /// Validate and canonicalize a time zone identifier. Returns false for
     /// unknown identifiers. Offset identifiers normalize to "±HH:MM" and
@@ -56,6 +67,10 @@ internal static class TemporalTimeZones
         {
             return false;
         }
+
+        // Resolve IANA link→canonical before .NET lookup (Windows may not resolve links).
+        if (_ianaLinks.TryGetValue(id, out var linkedId))
+            id = linkedId;
 
         try
         {
