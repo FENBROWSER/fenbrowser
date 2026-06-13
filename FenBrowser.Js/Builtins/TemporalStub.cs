@@ -958,17 +958,51 @@ public sealed class TemporalStub : IBuiltinModule
     private const long NsPerDay = 86_400_000_000_000L;
 
     /// <summary>DifferenceISODateTime with largestUnit=day: days + balanced time, uniform sign.</summary>
-    private static JsValue DifferencePlainDateTimes(IBuiltinContext ctx, JsHeap h, IsoDate d1, long t1Ns, IsoDate d2, long t2Ns)
+    /// <summary>CalendarDateAdd: add a date duration in the given calendar (ISO for iso8601/unmodelled).</summary>
+    private static IsoDate AddDateInCalendar(string cal, IsoDate date, double years, double months, double weeks, double days, bool constrain, out bool invalid)
+    {
+        var sys = CalendarMath.Get(cal);
+        if (sys is null)
+            return IsoMath.AddIsoDate(date, years, months, weeks, days, constrain, out invalid);
+        return sys.Add(date, (long)years, (long)months, (long)weeks, (long)days, constrain, out invalid);
+    }
+
+    /// <summary>CalendarDateUntil: date duration (years, months, weeks, days) from one to two in the calendar.</summary>
+    private static (int Years, int Months, int Weeks, long Days) DifferenceDateDuration(string cal, IsoDate one, IsoDate two, string largestUnit)
+    {
+        var sys = CalendarMath.Get(cal);
+        if (sys is null)
+            return IsoMath.DifferenceIsoDate(one, two, largestUnit);
+        return sys.Difference(one, two, largestUnit);
+    }
+
+    private static JsValue DifferencePlainDateTimes(IBuiltinContext ctx, JsHeap h, IsoDate d1, long t1Ns, IsoDate d2, long t2Ns, string cal, string largestUnit, bool negate = false)
     {
         long days = IsoMath.ToEpochDays(d2) - IsoMath.ToEpochDays(d1);
         long ns = t2Ns - t1Ns;
         if (days > 0 && ns < 0) { days--; ns += NsPerDay; }
         else if (days < 0 && ns > 0) { days++; ns -= NsPerDay; }
+
+        int yy = 0, mm = 0, ww = 0;
+        long dd = days;
+        int rank = DiffUnitRank(largestUnit);
+        if (rank <= 2) // year / month / week → decompose the day span in the calendar
+        {
+            var adj2 = IsoMath.EpochDaysToCivil(IsoMath.ToEpochDays(d1) + days);
+            (yy, mm, ww, dd) = DifferenceDateDuration(cal, d1, adj2, largestUnit);
+        }
+        else if (rank >= 4) // hour or smaller → fold whole days into the time total
+        {
+            ns += dd * NsPerDay;
+            dd = 0;
+        }
+
         int sign = ns < 0 ? -1 : 1;
         long absNs = Math.Abs(ns);
-        return MakeDuration(ctx, h, 0, 0, 0, ToSafeInt(days),
-            sign * (int)(absNs / 3_600_000_000_000L), sign * (int)(absNs / 60_000_000_000L % 60), sign * (int)(absNs / 1_000_000_000L % 60),
-            sign * (int)(absNs / 1_000_000L % 1000), sign * (int)(absNs / 1_000L % 1000), sign * (int)(absNs % 1000));
+        int f = negate ? -1 : 1;
+        return MakeDuration(ctx, h, f * yy, f * mm, f * ww, f * ToSafeInt(dd),
+            f * sign * (int)(absNs / 3_600_000_000_000L), f * sign * (int)(absNs / 60_000_000_000L % 60), f * sign * (int)(absNs / 1_000_000_000L % 60),
+            f * sign * (int)(absNs / 1_000_000L % 1000), f * sign * (int)(absNs / 1_000L % 1000), f * sign * (int)(absNs % 1000));
     }
 
     /// <summary>ToTemporalInstant for method arguments: Instant/ZonedDateTime instance or ISO string → epoch ns.</summary>
@@ -1615,8 +1649,8 @@ public sealed class TemporalStub : IBuiltinModule
             + sign * DurationToNanos(0, dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos);
         long dayCarry = (long)Math.Floor(total / (double)NsPerDay);
         long timeNs = total - dayCarry * NsPerDay;
-        var result = IsoMath.AddIsoDate(date, sign * dur.years, sign * dur.months, sign * dur.weeks,
-            sign * (double)dur.days + dayCarry, constrainIntermediate: true, out var invalid);
+        var result = AddDateInCalendar(CalId(h, o), date, sign * dur.years, sign * dur.months, sign * dur.weeks,
+            sign * (double)dur.days + dayCarry, constrain: true, out var invalid);
         if (invalid || !IsoMath.IsoDateWithinLimits(result))
             throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range."));
         return AttachPrototype(h, MakePlainDateTimeParts(ctx, h, result.Year, result.Month, result.Day,
@@ -2382,8 +2416,8 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "add", (o, a) => {
             var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             _ = GetOverflowOption(ctx, h, a, 1);
-            var result = IsoMath.AddIsoDate(DecodeIsoDate(h, o), dur.years, dur.months, dur.weeks,
-                dur.days + (dur.hours * 3600L + dur.minutes * 60L + dur.seconds) / 86_400.0, constrainIntermediate: true, out var invalid);
+            var result = AddDateInCalendar(CalId(h, o), DecodeIsoDate(h, o), dur.years, dur.months, dur.weeks,
+                dur.days + (dur.hours * 3600L + dur.minutes * 60L + dur.seconds) / 86_400.0, constrain: true, out var invalid);
             if (invalid || !IsoMath.IsoDateWithinLimits(result))
                 throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range."));
             return AttachPrototype(h, MakePlainDateYmd(ctx, h, result.Year, result.Month, result.Day, GetVStr(h, o, "calendarId")), pH);
@@ -2391,25 +2425,25 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => {
             var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             _ = GetOverflowOption(ctx, h, a, 1);
-            var result = IsoMath.AddIsoDate(DecodeIsoDate(h, o), -dur.years, -dur.months, -dur.weeks,
-                -(dur.days + (dur.hours * 3600L + dur.minutes * 60L + dur.seconds) / 86_400.0), constrainIntermediate: true, out var invalid);
+            var result = AddDateInCalendar(CalId(h, o), DecodeIsoDate(h, o), -dur.years, -dur.months, -dur.weeks,
+                -(dur.days + (dur.hours * 3600L + dur.minutes * 60L + dur.seconds) / 86_400.0), constrain: true, out var invalid);
             if (invalid || !IsoMath.IsoDateWithinLimits(result))
                 throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range."));
             return AttachPrototype(h, MakePlainDateYmd(ctx, h, result.Year, result.Month, result.Day, GetVStr(h, o, "calendarId")), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
             var (other, _) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            GetDifferenceSettings(ctx, h, a, 1, DateDiffUnits, "day", "day");
-            long days = IsoMath.ToEpochDays(other) - IsoMath.ToEpochDays(DecodeIsoDate(h, o));
+            var s = GetDifferenceSettings(ctx, h, a, 1, DateDiffUnits, "day", "day");
+            var (yy, mm, ww, dd) = DifferenceDateDuration(CalId(h, o), DecodeIsoDate(h, o), other, s.Largest);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
-                MakeDuration(ctx, h, 0, 0, 0, ToSafeInt(days), 0, 0, 0, 0, 0, 0));
+                MakeDuration(ctx, h, yy, mm, ww, ToSafeInt(dd), 0, 0, 0, 0, 0, 0));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
             var (other, _) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            GetDifferenceSettings(ctx, h, a, 1, DateDiffUnits, "day", "day");
-            long days = IsoMath.ToEpochDays(DecodeIsoDate(h, o)) - IsoMath.ToEpochDays(other);
+            var s = GetDifferenceSettings(ctx, h, a, 1, DateDiffUnits, "day", "day");
+            var (yy, mm, ww, dd) = DifferenceDateDuration(CalId(h, o), DecodeIsoDate(h, o), other, s.Largest);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
-                MakeDuration(ctx, h, 0, 0, 0, ToSafeInt(days), 0, 0, 0, 0, 0, 0));
+                MakeDuration(ctx, h, -yy, -mm, -ww, -ToSafeInt(dd), 0, 0, 0, 0, 0, 0));
         }, 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
             var (other, otherCal) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
@@ -2745,15 +2779,15 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => AddDurationToPlainDateTime(ctx, h, t, o, a, pH, -1), 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
             var (otherDate, otherTime) = ToTemporalDateTimeRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "day");
+            var s = GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "day");
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
-                DifferencePlainDateTimes(ctx, h, DecodeIsoDateLong(h, o), DecodeTimeOfDayNs(h, o), otherDate, otherTime.ToNanosecondsOfDay()));
+                DifferencePlainDateTimes(ctx, h, DecodeIsoDateLong(h, o), DecodeTimeOfDayNs(h, o), otherDate, otherTime.ToNanosecondsOfDay(), CalId(h, o), s.Largest));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
             var (otherDate, otherTime) = ToTemporalDateTimeRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "day");
+            var s = GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "day");
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
-                DifferencePlainDateTimes(ctx, h, otherDate, otherTime.ToNanosecondsOfDay(), DecodeIsoDateLong(h, o), DecodeTimeOfDayNs(h, o)));
+                DifferencePlainDateTimes(ctx, h, DecodeIsoDateLong(h, o), DecodeTimeOfDayNs(h, o), otherDate, otherTime.ToNanosecondsOfDay(), CalId(h, o), s.Largest, negate: true));
         }, 1);
         AddMethod(ctx, h, pH, p, "round", (o, a) => {
             var date = DecodeIsoDateLong(h, o);
@@ -3512,8 +3546,8 @@ public sealed class TemporalStub : IBuiltinModule
         if (dur.years != 0 || dur.months != 0 || dur.weeks != 0 || dur.days != 0)
         {
             var date = DecodeIsoDateLong(h, o);
-            var newDate = IsoMath.AddIsoDate(date, sign * dur.years, sign * dur.months, sign * dur.weeks, sign * (double)dur.days,
-                constrainIntermediate: true, out var invalid);
+            var newDate = AddDateInCalendar(CalId(h, o), date, sign * dur.years, sign * dur.months, sign * dur.weeks, sign * (double)dur.days,
+                constrain: true, out var invalid);
             if (invalid || !IsoMath.IsoDateWithinLimits(newDate))
                 throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range."));
             var time = new IsoTime((int)GetVNum(h, o, "hour"), (int)GetVNum(h, o, "minute"), (int)GetVNum(h, o, "second"),
