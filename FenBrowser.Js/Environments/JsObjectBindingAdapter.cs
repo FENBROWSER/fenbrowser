@@ -12,10 +12,9 @@ namespace FenBrowser.Js.Environments;
 // cannot leave the adapter pointing at a stale C# reference.
 //
 // Known limitations - intentional, deferred to a follow-up:
-//   * TryGet does not invoke accessor getters. Callers that need accessor semantics
-//     (with statements, certain host globals) will need an interpreter-aware variant
-//     that can run the getter. For the bulk of global-binding use the data path is
-//     sufficient.
+//   * TryGet invokes accessor getters only when the interpreter supplies an
+//     `accessorGet` evaluator (used for the real global and `with` bindings); with
+//     no evaluator it falls back to the data-only path.
 //   * TrySet does not walk the prototype chain looking for a setter. ECMA-262 [[Set]]
 //     does walk, but for top-level globals the receiver is the global object itself
 //     and the data path covers it. Setter routing lands when accessor calls are
@@ -24,12 +23,18 @@ public sealed class JsObjectBindingAdapter : IGlobalObject
 {
     private readonly JsHeap _heap;
     private readonly ObjectHandle _handle;
+    // Optional interpreter hook to evaluate an accessor get (the getter function
+    // invoked with this binding object as the receiver). When null the adapter
+    // falls back to the data-only path (getters surface as "unreadable").
+    private readonly Func<ObjectHandle, string, JsValue>? _accessorGet;
 
-    public JsObjectBindingAdapter(JsHeap heap, ObjectHandle handle)
+    public JsObjectBindingAdapter(
+        JsHeap heap, ObjectHandle handle, Func<ObjectHandle, string, JsValue>? accessorGet = null)
     {
         ArgumentNullException.ThrowIfNull(heap);
         _heap = heap;
         _handle = handle;
+        _accessorGet = accessorGet;
     }
 
     public ObjectHandle? AsObjectHandle => _handle;
@@ -49,10 +54,15 @@ public sealed class JsObjectBindingAdapter : IGlobalObject
         {
             if (descriptor.IsAccessor)
             {
-                // Accessor get needs to call the getter function; this adapter has no
-                // interpreter handle, so surface as "not readable through here". The
-                // env-record translates that into undefined (non-strict) or NotFound
-                // (strict), which is the safe-but-lossy behavior documented above.
+                // Accessor get needs to call the getter with this object as receiver.
+                // When the interpreter supplied an evaluator, use it (ECMA-262
+                // 9.1.1.2.6 / Get(O, N, O)); otherwise fall back to the lossy path.
+                if (_accessorGet is not null)
+                {
+                    value = _accessorGet(_handle, name);
+                    return true;
+                }
+
                 value = JsValue.Undefined;
                 return false;
             }

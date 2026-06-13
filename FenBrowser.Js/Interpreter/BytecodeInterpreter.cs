@@ -1301,7 +1301,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     // environment record so the body resolves names against it.
                     var bindingValue = ToObjectValue(frame.Registers[ins.A]);
                     var bindingHandle = bindingValue.AsObjectHandle();
-                    var adapter = new JsObjectBindingAdapter(_heap, bindingHandle);
+                    var adapter = CreateBindingAdapter(bindingHandle);
                     frame.Environment = new ObjectEnvironmentRecord(adapter, isWithEnvironment: true, frame.Environment);
                     break;
                 }
@@ -4292,6 +4292,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return _iteratorPrototypeHandle!.Value;
     }
 
+    // Build an object-binding adapter whose accessor reads run the getter with the
+    // binding object as the receiver (ECMA-262 Get(O, N, O)) — needed so global and
+    // `with` bindings that are accessor properties evaluate their getter instead of
+    // silently reading undefined.
+    private JsObjectBindingAdapter CreateBindingAdapter(ObjectHandle handle)
+        => new(_heap, handle, (h, name) =>
+        {
+            var obj = _heap.GetObject(h);
+            return TryGetPropertyValue(obj, JsValue.FromObject(h), name, out var value)
+                ? value
+                : JsValue.Undefined;
+        });
+
     private GlobalEnvironmentRecord EnsureGlobalEnvironment()
     {
         if (_globalEnvironment is { } existing)
@@ -4301,7 +4314,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         var globalHandle = EnsureGlobalObject();
         _globalEnvironment = new GlobalEnvironmentRecord(
-            new JsObjectBindingAdapter(_heap, globalHandle),
+            CreateBindingAdapter(globalHandle),
             JsValue.FromObject(globalHandle));
         return _globalEnvironment;
     }
