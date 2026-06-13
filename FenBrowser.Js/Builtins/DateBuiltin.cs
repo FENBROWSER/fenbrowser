@@ -14,7 +14,9 @@ public sealed class DateBuiltin : IBuiltinModule
         ArgumentNullException.ThrowIfNull(context);
         var heap = context.Heap;
 
-        var prototype = new DateObject(double.NaN);
+        // ECMA-262 21.4.3: the Date prototype is an ordinary object, NOT a Date
+        // instance — it has no [[DateValue]], so Date.prototype.getTime() etc. throw.
+        var prototype = new JsObject();
         prototype.SetPrototype(context.GetObjectPrototype());
         var prototypeHandle = heap.AllocateObject(prototype, AllocationSite.Current());
         heap.PushRoot(prototypeHandle);
