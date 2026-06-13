@@ -3242,8 +3242,12 @@ public sealed class JsParser
                 continue;
             }
 
-            if ((IsPunctuator("++") || IsPunctuator("--")) && minBindingPower <= 34)
+            if ((IsPunctuator("++") || IsPunctuator("--")) && minBindingPower <= 34 &&
+                !HasLineTerminatorBetween(Previous(), Current()))
             {
+                // ECMA-262 13.4: UpdateExpression has `[no LineTerminator here]`
+                // before the postfix ++/--. A newline forces ASI, so `x \n ++`
+                // is `x; ++` (a prefix operator missing its operand), not `x++`.
                 if (!IsUpdateTarget(left))
                 {
                     throw new JsParserException("Invalid update expression target.");
