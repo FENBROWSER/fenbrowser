@@ -1787,6 +1787,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var keyValue = frame.Registers[ins.C];
                     try
                     {
+                        // ECMA-262 13.3.2.1: GetValue requires RequireObjectCoercible
+                        // on the base before the property key is coerced, so
+                        // `null[obj]` throws a TypeError before obj's toString runs.
+                        if (receiver.Tag is JsValueTag.Null or JsValueTag.Undefined)
+                        {
+                            var kind = receiver.Tag == JsValueTag.Null ? "null" : "undefined";
+                            var msg = keyValue.Tag == JsValueTag.String
+                                ? $"Cannot read properties of {kind} (reading '{keyValue.AsString()}')."
+                                : $"Cannot read properties of {kind}.";
+                            throw new JsThrownException(CreateTypeError(msg));
+                        }
+
                         if (keyValue.Tag == JsValueTag.Symbol)
                         {
                             frame.Registers[ins.A] = GetReceiverSymbolProperty(receiver, keyValue.AsSymbolId());
