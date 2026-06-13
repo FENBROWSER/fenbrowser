@@ -1585,6 +1585,7 @@ public sealed class JsParser
             }
 
             ValidateForInInitializer(initializer);
+            ValidateForHeadDestructuringTarget(initializer);
 
             Advance(); // in
             var iterable = ParseExpression(0);
@@ -1600,6 +1601,7 @@ public sealed class JsParser
                 throw new JsParserException("for-of requires an initializer target.");
             }
 
+            ValidateForHeadDestructuringTarget(initializer);
             Advance(); // of
             var iterable = ParseExpression(0);
             ExpectPunctuator(")");
@@ -3275,6 +3277,19 @@ public sealed class JsParser
 
                     throw new JsParserException(
                         $"Invalid assignment target ({left.GetType().Name}){Where()}.");
+                }
+
+                // A destructuring pattern (array/object literal) is only valid with
+                // plain `=`; for `=` it must be a structurally valid AssignmentPattern.
+                if (left is ArrayLiteralExpressionNode or ObjectLiteralExpressionNode)
+                {
+                    if (Current().Text != "=")
+                    {
+                        throw new JsParserException(
+                            $"Invalid destructuring assignment target{Where()}.");
+                    }
+
+                    ValidateAssignmentPattern(left);
                 }
 
                 ValidateStrictAssignmentTarget(left);
@@ -5217,6 +5232,153 @@ public sealed class JsParser
         ParenthesizedExpressionNode pe => IsSimpleAssignmentTarget(pe.Expression),
         _ => false,
     };
+
+    // ECMA-262 13.15.5 — when an ArrayLiteral/ObjectLiteral sits in a
+    // destructuring assignment position (LHS of `=`, or a for-in/of head), it is
+    // reparsed under the AssignmentPattern goal symbol. Shapes that are not valid
+    // AssignmentPatterns are early SyntaxErrors (negative `phase: parse` tests).
+    // The shallow IsValidAssignmentTarget gate accepts every array/object literal;
+    // this performs the deep structural validation.
+    // A for-in/for-of head whose LHS is a bare array/object literal is an
+    // assignment-target pattern (lhsKind = assignment) and must be a valid
+    // AssignmentPattern. `let`/`const`/`var` declaration heads use binding-pattern
+    // parsing and are validated elsewhere.
+    private void ValidateForHeadDestructuringTarget(StatementNode? initializer)
+    {
+        if (initializer is ExpressionStatementNode { Expression: var expr } &&
+            expr is ArrayLiteralExpressionNode or ObjectLiteralExpressionNode)
+        {
+            ValidateAssignmentPattern(expr);
+        }
+    }
+
+    private void ValidateAssignmentPattern(ExpressionNode node)
+    {
+        switch (node)
+        {
+            case ArrayLiteralExpressionNode array:
+                ValidateArrayAssignmentPattern(array);
+                break;
+            case ObjectLiteralExpressionNode obj:
+                ValidateObjectAssignmentPattern(obj);
+                break;
+            default:
+                ValidateDestructuringAssignmentTarget(node);
+                break;
+        }
+    }
+
+    private void ValidateArrayAssignmentPattern(ArrayLiteralExpressionNode array)
+    {
+        var count = array.Elements.Count;
+        for (var i = 0; i < count; i++)
+        {
+            var element = array.Elements[i];
+            switch (element)
+            {
+                case ElisionExpressionNode:
+                    break;
+                case SpreadElementExpressionNode rest:
+                    // AssignmentRestElement must be the last element and cannot carry
+                    // a default initializer.
+                    if (i != count - 1)
+                    {
+                        throw new JsParserException(
+                            $"Rest element must be last in a destructuring pattern{Where()}.");
+                    }
+
+                    if (rest.Argument is AssignmentExpressionNode)
+                    {
+                        throw new JsParserException(
+                            $"Rest element cannot have an initializer{Where()}.");
+                    }
+
+                    ValidateDestructuringAssignmentTarget(rest.Argument);
+                    break;
+                case AssignmentExpressionNode assign:
+                    // AssignmentElement : DestructuringAssignmentTarget Initializer
+                    ValidateDestructuringAssignmentTarget(assign.Left);
+                    break;
+                default:
+                    ValidateDestructuringAssignmentTarget(element);
+                    break;
+            }
+        }
+    }
+
+    private void ValidateObjectAssignmentPattern(ObjectLiteralExpressionNode obj)
+    {
+        var count = obj.Properties.Count;
+        for (var i = 0; i < count; i++)
+        {
+            var property = obj.Properties[i];
+            if (property.Value is SpreadElementExpressionNode rest)
+            {
+                // AssignmentRestProperty must be last and its target must be a
+                // simple DestructuringAssignmentTarget (never a nested pattern).
+                if (i != count - 1)
+                {
+                    throw new JsParserException(
+                        $"Rest element must be last in a destructuring pattern{Where()}.");
+                }
+
+                if (rest.Argument is ArrayLiteralExpressionNode or ObjectLiteralExpressionNode)
+                {
+                    throw new JsParserException(
+                        $"Invalid rest binding target in object destructuring pattern{Where()}.");
+                }
+
+                if (rest.Argument is AssignmentExpressionNode)
+                {
+                    throw new JsParserException(
+                        $"Rest element cannot have an initializer{Where()}.");
+                }
+
+                ValidateDestructuringAssignmentTarget(rest.Argument);
+                continue;
+            }
+
+            // `{ key = default }` cover-initialized shorthand: the target is the
+            // (already-validated) identifier key; nothing further to check.
+            if (property.IsCoverInitializedName)
+            {
+                continue;
+            }
+
+            var target = property.Value;
+            if (target is AssignmentExpressionNode withDefault)
+            {
+                target = withDefault.Left;
+            }
+
+            ValidateDestructuringAssignmentTarget(target);
+        }
+    }
+
+    // ECMA-262 DestructuringAssignmentTarget : LeftHandSideExpression. A nested
+    // array/object literal is itself an assignment pattern; any other target must
+    // have a "simple" AssignmentTargetType (Identifier or MemberExpression).
+    private void ValidateDestructuringAssignmentTarget(ExpressionNode target)
+    {
+        switch (target)
+        {
+            case ArrayLiteralExpressionNode array:
+                ValidateArrayAssignmentPattern(array);
+                break;
+            case ObjectLiteralExpressionNode obj:
+                ValidateObjectAssignmentPattern(obj);
+                break;
+            case IdentifierExpressionNode:
+            case MemberExpressionNode:
+                break;
+            case ParenthesizedExpressionNode paren:
+                ValidateDestructuringAssignmentTarget(paren.Expression);
+                break;
+            default:
+                throw new JsParserException(
+                    $"Invalid destructuring assignment target ({target.GetType().Name}){Where()}.");
+        }
+    }
 
     private static bool IsValidAssignmentTarget(ExpressionNode node)
     {
