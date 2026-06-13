@@ -154,13 +154,14 @@ internal abstract class CalendarSystem
         if (sign == 0) return (0, 0, 0, 0);
 
         ToNative(one, out int y1, out int m1, out int d1);
+        string code1 = MonthCodeFor(y1, m1);
         int years = 0, months = 0;
         if (largestUnit == "year")
         {
             ToNative(two, out int y2, out _, out _);
             int candidateYears = y2 - y1;
             if (candidateYears != 0) candidateYears -= sign;
-            while (!Surpasses(sign, BalanceYearMonth(y1 + candidateYears, m1), d1, two))
+            while (!Surpasses(sign, (y1 + candidateYears, OrdinalOfCode(y1 + candidateYears, code1)), d1, two))
             {
                 years = candidateYears;
                 candidateYears += sign;
@@ -169,11 +170,12 @@ internal abstract class CalendarSystem
 
         if (largestUnit is "year" or "month")
         {
-            // Count whole calendar months from the (one + years) anchor. Because
-            // BalanceYearMonth honours each year's month count (12 or 13), this
-            // naturally yields the ordinal month span across lunisolar leap years.
+            // Count whole calendar months from the (one + years) anchor — re-anchored
+            // on the source month CODE in that year (its ordinal can shift across a
+            // lunisolar leap year), then stepping ordinals (12 or 13 per year).
+            int anchorOrd = OrdinalOfCode(y1 + years, code1);
             int candidateMonths = sign;
-            var inter = BalanceYearMonth(y1 + years, m1 + candidateMonths);
+            var inter = BalanceYearMonth(y1 + years, anchorOrd + candidateMonths);
             while (!Surpasses(sign, inter, d1, two))
             {
                 months = candidateMonths;
@@ -182,13 +184,19 @@ internal abstract class CalendarSystem
             }
         }
 
-        var (fy, fm) = BalanceYearMonth(y1 + years, m1 + months);
+        int fAnchor = OrdinalOfCode(y1 + years, code1);
+        var (fy, fm) = BalanceYearMonth(y1 + years, fAnchor + months);
         int cd = Math.Min(d1, DaysInMonthOrdinal(fy, fm));
         long days = ep2 - ToFixed(fy, fm, cd);
         long weeks = 0;
         if (largestUnit == "week") { weeks = days / 7; days %= 7; }
         return (years, months, (int)weeks, days);
     }
+
+    // The ordinal in `year` of a month code, constraining an absent leap month
+    // to its base month (used to re-anchor difference across lunisolar years).
+    private int OrdinalOfCode(int year, string code)
+        => MonthFromCode(year, code, out int ord, out _) ? ord : 1;
 
     private (int Year, int Month) BalanceYearMonth(int year, long month)
     {
