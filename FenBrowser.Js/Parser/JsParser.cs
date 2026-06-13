@@ -41,6 +41,10 @@ public sealed class JsParser
     private int _syntheticBindingCounter;
     private bool _strictMode;
     private bool _moduleMode;
+    // True only while parsing a statement that sits directly at the top level of
+    // a Module. import/export declarations are a SyntaxError anywhere else
+    // (ECMA-262 16.2.1.1 / 16.2.2.1 — they are ModuleItems, not Statements).
+    private bool _atModuleTopLevel;
     private bool _inDirectivePrologue = true;
     private bool _allowYieldExpression;
     private bool _allowAwaitExpression;
@@ -117,6 +121,7 @@ public sealed class JsParser
 
         while (!Is(TokenKind.EndOfFile))
         {
+            _atModuleTopLevel = true;
             var statement = ParseStatement();
             statements.Add(statement);
             UpdateDirectivePrologueState(statement);
@@ -890,10 +895,15 @@ public sealed class JsParser
 
     private StatementNode ParseStatement(StatementBodyContext ctx = StatementBodyContext.StatementListItem)
     {
+        // Capture and clear the module-top-level flag so that nested statements
+        // parsed by this call (block bodies, control-flow clauses, etc.) are not
+        // treated as top-level module items.
+        var atModuleTopLevel = _atModuleTopLevel;
+        _atModuleTopLevel = false;
         EnterRecursion();
         try
         {
-            return ParseStatementCore(ctx);
+            return ParseStatementCore(ctx, atModuleTopLevel);
         }
         finally
         {
@@ -901,7 +911,7 @@ public sealed class JsParser
         }
     }
 
-    private StatementNode ParseStatementCore(StatementBodyContext ctx)
+    private StatementNode ParseStatementCore(StatementBodyContext ctx, bool atModuleTopLevel)
     {
         if (IsPunctuator("@"))
         {
@@ -954,8 +964,16 @@ public sealed class JsParser
                     {
                         break;
                     }
+                    if (!_moduleMode || !atModuleTopLevel)
+                    {
+                        throw new JsParserException("An import declaration may only appear at the top level of a module.");
+                    }
                     return ParseImportDeclaration();
                 case "export":
+                    if (!_moduleMode || !atModuleTopLevel)
+                    {
+                        throw new JsParserException("An export declaration may only appear at the top level of a module.");
+                    }
                     return ParseExportDeclaration();
                 case "class":
                     if (ctx != StatementBodyContext.StatementListItem)
