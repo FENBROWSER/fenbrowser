@@ -1601,6 +1601,7 @@ public sealed class JsParser
                 throw new JsParserException("for-of requires an initializer target.");
             }
 
+            ValidateForOfDeclarationNoInitializer(initializer);
             ValidateForHeadDestructuringTarget(initializer);
             Advance(); // of
             var iterable = ParseExpression(0);
@@ -5239,6 +5240,24 @@ public sealed class JsParser
     // AssignmentPatterns are early SyntaxErrors (negative `phase: parse` tests).
     // The shallow IsValidAssignmentTarget gate accepts every array/object literal;
     // this performs the deep structural validation.
+    // ECMA-262 14.7.5: the ForDeclaration/ForBinding of a for-of head (let/const
+    // or var) may not carry an initializer — unlike for-in, which permits the
+    // Annex B sloppy `var x = init` form. Any initializer here is a SyntaxError.
+    private void ValidateForOfDeclarationNoInitializer(StatementNode? initializer)
+    {
+        if (initializer is VariableDeclarationStatementNode declaration)
+        {
+            foreach (var declarator in declaration.Declarators)
+            {
+                if (declarator.Initializer is not null)
+                {
+                    throw new JsParserException(
+                        $"A for-of loop variable declaration may not have an initializer{Where()}.");
+                }
+            }
+        }
+    }
+
     // A for-in/for-of head whose LHS is a bare array/object literal is an
     // assignment-target pattern (lhsKind = assignment) and must be a valid
     // AssignmentPattern. `let`/`const`/`var` declaration heads use binding-pattern
@@ -5369,6 +5388,10 @@ public sealed class JsParser
                 ValidateObjectAssignmentPattern(obj);
                 break;
             case IdentifierExpressionNode:
+                // 13.15.1: in strict mode `eval`/`arguments` are not valid
+                // simple assignment targets, including inside a pattern.
+                ValidateStrictAssignmentTarget(target);
+                break;
             case MemberExpressionNode:
                 break;
             case ParenthesizedExpressionNode paren:
