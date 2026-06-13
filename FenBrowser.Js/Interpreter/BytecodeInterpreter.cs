@@ -7984,11 +7984,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 {
                     var k = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     if (!TryGetPropertyValue(rObj, args[1], k, out var item)) continue;
+                    // ECMA-262 25.5.2.1: an element contributes a key when it is a
+                    // String/Number primitive, or a String/Number wrapper object
+                    // (has [[StringData]]/[[NumberData]]); the key is ? ToString(item),
+                    // which may run a custom toString.
                     if (item.Tag == JsValueTag.String)
                     {
                         propertyList.Add(item.AsString());
                     }
                     else if (item.Tag == JsValueTag.Number || item.Tag == JsValueTag.Int32)
+                    {
+                        propertyList.Add(ToStringValue(item));
+                    }
+                    else if (item.Tag == JsValueTag.Object &&
+                             _heap.GetObject(item.AsObjectHandle()) is StringObject or NumberObject)
                     {
                         propertyList.Add(ToStringValue(item));
                     }
