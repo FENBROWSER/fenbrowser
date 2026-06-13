@@ -164,8 +164,17 @@ internal abstract class CalendarSystem
             ToNative(two, out int y2, out _, out _);
             int candidateYears = y2 - y1;
             if (candidateYears != 0) candidateYears -= sign;
-            while (!Surpasses(sign, (y1 + candidateYears, OrdinalOfCode(y1 + candidateYears, code1)), d1, two))
+            while (true)
             {
+                int cy = y1 + candidateYears;
+                int co = OrdinalOfCode(cy, code1);
+                // If the source month code does not exist in the candidate year
+                // (e.g. a leap month constrained to a regular month), and we are
+                // moving toward the target year, the year boundary is crossed.
+                MonthFromCode(cy, code1, out _, out bool existsInCandidate);
+                bool pastTarget = sign > 0 ? cy >= y2 : cy <= y2;
+                if (Surpasses(sign, (cy, co), d1, two)) break;
+                if (!existsInCandidate && pastTarget) break;
                 years = candidateYears;
                 candidateYears += sign;
             }
