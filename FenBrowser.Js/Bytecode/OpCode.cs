@@ -259,4 +259,10 @@ public enum OpCode : byte
 		// every own enumerable property (string and symbol keys) of source into
 		// target via [[Get]]/[[Set]]. null/undefined source is a no-op.
 		CopyDataProperties,
+
+		// Annex B.3.3 web-compat: assign a block-level function declaration's value
+		// to the binding for the same name in the running execution context's
+		// VariableEnvironment (the nearest function/global/module environment),
+		// skipping the intervening block scopes. A=value reg, B=variable slot.
+		StoreVarTop,
 }

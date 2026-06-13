@@ -60,6 +60,12 @@ public sealed class BytecodeCompiler
     private readonly List<JsValue> _constants = new();
     private readonly Dictionary<string, int> _variables = new(StringComparer.Ordinal);
     private readonly HashSet<string> _varDeclarationNames = new(StringComparer.Ordinal);
+    // Annex B.3.3: names of block-level FunctionDeclarations (sloppy mode only)
+    // eligible for the legacy var-scoped binding. Populated once per function/
+    // script/eval compile; a block-level function whose name is here gets an
+    // extra StoreVarTop after its block InitVar so the value reaches the
+    // VariableEnvironment binding.
+    private readonly HashSet<string> _annexBFunctionNames = new(StringComparer.Ordinal);
     // Running count of EnterScope ops emitted minus LeaveScope ops emitted.
     // Loop contexts snapshot this at entry so break/continue can emit
     // matching LeaveScope ops before jumping (ECMA-262 14.7 abrupt
@@ -178,6 +184,7 @@ public sealed class BytecodeCompiler
         _constants.Clear();
         _variables.Clear();
         _varDeclarationNames.Clear();
+        _annexBFunctionNames.Clear();
         _lexicalDeclarationNames.Clear();
         _constDeclarationNames.Clear();
         _propertyNames.Clear();
@@ -197,6 +204,21 @@ public sealed class BytecodeCompiler
         {
             _parameterNames.Add(p);
             _ = GetOrCreateVariableSlot(p);
+        }
+
+        // Annex B.3.3 (sloppy mode only): block-level function declarations also
+        // get a var-scoped binding in this VariableEnvironment. Collect the
+        // eligible names first so the hoisted var bindings exist before any code
+        // runs, then HoistFunctionDeclarations / block compilation emit the
+        // StoreVarTop assignments at the right points.
+        if (!_isStrictMode)
+        {
+            CollectAnnexBFunctionNames(program.Body, _annexBFunctionNames);
+            foreach (var annexBName in _annexBFunctionNames)
+            {
+                _varDeclarationNames.Add(annexBName);
+                _ = GetOrCreateVariableSlot(annexBName);
+            }
         }
 
         HoistFunctionDeclarations(program.Body);
@@ -541,6 +563,12 @@ public sealed class BytecodeCompiler
         if (blockScoped)
         {
             _instructions.Add(new Instruction(OpCode.InitVar, dest, slot, 0));
+            // Annex B.3.3: also copy the function value into the VariableEnvironment
+            // binding of the same name (sloppy mode, no conflicting lexical decl).
+            if (!_isStrictMode && _annexBFunctionNames.Contains(functionDecl.Name))
+            {
+                _instructions.Add(new Instruction(OpCode.StoreVarTop, dest, slot, 0));
+            }
         }
         else
         {
@@ -1197,13 +1225,13 @@ public sealed class BytecodeCompiler
         var testReg = CompileExpression(ifStmt.Test);
         var jumpIfFalseIndex = EmitPlaceholder(OpCode.JumpIfFalse, testReg);
 
-        CompileStatement(ifStmt.Consequent);
+        CompileStatement(WrapBareAnnexBFunction(ifStmt.Consequent));
 
         if (ifStmt.Alternate is not null)
         {
             var jumpAfterConsequent = EmitPlaceholder(OpCode.Jump);
             PatchJump(jumpIfFalseIndex, _instructions.Count);
-            CompileStatement(ifStmt.Alternate);
+            CompileStatement(WrapBareAnnexBFunction(ifStmt.Alternate));
             PatchJump(jumpAfterConsequent, _instructions.Count);
         }
         else
@@ -2389,7 +2417,7 @@ public sealed class BytecodeCompiler
                 Seq = _nestingSeq++
             };
             _labelStack.Push(target);
-            CompileStatement(labeled.Body);
+            CompileStatement(WrapBareAnnexBFunction(labeled.Body));
             var end = _instructions.Count;
             foreach (var jumpIdx in target.BreakJumpIndices)
             {
@@ -2398,6 +2426,16 @@ public sealed class BytecodeCompiler
             _labelStack.Pop();
         }
     }
+
+    // ECMA-262 Annex B.3.2/B.3.4: in sloppy mode a FunctionDeclaration may appear
+    // directly as the Statement of an if/else or labelled statement; it then
+    // behaves as if enclosed in a Block. Wrap it so the block-compilation path
+    // gives it a block-scoped binding (and, via _annexBFunctionNames, the legacy
+    // var-scoped binding). Strict mode forbids this position, so leave it unchanged.
+    private StatementNode WrapBareAnnexBFunction(StatementNode stmt)
+        => !_isStrictMode && stmt is FunctionDeclarationNode
+            ? new BlockStatementNode(new[] { stmt }, stmt.Span)
+            : stmt;
 
     // Returns true if the name is in any active block block-scoped name set.
     private bool IsBlockScopedName(string name)
@@ -3484,6 +3522,201 @@ public sealed class BytecodeCompiler
                 return CompileExpression(spread.Argument);
             default:
                 throw new InvalidOperationException($"Unsupported expression type {expr.GetType().Name}.");
+        }
+    }
+
+    // ECMA-262 Annex B.3.3: in sloppy-mode function/script/eval code, a
+    // FunctionDeclaration nested inside a Block (or CaseBlock) also creates a
+    // var-scoped binding in the VariableEnvironment, provided introducing
+    // `var <name>` would not collide with an enclosing lexical declaration on the
+    // path to the var scope (a catch parameter is exempt per B.3.5). This collects
+    // the eligible names; the top-level statement list itself is not a nested
+    // block, so its direct FunctionDeclarations are excluded (already var-scoped).
+    private void CollectAnnexBFunctionNames(IReadOnlyList<StatementNode> body, HashSet<string> result)
+    {
+        var topLevelConflicts = new HashSet<string>(StringComparer.Ordinal);
+        CollectLexicalConflictNames(body, topLevelConflicts);
+        // A block-level function name that matches a formal parameter does not get
+        // an Annex B var binding (the parameter already occupies the var scope).
+        foreach (var p in _parameterNames)
+        {
+            topLevelConflicts.Add(p);
+        }
+
+        foreach (var stmt in body)
+        {
+            // Top-level FunctionDeclarations are ordinary var-scoped declarations,
+            // not Annex B cases; only descend into nested statements.
+            if (stmt is not FunctionDeclarationNode)
+            {
+                CollectAnnexBInStatement(stmt, topLevelConflicts, result);
+            }
+        }
+    }
+
+    // Recurse through a single statement looking for block-nested function
+    // declarations. `conflicts` holds lexical names in scope between the current
+    // position and the VariableEnvironment that would block an Annex B binding.
+    private void CollectAnnexBInStatement(StatementNode stmt, HashSet<string> conflicts, HashSet<string> result)
+    {
+        switch (stmt)
+        {
+            case BlockStatementNode block:
+                CollectAnnexBInBlockList(block.Statements, conflicts, result);
+                break;
+            case IfStatementNode ifStmt:
+                // B.3.4: a FunctionDeclaration directly in an if/else position is
+                // treated as if wrapped in a Block, so it is an Annex B candidate.
+                CollectAnnexBInChild(ifStmt.Consequent, conflicts, result);
+                if (ifStmt.Alternate is not null)
+                {
+                    CollectAnnexBInChild(ifStmt.Alternate, conflicts, result);
+                }
+                break;
+            case SwitchStatementNode switchStmt:
+                // A CaseBlock is a single lexical scope spanning all clauses.
+                var merged = new List<StatementNode>();
+                foreach (var clause in switchStmt.Cases)
+                {
+                    merged.AddRange(clause.Consequent);
+                }
+                CollectAnnexBInBlockList(merged, conflicts, result);
+                break;
+            case LabeledStatementNode labeled:
+                // B.3.2: a labelled FunctionDeclaration is also an Annex B candidate.
+                CollectAnnexBInChild(labeled.Body, conflicts, result);
+                break;
+            case WhileStatementNode whileStmt:
+                CollectAnnexBInStatement(whileStmt.Body, conflicts, result);
+                break;
+            case DoWhileStatementNode doWhile:
+                CollectAnnexBInStatement(doWhile.Body, conflicts, result);
+                break;
+            case WithStatementNode withStmt:
+                CollectAnnexBInStatement(withStmt.Body, conflicts, result);
+                break;
+            case ForStatementNode forStmt:
+                CollectAnnexBInLoop(forStmt.Initializer, forStmt.Body, conflicts, result);
+                break;
+            case ForInStatementNode forIn:
+                CollectAnnexBInLoop(forIn.Initializer, forIn.Body, conflicts, result);
+                break;
+            case ForOfStatementNode forOf:
+                CollectAnnexBInLoop(forOf.Initializer, forOf.Body, conflicts, result);
+                break;
+            case ForAwaitOfStatementNode forAwait:
+                CollectAnnexBInLoop(forAwait.Initializer, forAwait.Body, conflicts, result);
+                break;
+            case TryCatchStatementNode tryCatch:
+                CollectAnnexBInStatement(tryCatch.TryBlock, conflicts, result);
+                // The catch parameter is exempt (B.3.5), so it is not added to conflicts.
+                CollectAnnexBInStatement(tryCatch.CatchBlock, conflicts, result);
+                break;
+            case TryFinallyStatementNode tryFinally:
+                CollectAnnexBInStatement(tryFinally.TryBlock, conflicts, result);
+                CollectAnnexBInStatement(tryFinally.FinallyBlock, conflicts, result);
+                break;
+            case TryCatchFinallyStatementNode tryCatchFinally:
+                CollectAnnexBInStatement(tryCatchFinally.TryBlock, conflicts, result);
+                CollectAnnexBInStatement(tryCatchFinally.CatchBlock, conflicts, result);
+                CollectAnnexBInStatement(tryCatchFinally.FinallyBlock, conflicts, result);
+                break;
+            default:
+                // ExpressionStatement, return, bare FunctionDeclaration (B.3.4 — not
+                // handled here), etc.: nothing to collect.
+                break;
+        }
+    }
+
+    private void CollectAnnexBInLoop(StatementNode? initializer, StatementNode body, HashSet<string> conflicts, HashSet<string> result)
+    {
+        // A `let`/`const` loop head introduces a lexical binding scoped to the body.
+        if (initializer is VariableDeclarationStatementNode vd &&
+            (string.Equals(vd.Kind, "let", StringComparison.Ordinal) ||
+             string.Equals(vd.Kind, "const", StringComparison.Ordinal)))
+        {
+            var bodyConflicts = new HashSet<string>(conflicts, StringComparer.Ordinal);
+            foreach (var d in vd.Declarators)
+            {
+                foreach (var n in GetDeclaratorBoundNames(d))
+                {
+                    bodyConflicts.Add(n);
+                }
+            }
+
+            CollectAnnexBInStatement(body, bodyConflicts, result);
+            return;
+        }
+
+        CollectAnnexBInStatement(body, conflicts, result);
+    }
+
+    // A statement in an if/else/labelled position: a bare FunctionDeclaration there
+    // behaves (B.3.2 / B.3.4) as if wrapped in a Block, so it is an Annex B
+    // candidate; otherwise recurse normally.
+    private void CollectAnnexBInChild(StatementNode child, HashSet<string> conflicts, HashSet<string> result)
+    {
+        if (child is FunctionDeclarationNode fd && fd.Name.Length > 0)
+        {
+            if (!conflicts.Contains(fd.Name))
+            {
+                result.Add(fd.Name);
+            }
+
+            return;
+        }
+
+        CollectAnnexBInStatement(child, conflicts, result);
+    }
+
+    // Process the statement list of a Block/CaseBlock: its own lexical declarations
+    // join the conflict set, then each direct FunctionDeclaration is an Annex B
+    // candidate (added unless a conflict shadows it).
+    private void CollectAnnexBInBlockList(IReadOnlyList<StatementNode> statements, HashSet<string> conflicts, HashSet<string> result)
+    {
+        var blockConflicts = new HashSet<string>(conflicts, StringComparer.Ordinal);
+        CollectLexicalConflictNames(statements, blockConflicts);
+
+        foreach (var stmt in statements)
+        {
+            if (stmt is FunctionDeclarationNode fd && fd.Name.Length > 0)
+            {
+                if (!blockConflicts.Contains(fd.Name))
+                {
+                    result.Add(fd.Name);
+                }
+
+                continue;
+            }
+
+            CollectAnnexBInStatement(stmt, blockConflicts, result);
+        }
+    }
+
+    // Collect the lexically-declared names (let/const/class) directly in a
+    // statement list — these would make an Annex B `var` binding an early error.
+    private static void CollectLexicalConflictNames(IReadOnlyList<StatementNode> statements, HashSet<string> into)
+    {
+        foreach (var stmt in statements)
+        {
+            switch (stmt)
+            {
+                case VariableDeclarationStatementNode vd when
+                    string.Equals(vd.Kind, "let", StringComparison.Ordinal) ||
+                    string.Equals(vd.Kind, "const", StringComparison.Ordinal):
+                    foreach (var d in vd.Declarators)
+                    {
+                        foreach (var n in GetDeclaratorBoundNames(d))
+                        {
+                            into.Add(n);
+                        }
+                    }
+
+                    break;
+                case ClassDeclarationNode cd when cd.Name.Length > 0:
+                    into.Add(cd.Name);
+                    break;
+            }
         }
     }
 

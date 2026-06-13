@@ -970,6 +970,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.InitVar:
                     InitializeName(frame, ins.B, frame.Registers[ins.A]);
                     break;
+                case OpCode.StoreVarTop:
+                    StoreNameInVariableEnvironment(frame, ins.B, frame.Registers[ins.A]);
+                    break;
                 case OpCode.Move:
                     frame.Registers[ins.A] = frame.Registers[ins.B];
                     break;
@@ -4493,6 +4496,40 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         ThrowReferenceError(frame, $"Invalid variable slot {slot}.");
+    }
+
+    // Annex B.3.3 web-compat (StoreVarTop): write `value` to the binding for the
+    // block-level function name in the running execution context's
+    // VariableEnvironment — the nearest function/global/module environment record,
+    // skipping intervening block (declarative) and `with` (object) scopes. The
+    // matching var binding was pre-created by InstantiateVarDeclarations; this
+    // assignment runs when the containing block's declarations are instantiated.
+    private void StoreNameInVariableEnvironment(InterpreterFrame frame, int slot, JsValue value)
+    {
+        var name = SlotNameTable.GetName(frame.Function, slot);
+        if (name is null)
+        {
+            return;
+        }
+
+        EnvironmentRecord? env = frame.Environment;
+        while (env is not null &&
+               env is not FunctionEnvironmentRecord &&
+               env is not GlobalEnvironmentRecord &&
+               env is not ModuleEnvironmentRecord)
+        {
+            env = env.OuterEnv;
+        }
+
+        env ??= frame.Environment;
+        if (!env.HasBinding(name))
+        {
+            _ = env.CreateMutableBinding(name, deletable: true);
+            _ = env.InitializeBinding(name, value);
+            return;
+        }
+
+        _ = env.SetMutableBinding(name, value, strict: false);
     }
 
     internal void InitializeName(InterpreterFrame frame, int slot, JsValue value)
