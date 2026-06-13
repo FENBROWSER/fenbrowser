@@ -4982,6 +4982,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // step), overwrites the requested portions from args, and writes back through
     // TimeClip. Any non-finite component drives the result to NaN per the
     // spec's MakeDate failure mode.
+    private static JsValue ArgOrUndefined(IReadOnlyList<JsValue> args, int index)
+        => index >= 0 && index < args.Count ? args[index] : JsValue.Undefined;
+
     private JsValue SetDateField(
         JsValue thisValue, string method, IReadOnlyList<JsValue> args,
         bool hasYear, bool hasMonth, bool hasDay,
@@ -4993,10 +4996,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // every provided argument is ToNumber-coerced in argument order. So a NaN
         // Date still observes each valueOf once, and a callback that mutates the Date
         // mid-coercion does not change the captured time the result is built from.
+        // A required field with no corresponding argument is ToNumber(undefined) =
+        // NaN (e.g. `setFullYear()` yields an Invalid Date), so read missing slots as
+        // undefined rather than indexing past the argument list.
         var capturedT = date.TimeValue;
-        double? yearArg = hasYear ? ToNumber(args[yearArgIndex]) : null;
-        double? monthArg = hasMonth ? ToNumber(args[monthArgIndex]) : null;
-        double? dayArg = hasDay ? ToNumber(args[dayArgIndex]) : null;
+        double? yearArg = hasYear ? ToNumber(ArgOrUndefined(args, yearArgIndex)) : null;
+        double? monthArg = hasMonth ? ToNumber(ArgOrUndefined(args, monthArgIndex)) : null;
+        double? dayArg = hasDay ? ToNumber(ArgOrUndefined(args, dayArgIndex)) : null;
 
         double baseT;
         if (double.IsFinite(capturedT))
@@ -5040,7 +5046,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var t0 = date.TimeValue;
         var provided = new double[4];
         var has = new bool[4];
-        for (var i = 0; i < args.Count && startIndex + i < 4; i++)
+        // The most-significant component (at startIndex) is the required argument and
+        // is always ToNumber-coerced — `setHours()` with no argument is ToNumber(
+        // undefined) = NaN, yielding an Invalid Date. Lower-order components are only
+        // overwritten when actually supplied.
+        provided[startIndex] = ToNumber(ArgOrUndefined(args, 0));
+        has[startIndex] = true;
+        for (var i = 1; i < args.Count && startIndex + i < 4; i++)
         {
             provided[startIndex + i] = ToNumber(args[i]);
             has[startIndex + i] = true;
