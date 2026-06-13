@@ -7976,11 +7976,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 replacerFn = args[1];
             }
-            else if (rObj is ArrayObject)
+            else if (IsArrayValue(args[1]))
             {
+                // IsArray follows a Proxy whose target is an Array, and length /
+                // elements are read through [[Get]] (proxy-aware).
                 propertyList = new HashSet<string>(StringComparer.Ordinal);
-                var len = GetArrayLength(rObj);
-                for (var i = 0; i < len; i++)
+                var len = (long)LengthOfArrayLikeAsDouble(rObj, args[1]);
+                for (long i = 0; i < len; i++)
                 {
                     var k = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     if (!TryGetPropertyValue(rObj, args[1], k, out var item)) continue;
