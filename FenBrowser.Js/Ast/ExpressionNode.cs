@@ -74,7 +74,11 @@ public enum ObjectPropertyKind { Data, Getter, Setter }
 // which is otherwise structurally identical in the AST (both Key="key", Value=<expr>).
 public sealed record ObjectPropertyNode(string? Key, ExpressionNode? ComputedKey, bool IsComputed, ExpressionNode Value, SourceSpan Span, ObjectPropertyKind Kind = ObjectPropertyKind.Data, bool IsCoverInitializedName = false);
 
-public sealed record ObjectLiteralExpressionNode(IReadOnlyList<ObjectPropertyNode> Properties, SourceSpan Span) : ExpressionNode(Span);
+// HasDuplicateProtoSetter marks an object literal that contains more than one
+// `__proto__: value` colon-form data property (ECMA-262 B.3.1) — a SyntaxError
+// for a real ObjectLiteral, but permitted when the same source is reinterpreted
+// as an ObjectAssignmentPattern (cover grammar), so the error is deferred.
+public sealed record ObjectLiteralExpressionNode(IReadOnlyList<ObjectPropertyNode> Properties, SourceSpan Span, bool HasDuplicateProtoSetter = false) : ExpressionNode(Span);
 
 public sealed record ArrayLiteralExpressionNode(IReadOnlyList<ExpressionNode> Elements, SourceSpan Span) : ExpressionNode(Span);
 

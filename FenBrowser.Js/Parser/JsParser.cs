@@ -49,6 +49,10 @@ public sealed class JsParser
     private bool _allowYieldExpression;
     private bool _allowAwaitExpression;
     private bool _allowAnnexBForInInitializerTail;
+    // ECMA-262 B.3.1: object literals with duplicate `__proto__:` setters whose
+    // pattern-vs-literal fate is not yet known. Removed when validated as an
+    // assignment pattern; any left at end of parse is a SyntaxError.
+    private readonly List<ObjectLiteralExpressionNode> _pendingDuplicateProtoLiterals = new();
     private int _classStaticBlockDepth;
     // ECMA-262 grammar parameter [~In]: while true, the `in` keyword is NOT
     // treated as a relational operator so the `for ( LHS in Iterable )` head can
@@ -129,6 +133,14 @@ public sealed class JsParser
 
         var end = Current().Span;
         var span = new SourceSpan(start.Start, Math.Max(0, end.Start - start.Start), start.Line, start.Column);
+        // B.3.1: any object literal with duplicate `__proto__:` setters that was
+        // not consumed as an assignment pattern is a real ObjectLiteral — an error.
+        if (_pendingDuplicateProtoLiterals.Count > 0)
+        {
+            throw new JsParserException(
+                "Duplicate __proto__ fields are not allowed in object literals.");
+        }
+
         ValidateDirectivePrologueStrictStringEscapes(statements);
         var program = new ProgramNode(kind, statements, span);
         // ECMA-262 lexical-declaration early errors (duplicate let/const/class, or a
@@ -3846,6 +3858,10 @@ public sealed class JsParser
     {
         var open = Advance(); // {
         var properties = new List<ObjectPropertyNode>();
+        // ECMA-262 B.3.1: count `__proto__: value` colon-form data properties.
+        // More than one is a SyntaxError for a real object literal (deferred —
+        // permitted when reinterpreted as an assignment pattern).
+        var protoSetterCount = 0;
         while (!Is(TokenKind.EndOfFile) && !IsPunctuator("}"))
         {
             var keyToken = Current();
@@ -4168,6 +4184,11 @@ public sealed class JsParser
             {
                 Advance();
                 value = ParseExpression(2);
+                // A non-computed `__proto__: value` is a prototype setter.
+                if (!isComputed && string.Equals(key, "__proto__", StringComparison.Ordinal))
+                {
+                    protoSetterCount++;
+                }
             }
             else if (IsPunctuator("="))
             {
@@ -4212,7 +4233,17 @@ public sealed class JsParser
 
         ExpectPunctuator("}");
         var close = Previous();
-        return new ObjectLiteralExpressionNode(properties, MergeSpan(open.Span, close.Span));
+        var literal = new ObjectLiteralExpressionNode(
+            properties, MergeSpan(open.Span, close.Span), HasDuplicateProtoSetter: protoSetterCount > 1);
+        if (protoSetterCount > 1)
+        {
+            // Defer the error: legal if this literal is reinterpreted as an
+            // ObjectAssignmentPattern (cleared in ValidateObjectAssignmentPattern);
+            // otherwise ParseProgram throws once parsing completes.
+            _pendingDuplicateProtoLiterals.Add(literal);
+        }
+
+        return literal;
     }
 
     private ArrayLiteralExpressionNode ParseArrayLiteral()
@@ -5327,6 +5358,13 @@ public sealed class JsParser
 
     private void ValidateObjectAssignmentPattern(ObjectLiteralExpressionNode obj)
     {
+        // Reinterpreted as a pattern: duplicate `__proto__:` is permitted here, so
+        // withdraw any deferred B.3.1 literal error for this node.
+        if (obj.HasDuplicateProtoSetter)
+        {
+            _pendingDuplicateProtoLiterals.Remove(obj);
+        }
+
         var count = obj.Properties.Count;
         for (var i = 0; i < count; i++)
         {
