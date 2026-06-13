@@ -1657,14 +1657,14 @@ public sealed class TemporalStub : IBuiltinModule
         IReadOnlyList<JsValue> a, ObjectHandle pH, int sign)
     {
         var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-        _ = GetOverflowOption(ctx, h, a, 1);
+        bool constrain = GetOverflowOption(ctx, h, a, 1) == "constrain";
         var date = DecodeIsoDateLong(h, o);
         long total = DecodeTimeOfDayNs(h, o)
             + sign * DurationToNanos(0, dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos);
         long dayCarry = (long)Math.Floor(total / (double)NsPerDay);
         long timeNs = total - dayCarry * NsPerDay;
         var result = AddDateInCalendar(CalId(h, o), date, sign * dur.years, sign * dur.months, sign * dur.weeks,
-            sign * (double)dur.days + dayCarry, constrain: true, out var invalid);
+            sign * (double)dur.days + dayCarry, constrain, out var invalid);
         if (invalid || !IsoMath.IsoDateWithinLimits(result))
             throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range."));
         return AttachPrototype(h, MakePlainDateTimeParts(ctx, h, result.Year, result.Month, result.Day,
@@ -2429,20 +2429,20 @@ public sealed class TemporalStub : IBuiltinModule
         }, 1);
         AddMethod(ctx, h, pH, p, "add", (o, a) => {
             var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            _ = GetOverflowOption(ctx, h, a, 1);
+            bool constrain = GetOverflowOption(ctx, h, a, 1) == "constrain";
             var result = AddDateInCalendar(CalId(h, o), DecodeIsoDate(h, o), dur.years, dur.months, dur.weeks,
-                dur.days + (dur.hours * 3600L + dur.minutes * 60L + dur.seconds) / 86_400.0, constrain: true, out var invalid);
+                dur.days + (dur.hours * 3600L + dur.minutes * 60L + dur.seconds) / 86_400.0, constrain, out var invalid);
             if (invalid || !IsoMath.IsoDateWithinLimits(result))
-                throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range."));
+                throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range or invalid under overflow=reject."));
             return AttachPrototype(h, MakePlainDateYmd(ctx, h, result.Year, result.Month, result.Day, GetVStr(h, o, "calendarId")), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => {
             var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            _ = GetOverflowOption(ctx, h, a, 1);
+            bool constrain = GetOverflowOption(ctx, h, a, 1) == "constrain";
             var result = AddDateInCalendar(CalId(h, o), DecodeIsoDate(h, o), -dur.years, -dur.months, -dur.weeks,
-                -(dur.days + (dur.hours * 3600L + dur.minutes * 60L + dur.seconds) / 86_400.0), constrain: true, out var invalid);
+                -(dur.days + (dur.hours * 3600L + dur.minutes * 60L + dur.seconds) / 86_400.0), constrain, out var invalid);
             if (invalid || !IsoMath.IsoDateWithinLimits(result))
-                throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range."));
+                throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range or invalid under overflow=reject."));
             return AttachPrototype(h, MakePlainDateYmd(ctx, h, result.Year, result.Month, result.Day, GetVStr(h, o, "calendarId")), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
@@ -3003,13 +3003,16 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "add", (o, a) => {
             var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             _ = GetOverflowOption(ctx, h, a, 1);
+            // PlainYearMonth.add anchors at the first day of the month, so the day never overflows.
             var res = AddDateInCalendar(CalId(h, o), DecodeYearMonthIso(h, o), dur.years, dur.months, dur.weeks, dur.days, constrain: true, out _);
+            res = YearMonthReferenceIso(CalId(h, o), res);
             return AttachPrototype(h, MakePlainYearMonth(ctx, h, res.Year, res.Month, GetVStr(h, o, "calendarId"), res.Day), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => {
             var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             _ = GetOverflowOption(ctx, h, a, 1);
             var res = AddDateInCalendar(CalId(h, o), DecodeYearMonthIso(h, o), -dur.years, -dur.months, -dur.weeks, -dur.days, constrain: true, out _);
+            res = YearMonthReferenceIso(CalId(h, o), res);
             return AttachPrototype(h, MakePlainYearMonth(ctx, h, res.Year, res.Month, GetVStr(h, o, "calendarId"), res.Day), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
@@ -3571,14 +3574,14 @@ public sealed class TemporalStub : IBuiltinModule
     private static JsValue AddDurationToZoned(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> a, ObjectHandle pH, int sign)
     {
         var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-        _ = GetOverflowOption(ctx, h, a, 1);
+        bool constrain = GetOverflowOption(ctx, h, a, 1) == "constrain";
         string tz = GetVStr(h, o, "tz");
         long epochNs = DecodeInstantNanos(h, o);
         if (dur.years != 0 || dur.months != 0 || dur.weeks != 0 || dur.days != 0)
         {
             var date = DecodeIsoDateLong(h, o);
             var newDate = AddDateInCalendar(CalId(h, o), date, sign * dur.years, sign * dur.months, sign * dur.weeks, sign * (double)dur.days,
-                constrain: true, out var invalid);
+                constrain, out var invalid);
             if (invalid || !IsoMath.IsoDateWithinLimits(newDate))
                 throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range."));
             var time = new IsoTime((int)GetVNum(h, o, "hour"), (int)GetVNum(h, o, "minute"), (int)GetVNum(h, o, "second"),
