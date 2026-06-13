@@ -81,12 +81,95 @@ public sealed partial class BytecodeInterpreter
                 Configurable: true));
         _heap.WriteBarrier(protoHandle, formatToPartsHandle);
 
+        var resolvedOptionsMethod = new NativeFunctionObject(
+            "resolvedOptions",
+            (_, _) => DateTimeFormatResolvedOptions(locale, options),
+            length: 0);
+        var resolvedOptionsHandle = _heap.AllocateObject(resolvedOptionsMethod, AllocationSite.Current());
+        prototype.DefineOwnProperty(
+            "resolvedOptions",
+            new JsPropertyDescriptor(
+                JsValue.FromObject(resolvedOptionsHandle),
+                Writable: true,
+                Enumerable: false,
+                Configurable: true));
+        _heap.WriteBarrier(protoHandle, resolvedOptionsHandle);
+
         var instance = CreateOrdinaryObject();
         instance.SetPrototype(protoHandle);
         var instanceHandle = _heap.AllocateObject(instance, AllocationSite.Current());
         _heap.WriteBarrier(instanceHandle, protoHandle);
 
         return JsValue.FromObject(instanceHandle);
+    }
+
+    // ECMA-402 11.5.1 Intl.DateTimeFormat.prototype.resolvedOptions. Returns a
+    // new ordinary object with the resolved configuration in the spec's property
+    // order. When dateStyle/timeStyle is used the individual component options
+    // are omitted in their favour.
+    private JsValue DateTimeFormatResolvedOptions(string locale, IntlDateTimeFormatOptions options)
+    {
+        var result = CreateOrdinaryObject();
+        var handle = _heap.AllocateObject(result, AllocationSite.Current());
+        var rootMark = _heap.RootCount;
+        _heap.PushRoot(handle);
+
+        void Put(string name, JsValue value) =>
+            result.DefineOwnProperty(name,
+                new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+        void PutStr(string name, string? value)
+        {
+            if (!string.IsNullOrEmpty(value))
+            {
+                Put(name, JsValue.FromString(value));
+            }
+        }
+
+        var numberingSystem = ExtractUnicodeKeyword(locale, "nu") ?? "latn";
+        var calendar = options.CalendarId ?? ExtractUnicodeKeyword(locale, "ca") ?? "gregory";
+        var hasStyle = !string.IsNullOrEmpty(options.DateStyle) || !string.IsNullOrEmpty(options.TimeStyle);
+
+        Put("locale", JsValue.FromString(ResolveIntlLocale(locale, null)));
+        Put("calendar", JsValue.FromString(calendar.ToLowerInvariant()));
+        Put("numberingSystem", JsValue.FromString(numberingSystem.ToLowerInvariant()));
+        Put("timeZone", JsValue.FromString(options.TimeZoneId ?? "UTC"));
+
+        if (options.HourCycle is not null)
+        {
+            Put("hourCycle", JsValue.FromString(options.HourCycle));
+            Put("hour12", JsValue.FromBoolean(options.HourCycle is "h11" or "h12"));
+        }
+        else if (options.Hour12 is { } h12)
+        {
+            Put("hour12", JsValue.FromBoolean(h12));
+        }
+
+        if (hasStyle)
+        {
+            PutStr("dateStyle", options.DateStyle);
+            PutStr("timeStyle", options.TimeStyle);
+        }
+        else
+        {
+            PutStr("weekday", options.Weekday);
+            PutStr("era", options.Era);
+            PutStr("year", options.Year);
+            PutStr("month", options.Month);
+            PutStr("day", options.Day);
+            PutStr("dayPeriod", options.DayPeriod);
+            PutStr("hour", options.Hour);
+            PutStr("minute", options.Minute);
+            PutStr("second", options.Second);
+            if (options.FractionalSecondDigits is { } fsd)
+            {
+                Put("fractionalSecondDigits", JsValue.FromNumber(fsd));
+            }
+
+            PutStr("timeZoneName", options.TimeZoneName);
+        }
+
+        _heap.PopRootsTo(rootMark);
+        return JsValue.FromObject(handle);
     }
 
     private ObjectHandle EnsureDateTimeFormatPrototype()
@@ -290,7 +373,17 @@ public sealed partial class BytecodeInterpreter
     // to a stable default so tests that read it dynamically stay consistent.
     private static string ResolveNumberFormatLocale(NumberFormatState state)
     {
-        var raw = state.Locale ?? string.Empty;
+        var nu = state.NumberingSystem;
+        var supported = nu is "arab" or "thai" or "latn";
+        return ResolveIntlLocale(state.Locale, supported ? nu : null);
+    }
+
+    // Resolve the locale string reflected by an Intl service's resolvedOptions():
+    // the requested locale stripped of its `-u-` extension, plus `-u-nu-<system>`
+    // re-appended when a supported numbering system was requested via the locale.
+    private static string ResolveIntlLocale(string? requested, string? reflectNumberingSystem)
+    {
+        var raw = requested ?? string.Empty;
         var uIndex = raw.IndexOf("-u-", StringComparison.OrdinalIgnoreCase);
         var baseLocale = uIndex >= 0 ? raw[..uIndex] : raw;
         if (string.IsNullOrEmpty(baseLocale))
@@ -298,11 +391,10 @@ public sealed partial class BytecodeInterpreter
             baseLocale = "en-US";
         }
 
-        var nu = state.NumberingSystem;
-        var supported = nu is "arab" or "thai" or "latn";
-        if (supported && uIndex >= 0 && raw.IndexOf("-nu-", StringComparison.OrdinalIgnoreCase) >= 0)
+        if (reflectNumberingSystem is not null && uIndex >= 0 &&
+            raw.IndexOf("-nu-", StringComparison.OrdinalIgnoreCase) >= 0)
         {
-            return baseLocale + "-u-nu-" + nu;
+            return baseLocale + "-u-nu-" + reflectNumberingSystem;
         }
 
         return baseLocale;
