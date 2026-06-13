@@ -650,10 +650,11 @@ public sealed class TemporalStub : IBuiltinModule
     /// When <paramref name="baseFields"/> is given (the `with` path), absent fields fall back to it.
     /// </summary>
     private static (int Year, int Month, int Day) ResolveCalendarDateFields(
-        IBuiltinContext ctx, JsHeap h, JsValue bag, CalendarSystem sys, CalendarFields? baseFields, bool requireDay)
+        IBuiltinContext ctx, JsHeap h, JsValue bag, CalendarSystem sys, CalendarFields? baseFields, bool requireDay, bool readDay = true)
     {
         // PrepareTemporalFields reads keys in sorted order: day, era, eraYear, month, monthCode, year.
-        bool hasDay = TryGetField(ctx, h, bag, "day", out var dayV);
+        JsValue dayV = JsValue.Undefined;
+        bool hasDay = readDay && TryGetField(ctx, h, bag, "day", out dayV);
         bool hasEra = TryGetField(ctx, h, bag, "era", out var eraV);
         bool hasEraYear = TryGetField(ctx, h, bag, "eraYear", out var eraYearV);
         bool hasMonth = TryGetField(ctx, h, bag, "month", out var monthV);
@@ -724,11 +725,11 @@ public sealed class TemporalStub : IBuiltinModule
     /// first, then the overflow option (matching the spec's observable operation order).
     /// </summary>
     private static IsoDate ResolveDateBagToIso(IBuiltinContext ctx, JsHeap h, JsValue bag, string calendar,
-        IReadOnlyList<JsValue> a, int optIdx, CalendarFields? baseFields = null, bool requireDay = true)
-        => ResolveDateBagToIso(ctx, h, bag, calendar, a, optIdx, out _, baseFields, requireDay);
+        IReadOnlyList<JsValue> a, int optIdx, CalendarFields? baseFields = null, bool requireDay = true, bool readDay = true)
+        => ResolveDateBagToIso(ctx, h, bag, calendar, a, optIdx, out _, baseFields, requireDay, readDay);
 
     private static IsoDate ResolveDateBagToIso(IBuiltinContext ctx, JsHeap h, JsValue bag, string calendar,
-        IReadOnlyList<JsValue> a, int optIdx, out string overflow, CalendarFields? baseFields = null, bool requireDay = true)
+        IReadOnlyList<JsValue> a, int optIdx, out string overflow, CalendarFields? baseFields = null, bool requireDay = true, bool readDay = true)
     {
         var sys = CalendarMath.Get(calendar);
         if (sys is null)
@@ -743,7 +744,8 @@ public sealed class TemporalStub : IBuiltinModule
             if (hasMonth) m = GetMonthFromFields(ctx, h, bag);
             else if (baseFields is { } bfm) m = bfm.Month;
             else throw new JsThrownException(ctx.CreateTypeError("month or monthCode is required."));
-            bool hasDay = TryGetField(ctx, h, bag, "day", out var dv);
+            JsValue dv = JsValue.Undefined;
+            bool hasDay = readDay && TryGetField(ctx, h, bag, "day", out dv);
             if (!hasDay && requireDay && baseFields is null)
                 throw new JsThrownException(ctx.CreateTypeError("day is required."));
             double d = hasDay ? ToIntegerWithTruncation(ctx, dv) : (baseFields?.Day ?? 1);
@@ -751,7 +753,7 @@ public sealed class TemporalStub : IBuiltinModule
             return RegulateIsoDate(ctx, y, m, d, overflow);
         }
 
-        var (year, monthOrdinal, day) = ResolveCalendarDateFields(ctx, h, bag, sys, baseFields, requireDay);
+        var (year, monthOrdinal, day) = ResolveCalendarDateFields(ctx, h, bag, sys, baseFields, requireDay, readDay);
         overflow = GetOverflowOption(ctx, h, a, optIdx);
         if (!sys.TryResolveToIso(year, monthOrdinal, day, overflow, out var iso))
             throw new JsThrownException(ctx.CreateRangeError("Date is outside the supported range or invalid for the calendar."));
@@ -1039,7 +1041,7 @@ public sealed class TemporalStub : IBuiltinModule
     }
 
     /// <summary>ToTemporalYearMonth: instance, ISO string, or property bag.</summary>
-    private static (int Year, int Month, string Calendar) ToTemporalYearMonthRecord(IBuiltinContext ctx, JsHeap h, JsValue arg)
+    private static (int Year, int Month, int Day, string Calendar) ToTemporalYearMonthRecord(IBuiltinContext ctx, JsHeap h, JsValue arg)
     {
         if (arg.Tag == JsValueTag.String)
         {
@@ -1047,23 +1049,35 @@ public sealed class TemporalStub : IBuiltinModule
             if (!TemporalIsoParser.TryParseYearMonth(s, out var parsed, out var parseError) || parsed.HasUtcDesignator)
                 throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO year-month string: {parseError}"));
             var cal = CalendarFromAnnotation(ctx, parsed.Calendar);
-            return (parsed.Year, parsed.Month, cal);
+            var refIso = YearMonthReferenceIso(cal, new IsoDate(parsed.Year, parsed.Month, Math.Max(1, parsed.Day)));
+            return (refIso.Year, refIso.Month, refIso.Day, cal);
         }
 
         if (arg.Tag == JsValueTag.Object)
         {
             var obj = h.GetObject(arg.AsObjectHandle());
             if (TryGetInternalData(h, obj, out var data) && HasOwn(h, data, "y"))
-                return ((int)GetVNum(h, obj, "y"), (int)GetVNum(h, obj, "m"), GetVStr(h, obj, "calendarId"));
+            {
+                var iso = DecodeYearMonthIso(h, obj);
+                return (iso.Year, iso.Month, iso.Day, GetVStr(h, obj, "calendarId"));
+            }
 
             string bagCal = GetCalendarFromFields(ctx, h, arg);
+            var bagSys = CalendarMath.Get(bagCal);
+            if (bagSys is not null)
+            {
+                var (cy, cmo, _) = ResolveCalendarDateFields(ctx, h, arg, bagSys, null, requireDay: false);
+                if (!bagSys.TryResolveToIso(cy, cmo, 1, "constrain", out var iso))
+                    throw new JsThrownException(ctx.CreateRangeError("Year-month is invalid for the calendar."));
+                return (iso.Year, iso.Month, iso.Day, bagCal);
+            }
             if (!TryGetField(ctx, h, arg, "year", out var yearValue))
                 throw new JsThrownException(ctx.CreateTypeError("year is required."));
             double y = ToIntegerWithTruncation(ctx, yearValue);
             double m = GetMonthFromFields(ctx, h, arg);
             if (y is < -999_999 or > 999_999)
                 throw new JsThrownException(ctx.CreateRangeError("Year is out of the supported range."));
-            return ((int)y, (int)Math.Clamp(m, 1, 12), bagCal);
+            return ((int)y, (int)Math.Clamp(m, 1, 12), 1, bagCal);
         }
 
         throw new JsThrownException(ctx.CreateTypeError("Cannot convert value to a Temporal year-month."));
@@ -2460,8 +2474,9 @@ public sealed class TemporalStub : IBuiltinModule
                 GetVStr(h, o, "calendarId")));
         }, 1);
         AddMethod(ctx, h, pH, p, "toPlainYearMonth", (o, _) => {
-            var d = DecodeIsoDate(h, o);
-            return AttachTemporalPrototypeByName(ctx, h, t, "PlainYearMonth", MakePlainYearMonth(ctx, h, d.Year, d.Month, GetVStr(h, o, "calendarId")));
+            string cal = CalId(h, o);
+            var refIso = YearMonthReferenceIso(cal, DecodeIsoDate(h, o));
+            return AttachTemporalPrototypeByName(ctx, h, t, "PlainYearMonth", MakePlainYearMonth(ctx, h, refIso.Year, refIso.Month, GetVStr(h, o, "calendarId"), refIso.Day));
         }, 0);
         AddMethod(ctx, h, pH, p, "toPlainMonthDay", (o, _) => {
             var d = DecodeIsoDate(h, o);
@@ -2952,7 +2967,7 @@ public sealed class TemporalStub : IBuiltinModule
             || !IsoMath.IsValidIsoDate((int)y, (int)m, (int)refDay)
             || !IsoMath.IsoDateWithinLimits(new IsoDate((int)y, (int)m, (int)refDay)))
             throw new JsThrownException(ctx.CreateRangeError("Invalid ISO year-month."));
-        return MakePlainYearMonth(ctx, h, (int)y, (int)m, cal);
+        return MakePlainYearMonth(ctx, h, (int)y, (int)m, cal, (int)refDay);
     }
 
     private void InstallPlainYearMonth(IBuiltinContext ctx, JsObject t, ObjectHandle tH, JsHeap h)
@@ -2960,84 +2975,91 @@ public sealed class TemporalStub : IBuiltinModule
         var (cH, pH) = MakeCtor(ctx, h, t, tH, "PlainYearMonth", 2, true,
             (cctx, hh, a) => ConstructPlainYearMonth(cctx, hh, a));
         var p = h.GetObject(pH);
-        AddGetter(ctx, h, pH, p, "year", o => GetV(h, o, "y"));
-        AddGetter(ctx, h, pH, p, "month", o => GetV(h, o, "m"));
-        AddGetter(ctx, h, pH, p, "monthCode", o => JsValue.FromString($"M{(int)GetVNum(h, o, "m"):D2}"));
+        AddGetter(ctx, h, pH, p, "year", o => { var iso = DecodeYearMonthIso(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), iso)?.Year ?? iso.Year); });
+        AddGetter(ctx, h, pH, p, "month", o => { var iso = DecodeYearMonthIso(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), iso)?.Month ?? iso.Month); });
+        AddGetter(ctx, h, pH, p, "monthCode", o => { var iso = DecodeYearMonthIso(h, o); return JsValue.FromString(CalFields(CalId(h, o), iso)?.MonthCode ?? $"M{iso.Month:D2}"); });
         AddGetter(ctx, h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
-        AddGetter(ctx, h, pH, p, "daysInMonth", o => JsValue.FromNumber(IsoMath.DaysInMonth((int)GetVNum(h, o, "y"), Math.Clamp((int)GetVNum(h, o, "m"), 1, 12))));
-        AddGetter(ctx, h, pH, p, "daysInYear", o => JsValue.FromNumber(IsoMath.DaysInYear((int)GetVNum(h, o, "y"))));
-        AddGetter(ctx, h, pH, p, "monthsInYear", o => JsValue.FromNumber(12));
-        AddGetter(ctx, h, pH, p, "inLeapYear", o => JsValue.FromBoolean(IsoMath.IsLeapYear((int)GetVNum(h, o, "y"))));
-        // era/eraYear are undefined for the iso8601 calendar.
-        AddGetter(ctx, h, pH, p, "era", _ => JsValue.Undefined);
-        AddGetter(ctx, h, pH, p, "eraYear", _ => JsValue.Undefined);
+        AddGetter(ctx, h, pH, p, "daysInMonth", o => { var iso = DecodeYearMonthIso(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), iso)?.DaysInMonth ?? IsoMath.DaysInMonth(iso.Year, iso.Month)); });
+        AddGetter(ctx, h, pH, p, "daysInYear", o => { var iso = DecodeYearMonthIso(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), iso)?.DaysInYear ?? IsoMath.DaysInYear(iso.Year)); });
+        AddGetter(ctx, h, pH, p, "monthsInYear", o => { var iso = DecodeYearMonthIso(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), iso)?.MonthsInYear ?? 12); });
+        AddGetter(ctx, h, pH, p, "inLeapYear", o => { var iso = DecodeYearMonthIso(h, o); return JsValue.FromBoolean(CalFields(CalId(h, o), iso)?.InLeapYear ?? IsoMath.IsLeapYear(iso.Year)); });
+        AddGetter(ctx, h, pH, p, "era", o => EraValue(CalId(h, o), DecodeYearMonthIso(h, o)));
+        AddGetter(ctx, h, pH, p, "eraYear", o => EraYearValue(CalId(h, o), DecodeYearMonthIso(h, o)));
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("PlainYearMonth.with: argument must be an object."));
             var bagValue = a[0];
-            bool hasYear = TryGetField(ctx, h, bagValue, "year", out var yearValue);
-            bool hasMonth = TryGetField(ctx, h, bagValue, "month", out _) || TryGetField(ctx, h, bagValue, "monthCode", out _);
-            if (!hasYear && !hasMonth)
+            string cal = CalId(h, o);
+            bool hasField = TryGetField(ctx, h, bagValue, "year", out _) || TryGetField(ctx, h, bagValue, "month", out _)
+                || TryGetField(ctx, h, bagValue, "monthCode", out _) || TryGetField(ctx, h, bagValue, "era", out _)
+                || TryGetField(ctx, h, bagValue, "eraYear", out _);
+            if (!hasField)
                 throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
-            double y = hasYear ? ToIntegerWithTruncation(ctx, yearValue) : GetVNum(h, o, "y");
-            double m = hasMonth ? GetMonthFromFields(ctx, h, bagValue) : GetVNum(h, o, "m");
-            var overflow = GetOverflowOption(ctx, h, a, 1);
-            if (y is < -999_999 or > 999_999)
-                throw new JsThrownException(ctx.CreateRangeError("Year is out of the supported range."));
-            if (overflow == "reject" && m is < 1 or > 12)
-                throw new JsThrownException(ctx.CreateRangeError("Invalid ISO year-month."));
-            return AttachPrototype(h, MakePlainYearMonth(ctx, h, (int)y, (int)Math.Clamp(m, 1, 12), GetVStr(h, o, "calendarId")), pH);
+            var cur = DecodeYearMonthIso(h, o);
+            var baseFields = CalFields(cal, cur) ?? new CalendarFields(null, null, cur.Year, cur.Month, $"M{cur.Month:D2}", cur.Day, 0, 0, 12, false);
+            var iso = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, baseFields, requireDay: false, readDay: false);
+            iso = YearMonthReferenceIso(cal, iso);
+            return AttachPrototype(h, MakePlainYearMonth(ctx, h, iso.Year, iso.Month, cal, iso.Day), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "add", (o, a) => {
             var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             _ = GetOverflowOption(ctx, h, a, 1);
-            var dt = DecodePlainYearMonth(h, o);
-            dt = SafeAddDate(dt, dur.years, dur.months, 0);
-            return AttachPrototype(h, MakePlainYearMonth(ctx, h, dt.Year, dt.Month, GetVStr(h, o, "calendarId")), pH);
+            var res = AddDateInCalendar(CalId(h, o), DecodeYearMonthIso(h, o), dur.years, dur.months, dur.weeks, dur.days, constrain: true, out _);
+            return AttachPrototype(h, MakePlainYearMonth(ctx, h, res.Year, res.Month, GetVStr(h, o, "calendarId"), res.Day), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => {
             var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             _ = GetOverflowOption(ctx, h, a, 1);
-            var dt = DecodePlainYearMonth(h, o);
-            dt = SafeAddDate(dt, -dur.years, -dur.months, 0);
-            return AttachPrototype(h, MakePlainYearMonth(ctx, h, dt.Year, dt.Month, GetVStr(h, o, "calendarId")), pH);
+            var res = AddDateInCalendar(CalId(h, o), DecodeYearMonthIso(h, o), -dur.years, -dur.months, -dur.weeks, -dur.days, constrain: true, out _);
+            return AttachPrototype(h, MakePlainYearMonth(ctx, h, res.Year, res.Month, GetVStr(h, o, "calendarId"), res.Day), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
-            var (oy, om, _) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            GetDifferenceSettings(ctx, h, a, 1, YearMonthDiffUnits, "month", "year");
-            int totalMonths = (oy - (int)GetVNum(h, o, "y")) * 12 + (om - (int)GetVNum(h, o, "m"));
+            var (oy, om, od, _) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var s = GetDifferenceSettings(ctx, h, a, 1, YearMonthDiffUnits, "month", "year");
+            var (yy, mm, _, _) = DifferenceDateDuration(CalId(h, o), DecodeYearMonthIso(h, o), new IsoDate(oy, om, od), s.Largest);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
-                MakeDuration(ctx, h, totalMonths / 12, totalMonths % 12, 0, 0, 0, 0, 0, 0, 0, 0));
+                MakeDuration(ctx, h, yy, mm, 0, 0, 0, 0, 0, 0, 0, 0));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
-            var (oy, om, _) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            GetDifferenceSettings(ctx, h, a, 1, YearMonthDiffUnits, "month", "year");
-            int totalMonths = ((int)GetVNum(h, o, "y") - oy) * 12 + ((int)GetVNum(h, o, "m") - om);
+            var (oy, om, od, _) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var s = GetDifferenceSettings(ctx, h, a, 1, YearMonthDiffUnits, "month", "year");
+            var (yy, mm, _, _) = DifferenceDateDuration(CalId(h, o), DecodeYearMonthIso(h, o), new IsoDate(oy, om, od), s.Largest);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
-                MakeDuration(ctx, h, totalMonths / 12, totalMonths % 12, 0, 0, 0, 0, 0, 0, 0, 0));
+                MakeDuration(ctx, h, -yy, -mm, 0, 0, 0, 0, 0, 0, 0, 0));
         }, 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
-            var (oy, om, ocal) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var (oy, om, od, ocal) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             var selfCal = GetVStr(h, o, "calendarId");
             bool calsEqual = (string.IsNullOrEmpty(selfCal) ? "iso8601" : selfCal) == (string.IsNullOrEmpty(ocal) ? "iso8601" : ocal);
-            return JsValue.FromBoolean((int)GetVNum(h, o, "y") == oy && (int)GetVNum(h, o, "m") == om && calsEqual);
+            var self = DecodeYearMonthIso(h, o);
+            return JsValue.FromBoolean(self.Year == oy && self.Month == om && self.Day == od && calsEqual);
         }, 1);
         AddMethod(ctx, h, pH, p, "toPlainDate", (o, a) => {
             int day = 1;
             if (a.Count > 0 && a[0].Tag == JsValueTag.Object && TryGetField(ctx, h, a[0], "day", out var dv))
                 day = ToSafeInt(ToIntegerWithTruncation(ctx, dv));
-            int y = (int)GetVNum(h, o, "y");
-            int m = Math.Clamp((int)GetVNum(h, o, "m"), 1, 12);
-            day = Math.Clamp(day, 1, IsoMath.DaysInMonth(y, m));
-            return AttachTemporalPrototypeByName(ctx, h, t, "PlainDate", MakePlainDateYmd(ctx, h, y, m, day, GetVStr(h, o, "calendarId")));
+            string cal = CalId(h, o);
+            var iso = DecodeYearMonthIso(h, o);
+            var sys = CalendarMath.Get(cal);
+            if (sys is not null)
+            {
+                sys.ToNative(iso, out int cy, out int cmo, out _);
+                if (!sys.TryResolveToIso(cy, cmo, day, "constrain", out iso))
+                    throw new JsThrownException(ctx.CreateRangeError("Invalid day for the calendar month."));
+            }
+            else
+            {
+                int dd = Math.Clamp(day, 1, IsoMath.DaysInMonth(iso.Year, iso.Month));
+                iso = new IsoDate(iso.Year, iso.Month, dd);
+            }
+            return AttachTemporalPrototypeByName(ctx, h, t, "PlainDate", MakePlainDateYmd(ctx, h, iso.Year, iso.Month, iso.Day, cal));
         }, 1);
         AddMethod(ctx, h, pH, p, "toString", (o, a) => {
             var opts = GetToStringOptions(ctx, h, a, 0);
-            int y = (int)GetVNum(h, o, "y");
-            int m = (int)GetVNum(h, o, "m");
+            var iso = DecodeYearMonthIso(h, o);
             string suffix = CalendarSuffix(h, o, opts);
             // With a calendar annotation the reference ISO day is included.
-            string day = suffix.Length > 0 ? "-01" : "";
-            return JsValue.FromString($"{FormatIsoYear(y)}-{m:D2}{day}{suffix}");
+            string day = suffix.Length > 0 ? $"-{iso.Day:D2}" : "";
+            return JsValue.FromString($"{FormatIsoYear(iso.Year)}-{iso.Month:D2}{day}{suffix}");
         }, 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainYearMonth(h, o), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
@@ -3054,7 +3076,8 @@ public sealed class TemporalStub : IBuiltinModule
                 _ = GetOverflowOption(ctx, h, a, 1);
                 if (!IsoMath.IsoDateWithinLimits(new IsoDate(parsed.Year, parsed.Month, 1)))
                     throw new JsThrownException(ctx.CreateRangeError("Year-month is outside the supported Temporal range."));
-                return AttachPrototype(h, MakePlainYearMonth(ctx, h, parsed.Year, parsed.Month, parsedCal), pH);
+                var refIso = YearMonthReferenceIso(parsedCal, new IsoDate(parsed.Year, parsed.Month, Math.Max(1, parsed.Day)));
+                return AttachPrototype(h, MakePlainYearMonth(ctx, h, refIso.Year, refIso.Month, parsedCal, refIso.Day), pH);
             }
             if (arg.Tag == JsValueTag.Object)
             {
@@ -3062,11 +3085,20 @@ public sealed class TemporalStub : IBuiltinModule
                 if (IsTemporalInstance(h, arg, pH))
                 {
                     _ = GetOverflowOption(ctx, h, a, 1);
-                    int y = ToSafeInt(GetVNum(h, obj, "y")), m = ToSafeInt(GetVNum(h, obj, "m"));
-                    return AttachPrototype(h, MakePlainYearMonth(ctx, h, y, m, GetVStr(h, obj, "calendarId")), pH);
+                    var iso = DecodeYearMonthIso(h, obj);
+                    return AttachPrototype(h, MakePlainYearMonth(ctx, h, iso.Year, iso.Month, GetVStr(h, obj, "calendarId"), iso.Day), pH);
                 }
-                // Property bag: year + (month|monthCode) required.
+                // Property bag: year (or era+eraYear) + (month|monthCode) required.
                 string cal = GetCalendarFromFields(ctx, h, arg);
+                var ymSys = CalendarMath.Get(cal);
+                if (ymSys is not null)
+                {
+                    var (cy, cmo, _) = ResolveCalendarDateFields(ctx, h, arg, ymSys, null, requireDay: false);
+                    var ov = GetOverflowOption(ctx, h, a, 1);
+                    if (!ymSys.TryResolveToIso(cy, cmo, 1, ov, out var ymIso))
+                        throw new JsThrownException(ctx.CreateRangeError("Year-month is invalid for the calendar or outside the supported range."));
+                    return AttachPrototype(h, MakePlainYearMonth(ctx, h, ymIso.Year, ymIso.Month, cal, ymIso.Day), pH);
+                }
                 if (!TryGetField(ctx, h, arg, "year", out var yearValue))
                     throw new JsThrownException(ctx.CreateTypeError("PlainYearMonth.from: year is required."));
                 double y2 = ToIntegerWithTruncation(ctx, yearValue);
@@ -3086,10 +3118,9 @@ public sealed class TemporalStub : IBuiltinModule
             throw new JsThrownException(ctx.CreateTypeError("PlainYearMonth.from: argument must be a string or property bag."));
         }, 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
-            var (y1, m1, _) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            var (y2, m2, _) = ToTemporalYearMonthRecord(ctx, h, a.Count > 1 ? a[1] : JsValue.Undefined);
-            int c1 = y1 != y2 ? (y1 < y2 ? -1 : 1) : m1 != m2 ? (m1 < m2 ? -1 : 1) : 0;
-            return JsValue.FromNumber(c1);
+            var (y1, m1, d1, _) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var (y2, m2, d2, _) = ToTemporalYearMonthRecord(ctx, h, a.Count > 1 ? a[1] : JsValue.Undefined);
+            return JsValue.FromNumber(IsoMath.Compare(new IsoDate(y1, m1, d1), new IsoDate(y2, m2, d2)));
         }, 2);
     }
 
@@ -3853,15 +3884,39 @@ public sealed class TemporalStub : IBuiltinModule
         return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
     }
 
-    private static JsValue MakePlainYearMonth(IBuiltinContext ctx, JsHeap h, int y, int m, string calendarId = "iso8601")
+    private static JsValue MakePlainYearMonth(IBuiltinContext ctx, JsHeap h, int y, int m, string calendarId = "iso8601", int refDay = 1)
     {
         var o = new JsObject();
         var d = new JsObject(); var dH = h.AllocateObject(d, AllocationSite.Current());
         d.SetProperty("y", JsValue.FromNumber(y));
         d.SetProperty("m", JsValue.FromNumber(m));
+        d.SetProperty("d", JsValue.FromNumber(refDay));
         d.SetProperty("calendarId", JsValue.FromString(string.IsNullOrEmpty(calendarId) ? "iso8601" : calendarId));
         o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.FromObject(dH), false, false, false));
         return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
+    }
+
+    /// <summary>
+    /// The reference ISO date for a year-month: day 1 of the calendar month containing
+    /// <paramref name="isoFromString"/> (for iso8601 this is simply that month's day 1).
+    /// </summary>
+    private static IsoDate YearMonthReferenceIso(string calendar, IsoDate isoFromString)
+    {
+        var sys = CalendarMath.Get(calendar);
+        if (sys is null)
+            return new IsoDate(isoFromString.Year, isoFromString.Month, 1);
+        sys.ToNative(isoFromString, out int cy, out int cmo, out _);
+        return sys.TryResolveToIso(cy, cmo, 1, "constrain", out var iso) ? iso : isoFromString;
+    }
+
+    /// <summary>The ISO reference date stored for a PlainYearMonth (reference day defaults to 1).</summary>
+    private static IsoDate DecodeYearMonthIso(JsHeap h, JsObject o)
+    {
+        int y = (int)GetVNum(h, o, "y");
+        int m = Math.Clamp((int)GetVNum(h, o, "m"), 1, 12);
+        int d = TryGetInternalData(h, o, out var data) && HasOwn(h, data, "d") ? (int)GetVNum(h, o, "d") : 1;
+        d = Math.Clamp(d, 1, IsoMath.DaysInMonth(y, m));
+        return new IsoDate(y, m, d);
     }
 
     private static JsValue MakePlainMonthDay(IBuiltinContext ctx, JsHeap h, int m, int d, string calendarId = "iso8601")
