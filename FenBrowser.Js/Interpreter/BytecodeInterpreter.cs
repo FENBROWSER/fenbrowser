@@ -7834,7 +7834,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
                     else
                     {
-                        valueObj.SetProperty(k, newValue);
+                        // 25.5.1.1: Perform ? CreateDataProperty(val, P, newElement) —
+                        // a define (not [[Set]]), so a non-configurable property is not
+                        // overwritten and no inherited setter runs.
+                        _ = CreateDataProperty(valueHandle, valueObj, k, newValue);
                     }
                 }
             }
@@ -7855,7 +7858,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
                     else
                     {
-                        valueObj.SetProperty(k, newValue);
+                        // 25.5.1.1: Perform ? CreateDataProperty(val, P, newElement).
+                        _ = CreateDataProperty(valueHandle, valueObj, k, newValue);
                     }
                 }
             }
@@ -10097,6 +10101,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return false;
         }
 
+        return true;
+    }
+
+    // ECMA-262 7.3.5 CreateDataProperty(O, P, V): perform O.[[DefineOwnProperty]]
+    // with { [[Value]]: V, [[Writable]]: true, [[Enumerable]]: true,
+    // [[Configurable]]: true } and return the success boolean — false (without
+    // throwing) when an existing non-configurable property or a non-extensible
+    // object rejects the definition. Ordinary-object path only (callers that may
+    // see a Proxy must route through the trap separately).
+    private bool CreateDataProperty(ObjectHandle handle, JsObject obj, string key, JsValue value)
+    {
+        var hasExisting = obj.TryGetOwnProperty(key, out var existing);
+        if (!IsCompatiblePropertyDescriptor(
+                obj.Extensible, hasExisting, existing,
+                newIsAccessor: false, hasValue: true, value, hasWritable: true, writable: true,
+                hasEnumerable: true, enumerable: true, hasConfigurable: true, configurable: true,
+                hasGetter: false, JsValue.Undefined, hasSetter: false, JsValue.Undefined))
+        {
+            return false;
+        }
+
+        var descriptor = new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true);
+        _ = obj.DefineOwnProperty(key, descriptor);
+        WriteDescriptorBarrier(handle, descriptor);
         return true;
     }
 
