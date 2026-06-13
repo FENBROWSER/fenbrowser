@@ -190,11 +190,12 @@ internal abstract class CalendarSystem
 
     private bool Surpasses(int sign, (int Year, int Month) ym, int day, IsoDate two)
     {
+        // ISODateSurpasses compares the (unconstrained) candidate day: e.g. Jan 29 + 1 month
+        // is nominally Feb 29, which surpasses a Feb 28 target, so it is not a whole month.
         ToNative(two, out int ty, out int tm, out int td);
         if (ym.Year != ty) return sign * (ym.Year - ty) > 0;
         if (ym.Month != tm) return sign * (ym.Month - tm) > 0;
-        int dd = Math.Min(day, DaysInMonthOrdinal(ym.Year, ym.Month));
-        if (dd != td) return sign * (dd - td) > 0;
+        if (day != td) return sign * (day - td) > 0;
         return false;
     }
 

@@ -313,10 +313,9 @@ internal static class IsoMath
             return sign * (m1 - two.Month) > 0;
         }
 
-        int d = Math.Min(d1, DaysInMonth(y1, m1));
-        if (d != two.Day)
+        if (d1 != two.Day)
         {
-            return sign * (d - two.Day) > 0;
+            return sign * (d1 - two.Day) > 0;
         }
 
         return false;
