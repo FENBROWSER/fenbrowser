@@ -223,11 +223,89 @@ public sealed partial class BytecodeInterpreter
                 Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(protoHandle, formatToPartsHandle);
 
+        var resolvedOptionsMethod = new NativeFunctionObject(
+            "resolvedOptions",
+            (_, _) => NumberFormatResolvedOptions(state),
+            length: 0);
+        var resolvedOptionsHandle = _heap.AllocateObject(resolvedOptionsMethod, AllocationSite.Current());
+        prototype.DefineOwnProperty("resolvedOptions",
+            new JsPropertyDescriptor(JsValue.FromObject(resolvedOptionsHandle),
+                Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, resolvedOptionsHandle);
+
         var instance = CreateOrdinaryObject();
         instance.SetPrototype(protoHandle);
         var instanceHandle = _heap.AllocateObject(instance, AllocationSite.Current());
         _heap.WriteBarrier(instanceHandle, protoHandle);
         return JsValue.FromObject(instanceHandle);
+    }
+
+    // ECMA-402 15.5.1 Intl.NumberFormat.prototype.resolvedOptions. Returns a new
+    // ordinary object with the resolved configuration in the spec's property
+    // order. Defaults follow SetNumberFormatDigitOptions / SetNumberFormatUnitOptions.
+    private JsValue NumberFormatResolvedOptions(NumberFormatState state)
+    {
+        var options = CreateOrdinaryObject();
+        var handle = _heap.AllocateObject(options, AllocationSite.Current());
+        var rootMark = _heap.RootCount;
+        _heap.PushRoot(handle);
+
+        void Put(string name, JsValue value) =>
+            options.DefineOwnProperty(name,
+                new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
+
+        var style = state.Style ?? "decimal";
+        var minFraction = state.MinimumFractionDigits ?? 0;
+        var maxFraction = state.MaximumFractionDigits ?? Math.Max(minFraction, 3);
+
+        Put("locale", JsValue.FromString(ResolveNumberFormatLocale(state)));
+        Put("numberingSystem", JsValue.FromString(state.NumberingSystem));
+        Put("style", JsValue.FromString(style));
+        if (string.Equals(style, "unit", StringComparison.Ordinal) && state.Unit is not null)
+        {
+            Put("unit", JsValue.FromString(state.Unit));
+            Put("unitDisplay", JsValue.FromString(state.UnitDisplay ?? "short"));
+        }
+
+        Put("minimumIntegerDigits", JsValue.FromNumber(state.MinimumIntegerDigits));
+        Put("minimumFractionDigits", JsValue.FromNumber(minFraction));
+        Put("maximumFractionDigits", JsValue.FromNumber(maxFraction));
+        // ES2023 useGrouping resolves to a string/false; the legacy boolean true
+        // default surfaces as "auto" (its previous meaning), false stays false.
+        Put("useGrouping", state.UseGrouping ? JsValue.FromString("auto") : JsValue.FromBoolean(false));
+        Put("notation", JsValue.FromString("standard"));
+        Put("signDisplay", JsValue.FromString(state.SignDisplay ?? "auto"));
+        Put("roundingIncrement", JsValue.FromNumber(1));
+        Put("roundingMode", JsValue.FromString("halfExpand"));
+        Put("roundingPriority", JsValue.FromString("auto"));
+        Put("trailingZeroDisplay", JsValue.FromString("auto"));
+
+        _heap.PopRootsTo(rootMark);
+        return JsValue.FromObject(handle);
+    }
+
+    // Resolve the locale reflected by resolvedOptions().locale: the requested
+    // locale with its `-u-` extension stripped, plus `-u-nu-<system>` re-appended
+    // when a supported numbering system was requested. Empty/unknown falls back
+    // to a stable default so tests that read it dynamically stay consistent.
+    private static string ResolveNumberFormatLocale(NumberFormatState state)
+    {
+        var raw = state.Locale ?? string.Empty;
+        var uIndex = raw.IndexOf("-u-", StringComparison.OrdinalIgnoreCase);
+        var baseLocale = uIndex >= 0 ? raw[..uIndex] : raw;
+        if (string.IsNullOrEmpty(baseLocale))
+        {
+            baseLocale = "en-US";
+        }
+
+        var nu = state.NumberingSystem;
+        var supported = nu is "arab" or "thai" or "latn";
+        if (supported && uIndex >= 0 && raw.IndexOf("-nu-", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return baseLocale + "-u-nu-" + nu;
+        }
+
+        return baseLocale;
     }
 
     // ECMA-402 10.1.1 InitializeCollator.
@@ -1103,7 +1181,10 @@ public sealed partial class BytecodeInterpreter
         int? maximumFractionDigits = null;
         bool useGrouping = true;
         string? signDisplay = null;
-        string numberingSystem = "latn";
+        // ECMA-402 resolves the numbering system from options.numberingSystem,
+        // then the locale's `-u-nu-` Unicode extension, then "latn". The value is
+        // always lower-cased (case is insignificant in BCP-47 extensions).
+        string? optionsNumberingSystem = null;
 
         if (optionsValue.Tag == JsValueTag.Object)
         {
@@ -1120,10 +1201,66 @@ public sealed partial class BytecodeInterpreter
             maximumFractionDigits = GetInt("maximumFractionDigits");
             useGrouping = GetBool("useGrouping") ?? true;
             signDisplay = GetString("signDisplay");
-            numberingSystem = GetString("numberingSystem") ?? "latn";
+            optionsNumberingSystem = GetString("numberingSystem");
         }
 
+        var localeNumberingSystem = ExtractUnicodeKeyword(locale, "nu");
+        var numberingSystem = (optionsNumberingSystem ?? localeNumberingSystem ?? "latn").ToLowerInvariant();
+
         return new NumberFormatState(locale, style, unit, unitDisplay, minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits, useGrouping, signDisplay, numberingSystem);
+    }
+
+    // Extract a Unicode (`-u-`) extension keyword value from a BCP-47 locale,
+    // e.g. ExtractUnicodeKeyword("en-US-u-nu-arab", "nu") -> "arab". Returns null
+    // when the locale has no `-u-` singleton or the key is absent. The value is
+    // the run of subtags after the key up to the next two-letter key / end.
+    private static string? ExtractUnicodeKeyword(string locale, string key)
+    {
+        if (string.IsNullOrEmpty(locale))
+        {
+            return null;
+        }
+
+        var subtags = locale.Split('-');
+        var i = 0;
+        // Find the `u` singleton.
+        while (i < subtags.Length && !string.Equals(subtags[i], "u", StringComparison.OrdinalIgnoreCase))
+        {
+            i++;
+        }
+
+        if (i >= subtags.Length)
+        {
+            return null;
+        }
+
+        i++; // move past 'u'
+        while (i < subtags.Length)
+        {
+            // A two-character subtag in the extension is a key; longer ones are
+            // attributes/type values. Singleton (length 1) ends the extension.
+            if (subtags[i].Length == 1)
+            {
+                break; // next singleton extension begins
+            }
+
+            if (subtags[i].Length == 2 && string.Equals(subtags[i], key, StringComparison.OrdinalIgnoreCase))
+            {
+                var type = new List<string>();
+                i++;
+                while (i < subtags.Length && subtags[i].Length > 2)
+                {
+                    type.Add(subtags[i]);
+                    i++;
+                }
+
+                return type.Count == 0 ? string.Empty : string.Join('-', type).ToLowerInvariant();
+            }
+
+            i++;
+        }
+
+        return null;
     }
 
     private static ListFormatState ParseListFormatState(string locale, JsValue optionsValue)
