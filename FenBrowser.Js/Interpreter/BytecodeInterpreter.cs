@@ -1458,6 +1458,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.DeletePropByName:
                 {
                     var receiver = frame.Registers[ins.B];
+                    // ECMA-262 13.5.1.2: delete of a property reference does
+                    // ToObject(base) first, so `delete null.x` / `delete undefined.x`
+                    // throw TypeError. Other primitives box harmlessly (delete of a
+                    // non-own property yields true).
+                    if (receiver.Tag is JsValueTag.Null or JsValueTag.Undefined)
+                    {
+                        ThrowOrHandle(frame, CreateTypeError(
+                            "Cannot convert " + (receiver.Tag == JsValueTag.Null ? "null" : "undefined") + " to object."));
+                        break;
+                    }
+
                     if (receiver.Tag != JsValueTag.Object)
                     {
                         frame.Registers[ins.A] = JsValue.FromBoolean(true);
@@ -1626,6 +1637,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.DeleteElem:
                 {
                     var receiver = frame.Registers[ins.B];
+                    // ECMA-262 13.5.1.2: ToObject(base) happens before the key is
+                    // coerced, so `delete null[x]` throws TypeError before x's
+                    // toString runs.
+                    if (receiver.Tag is JsValueTag.Null or JsValueTag.Undefined)
+                    {
+                        ThrowOrHandle(frame, CreateTypeError(
+                            "Cannot convert " + (receiver.Tag == JsValueTag.Null ? "null" : "undefined") + " to object."));
+                        break;
+                    }
+
                     if (receiver.Tag != JsValueTag.Object)
                     {
                         frame.Registers[ins.A] = JsValue.FromBoolean(true);
