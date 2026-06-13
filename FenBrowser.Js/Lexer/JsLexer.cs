@@ -731,6 +731,14 @@ public sealed class JsLexer
             }
             else
             {
+                // ECMA-262 12.9.5: a RegularExpressionBackslashSequence may not
+                // contain a LineTerminator — `/\<LF>/` is a SyntaxError, not a
+                // valid escape of the newline.
+                if (IsLineTerminator(ch))
+                {
+                    break;
+                }
+
                 escaped = false;
             }
 
