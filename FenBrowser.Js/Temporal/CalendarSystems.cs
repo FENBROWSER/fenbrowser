@@ -642,3 +642,106 @@ internal sealed class HebrewCalendarSystem : CalendarSystem
         return r;
     }
 }
+
+// Chinese / Korean (dangi) lunisolar calendars, backed by System.Globalization's
+// EastAsianLunisolarCalendar (limited to roughly 1901-2101 / 918-2051). Temporal
+// exposes the month ordinal directly (1..13) and stable month codes where a leap
+// month duplicates the previous code with an "L" suffix (e.g. M05L). No era.
+internal sealed class EastAsianCalendarSystem : CalendarSystem
+{
+    private readonly string _id;
+    private readonly System.Globalization.EastAsianLunisolarCalendar _cal;
+    private readonly long _minEpoch;
+    private readonly long _maxEpoch;
+
+    public EastAsianCalendarSystem(string id, System.Globalization.EastAsianLunisolarCalendar cal)
+    {
+        _id = id;
+        _cal = cal;
+        _minEpoch = IsoMath.CivilToEpochDays(cal.MinSupportedDateTime.Year, cal.MinSupportedDateTime.Month, cal.MinSupportedDateTime.Day);
+        _maxEpoch = IsoMath.CivilToEpochDays(cal.MaxSupportedDateTime.Year, cal.MaxSupportedDateTime.Month, cal.MaxSupportedDateTime.Day);
+    }
+
+    public override string Id => _id;
+
+    public override int MonthsInYear(int year)
+    {
+        try { return _cal.GetMonthsInYear(year); }
+        catch { return 12; }
+    }
+
+    public override bool InLeapYear(int year)
+    {
+        try { return _cal.GetMonthsInYear(year) == 13; }
+        catch { return false; }
+    }
+
+    public override int DaysInMonthOrdinal(int year, int month)
+    {
+        try { return _cal.GetDaysInMonth(year, month); }
+        catch { return 30; }
+    }
+
+    public override long ToFixed(int year, int month, int day)
+    {
+        try
+        {
+            var dt = _cal.ToDateTime(year, month, day, 0, 0, 0, 0);
+            return IsoMath.CivilToEpochDays(dt.Year, dt.Month, dt.Day);
+        }
+        catch
+        {
+            return long.MinValue; // out of the backing calendar's range → caller treats as invalid
+        }
+    }
+
+    public override void FromFixed(long epochDay, out int year, out int month, out int day)
+    {
+        long clamped = Math.Clamp(epochDay, _minEpoch, _maxEpoch);
+        var iso = IsoMath.EpochDaysToCivil(clamped);
+        var dt = new DateTime(iso.Year, iso.Month, iso.Day);
+        year = _cal.GetYear(dt);
+        month = _cal.GetMonth(dt);
+        day = _cal.GetDayOfMonth(dt);
+    }
+
+    public override (string?, int?) EraFor(int year, long epochDay) => (null, null);
+    public override bool YearFromEra(string era, int eraYear, out int year) { year = 0; return false; }
+
+    public override string MonthCodeFor(int year, int month)
+    {
+        int leap = LeapMonth(year);
+        if (leap == 0 || month < leap) return $"M{month:D2}";
+        if (month == leap) return $"M{month - 1:D2}L";
+        return $"M{month - 1:D2}";
+    }
+
+    public override bool MonthFromCode(int year, string code, out int month, out bool existsInYear)
+    {
+        existsInYear = false;
+        if (!ParseSimpleMonthCode(code, out int nn, out bool leap)) { month = 0; return false; }
+        int leapMonth = LeapMonth(year);
+        if (leap)
+        {
+            month = leapMonth;
+            existsInYear = leapMonth > 0 && leapMonth - 1 == nn;
+            return true;
+        }
+
+        month = (leapMonth == 0 || nn < leapMonth) ? nn : nn + 1;
+        existsInYear = month >= 1 && month <= MonthsInYear(year);
+        return true;
+    }
+
+    private int LeapMonth(int year)
+    {
+        try { return _cal.GetLeapMonth(year); }
+        catch { return 0; }
+    }
+
+    public override int DaysInYear(int year)
+    {
+        try { return _cal.GetDaysInYear(year); }
+        catch { return 354; }
+    }
+}
