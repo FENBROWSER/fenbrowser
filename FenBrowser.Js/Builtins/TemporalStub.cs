@@ -801,6 +801,14 @@ public sealed class TemporalStub : IBuiltinModule
             }
 
             string bagCal = GetCalendarFromFields(ctx, h, arg);
+            var bagSys = CalendarMath.Get(bagCal);
+            if (bagSys is not null)
+            {
+                var (cy, cmo, cd) = ResolveCalendarDateFields(ctx, h, arg, bagSys, null, requireDay: true);
+                if (!bagSys.TryResolveToIso(cy, cmo, cd, "constrain", out var calIso))
+                    throw new JsThrownException(ctx.CreateRangeError("Date is invalid for the calendar."));
+                return (calIso, bagCal);
+            }
             if (!TryGetField(ctx, h, arg, "year", out var yearValue))
                 throw new JsThrownException(ctx.CreateTypeError("year is required."));
             double y = ToIntegerWithTruncation(ctx, yearValue);
@@ -933,15 +941,26 @@ public sealed class TemporalStub : IBuiltinModule
                 throw new JsThrownException(ctx.CreateTypeError("Cannot convert this Temporal object to a date-time."));
             }
 
-            _ = GetCalendarFromFields(ctx, h, arg);
-            if (!TryGetField(ctx, h, arg, "year", out var yearValue))
-                throw new JsThrownException(ctx.CreateTypeError("year is required."));
-            double y = ToIntegerWithTruncation(ctx, yearValue);
-            double m = GetMonthFromFields(ctx, h, arg);
-            if (!TryGetField(ctx, h, arg, "day", out var dayValue))
-                throw new JsThrownException(ctx.CreateTypeError("day is required."));
-            double d = ToIntegerWithTruncation(ctx, dayValue);
-            var bagDate = RegulateIsoDate(ctx, y, m, d, "constrain");
+            string dtCal = GetCalendarFromFields(ctx, h, arg);
+            var dtSys = CalendarMath.Get(dtCal);
+            IsoDate bagDate;
+            if (dtSys is not null)
+            {
+                var (cy, cmo, cd) = ResolveCalendarDateFields(ctx, h, arg, dtSys, null, requireDay: true);
+                if (!dtSys.TryResolveToIso(cy, cmo, cd, "constrain", out bagDate))
+                    throw new JsThrownException(ctx.CreateRangeError("Date is invalid for the calendar."));
+            }
+            else
+            {
+                if (!TryGetField(ctx, h, arg, "year", out var yearValue))
+                    throw new JsThrownException(ctx.CreateTypeError("year is required."));
+                double y = ToIntegerWithTruncation(ctx, yearValue);
+                double m = GetMonthFromFields(ctx, h, arg);
+                if (!TryGetField(ctx, h, arg, "day", out var dayValue))
+                    throw new JsThrownException(ctx.CreateTypeError("day is required."));
+                double d = ToIntegerWithTruncation(ctx, dayValue);
+                bagDate = RegulateIsoDate(ctx, y, m, d, "constrain");
+            }
             string[] timeFields = { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" };
             var tv = new double[timeFields.Length];
             for (int fi = 0; fi < timeFields.Length; fi++)
