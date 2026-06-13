@@ -5369,16 +5369,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue DatePrototypeToJson(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
-        if (thisValue.Tag != JsValueTag.Object)
-        {
-            throw new JsThrownException(CreateTypeError("Date.prototype.toJSON called on non-object."));
-        }
-        var primitive = ToPrimitive(thisValue, PrimitiveHint.Number);
-        if (primitive.Tag == JsValueTag.Number && !double.IsFinite(primitive.AsNumber()))
+        // ECMA-262 21.4.4.37: generic over any object. ToObject(this), ToPrimitive
+        // (number) → null when non-finite, otherwise ? Invoke(O, "toISOString") on
+        // the receiver (not the internal Date method, so a custom toISOString runs).
+        var o = ToObjectValue(thisValue);
+        var primitive = ToPrimitive(o, PrimitiveHint.Number);
+        if (primitive.Tag is JsValueTag.Number && !double.IsFinite(primitive.AsNumber()))
         {
             return JsValue.Null;
         }
-        return DatePrototypeToIsoString(thisValue, Array.Empty<JsValue>());
+
+        var obj = _heap.GetObject(o.AsObjectHandle());
+        var method = TryGetPropertyValue(obj, o, "toISOString", out var m) ? m : JsValue.Undefined;
+        if (!IsCallable(method))
+        {
+            throw new JsThrownException(CreateTypeError("Date.prototype.toJSON: toISOString is not callable."));
+        }
+
+        return CallFunction(method, Array.Empty<JsValue>(), o);
     }
 
     // ECMA-262 21.4.4.36 Date.prototype.toISOString. Format is the Date Time String
