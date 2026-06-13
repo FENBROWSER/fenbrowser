@@ -649,7 +649,7 @@ public sealed class TemporalStub : IBuiltinModule
     /// month/monthCode and day (in sorted key order), resolving to native (year, monthOrdinal, day).
     /// When <paramref name="baseFields"/> is given (the `with` path), absent fields fall back to it.
     /// </summary>
-    private (int Year, int Month, int Day) ResolveCalendarDateFields(
+    private static (int Year, int Month, int Day) ResolveCalendarDateFields(
         IBuiltinContext ctx, JsHeap h, JsValue bag, CalendarSystem sys, CalendarFields? baseFields, bool requireDay)
     {
         // PrepareTemporalFields reads keys in sorted order: day, era, eraYear, month, monthCode, year.
@@ -723,11 +723,11 @@ public sealed class TemporalStub : IBuiltinModule
     /// Resolve a date bag to an ISO date for the given calendar (ISO or non-ISO). Fields are read
     /// first, then the overflow option (matching the spec's observable operation order).
     /// </summary>
-    private IsoDate ResolveDateBagToIso(IBuiltinContext ctx, JsHeap h, JsValue bag, string calendar,
+    private static IsoDate ResolveDateBagToIso(IBuiltinContext ctx, JsHeap h, JsValue bag, string calendar,
         IReadOnlyList<JsValue> a, int optIdx, CalendarFields? baseFields = null, bool requireDay = true)
         => ResolveDateBagToIso(ctx, h, bag, calendar, a, optIdx, out _, baseFields, requireDay);
 
-    private IsoDate ResolveDateBagToIso(IBuiltinContext ctx, JsHeap h, JsValue bag, string calendar,
+    private static IsoDate ResolveDateBagToIso(IBuiltinContext ctx, JsHeap h, JsValue bag, string calendar,
         IReadOnlyList<JsValue> a, int optIdx, out string overflow, CalendarFields? baseFields = null, bool requireDay = true)
     {
         var sys = CalendarMath.Get(calendar);
@@ -3243,14 +3243,25 @@ public sealed class TemporalStub : IBuiltinModule
             if (tzValue.Tag != JsValueTag.String)
                 throw new JsThrownException(ctx.CreateTypeError("timeZone must be a string."));
             string bagTz = CanonicalizeTimeZoneId(ctx, tzValue.AsString());
-            if (!TryGetField(ctx, h, arg, "year", out var yearValue))
-                throw new JsThrownException(ctx.CreateTypeError("year is required."));
-            double y = ToIntegerWithTruncation(ctx, yearValue);
-            double m = GetMonthFromFields(ctx, h, arg);
-            if (!TryGetField(ctx, h, arg, "day", out var dayValue))
-                throw new JsThrownException(ctx.CreateTypeError("day is required."));
-            double d = ToIntegerWithTruncation(ctx, dayValue);
-            var bagDate = RegulateIsoDate(ctx, y, m, d, "constrain");
+            var bagSys = CalendarMath.Get(bagCal);
+            IsoDate bagDate;
+            if (bagSys is null)
+            {
+                if (!TryGetField(ctx, h, arg, "year", out var yearValue))
+                    throw new JsThrownException(ctx.CreateTypeError("year is required."));
+                double y = ToIntegerWithTruncation(ctx, yearValue);
+                double m = GetMonthFromFields(ctx, h, arg);
+                if (!TryGetField(ctx, h, arg, "day", out var dayValue))
+                    throw new JsThrownException(ctx.CreateTypeError("day is required."));
+                double d = ToIntegerWithTruncation(ctx, dayValue);
+                bagDate = RegulateIsoDate(ctx, y, m, d, "constrain");
+            }
+            else
+            {
+                var (cy, cmo, cd) = ResolveCalendarDateFields(ctx, h, arg, bagSys, null, requireDay: true);
+                if (!bagSys.TryResolveToIso(cy, cmo, cd, "constrain", out bagDate))
+                    throw new JsThrownException(ctx.CreateRangeError("Date is invalid for the calendar or outside the supported range."));
+            }
             string[] timeFields = { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" };
             var tv = new double[timeFields.Length];
             for (int fi = 0; fi < timeFields.Length; fi++)
@@ -3323,12 +3334,15 @@ public sealed class TemporalStub : IBuiltinModule
         var (cH, pH) = MakeCtor(ctx, h, t, tH, "ZonedDateTime", 2, true,
             (cctx, hh, a) => ConstructZonedDateTime(cctx, hh, a));
         var p = h.GetObject(pH);
-        foreach (var f in new[] { "year", "month", "day", "hour", "minute", "second", "millisecond", "microsecond", "nanosecond",
+        foreach (var f in new[] { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond",
             "epochSeconds", "epochMilliseconds", "epochMicroseconds", "offsetNanoseconds" })
             AddGetter(ctx, h, pH, p, f, o => GetV(h, o, f));
+        AddGetter(ctx, h, pH, p, "year", o => { var iso = DecodeIsoDateLong(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), iso)?.Year ?? iso.Year); });
+        AddGetter(ctx, h, pH, p, "month", o => { var iso = DecodeIsoDateLong(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), iso)?.Month ?? iso.Month); });
+        AddGetter(ctx, h, pH, p, "day", o => { var iso = DecodeIsoDateLong(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), iso)?.Day ?? iso.Day); });
         AddGetter(ctx, h, pH, p, "epochNanoseconds", o => GetV(h, o, "ensBig"));
         AddGetter(ctx, h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
-        AddGetter(ctx, h, pH, p, "monthCode", o => JsValue.FromString($"M{(int)GetVNum(h, o, "month"):D2}"));
+        AddGetter(ctx, h, pH, p, "monthCode", o => { var iso = DecodeIsoDateLong(h, o); return JsValue.FromString(CalFields(CalId(h, o), iso)?.MonthCode ?? $"M{iso.Month:D2}"); });
         AddGetter(ctx, h, pH, p, "dayOfWeek", o => JsValue.FromNumber(IsoMath.DayOfWeek(DecodeIsoDateLong(h, o))));
         AddGetter(ctx, h, pH, p, "dayOfYear", o => JsValue.FromNumber(IsoMath.DayOfYear(DecodeIsoDateLong(h, o))));
         AddGetter(ctx, h, pH, p, "weekOfYear", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDateLong(h, o)).Week));
@@ -3342,22 +3356,22 @@ public sealed class TemporalStub : IBuiltinModule
             return JsValue.FromNumber((end - start) / 3_600_000_000_000.0);
         });
         AddGetter(ctx, h, pH, p, "daysInWeek", o => JsValue.FromNumber(7));
-        AddGetter(ctx, h, pH, p, "daysInMonth", o => { var dt = DecodeIsoDateLong(h, o); return JsValue.FromNumber(IsoMath.DaysInMonth(dt.Year, dt.Month)); });
-        AddGetter(ctx, h, pH, p, "daysInYear", o => JsValue.FromNumber(IsoMath.DaysInYear(DecodeIsoDateLong(h, o).Year)));
-        AddGetter(ctx, h, pH, p, "monthsInYear", o => JsValue.FromNumber(12));
-        AddGetter(ctx, h, pH, p, "inLeapYear", o => JsValue.FromBoolean(IsoMath.IsLeapYear(DecodeIsoDateLong(h, o).Year)));
+        AddGetter(ctx, h, pH, p, "daysInMonth", o => { var dt = DecodeIsoDateLong(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), dt)?.DaysInMonth ?? IsoMath.DaysInMonth(dt.Year, dt.Month)); });
+        AddGetter(ctx, h, pH, p, "daysInYear", o => { var dt = DecodeIsoDateLong(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), dt)?.DaysInYear ?? IsoMath.DaysInYear(dt.Year)); });
+        AddGetter(ctx, h, pH, p, "monthsInYear", o => { var dt = DecodeIsoDateLong(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), dt)?.MonthsInYear ?? 12); });
+        AddGetter(ctx, h, pH, p, "inLeapYear", o => { var dt = DecodeIsoDateLong(h, o); return JsValue.FromBoolean(CalFields(CalId(h, o), dt)?.InLeapYear ?? IsoMath.IsLeapYear(dt.Year)); });
         AddGetter(ctx, h, pH, p, "offset", o => JsValue.FromString(TemporalTimeZones.FormatOffset((long)GetVNum(h, o, "offsetNanoseconds"))));
         AddGetter(ctx, h, pH, p, "timeZoneId", o => GetV(h, o, "tz"));
-        // era/eraYear are undefined for the iso8601 calendar.
-        AddGetter(ctx, h, pH, p, "era", _ => JsValue.Undefined);
-        AddGetter(ctx, h, pH, p, "eraYear", _ => JsValue.Undefined);
+        AddGetter(ctx, h, pH, p, "era", o => EraValue(CalId(h, o), DecodeIsoDateLong(h, o)));
+        AddGetter(ctx, h, pH, p, "eraYear", o => EraYearValue(CalId(h, o), DecodeIsoDateLong(h, o)));
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("ZonedDateTime.with: argument must be an object."));
             var bagValue = a[0];
             var curDate = DecodeIsoDateLong(h, o);
-            bool hasYear = TryGetField(ctx, h, bagValue, "year", out var yearValue);
-            bool hasMonth = TryGetField(ctx, h, bagValue, "month", out _) || TryGetField(ctx, h, bagValue, "monthCode", out _);
-            bool hasDay = TryGetField(ctx, h, bagValue, "day", out var dayValue);
+            string cal = CalId(h, o);
+            bool hasDateField = TryGetField(ctx, h, bagValue, "year", out _) || TryGetField(ctx, h, bagValue, "month", out _)
+                || TryGetField(ctx, h, bagValue, "monthCode", out _) || TryGetField(ctx, h, bagValue, "day", out _)
+                || TryGetField(ctx, h, bagValue, "era", out _) || TryGetField(ctx, h, bagValue, "eraYear", out _);
             bool hasOffset = TryGetField(ctx, h, bagValue, "offset", out _);
             string[] timeFields = { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" };
             var timeValues = new double[timeFields.Length];
@@ -3376,13 +3390,10 @@ public sealed class TemporalStub : IBuiltinModule
             }
             if (TryGetField(ctx, h, bagValue, "timeZone", out _) || TryGetField(ctx, h, bagValue, "calendar", out _))
                 throw new JsThrownException(ctx.CreateTypeError("with: timeZone and calendar cannot be changed here; use withTimeZone/withCalendar."));
-            if (!hasYear && !hasMonth && !hasDay && !anyTime && !hasOffset)
+            if (!hasDateField && !anyTime && !hasOffset)
                 throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
-            double y = hasYear ? ToIntegerWithTruncation(ctx, yearValue) : curDate.Year;
-            double m = hasMonth ? GetMonthFromFields(ctx, h, bagValue) : curDate.Month;
-            double d = hasDay ? ToIntegerWithTruncation(ctx, dayValue) : curDate.Day;
-            var overflow = GetOverflowOption(ctx, h, a, 1);
-            var date = RegulateIsoDate(ctx, y, m, d, overflow);
+            var baseFields = CalFields(cal, curDate) ?? new CalendarFields(null, null, curDate.Year, curDate.Month, $"M{curDate.Month:D2}", curDate.Day, 0, 0, 12, false);
+            var date = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, out var overflow, baseFields);
             if (overflow == "reject")
                 ValidateTime(ctx, timeValues[0], timeValues[1], timeValues[2], timeValues[3], timeValues[4], timeValues[5]);
             var time = new IsoTime(
