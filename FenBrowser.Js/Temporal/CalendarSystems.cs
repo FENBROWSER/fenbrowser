@@ -616,10 +616,12 @@ internal sealed class HebrewCalendarSystem : CalendarSystem
         bool isLeap = LeapYear(year);
         if (leap)
         {
-            // Only Adar I (M05L) exists, and only in a leap year.
-            month = 6;
-            existsInYear = isLeap && nn == 5;
-            return nn == 5;
+            // Adar I = M05L is the only leap month code; others are invalid.
+            if (nn != 5) { month = 0; return false; }
+            if (isLeap) { month = 6; existsInYear = true; return true; }
+            month = 5; // common year: constrain M05L → Adar (M05)
+            existsInYear = false;
+            return true;
         }
 
         if (!isLeap) { month = nn; existsInYear = nn is >= 1 and <= 12; return true; }
@@ -723,8 +725,16 @@ internal sealed class EastAsianCalendarSystem : CalendarSystem
         int leapMonth = LeapMonth(year);
         if (leap)
         {
-            month = leapMonth;
-            existsInYear = leapMonth > 0 && leapMonth - 1 == nn;
+            if (leapMonth > 0 && leapMonth - 1 == nn)
+            {
+                month = leapMonth;
+                existsInYear = true;
+                return true;
+            }
+
+            // Leap month MnnL absent this year: constrain to the base month Mnn.
+            month = (leapMonth == 0 || nn < leapMonth) ? nn : nn + 1;
+            existsInYear = false;
             return true;
         }
 

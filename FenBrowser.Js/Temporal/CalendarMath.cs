@@ -111,16 +111,28 @@ internal abstract class CalendarSystem
         return true;
     }
 
-    // CalendarDateAdd: add years/months (in calendar space, clamping the day to
-    // the target month length) then weeks/days by epoch arithmetic.
+    // CalendarDateAdd: add years (preserving the month *code*, constraining a
+    // leap month that does not exist in the target year), then months (by
+    // ordinal balancing), clamp the day, then add weeks/days by epoch arithmetic.
     public IsoDate Add(IsoDate date, long years, long months, long weeks, long days, bool constrain, out bool invalid)
     {
         invalid = false;
         ToNative(date, out int y, out int mo, out int d);
-        long ty = y + years;
-        long tm = mo + months;
-        if (ty is < -1_000_000 or > 1_000_000) { invalid = true; return date; }
-        var (by, bm) = BalanceYearMonth((int)ty, tm);
+        if (y + years is < -1_000_000 or > 1_000_000) { invalid = true; return date; }
+
+        // Year step: keep the month code in the new year.
+        int yA = (int)(y + years);
+        string code = MonthCodeFor(y, mo);
+        if (!MonthFromCode(yA, code, out int ordA, out bool exists))
+        {
+            invalid = true;
+            return date;
+        }
+
+        if (!exists && !constrain) { invalid = true; return date; }
+
+        // Month step: advance the ordinal, balancing across years.
+        var (by, bm) = BalanceYearMonth(yA, ordA + months);
         int dim = DaysInMonthOrdinal(by, bm);
         if (d > dim)
         {
