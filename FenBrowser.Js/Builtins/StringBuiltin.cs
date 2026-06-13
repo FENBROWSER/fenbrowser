@@ -398,9 +398,66 @@ public sealed class StringBuiltin : IBuiltinModule
         return JsValue.FromNumber(s[..from].LastIndexOf(search, StringComparison.Ordinal));
     }
 
+    // ECMA-262 22.1.3.6/22.1.3.7/22.1.3.23: includes/startsWith/endsWith must
+    // throw a TypeError when the search argument IsRegExp, evaluated before the
+    // search value is coerced to a string.
+    private static void ThrowIfSearchIsRegExp(IBuiltinContext ctx, IReadOnlyList<JsValue> args, string method)
+    {
+        var search = args.Count > 0 ? args[0] : JsValue.Undefined;
+        if (IsRegExp(ctx, search))
+        {
+            throw new JsThrownException(ctx.CreateTypeError(
+                $"First argument to String.prototype.{method} must not be a regular expression."));
+        }
+    }
+
+    // ECMA-262 7.2.8 IsRegExp(argument): reads @@match (invoking a getter), and
+    // when it is undefined falls back to the [[RegExpMatcher]] internal slot.
+    private static bool IsRegExp(IBuiltinContext ctx, JsValue value)
+    {
+        if (value.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var obj = ctx.Heap.GetObject(value.AsObjectHandle());
+        var matchId = ctx.CreateWellKnownSymbol("match").AsSymbolId();
+        var matcher = JsValue.Undefined;
+        if (obj.TryGetSymbolProperty(matchId, h => ctx.Heap.GetObject(h), out var desc))
+        {
+            if (desc.IsAccessor)
+            {
+                if (desc.Get.Tag != JsValueTag.Undefined)
+                {
+                    matcher = ctx.CallFunction(desc.Get, System.Array.Empty<JsValue>(), value);
+                }
+            }
+            else
+            {
+                matcher = desc.Value;
+            }
+        }
+
+        if (matcher.Tag != JsValueTag.Undefined)
+        {
+            return matcher.Tag switch
+            {
+                JsValueTag.Boolean => matcher.AsBoolean(),
+                JsValueTag.Int32 => matcher.AsInt32() != 0,
+                JsValueTag.Number => matcher.AsNumber() != 0 && !double.IsNaN(matcher.AsNumber()),
+                JsValueTag.String => matcher.AsString().Length != 0,
+                JsValueTag.Null or JsValueTag.Undefined => false,
+                _ => true,
+            };
+        }
+
+        return obj is RegExpObject;
+    }
+
     private static JsValue Includes(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var s = RequireString(ctx, thisValue);
+        ThrowIfSearchIsRegExp(ctx, args, "includes");
         var search = args.Count > 0 ? ctx.ToStringValue(args[0]) : "undefined";
         var from = args.Count > 1 ? Math.Clamp((int)ctx.ToNumber(args[1]), 0, s.Length) : 0;
         return JsValue.FromBoolean(s.IndexOf(search, from, StringComparison.Ordinal) >= 0);
@@ -409,6 +466,7 @@ public sealed class StringBuiltin : IBuiltinModule
     private static JsValue StartsWith(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var s = RequireString(ctx, thisValue);
+        ThrowIfSearchIsRegExp(ctx, args, "startsWith");
         var search = args.Count > 0 ? ctx.ToStringValue(args[0]) : "undefined";
         var from = args.Count > 1 ? Math.Clamp((int)ctx.ToNumber(args[1]), 0, s.Length) : 0;
         if (from + search.Length > s.Length) return JsValue.FromBoolean(false);
@@ -418,6 +476,7 @@ public sealed class StringBuiltin : IBuiltinModule
     private static JsValue EndsWith(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var s = RequireString(ctx, thisValue);
+        ThrowIfSearchIsRegExp(ctx, args, "endsWith");
         var search = args.Count > 0 ? ctx.ToStringValue(args[0]) : "undefined";
         var endPos = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
             ? Math.Clamp((int)ctx.ToNumber(args[1]), 0, s.Length) : s.Length;
