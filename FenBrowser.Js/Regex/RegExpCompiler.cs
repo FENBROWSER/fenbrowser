@@ -229,6 +229,13 @@ public static class RegExpCompiler
         ValidatePatternEarlyErrors(pattern, parsedFlags);
     }
 
+    private sealed class NameScope
+    {
+        public HashSet<string> CurrentAlternative { get; } = new(StringComparer.Ordinal);
+
+        public HashSet<string> Committed { get; } = new(StringComparer.Ordinal);
+    }
+
     private enum GroupKind
     {
         Other,
@@ -261,6 +268,13 @@ public static class RegExpCompiler
         var namedReferences = new List<string>();
         var decimalBackreferences = new List<int>();
         var groups = new Stack<GroupKind>();
+        // Alternation-aware duplicate named-group detection (ES2025 duplicate
+        // named capture groups): a name may repeat across distinct alternatives
+        // of a disjunction, but not twice on a single match path. Each scope
+        // frame tracks names declared in the current alternative and names that
+        // have been committed by prior (closed) alternatives at this group level.
+        var nameScopes = new Stack<NameScope>();
+        nameScopes.Push(new NameScope());
         var inCharClass = false;
         var classStart = -1;
         var captureCount = 0;
@@ -431,6 +445,16 @@ public static class RegExpCompiler
                 throw new RegexSyntaxError("Invalid extended pattern character in Unicode regular expression.");
             }
 
+            if (ch == '|')
+            {
+                // New alternative at this group level: commit the names declared
+                // in the current alternative; later alternatives may reuse them.
+                var altScope = nameScopes.Peek();
+                altScope.Committed.UnionWith(altScope.CurrentAlternative);
+                altScope.CurrentAlternative.Clear();
+                continue;
+            }
+
             if (ch == '(')
             {
                 var kind = GroupKind.Other;
@@ -480,6 +504,15 @@ public static class RegExpCompiler
                                 throw new RegexSyntaxError("Invalid named capturing group.");
                             }
 
+                            // The group is a term in the enclosing scope's current
+                            // alternative: a same-named group already on this path
+                            // is a Syntax Error.
+                            var declScope = nameScopes.Peek();
+                            if (!declScope.CurrentAlternative.Add(groupName))
+                            {
+                                throw new RegexSyntaxError("Duplicate capture group name in regular expression.");
+                            }
+
                             _ = namedGroups.Add(groupName);
                         }
                     }
@@ -496,6 +529,12 @@ public static class RegExpCompiler
                         {
                             throw new RegexSyntaxError("Invalid regexp modifiers group.");
                         }
+
+                        // ECMA-262 RegExp modifiers (e.g. (?ims-ims:...)): the flag
+                        // sets must be non-empty (at least one side), contain only
+                        // i/m/s, have no duplicate flags, and add/remove sets must be
+                        // disjoint. Validate the expression between '?' and ':'.
+                        ValidateInlineModifierExpression(pattern[(i + 2)..colon]);
                     }
                     else if (marker is not (':' or '=' or '!' or '<'))
                     {
@@ -523,6 +562,7 @@ public static class RegExpCompiler
                 }
 
                 groups.Push(kind);
+                nameScopes.Push(new NameScope());
                 continue;
             }
 
@@ -531,6 +571,28 @@ public static class RegExpCompiler
                 if (groups.Count == 0)
                 {
                     continue;
+                }
+
+                // Pop the group's name scope and fold the names it can contribute
+                // (any alternative) into the parent's current alternative path. A
+                // collision there means two same-named groups share a match path.
+                if (nameScopes.Count > 1)
+                {
+                    var childScope = nameScopes.Pop();
+                    var parentScope = nameScopes.Peek();
+                    // A name that appears in different alternatives within the child
+                    // is not a conflict — collapse the child's contributed names into
+                    // a single deduped set, then check that set against the parent's
+                    // current path (where a collision IS a same-path duplicate).
+                    var childNames = new HashSet<string>(childScope.Committed, StringComparer.Ordinal);
+                    childNames.UnionWith(childScope.CurrentAlternative);
+                    foreach (var name in childNames)
+                    {
+                        if (!parentScope.CurrentAlternative.Add(name))
+                        {
+                            throw new RegexSyntaxError("Duplicate capture group name in regular expression.");
+                        }
+                    }
                 }
 
                 var kind = groups.Pop();
@@ -735,7 +797,9 @@ public static class RegExpCompiler
 
         var addPart = hyphenIndex >= 0 ? expression[..hyphenIndex] : expression;
         var removePart = hyphenIndex >= 0 ? expression[(hyphenIndex + 1)..] : string.Empty;
-        if (addPart.Length == 0 || (hyphenIndex >= 0 && removePart.Length == 0))
+        // It is a Syntax Error only if BOTH flag sets are empty (e.g. "(?-:a)").
+        // "(?-i:a)" (empty add) and "(?i-:a)" (empty remove) are valid.
+        if (addPart.Length == 0 && removePart.Length == 0)
         {
             throw new RegexSyntaxError("Invalid regexp modifiers group.");
         }

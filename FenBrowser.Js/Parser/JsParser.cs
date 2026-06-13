@@ -3545,6 +3545,7 @@ public sealed class JsParser
             try
             {
                 Regex.RegExpCompiler.ValidatePattern(pattern, flags);
+                Regex.RegExpCompiler.ValidateLiteralSyntax(token.Text);
             }
             catch (Regex.RegexSyntaxError ex)
             {
