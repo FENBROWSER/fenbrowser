@@ -5186,6 +5186,47 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }, length: 1);
         // B.2.3.3 Date.prototype.toGMTString � alias of toUTCString.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toGMTString", DatePrototypeToUtcString);
+
+        // ECMA-262 21.4.4.45 Date.prototype [ @@toPrimitive ] ( hint ). Unlike the
+        // default ordinary [[ToPrimitive]], "default" behaves like "string"; an
+        // invalid (or non-string) hint is a TypeError. { length:1, configurable }.
+        var toPrimitive = new NativeFunctionObject("[Symbol.toPrimitive]", (thisValue, callArgs) =>
+        {
+            if (thisValue.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Date.prototype[Symbol.toPrimitive] called on a non-object."));
+            }
+
+            var hintArg = callArgs.Count > 0 ? callArgs[0] : JsValue.Undefined;
+            var hintStr = hintArg.Tag == JsValueTag.String ? hintArg.AsString() : null;
+            PrimitiveHint hint;
+            if (hintStr is "string" or "default")
+            {
+                hint = PrimitiveHint.String;
+            }
+            else if (hintStr == "number")
+            {
+                hint = PrimitiveHint.Number;
+            }
+            else
+            {
+                throw new JsThrownException(CreateTypeError(
+                    "Date.prototype[Symbol.toPrimitive] called with an invalid hint."));
+            }
+
+            if (TryOrdinaryToPrimitive(thisValue, hint, out var primitive))
+            {
+                return primitive;
+            }
+
+            throw new JsThrownException(CreateTypeError("Cannot convert Date to a primitive value."));
+        }, length: 1);
+        var toPrimitiveHandle = _heap.AllocateObject(toPrimitive, AllocationSite.Current());
+        prototype.DefineOwnSymbolProperty(GetWellKnownSymbolId("toPrimitive"),
+            new JsPropertyDescriptor(JsValue.FromObject(toPrimitiveHandle),
+                Writable: false, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, toPrimitiveHandle);
     }
 
     private DateObject RequireDate(JsValue thisValue, string method)
