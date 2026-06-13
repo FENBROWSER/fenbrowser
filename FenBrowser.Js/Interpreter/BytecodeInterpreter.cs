@@ -5017,7 +5017,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         else
         {
-            date.TimeValue = double.NaN;
+            // The captured time was NaN and this setter cannot resurrect it: the
+            // result is NaN, but [[DateValue]] is left as-is (it is already NaN,
+            // unless an argument's valueOf mutated it mid-coercion — that write is
+            // preserved, matching the time-field setters).
             return JsValue.FromNumber(double.NaN);
         }
 
