@@ -8079,7 +8079,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             JsValueTag.Boolean => value.AsBoolean() ? "true" : "false",
             JsValueTag.Int32 => value.AsInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
             JsValueTag.Number => StringifyJsonNumber(value.AsNumber()),
-            JsValueTag.String => JsonSerializer.Serialize(value.AsString()),
+            JsValueTag.String => QuoteJsonString(value.AsString()),
             JsValueTag.Object => StringifyJsonObject(value, ctx, depth, inArray),
             _ => inArray ? "null" : null
         };
@@ -8090,6 +8090,54 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return double.IsFinite(number)
             ? FormatNumberForString(number)
             : "null";
+    }
+
+    // ECMA-262 25.5.2.3 QuoteJSONString: wrap in double quotes, backslash-escape
+    // " and \, use the short escapes for the control chars that have them, \u-escape
+    // any other control char and any unpaired surrogate, and pass every other code
+    // unit through unchanged. (System.Text.Json's default encoder additionally
+    // escapes <, >, &, ', + for HTML safety, which is not JSON.stringify behavior.)
+    private static string QuoteJsonString(string s)
+    {
+        var sb = new System.Text.StringBuilder(s.Length + 2);
+        sb.Append('"');
+        for (var i = 0; i < s.Length; i++)
+        {
+            var c = s[i];
+            switch (c)
+            {
+                case '"': sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                case '\b': sb.Append("\\b"); break;
+                case '\f': sb.Append("\\f"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    if (c < 0x20)
+                    {
+                        sb.Append("\\u").Append(((int)c).ToString("x4", System.Globalization.CultureInfo.InvariantCulture));
+                    }
+                    else if (char.IsHighSurrogate(c) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]))
+                    {
+                        sb.Append(c).Append(s[i + 1]);
+                        i++;
+                    }
+                    else if (char.IsHighSurrogate(c) || char.IsLowSurrogate(c))
+                    {
+                        sb.Append("\\u").Append(((int)c).ToString("x4", System.Globalization.CultureInfo.InvariantCulture));
+                    }
+                    else
+                    {
+                        sb.Append(c);
+                    }
+
+                    break;
+            }
+        }
+
+        sb.Append('"');
+        return sb.ToString();
     }
 
     private string? StringifyJsonObject(JsValue value, JsonStringifyContext ctx, int depth, bool inArray)
@@ -8133,9 +8181,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
             foreach (var key in keys)
             {
+                // 25.5.2 SerializeJSONProperty: value = ? Get(holder, key). A key in
+                // the (snapshotted) list whose property was deleted mid-iteration
+                // reads as undefined — the ReplacerFunction still runs and may
+                // resurrect it, so do not skip the entry here.
                 if (!TryGetPropertyValue(obj, value, key, out var propertyValue))
                 {
-                    continue;
+                    propertyValue = JsValue.Undefined;
                 }
                 // ECMA-262 25.5.2 ReplacerFunction call - applied per entry with the
                 // holder as 'this' and (key, value) arguments.
@@ -8148,7 +8200,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 if (serialized is not null)
                 {
                     var colon = ctx.Gap.Length > 0 ? ": " : ":";
-                    parts.Add(JsonSerializer.Serialize(key) + colon + serialized);
+                    parts.Add(QuoteJsonString(key) + colon + serialized);
                 }
             }
 
