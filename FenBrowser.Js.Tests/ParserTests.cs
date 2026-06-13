@@ -964,12 +964,15 @@ public sealed class ParserTests
         var b1 = Assert.IsType<BinaryExpressionNode>(s1.Expression);
         Assert.Equal("??", b1.Operator);
 
+        // &&= / ||= / ??= parse to LogicalAssignmentExpressionNode (the compiler
+        // lowers them with short-circuit semantics — they are not a plain
+        // `x = x op y` desugaring).
         var s2 = Assert.IsType<ExpressionStatementNode>(program.Body[1]);
-        Assert.IsType<AssignmentExpressionNode>(s2.Expression);
+        Assert.Equal("&&", Assert.IsType<LogicalAssignmentExpressionNode>(s2.Expression).Operator);
         var s3 = Assert.IsType<ExpressionStatementNode>(program.Body[2]);
-        Assert.IsType<AssignmentExpressionNode>(s3.Expression);
+        Assert.Equal("||", Assert.IsType<LogicalAssignmentExpressionNode>(s3.Expression).Operator);
         var s4 = Assert.IsType<ExpressionStatementNode>(program.Body[3]);
-        Assert.IsType<AssignmentExpressionNode>(s4.Expression);
+        Assert.Equal("??", Assert.IsType<LogicalAssignmentExpressionNode>(s4.Expression).Operator);
     }
 
     [Fact]

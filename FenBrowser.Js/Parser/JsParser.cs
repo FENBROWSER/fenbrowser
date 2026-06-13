@@ -1706,8 +1706,7 @@ public sealed class JsParser
 
                 var op = Advance().Text;
                 var right = ParseExpression(2);
-                var rhs = BuildAssignmentRight(iterable, op, right);
-                iterable = new AssignmentExpressionNode(iterable, rhs, MergeSpan(iterable.Span, right.Span));
+                iterable = BuildAssignmentNode(iterable, op, right, MergeSpan(iterable.Span, right.Span));
             }
 
             while (IsPunctuator(","))
@@ -3290,8 +3289,7 @@ public sealed class JsParser
                 // leftBp >= 2 (||, ??, &&, |, ^ — bp 5..9 — would otherwise
                 // be wrongly left-associated as `(a = b) op c`).
                 var assignmentRight = ParseExpression(2);
-                var rhs = BuildAssignmentRight(left, op, assignmentRight);
-                left = new AssignmentExpressionNode(left, rhs, MergeSpan(left.Span, assignmentRight.Span));
+                left = BuildAssignmentNode(left, op, assignmentRight, MergeSpan(left.Span, assignmentRight.Span));
                 continue;
             }
 
@@ -5154,6 +5152,28 @@ public sealed class JsParser
                token.Text is "=" or "+=" or "-=" or "*=" or "/=" or "%=" or "<<=" or ">>=" or ">>>=" or "&=" or "^=" or "|=" or "**=" or "&&=" or "||=" or "??=";
     }
 
+    // Build the assignment expression node for `target op right`. Logical
+    // assignment operators produce a LogicalAssignmentExpressionNode (which the
+    // compiler lowers with short-circuit semantics); all others desugar to
+    // `target = (target op' right)`.
+    private static ExpressionNode BuildAssignmentNode(ExpressionNode target, string op, ExpressionNode right, SourceSpan span)
+    {
+        if (op is "&&=" or "||=" or "??=")
+        {
+            // ECMA-262 13.15.1: AssignmentTargetType of the LHS must be simple
+            // (Identifier or MemberExpression) — `f() &&= 1` is an early SyntaxError.
+            if (!IsSimpleAssignmentTarget(target))
+            {
+                throw new JsParserException("Invalid left-hand side in logical assignment (target is not simple).");
+            }
+
+            return new LogicalAssignmentExpressionNode(target, op[..^1], right, span);
+        }
+
+        var rhs = BuildAssignmentRight(target, op, right);
+        return new AssignmentExpressionNode(target, rhs, span);
+    }
+
     private static ExpressionNode BuildAssignmentRight(ExpressionNode left, string op, ExpressionNode right)
     {
         return op switch
@@ -5187,6 +5207,17 @@ public sealed class JsParser
     // ObjectExpressionNode until the assignment-time conversion runs,
     // so we accept those too — the conversion step rejects shapes that
     // aren't valid patterns.
+    // ECMA-262 13.15.2 "simple" AssignmentTargetType — Identifier or
+    // MemberExpression (through parentheses). Required for compound and logical
+    // assignment LHS; CallExpression and destructuring patterns are not simple.
+    private static bool IsSimpleAssignmentTarget(ExpressionNode node) => node switch
+    {
+        IdentifierExpressionNode => true,
+        MemberExpressionNode => true,
+        ParenthesizedExpressionNode pe => IsSimpleAssignmentTarget(pe.Expression),
+        _ => false,
+    };
+
     private static bool IsValidAssignmentTarget(ExpressionNode node)
     {
         return node switch

@@ -47,6 +47,12 @@ public sealed record BinaryExpressionNode(string Operator, ExpressionNode Left, 
 
 public sealed record AssignmentExpressionNode(ExpressionNode Left, ExpressionNode Right, SourceSpan Span) : ExpressionNode(Span);
 
+// Logical assignment (&&=, ||=, ??=). Operator is the underlying logical
+// operator ("&&", "||", "??"). Unlike a desugared `x = x op y`, these
+// short-circuit: when the operator's condition is not met, the right side is
+// not evaluated and no assignment (PutValue) is performed.
+public sealed record LogicalAssignmentExpressionNode(ExpressionNode Target, string Operator, ExpressionNode Value, SourceSpan Span) : ExpressionNode(Span);
+
 public sealed record CallExpressionNode(ExpressionNode Callee, IReadOnlyList<ExpressionNode> Arguments, SourceSpan Span) : ExpressionNode(Span);
 
 public sealed record ArrowFunctionExpressionNode(

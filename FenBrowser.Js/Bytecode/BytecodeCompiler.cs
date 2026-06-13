@@ -1625,6 +1625,125 @@ public sealed class BytecodeCompiler
     // reference (evaluated once). Returns the new value for prefix forms and
     // the old (coerced) value for postfix forms. Only Identifier and non-super
     // member targets reach here; the parser keeps the legacy desugar otherwise.
+    // ECMA-262 13.15.2 — logical assignment (&&=, ||=, ??=). Evaluates the
+    // reference once; the right side is evaluated and stored only when the
+    // operator's condition is met (truthy for &&=, falsy for ||=, nullish for
+    // ??=). The whole expression yields the stored value, else the existing one.
+    private int CompileLogicalAssignment(LogicalAssignmentExpressionNode node)
+    {
+        var target = node.Target;
+        while (target is ParenthesizedExpressionNode paren)
+        {
+            target = paren.Expression;
+        }
+
+        node = node with { Target = target };
+        if (node.Target is IdentifierExpressionNode id)
+        {
+            var slot = GetOrCreateVariableSlot(id.Name);
+            var curReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.LoadVar, curReg, slot, 0));
+            var resultReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.Move, resultReg, curReg, 0));
+
+            var skipJumps = EmitLogicalAssignTest(node.Operator, curReg);
+            // NamedEvaluation: `x ||= function(){}` names the function "x".
+            var valReg = CompileNamedInitializer(node.Value, id.Name);
+            _instructions.Add(new Instruction(OpCode.StoreVar, valReg, slot, 0));
+            _instructions.Add(new Instruction(OpCode.Move, resultReg, valReg, 0));
+            foreach (var j in skipJumps)
+            {
+                PatchJump(j, _instructions.Count);
+            }
+
+            return resultReg;
+        }
+
+        var member = (MemberExpressionNode)node.Target;
+        ThrowIfPrivateMemberAccess(member);
+        var objReg = CompileExpression(member.Object);
+
+        if (member.Computed)
+        {
+            var keyReg = CompileExpression(member.PropertyExpression!);
+            var curReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.GetElem, curReg, objReg, keyReg));
+            var resultReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.Move, resultReg, curReg, 0));
+
+            var skipJumps = EmitLogicalAssignTest(node.Operator, curReg);
+            var valReg = CompileExpression(node.Value);
+            _instructions.Add(new Instruction(OpCode.SetElem, objReg, keyReg, valReg));
+            _instructions.Add(new Instruction(OpCode.Move, resultReg, valReg, 0));
+            foreach (var j in skipJumps)
+            {
+                PatchJump(j, _instructions.Count);
+            }
+
+            return resultReg;
+        }
+
+        var nameIndex = GetOrCreatePropertyName(member.Property);
+        var isPrivate = IsPrivateMangled(member.Property);
+        var getOp = isPrivate ? OpCode.GetPrivateField : OpCode.GetPropByName;
+        var curMemberReg = AllocateRegister();
+        _instructions.Add(new Instruction(getOp, curMemberReg, objReg, nameIndex));
+        var resultMemberReg = AllocateRegister();
+        _instructions.Add(new Instruction(OpCode.Move, resultMemberReg, curMemberReg, 0));
+
+        var memberSkipJumps = EmitLogicalAssignTest(node.Operator, curMemberReg);
+        var newValReg = CompileExpression(node.Value);
+        var setOp = isPrivate
+            ? (_compilingClassConstructor ? OpCode.DefinePrivateField : OpCode.SetPrivateField)
+            : OpCode.SetPropByName;
+        _instructions.Add(new Instruction(setOp, objReg, nameIndex, newValReg));
+        _instructions.Add(new Instruction(OpCode.Move, resultMemberReg, newValReg, 0));
+        foreach (var j in memberSkipJumps)
+        {
+            PatchJump(j, _instructions.Count);
+        }
+
+        return resultMemberReg;
+    }
+
+    // Emit the short-circuit test for a logical assignment. After this returns,
+    // the next emitted instructions are the "do the assignment" block; the
+    // returned jump placeholders must be patched to the point after that block
+    // (they fire when the assignment should be SKIPPED).
+    private List<int> EmitLogicalAssignTest(string op, int curReg)
+    {
+        switch (op)
+        {
+            case "&&":
+                // Assign when current is truthy; skip (jump) when falsy.
+                return new List<int> { EmitPlaceholder(OpCode.JumpIfFalse, curReg) };
+            case "||":
+            {
+                // Assign when current is falsy; skip when truthy.
+                var toAssign = EmitPlaceholder(OpCode.JumpIfFalse, curReg); // falsy -> assign
+                var skip = EmitPlaceholder(OpCode.Jump);                    // truthy -> skip
+                PatchJump(toAssign, _instructions.Count);                   // assign block begins here
+                return new List<int> { skip };
+            }
+            default: // "??" — assign only when current is null or undefined.
+            {
+                var nullConst = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.LoadConst, nullConst, AddConstant(JsValue.Null), 0));
+                var undefConst = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.LoadConst, undefConst, AddConstant(JsValue.Undefined), 0));
+                var eq = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.StrictEq, eq, curReg, nullConst));
+                var notNull = EmitPlaceholder(OpCode.JumpIfFalse, eq);  // not null -> check undefined
+                var toAssignFromNull = EmitPlaceholder(OpCode.Jump);    // is null -> assign
+                PatchJump(notNull, _instructions.Count);
+                _instructions.Add(new Instruction(OpCode.StrictEq, eq, curReg, undefConst));
+                var skip = EmitPlaceholder(OpCode.JumpIfFalse, eq);     // not undefined -> skip
+                PatchJump(toAssignFromNull, _instructions.Count);       // assign block begins here
+                return new List<int> { skip };
+            }
+        }
+    }
+
     private int CompileUpdateExpression(UnaryExpressionNode unary)
     {
         var isIncrement = unary.Operator is "preIncrement" or "postIncrement";
@@ -2428,6 +2547,8 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.ImportMeta, dest, 0, 0));
                 return dest;
             }
+            case LogicalAssignmentExpressionNode logical:
+                return CompileLogicalAssignment(logical);
             case AssignmentExpressionNode assign when assign.Left is IdentifierExpressionNode id:
             {
                 // NamedEvaluation: `f = function(){}` names the function "f".
