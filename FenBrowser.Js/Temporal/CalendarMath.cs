@@ -11,6 +11,7 @@ internal readonly record struct CalendarFields(
     int Month,
     string MonthCode,
     int Day,
+    int DayOfYear,
     int DaysInMonth,
     int DaysInYear,
     int MonthsInYear,
@@ -78,8 +79,10 @@ internal abstract class CalendarSystem
         long epoch = IsoMath.CivilToEpochDays(iso.Year, iso.Month, iso.Day);
         FromFixed(epoch, out int y, out int m, out int d);
         var (era, eraYear) = EraFor(y, epoch);
+        long yearStartEpoch = ToFixed(y, 1, 1);
+        int dayOfYear = (int)(epoch - yearStartEpoch) + 1;
         return new CalendarFields(
-            era, eraYear, y, m, MonthCodeFor(y, m), d,
+            era, eraYear, y, m, MonthCodeFor(y, m), d, dayOfYear,
             DaysInMonthOrdinal(y, m), DaysInYear(y), MonthsInYear(y), InLeapYear(y));
     }
 
@@ -253,6 +256,7 @@ internal static class CalendarMath
             new IndianCalendarSystem(),
             new IslamicCalendarSystem("islamic-civil", civilEpoch: true),
             new IslamicCalendarSystem("islamic-tbla", civilEpoch: false),
+            new IslamicUmalquraCalendarSystem(),
             new PersianCalendarSystem(),
             new HebrewCalendarSystem(),
             new EastAsianCalendarSystem("chinese", new System.Globalization.ChineseLunisolarCalendar()),

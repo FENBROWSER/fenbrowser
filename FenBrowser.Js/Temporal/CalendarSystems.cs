@@ -329,6 +329,110 @@ internal sealed class IndianCalendarSystem : CalendarSystem
     }
 }
 
+// Islamic Umm Al-Qura calendar (islamic-umalqura) backed by .NET's
+// System.Globalization.UmAlQuraCalendar. The .NET implementation covers the
+// range 1318–1500 AH (1900–2077 CE); dates outside this range fall back to the
+// tabular Islamic (civil) algorithm.
+internal sealed class IslamicUmalquraCalendarSystem : CalendarSystem
+{
+    private static readonly System.Globalization.UmAlQuraCalendar _netCal = new();
+    private const long TableEpochRd = 227015; // same epoch as islamic-civil
+
+    // .NET UmAlQuraCalendar range in epoch days.
+    private static readonly long _netMinEpoch = IsoMath.CivilToEpochDays(
+        _netCal.MinSupportedDateTime.Year, _netCal.MinSupportedDateTime.Month, _netCal.MinSupportedDateTime.Day);
+    private static readonly long _netMaxEpoch = IsoMath.CivilToEpochDays(
+        _netCal.MaxSupportedDateTime.Year, _netCal.MaxSupportedDateTime.Month, _netCal.MaxSupportedDateTime.Day);
+    private static readonly int _netMinYear = _netCal.GetYear(_netCal.MinSupportedDateTime);
+    private static readonly int _netMaxYear = _netCal.GetYear(_netCal.MaxSupportedDateTime);
+
+    public override string Id => "islamic-umalqura";
+    public override int MonthsInYear(int year) => 12;
+
+    private static bool InRange(int year) => year >= _netMinYear && year <= _netMaxYear;
+
+    public override bool InLeapYear(int year) => DaysInYear(year) == 355;
+
+    public override int DaysInMonthOrdinal(int year, int month)
+    {
+        if (month == 12) return InLeapYear(year) ? 30 : 29;
+        return month % 2 == 1 ? 30 : 29;
+    }
+
+    public override long ToFixed(int year, int month, int day)
+    {
+        try
+        {
+            var dt = _netCal.ToDateTime(year, month, day, 0, 0, 0, 0);
+            return IsoMath.CivilToEpochDays(dt.Year, dt.Month, dt.Day);
+        }
+        catch
+        {
+            // Tabular Islamic fallback (same epoch as islamic-civil).
+            long rd = TableEpochRd - 1 + (year - 1L) * 354 + FloorDiv(3 + 11L * year, 30)
+                      + 29L * (month - 1) + FloorDiv(month, 2) + day;
+            return rd - RataDieToEpoch;
+        }
+    }
+
+    public override void FromFixed(long epochDay, out int year, out int month, out int day)
+    {
+        if (epochDay >= _netMinEpoch && epochDay <= _netMaxEpoch)
+        {
+            var iso = IsoMath.EpochDaysToCivil(epochDay);
+            var dt = new DateTime(iso.Year, iso.Month, iso.Day);
+            year = _netCal.GetYear(dt);
+            month = _netCal.GetMonth(dt);
+            day = _netCal.GetDayOfMonth(dt);
+            return;
+        }
+
+        // Tabular Islamic fallback.
+        long date = epochDay + RataDieToEpoch;
+        long y = FloorDiv(30 * (date - TableEpochRd) + 10646, 10631);
+        long priorDays = date - (TableToFixed((int)y, 1, 1) + RataDieToEpoch);
+        long m = Math.Min(12, FloorDiv(11 * priorDays + 330, 325));
+        long monthStart = TableToFixed((int)y, (int)m, 1) + RataDieToEpoch;
+        long d = date - monthStart + 1;
+        year = (int)y;
+        month = (int)m;
+        day = (int)d;
+    }
+
+    private long TableToFixed(int year, int month, int day)
+    {
+        long rd = TableEpochRd - 1 + (year - 1L) * 354 + FloorDiv(3 + 11L * year, 30)
+                  + 29L * (month - 1) + FloorDiv(month, 2) + day;
+        return rd - RataDieToEpoch;
+    }
+
+    public override (string?, int?) EraFor(int year, long epochDay)
+        => year >= 1 ? ("ah", year) : ("bh", 1 - year);
+
+    public override bool YearFromEra(string era, int eraYear, out int year)
+    {
+        switch (era)
+        {
+            case "ah": year = eraYear; return true;
+            case "bh": year = 1 - eraYear; return true;
+            default: year = 0; return false;
+        }
+    }
+
+    public override string MonthCodeFor(int year, int month) => $"M{month:D2}";
+    public override bool MonthFromCode(int year, string code, out int month, out bool existsInYear)
+    {
+        existsInYear = false;
+        if (!ParseSimpleMonthCode(code, out int ord, out bool leap) || leap || ord > 12) { month = 0; return false; }
+        month = ord;
+        existsInYear = ord is >= 1 and <= 12;
+        return true;
+    }
+
+    private static long FloorDiv(long a, long b) { long q = a / b; if (a % b != 0 && (a < 0) != (b < 0)) q--; return q; }
+    private static long Mod(long a, long b) { long r = a % b; if (r != 0 && (r < 0) != (b < 0)) r += b; return r; }
+}
+
 // Tabular Islamic calendar (islamic-civil and islamic-tbla). 12 alternating
 // months of 30/29 days; the 30-year cycle has 11 leap years (extra day in the
 // 12th month). islamic-civil and islamic-tbla differ only by epoch (Fri/Thu).

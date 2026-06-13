@@ -627,6 +627,26 @@ public sealed class TemporalStub : IBuiltinModule
         return string.IsNullOrEmpty(c) ? "iso8601" : c;
     }
 
+    private static void RequireMatchingCalendar(IBuiltinContext ctx, string self, string other)
+    {
+        string a = string.IsNullOrEmpty(self) ? "iso8601" : self;
+        string b = string.IsNullOrEmpty(other) ? "iso8601" : other;
+        if (!string.Equals(a, b, StringComparison.Ordinal))
+            throw new JsThrownException(ctx.CreateRangeError("cannot use until/since with PDTs having different calendars"));
+    }
+
+    private static void RequireNoTimeStyle(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> a)
+    {
+        if (a.Count > 0 && a[0].Tag == JsValueTag.Object && TryGetField(ctx, h, a[0], "timeStyle", out _))
+            throw new JsThrownException(ctx.CreateTypeError("timeStyle conflicts with date-only Temporal types."));
+    }
+
+    private static void RequireNoDateStyle(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> a)
+    {
+        if (a.Count > 0 && a[0].Tag == JsValueTag.Object && TryGetField(ctx, h, a[0], "dateStyle", out _))
+            throw new JsThrownException(ctx.CreateTypeError("dateStyle conflicts with time-only Temporal types."));
+    }
+
     /// <summary>Calendar-relative field view of an ISO date, or null for iso8601 / unsupported calendars.</summary>
     private static CalendarFields? CalFields(string calId, IsoDate iso)
         => CalendarMath.Get(calId)?.ToFields(iso);
@@ -2418,9 +2438,9 @@ public sealed class TemporalStub : IBuiltinModule
         AddGetter(ctx, h, pH, p, "day", o => { var iso = DecodeIsoDate(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), iso)?.Day ?? iso.Day); });
         AddGetter(ctx, h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
         AddGetter(ctx, h, pH, p, "dayOfWeek", o => JsValue.FromNumber(IsoMath.DayOfWeek(DecodeIsoDate(h, o))));
-        AddGetter(ctx, h, pH, p, "dayOfYear", o => JsValue.FromNumber(IsoMath.DayOfYear(DecodeIsoDate(h, o))));
-        AddGetter(ctx, h, pH, p, "weekOfYear", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDate(h, o)).Week));
-        AddGetter(ctx, h, pH, p, "yearOfWeek", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDate(h, o)).Year));
+        AddGetter(ctx, h, pH, p, "dayOfYear", o => { var dt = DecodeIsoDate(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), dt)?.DayOfYear ?? IsoMath.DayOfYear(dt)); });
+        AddGetter(ctx, h, pH, p, "weekOfYear", o => { var dt = DecodeIsoDate(h, o); return CalFields(CalId(h, o), dt) is null ? JsValue.FromNumber(IsoMath.WeekOfYear(dt).Week) : JsValue.Undefined; });
+        AddGetter(ctx, h, pH, p, "yearOfWeek", o => { var dt = DecodeIsoDate(h, o); return CalFields(CalId(h, o), dt) is null ? JsValue.FromNumber(IsoMath.WeekOfYear(dt).Year) : JsValue.Undefined; });
         AddGetter(ctx, h, pH, p, "daysInWeek", o => JsValue.FromNumber(7));
         AddGetter(ctx, h, pH, p, "daysInMonth", o => { var dt = DecodeIsoDate(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), dt)?.DaysInMonth ?? IsoMath.DaysInMonth(dt.Year, dt.Month)); });
         AddGetter(ctx, h, pH, p, "daysInYear", o => { var dt = DecodeIsoDate(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), dt)?.DaysInYear ?? IsoMath.DaysInYear(dt.Year)); });
@@ -2438,7 +2458,7 @@ public sealed class TemporalStub : IBuiltinModule
                 || TryGetField(ctx, h, bagValue, "era", out _) || TryGetField(ctx, h, bagValue, "eraYear", out _);
             if (!hasField)
                 throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
-            var iso = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, CalFields(cal, cur) ?? new CalendarFields(null, null, cur.Year, cur.Month, $"M{cur.Month:D2}", cur.Day, 0, 0, 12, false));
+            var iso = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, CalFields(cal, cur) ?? new CalendarFields(null, null, cur.Year, cur.Month, $"M{cur.Month:D2}", cur.Day, 0, 0, 0, 12, false));
             return AttachPrototype(h, MakePlainDateYmd(ctx, h, iso.Year, iso.Month, iso.Day, cal), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "withCalendar", (o, a) => {
@@ -2465,14 +2485,16 @@ public sealed class TemporalStub : IBuiltinModule
             return AttachPrototype(h, MakePlainDateYmd(ctx, h, result.Year, result.Month, result.Day, GetVStr(h, o, "calendarId")), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
-            var (other, _) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var (other, otherCal) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            RequireMatchingCalendar(ctx, CalId(h, o), otherCal);
             var s = GetDifferenceSettings(ctx, h, a, 1, DateDiffUnits, "day", "day");
             var (yy, mm, ww, dd) = DifferenceDateDuration(CalId(h, o), DecodeIsoDate(h, o), other, s.Largest);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
                 MakeDuration(ctx, h, yy, mm, ww, ToSafeInt(dd), 0, 0, 0, 0, 0, 0));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
-            var (other, _) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var (other, otherCal) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            RequireMatchingCalendar(ctx, CalId(h, o), otherCal);
             var s = GetDifferenceSettings(ctx, h, a, 1, DateDiffUnits, "day", "day");
             var (yy, mm, ww, dd) = DifferenceDateDuration(CalId(h, o), DecodeIsoDate(h, o), other, s.Largest);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
@@ -2533,7 +2555,10 @@ public sealed class TemporalStub : IBuiltinModule
             var d = DecodeIsoDate(h, o);
             return JsValue.FromString($"{FormatIsoYear(d.Year)}-{d.Month:D2}-{d.Day:D2}{CalendarSuffix(h, o, opts)}");
         }, 0);
-        AddMethod(ctx, h, pH, p, "toLocaleString", (o, _) => FormatPlainDate(h, o), 0);
+        AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => {
+            RequireNoTimeStyle(ctx, h, a);
+            return FormatPlainDate(h, o);
+        }, 2);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainDate(h, o), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("PlainDate.prototype.valueOf throws.")), 0);
         var c = h.GetObject(cH);
@@ -2662,7 +2687,10 @@ public sealed class TemporalStub : IBuiltinModule
             var selfNs = DurationToNanos(0, (int)GetVNum(h,o,"hour"), (int)GetVNum(h,o,"minute"), (int)GetVNum(h,o,"second"), (int)GetVNum(h,o,"millisecond"), (int)GetVNum(h,o,"microsecond"), (int)GetVNum(h,o,"nanosecond"));
             return JsValue.FromBoolean(selfNs == other.ToNanosecondsOfDay());
         }, 1);
-        AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => PlainTimeToLocaleString(ctx, h, o, a), 2);
+        AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => {
+            RequireNoDateStyle(ctx, h, a);
+            return PlainTimeToLocaleString(ctx, h, o, a);
+        }, 2);
         AddMethod(ctx, h, pH, p, "toString", (o, a) => {
             var opts = GetToStringOptions(ctx, h, a, 0);
             long dayNs = DecodeTimeOfDayNs(h, o);
@@ -2752,9 +2780,9 @@ public sealed class TemporalStub : IBuiltinModule
         AddGetter(ctx, h, pH, p, "monthCode", o => { var iso = DecodeIsoDateLong(h, o); return JsValue.FromString(CalFields(CalId(h, o), iso)?.MonthCode ?? $"M{iso.Month:D2}"); });
         AddGetter(ctx, h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
         AddGetter(ctx, h, pH, p, "dayOfWeek", o => JsValue.FromNumber(IsoMath.DayOfWeek(DecodeIsoDateLong(h, o))));
-        AddGetter(ctx, h, pH, p, "dayOfYear", o => JsValue.FromNumber(IsoMath.DayOfYear(DecodeIsoDateLong(h, o))));
-        AddGetter(ctx, h, pH, p, "weekOfYear", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDateLong(h, o)).Week));
-        AddGetter(ctx, h, pH, p, "yearOfWeek", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDateLong(h, o)).Year));
+        AddGetter(ctx, h, pH, p, "dayOfYear", o => { var dt = DecodeIsoDateLong(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), dt)?.DayOfYear ?? IsoMath.DayOfYear(dt)); });
+        AddGetter(ctx, h, pH, p, "weekOfYear", o => { var dt = DecodeIsoDateLong(h, o); return CalFields(CalId(h, o), dt) is null ? JsValue.FromNumber(IsoMath.WeekOfYear(dt).Week) : JsValue.Undefined; });
+        AddGetter(ctx, h, pH, p, "yearOfWeek", o => { var dt = DecodeIsoDateLong(h, o); return CalFields(CalId(h, o), dt) is null ? JsValue.FromNumber(IsoMath.WeekOfYear(dt).Year) : JsValue.Undefined; });
         AddGetter(ctx, h, pH, p, "daysInWeek", o => JsValue.FromNumber(7));
         AddGetter(ctx, h, pH, p, "daysInMonth", o => { var dt = DecodeIsoDateLong(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), dt)?.DaysInMonth ?? IsoMath.DaysInMonth(dt.Year, dt.Month)); });
         AddGetter(ctx, h, pH, p, "daysInYear", o => { var dt = DecodeIsoDateLong(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), dt)?.DaysInYear ?? IsoMath.DaysInYear(dt.Year)); });
@@ -2787,7 +2815,7 @@ public sealed class TemporalStub : IBuiltinModule
             }
             if (!hasDateField && !anyTime)
                 throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
-            var baseFields = CalFields(cal, curDate) ?? new CalendarFields(null, null, curDate.Year, curDate.Month, $"M{curDate.Month:D2}", curDate.Day, 0, 0, 12, false);
+            var baseFields = CalFields(cal, curDate) ?? new CalendarFields(null, null, curDate.Year, curDate.Month, $"M{curDate.Month:D2}", curDate.Day, 0, 0, 0, 12, false);
             var date = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, out var overflow, baseFields);
             if (overflow == "reject")
                 ValidateTime(ctx, timeValues[0], timeValues[1], timeValues[2], timeValues[3], timeValues[4], timeValues[5]);
@@ -3014,7 +3042,7 @@ public sealed class TemporalStub : IBuiltinModule
             if (!hasField)
                 throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
             var cur = DecodeYearMonthIso(h, o);
-            var baseFields = CalFields(cal, cur) ?? new CalendarFields(null, null, cur.Year, cur.Month, $"M{cur.Month:D2}", cur.Day, 0, 0, 12, false);
+            var baseFields = CalFields(cal, cur) ?? new CalendarFields(null, null, cur.Year, cur.Month, $"M{cur.Month:D2}", cur.Day, 0, 0, 0, 12, false);
             var iso = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, baseFields, requireDay: false, readDay: false);
             iso = YearMonthReferenceIso(cal, iso);
             return AttachPrototype(h, MakePlainYearMonth(ctx, h, iso.Year, iso.Month, cal, iso.Day), pH);
@@ -3035,14 +3063,16 @@ public sealed class TemporalStub : IBuiltinModule
             return AttachPrototype(h, MakePlainYearMonth(ctx, h, res.Year, res.Month, GetVStr(h, o, "calendarId"), res.Day), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
-            var (oy, om, od, _) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var (oy, om, od, otherCal) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            RequireMatchingCalendar(ctx, CalId(h, o), otherCal);
             var s = GetDifferenceSettings(ctx, h, a, 1, YearMonthDiffUnits, "month", "year");
             var (yy, mm, _, _) = DifferenceDateDuration(CalId(h, o), DecodeYearMonthIso(h, o), new IsoDate(oy, om, od), s.Largest);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
                 MakeDuration(ctx, h, yy, mm, 0, 0, 0, 0, 0, 0, 0, 0));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
-            var (oy, om, od, _) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var (oy, om, od, otherCal) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            RequireMatchingCalendar(ctx, CalId(h, o), otherCal);
             var s = GetDifferenceSettings(ctx, h, a, 1, YearMonthDiffUnits, "month", "year");
             var (yy, mm, _, _) = DifferenceDateDuration(CalId(h, o), DecodeYearMonthIso(h, o), new IsoDate(oy, om, od), s.Largest);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
@@ -3084,6 +3114,10 @@ public sealed class TemporalStub : IBuiltinModule
             return JsValue.FromString($"{FormatIsoYear(iso.Year)}-{iso.Month:D2}{day}{suffix}");
         }, 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainYearMonth(h, o), 0);
+        AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => {
+            RequireNoTimeStyle(ctx, h, a);
+            return FormatPlainYearMonth(h, o);
+        }, 2);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
         AddStatic(ctx, h, cH, c, "from", a => {
@@ -3194,6 +3228,10 @@ public sealed class TemporalStub : IBuiltinModule
             return JsValue.FromString($"{year}{m:D2}-{d:D2}{suffix}");
         }, 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainMonthDay(h, o), 0);
+        AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => {
+            RequireNoTimeStyle(ctx, h, a);
+            return FormatPlainMonthDay(h, o);
+        }, 2);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
         AddStatic(ctx, h, cH, c, "from", a => {
@@ -3431,9 +3469,9 @@ public sealed class TemporalStub : IBuiltinModule
         AddGetter(ctx, h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
         AddGetter(ctx, h, pH, p, "monthCode", o => { var iso = DecodeIsoDateLong(h, o); return JsValue.FromString(CalFields(CalId(h, o), iso)?.MonthCode ?? $"M{iso.Month:D2}"); });
         AddGetter(ctx, h, pH, p, "dayOfWeek", o => JsValue.FromNumber(IsoMath.DayOfWeek(DecodeIsoDateLong(h, o))));
-        AddGetter(ctx, h, pH, p, "dayOfYear", o => JsValue.FromNumber(IsoMath.DayOfYear(DecodeIsoDateLong(h, o))));
-        AddGetter(ctx, h, pH, p, "weekOfYear", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDateLong(h, o)).Week));
-        AddGetter(ctx, h, pH, p, "yearOfWeek", o => JsValue.FromNumber(IsoMath.WeekOfYear(DecodeIsoDateLong(h, o)).Year));
+        AddGetter(ctx, h, pH, p, "dayOfYear", o => { var dt = DecodeIsoDateLong(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), dt)?.DayOfYear ?? IsoMath.DayOfYear(dt)); });
+        AddGetter(ctx, h, pH, p, "weekOfYear", o => { var dt = DecodeIsoDateLong(h, o); return CalFields(CalId(h, o), dt) is null ? JsValue.FromNumber(IsoMath.WeekOfYear(dt).Week) : JsValue.Undefined; });
+        AddGetter(ctx, h, pH, p, "yearOfWeek", o => { var dt = DecodeIsoDateLong(h, o); return CalFields(CalId(h, o), dt) is null ? JsValue.FromNumber(IsoMath.WeekOfYear(dt).Year) : JsValue.Undefined; });
         AddGetter(ctx, h, pH, p, "hoursInDay", o => {
             var date = DecodeIsoDateLong(h, o);
             string tz = GetVStr(h, o, "tz");
@@ -3479,7 +3517,7 @@ public sealed class TemporalStub : IBuiltinModule
                 throw new JsThrownException(ctx.CreateTypeError("with: timeZone and calendar cannot be changed here; use withTimeZone/withCalendar."));
             if (!hasDateField && !anyTime && !hasOffset)
                 throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
-            var baseFields = CalFields(cal, curDate) ?? new CalendarFields(null, null, curDate.Year, curDate.Month, $"M{curDate.Month:D2}", curDate.Day, 0, 0, 12, false);
+            var baseFields = CalFields(cal, curDate) ?? new CalendarFields(null, null, curDate.Year, curDate.Month, $"M{curDate.Month:D2}", curDate.Day, 0, 0, 0, 12, false);
             var date = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, out var overflow, baseFields);
             if (overflow == "reject")
                 ValidateTime(ctx, timeValues[0], timeValues[1], timeValues[2], timeValues[3], timeValues[4], timeValues[5]);
@@ -3517,14 +3555,16 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "add", (o, a) => AddDurationToZoned(ctx, h, o, a, pH, 1), 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => AddDurationToZoned(ctx, h, o, a, pH, -1), 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
-            var (otherNs, _, _) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "hour");
-            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNs(ctx, h, otherNs - DecodeInstantNanos(h, o)));
+            var (otherNs, _, otherCal) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            RequireMatchingCalendar(ctx, CalId(h, o), otherCal);
+            var s = GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "hour");
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNsBalanced(ctx, h, otherNs - DecodeInstantNanos(h, o), s.Largest));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
-            var (otherNs, _, _) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "hour");
-            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNs(ctx, h, DecodeInstantNanos(h, o) - otherNs));
+            var (otherNs, _, otherCal) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            RequireMatchingCalendar(ctx, CalId(h, o), otherCal);
+            var s = GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "hour");
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDurationFromNsBalanced(ctx, h, DecodeInstantNanos(h, o) - otherNs, s.Largest));
         }, 1);
         AddMethod(ctx, h, pH, p, "round", (o, a) => ZonedRound(ctx, h, o, a, pH), 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
@@ -3804,9 +3844,25 @@ public sealed class TemporalStub : IBuiltinModule
         if (totalNs == long.MinValue) totalNs = long.MinValue + 1;
         double sign = totalNs < 0 ? -1 : 1;
         long abs = Math.Abs(totalNs);
+        long days = 0, weeks = 0;
         double hours = 0, minutes = 0, seconds = 0, millis = 0, micros = 0, nanos = 0;
+        // For day/week, use UTC-equivalent 24h day length. DST-aware balancing is
+        // done in Duration.prototype.round with a relativeTo ZonedDateTime.
+        const long DayNs = 86_400_000_000_000L;
         switch (largest)
         {
+            case "year":
+            case "month":
+                // years/months require calendar-aware diff; for now, balance to days
+                days = abs / DayNs; abs %= DayNs;
+                goto case "hour";
+            case "week":
+                weeks = abs / (DayNs * 7); abs %= (DayNs * 7);
+                days = abs / DayNs; abs %= DayNs;
+                goto case "hour";
+            case "day":
+                days = abs / DayNs; abs %= DayNs;
+                goto case "hour";
             case "hour":
                 hours = abs / 3_600_000_000_000L; abs %= 3_600_000_000_000L;
                 minutes = abs / 60_000_000_000L; abs %= 60_000_000_000L;
@@ -3832,7 +3888,7 @@ public sealed class TemporalStub : IBuiltinModule
                 nanos = abs;
                 break;
         }
-        return MakeDurationD(ctx, h, 0, 0, 0, 0,
+        return MakeDurationD(ctx, h, 0, 0, sign * weeks, sign * days,
             sign * hours, sign * minutes, sign * seconds, sign * millis, sign * micros, sign * nanos);
     }
 

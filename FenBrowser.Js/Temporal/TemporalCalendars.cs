@@ -11,8 +11,8 @@ internal static class TemporalCalendars
         string[] ids =
         {
             "buddhist", "chinese", "coptic", "dangi", "ethioaa", "ethiopic",
-            "gregory", "hebrew", "indian", "islamic", "islamic-civil",
-            "islamic-rgsa", "islamic-tbla", "islamic-umalqura", "iso8601",
+            "gregory", "hebrew", "indian", "islamic-civil",
+            "islamic-tbla", "islamic-umalqura", "iso8601",
             "japanese", "persian", "roc",
         };
         var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
