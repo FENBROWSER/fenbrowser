@@ -29,14 +29,15 @@ public sealed class ErrorBuiltins : IBuiltinModule
         // Store Error.prototype in a place subclasses can reach
         var errorProto = errorProtoHandle;
 
-        // Subclasses chain to Error.prototype
-        bindings.Add(BuiltinBinding.NonEnumerable("TypeError", JsValue.FromObject(CreateNativeError(context, errorProto, "TypeError"))));
-        bindings.Add(BuiltinBinding.NonEnumerable("RangeError", JsValue.FromObject(CreateNativeError(context, errorProto, "RangeError"))));
-        bindings.Add(BuiltinBinding.NonEnumerable("SyntaxError", JsValue.FromObject(CreateNativeError(context, errorProto, "SyntaxError"))));
-        bindings.Add(BuiltinBinding.NonEnumerable("ReferenceError", JsValue.FromObject(CreateNativeError(context, errorProto, "ReferenceError"))));
-        bindings.Add(BuiltinBinding.NonEnumerable("EvalError", JsValue.FromObject(CreateNativeError(context, errorProto, "EvalError"))));
-        bindings.Add(BuiltinBinding.NonEnumerable("URIError", JsValue.FromObject(CreateNativeError(context, errorProto, "URIError"))));
-        bindings.Add(BuiltinBinding.NonEnumerable("SuppressedError", JsValue.FromObject(CreateNativeError(context, errorProto, "SuppressedError", length: 3))));
+        // Subclasses chain to Error.prototype, AND the constructor's [[Prototype]]
+        // is %Error% (ECMA-262 19.5.1).
+        bindings.Add(BuiltinBinding.NonEnumerable("TypeError", JsValue.FromObject(CreateNativeError(context, errorProto, "TypeError", errorCtor))));
+        bindings.Add(BuiltinBinding.NonEnumerable("RangeError", JsValue.FromObject(CreateNativeError(context, errorProto, "RangeError", errorCtor))));
+        bindings.Add(BuiltinBinding.NonEnumerable("SyntaxError", JsValue.FromObject(CreateNativeError(context, errorProto, "SyntaxError", errorCtor))));
+        bindings.Add(BuiltinBinding.NonEnumerable("ReferenceError", JsValue.FromObject(CreateNativeError(context, errorProto, "ReferenceError", errorCtor))));
+        bindings.Add(BuiltinBinding.NonEnumerable("EvalError", JsValue.FromObject(CreateNativeError(context, errorProto, "EvalError", errorCtor))));
+        bindings.Add(BuiltinBinding.NonEnumerable("URIError", JsValue.FromObject(CreateNativeError(context, errorProto, "URIError", errorCtor))));
+        bindings.Add(BuiltinBinding.NonEnumerable("SuppressedError", JsValue.FromObject(CreateNativeError(context, errorProto, "SuppressedError", errorCtor, length: 3))));
 
         // Error.prototype.toString
         DefineProtoMethod(context, heap, errorProto, heap.GetObject(errorProto), "toString", ErrorToString);
@@ -87,10 +88,13 @@ public sealed class ErrorBuiltins : IBuiltinModule
         return ctorHandle;
     }
 
-    private static ObjectHandle CreateNativeError(IBuiltinContext ctx, ObjectHandle errorProtoHandle, string name, int length = 1)
+    private static ObjectHandle CreateNativeError(IBuiltinContext ctx, ObjectHandle errorProtoHandle, string name, ObjectHandle errorCtorHandle, int length = 1)
     {
         var protoHandle = CreateErrorPrototype(ctx, errorProtoHandle, name);
-        return CreateErrorConstructor(ctx, protoHandle, name, length);
+        var ctorHandle = CreateErrorConstructor(ctx, protoHandle, name, length);
+        // ECMA-262 19.5.1: NativeError constructors have [[Prototype]] = %Error%.
+        ctx.Heap.GetObject(ctorHandle).SetPrototype(errorCtorHandle);
+        return ctorHandle;
     }
 
     private static ObjectHandle CreateErrorConstructor(IBuiltinContext ctx, ObjectHandle protoHandle, string name, int length = 1)
