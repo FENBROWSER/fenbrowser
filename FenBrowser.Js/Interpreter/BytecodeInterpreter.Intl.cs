@@ -422,7 +422,7 @@ public sealed partial class BytecodeInterpreter
         // ES2023 useGrouping resolves to a string/false; the legacy boolean true
         // default surfaces as "auto" (its previous meaning), false stays false.
         Put("useGrouping", state.UseGrouping ? JsValue.FromString("auto") : JsValue.FromBoolean(false));
-        Put("notation", JsValue.FromString("standard"));
+        Put("notation", JsValue.FromString(state.Notation ?? "standard"));
         Put("signDisplay", JsValue.FromString(state.SignDisplay ?? "auto"));
         Put("roundingIncrement", JsValue.FromNumber(1));
         Put("roundingMode", JsValue.FromString("halfExpand"));
@@ -1640,18 +1640,21 @@ public sealed partial class BytecodeInterpreter
         string notation = state.Notation ?? "standard";
         string formatted;
         if (notation == "scientific")
-            formatted = absValue.ToString("E" + Math.Max(0, maxFrac), CultureInfo.InvariantCulture);
-            // CLDR: exponent should be "E" + integer without leading zeros
-            int eIdx = formatted.IndexOf('E');
-            if (eIdx >= 0)
+        {
+            if (absValue == 0) { formatted = "0E0"; }
+            else
             {
+                formatted = absValue.ToString("E" + Math.Max(0, maxFrac), CultureInfo.InvariantCulture);
+                int eIdx = formatted.IndexOf('E');
                 string mant = formatted[..eIdx];
                 string exp = formatted[(eIdx + 1)..];
                 if (exp.StartsWith("-")) exp = "-" + exp[1..].TrimStart('0');
+                else if (exp.StartsWith("+")) exp = exp[1..].TrimStart('0');
                 else exp = exp.TrimStart('0');
                 if (exp == "" || exp == "-") exp = exp == "-" ? "-0" : "0";
                 formatted = mant + "E" + exp;
             }
+        }
         else if (notation == "engineering")
         {
             if (absValue == 0) formatted = "0E0";
@@ -1659,7 +1662,9 @@ public sealed partial class BytecodeInterpreter
             {
                 int engExp = ((int)Math.Floor(Math.Log10(absValue)) / 3) * 3;
                 double mantissa = absValue / Math.Pow(10, engExp);
-                formatted = mantissa.ToString("F" + Math.Max(0, maxFrac), CultureInfo.InvariantCulture) + "E" + engExp;
+                if (mantissa >= 1000) { mantissa /= 1000; engExp += 3; }
+                if (mantissa < 1) { mantissa *= 1000; engExp -= 3; }
+                formatted = mantissa.ToString("F" + maxFrac, CultureInfo.InvariantCulture) + "E" + engExp;
             }
         }
         else
