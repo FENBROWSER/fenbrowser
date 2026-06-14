@@ -1426,9 +1426,23 @@ public sealed partial class BytecodeInterpreter
 
     private static CultureInfo ResolveNumberCulture(string locale)
     {
-        if (string.IsNullOrEmpty(locale)) return CultureInfo.InvariantCulture;
-        try { return CultureInfo.GetCultureInfo(locale); }
-        catch (CultureNotFoundException) { return CultureInfo.InvariantCulture; }
+        if (string.IsNullOrEmpty(locale)) return CultureInfo.GetCultureInfo("en-US");
+        // Strip -u- extensions (.NET doesn't parse them).
+        var uIdx = locale.IndexOf("-u-", StringComparison.OrdinalIgnoreCase);
+        var baseLocale = uIdx >= 0 ? locale[..uIdx] : locale;
+        if (string.IsNullOrEmpty(baseLocale)) return CultureInfo.GetCultureInfo("en-US");
+        try { return CultureInfo.GetCultureInfo(baseLocale); }
+        catch (CultureNotFoundException)
+        {
+            // Try just the language part.
+            var dash = baseLocale.IndexOf('-');
+            if (dash > 0)
+            {
+                try { return CultureInfo.GetCultureInfo(baseLocale[..dash]); }
+                catch { return CultureInfo.GetCultureInfo("en-US"); }
+            }
+            return CultureInfo.GetCultureInfo("en-US");
+        }
     }
 
     // Format a number to parts using significant digits (ECMA-402 SetNumberFormatDigitOptions).
