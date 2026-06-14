@@ -1613,6 +1613,14 @@ public sealed partial class BytecodeInterpreter
         var culture = ResolveNumberCulture(state.Locale);
         if (culture == CultureInfo.InvariantCulture) culture = CultureInfo.GetCultureInfo("en-US");
         var nfi = culture.NumberFormat;
+        // Handle special values (NaN, Infinity) before normal formatting.
+        if (double.IsNaN(number))
+            return new[] { new IntlPart("nan", "NaN") };
+        if (double.IsPositiveInfinity(number))
+            return new[] { new IntlPart("infinity", "∞") };
+        if (double.IsNegativeInfinity(number))
+            return new[] { new IntlPart("minusSign", nfi.NegativeSign, state.Unit), new IntlPart("infinity", "∞") };
+
         var style = state.Style ?? "decimal";
         bool negative = number < 0;
         double absValue = Math.Abs(number);
@@ -1686,7 +1694,7 @@ public sealed partial class BytecodeInterpreter
                 }
             }
             var sciParts = new List<IntlPart>();
-            if (showSign && negative)
+            if (negative)
                 sciParts.Add(new IntlPart("minusSign", nfi.NegativeSign, state.Unit));
             sciParts.Add(new IntlPart("literal", ApplyNumberingSystem(sciFormatted, state.NumberingSystem), state.Unit));
             return sciParts;
