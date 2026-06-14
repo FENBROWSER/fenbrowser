@@ -1945,18 +1945,33 @@ public sealed partial class BytecodeInterpreter
 
     private IReadOnlyList<IntlPart> FormatListToParts(IReadOnlyList<string> items, ListFormatState state)
     {
-        _ = state;
         var parts = new List<IntlPart>();
+        if (items.Count == 0) return parts;
+        if (items.Count == 1)
+        {
+            parts.Add(new IntlPart("element", items[0]));
+            return parts;
+        }
+        bool isOr = string.Equals(state.Type, "disjunction", StringComparison.Ordinal);
+        string narrow = state.Style == "narrow";
+        // English CLDR patterns
         for (var i = 0; i < items.Count; i++)
         {
             if (i > 0)
             {
-                parts.Add(new IntlPart("literal", ", "));
+                if (i == items.Count - 1)
+                {
+                    // Last separator: ", and " or ", or "
+                    parts.Add(new IntlPart("literal", narrow ? " " : ", "));
+                    if (!narrow) parts.Add(new IntlPart("literal", isOr ? "or " : "and "));
+                }
+                else
+                {
+                    parts.Add(new IntlPart("literal", narrow ? " " : ", "));
+                }
             }
-
             parts.Add(new IntlPart("element", items[i]));
         }
-
         return parts;
     }
 
