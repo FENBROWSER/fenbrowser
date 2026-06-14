@@ -1369,9 +1369,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 case OpCode.SetPrototype:
                 {
-                    // ECMA-262 7.3.5 OrdinarySetPrototypeOf - the V argument must be
-                    // either an Object or Null; anything else is a TypeError. The
-                    // current spec allows the same-target case as a no-op.
                     var childValue = frame.Registers[ins.A];
                     var parentValue = frame.Registers[ins.B];
                     if (childValue.Tag != JsValueTag.Object)
@@ -1379,6 +1376,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         ThrowOrHandle(frame, CreateTypeError("SetPrototype requires an object target."));
                         break;
                     }
+                    // D=1: object literal __proto__ setter (B.3.1) — no-op for
+                    // non-Object, non-Null values instead of TypeError.
+                    if (ins.D != 0 && parentValue.Tag != JsValueTag.Object && parentValue.Tag != JsValueTag.Null)
+                        break;
 
                     var childHandle = childValue.AsObjectHandle();
                     var childObj = _heap.GetObject(childHandle);

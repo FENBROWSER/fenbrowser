@@ -3352,19 +3352,25 @@ public sealed class BytecodeCompiler
                         }
 
                         var nameIndex = GetOrCreatePropertyName(prop.Key);
-                        // Audit §1: object-literal accessors install via
-                        // DefineGetter/DefineSetter rather than SetPropByName so
-                        // `iter.next` (a getter) invokes the function instead of
-                        // returning it raw.
-                        var namedOp = prop.Kind switch
+                        // ECMA-262 B.3.1: non-computed __proto__ sets prototype
+                        // directly via [[SetPrototypeOf]], bypassing the accessor.
+                        OpCode namedOp;
+                        int namedD = 0;
+                        if (prop.Key == "__proto__" && prop.Kind == ObjectPropertyKind.Data)
                         {
-                            ObjectPropertyKind.Getter => OpCode.DefineGetter,
-                            ObjectPropertyKind.Setter => OpCode.DefineSetter,
-                            _ => OpCode.SetPropByName,
-                        };
+                            namedOp = OpCode.SetPrototype;
+                            namedD = 1; // literal __proto__: no-op for non-Object values
+                        }
+                        else
+                            namedOp = prop.Kind switch
+                            {
+                                ObjectPropertyKind.Getter => OpCode.DefineGetter,
+                                ObjectPropertyKind.Setter => OpCode.DefineSetter,
+                                _ => OpCode.SetPropByName,
+                            };
                         // D=1 marks an object-literal accessor as enumerable.
                         var namedEnum = prop.Kind is ObjectPropertyKind.Getter or ObjectPropertyKind.Setter ? 1 : 0;
-                        _instructions.Add(new Instruction(namedOp, dest, nameIndex, valueReg, namedEnum));
+                        _instructions.Add(new Instruction(namedOp, dest, nameIndex, valueReg, namedD != 0 ? namedD : namedEnum));
                     }
                 }
 
