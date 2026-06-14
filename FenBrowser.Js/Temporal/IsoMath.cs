@@ -271,10 +271,12 @@ internal static class IsoMath
                 intermediate = BalanceYearMonth(intermediate.Year, intermediate.Month + sign);
             }
 
-            if (largestUnit == "month")
+            // ECMA-262 CalendarDateUntil: years are always populated when the
+            // largestUnit is "year" or "month". Don't zero out years for "month".
+            if (largestUnit == "year")
             {
-                months += years * 12;
-                years = 0;
+                // Only for "year": the caller expects years to be the primary output.
+                // For "month": years and months are both returned.
             }
         }
 

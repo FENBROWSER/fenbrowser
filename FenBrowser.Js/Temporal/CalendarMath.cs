@@ -159,20 +159,19 @@ internal abstract class CalendarSystem
         ToNative(one, out int y1, out int m1, out int d1);
         string code1 = MonthCodeFor(y1, m1);
         int years = 0, months = 0;
-        if (largestUnit is "year" or "month")
+        // Compute years and months for all calendar units (year/month/week).
+        // ECMA-262 CalendarDateUntil: the result includes ALL larger units,
+        // not just the requested largestUnit.
+        if (largestUnit is "year" or "month" or "week")
         {
             ToNative(two, out int y2, out _, out _);
             int candidateYears = y2 - y1;
-            // Diagnostic
-            System.Console.Error.WriteLine($"DIFF years={years} y1={y1} y2={y2} largestUnit={largestUnit}");
             if (candidateYears != 0) candidateYears -= sign;
             while (true)
             {
                 int cy = y1 + candidateYears;
                 int co = OrdinalOfCode(cy, code1);
                 if (Surpasses(sign, (cy, co), d1, two)) break;
-                // If the source month code does not exist in this candidate year
-                // (leap→common), and this year is at or past the target, stop.
                 MonthFromCode(cy, code1, out _, out bool existsInCandidate);
                 bool atOrPastTarget = sign > 0 ? cy >= y2 : cy <= y2;
                 if (!existsInCandidate && atOrPastTarget) break;
@@ -181,7 +180,7 @@ internal abstract class CalendarSystem
             }
         }
 
-        if (largestUnit is "year" or "month")
+        if (largestUnit is "year" or "month" or "week")
         {
             // Count whole calendar months from the (one + years) anchor — re-anchored
             // on the source month CODE in that year (its ordinal can shift across a

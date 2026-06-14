@@ -1568,11 +1568,11 @@ public sealed class TemporalStub : IBuiltinModule
         if (increment <= 0) return value;
         long t = value / increment;
         long r = value % increment;
-        // When there is a fractional part (nextSmaller > 0), treat exact
+        // When there is a fractional part (nextSmaller != 0), treat exact
         // division as having a tiny remainder so ceil/floor react correctly.
-        bool hasFraction = nextSmaller > 0;
+        bool hasFraction = nextSmaller != 0;
         if (r == 0 && !hasFraction) return value;
-        if (r == 0 && hasFraction) r = 1; // tiny positive remainder for rounding
+        if (r == 0 && hasFraction) r = nextSmaller > 0 ? 1 : -1;
         long lower = r > 0 ? t : t - 1;
         long upper = r > 0 ? t + 1 : t;
         long absR2 = Math.Abs(r) * 2;
@@ -4375,14 +4375,15 @@ public sealed class TemporalStub : IBuiltinModule
         else if (unit == "month")
         {
             int miy = sys.MonthsInYear((int)(anchor.Year + years));
-            months = (int)RoundToIncrement(months, 0, miy, increment, mode, out _, out _);
+            long monthDays = sys.DaysInMonthOrdinal((int)(anchor.Year + years), (int)months);
+            months = (int)RoundToIncrement(months, (int)days, (int)monthDays, increment, mode, out _, out _);
             weeks = 0; days = 0;
             timeRemainderNs = 0;
         }
         else if (unit == "week")
         {
-            weeks = (int)RoundToIncrement(weeks, (int)days, 7, increment, mode, out long leftoverDays, out _);
-            days = leftoverDays;
+            weeks = (int)RoundToIncrement(weeks, (int)days, 7, increment, mode, out _, out _);
+            days = 0;
             timeRemainderNs = 0;
         }
         else if (unit == "day")
