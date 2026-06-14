@@ -11187,19 +11187,52 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // RangeError per step 3.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "with", ArrayPrototypeWith, length: 2);
 
-        // ECMA-262 23.1.2.3 Array.of(...items). Returns a fresh Array populated with
-        // exactly the supplied items - distinct from new Array(n), which uses a
-        // single Number argument to set length.
-        DefineIntrinsicFunction(constructorHandle, constructor, "of", (_, args) =>
+        // ECMA-262 23.1.2.3 Array.of(...items). Spec algorithm:
+        // 1. Let len be the actual number of arguments.
+        // 2. Let items be the List of arguments.
+        // 3. Let C be the this value.
+        // 4. If IsConstructor(C) is true, let A = ? Construct(C, «len»).
+        // 5. Else, let A = ? ArrayCreate(len).
+        // 6-7. CreateDataPropertyOrThrow for each element.
+        // 8. ? Set(A, "length", len, true). 9. Return A.
+        DefineIntrinsicFunction(constructorHandle, constructor, "of", (thisValue, args) =>
         {
-            var items = new JsValue[args.Count];
-            for (var i = 0; i < args.Count; i++)
+            var len = args.Count;
+            JsValue result;
+            JsObject a;
+            // Step 4: if thisValue is a constructor, use Construct(C, «len»).
+            // ConstructFunction throws TypeError for non-constructable values,
+            // matching the spec's IsConstructor/Construct semantics.
+            if (thisValue.Tag == JsValueTag.Object &&
+                _heap.GetObject(thisValue.AsObjectHandle()) is JsFunctionObject or NativeFunctionObject)
             {
-                items[i] = args[i];
+                result = ConstructFunction(
+                    thisValue,
+                    new[] { JsValue.FromNumber(len) },
+                    thisValue);
+                if (result.Tag != JsValueTag.Object)
+                    throw new JsThrownException(CreateTypeError("Array.of: constructor did not return an object."));
+                a = _heap.GetObject(result.AsObjectHandle());
+            }
+            else
+            {
+                // Step 5: ArrayCreate(len) — ordinary array with Array.prototype.
+                a = new JsObject();
+                a.SetPrototype(EnsureArrayPrototype());
+                a.DefineOwnProperty("length", new JsPropertyDescriptor(
+                    JsValue.FromNumber(len), Writable: true, Enumerable: false, Configurable: false));
+                result = JsValue.FromObject(_heap.AllocateObject(a, AllocationSite.Current()));
             }
 
-            var arr = CreateArrayFromElements(items);
-            return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+            // Steps 6-7: CreateDataPropertyOrThrow for each element.
+            for (var k = 0; k < len; k++)
+            {
+                CreateDataPropertyOrThrow(a, k.ToString(), args[k]);
+            }
+
+            // Step 8: Set(A, "length", 𝔽(len), true).
+            _ = a.SetProperty("length", JsValue.FromNumber(len));
+            return result;
         }, length: 0);
 
         // ECMA-262 23.1.2.1 Array.from(items[, mapFn[, thisArg]]). Spec algorithm:
@@ -12754,39 +12787,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private void CreateDataPropertyOrThrow(JsObject obj, string key, JsValue value)
     {
-        var descriptor = new JsPropertyDescriptor(
-            value,
-            Writable: true,
-            Enumerable: true,
-            Configurable: true);
-
-        if (obj.TryGetOwnProperty(key, out var existing))
-        {
-            // Configurable properties can always be replaced by CreateDataProperty.
-            if (existing.Configurable)
-            {
-                _ = obj.DefineOwnProperty(key, descriptor);
-                return;
-            }
-
-            // Non-configurable properties reject changes to [[Enumerable]],
-            // [[Configurable]], accessor/data kind, and [[Writable]] false data.
-            if (existing.IsAccessor || !existing.Writable || !existing.Enumerable)
-            {
-                throw new JsThrownException(CreateTypeError(
-                    "Cannot redefine non-configurable property '" + key + "'."));
-            }
-
-            _ = obj.DefineOwnProperty(key, existing with { Value = value });
-            return;
-        }
-
-        if (!obj.Extensible)
+        // ECMA-262 7.3.6 CreateDataPropertyOrThrow — same compatibility check
+        // as CreateDataProperty. The descriptor always has Configurable=true,
+        // so it fails for any non-configurable existing property (10.1.6.3 step 4a).
+        var hasExisting = obj.TryGetOwnProperty(key, out var existing);
+        if (!IsCompatiblePropertyDescriptor(
+                obj.Extensible, hasExisting, existing,
+                newIsAccessor: false, hasValue: true, value, hasWritable: true, writable: true,
+                hasEnumerable: true, enumerable: true, hasConfigurable: true, configurable: true,
+                hasGetter: false, JsValue.Undefined, hasSetter: false, JsValue.Undefined))
         {
             throw new JsThrownException(CreateTypeError(
-                "Cannot create property '" + key + "' on a non-extensible object."));
+                "Cannot create data property '" + key + "' on this object."));
         }
 
+        var descriptor = new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true);
         _ = obj.DefineOwnProperty(key, descriptor);
     }
 
