@@ -582,21 +582,29 @@ public sealed partial class BytecodeInterpreter
             return true;
 
         // Temporal.PlainDate / PlainDateTime → convert to UTC midnight.
-        // DecodeIsoDate uses GetV which reads internal _v slots; year=0 means not found.
+        // Read _v internal slots directly (same approach as DecodeIsoDate in TemporalStub).
         if (args[0].Tag == JsValueTag.Object)
         {
             var obj = _heap.GetObject(args[0].AsObjectHandle());
-            var iso = DecodeIsoDate(_heap, obj);
-            if (iso.Year != 0)
+            if (obj.TryGetOwnProperty("_v", out var vd) && vd.Value.Tag == JsValueTag.Object)
             {
-                instant = new DateTimeOffset(iso.Year, iso.Month, iso.Day, 0, 0, 0, TimeSpan.Zero);
-                return true;
-            }
-            iso = DecodeIsoDateLong(_heap, obj);
-            if (iso.Year != 0)
-            {
-                instant = new DateTimeOffset(iso.Year, iso.Month, iso.Day, 0, 0, 0, TimeSpan.Zero);
-                return true;
+                var data = _heap.GetObject(vd.Value.AsObjectHandle());
+                int y = 0, m = 0, d = 0;
+                if (data.TryGetOwnProperty("y", out var yd)) y = (int)yd.Value.AsNumber();
+                else if (data.TryGetOwnProperty("year", out var y2d)) y = (int)y2d.Value.AsNumber();
+                if (y != 0)
+                {
+                    m = data.TryGetOwnProperty("m", out var md) ? (int)md.Value.AsNumber() :
+                        (data.TryGetOwnProperty("month", out var m2d) ? (int)m2d.Value.AsNumber() : 1);
+                    d = data.TryGetOwnProperty("d", out var dd) ? (int)dd.Value.AsNumber() :
+                        (data.TryGetOwnProperty("day", out var d2d) ? (int)d2d.Value.AsNumber() : 1);
+                    m = Math.Clamp(m, 1, 12); d = Math.Clamp(d, 1, 28);
+                    if (!data.TryGetOwnProperty("ens", out _)) // not a ZDT/Instant
+                    {
+                        instant = new DateTimeOffset(y, m, d, 0, 0, 0, TimeSpan.Zero);
+                        return true;
+                    }
+                }
             }
         }
 
@@ -627,7 +635,10 @@ public sealed partial class BytecodeInterpreter
                 return dateObj.TimeValue;
         }
 
-        return ToNumber(arg);
+        // If ToNumber throws (e.g., Temporal objects with throwing valueOf),
+        // return NaN so the caller can handle it.
+        try { return ToNumber(arg); }
+        catch (JsThrownException) { return double.NaN; }
     }
 
     private bool TryGetTemporalInstant(JsValue arg, out DateTimeOffset instant)
@@ -1953,7 +1964,7 @@ public sealed partial class BytecodeInterpreter
             return parts;
         }
         bool isOr = string.Equals(state.Type, "disjunction", StringComparison.Ordinal);
-        string narrow = state.Style == "narrow";
+        bool narrow = state.Style == "narrow";
         // English CLDR patterns
         for (var i = 0; i < items.Count; i++)
         {
