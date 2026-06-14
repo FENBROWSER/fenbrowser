@@ -265,8 +265,13 @@ namespace FenBrowser.FenEngine.Rendering
             // Process CSS counters (counter-reset and counter-increment)
             ProcessCounters(style);
             
-            // Determine if this creates a new stacking context
-            bool createsStackingContext = DetermineCreatesStackingContext(style);
+            // Determine if this creates a new stacking context. An iframe is a scroll
+            // host for its subdocument (even with overflow:hidden it scrolls
+            // programmatically), so it needs its own context to carry the scroll offset
+            // + clip that move its content within the frame box.
+            bool createsStackingContext = DetermineCreatesStackingContext(style) ||
+                (node is Element stackingEl &&
+                 string.Equals(stackingEl.TagName, "IFRAME", StringComparison.OrdinalIgnoreCase));
             int zIndex = style?.ZIndex ?? 0;
 
             /*
@@ -414,8 +419,8 @@ namespace FenBrowser.FenEngine.Rendering
                     PaintNodes = paintNodes,
                     MaskImage = style?.MaskImage,
                     // Use BorderBox for masking area by default (standard box-mask)
-                    MaskBounds = box.BorderBox,
-                    Opacity = (float)(style.Opacity ?? 1.0),
+                    MaskBounds = box?.BorderBox ?? default,
+                    Opacity = (float)(style?.Opacity ?? 1.0),
                     Filter = style?.Filter,
                     BackdropFilter = style?.BackdropFilter
                 };
@@ -479,7 +484,14 @@ namespace FenBrowser.FenEngine.Rendering
                     childContext.ClipBounds = box.PaddingBox;
                 }
 
-                if (isScrollable && _scrollManager != null)
+                // A nested browsing context (iframe) is always a scroll container for its
+                // subdocument: even with overflow:hidden it can be scrolled programmatically
+                // (e.g. Acid2's reftest calls #top.scrollIntoView() inside the frame). Apply
+                // its tracked scroll offset so the frame content scrolls within its own box.
+                bool isIframeScrollHost = node is Element ifrEl &&
+                    string.Equals(ifrEl.TagName, "IFRAME", StringComparison.OrdinalIgnoreCase);
+
+                if ((isScrollable || isIframeScrollHost) && _scrollManager != null)
                 {
                     var scrollElement = node as Element;
                     if (scrollElement != null)
@@ -504,6 +516,12 @@ namespace FenBrowser.FenEngine.Rendering
                         if (scrollState != null)
                         {
                             childContext.ScrollOffset = new SKPoint(scrollState.ScrollX, scrollState.ScrollY);
+                        }
+                        if (isIframeScrollHost)
+                        {
+                            global::FenBrowser.Core.EngineLogCompat.Info(
+                                $"[ScrollIframePaint] host=<{scrollElement.TagName}> hash={scrollElement.GetHashCode()} contentH={contentH:F0} viewportH={viewportH:F0} scrollY={scrollState?.ScrollY:F0} maxY={scrollState?.MaxScrollY:F0}",
+                                LogCategory.Rendering);
                         }
                     }
                 }

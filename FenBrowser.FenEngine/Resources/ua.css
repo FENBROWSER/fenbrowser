@@ -214,10 +214,16 @@ video,
 audio,
 canvas,
 svg,
-iframe,
 embed,
 object {
   display: inline; /* Or inline-block if specialized */
+}
+
+/* Frame with a nested browsing context: atomic inline-block so CSS width/height
+   size the box, and clip the subdocument to that box (its own viewport). */
+iframe {
+  display: inline-block;
+  overflow: hidden;
 }
 
 /* Form controls */

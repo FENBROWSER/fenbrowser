@@ -47,6 +47,12 @@ kbd, samp       { font-family: monospace }
 pre             { white-space: pre }
 button, textarea,
 input, select   { display: inline-block; }
+/* Replaced elements with a nested browsing context. Treat the frame as an
+   atomic inline-block so its CSS width/height size the box (a non-replaced
+   inline box would ignore them), and clip the subdocument to that box so its
+   content scrolls within the frame's own viewport rather than bleeding into
+   the parent page. */
+iframe          { display: inline-block; overflow: hidden; }
 
 /* Form element defaults — lowest specificity, site CSS overrides naturally */
 input, textarea { padding: 5px 2px; border: 1px solid gray; border-radius: 4px; background-color: white; }

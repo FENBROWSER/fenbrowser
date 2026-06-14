@@ -184,6 +184,18 @@ public class BrowserIntegration
                 return;
             }
 
+            // An element inside a nested browsing context must scroll *that* frame's
+            // viewport, not the top-level page. The frame's Document is attached as a
+            // child of its <iframe> host, so the host appears in the element's ancestor
+            // chain. Acid2's reftest depends on this: #top.scrollIntoView() inside the
+            // 400x300 frame reveals the face within the frame, leaving the outer page put.
+            var iframeHost = FindContainingIframe(element);
+            if (iframeHost != null)
+            {
+                ScrollIframeToElement(iframeHost, element);
+                return;
+            }
+
             var rect = GetElementRect(element);
             if (rect.HasValue)
             {
@@ -1618,13 +1630,71 @@ public class BrowserIntegration
     public SKRect? GetElementRect(Element element)
     {
         if (element == null) return null;
-        
+
         lock (_rendererLock)
         {
             var box = _renderer.GetElementBox(element);
             if (box == null) return null;
             return box.BorderBox;
         }
+    }
+
+    /// <summary>
+    /// Walks an element's ancestor chain for the nearest <iframe> host. Returns null
+    /// when the element lives in the top-level document.
+    /// </summary>
+    private static Element FindContainingIframe(Element element)
+    {
+        for (var node = element?.ParentNode; node != null; node = node.ParentNode)
+        {
+            if (node is Element ancestor &&
+                string.Equals(ancestor.TagName, "IFRAME", StringComparison.OrdinalIgnoreCase))
+            {
+                return ancestor;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Scrolls a nested browsing context so <paramref name="target"/>'s top edge aligns
+    /// with the top of the frame's viewport (scrollIntoView default block:"start").
+    /// </summary>
+    private void ScrollIframeToElement(Element iframeHost, Element target)
+    {
+        lock (_rendererLock)
+        {
+            var frameBox = _renderer.GetElementBox(iframeHost);
+            var targetBox = _renderer.GetElementBox(target);
+            if (frameBox == null || targetBox == null)
+            {
+                return;
+            }
+
+            float frameContentTop = frameBox.PaddingBox.Top;
+            float desired = targetBox.BorderBox.Top - frameContentTop;
+            if (desired < 0f) desired = 0f;
+
+            EngineLogBridge.Info(
+                $"[ScrollIframe] host=<{iframeHost.TagName}> hash={iframeHost.GetHashCode()} frameTop={frameContentTop:F0} targetTop={targetBox.BorderBox.Top:F0} desired={desired:F0}",
+                LogCategory.Rendering);
+
+            // Allow the programmatic scroll to reach the target even though the frame is
+            // overflow:hidden; widen the bounds before setting the position so the paint
+            // pass (which re-derives bounds from content) does not clamp it short.
+            float viewportH = Math.Max(0f, frameBox.PaddingBox.Height);
+            _renderer.ScrollManager.SetScrollBounds(
+                iframeHost,
+                Math.Max(0f, frameBox.PaddingBox.Width),
+                desired + viewportH,
+                Math.Max(0f, frameBox.PaddingBox.Width),
+                viewportH);
+            _renderer.ScrollManager.SetScrollPosition(iframeHost, 0, desired);
+        }
+
+        RequestFrame(RenderFrameInvalidationReason.Scroll | RenderFrameInvalidationReason.Overlay,
+            "BrowserIntegration.ScrollIframeToElement", notifyUi: true);
     }
     
     /// <summary>
