@@ -471,10 +471,170 @@ public sealed class JsParser
                 case ClassDeclarationNode classDeclaration:
                     names.Add(classDeclaration.Name);
                     break;
+                // ECMA-262 14.2.1 / Annex B.3.1.1: function declarations inside blocks
+                // are lexically scoped and count as LexicallyDeclaredNames for early
+                // error duplicate detection.
+                case FunctionDeclarationNode funcDecl:
+                    names.Add(funcDecl.Name);
+                    break;
             }
         }
 
         return names;
+    }
+
+    // ECMA-262 14.2.1 Block Static Semantics: Early Errors.
+    // Also incorporates Annex B.3.1.1 sloppy-mode exceptions.
+    private void ValidateBlockEarlyErrors(IReadOnlyList<StatementNode> statements)
+    {
+        ValidateBlockLexicalVarConflicts(statements);
+        // Check for duplicate lexical names (including function declarations).
+        // In strict mode, any duplicate is an error. In sloppy mode, Annex
+        // B.3.1.1 allows duplicate FunctionDeclarations whose BoundNames are
+        // all in VarDeclaredNames.
+        // Track not just whether we've seen a name, but ALSO whether any
+        // prior declaration for that name was async/generator. Annex B.3.1.1
+        // only permits duplicate *ordinary* function declarations.
+        var seenFuncNames = new HashSet<string>(StringComparer.Ordinal);
+        var nonOrdinaryFuncNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var stmt in statements)
+        {
+            if (stmt is FunctionDeclarationNode func)
+            {
+                if (!seenFuncNames.Add(func.Name))
+                {
+                    // In strict mode, any duplicate is an error. In sloppy
+                    // mode, duplicates are only OK when ALL occurrences are
+                    // ordinary (non-async, non-generator) function declarations.
+                    if (_strictMode || func.IsAsync || func.IsGenerator
+                        || nonOrdinaryFuncNames.Contains(func.Name))
+                    {
+                        throw new JsParserException(
+                            $"Duplicate block-level function declaration '{func.Name}'.");
+                    }
+                }
+                if (func.IsAsync || func.IsGenerator)
+                {
+                    nonOrdinaryFuncNames.Add(func.Name);
+                }
+            }
+            else if (stmt is VariableDeclarationStatementNode decl && decl.Kind is "let" or "const")
+            {
+                foreach (var d in decl.Declarators)
+                {
+                    if (!seenFuncNames.Add(d.Identifier))
+                    {
+                        throw new JsParserException(
+                            $"Duplicate lexical declaration '{d.Identifier}' in block.");
+                    }
+                }
+            }
+            else if (stmt is ClassDeclarationNode cls)
+            {
+                if (!seenFuncNames.Add(cls.Name))
+                {
+                    throw new JsParserException(
+                        $"Duplicate class declaration '{cls.Name}' in block.");
+                }
+            }
+        }
+    }
+
+    private static HashSet<string> CollectTopLevelVarDeclaredNames(IReadOnlyList<StatementNode> statements)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        CollectVarDeclaredNamesRecursive(statements, names);
+        return names;
+    }
+
+    // ECMA-262 14.2.1 VarDeclaredNames: var declarations propagate through
+    // nested blocks recursively. `{ { var x; } function x() {} }` must flag
+    // the conflict because the inner `var x` contributes to the outer block's
+    // VarDeclaredNames.
+    private static void CollectVarDeclaredNamesRecursive(IReadOnlyList<StatementNode> statements, HashSet<string> names)
+    {
+        foreach (var statement in statements)
+        {
+            switch (statement)
+            {
+                case VariableDeclarationStatementNode declaration when declaration.Kind is "var":
+                    foreach (var declarator in declaration.Declarators)
+                    {
+                        names.Add(declarator.Identifier);
+                    }
+                    break;
+                // Annex B.3.1.1: in sloppy mode, function declarations inside blocks
+                // also count as var declarations.
+                case FunctionDeclarationNode funcDecl:
+                    names.Add(funcDecl.Name);
+                    break;
+                case BlockStatementNode block:
+                    CollectVarDeclaredNamesRecursive(block.Statements, names);
+                    break;
+            }
+        }
+    }
+
+    private static void CollectVarConflictNamesRecursive(
+        IReadOnlyList<StatementNode> statements,
+        HashSet<string> varDeclNames,
+        HashSet<string> funcDeclNames,
+        HashSet<string> letConstClassNames)
+    {
+        foreach (var stmt in statements)
+        {
+            if (stmt is FunctionDeclarationNode func)
+                funcDeclNames.Add(func.Name);
+            else if (stmt is VariableDeclarationStatementNode vdecl)
+            {
+                foreach (var d in vdecl.Declarators)
+                {
+                    if (vdecl.Kind is "var")
+                        varDeclNames.Add(d.Identifier);
+                    else
+                        letConstClassNames.Add(d.Identifier);
+                }
+            }
+            else if (stmt is ClassDeclarationNode cls)
+                letConstClassNames.Add(cls.Name);
+            else if (stmt is BlockStatementNode block)
+                CollectVarConflictNamesRecursive(block.Statements, varDeclNames, funcDeclNames, letConstClassNames);
+        }
+    }
+
+    // Var-vs-lexical conflict validation for blocks. Function declarations in
+    // sloppy-mode blocks contribute to BOTH LexicallyDeclaredNames AND
+    // VarDeclaredNames (Annex B.3.1.1). A conflict exists when:
+    // (a) a lexical name (let/const/class/func) also appears as a var name from
+    //     an explicit `var` declaration, OR
+    // (b) a lexical name from let/const/class also appears as a function decl.
+    private void ValidateBlockLexicalVarConflicts(IReadOnlyList<StatementNode> statements)
+    {
+        var lexicalNames = CollectTopLevelLexicallyDeclaredNames(statements);
+        if (lexicalNames.Count == 0) return;
+
+        // Var names ONLY from explicit `var` declarations (not function annex B).
+        // Must recurse into nested blocks (ECMA-262 VarDeclaredNames propagates).
+        var varDeclNames = new HashSet<string>(StringComparer.Ordinal);
+        var funcDeclNames = new HashSet<string>(StringComparer.Ordinal);
+        var letConstClassNames = new HashSet<string>(StringComparer.Ordinal);
+        CollectVarConflictNamesRecursive(statements, varDeclNames, funcDeclNames, letConstClassNames);
+
+        foreach (var name in lexicalNames)
+        {
+            // Conflict (a): lexical name vs explicit `var` declaration.
+            if (varDeclNames.Contains(name))
+            {
+                throw new JsParserException(
+                    $"Block-scoped declaration '{name}' conflicts with a var declaration in the same block.");
+            }
+            // Conflict (b): let/const/class name vs function declaration.
+            if (letConstClassNames.Contains(name) && funcDeclNames.Contains(name))
+            {
+                throw new JsParserException(
+                    $"Block-scoped declaration '{name}' conflicts with a function declaration in the same block.");
+            }
+        }
     }
 
     // ECMA-262 15.4.1 MethodDefinition early errors: a getter takes no
@@ -1097,6 +1257,9 @@ public sealed class JsParser
 
         ExpectPunctuator("}");
         var close = Previous();
+        // ECMA-262 14.2.1: early error check for duplicate declarations
+        // and var-vs-lexical conflicts within the block.
+        ValidateBlockEarlyErrors(statements);
         return new BlockStatementNode(statements, MergeSpan(open.Span, close.Span));
     }
 
