@@ -4291,31 +4291,30 @@ public sealed class TemporalStub : IBuiltinModule
         var relDate = relTo.date;
         bool invalid;
         relDate = sys.Add(relDate, dur.years, dur.months, dur.weeks, 0, constrain: true, out invalid);
-        long totalDays = IsoMath.CivilToEpochDays(relDate.Year, relDate.Month, relDate.Day)
-                         - IsoMath.CivilToEpochDays(relTo.date.Year, relTo.date.Month, relTo.date.Day)
-                         + dur.days;
-        long totalNs = totalDays * 86_400_000_000_000L + DurationDayTimeNs(dur);
+        long dateDays = IsoMath.CivilToEpochDays(relDate.Year, relDate.Month, relDate.Day)
+                        - IsoMath.CivilToEpochDays(relTo.date.Year, relTo.date.Month, relTo.date.Day);
+        // Calendar days from Add + the duration's own days field.
+        long totalDays = dateDays + dur.days;
+        // Time components only (hours..nanos), NOT days.
+        long timeNs = dur.hours * 3_600_000_000_000L + dur.minutes * 60_000_000_000L
+            + dur.seconds * 1_000_000_000L + dur.millis * 1_000_000L
+            + dur.micros * 1_000L + dur.nanos;
+        long totalNs = totalDays * 86_400_000_000_000L + timeNs;
 
         smallest ??= "nanosecond";
         string largestEff = largest is null or "auto" ? "day" : largest;
-        // If the target unit is a calendar unit (year/month/week), use the
-        // calendar-aware rounding path.
-        if (smallest == "day" || IsCalendarUnit(smallest))
+        bool needCalendar = smallest == "day" || IsCalendarUnit(smallest)
+            || IsCalendarUnit(largestEff) || largestEff == "day";
+        if (needCalendar)
         {
             return DurationRoundToCalendarUnit(ctx, h, dur, totalNs, smallest!, largestEff, (long)increment, mode, sys, relTo);
         }
 
-        // Time-unit rounding: the calendar portion (years/months/weeks) has
-        // already been converted to days via sys.Add. We now have totalNs
-        // representing the full duration in nanoseconds. Round to the target
-        // time unit and balance.
+        // Pure time-unit rounding: round the total nanoseconds, balance from
+        // the specified largestUnit.
         long tUnitNs = (long)increment * UnitNs(smallest);
         long roundedNs = RoundNsToIncrement(ctx, totalNs, tUnitNs, mode);
-        // If largestEff is a time unit, balance from there; otherwise from "day".
-        string effLargest = largestEff == "auto" ? "day" : largestEff;
-        if (effLargest != "day" && !IsCalendarUnit(effLargest))
-            return MakeDurationBalancedNs(ctx, h, roundedNs, effLargest);
-        return MakeDurationBalancedNs(ctx, h, roundedNs, "day");
+        return MakeDurationBalancedNs(ctx, h, roundedNs, largestEff);
     }
 
     /// <summary>Round total nanoseconds of a calendar-aware duration to a calendar
@@ -4334,28 +4333,56 @@ public sealed class TemporalStub : IBuiltinModule
         var diff = sys.Difference(anchor, resultDate, largestEff == "auto" ? "day" : largestEff);
 
         long years = diff.Years, months = diff.Months, weeks = diff.Weeks, days = diff.Days;
-        // Apply rounding to the target unit.
+        // Time-of-day remainder only (the nanosecond-of-day part after date balancing).
+        long timeRemainderNs = original.hours * 3_600_000_000_000L
+            + original.minutes * 60_000_000_000L + original.seconds * 1_000_000_000L
+            + original.millis * 1_000_000L + original.micros * 1_000L + original.nanos;
+
+        // Apply rounding to the target unit only if it's a calendar unit.
         if (unit == "year")
         {
-            years = RoundToIncrement(years, months, 12, increment, mode, out months, out _);
-            months = 0; weeks = 0; days = 0;
+            long mths = RoundToIncrement(years, months, 12, increment, mode, out long leftoverMonths, out _);
+            years = mths; months = leftoverMonths; weeks = 0; days = 0;
+            timeRemainderNs = 0;
         }
         else if (unit == "month")
         {
-            months = Math.Max(0, months);
             int miy = sys.MonthsInYear((int)(anchor.Year + years));
             months = (int)RoundToIncrement(months, 0, miy, increment, mode, out _, out _);
             weeks = 0; days = 0;
+            timeRemainderNs = 0;
         }
         else if (unit == "week")
         {
             weeks = (int)RoundToIncrement(weeks, (int)days, 7, increment, mode, out long leftoverDays, out _);
             days = leftoverDays;
+            timeRemainderNs = 0;
+        }
+        else if (unit == "day")
+        {
+            // Round days with any remaining time-of-day as the fractional part.
+            long dayNs = days * 86_400_000_000_000L + timeRemainderNs;
+            long roundedDayNs = RoundNsToIncrement(ctx, dayNs, (long)increment * 86_400_000_000_000L, mode);
+            days = (int)(roundedDayNs / 86_400_000_000_000L);
+            timeRemainderNs = roundedDayNs % 86_400_000_000_000L;
+            weeks = 0;
+        }
+
+        // Convert remaining nanoseconds back to time components.
+        long rem = timeRemainderNs;
+        int hours = 0, minutes = 0, seconds = 0, millis = 0, micros = 0, nanos = 0;
+        if (rem != 0)
+        {
+            hours = (int)(rem / 3_600_000_000_000L); rem %= 3_600_000_000_000L;
+            minutes = (int)(rem / 60_000_000_000L); rem %= 60_000_000_000L;
+            seconds = (int)(rem / 1_000_000_000L); rem %= 1_000_000_000L;
+            millis = (int)(rem / 1_000_000L); rem %= 1_000_000L;
+            micros = (int)(rem / 1_000L); rem %= 1_000L;
+            nanos = (int)rem;
         }
 
         return MakeDuration(ctx, h, (int)years, (int)months, (int)weeks, (int)days,
-            original.hours, original.minutes, original.seconds,
-            original.millis, original.micros, original.nanos);
+            hours, minutes, seconds, millis, micros, nanos);
     }
 
     /// <summary>Duration.prototype.round for day/time units.</summary>
@@ -4471,9 +4498,13 @@ public sealed class TemporalStub : IBuiltinModule
         var relDate = relTo.date;
         bool invalid;
         relDate = sys.Add(relDate, dur.years, dur.months, dur.weeks, 0, constrain: true, out invalid);
-        long totalNs = (IsoMath.CivilToEpochDays(relDate.Year, relDate.Month, relDate.Day)
-                        - IsoMath.CivilToEpochDays(relTo.date.Year, relTo.date.Month, relTo.date.Day)
-                        + dur.days) * 86_400_000_000_000L + DurationDayTimeNs(dur);
+        long dateDays = IsoMath.CivilToEpochDays(relDate.Year, relDate.Month, relDate.Day)
+                        - IsoMath.CivilToEpochDays(relTo.date.Year, relTo.date.Month, relTo.date.Day);
+        long totalDays = dateDays + dur.days;
+        long timeNs = dur.hours * 3_600_000_000_000L + dur.minutes * 60_000_000_000L
+            + dur.seconds * 1_000_000_000L + dur.millis * 1_000_000L
+            + dur.micros * 1_000L + dur.nanos;
+        long totalNs = totalDays * 86_400_000_000_000L + timeNs;
         if (unit == "day") return JsValue.FromNumber(totalNs / (double)86_400_000_000_000L);
         if (IsCalendarUnit(unit))
         {
