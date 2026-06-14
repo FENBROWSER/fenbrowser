@@ -7732,9 +7732,158 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _heap.WriteBarrier(handle, fnHandle);
         }
 
+        // ECMA-402 PluralRules constructor (basic .NET-backed).
+        {
+            var prCtor = new NativeFunctionObject("PluralRules",
+                (_, _) => throw new JsThrownException(CreateTypeError("PluralRules must be invoked with 'new'.")),
+                construct: _ => PluralRulesConstruct(),
+                length: 0);
+            var prCtorHandle = _heap.AllocateObject(prCtor, AllocationSite.Current());
+            _heap.PushRoot(prCtorHandle);
+            _ = intl.DefineOwnProperty("PluralRules",
+                new JsPropertyDescriptor(JsValue.FromObject(prCtorHandle), Writable: true, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(handle, prCtorHandle);
+        }
+
+        // ECMA-402 Segmenter constructor (basic stub).
+        {
+            var segCtor = new NativeFunctionObject("Segmenter",
+                (_, _) => throw new JsThrownException(CreateTypeError("Segmenter must be invoked with 'new'.")),
+                construct: _ => SegmenterConstruct(),
+                length: 0);
+            var segCtorHandle = _heap.AllocateObject(segCtor, AllocationSite.Current());
+            _heap.PushRoot(segCtorHandle);
+            _ = intl.DefineOwnProperty("Segmenter",
+                new JsPropertyDescriptor(JsValue.FromObject(segCtorHandle), Writable: true, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(handle, segCtorHandle);
+        }
+
+        // ECMA-402 DisplayNames constructor (basic .NET-backed).
+        {
+            var dnCtor = new NativeFunctionObject("DisplayNames",
+                (_, _) => throw new JsThrownException(CreateTypeError("DisplayNames must be invoked with 'new'.")),
+                construct: args => DisplayNamesConstruct(args),
+                length: 2);
+            var dnCtorHandle = _heap.AllocateObject(dnCtor, AllocationSite.Current());
+            _heap.PushRoot(dnCtorHandle);
+            _ = intl.DefineOwnProperty("DisplayNames",
+                new JsPropertyDescriptor(JsValue.FromObject(dnCtorHandle), Writable: true, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(handle, dnCtorHandle);
+        }
+
         _intlObjectHandle = handle;
         return handle;
     }
+
+    private JsValue PluralRulesConstruct()
+    {
+        var proto = CreateOrdinaryObject();
+        var ph = _heap.AllocateObject(proto, AllocationSite.Current());
+        _heap.PushRoot(ph);
+        var selectFn = new NativeFunctionObject("select", (_, a) =>
+        {
+            double n = a.Count > 0 ? ToNumber(a[0]) : 0;
+            // Basic English plural rules: "one" for 1, "other" otherwise.
+            return JsValue.FromString(n == 1 ? "one" : "other");
+        }, length: 1);
+        proto.DefineOwnProperty("select", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(selectFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+        var inst = CreateOrdinaryObject();
+        inst.SetPrototype(ph);
+        return JsValue.FromObject(_heap.AllocateObject(inst, AllocationSite.Current()));
+    }
+
+    private JsValue SegmenterConstruct()
+    {
+        var proto = CreateOrdinaryObject();
+        var ph = _heap.AllocateObject(proto, AllocationSite.Current());
+        _heap.PushRoot(ph);
+        var segmentFn = new NativeFunctionObject("segment", (_, a) =>
+        {
+            var str = a.Count > 0 ? ToStringValue(a[0]) : "";
+            var segments = CreateOrdinaryObject();
+            var iterFn = new NativeFunctionObject("next", (_, _2) =>
+            {
+                // Simple character-by-character segmentation.
+                var idxObj = new JsObject();
+                // Store state on the segments object.
+                int idx = 0;
+                if (segments.TryGetOwnProperty("_idx", out var idxDesc))
+                    idx = (int)idxDesc.Value.AsNumber();
+                if (idx >= str.Length)
+                {
+                    var doneObj = CreateOrdinaryObject();
+                    doneObj.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+                    return JsValue.FromObject(_heap.AllocateObject(doneObj, AllocationSite.Current()));
+                }
+                var seg = CreateOrdinaryObject();
+                seg.DefineOwnProperty("segment", new JsPropertyDescriptor(JsValue.FromString(str[idx].ToString()), Writable: true, Enumerable: true, Configurable: true));
+                seg.DefineOwnProperty("index", new JsPropertyDescriptor(JsValue.FromNumber(idx), Writable: true, Enumerable: true, Configurable: true));
+                seg.DefineOwnProperty("input", new JsPropertyDescriptor(JsValue.FromString(str), Writable: true, Enumerable: true, Configurable: true));
+                var result = CreateOrdinaryObject();
+                result.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(seg, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
+                result.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
+                segments.DefineOwnProperty("_idx", new JsPropertyDescriptor(JsValue.FromNumber(idx + 1), Writable: true, Enumerable: false, Configurable: false));
+                return JsValue.FromObject(_heap.AllocateObject(result, AllocationSite.Current()));
+            }, length: 0);
+            var iterObj = CreateOrdinaryObject();
+            var iterObjHandle = _heap.AllocateObject(iterObj, AllocationSite.Current());
+            iterObj.DefineOwnProperty("next", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(iterFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+            // Self-referencing Symbol.iterator
+            var capturedHandle = iterObjHandle;
+            var symIter = new NativeFunctionObject("[Symbol.iterator]", (_, _2) => JsValue.FromObject(capturedHandle), length: 0);
+            var symHandle = _heap.AllocateObject(symIter, AllocationSite.Current());
+            var symId = ((IBuiltinContext)this).CreateWellKnownSymbol("iterator").AsSymbolId();
+            iterObj.DefineOwnSymbolProperty(symId, new JsPropertyDescriptor(JsValue.FromObject(symHandle), Writable: true, Enumerable: false, Configurable: true));
+            return JsValue.FromObject(iterObjHandle);
+        }, length: 1);
+        proto.DefineOwnProperty("segment", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(segmentFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+        var inst = CreateOrdinaryObject();
+        inst.SetPrototype(ph);
+        return JsValue.FromObject(_heap.AllocateObject(inst, AllocationSite.Current()));
+    }
+
+    private JsValue DisplayNamesConstruct(IReadOnlyList<JsValue> args)
+    {
+        var locale = args.Count > 0 ? ToStringValue(args[0]) : "en";
+        var opts = args.Count > 1 && args[1].Tag == JsValueTag.Object ? _heap.GetObject(args[1].AsObjectHandle()) : null;
+        string style = "long", type = "language";
+        if (opts is not null)
+        {
+            if (TryGetPropertyValue(opts, args[1], "style", out var sv) && sv.Tag != JsValueTag.Undefined) style = ToStringValue(sv);
+            if (TryGetPropertyValue(opts, args[1], "type", out var tv) && tv.Tag != JsValueTag.Undefined) type = ToStringValue(tv);
+        }
+        var proto = CreateOrdinaryObject();
+        var ph = _heap.AllocateObject(proto, AllocationSite.Current());
+        _heap.PushRoot(ph);
+        var ofFn = new NativeFunctionObject("of", (_, a) =>
+        {
+            var code = a.Count > 0 ? ToStringValue(a[0]) : "";
+            string? result = type switch
+            {
+                "language" => TryGetLanguageDisplayName(code, style),
+                "region" => TryGetRegionDisplayName(code, style),
+                "script" => TryGetScriptDisplayName(code),
+                "currency" => TryGetCurrencyDisplayName(code, style),
+                "calendar" => TryGetCalendarDisplayName(code),
+                _ => code
+            };
+            return JsValue.FromString(result ?? code);
+        }, length: 1);
+        proto.DefineOwnProperty("of", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(ofFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+        var inst = CreateOrdinaryObject();
+        inst.SetPrototype(ph);
+        return JsValue.FromObject(_heap.AllocateObject(inst, AllocationSite.Current()));
+    }
+
+    private static string? TryGetLanguageDisplayName(string code, string style)
+    {
+        try { var c = new System.Globalization.CultureInfo(code); return style == "long" ? c.EnglishName : c.TwoLetterISOLanguageName.ToUpperInvariant(); }
+        catch { return code; }
+    }
+    private static string? TryGetRegionDisplayName(string code, string style) => code;
+    private static string? TryGetScriptDisplayName(string code) => code;
+    private static string? TryGetCurrencyDisplayName(string code, string style) => code;
+    private static string? TryGetCalendarDisplayName(string code) => code;
 
     private JsValue GetCanonicalLocales(IReadOnlyList<JsValue> args)
     {
