@@ -1349,6 +1349,19 @@ public sealed class JsParser
             }
         }
 
+        // ECMA-262 13.7.5: duplicate bound names in for-in/of declarations.
+        if (start.Text is "let" or "const")
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var d in declarators)
+            {
+                if (d.BindingPattern is not null)
+                    ValidateBindingPatternDuplicates(d.BindingPattern, seen);
+                else if (!IsSyntheticPatternBinding(d.Identifier) && !seen.Add(d.Identifier))
+                    throw new JsParserException($"Duplicate declaration '{d.Identifier}'.");
+            }
+        }
+
         if (IsPunctuator(";"))
         {
             Advance();
@@ -1794,6 +1807,7 @@ public sealed class JsParser
             var iterable = ParseExpression(0);
             ExpectPunctuator(")");
             var forInBody = ParseStatement(StatementBodyContext.IterationOrWith);
+            ValidateForHeadBodyVarConflicts(initializer, forInBody);
             return new ForInStatementNode(initializer, iterable, forInBody, MergeSpan(start.Span, forInBody.Span));
         }
 
@@ -1817,6 +1831,7 @@ public sealed class JsParser
             var iterable = ParseExpression(0);
             ExpectPunctuator(")");
             var forOfBody = ParseStatement(StatementBodyContext.IterationOrWith);
+            ValidateForHeadBodyVarConflicts(initializer, forOfBody);
             return isForAwait
                 ? new ForAwaitOfStatementNode(initializer, iterable, forOfBody, MergeSpan(start.Span, forOfBody.Span))
                 : new ForOfStatementNode(initializer, iterable, forOfBody, MergeSpan(start.Span, forOfBody.Span));
@@ -2023,6 +2038,47 @@ public sealed class JsParser
         }
 
         return false;
+    }
+
+    // ECMA-262 13.7.5: the body of a for-in/for-of must not have var-declared
+    // names that conflict with the head's bound names.
+    private void ValidateForHeadBodyVarConflicts(StatementNode? initializer, StatementNode body)
+    {
+        if (initializer is not VariableDeclarationStatementNode decl) return;
+        var boundNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var d in decl.Declarators)
+        {
+            if (d.BindingPattern is not null)
+                CollectBoundNames(d.BindingPattern, boundNames);
+            else if (!IsSyntheticPatternBinding(d.Identifier))
+                boundNames.Add(d.Identifier);
+        }
+        if (boundNames.Count == 0) return;
+        var varNames = new HashSet<string>(StringComparer.Ordinal);
+        CollectVarDeclaredNamesRecursive(new[] { body }, varNames);
+        foreach (var name in boundNames)
+            if (varNames.Contains(name))
+                throw new JsParserException(
+                    $"For-loop body re-declares variable '{name}' from the head declaration.");
+    }
+
+    private static void CollectBoundNames(BindingPatternNode pattern, HashSet<string> names)
+    {
+        switch (pattern)
+        {
+            case IdentifierBindingPatternNode id:
+                if (!IsSyntheticPatternBinding(id.Name)) names.Add(id.Name);
+                break;
+            case ArrayBindingPatternNode arr:
+                foreach (var el in arr.Elements)
+                    if (el.Target is { } t) CollectBoundNames(t, names);
+                break;
+            case ObjectBindingPatternNode obj:
+                foreach (var prop in obj.Properties)
+                    CollectBoundNames(prop.Target, names);
+                if (obj.Rest is { } r) CollectBoundNames(r, names);
+                break;
+        }
     }
 
     private static bool TryGetTopLevelInBinary(ExpressionNode expression, out ExpressionNode left, out ExpressionNode right)
@@ -5515,6 +5571,32 @@ public sealed class JsParser
         ParenthesizedExpressionNode pe => IsSimpleAssignmentTarget(pe.Expression),
         _ => false,
     };
+
+    // ECMA-262: recursive validation of binding patterns for duplicate names.
+    // `for (const [x, x] in {})` must throw SyntaxError.
+    internal static void ValidateBindingPatternDuplicates(BindingPatternNode pattern, HashSet<string> seen)
+    {
+        switch (pattern)
+        {
+            case IdentifierBindingPatternNode id:
+                if (!IsSyntheticPatternBinding(id.Name) && !seen.Add(id.Name))
+                    throw new JsParserException($"Duplicate binding '{id.Name}' in pattern.");
+                break;
+            case ArrayBindingPatternNode arr:
+                foreach (var el in arr.Elements)
+                {
+                    if (el.Target is { } t) ValidateBindingPatternDuplicates(t, seen);
+                }
+                break;
+            case ObjectBindingPatternNode obj:
+                foreach (var prop in obj.Properties)
+                {
+                    ValidateBindingPatternDuplicates(prop.Target, seen);
+                }
+                if (obj.Rest is { } r) ValidateBindingPatternDuplicates(r, seen);
+                break;
+        }
+    }
 
     // ECMA-262 13.15.5 — when an ArrayLiteral/ObjectLiteral sits in a
     // destructuring assignment position (LHS of `=`, or a for-in/of head), it is
