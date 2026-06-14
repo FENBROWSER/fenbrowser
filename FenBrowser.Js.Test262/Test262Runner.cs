@@ -919,6 +919,10 @@ public sealed class Test262Runner
                 }
 
                 var interruptRequested = 0;
+                // Fire interrupt after timeoutMs so the interpreter self-terminates
+                // via its WallClockTimeoutMs check + InterruptCallback polling.
+                using var interruptTimer = new Timer(
+                    _ => Volatile.Write(ref interruptRequested, 1), null, timeoutMs, Timeout.Infinite);
                 var executeCompleted = RunWithPerTestTimeout(() =>
                 {
                     var overrideInvoker = RuntimeInvokerForTests;
@@ -933,8 +937,6 @@ public sealed class Test262Runner
                             ? compiler.CompileProgram(JsParser.ParseModule(source))
                             : compiler.CompileScript(source);
                         var interpreter = new BytecodeInterpreter(new JsHeap());
-                        // Use interpreter-level wall-clock budget so long-running scripts
-                        // terminate from inside execution before the external timeout.
                         interpreter.WallClockTimeoutMs = Math.Max(1, timeoutMs);
                         interpreter.InterruptCallback = () => Volatile.Read(ref interruptRequested) == 0;
                         try
@@ -943,24 +945,17 @@ public sealed class Test262Runner
                         }
                         catch (JsThrownException thrown)
                         {
-                            // Capture a "Name: message" description while the interpreter
-                            // (and its heap) is still alive; the outer catch only sees the
-                            // JsValue handle, whose heap is gone by then.
                             thrown.Description ??= interpreter.DescribeThrownValue(thrown.Value);
                             throw;
                         }
                     }
                 }, timeoutMs);
+                interruptTimer.Change(Timeout.Infinite, Timeout.Infinite); // disarm
                 if (!executeCompleted)
                 {
-                    Volatile.Write(ref interruptRequested, 1);
                     timedOut++;
                     var expected = FindMatchingExpectation(expectations, relativePath, "Timeout");
-                    if (expected is not null)
-                    {
-                        expectedFailures++;
-                    }
-
+                    if (expected is not null) expectedFailures++;
                     failures.Add(new
                     {
                         path = file,
@@ -1487,29 +1482,19 @@ public sealed class Test262Runner
     private static bool RunWithPerTestTimeout(Action action, int timeoutMs)
     {
         ExceptionDispatchInfo? captured = null;
-        using var cts = new CancellationTokenSource(Math.Max(1, timeoutMs));
         var task = Task.Run(() =>
         {
-            try
-            {
-                action();
-            }
-            catch (Exception ex)
-            {
-                captured = ExceptionDispatchInfo.Capture(ex);
-            }
-        }, cts.Token);
+            try { action(); }
+            catch (Exception ex) { captured = ExceptionDispatchInfo.Capture(ex); }
+        });
 
-        try
-        {
-            task.Wait(cts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // Timeout fired before the task completed.
-            // The interpreter's WallClockTimeoutMs + InterruptCallback handle in-flight abort.
+        // WhenAny gives wall-clock timeout. Add 500ms grace period so the
+        // interpreter's WallClockTimeoutMs + InterruptCallback have time
+        // to tear down the test before the external timeout fires.
+        var deadlineMs = Math.Max(1, timeoutMs + 500);
+        var first = Task.WhenAny(task, Task.Delay(deadlineMs)).GetAwaiter().GetResult();
+        if (first != task)
             return false;
-        }
 
         captured?.Throw();
         return true;
