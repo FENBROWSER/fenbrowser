@@ -19,6 +19,8 @@ public sealed partial class BytecodeInterpreter
     private sealed record NumberFormatState(
         string Locale,
         string? Style,
+        string? Currency,
+        string? CurrencyDisplay,
         string? Unit,
         string? UnitDisplay,
         int MinimumIntegerDigits,
@@ -346,6 +348,11 @@ public sealed partial class BytecodeInterpreter
         Put("locale", JsValue.FromString(ResolveNumberFormatLocale(state)));
         Put("numberingSystem", JsValue.FromString(state.NumberingSystem));
         Put("style", JsValue.FromString(style));
+        if (string.Equals(style, "currency", StringComparison.Ordinal))
+        {
+            Put("currency", JsValue.FromString(state.Currency ?? "USD"));
+            Put("currencyDisplay", JsValue.FromString(state.CurrencyDisplay ?? "symbol"));
+        }
         if (string.Equals(style, "unit", StringComparison.Ordinal) && state.Unit is not null)
         {
             Put("unit", JsValue.FromString(state.Unit));
@@ -1276,6 +1283,8 @@ public sealed partial class BytecodeInterpreter
     private NumberFormatState ParseNumberFormatState(string locale, JsValue optionsValue)
     {
         string? style = null;
+        string? currency = null;
+        string? currencyDisplay = null;
         string? unit = null;
         string? unitDisplay = null;
         int minimumIntegerDigits = 1;
@@ -1298,8 +1307,8 @@ public sealed partial class BytecodeInterpreter
             int? GetInt(string name) => TryGetPropertyValue(options, optionsValue, name, out var value) && value.Tag != JsValueTag.Undefined ? (int)ToNumber(value) : null;
 
             style = GetString("style");
-            unit = GetString("unit");
-            unitDisplay = GetString("unitDisplay");
+            if (style == "currency") { currency = GetString("currency"); currencyDisplay = GetString("currencyDisplay"); }
+            if (style == "unit") { unit = GetString("unit"); unitDisplay = GetString("unitDisplay"); }
             minimumIntegerDigits = GetInt("minimumIntegerDigits") ?? 1;
             minimumFractionDigits = GetInt("minimumFractionDigits");
             maximumFractionDigits = GetInt("maximumFractionDigits");
@@ -1313,7 +1322,7 @@ public sealed partial class BytecodeInterpreter
         var localeNumberingSystem = ExtractUnicodeKeyword(locale, "nu");
         var numberingSystem = (optionsNumberingSystem ?? localeNumberingSystem ?? "latn").ToLowerInvariant();
 
-        return new NumberFormatState(locale, style, unit, unitDisplay, minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits, minimumSignificantDigits, maximumSignificantDigits, useGrouping, signDisplay, numberingSystem);
+        return new NumberFormatState(locale, style, currency, currencyDisplay, unit, unitDisplay, minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits, minimumSignificantDigits, maximumSignificantDigits, useGrouping, signDisplay, numberingSystem);
     }
 
     // Extract a Unicode (`-u-`) extension keyword value from a BCP-47 locale,
@@ -2088,6 +2097,7 @@ public sealed partial class BytecodeInterpreter
                 var numberState = new NumberFormatState(
                     locale,
                     unitStyle is "numeric" or "2-digit" ? null : "unit",
+                    null, null,
                     SingularDurationUnit(unit),
                     unitStyle is "numeric" or "2-digit" ? null : unitStyle,
                     unitStyle == "2-digit" ? 2 : 1,
