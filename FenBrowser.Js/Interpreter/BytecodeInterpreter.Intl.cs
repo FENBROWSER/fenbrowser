@@ -581,34 +581,22 @@ public sealed partial class BytecodeInterpreter
         if (TryGetTemporalInstant(args[0], out instant))
             return true;
 
-        // Temporal.PlainDate / PlainDateTime → convert to UTC midnight
+        // Temporal.PlainDate / PlainDateTime → convert to UTC midnight.
+        // DecodeIsoDate uses GetV which reads internal _v slots; year=0 means not found.
         if (args[0].Tag == JsValueTag.Object)
         {
             var obj = _heap.GetObject(args[0].AsObjectHandle());
-            if (obj.TryGetOwnProperty("_v", out var dv) && dv.Value.Tag == JsValueTag.Object)
+            var iso = DecodeIsoDate(_heap, obj);
+            if (iso.Year != 0)
             {
-                var d = _heap.GetObject(dv.Value.AsObjectHandle());
-                // PlainDate has "y"; PlainDateTime has "year" and no "ens" (epoch nanos).
-                bool hasDateFields = d.TryGetOwnProperty("y", out _) || d.TryGetOwnProperty("year", out _);
-                bool hasEpochNanos = d.TryGetOwnProperty("ens", out _);
-                if (hasDateFields && !hasEpochNanos)
-                {
-                    int y, m, day;
-                    if (d.TryGetOwnProperty("y", out var yd))
-                    {
-                        y = (int)yd.Value.AsNumber();
-                        m = (int)(d.TryGetOwnProperty("m", out var md2) ? md2.Value.AsNumber() : 1);
-                        day = (int)(d.TryGetOwnProperty("d", out var dd2) ? dd2.Value.AsNumber() : 1);
-                    }
-                    else
-                    {
-                        y = (int)(d.TryGetOwnProperty("year", out var yd2) ? yd2.Value.AsNumber() : 0);
-                        m = (int)(d.TryGetOwnProperty("month", out var md2) ? md2.Value.AsNumber() : 1);
-                        day = (int)(d.TryGetOwnProperty("day", out var dd2) ? dd2.Value.AsNumber() : 1);
-                    }
-                    instant = new DateTimeOffset(y, Math.Clamp(m, 1, 12), Math.Clamp(day, 1, 28), 0, 0, 0, TimeSpan.Zero);
-                    return true;
-                }
+                instant = new DateTimeOffset(iso.Year, iso.Month, iso.Day, 0, 0, 0, TimeSpan.Zero);
+                return true;
+            }
+            iso = DecodeIsoDateLong(_heap, obj);
+            if (iso.Year != 0)
+            {
+                instant = new DateTimeOffset(iso.Year, iso.Month, iso.Day, 0, 0, 0, TimeSpan.Zero);
+                return true;
             }
         }
 
