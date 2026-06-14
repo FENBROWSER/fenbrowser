@@ -1579,6 +1579,8 @@ public sealed partial class BytecodeInterpreter
         else if (value.Tag == JsValueTag.String && double.TryParse(value.AsString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var n)) number = n;
         else number = ToNumber(value);
         if (double.IsNaN(number)) return new[] { new IntlPart("nan", "NaN") };
+        // ECMA-402: -0 should be treated as +0 for formatting (sign is controlled by signDisplay).
+        if (number == 0) number = 0;
 
         var culture = ResolveNumberCulture(state.Locale);
         if (culture == CultureInfo.InvariantCulture) culture = CultureInfo.GetCultureInfo("en-US");
@@ -1618,6 +1620,17 @@ public sealed partial class BytecodeInterpreter
         string formatted;
         if (notation == "scientific")
             formatted = absValue.ToString("E" + Math.Max(0, maxFrac), CultureInfo.InvariantCulture);
+            // CLDR: exponent should be "E" + integer without leading zeros
+            int eIdx = formatted.IndexOf('E');
+            if (eIdx >= 0)
+            {
+                string mant = formatted[..eIdx];
+                string exp = formatted[(eIdx + 1)..];
+                if (exp.StartsWith("-")) exp = "-" + exp[1..].TrimStart('0');
+                else exp = exp.TrimStart('0');
+                if (exp == "" || exp == "-") exp = exp == "-" ? "-0" : "0";
+                formatted = mant + "E" + exp;
+            }
         else if (notation == "engineering")
         {
             if (absValue == 0) formatted = "0E0";
