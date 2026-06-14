@@ -53,6 +53,7 @@ public sealed class JsParser
     // pattern-vs-literal fate is not yet known. Removed when validated as an
     // assignment pattern; any left at end of parse is a SyntaxError.
     private readonly List<ObjectLiteralExpressionNode> _pendingDuplicateProtoLiterals = new();
+    private readonly List<ObjectLiteralExpressionNode> _pendingCoverInitializedNameLiterals = new();
     private int _classStaticBlockDepth;
     // ECMA-262 grammar parameter [~In]: while true, the `in` keyword is NOT
     // treated as a relational operator so the `for ( LHS in Iterable )` head can
@@ -148,6 +149,15 @@ public sealed class JsParser
         {
             throw new JsParserException(
                 "Duplicate __proto__ fields are not allowed in object literals.");
+        }
+
+        // ECMA-262 12.2.6.1: CoverInitializedName (e.g. `{ a = 1 }`) is only
+        // valid as cover grammar for destructuring assignment patterns, never
+        // in a real object literal.
+        if (_pendingCoverInitializedNameLiterals.Count > 0)
+        {
+            throw new JsParserException(
+                "CoverInitializedName is not valid in an object literal.");
         }
 
         ValidateDirectivePrologueStrictStringEscapes(statements);
@@ -1266,7 +1276,11 @@ public sealed class JsParser
         var statements = new List<StatementNode>();
         while (!Is(TokenKind.EndOfFile) && !IsPunctuator("}"))
         {
-            statements.Add(ParseStatement());
+            var statement = ParseStatement();
+            // ECMA-262 15.1.1: directive prologue may set strict mode for the
+            // remainder of this block (profiled for function/program bodies).
+            UpdateDirectivePrologueState(statement);
+            statements.Add(statement);
         }
 
         ExpectPunctuator("}");
@@ -2169,12 +2183,17 @@ public sealed class JsParser
     private BlockStatementNode ParseFunctionBlockBody(Func<BlockStatementNode> parse)
     {
         _functionBodyDepth++;
+        // ECMA-262 15.1: directive prologue restarts for each function body
+        // so "use strict" inside a function is recognised by the parser.
+        var savedDirectivePrologue = _inDirectivePrologue;
+        _inDirectivePrologue = true;
         try
         {
             return parse();
         }
         finally
         {
+            _inDirectivePrologue = savedDirectivePrologue;
             _functionBodyDepth--;
         }
     }
@@ -4549,6 +4568,14 @@ public sealed class JsParser
                         $"'{key}' is a reserved word and cannot be a shorthand property in strict mode{Where()}.");
                 }
 
+                if (_classStaticBlockDepth > 0 && key is not null &&
+                    (string.Equals(key, "await", StringComparison.Ordinal) ||
+                     string.Equals(key, "arguments", StringComparison.Ordinal)))
+                {
+                    throw new JsParserException(
+                        $"'{key}' may not be used as a shorthand property name inside a class static block.");
+                }
+
                 Advance();
                 value = ParseExpression(2);
                 isCoverInitializedName = true;
@@ -4568,6 +4595,16 @@ public sealed class JsParser
                 {
                     throw new JsParserException(
                         $"'{key}' is a reserved word and cannot be a shorthand property in strict mode{Where()}.");
+                }
+
+                // ECMA-262 15.7: 'await'/'arguments' are not valid shorthand
+                // IdentifierReferences in class static blocks.
+                if (_classStaticBlockDepth > 0 && key is not null &&
+                    (string.Equals(key, "await", StringComparison.Ordinal) ||
+                     string.Equals(key, "arguments", StringComparison.Ordinal)))
+                {
+                    throw new JsParserException(
+                        $"'{key}' may not be used as a shorthand property name inside a class static block.");
                 }
 
                 value = new IdentifierExpressionNode(key!, keyToken.Span);
@@ -4596,6 +4633,14 @@ public sealed class JsParser
             // ObjectAssignmentPattern (cleared in ValidateObjectAssignmentPattern);
             // otherwise ParseProgram throws once parsing completes.
             _pendingDuplicateProtoLiterals.Add(literal);
+        }
+
+        // ECMA-262 12.2.6.1: CoverInitializedName cannot appear in a real
+        // object literal. Defer the error because this may be reinterpreted
+        // as an ObjectAssignmentPattern.
+        if (properties.Any(p => p.IsCoverInitializedName))
+        {
+            _pendingCoverInitializedNameLiterals.Add(literal);
         }
 
         return literal;
@@ -5849,6 +5894,10 @@ public sealed class JsParser
         {
             _pendingDuplicateProtoLiterals.Remove(obj);
         }
+
+        // Likewise, CoverInitializedName is valid in a destructuring pattern —
+        // withdraw the deferred literal error.
+        _pendingCoverInitializedNameLiterals.Remove(obj);
 
         var count = obj.Properties.Count;
         for (var i = 0; i < count; i++)
