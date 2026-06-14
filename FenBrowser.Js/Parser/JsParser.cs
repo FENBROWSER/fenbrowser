@@ -4481,6 +4481,11 @@ public sealed class JsParser
                     throw new JsParserException(
                         $"'{key}' is a reserved word and cannot be a shorthand property{Where()}.");
                 }
+                if (_strictMode && IsStrictModeFutureReservedWord(key))
+                {
+                    throw new JsParserException(
+                        $"'{key}' is a reserved word and cannot be a shorthand property in strict mode{Where()}.");
+                }
 
                 Advance();
                 value = ParseExpression(2);
@@ -4494,6 +4499,13 @@ public sealed class JsParser
                 {
                     throw new JsParserException(
                         $"'{key}' is a reserved word and cannot be a shorthand property{Where()}.");
+                }
+                // ECMA-262 12.2.6.1: FutureReservedWords are disallowed as
+                // shorthand IdentifierReferences in strict mode.
+                if (_strictMode && IsStrictModeFutureReservedWord(key))
+                {
+                    throw new JsParserException(
+                        $"'{key}' is a reserved word and cannot be a shorthand property in strict mode{Where()}.");
                 }
 
                 value = new IdentifierExpressionNode(key, keyToken.Span);
@@ -5451,6 +5463,14 @@ public sealed class JsParser
         }
         return IsIdentifierLike(next);
     }
+
+    // ECMA-262 12.2.6.1: FutureReservedWords disallowed as shorthand identifiers in strict mode.
+    private static bool IsStrictModeFutureReservedWord(string name) => name switch
+    {
+        "implements" or "interface" or "let" or "package" or "private"
+            or "protected" or "public" or "static" or "yield" => true,
+        _ => false
+    };
 
     private bool IsIdentifierLike(Token token)
     {
