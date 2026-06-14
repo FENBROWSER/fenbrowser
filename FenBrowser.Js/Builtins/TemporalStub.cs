@@ -1568,7 +1568,11 @@ public sealed class TemporalStub : IBuiltinModule
         if (increment <= 0) return value;
         long t = value / increment;
         long r = value % increment;
-        if (r == 0) return value;
+        // When there is a fractional part (nextSmaller > 0), treat exact
+        // division as having a tiny remainder so ceil/floor react correctly.
+        bool hasFraction = nextSmaller > 0;
+        if (r == 0 && !hasFraction) return value;
+        if (r == 0 && hasFraction) r = 1; // tiny positive remainder for rounding
         long lower = r > 0 ? t : t - 1;
         long upper = r > 0 ? t + 1 : t;
         long absR2 = Math.Abs(r) * 2;
@@ -1587,9 +1591,9 @@ public sealed class TemporalStub : IBuiltinModule
         };
         didExpand = result != t;
         if (didExpand && result > t && nextSmaller > 0)
-            overflow = -(nextInOne - nextSmaller); // carry from nextSmaller
+            overflow = -(nextInOne - nextSmaller);
         else if (didExpand && result < t && nextSmaller > 0)
-            overflow = nextSmaller; // carry into nextSmaller
+            overflow = nextSmaller;
         return result * increment;
     }
 
@@ -4314,9 +4318,20 @@ public sealed class TemporalStub : IBuiltinModule
             throw new JsThrownException(ctx.CreateRangeError("Duration out of range for this relativeTo."));
 
         smallest ??= "nanosecond";
-        string largestEff = largest is null or "auto" ? "day" : largest;
-        bool needCalendar = smallest == "day" || IsCalendarUnit(smallest)
-            || IsCalendarUnit(largestEff) || largestEff == "day";
+        // For calendar-aware rounding, use the smallest calendar unit as the
+        // largestEff so Difference balances properly. If smallest is a time unit,
+        // use "day" since calendar part is already converted to days.
+        string largestEff;
+        if (IsCalendarUnit(smallest))
+            largestEff = smallest!;
+        else if (IsCalendarUnit(largest))
+            largestEff = largest!;
+        else if (smallest == "day")
+            largestEff = "day";
+        else
+            largestEff = largest is null or "auto" ? "day" : largest;
+        bool needCalendar = IsCalendarUnit(smallest) || IsCalendarUnit(largestEff)
+            || smallest == "day" || largestEff == "day";
         if (needCalendar)
         {
             return DurationRoundToCalendarUnit(ctx, h, dur, totalNs, smallest!, largestEff, (long)increment, mode, sys, relTo);
@@ -4353,8 +4368,8 @@ public sealed class TemporalStub : IBuiltinModule
         // Apply rounding to the target unit only if it's a calendar unit.
         if (unit == "year")
         {
-            long mths = RoundToIncrement(years, months, 12, increment, mode, out long leftoverMonths, out _);
-            years = mths; months = leftoverMonths; weeks = 0; days = 0;
+            long mths = RoundToIncrement(years, months, 12, increment, mode, out _, out _);
+            years = mths; months = 0; weeks = 0; days = 0;
             timeRemainderNs = 0;
         }
         else if (unit == "month")
