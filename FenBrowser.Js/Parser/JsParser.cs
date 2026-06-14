@@ -1362,10 +1362,14 @@ public sealed class JsParser
             }
         }
 
+        // ECMA-262 ASI: after a declaration, require `;`, newline, `}`, or EOF.
+        // Same-line tokens that aren't continuation (`=`, `,`) are errors.
+        var lastTok = Previous();
         if (IsPunctuator(";"))
-        {
             Advance();
-        }
+        else if (!inForHead && !Is(TokenKind.EndOfFile) && !IsPunctuator("}") &&
+                 !HasLineTerminatorBetween(lastTok, Current()))
+            throw new JsParserException($"Unexpected token '{Current().Text}' after declaration.");
 
         var end = Previous();
         return new VariableDeclarationStatementNode(start.Text, declarators, MergeSpan(start.Span, end.Span));
