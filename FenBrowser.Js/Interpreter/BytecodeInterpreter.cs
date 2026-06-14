@@ -6258,35 +6258,71 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return thisValue;
     }
 
+    // ECMA-262 22.2.5.9 RegExp.prototype [ @@match ] ( string )
     private JsValue RegExpPrototypeSymbolMatch(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var regexp = RegExpThisValue(thisValue);
+        if (thisValue.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("RegExp.prototype[@@match] called on non-object."));
+        var rxObj = _heap.GetObject(thisValue.AsObjectHandle());
         var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
-        if (!regexp.Flags.Contains('g', StringComparison.Ordinal))
+        bool global = false;
+        if (TryGetPropertyValue(rxObj, thisValue, "global", out var globalVal))
+            global = IsTruthy(globalVal);
+        if (!global)
+            return RegExpExec(thisValue, input);
+        bool fullUnicode = false;
+        if (TryGetPropertyValue(rxObj, thisValue, "unicode", out var unicodeVal))
+            fullUnicode = IsTruthy(unicodeVal);
+        _ = rxObj.SetProperty("lastIndex", JsValue.FromNumber(0));
+        var results = new List<JsValue>();
+        while (true)
         {
-            return RegExpPrototypeExec(thisValue, new[] { JsValue.FromString(input) });
+            var result = RegExpExec(thisValue, input);
+            if (result.Tag == JsValueTag.Null)
+            {
+                if (results.Count == 0) return JsValue.Null;
+                return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(results), AllocationSite.Current()));
+            }
+            var resultObj = _heap.GetObject(result.AsObjectHandle());
+            string matchStr = "";
+            if (TryGetPropertyValue(resultObj, result, "0", out var match0Val))
+                matchStr = ToStringValue(match0Val);
+            results.Add(JsValue.FromString(matchStr));
+            if (matchStr.Length == 0)
+            {
+                double thisIndex = 0;
+                if (TryGetPropertyValue(rxObj, thisValue, "lastIndex", out var liVal))
+                { var len = ToNumber(liVal); if (!double.IsNaN(len) && len > 0) thisIndex = Math.Min(Math.Truncate(len), 9007199254740991); }
+                int thisIndexInt = thisIndex > int.MaxValue ? int.MaxValue : (int)thisIndex;
+                var nextIndex = AdvanceStringIndex(input, thisIndexInt, fullUnicode);
+                _ = rxObj.SetProperty("lastIndex", JsValue.FromNumber(nextIndex));
+            }
         }
-
-        var values = new List<JsValue>();
-        foreach (Match match in regexp.Regex.Matches(input))
-        {
-            values.Add(JsValue.FromString(match.Value));
-        }
-
-        if (values.Count == 0)
-        {
-            return JsValue.Null;
-        }
-
-        return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(values), AllocationSite.Current()));
     }
 
+    // ECMA-262 22.2.5.11 RegExp.prototype [ @@search ] ( string )
     private JsValue RegExpPrototypeSymbolSearch(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var regexp = RegExpThisValue(thisValue);
+        if (thisValue.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("RegExp.prototype[@@search] called on non-object."));
+        var rxObj = _heap.GetObject(thisValue.AsObjectHandle());
         var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
-        var match = regexp.Regex.Match(input);
-        return JsValue.FromNumber(match.Success ? match.Index : -1);
+        var previousLastIndex = JsValue.FromNumber(0);
+        TryGetPropertyValue(rxObj, thisValue, "lastIndex", out previousLastIndex);
+        if (!(previousLastIndex.Tag == JsValueTag.Number && previousLastIndex.AsNumber() == 0))
+            _ = rxObj.SetProperty("lastIndex", JsValue.FromNumber(0));
+        var result = RegExpExec(thisValue, input);
+        var currentLastIndex = JsValue.FromNumber(0);
+        TryGetPropertyValue(rxObj, thisValue, "lastIndex", out currentLastIndex);
+        if (!(currentLastIndex.Tag == JsValueTag.Number && previousLastIndex.Tag == JsValueTag.Number &&
+              currentLastIndex.AsNumber() == previousLastIndex.AsNumber()))
+            _ = rxObj.SetProperty("lastIndex", previousLastIndex);
+        if (result.Tag == JsValueTag.Null)
+            return JsValue.FromNumber(-1);
+        var resultObj = _heap.GetObject(result.AsObjectHandle());
+        if (TryGetPropertyValue(resultObj, result, "index", out var indexVal))
+            return JsValue.FromNumber(ToNumber(indexVal));
+        return JsValue.FromNumber(-1);
     }
 
     private JsValue RegExpPrototypeSymbolReplace(JsValue thisValue, IReadOnlyList<JsValue> args)
