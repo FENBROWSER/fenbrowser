@@ -6325,54 +6325,164 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return JsValue.FromNumber(-1);
     }
 
+    // ECMA-262 22.2.5.13 RegExp.prototype [ @@replace ] ( string, replaceValue )
     private JsValue RegExpPrototypeSymbolReplace(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var regexp = RegExpThisValue(thisValue);
+        if (thisValue.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("RegExp.prototype[@@replace] called on non-object."));
+        var rxObj = _heap.GetObject(thisValue.AsObjectHandle());
         var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
         var replacement = args.Count > 1 ? args[1] : JsValue.Undefined;
 
-        if (replacement.Tag == JsValueTag.Object && IsCallable(replacement))
+        // Fast path for real RegExp objects that haven't had global overridden.
+        if (rxObj is RegExpObject fastRx &&
+            !rxObj.TryGetOwnProperty("global", out _))
         {
-            var output = regexp.Regex.Replace(input, m =>
+            if (replacement.Tag == JsValueTag.Object && IsCallable(replacement))
             {
-                var result = CallFunction(
-                    replacement,
-                    new[] { JsValue.FromString(m.Value), JsValue.FromNumber(m.Index), JsValue.FromString(input) },
-                    JsValue.Undefined);
-                return ToStringValue(result);
-            });
-            return JsValue.FromString(output);
+                var output = fastRx.Regex.Replace(input, m =>
+                {
+                    var result = CallFunction(replacement,
+                        new[] { JsValue.FromString(m.Value), JsValue.FromNumber(m.Index), JsValue.FromString(input) },
+                        JsValue.Undefined);
+                    return ToStringValue(result);
+                });
+                return JsValue.FromString(output);
+            }
+            var replStr = ToStringValue(replacement);
+            var global = fastRx.Flags.Contains('g', StringComparison.Ordinal);
+            if (global)
+            {
+                var matches = fastRx.Regex.Matches(input);
+                if (matches.Count == 0) return JsValue.FromString(input);
+                var sb = new System.Text.StringBuilder();
+                var prevEnd = 0;
+                foreach (System.Text.RegularExpressions.Match m in matches)
+                { sb.Append(input.AsSpan(prevEnd, m.Index - prevEnd)); sb.Append(GetSubstitution(input, m, replStr, fastRx)); prevEnd = m.Index + m.Length; }
+                sb.Append(input.AsSpan(prevEnd));
+                return JsValue.FromString(sb.ToString());
+            }
+            else
+            {
+                var match = fastRx.Regex.Match(input);
+                if (!match.Success) return JsValue.FromString(input);
+                return JsValue.FromString(input.Substring(0, match.Index) + GetSubstitution(input, match, replStr, fastRx) + input.Substring(match.Index + match.Length));
+            }
         }
 
-        // ECMA-262 §22.2.5.9 GetSubstitution — manual replacement with spec patterns.
-        var replStr = ToStringValue(replacement);
-        var global = regexp.Flags.Contains('g', StringComparison.Ordinal);
-        if (global)
+        // Spec path via RegExpExec.
+        bool replaceGlobal = false;
+        if (TryGetPropertyValue(rxObj, thisValue, "global", out var gVal))
+            replaceGlobal = IsTruthy(gVal);
+        bool fullUnicode = false;
+        if (TryGetPropertyValue(rxObj, thisValue, "unicode", out var uVal))
+            fullUnicode = IsTruthy(uVal);
+        if (replaceGlobal)
+            _ = rxObj.SetProperty("lastIndex", JsValue.FromNumber(0));
+        var execResults = new List<JsValue>();
+        while (true)
         {
-            // Global: replace all matches using ECMA-262 GetSubstitution
-            var matches = regexp.Regex.Matches(input);
-            if (matches.Count == 0) return JsValue.FromString(input);
-            var sb = new System.Text.StringBuilder();
-            var prevEnd = 0;
-            foreach (System.Text.RegularExpressions.Match m in matches)
+            var r = RegExpExec(thisValue, input);
+            if (r.Tag == JsValueTag.Null) break;
+            execResults.Add(r);
+            if (!replaceGlobal) break;
+            var rObj = _heap.GetObject(r.AsObjectHandle());
+            if (TryGetPropertyValue(rObj, r, "0", out var m0) && ToStringValue(m0).Length == 0)
             {
-                sb.Append(input.AsSpan(prevEnd, m.Index - prevEnd));
-                sb.Append(GetSubstitution(input, m, replStr, regexp));
-                prevEnd = m.Index + m.Length;
+                double ti = 0;
+                if (TryGetPropertyValue(rxObj, thisValue, "lastIndex", out var li))
+                { var n = ToNumber(li); if (!double.IsNaN(n) && n > 0) ti = Math.Min(Math.Truncate(n), 9007199254740991); }
+                _ = rxObj.SetProperty("lastIndex", JsValue.FromNumber(AdvanceStringIndex(input, ti > int.MaxValue ? int.MaxValue : (int)ti, fullUnicode)));
             }
-            sb.Append(input.AsSpan(prevEnd));
-            return JsValue.FromString(sb.ToString());
         }
-        else
+        var acc = new System.Text.StringBuilder();
+        int nextPos = 0;
+        bool functionalReplace = replacement.Tag == JsValueTag.Object && IsCallable(replacement);
+        var replStr2 = functionalReplace ? "" : ToStringValue(replacement);
+        foreach (var execResult in execResults)
         {
-            // Non-global: replace first match only
-            var match = regexp.Regex.Match(input);
-            if (!match.Success) return JsValue.FromString(input);
-            var result = input.Substring(0, match.Index)
-                + GetSubstitution(input, match, replStr, regexp)
-                + input.Substring(match.Index + match.Length);
-            return JsValue.FromString(result);
+            var erObj = _heap.GetObject(execResult.AsObjectHandle());
+            string matched = "";
+            if (TryGetPropertyValue(erObj, execResult, "0", out var mv)) matched = ToStringValue(mv);
+            double pos = 0;
+            if (TryGetPropertyValue(erObj, execResult, "index", out var iv)) { var pn = ToNumber(iv); if (!double.IsNaN(pn) && pn >= 0) pos = Math.Min(Math.Truncate(pn), input.Length); }
+            int posInt = (int)pos;
+            if (posInt >= nextPos)
+            {
+                acc.Append(input.AsSpan(nextPos, posInt - nextPos));
+                if (functionalReplace)
+                {
+                    var replArgs = new List<JsValue> { JsValue.FromString(matched) };
+                    int nCaps = (int)LengthOfArrayLikeAsDouble(erObj, execResult);
+                    for (int g = 1; g < nCaps; g++)
+                    {
+                        if (TryGetPropertyValue(erObj, execResult, g.ToString(System.Globalization.CultureInfo.InvariantCulture), out var cap))
+                            replArgs.Add(cap.Tag == JsValueTag.Undefined ? JsValue.Undefined : JsValue.FromString(ToStringValue(cap)));
+                        else replArgs.Add(JsValue.Undefined);
+                    }
+                    replArgs.Add(JsValue.FromNumber(posInt));
+                    replArgs.Add(JsValue.FromString(input));
+                    if (TryGetPropertyValue(erObj, execResult, "groups", out var grp) && grp.Tag != JsValueTag.Undefined)
+                        replArgs.Add(grp);
+                    var replResult = CallFunction(replacement, replArgs, JsValue.Undefined);
+                    acc.Append(ToStringValue(replResult));
+                }
+                else
+                {
+                    // Use captured groups from execResult for GetSubstitution-like replacement
+                    var capGroups = new List<string>();
+                    int nCaps = (int)LengthOfArrayLikeAsDouble(erObj, execResult);
+                    for (int g = 1; g < nCaps; g++)
+                    {
+                        if (TryGetPropertyValue(erObj, execResult, g.ToString(System.Globalization.CultureInfo.InvariantCulture), out var cap) && cap.Tag != JsValueTag.Undefined)
+                            capGroups.Add(ToStringValue(cap));
+                        else capGroups.Add("");
+                    }
+                    acc.Append(GetSubstitutionSpec(input, matched, posInt, capGroups, replStr2));
+                }
+                nextPos = posInt + matched.Length;
+            }
         }
+        if (nextPos < input.Length) acc.Append(input.AsSpan(nextPos));
+        return JsValue.FromString(acc.ToString());
+    }
+
+    /// <summary>Simplified GetSubstitution for the spec-based @@replace path.</summary>
+    private static string GetSubstitutionSpec(string input, string matched, int position, List<string> captures, string replacement)
+    {
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i < replacement.Length; i++)
+        {
+            if (replacement[i] == '$' && i + 1 < replacement.Length)
+            {
+                var c = replacement[i + 1];
+                switch (c)
+                {
+                    case '$': sb.Append('$'); i++; break;
+                    case '&': sb.Append(matched); i++; break;
+                    case '`': sb.Append(input.AsSpan(0, position)); i++; break;
+                    case '\'': sb.Append(input.AsSpan(position + matched.Length)); i++; break;
+                    case '<':
+                        var eb = replacement.IndexOf('>', i + 2);
+                        if (eb >= 0) { i = eb; } else { sb.Append('$'); sb.Append('<'); i++; }
+                        break;
+                    default:
+                        if (c >= '0' && c <= '9')
+                        {
+                            var ns = c.ToString();
+                            var j = i + 2;
+                            while (j < replacement.Length && replacement[j] >= '0' && replacement[j] <= '9') { ns += replacement[j]; j++; }
+                            if (int.TryParse(ns, out var gn) && gn > 0 && gn <= captures.Count)
+                            { sb.Append(captures[gn - 1]); i += ns.Length; }
+                            else { sb.Append('$'); i++; }
+                        }
+                        else { sb.Append('$'); i++; sb.Append(c); }
+                        break;
+                }
+            }
+            else sb.Append(replacement[i]);
+        }
+        return sb.ToString();
     }
 
     /// <summary>ECMA-262 §22.2.5.9 GetSubstitution.</summary>
@@ -6455,7 +6565,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // ECMA-262 §22.2.5.11 RegExp.prototype [ @@split ] ( string, limit )
     private JsValue RegExpPrototypeSymbolSplit(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var regexp = RegExpThisValue(thisValue);
+        if (thisValue.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("RegExp.prototype[@@split] called on non-object."));
+        var rxObj = _heap.GetObject(thisValue.AsObjectHandle());
         var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
         var limit = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
             ? Math.Max(0, (int)ToNumber(args[1]))
@@ -6464,117 +6576,106 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (limit == 0)
             return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current()));
 
-        // If input is empty and the regex matches empty string, we need special handling
-        if (input.Length == 0)
+        // Fast path for real RegExp objects.
+        if (rxObj is RegExpObject splitRx)
         {
-            var m = regexp.Regex.Match(input);
-            if (m.Success)
-                return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current()));
-            return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(new[] { JsValue.FromString(input) }), AllocationSite.Current()));
-        }
-
-        // ECMA-262 22.2.6.14 RegExp.prototype[@@split] uses a STICKY splitter: each
-        // step matches only at lastIndex (q). An empty match that ends at the current
-        // split point p is skipped (advance q), but an empty match elsewhere DOES split
-        // — that's how /(?:)/ splits between every character, which the old "skip all
-        // empty matches" logic got wrong (it returned the whole string unsplit).
-        var parts = new List<JsValue>();
-        var size = input.Length;
-        var p = 0;
-        var q = 0;
-
-        while (q < size)
-        {
-            var m = regexp.Regex.Match(input, q);
-            // Sticky: require the match to start exactly at q; otherwise no match here.
-            if (!m.Success || m.Index != q)
+            if (input.Length == 0)
             {
-                q++;
-                continue;
+                var m = splitRx.Regex.Match(input);
+                if (m.Success)
+                    return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current()));
+                return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(new[] { JsValue.FromString(input) }), AllocationSite.Current()));
             }
 
-            var e = Math.Min(m.Index + m.Length, size);
-            if (e == p)
+            var parts = new List<JsValue>();
+            var size = input.Length;
+            var p = 0;
+            var q = 0;
+            while (q < size)
             {
-                // Empty match at the last split point — advance and keep scanning.
-                q++;
-                continue;
-            }
-
-            parts.Add(JsValue.FromString(input.Substring(p, q - p)));
-            if (parts.Count >= limit)
-                return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(parts), AllocationSite.Current()));
-
-            // Interleave capturing group matches (ECMA-262 step 14.f).
-            for (var i = 1; i < m.Groups.Count; i++)
-            {
-                var g = m.Groups[i];
-                parts.Add(g.Success ? JsValue.FromString(g.Value) : JsValue.Undefined);
+                var m = splitRx.Regex.Match(input, q);
+                if (!m.Success || m.Index != q) { q++; continue; }
+                var e = Math.Min(m.Index + m.Length, size);
+                if (e == p) { q++; continue; }
+                parts.Add(JsValue.FromString(input.Substring(p, q - p)));
                 if (parts.Count >= limit)
                     return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(parts), AllocationSite.Current()));
+                for (var i = 1; i < m.Groups.Count; i++)
+                {
+                    var g = m.Groups[i];
+                    parts.Add(g.Success ? JsValue.FromString(g.Value) : JsValue.Undefined);
+                    if (parts.Count >= limit)
+                        return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(parts), AllocationSite.Current()));
+                }
+                p = e; q = p;
             }
-
-            p = e;
-            q = p;
+            if (parts.Count < limit)
+                parts.Add(JsValue.FromString(input.Substring(p)));
+            return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(parts), AllocationSite.Current()));
         }
 
-        // Final substring S[p..size].
-        if (parts.Count < limit)
+        // Fallback: simple split via RegExpExec.
+        var resultParts = new List<JsValue>();
+        int start = 0;
+        while (start <= input.Length)
         {
-            parts.Add(JsValue.FromString(input.Substring(p)));
+            var execResult = RegExpExec(thisValue, input);
+            if (execResult.Tag == JsValueTag.Null) break;
+            var erObj = _heap.GetObject(execResult.AsObjectHandle());
+            int matchIdx = 0;
+            if (TryGetPropertyValue(erObj, execResult, "index", out var idxVal))
+                matchIdx = (int)ToNumber(idxVal);
+            string matched = "";
+            if (TryGetPropertyValue(erObj, execResult, "0", out var m0))
+                matched = ToStringValue(m0);
+            resultParts.Add(JsValue.FromString(input.Substring(start, matchIdx - start)));
+            if (resultParts.Count >= limit) break;
+            start = matchIdx + matched.Length;
+            if (matched.Length == 0) start++;
         }
-
-        return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(parts), AllocationSite.Current()));
+        if (start <= input.Length && resultParts.Count < limit)
+            resultParts.Add(JsValue.FromString(input.Substring(start)));
+        return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(resultParts), AllocationSite.Current()));
     }
 
+    // ECMA-262 22.2.5.10 RegExp.prototype [ @@matchAll ] ( string )
     private JsValue RegExpPrototypeSymbolMatchAll(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        var regexp = RegExpThisValue(thisValue);
+        if (thisValue.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("RegExp.prototype[@@matchAll] called on non-object."));
+        var rxObj = _heap.GetObject(thisValue.AsObjectHandle());
         var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
         var results = new List<JsValue>();
 
-        foreach (Match match in regexp.Regex.Matches(input))
+        // Fast path for real RegExp objects.
+        if (rxObj is RegExpObject matchAllRx)
         {
-            var record = CreateArrayObject(Array.Empty<JsValue>());
-            _ = record.DefineOwnProperty("0",
-                new JsPropertyDescriptor(JsValue.FromString(match.Value), Writable: true, Enumerable: true, Configurable: true));
-            for (var i = 1; i < match.Groups.Count; i++)
+            foreach (Match match in matchAllRx.Regex.Matches(input))
             {
-                var g = match.Groups[i];
-                var v = g.Success ? JsValue.FromString(g.Value) : JsValue.Undefined;
-                _ = record.DefineOwnProperty(
-                    i.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    new JsPropertyDescriptor(v, Writable: true, Enumerable: true, Configurable: true));
+                var record = CreateArrayObject(Array.Empty<JsValue>());
+                _ = record.DefineOwnProperty("0", new JsPropertyDescriptor(JsValue.FromString(match.Value), Writable: true, Enumerable: true, Configurable: true));
+                for (var i = 1; i < match.Groups.Count; i++)
+                { var g = match.Groups[i]; var v = g.Success ? JsValue.FromString(g.Value) : JsValue.Undefined; _ = record.DefineOwnProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture), new JsPropertyDescriptor(v, Writable: true, Enumerable: true, Configurable: true)); }
+                var mgroupsObj = new JsObject(); var mHasNamed = false;
+                foreach (var mName in matchAllRx.Regex.GetGroupNames())
+                { if (int.TryParse(mName, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out _)) continue; mHasNamed = true; var mGrp = match.Groups[mName]; mgroupsObj.DefineOwnProperty(mName, new JsPropertyDescriptor(mGrp.Success ? JsValue.FromString(mGrp.Value) : JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true)); }
+                if (mHasNamed) _ = record.DefineOwnProperty("groups", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(mgroupsObj, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
+                else _ = record.DefineOwnProperty("groups", new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true));
+                _ = record.DefineOwnProperty("index", new JsPropertyDescriptor(JsValue.FromNumber(match.Index), Writable: true, Enumerable: true, Configurable: true));
+                _ = record.DefineOwnProperty("input", new JsPropertyDescriptor(JsValue.FromString(input), Writable: true, Enumerable: true, Configurable: true));
+                _ = record.DefineOwnProperty("length", new JsPropertyDescriptor(JsValue.FromNumber(match.Groups.Count), Writable: true, Enumerable: false, Configurable: false));
+                results.Add(JsValue.FromObject(_heap.AllocateObject(record, AllocationSite.Current())));
             }
-            // Named groups
-            var mgroupsObj = new JsObject();
-            var mGroupNames = regexp.Regex.GetGroupNames();
-            var mHasNamed = false;
-            foreach (var mName in mGroupNames)
+        }
+        else
+        {
+            // Non-RegExp path via RegExpExec.
+            while (true)
             {
-                if (int.TryParse(mName, System.Globalization.NumberStyles.Integer,
-                        System.Globalization.CultureInfo.InvariantCulture, out _)) continue;
-                mHasNamed = true;
-                var mGrp = match.Groups[mName];
-                mgroupsObj.DefineOwnProperty(mName,
-                    new JsPropertyDescriptor(mGrp.Success ? JsValue.FromString(mGrp.Value) : JsValue.Undefined,
-                        Writable: true, Enumerable: true, Configurable: true));
+                var execResult = RegExpExec(thisValue, input);
+                if (execResult.Tag == JsValueTag.Null) break;
+                results.Add(execResult);
             }
-            if (mHasNamed)
-                _ = record.DefineOwnProperty("groups",
-                    new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(mgroupsObj, AllocationSite.Current())),
-                        Writable: true, Enumerable: true, Configurable: true));
-            else
-                _ = record.DefineOwnProperty("groups",
-                    new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true));
-
-            _ = record.DefineOwnProperty("index",
-                new JsPropertyDescriptor(JsValue.FromNumber(match.Index), Writable: true, Enumerable: true, Configurable: true));
-            _ = record.DefineOwnProperty("input",
-                new JsPropertyDescriptor(JsValue.FromString(input), Writable: true, Enumerable: true, Configurable: true));
-            _ = record.DefineOwnProperty("length",
-                new JsPropertyDescriptor(JsValue.FromNumber(match.Groups.Count), Writable: true, Enumerable: false, Configurable: false));
-            results.Add(JsValue.FromObject(_heap.AllocateObject(record, AllocationSite.Current())));
         }
 
         // ECMA-262 §22.2.5.10 — return a RegExpStringIterator, not a plain array.
