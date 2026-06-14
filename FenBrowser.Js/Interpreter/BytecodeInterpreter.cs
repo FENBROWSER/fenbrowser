@@ -7914,6 +7914,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromObject(iterObjHandle);
         }, length: 1);
         proto.DefineOwnProperty("segment", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(segmentFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+        var segResFn = new NativeFunctionObject("resolvedOptions", (_, _2) =>
+        {
+            var o = CreateOrdinaryObject();
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("granularity", new JsPropertyDescriptor(JsValue.FromString("grapheme"), Writable: true, Enumerable: true, Configurable: true));
+            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
+        }, length: 0);
+        proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(segResFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
         var inst = CreateOrdinaryObject();
         inst.SetPrototype(ph);
         return JsValue.FromObject(_heap.AllocateObject(inst, AllocationSite.Current()));
@@ -7947,6 +7955,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromString(result ?? code);
         }, length: 1);
         proto.DefineOwnProperty("of", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(ofFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+        var dnResFn = new NativeFunctionObject("resolvedOptions", (_, _2) =>
+        {
+            var o = CreateOrdinaryObject();
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString(style), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(type), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("fallback", new JsPropertyDescriptor(JsValue.FromString("code"), Writable: true, Enumerable: true, Configurable: true));
+            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
+        }, length: 0);
+        proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(dnResFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
         var inst = CreateOrdinaryObject();
         inst.SetPrototype(ph);
         return JsValue.FromObject(_heap.AllocateObject(inst, AllocationSite.Current()));

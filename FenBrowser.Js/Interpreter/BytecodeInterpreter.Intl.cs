@@ -472,6 +472,22 @@ public sealed partial class BytecodeInterpreter
                 Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(protoHandle, protoMethodHandle);
 
+        var resolvedOptsMethod = new NativeFunctionObject("resolvedOptions", (_, _2) =>
+        {
+            var o = CreateOrdinaryObject();
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(string.IsNullOrEmpty(locale) ? "en-US" : locale), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("usage", new JsPropertyDescriptor(JsValue.FromString("sort"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("sensitivity", new JsPropertyDescriptor(JsValue.FromString("variant"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("ignorePunctuation", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("collation", new JsPropertyDescriptor(JsValue.FromString("default"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("numeric", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("caseFirst", new JsPropertyDescriptor(JsValue.FromString("false"), Writable: true, Enumerable: true, Configurable: true));
+            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
+        }, length: 0);
+        var resolvedOptsHandle = _heap.AllocateObject(resolvedOptsMethod, AllocationSite.Current());
+        prototype.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(resolvedOptsHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, resolvedOptsHandle);
+
         var instance = CreateOrdinaryObject();
         instance.SetPrototype(protoHandle);
         var instanceHandle = _heap.AllocateObject(instance, AllocationSite.Current());
@@ -514,6 +530,18 @@ public sealed partial class BytecodeInterpreter
         prototype.DefineOwnProperty("formatToParts",
             new JsPropertyDescriptor(JsValue.FromObject(formatToPartsHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(protoHandle, formatToPartsHandle);
+
+        var lfResOpts = new NativeFunctionObject("resolvedOptions", (_, _2) =>
+        {
+            var o = CreateOrdinaryObject();
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(string.IsNullOrEmpty(state.Locale) ? "en-US" : state.Locale), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(state.Type), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString(state.Style), Writable: true, Enumerable: true, Configurable: true));
+            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
+        }, length: 0);
+        var lfResHandle = _heap.AllocateObject(lfResOpts, AllocationSite.Current());
+        prototype.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(lfResHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, lfResHandle);
 
         var instance = CreateOrdinaryObject();
         instance.SetPrototype(protoHandle);
