@@ -2001,7 +2001,7 @@ public static class RegExpCompiler
     /// matches the empty string. .NET with RegexOptions.ECMAScript may not
     /// handle this correctly, so we rewrite forward references explicitly.
     /// </summary>
-    private static string RewriteForwardBackreferences(string pattern)
+    internal static string RewriteForwardBackreferences(string pattern)
     {
         if (string.IsNullOrEmpty(pattern))
         {

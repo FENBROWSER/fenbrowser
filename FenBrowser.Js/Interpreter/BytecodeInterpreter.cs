@@ -5824,6 +5824,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             dotNetPattern = RegExpCompiler.RewriteUnicodeCodePointEscapes(dotNetPattern);
         }
         dotNetPattern = RegExpCompiler.RewriteUnicodePropertyEscapesForDotNet(dotNetPattern);
+        dotNetPattern = RegExpCompiler.RewriteForwardBackreferences(dotNetPattern);
 
         BclRegex regex;
         try
@@ -5984,6 +5985,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             dotNetPattern = RegExpCompiler.RewriteUnicodeCodePointEscapes(dotNetPattern);
         }
         dotNetPattern = RegExpCompiler.RewriteUnicodePropertyEscapesForDotNet(dotNetPattern);
+        dotNetPattern = RegExpCompiler.RewriteForwardBackreferences(dotNetPattern);
 
         BclRegex regex;
         try

@@ -168,6 +168,7 @@ public sealed class RegExpBuiltin : IBuiltinModule
             dotNetPattern = Regex.RegExpCompiler.RewriteUnicodeCodePointEscapes(dotNetPattern);
             dotNetPattern = Regex.RegExpCompiler.RewriteUnicodePropertyEscapesForDotNet(dotNetPattern);
         }
+        dotNetPattern = Regex.RegExpCompiler.RewriteForwardBackreferences(dotNetPattern);
 
         BclRegex regex;
         try
