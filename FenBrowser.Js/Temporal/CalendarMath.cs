@@ -159,10 +159,12 @@ internal abstract class CalendarSystem
         ToNative(one, out int y1, out int m1, out int d1);
         string code1 = MonthCodeFor(y1, m1);
         int years = 0, months = 0;
-        if (largestUnit == "year")
+        if (largestUnit is "year" or "month")
         {
             ToNative(two, out int y2, out _, out _);
             int candidateYears = y2 - y1;
+            // Diagnostic
+            System.Console.Error.WriteLine($"DIFF years={years} y1={y1} y2={y2} largestUnit={largestUnit}");
             if (candidateYears != 0) candidateYears -= sign;
             while (true)
             {
