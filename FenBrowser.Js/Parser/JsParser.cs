@@ -1321,6 +1321,34 @@ public sealed class JsParser
             Advance();
         }
 
+        // ECMA-262 14.3.1.1: const declarations must have an initializer
+        // (except in for-in/for-of heads where the iteration supplies the value).
+        if (!inForHead && string.Equals(start.Text, "const", StringComparison.Ordinal))
+        {
+            foreach (var d in declarators)
+            {
+                if (d.Initializer is null)
+                {
+                    throw new JsParserException("Missing initializer in const declaration.");
+                }
+            }
+        }
+
+        // ECMA-262 14.3.1.1: "let" may not be used as a binding name in a
+        // let/const declaration. Covers `let let;`, `const let = 1;`, and
+        // ASI edge cases like `let\nlet;`.
+        if (start.Text is "let" or "const")
+        {
+            foreach (var d in declarators)
+            {
+                if (string.Equals(d.Identifier, "let", StringComparison.Ordinal))
+                {
+                    throw new JsParserException(
+                        "'let' may not be used as a binding name in a let or const declaration.");
+                }
+            }
+        }
+
         if (IsPunctuator(";"))
         {
             Advance();
