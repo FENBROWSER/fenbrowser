@@ -1559,6 +1559,40 @@ public sealed class TemporalStub : IBuiltinModule
         return result * increment;
     }
 
+    /// <summary>Round a calendar-unit value (years or months) to an increment,
+    /// carrying the remainder into the next-smaller unit.</summary>
+    private static long RoundToIncrement(long value, long nextSmaller, long nextInOne, long increment, string mode,
+        out long overflow, out bool didExpand)
+    {
+        overflow = 0; didExpand = false;
+        if (increment <= 0) return value;
+        long t = value / increment;
+        long r = value % increment;
+        if (r == 0) return value;
+        long lower = r > 0 ? t : t - 1;
+        long upper = r > 0 ? t + 1 : t;
+        long absR2 = Math.Abs(r) * 2;
+        long nearer = absR2 < increment ? (r > 0 ? lower : upper) : (r > 0 ? upper : lower);
+        long result = mode switch
+        {
+            "ceil" => upper,
+            "floor" => lower,
+            "trunc" => t,
+            "expand" => value > 0 ? upper : lower,
+            "halfCeil" => absR2 == increment ? upper : nearer,
+            "halfFloor" => absR2 == increment ? lower : nearer,
+            "halfTrunc" => absR2 == increment ? t : nearer,
+            "halfEven" => absR2 == increment ? (lower % 2 == 0 ? lower : upper) : nearer,
+            _ => absR2 == increment ? (value > 0 ? upper : lower) : nearer, // halfExpand
+        };
+        didExpand = result != t;
+        if (didExpand && result > t && nextSmaller > 0)
+            overflow = -(nextInOne - nextSmaller); // carry from nextSmaller
+        else if (didExpand && result < t && nextSmaller > 0)
+            overflow = nextSmaller; // carry into nextSmaller
+        return result * increment;
+    }
+
     // ─── toString options (precision / calendarName / offset / timeZoneName) ───
 
     private sealed class ToStringOptions
@@ -4209,7 +4243,108 @@ public sealed class TemporalStub : IBuiltinModule
             ToSafeInt(current[5]), ToSafeInt(current[6]), ToSafeInt(current[7]), ToSafeInt(current[8]), ToSafeInt(current[9]));
     }
 
-    /// <summary>Duration.prototype.round for day/time units (relativeTo unsupported → RangeError on calendar units).</summary>
+    /// <summary>Decode a relativeTo option into (IsoDate, calendarId). Returns null
+    /// if no relativeTo was provided.</summary>
+    private static (IsoDate date, string calId)? TryDecodeRelativeTo(IBuiltinContext ctx, JsHeap h, JsValue options)
+    {
+        if (options.Tag != JsValueTag.Object) return null;
+        if (!TryGetField(ctx, h, options, "relativeTo", out var relVal) || relVal.Tag == JsValueTag.Undefined)
+            return null;
+        if (relVal.Tag != JsValueTag.Object)
+        {
+            // String relativeTo: parse as an ISO date string (yyyy-mm-dd[+options]).
+            var str = ctx.ToStringValue(relVal);
+            if (TemporalIsoParser.TryParseDateTime(str, out var pdt, out _))
+                return (new IsoDate(pdt.Year, pdt.Month, pdt.Day), pdt.Calendar ?? "iso8601");
+            throw new JsThrownException(ctx.CreateRangeError("relativeTo string could not be parsed."));
+        }
+        var relObj = h.GetObject(relVal.AsObjectHandle());
+        string calId = CalId(h, relObj);
+        var date = DecodeIsoDateLong(h, relObj);
+        return (date, calId);
+    }
+
+    /// <summary>Calendar-aware Duration.prototype.round using relativeTo for
+    /// years/months/weeks/days balancing and rounding.</summary>
+    private static JsValue DurationRoundCalendar(IBuiltinContext ctx, JsHeap h,
+        (int years, int months, int weeks, int days, int hours, int minutes, int seconds, int millis, int micros, int nanos) dur, string? smallest, string? largest, double increment, string mode,
+        (IsoDate date, string calId) relTo)
+    {
+        var sys = CalendarMath.Get(relTo.calId);
+        // Use iso8601 calendar math for simplicity if the calendar is not recognized.
+        sys ??= CalendarMath.Get("iso8601")!;
+        // Accumulate date part: add years, months, weeks to the relativeTo date.
+        var relDate = relTo.date;
+        bool invalid;
+        relDate = sys.Add(relDate, dur.years, dur.months, dur.weeks, 0, constrain: true, out invalid);
+        long totalDays = IsoMath.CivilToEpochDays(relDate.Year, relDate.Month, relDate.Day)
+                         - IsoMath.CivilToEpochDays(relTo.date.Year, relTo.date.Month, relTo.date.Day)
+                         + dur.days;
+        long totalNs = totalDays * 86_400_000_000_000L + DurationDayTimeNs(dur);
+
+        smallest ??= "nanosecond";
+        string largestEff = largest is null or "auto" ? "day" : largest;
+        // If the target unit is a calendar unit (year/month/week), use the
+        // calendar-aware rounding path.
+        if (smallest == "day" || IsCalendarUnit(smallest))
+        {
+            return DurationRoundToCalendarUnit(ctx, h, dur, totalNs, smallest!, largestEff, (long)increment, mode, sys, relTo);
+        }
+
+        // Time-unit rounding: the calendar portion (years/months/weeks) has
+        // already been converted to days via sys.Add. We now have totalNs
+        // representing the full duration in nanoseconds. Round to the target
+        // time unit and balance.
+        long tUnitNs = (long)increment * UnitNs(smallest);
+        long roundedNs = RoundNsToIncrement(ctx, totalNs, tUnitNs, mode);
+        // If largestEff is a time unit, balance from there; otherwise from "day".
+        string effLargest = largestEff == "auto" ? "day" : largestEff;
+        if (effLargest != "day" && !IsCalendarUnit(effLargest))
+            return MakeDurationBalancedNs(ctx, h, roundedNs, effLargest);
+        return MakeDurationBalancedNs(ctx, h, roundedNs, "day");
+    }
+
+    /// <summary>Round total nanoseconds of a calendar-aware duration to a calendar
+    /// unit (years, months, weeks) using the relativeTo anchor date.</summary>
+    private static JsValue DurationRoundToCalendarUnit(IBuiltinContext ctx, JsHeap h,
+        (int years, int months, int weeks, int days, int hours, int minutes, int seconds, int millis, int micros, int nanos) original, long totalNs, string unit, string largestEff,
+        long increment, string mode, CalendarSystem sys, (IsoDate, string) relTo)
+    {
+        // For calendar units, rebuild a balanced intermediate duration and round.
+        var anchor = relTo.Item1;
+        long totalDays = totalNs / 86_400_000_000_000L;
+        long remainderNs = totalNs % 86_400_000_000_000L;
+        if (remainderNs < 0) { totalDays--; remainderNs += 86_400_000_000_000L; }
+
+        var resultDate = IsoMath.EpochDaysToCivil(IsoMath.CivilToEpochDays(anchor.Year, anchor.Month, anchor.Day) + totalDays);
+        var diff = sys.Difference(anchor, resultDate, largestEff == "auto" ? "day" : largestEff);
+
+        long years = diff.Years, months = diff.Months, weeks = diff.Weeks, days = diff.Days;
+        // Apply rounding to the target unit.
+        if (unit == "year")
+        {
+            years = RoundToIncrement(years, months, 12, increment, mode, out months, out _);
+            months = 0; weeks = 0; days = 0;
+        }
+        else if (unit == "month")
+        {
+            months = Math.Max(0, months);
+            int miy = sys.MonthsInYear((int)(anchor.Year + years));
+            months = (int)RoundToIncrement(months, 0, miy, increment, mode, out _, out _);
+            weeks = 0; days = 0;
+        }
+        else if (unit == "week")
+        {
+            weeks = (int)RoundToIncrement(weeks, (int)days, 7, increment, mode, out long leftoverDays, out _);
+            days = leftoverDays;
+        }
+
+        return MakeDuration(ctx, h, (int)years, (int)months, (int)weeks, (int)days,
+            original.hours, original.minutes, original.seconds,
+            original.millis, original.micros, original.nanos);
+    }
+
+    /// <summary>Duration.prototype.round for day/time units.</summary>
     private static JsValue DurationRound(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> a)
     {
         if (a.Count == 0 || a[0].Tag == JsValueTag.Undefined)
@@ -4243,8 +4378,6 @@ public sealed class TemporalStub : IBuiltinModule
                 smallest = NormalizeUnitName(ctx, sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv));
             if (smallest is null && (largest is null || largest == "auto"))
                 throw new JsThrownException(ctx.CreateRangeError("round requires smallestUnit or largestUnit."));
-            if (TryGetField(ctx, h, a[0], "relativeTo", out _))
-                throw new JsThrownException(ctx.CreateRangeError("relativeTo is not supported."));
         }
         else
         {
@@ -4252,8 +4385,17 @@ public sealed class TemporalStub : IBuiltinModule
         }
 
         var dur = DecodeDuration(h, o);
-        if (dur.years != 0 || dur.months != 0 || dur.weeks != 0 || IsCalendarUnit(smallest) || (largest is not null && largest != "auto" && IsCalendarUnit(largest)))
-            throw new JsThrownException(ctx.CreateRangeError("Calendar units require relativeTo (not supported)."));
+        // Decode relativeTo (already parsed above in the options object path).
+        var relTo = a.Count > 0 && a[0].Tag == JsValueTag.Object
+            ? TryDecodeRelativeTo(ctx, h, a[0]) : null;
+        bool hasCalendarUnits = dur.years != 0 || dur.months != 0 || dur.weeks != 0
+            || IsCalendarUnit(smallest) || (largest is not null && largest != "auto" && IsCalendarUnit(largest));
+        if (hasCalendarUnits && relTo is null)
+            throw new JsThrownException(ctx.CreateRangeError("Calendar units require relativeTo."));
+        if (hasCalendarUnits)
+        {
+            return DurationRoundCalendar(ctx, h, dur, smallest, largest, increment, mode, relTo!.Value);
+        }
         smallest ??= "nanosecond";
         string largestEff = largest is null or "auto"
             ? (UnitRank(DefaultLargestUnit(dur)) <= UnitRank(smallest) ? DefaultLargestUnit(dur) : smallest)
@@ -4271,20 +4413,20 @@ public sealed class TemporalStub : IBuiltinModule
         return MakeDurationBalancedNs(ctx, h, rounded, largestEff);
     }
 
-    /// <summary>Duration.prototype.total for day/time units.</summary>
+    /// <summary>Duration.prototype.total for day/time units, with optional relativeTo.</summary>
     private static JsValue DurationTotal(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> a)
     {
         if (a.Count == 0 || a[0].Tag == JsValueTag.Undefined)
             throw new JsThrownException(ctx.CreateTypeError("total requires a unit or options argument."));
         string unit;
+        (IsoDate date, string calId)? relTo = null;
         if (a[0].Tag == JsValueTag.String)
         {
             unit = NormalizeUnitName(ctx, a[0].AsString());
         }
         else if (a[0].Tag == JsValueTag.Object)
         {
-            if (TryGetField(ctx, h, a[0], "relativeTo", out _))
-                throw new JsThrownException(ctx.CreateRangeError("relativeTo is not supported."));
+            relTo = TryDecodeRelativeTo(ctx, h, a[0]);
             if (!TryGetField(ctx, h, a[0], "unit", out var uv))
                 throw new JsThrownException(ctx.CreateRangeError("total requires a unit."));
             unit = NormalizeUnitName(ctx, uv.Tag == JsValueTag.String ? uv.AsString() : ctx.ToStringValue(uv));
@@ -4295,9 +4437,45 @@ public sealed class TemporalStub : IBuiltinModule
         }
 
         var dur = DecodeDuration(h, o);
-        if (dur.years != 0 || dur.months != 0 || dur.weeks != 0 || IsCalendarUnit(unit))
-            throw new JsThrownException(ctx.CreateRangeError("Calendar units require relativeTo (not supported)."));
+        bool hasCalendar = dur.years != 0 || dur.months != 0 || dur.weeks != 0 || IsCalendarUnit(unit);
+        if (hasCalendar && relTo is null)
+            throw new JsThrownException(ctx.CreateRangeError("Calendar units require relativeTo."));
+        if (hasCalendar)
+        {
+            return DurationTotalCalendar(ctx, h, dur, unit, relTo!.Value);
+        }
         return JsValue.FromNumber(DurationDayTimeNs(dur) / (double)UnitNs(unit));
+    }
+
+    /// <summary>Calendar-aware Duration.prototype.total: add years/months/weeks
+    /// to the relativeTo date, then measure the total difference in the target unit.</summary>
+    private static JsValue DurationTotalCalendar(IBuiltinContext ctx, JsHeap h,
+        (int years, int months, int weeks, int days, int hours, int minutes, int seconds, int millis, int micros, int nanos) dur, string unit, (IsoDate date, string calId) relTo)
+    {
+        var sys = CalendarMath.Get(relTo.calId);
+        sys ??= CalendarMath.Get("iso8601")!;
+        var relDate = relTo.date;
+        bool invalid;
+        relDate = sys.Add(relDate, dur.years, dur.months, dur.weeks, 0, constrain: true, out invalid);
+        long totalNs = (IsoMath.CivilToEpochDays(relDate.Year, relDate.Month, relDate.Day)
+                        - IsoMath.CivilToEpochDays(relTo.date.Year, relTo.date.Month, relTo.date.Day)
+                        + dur.days) * 86_400_000_000_000L + DurationDayTimeNs(dur);
+        if (unit == "day") return JsValue.FromNumber(totalNs / (double)86_400_000_000_000L);
+        if (IsCalendarUnit(unit))
+        {
+            var endDate = IsoMath.EpochDaysToCivil(IsoMath.CivilToEpochDays(relTo.date.Year, relTo.date.Month, relTo.date.Day)
+                + totalNs / 86_400_000_000_000L);
+            var diff = sys.Difference(relTo.date, endDate, unit);
+            double result = unit switch
+            {
+                "year" => diff.Years + diff.Months / 12.0 + diff.Weeks / 52.1775 + diff.Days / 365.2425,
+                "month" => diff.Years * 12.0 + diff.Months + diff.Weeks / 4.34524 + diff.Days / 30.436875,
+                "week" => diff.Years * 52.1775 + diff.Months * 4.34524 + diff.Weeks + diff.Days / 7.0,
+                _ => diff.Years * 365.2425 + diff.Months * 30.436875 + diff.Weeks * 7.0 + diff.Days
+            };
+            return JsValue.FromNumber(result);
+        }
+        return JsValue.FromNumber(totalNs / (double)UnitNs(unit));
     }
 
     private static JsValue CloneTemporal(IBuiltinContext ctx, JsHeap h, JsObject orig)

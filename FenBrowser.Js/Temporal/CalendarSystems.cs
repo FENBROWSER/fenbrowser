@@ -1,5 +1,14 @@
 namespace FenBrowser.Js.Temporal;
 
+// ISO 8601 calendar: same day grid as Gregorian but with NO era/eraYear.
+// Used by default when no calendar is specified and for Duration relativeTo.
+internal sealed class Iso8601CalendarSystem : GregorianCalendarSystem
+{
+    public Iso8601CalendarSystem() : base("iso8601") { }
+    public override (string?, int?) EraFor(int year, long epochDay) => (null, null);
+    public override bool YearFromEra(string era, int eraYear, out int year) { year = 0; return false; }
+}
+
 // Proleptic Gregorian calendar (Temporal "gregory"): the ISO day grid with
 // era/eraYear labelling. Buddhist/ROC/Japanese reuse the same grid and only
 // relabel the year and era, so they derive from this.

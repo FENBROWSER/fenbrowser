@@ -254,6 +254,7 @@ internal static class CalendarMath
     {
         var list = new CalendarSystem[]
         {
+            new Iso8601CalendarSystem(),
             new GregorianCalendarSystem("gregory"),
             new BuddhistCalendarSystem(),
             new RocCalendarSystem(),
