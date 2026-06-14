@@ -4260,7 +4260,21 @@ public sealed class TemporalStub : IBuiltinModule
         }
         var relObj = h.GetObject(relVal.AsObjectHandle());
         string calId = CalId(h, relObj);
-        var date = DecodeIsoDateLong(h, relObj);
+        // PlainDate stores y/m/d inside _v; PlainDateTime/ZonedDateTime
+        // store year/month/day. Detect by probing _v.y existence.
+        IsoDate date;
+        if (relObj.TryGetOwnProperty("_v", out var vDesc) && vDesc.Value.Tag == JsValueTag.Object)
+        {
+            var data = h.GetObject(vDesc.Value.AsObjectHandle());
+            if (data.TryGetOwnProperty("y", out _))
+                date = DecodeIsoDate(h, relObj);
+            else
+                date = DecodeIsoDateLong(h, relObj);
+        }
+        else
+        {
+            date = DecodeIsoDateLong(h, relObj);
+        }
         return (date, calId);
     }
 
