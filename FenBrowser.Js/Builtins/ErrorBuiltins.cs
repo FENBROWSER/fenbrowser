@@ -37,7 +37,31 @@ public sealed class ErrorBuiltins : IBuiltinModule
         bindings.Add(BuiltinBinding.NonEnumerable("ReferenceError", JsValue.FromObject(CreateNativeError(context, errorProto, "ReferenceError", errorCtor))));
         bindings.Add(BuiltinBinding.NonEnumerable("EvalError", JsValue.FromObject(CreateNativeError(context, errorProto, "EvalError", errorCtor))));
         bindings.Add(BuiltinBinding.NonEnumerable("URIError", JsValue.FromObject(CreateNativeError(context, errorProto, "URIError", errorCtor))));
-        bindings.Add(BuiltinBinding.NonEnumerable("SuppressedError", JsValue.FromObject(CreateNativeError(context, errorProto, "SuppressedError", errorCtor, length: 3))));
+        // ECMA-262 20.5.12 SuppressedError(error, suppressed, message[, options])
+        // Message is the THIRD argument, not the first. Use a dedicated constructor.
+        {
+            var protoHandle = CreateErrorPrototype(context, errorProto, "SuppressedError");
+            var capturedProto = protoHandle;
+            var capturedCtx = context;
+            var heap2 = context.Heap;
+            var constructor = new NativeFunctionObject(
+                "SuppressedError",
+                (_, args) => BuildError(capturedCtx, capturedProto, "SuppressedError",
+                    args.Count > 2 ? new[] { args[2] } : Array.Empty<JsValue>()),
+                args => BuildError(capturedCtx, capturedProto, "SuppressedError",
+                    args.Count > 2 ? new[] { args[2] } : Array.Empty<JsValue>()),
+                length: 3);
+            constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(protoHandle), Writable: false, Enumerable: false, Configurable: false));
+            var ctorHandle = heap2.AllocateObject(constructor, AllocationSite.Current());
+            heap2.PushRoot(ctorHandle);
+            heap2.WriteBarrier(ctorHandle, protoHandle);
+            var proto = heap2.GetObject(protoHandle);
+            _ = proto.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(ctorHandle), Writable: true, Enumerable: false, Configurable: true));
+            heap2.WriteBarrier(protoHandle, ctorHandle);
+            // ECMA-262 19.5.1: NativeError constructors have [[Prototype]] = %Error%.
+            heap2.GetObject(ctorHandle).SetPrototype(errorCtor);
+            bindings.Add(BuiltinBinding.NonEnumerable("SuppressedError", JsValue.FromObject(ctorHandle)));
+        }
 
         // Error.prototype.toString
         DefineProtoMethod(context, heap, errorProto, heap.GetObject(errorProto), "toString", ErrorToString);
