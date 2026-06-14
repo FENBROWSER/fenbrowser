@@ -32,7 +32,7 @@ internal static class IntlDateTimeFormatting
     {
         if (string.IsNullOrWhiteSpace(locale))
         {
-            return CultureInfo.InvariantCulture;
+            return CultureInfo.GetCultureInfo("en-US");
         }
 
         try
@@ -54,7 +54,7 @@ internal static class IntlDateTimeFormatting
             }
         }
 
-        return CultureInfo.InvariantCulture;
+        return CultureInfo.GetCultureInfo("en-US");
     }
 
     public static void ValidateOptions(IntlDateTimeFormatOptions options)
@@ -419,40 +419,52 @@ internal static class IntlDateTimeFormatting
 
     private static void AppendDateParts(List<IntlDateTimePart> parts, DateTime dateTime, CultureInfo culture, IntlDateTimeFormatOptions options)
     {
-        var first = true;
+        var sep = culture.DateTimeFormat.DateSeparator;
+        // Determine the culture's component order from its short date pattern
+        var pattern = culture.DateTimeFormat.ShortDatePattern;
+        var monthPos = pattern.IndexOf('M');
+        var dayPos = pattern.IndexOf('d');
+        var yearPos = pattern.IndexOf('y');
+        if (yearPos < 0) yearPos = int.MaxValue;
+        if (monthPos < 0) monthPos = int.MaxValue;
+        if (dayPos < 0) dayPos = int.MaxValue;
+
+        var ordered = new List<(string type, string value)>();
+        // weekday always goes first if present
         if (!string.IsNullOrEmpty(options.Weekday))
         {
-            AddLiteralIfNeeded(parts, ref first, "");
-            parts.Add(new IntlDateTimePart("weekday", FormatWeekday(dateTime, culture, options.Weekday!)));
-            first = false;
+            ordered.Add(("weekday", FormatWeekday(dateTime, culture, options.Weekday!)));
+            if (!string.IsNullOrEmpty(options.Year) || !string.IsNullOrEmpty(options.Month) || !string.IsNullOrEmpty(options.Day))
+                ordered.Add(("literal", " "));
         }
 
-        if (!string.IsNullOrEmpty(options.Month))
-        {
-            AddLiteralIfNeeded(parts, ref first, first ? string.Empty : " ");
-            parts.Add(new IntlDateTimePart("month", FormatMonth(dateTime, culture, options.Month!)));
-            first = false;
-        }
-
-        if (!string.IsNullOrEmpty(options.Day))
-        {
-            AddLiteralIfNeeded(parts, ref first, first ? string.Empty : " ");
-            parts.Add(new IntlDateTimePart("day", FormatDay(dateTime, options.Day!)));
-            first = false;
-        }
-
+        // Build ordered list of date components in culture order
+        var dateComps = new List<(int order, string type, string value)>();
         if (!string.IsNullOrEmpty(options.Year))
+            dateComps.Add((yearPos, "year", FormatYear(dateTime, options.Year!)));
+        if (!string.IsNullOrEmpty(options.Month))
+            dateComps.Add((monthPos, "month", FormatMonth(dateTime, culture, options.Month!)));
+        if (!string.IsNullOrEmpty(options.Day))
+            dateComps.Add((dayPos, "day", FormatDay(dateTime, options.Day!)));
+        dateComps.Sort((a, b) => a.order.CompareTo(b.order));
+
+        var first = true;
+        foreach (var (_, type, value) in dateComps)
         {
-            AddLiteralIfNeeded(parts, ref first, first ? string.Empty : ", ");
-            parts.Add(new IntlDateTimePart("year", FormatYear(dateTime, options.Year!)));
+            if (!first) ordered.Add(("literal", sep));
+            ordered.Add((type, value));
             first = false;
         }
 
+        // era always goes last if present
         if (!string.IsNullOrEmpty(options.Era))
         {
-            AddLiteralIfNeeded(parts, ref first, " ");
-            parts.Add(new IntlDateTimePart("era", FormatEra(dateTime, culture, options.Era!)));
+            ordered.Add(("literal", " "));
+            ordered.Add(("era", FormatEra(dateTime, culture, options.Era!)));
         }
+
+        foreach (var (type, value) in ordered)
+            parts.Add(new IntlDateTimePart(type, value));
     }
 
     private static void AppendTimeParts(
