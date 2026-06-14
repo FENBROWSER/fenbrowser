@@ -212,12 +212,23 @@ public sealed partial class BytecodeInterpreter
                 var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment);
                 genObj.ThisValue = thisValue;
                 genObj.InitialArgs = args as JsValue[] ?? System.Linq.Enumerable.ToArray(args);
+                // ECMA-262 14.4.11: FunctionDeclarationInstantiation runs
+                // before OrdinaryCreateFromConstructor. Since our prologue
+                // performs param binding (including default-param side-effects
+                // that may mutate g.prototype), we allocate with a default
+                // prototype, run the prologue, then set the correct prototype
+                // per GetPrototypeFromConstructor.
                 genObj.SetPrototype(GetGlobalPrototype("GeneratorPrototype"));
                 var genHandle = _heap.AllocateObject(genObj, AllocationSite.Current());
                 if (fn.Function.PrologueEndIp > 0)
                 {
                     RunGeneratorPrologue(genObj, fn.Function);
                 }
+                // Read g.prototype AFTER FunctionDeclarationInstantiation so
+                // default-param mutations (e.g. g.prototype = null) take effect.
+                var genProtoValue = GetReceiverProperty(value, "prototype");
+                if (genProtoValue.Tag == JsValueTag.Object)
+                    genObj.SetPrototype(genProtoValue.AsObjectHandle());
                 return JsValue.FromObject(genHandle);
             }
 
@@ -242,6 +253,11 @@ public sealed partial class BytecodeInterpreter
                 {
                     RunGeneratorPrologue(genObj, fn.Function);
                 }
+                // Read g.prototype AFTER FunctionDeclarationInstantiation so
+                // default-param mutations (e.g. g.prototype = null) take effect.
+                var asyncGenProtoValue = GetReceiverProperty(value, "prototype");
+                if (asyncGenProtoValue.Tag == JsValueTag.Object)
+                    genObj.SetPrototype(asyncGenProtoValue.AsObjectHandle());
                 return JsValue.FromObject(genHandle);
             }
 

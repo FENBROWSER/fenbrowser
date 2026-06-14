@@ -9329,13 +9329,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 Configurable: false));
         var handle = _heap.AllocateObject(fnObj, AllocationSite.Current());
         fnObj.SelfHandle = handle;
-        _ = functionInstancePrototype.DefineOwnProperty(
-            "constructor",
-            new JsPropertyDescriptor(
-                JsValue.FromObject(handle),
-                Writable: true,
-                Enumerable: false,
-                Configurable: true));
+        // ECMA-262 25.2.4.2: GeneratorFunction instances have a `prototype`
+        // property that is a plain object with no own properties. The
+        // `constructor` back-link is NOT defined here — it is inherited
+        // from %GeneratorPrototype% (or %AsyncGeneratorPrototype%).
+        if (function.Kind != FunctionKind.Generator && function.Kind != FunctionKind.AsyncGenerator)
+        {
+            _ = functionInstancePrototype.DefineOwnProperty(
+                "constructor",
+                new JsPropertyDescriptor(
+                    JsValue.FromObject(handle),
+                    Writable: true,
+                    Enumerable: false,
+                    Configurable: true));
+        }
         _heap.WriteBarrier(handle, prototypeHandle);
         _heap.WriteBarrier(prototypeHandle, handle);
         return JsValue.FromObject(handle);
