@@ -1644,9 +1644,9 @@ public sealed partial class BytecodeInterpreter
             if (absValue == 0) { formatted = "0E0"; }
             else
             {
-                formatted = absValue.ToString("E" + Math.Max(0, maxFrac), CultureInfo.InvariantCulture);
+                formatted = absValue.ToString("E" + maxFrac, CultureInfo.InvariantCulture);
                 int eIdx = formatted.IndexOf('E');
-                string mant = formatted[..eIdx];
+                string mant = formatted[..eIdx].Replace(".", nfi.NumberDecimalSeparator);
                 string exp = formatted[(eIdx + 1)..];
                 if (exp.StartsWith("-")) exp = "-" + exp[1..].TrimStart('0');
                 else if (exp.StartsWith("+")) exp = exp[1..].TrimStart('0');
@@ -1664,7 +1664,7 @@ public sealed partial class BytecodeInterpreter
                 double mantissa = absValue / Math.Pow(10, engExp);
                 if (mantissa >= 1000) { mantissa /= 1000; engExp += 3; }
                 if (mantissa < 1) { mantissa *= 1000; engExp -= 3; }
-                formatted = mantissa.ToString("F" + maxFrac, CultureInfo.InvariantCulture) + "E" + engExp;
+                formatted = mantissa.ToString("F" + maxFrac, CultureInfo.InvariantCulture).Replace(".", nfi.NumberDecimalSeparator) + "E" + engExp;
             }
         }
         else
