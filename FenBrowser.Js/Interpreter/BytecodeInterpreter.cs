@@ -9293,15 +9293,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _heap.WriteBarrier(prototypeHandle, callHandle);
 
-        var restrictedThrower = JsValue.FromObject(EnsureThrowTypeErrorIntrinsic());
-        var restrictedDescriptor = JsPropertyDescriptor.Accessor(
-            restrictedThrower,
-            restrictedThrower,
+        // ECMA-262 20.2.3 / Annex B.2.2.1: Function.prototype.caller and
+        // Function.prototype.arguments are accessors that throw TypeError in
+        // strict mode and return null (caller) or null (arguments) in sloppy.
+        var annexThrower = JsValue.FromObject(EnsureThrowTypeErrorIntrinsic());
+        var annexGetter = new NativeFunctionObject("get caller/arguments", (thisValue, _) =>
+        {
+            // In sloppy mode: return null. In strict mode: the accessor on the
+            // prototype already throws if the function is strict.
+            return JsValue.Null;
+        }, length: 0);
+        var annexGetterHandle = _heap.AllocateObject(annexGetter, AllocationSite.Current());
+        var annexDesc = JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(annexGetterHandle),
+            annexThrower,
             Enumerable: false,
             Configurable: true);
-        _ = prototype.DefineOwnProperty("arguments", restrictedDescriptor);
-        _ = prototype.DefineOwnProperty("caller", restrictedDescriptor);
-        WriteDescriptorBarrier(prototypeHandle, restrictedDescriptor);
+        _ = prototype.DefineOwnProperty("arguments", annexDesc);
+        _ = prototype.DefineOwnProperty("caller", annexDesc);
+        WriteDescriptorBarrier(prototypeHandle, annexDesc);
 
         // ECMA-262 20.2.3.1 Function.prototype.apply(thisArg, argsArray). The
         // second argument is an Array (or array-like). null/undefined become an
