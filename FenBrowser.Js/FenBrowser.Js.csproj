@@ -9,6 +9,11 @@
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
   </PropertyGroup>
   <ItemGroup>
+    <!-- Force ICU globalization on all platforms for CLDR-compliant Intl formatting
+         matching V8/SpiderMonkey/test262 expected output. -->
+    <RuntimeHostConfigurationOption Include="System.Globalization.UseNls" Value="false" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
   </ItemGroup>
   <ItemGroup>

@@ -17,6 +17,9 @@
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
   <ItemGroup>
+    <RuntimeHostConfigurationOption Include="System.Globalization.UseNls" Value="false" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\FenBrowser.Js\FenBrowser.Js.csproj" />
   </ItemGroup>
 </Project>
