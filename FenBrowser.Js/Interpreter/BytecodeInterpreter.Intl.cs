@@ -241,6 +241,25 @@ public sealed partial class BytecodeInterpreter
             new JsPropertyDescriptor(JsValue.FromObject(formatToPartsHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, formatToPartsHandle);
 
+        var resolvedOptsStub = new NativeFunctionObject("resolvedOptions", (_, _) =>
+        {
+            var o = CreateOrdinaryObject();
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en-US"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("calendar", new JsPropertyDescriptor(JsValue.FromString("gregory"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("numberingSystem", new JsPropertyDescriptor(JsValue.FromString("latn"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("timeZone", new JsPropertyDescriptor(JsValue.FromString("UTC"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("year", new JsPropertyDescriptor(JsValue.FromString("numeric"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("month", new JsPropertyDescriptor(JsValue.FromString("numeric"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("day", new JsPropertyDescriptor(JsValue.FromString("numeric"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("hour", new JsPropertyDescriptor(JsValue.FromString("numeric"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("minute", new JsPropertyDescriptor(JsValue.FromString("numeric"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("second", new JsPropertyDescriptor(JsValue.FromString("numeric"), Writable: true, Enumerable: true, Configurable: true));
+            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
+        }, length: 0);
+        var resolvedOptsHandle = _heap.AllocateObject(resolvedOptsStub, AllocationSite.Current());
+        _ = prototype.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(resolvedOptsHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, resolvedOptsHandle);
+
         _dateTimeFormatPrototypeHandle = prototypeHandle;
         return prototypeHandle;
     }
