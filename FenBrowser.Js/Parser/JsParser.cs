@@ -1337,6 +1337,16 @@ public sealed class JsParser
         // ECMA-262 14.3.1.1: "let" may not be used as a binding name in a
         // let/const declaration. Covers `let let;`, `const let = 1;`, and
         // ASI edge cases like `let\nlet;`.
+        // ECMA-262 15.7.3: class static blocks disallow 'await' as a binding name.
+        if (_classStaticBlockDepth > 0)
+        {
+            foreach (var d in declarators)
+            {
+                if (!IsSyntheticPatternBinding(d.Identifier) && string.Equals(d.Identifier, "await", StringComparison.Ordinal))
+                    throw new JsParserException("'await' may not be used as a binding name inside a class static block.");
+            }
+        }
+
         if (start.Text is "let" or "const")
         {
             foreach (var d in declarators)
