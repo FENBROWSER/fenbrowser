@@ -1643,6 +1643,12 @@ public sealed partial class BytecodeInterpreter
             cnf.NumberGroupSizes = new int[] { 0 };
             cnf.CurrencyGroupSizes = new int[] { 0 };
         }
+        // For currency style without a specific currency code, use USD as default.
+        if (style == "currency" && string.IsNullOrEmpty(state.Currency))
+        {
+            try { cnf.CurrencySymbol = new System.Globalization.RegionInfo("US").CurrencySymbol; }
+            catch { cnf.CurrencySymbol = "$"; }
+        }
 
         string notation = state.Notation ?? "standard";
         string formatted;
