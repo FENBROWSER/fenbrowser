@@ -23,6 +23,7 @@ public sealed partial class BytecodeInterpreter
         string? CurrencyDisplay,
         string? Unit,
         string? UnitDisplay,
+        string? Notation,
         int MinimumIntegerDigits,
         int? MinimumFractionDigits,
         int? MaximumFractionDigits,
@@ -1344,6 +1345,7 @@ public sealed partial class BytecodeInterpreter
         string? currencyDisplay = null;
         string? unit = null;
         string? unitDisplay = null;
+        string notation = "standard";
         int minimumIntegerDigits = 1;
         int? minimumFractionDigits = null;
         int? maximumFractionDigits = null;
@@ -1364,6 +1366,7 @@ public sealed partial class BytecodeInterpreter
             int? GetInt(string name) => TryGetPropertyValue(options, optionsValue, name, out var value) && value.Tag != JsValueTag.Undefined ? (int)ToNumber(value) : null;
 
             style = GetString("style");
+            notation = GetString("notation") ?? "standard";
             if (style == "currency") { currency = GetString("currency"); currencyDisplay = GetString("currencyDisplay"); }
             if (style == "unit") { unit = GetString("unit"); unitDisplay = GetString("unitDisplay"); }
             minimumIntegerDigits = GetInt("minimumIntegerDigits") ?? 1;
@@ -1379,7 +1382,7 @@ public sealed partial class BytecodeInterpreter
         var localeNumberingSystem = ExtractUnicodeKeyword(locale, "nu");
         var numberingSystem = (optionsNumberingSystem ?? localeNumberingSystem ?? "latn").ToLowerInvariant();
 
-        return new NumberFormatState(locale, style, currency, currencyDisplay, unit, unitDisplay, minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits, minimumSignificantDigits, maximumSignificantDigits, useGrouping, signDisplay, numberingSystem);
+        return new NumberFormatState(locale, style, currency, currencyDisplay, unit, unitDisplay, notation, minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits, minimumSignificantDigits, maximumSignificantDigits, useGrouping, signDisplay, numberingSystem);
     }
 
     // Extract a Unicode (`-u-`) extension keyword value from a BCP-47 locale,
@@ -1592,12 +1595,27 @@ public sealed partial class BytecodeInterpreter
             cnf.CurrencyGroupSizes = new int[] { 0 };
         }
 
-        string formatted = style switch
+        string notation = state.Notation ?? "standard";
+        string formatted;
+        if (notation == "scientific")
+            formatted = absValue.ToString("E" + Math.Max(0, maxFrac), CultureInfo.InvariantCulture);
+        else if (notation == "engineering")
         {
-            "currency" => number.ToString("C", cnf),
-            "percent" => number.ToString("P", cnf),
-            _ => absValue.ToString("N", cnf),
-        };
+            if (absValue == 0) formatted = "0E0";
+            else
+            {
+                int engExp = ((int)Math.Floor(Math.Log10(absValue)) / 3) * 3;
+                double mantissa = absValue / Math.Pow(10, engExp);
+                formatted = mantissa.ToString("F" + Math.Max(0, maxFrac), CultureInfo.InvariantCulture) + "E" + engExp;
+            }
+        }
+        else
+            formatted = style switch
+            {
+                "currency" => number.ToString("C", cnf),
+                "percent" => number.ToString("P", cnf),
+                _ => absValue.ToString("N", cnf),
+            };
         // Trim trailing zeros in fraction from maxFrac down to minFrac.
         string decSep = cnf.NumberDecimalSeparator;
         int decIdx = formatted.IndexOf(decSep, StringComparison.Ordinal);
@@ -2171,6 +2189,7 @@ public sealed partial class BytecodeInterpreter
                     null, null,
                     SingularDurationUnit(unit),
                     unitStyle is "numeric" or "2-digit" ? null : unitStyle,
+                    "standard",
                     unitStyle == "2-digit" ? 2 : 1,
                     null, null, null, null,
                     unitStyle is "numeric" or "2-digit" ? false : true,
