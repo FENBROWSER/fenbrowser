@@ -4564,7 +4564,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return;
         }
 
-        _ = env.SetMutableBinding(name, value, strict: false);
+        // Annex B.3.3: the binding may be created but uninitialized (TDZ).
+        // SetMutableBinding returns TdzAccess for uninitialized bindings.
+        // Use InitializeBinding in that case.
+        var result = env.SetMutableBinding(name, value, strict: false);
+        if (result == BindingOpResult.TdzAccess)
+            _ = env.InitializeBinding(name, value);
     }
 
     internal void InitializeName(InterpreterFrame frame, int slot, JsValue value)
