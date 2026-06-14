@@ -1807,6 +1807,7 @@ public sealed class JsParser
             var iterable = ParseExpression(0);
             ExpectPunctuator(")");
             var forInBody = ParseStatement(StatementBodyContext.IterationOrWith);
+            ValidateIterationBodyNotLabelledFunction(forInBody);
             ValidateForHeadBodyVarConflicts(initializer, forInBody);
             return new ForInStatementNode(initializer, iterable, forInBody, MergeSpan(start.Span, forInBody.Span));
         }
@@ -1831,6 +1832,7 @@ public sealed class JsParser
             var iterable = ParseExpression(0);
             ExpectPunctuator(")");
             var forOfBody = ParseStatement(StatementBodyContext.IterationOrWith);
+            ValidateIterationBodyNotLabelledFunction(forOfBody);
             ValidateForHeadBodyVarConflicts(initializer, forOfBody);
             return isForAwait
                 ? new ForAwaitOfStatementNode(initializer, iterable, forOfBody, MergeSpan(start.Span, forOfBody.Span))
@@ -2038,6 +2040,18 @@ public sealed class JsParser
         }
 
         return false;
+    }
+
+    // ECMA-262 13.7.5 / 14.7 / 14.6: IterationStatement bodies must not be
+    // labelled function declarations (even nested labels like L1: L2: function f).
+    private static void ValidateIterationBodyNotLabelledFunction(StatementNode body)
+    {
+        var stmt = body;
+        while (stmt is LabeledStatementNode labeled)
+            stmt = labeled.Body;
+        if (stmt is FunctionDeclarationNode)
+            throw new JsParserException(
+                "Labelled function declarations are not allowed as the body of an iteration statement.");
     }
 
     // ECMA-262 13.7.5: the body of a for-in/for-of must not have var-declared
