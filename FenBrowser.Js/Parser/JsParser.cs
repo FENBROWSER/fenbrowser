@@ -551,7 +551,7 @@ public sealed class JsParser
     // nested blocks recursively. `{ { var x; } function x() {} }` must flag
     // the conflict because the inner `var x` contributes to the outer block's
     // VarDeclaredNames.
-    private static void CollectVarDeclaredNamesRecursive(IReadOnlyList<StatementNode> statements, HashSet<string> names)
+    private static void CollectVarDeclaredNamesRecursive(IReadOnlyList<StatementNode> statements, HashSet<string> names, bool recurseIntoBlocks = true)
     {
         foreach (var statement in statements)
         {
@@ -568,8 +568,8 @@ public sealed class JsParser
                 case FunctionDeclarationNode funcDecl:
                     names.Add(funcDecl.Name);
                     break;
-                case BlockStatementNode block:
-                    CollectVarDeclaredNamesRecursive(block.Statements, names);
+                case BlockStatementNode block when recurseIntoBlocks:
+                    CollectVarDeclaredNamesRecursive(block.Statements, names, recurseIntoBlocks);
                     break;
             }
         }
@@ -584,7 +584,12 @@ public sealed class JsParser
         foreach (var stmt in statements)
         {
             if (stmt is FunctionDeclarationNode func)
+            {
                 funcDeclNames.Add(func.Name);
+                // Annex B.3.1: function decls in blocks also contribute to var names,
+                // but only for the purpose of NOT treating them as conflicts with
+                // themselves. We handle that at conflict-check time.
+            }
             else if (stmt is VariableDeclarationStatementNode vdecl)
             {
                 foreach (var d in vdecl.Declarators)
@@ -2088,7 +2093,14 @@ public sealed class JsParser
         }
         if (boundNames.Count == 0) return;
         var varNames = new HashSet<string>(StringComparer.Ordinal);
-        CollectVarDeclaredNamesRecursive(new[] { body }, varNames);
+        // Only collect `var` declarations (not function declarations) from the
+        // body's direct statements. Function declarations in blocks hoist to the
+        // enclosing function scope per Annex B.3.3, not to the for-body scope.
+        foreach (var stmt in (body is BlockStatementNode b ? b.Statements : new[] { body }))
+        {
+            if (stmt is VariableDeclarationStatementNode vdecl && vdecl.Kind is "var")
+                foreach (var d in vdecl.Declarators) varNames.Add(d.Identifier);
+        }
         foreach (var name in boundNames)
             if (varNames.Contains(name))
                 throw new JsParserException(
