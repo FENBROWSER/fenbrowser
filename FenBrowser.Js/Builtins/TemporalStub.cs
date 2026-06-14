@@ -4260,10 +4260,17 @@ public sealed class TemporalStub : IBuiltinModule
         }
         var relObj = h.GetObject(relVal.AsObjectHandle());
         string calId = CalId(h, relObj);
-        // PlainDate stores y/m/d inside _v; PlainDateTime/ZonedDateTime
-        // store year/month/day. Detect by probing _v.y existence.
         IsoDate date;
-        if (relObj.TryGetOwnProperty("_v", out var vDesc) && vDesc.Value.Tag == JsValueTag.Object)
+        // ZonedDateTime: has epochNanoseconds, derive date from epoch.
+        if (TryGetField(ctx, h, relVal, "epochNanoseconds", out var ensVal) && ensVal.Tag != JsValueTag.Undefined)
+        {
+            long epochNs = ensVal.Tag == JsValueTag.BigInt ? (long)ensVal.AsBigInt() : (long)ensVal.AsNumber();
+            long epochDay = epochNs / 86_400_000_000_000L;
+            if (epochNs < 0 && epochNs % 86_400_000_000_000L != 0) epochDay--;
+            date = IsoMath.EpochDaysToCivil(epochDay);
+        }
+        // PlainDate stores y/m/d inside _v; PlainDateTime stores year/month/day.
+        else if (relObj.TryGetOwnProperty("_v", out var vDesc) && vDesc.Value.Tag == JsValueTag.Object)
         {
             var data = h.GetObject(vDesc.Value.AsObjectHandle());
             if (data.TryGetOwnProperty("y", out _))
@@ -4300,6 +4307,11 @@ public sealed class TemporalStub : IBuiltinModule
             + dur.seconds * 1_000_000_000L + dur.millis * 1_000_000L
             + dur.micros * 1_000L + dur.nanos;
         long totalNs = totalDays * 86_400_000_000_000L + timeNs;
+
+        // ECMA-262: the resulting date after adding must be within Temporal limits.
+        long resultEpochDay = IsoMath.CivilToEpochDays(relTo.date.Year, relTo.date.Month, relTo.date.Day) + totalDays;
+        if (resultEpochDay < IsoMath.MinEpochDay || resultEpochDay > IsoMath.MaxEpochDay)
+            throw new JsThrownException(ctx.CreateRangeError("Duration out of range for this relativeTo."));
 
         smallest ??= "nanosecond";
         string largestEff = largest is null or "auto" ? "day" : largest;
