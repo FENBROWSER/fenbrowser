@@ -7599,6 +7599,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
             }, length: 0);
             nfProto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(roStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+            var fmtStub = new NativeFunctionObject("format", (_, _2) => JsValue.FromString(""), length: 1);
+            nfProto.DefineOwnProperty("format", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(fmtStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+            var ftpStub = new NativeFunctionObject("formatToParts", (_, _2) => { var e = JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current())); return e; }, length: 1);
+            nfProto.DefineOwnProperty("formatToParts", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(ftpStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
             _ = ctor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(nfProtoHandle), Writable: false, Enumerable: false, Configurable: false));
             _ = intl.DefineOwnProperty(
                 "NumberFormat",
