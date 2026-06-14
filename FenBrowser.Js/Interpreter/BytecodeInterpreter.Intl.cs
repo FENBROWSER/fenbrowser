@@ -1372,36 +1372,169 @@ public sealed partial class BytecodeInterpreter
         return string.Concat(FormatNumberToParts(value, state).Select(static p => p.Value));
     }
 
-    private IReadOnlyList<IntlPart> FormatNumberToParts(JsValue value, NumberFormatState state)
+    private static CultureInfo ResolveNumberCulture(string locale)
     {
-        string raw;
-        if (value.Tag == JsValueTag.String)
-        {
-            raw = value.AsString();
-        }
-        else if (value.Tag == JsValueTag.Int32)
-        {
-            raw = value.AsInt32().ToString(CultureInfo.InvariantCulture);
-        }
-        else if (value.Tag == JsValueTag.Number)
-        {
-            var number = value.AsNumber();
-            if (double.IsNaN(number))
-            {
-                return new[] { new IntlPart("nan", "NaN") };
-            }
-
-            raw = number.ToString("0.############################", CultureInfo.InvariantCulture);
-        }
-        else
-        {
-            raw = ToStringValue(value);
-        }
-
-        return FormatNumericStringToParts(raw, state);
+        try { return CultureInfo.GetCultureInfo(locale); }
+        catch (CultureNotFoundException) { return CultureInfo.InvariantCulture; }
     }
 
-    private IReadOnlyList<IntlPart> FormatNumericStringToParts(string raw, NumberFormatState state)
+    private IReadOnlyList<IntlPart> FormatNumberToParts(JsValue value, NumberFormatState state)
+    {
+        // Extract the numeric value.
+        double number;
+        if (value.Tag == JsValueTag.String)
+        {
+            if (!double.TryParse(value.AsString(), NumberStyles.Float, CultureInfo.InvariantCulture, out number))
+                number = double.NaN;
+        }
+        else if (value.Tag == JsValueTag.Int32)
+            number = value.AsInt32();
+        else if (value.Tag == JsValueTag.Number)
+            number = value.AsNumber();
+        else
+        {
+            if (!double.TryParse(ToStringValue(value), NumberStyles.Float, CultureInfo.InvariantCulture, out number))
+                number = double.NaN;
+        }
+        if (double.IsNaN(number))
+            return new[] { new IntlPart("nan", "NaN") };
+
+        var culture = ResolveNumberCulture(state.Locale);
+        var nfi = culture.NumberFormat;
+
+        // Build format string based on state.
+        string format;
+        var style = state.Style ?? "decimal";
+        int minFrac = state.MinimumFractionDigits ?? (style == "currency" ? nfi.CurrencyDecimalDigits : 0);
+        int maxFrac = state.MaximumFractionDigits ?? (style == "currency" ? nfi.CurrencyDecimalDigits : 3);
+        bool useGrouping = state.UseGrouping;
+
+        // Determine format specifier.
+        char spec = style switch { "currency" => 'C', "percent" => 'P', _ => 'N' };
+        if (!useGrouping) spec = 'F'; // Fixed-point without grouping
+
+        // Build custom NumberFormatInfo to control fraction digits.
+        var customNfi = (NumberFormatInfo)nfi.Clone();
+        customNfi.NumberDecimalDigits = minFrac;
+        customNfi.CurrencyDecimalDigits = minFrac;
+        customNfi.PercentDecimalDigits = minFrac;
+
+        // Format with minimum fraction digits, then trim to max.
+        if (spec == 'C')
+            format = number.ToString("C" + minFrac.ToString(), customNfi);
+        else if (spec == 'P')
+            format = (number / 100.0).ToString("P" + minFrac, customNfi);
+        else
+            format = Math.Abs(number).ToString(spec.ToString() + minFrac, customNfi);
+
+        // Parse the formatted string into parts.
+        var parts = new List<IntlPart>();
+        bool negative = number < 0;
+        string signDisplay = state.SignDisplay ?? "auto";
+        bool showSign = signDisplay switch
+        {
+            "never" => false,
+            "always" => true,
+            "exceptZero" => number != 0,
+            "negative" => negative,
+            _ => negative // auto
+        };
+
+        if (showSign)
+        {
+            // Use locale-specific minus sign or plus sign.
+            if (negative)
+                parts.Add(new IntlPart("minusSign", nfi.NegativeSign, state.Unit));
+            else if (signDisplay == "always" || signDisplay == "exceptZero")
+                parts.Add(new IntlPart("plusSign", nfi.PositiveSign, state.Unit));
+        }
+
+        // Walk the formatted string character by character, classifying each.
+        string ds = nfi.NumberDecimalSeparator;
+        string gs = useGrouping ? nfi.NumberGroupSeparator : "\0"; // null sentinel if no grouping
+        string formattedNumber = format.Replace(nfi.NegativeSign, "").Replace(nfi.PositiveSign, "")
+            .Replace(nfi.CurrencySymbol, "").Replace(nfi.PercentSymbol, "").Replace("%", "").Trim();
+
+        // Walk the formatted output and emit parts.
+        int pos = 0;
+        // Find where the number actually starts (after currency/percent prefix).
+        while (pos < format.Length && !char.IsDigit(format[pos]) && format[pos] != nfi.NegativeSign[0] && format[pos] != '+')
+        {
+            if (char.IsWhiteSpace(format[pos]))
+                parts.Add(new IntlPart("literal", format[pos].ToString(), state.Unit));
+            pos++;
+        }
+        // Skip sign if present (already emitted above).
+        if (pos < format.Length && (format[pos] == nfi.NegativeSign[0] || format[pos] == '+'))
+            pos++;
+
+        // Parse the numeric portion.
+        for (int i = 0; i < formattedNumber.Length && pos < format.Length;)
+        {
+            char c = format[pos];
+            if (char.IsDigit(c))
+            {
+                var digitStart = pos;
+                var groupDigits = new List<char>();
+                while (pos < format.Length && (char.IsDigit(format[pos]) || format[pos] == '0'))
+                {
+                    groupDigits.Add(format[pos]);
+                    pos++;
+                }
+                var digitStr = new string(groupDigits.ToArray());
+                parts.Add(new IntlPart("integer", ApplyNumberingSystem(digitStr, state.NumberingSystem), state.Unit));
+            }
+            else if (format.Substring(pos).StartsWith(ds, StringComparison.Ordinal))
+            {
+                parts.Add(new IntlPart("decimal", ds, state.Unit));
+                pos += ds.Length;
+                // Read fraction digits.
+                var fracDigits = new List<char>();
+                while (pos < format.Length && char.IsDigit(format[pos]))
+                {
+                    fracDigits.Add(format[pos]);
+                    pos++;
+                }
+                var fracStr = new string(fracDigits.ToArray());
+                // Trim trailing zeros per maximumFractionDigits.
+                while (fracStr.Length > maxFrac) fracStr = fracStr[..^1];
+                // Trim trailing zeros down to minimumFractionDigits.
+                while (fracStr.Length > minFrac && fracStr.EndsWith("0")) fracStr = fracStr[..^1];
+                // Pad to minimumFractionDigits.
+                if (fracStr.Length < minFrac) fracStr = fracStr.PadRight(minFrac, '0');
+                if (fracStr.Length > 0)
+                    parts.Add(new IntlPart("fraction", ApplyNumberingSystem(fracStr, state.NumberingSystem), state.Unit));
+            }
+            else if (format.Substring(pos).StartsWith(gs, StringComparison.Ordinal) && gs.Length > 0)
+            {
+                parts.Add(new IntlPart("group", gs, state.Unit));
+                pos += gs.Length;
+            }
+            else
+            {
+                parts.Add(new IntlPart("literal", c.ToString(), state.Unit));
+                pos++;
+            }
+        }
+
+        // Style suffix: currency name, percent sign, or unit.
+        if (style == "currency" && nfi.CurrencySymbol.Length > 0)
+        {
+            parts.Add(new IntlPart("literal", " ", state.Unit));
+            parts.Add(new IntlPart("currency", nfi.CurrencySymbol, state.Unit));
+        }
+        else if (style == "unit" && !string.IsNullOrEmpty(state.Unit))
+        {
+            parts.Add(new IntlPart("literal", " ", state.Unit));
+            parts.Add(new IntlPart("unit", GetUnitLabel(state.Unit!, state.UnitDisplay ?? "short", state.Locale), state.Unit));
+        }
+
+        return parts;
+    }
+
+    // Simple numeric formatting used by DurationFormat internal formatting.
+    // Does numeric string → parts with unit labels but without full locale support.
+    private IReadOnlyList<IntlPart> FormatNumericStringToPartsSimple(string raw, NumberFormatState state)
     {
         var parts = new List<IntlPart>();
         var negative = raw.StartsWith("-", StringComparison.Ordinal);
@@ -1409,56 +1542,34 @@ public sealed partial class BytecodeInterpreter
         {
             raw = raw[1..];
             if (!string.Equals(state.SignDisplay, "never", StringComparison.Ordinal))
-            {
                 parts.Add(new IntlPart("minusSign", "-", state.Unit));
-            }
         }
-
         var split = raw.Split('.', 2);
         var integer = split[0].Length == 0 ? "0" : split[0];
         if (state.MinimumIntegerDigits > 1)
-        {
             integer = integer.PadLeft(state.MinimumIntegerDigits, '0');
-        }
-
         parts.Add(new IntlPart("integer", ApplyNumberingSystem(integer, state.NumberingSystem), state.Unit));
         if (split.Length == 2)
         {
             var fraction = split[1];
             if (state.MaximumFractionDigits is { } maxFrac)
             {
-                if (fraction.Length > maxFrac)
-                {
-                    fraction = fraction[..maxFrac];
-                }
-
-                // Trailing zeros are removed down to minimumFractionDigits, then the
-                // result is padded back up to that minimum (ToRawFixed / SetNumberFormatDigitOptions).
+                if (fraction.Length > maxFrac) fraction = fraction[..maxFrac];
                 var minFrac = state.MinimumFractionDigits ?? 0;
-                while (fraction.Length > minFrac && fraction.EndsWith("0", StringComparison.Ordinal))
-                {
-                    fraction = fraction[..^1];
-                }
-
-                if (fraction.Length < minFrac)
-                {
-                    fraction = fraction.PadRight(minFrac, '0');
-                }
+                while (fraction.Length > minFrac && fraction.EndsWith("0")) fraction = fraction[..^1];
+                if (fraction.Length < minFrac) fraction = fraction.PadRight(minFrac, '0');
             }
-
             if (fraction.Length > 0)
             {
                 parts.Add(new IntlPart("decimal", ".", state.Unit));
                 parts.Add(new IntlPart("fraction", ApplyNumberingSystem(fraction, state.NumberingSystem), state.Unit));
             }
         }
-
         if (state.Style == "unit" && !string.IsNullOrEmpty(state.Unit))
         {
             parts.Add(new IntlPart("literal", " ", state.Unit));
             parts.Add(new IntlPart("unit", GetUnitLabel(state.Unit!, state.UnitDisplay ?? "short", state.Locale), state.Unit));
         }
-
         return parts;
     }
 
@@ -1860,7 +1971,7 @@ public sealed partial class BytecodeInterpreter
                     suppressSign ? "never" : null,
                     numberingSystem);
 
-                var parts = FormatNumericStringToParts(raw, numberState).ToList();
+                var parts = FormatNumericStringToPartsSimple(raw, numberState).ToList();
 
                 if (needSeparator)
                 {
