@@ -12008,7 +12008,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         else
         {
-            cmp = (a, b) => string.CompareOrdinal(ToStringValue(a), ToStringValue(b));
+            cmp = (a, b) =>
+            {
+                // ECMA-262 SortCompare: use numeric comparison for BigInt,
+                // string comparison for everything else.
+                if (a.Tag == JsValueTag.BigInt && b.Tag == JsValueTag.BigInt)
+                    return BigInteger.Compare(a.AsBigInt(), b.AsBigInt());
+                return string.CompareOrdinal(ToStringValue(a), ToStringValue(b));
+            };
         }
 
         StableMergeSort(present, cmp);
@@ -15286,24 +15293,44 @@ fallbackArraySpecies:
                 new[] { bufferValue, JsValue.FromNumber(byteOffset), JsValue.FromNumber(newLen) }, out _);
         }, length: 2);
 
+        // SortCompare result: ToNumber for Number, Compare for BigInt.
+        static int CompareSortResult(JsValue v)
+        {
+            if (v.Tag == JsValueTag.BigInt)
+            {
+                var bi = v.AsBigInt();
+                return bi < 0 ? -1 : bi > 0 ? 1 : 0;
+            }
+            var n = v.Tag == JsValueTag.Int32 ? v.AsInt32() : v.AsNumber();
+            return n < 0 ? -1 : (n > 0 ? 1 : 0);
+        }
+
         DefineNativePrototypeMethod(protoHandle, proto, "sort", (thisValue, args) =>
         {
             var self = ValidateTypedArray(thisValue);
             var comparer = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (comparer.Tag != JsValueTag.Undefined && !IsCallable(comparer))
+                throw new JsThrownException(CreateTypeError("TypedArray.prototype.sort: comparator must be a function or undefined."));
             var values = new List<JsValue>(self.Length);
             for (var i = 0; i < self.Length; i++) values.Add(self.GetElement(i));
-            values.Sort((a, b) =>
+            try
             {
-                if (IsCallable(comparer))
+                values.Sort((a, b) =>
                 {
-                    var v = CallFunction(comparer, new[] { a, b }, JsValue.Undefined);
-                    var n = ToNumber(v);
-                    return n < 0 ? -1 : (n > 0 ? 1 : 0);
-                }
-                var na = ToNumber(a);
-                var nb = ToNumber(b);
-                return na.CompareTo(nb);
-            });
+                    if (IsCallable(comparer))
+                    {
+                        var v = CallFunction(comparer, new[] { a, b }, JsValue.Undefined);
+                        return CompareSortResult(v);
+                    }
+                    if (a.Tag == JsValueTag.BigInt && b.Tag == JsValueTag.BigInt)
+                        return BigInteger.Compare(a.AsBigInt(), b.AsBigInt());
+                    return ToNumber(a).CompareTo(ToNumber(b));
+                });
+            }
+            catch (InvalidOperationException ex) when (ex.InnerException is JsThrownException jse)
+            {
+                throw jse; // Re-throw user comparator errors that List<T>.Sort wrapped
+            }
             for (var i = 0; i < values.Count; i++) self.SetElement(i, values[i]);
             return thisValue;
         }, length: 1);
