@@ -581,29 +581,25 @@ public sealed partial class BytecodeInterpreter
         if (TryGetTemporalInstant(args[0], out instant))
             return true;
 
-        // Temporal.PlainDate / PlainDateTime → convert to UTC midnight.
-        // Read _v internal slots directly (same approach as DecodeIsoDate in TemporalStub).
+        // Temporal date types (PlainDate, PlainDateTime, PlainMonthDay, PlainYearMonth).
+        // These store internal slots in _v and throw on valueOf coercion.
         if (args[0].Tag == JsValueTag.Object)
         {
             var obj = _heap.GetObject(args[0].AsObjectHandle());
             if (obj.TryGetOwnProperty("_v", out var vd) && vd.Value.Tag == JsValueTag.Object)
             {
                 var data = _heap.GetObject(vd.Value.AsObjectHandle());
-                int y = 0, m = 0, d = 0;
-                if (data.TryGetOwnProperty("y", out var yd)) y = (int)yd.Value.AsNumber();
-                else if (data.TryGetOwnProperty("year", out var y2d)) y = (int)y2d.Value.AsNumber();
-                if (y != 0)
+                // All Temporal date types have calendarId. PlainTime does not.
+                if (data.TryGetOwnProperty("calendarId", out _))
                 {
-                    m = data.TryGetOwnProperty("m", out var md) ? (int)md.Value.AsNumber() :
-                        (data.TryGetOwnProperty("month", out var m2d) ? (int)m2d.Value.AsNumber() : 1);
-                    d = data.TryGetOwnProperty("d", out var dd) ? (int)dd.Value.AsNumber() :
-                        (data.TryGetOwnProperty("day", out var d2d) ? (int)d2d.Value.AsNumber() : 1);
-                    m = Math.Clamp(m, 1, 12); d = Math.Clamp(d, 1, 28);
-                    if (!data.TryGetOwnProperty("ens", out _)) // not a ZDT/Instant
-                    {
-                        instant = new DateTimeOffset(y, m, d, 0, 0, 0, TimeSpan.Zero);
-                        return true;
-                    }
+                    int y = 0, m = 1, d = 1;
+                    if (data.TryGetOwnProperty("y", out var yd))
+                    { y = (int)yd.Value.AsNumber(); m = (int)(data.TryGetOwnProperty("m", out var md) ? md.Value.AsNumber() : 1); d = (int)(data.TryGetOwnProperty("d", out var dd) ? dd.Value.AsNumber() : 1); }
+                    else if (data.TryGetOwnProperty("year", out var y2d))
+                    { y = (int)y2d.Value.AsNumber(); m = (int)(data.TryGetOwnProperty("month", out var m2d) ? m2d.Value.AsNumber() : 1); d = (int)(data.TryGetOwnProperty("day", out var d2d) ? d2d.Value.AsNumber() : 1); }
+                    if (y == 0) y = 2000; // PlainMonthDay has no year, use reference year
+                    instant = new DateTimeOffset(y, Math.Clamp(m, 1, 12), Math.Clamp(d, 1, 28), 0, 0, 0, TimeSpan.Zero);
+                    return true;
                 }
             }
         }
