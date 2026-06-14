@@ -3322,6 +3322,13 @@ public sealed class BytecodeCompiler
                         }
 
                         var keyReg = CompileExpression(prop.ComputedKey);
+                        // ECMA-262 10.2.9 SetFunctionName: for anonymous function
+                        // definitions with computed keys (e.g. `{ [sym]: function(){} }`),
+                        // stamp the `name` property from the computed key value.
+                        if (prop.Kind == ObjectPropertyKind.Data && IsAnonymousFunctionDefinition(prop.Value))
+                        {
+                            _instructions.Add(new Instruction(OpCode.SetFunctionName, valueReg, keyReg, 0));
+                        }
                         // Audit §1: object-literal accessors with computed keys
                         // emit DefineGetter/SetterByReg so the result installs
                         // as a real accessor descriptor, not a data property.

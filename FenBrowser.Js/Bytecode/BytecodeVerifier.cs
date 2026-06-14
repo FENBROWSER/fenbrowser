@@ -133,6 +133,10 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 break;
+            case OpCode.SetFunctionName:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                break;
             case OpCode.Add:
             case OpCode.Sub:
             case OpCode.Mul:

@@ -976,6 +976,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.Move:
                     frame.Registers[ins.A] = frame.Registers[ins.B];
                     break;
+                case OpCode.SetFunctionName:
+                    ApplyFunctionName(frame.Registers[ins.A], frame.Registers[ins.B], prefix: null);
+                    break;
                 case OpCode.Jump:
                     // Tier-4 #24 (audit �3.2): a back-edge is a Jump
                     // whose target precedes the source IP. Saturating add

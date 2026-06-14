@@ -265,4 +265,10 @@ public enum OpCode : byte
 		// VariableEnvironment (the nearest function/global/module environment),
 		// skipping the intervening block scopes. A=value reg, B=variable slot.
 		StoreVarTop,
+
+		// ECMA-262 10.2.9 SetFunctionName: stamps the `name` own property on a
+		// function object using a runtime-computed key (e.g. a Symbol from a
+		// computed property name). A=function reg, B=key reg.
+		// Used by object literals: { [computedKey]: function() {} }.
+		SetFunctionName,
 }
