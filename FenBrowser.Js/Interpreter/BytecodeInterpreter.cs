@@ -3858,12 +3858,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }, length: 2);
 
         // 28.1.6 get
+        // ECMA-262 28.1.6 Reflect.get(target, key [, receiver]): receiver
+        // defaults to target. The property lookup uses target; the receiver
+        // is passed as `this` to accessor getters.
         DefineIntrinsicFunction(handle, reflect, "get", (_, args) =>
         {
             RequireObjectTarget(args, "Reflect.get");
             var target = args[0];
+            var receiver = args.Count > 2 ? args[2] : target;
             var key = ToPropertyKey(args.Count > 1 ? args[1] : JsValue.Undefined);
-            return GetReceiverProperty(target, key);
+            return GetReceiverPropertyWithReceiver(target, receiver, key);
         }, length: 2);
 
         // 28.1.14 set
@@ -6587,6 +6591,123 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         throw new JsThrownException(CreateTypeError("RegExp.prototype method called on incompatible receiver."));
     }
 
+    // ECMA-262 22.2.5.2.1 RegExpExec ( R, S ).
+    // Calls the "exec" method of R with argument S. Works on any Object, not just RegExp.
+    private JsValue RegExpExec(JsValue R, string S)
+    {
+        // 1. Let exec be ? Get(R, "exec").
+        if (R.Tag != JsValueTag.Object || !TryGetPropertyValue(_heap.GetObject(R.AsObjectHandle()), R, "exec", out var execFn))
+        {
+            throw new JsThrownException(CreateTypeError("RegExpExec: 'exec' property not found."));
+        }
+        // 2. If IsCallable(exec) is true, then
+        if (IsCallable(execFn))
+        {
+            // a. Let result be ? Call(exec, R, « S »).
+            var result = CallFunction(execFn, new[] { JsValue.FromString(S) }, R);
+            // b. If Type(result) is neither Object nor Null, throw a TypeError exception.
+            if (result.Tag != JsValueTag.Object && result.Tag != JsValueTag.Null)
+            {
+                throw new JsThrownException(CreateTypeError("RegExpExec: exec must return object or null."));
+            }
+            // c. Return result.
+            return result;
+        }
+        // 3. Perform ? RequireInternalSlot(R, [[RegExpMatcher]]).
+        // ...fall through to built-in exec for RegExp objects.
+        if (R.Tag != JsValueTag.Object || _heap.GetObject(R.AsObjectHandle()) is not RegExpObject builtinRegexp)
+        {
+            throw new JsThrownException(CreateTypeError("RegExpExec: R is not a RegExp and has no callable exec."));
+        }
+        // 4. Return ? RegExpBuiltinExec(R, S).
+        return RegExpPrototypeExec(R, new[] { JsValue.FromString(S) });
+    }
+
+    // ECMA-262 22.2.5.2.1 step helper: AdvanceStringIndex.
+    private static int AdvanceStringIndex(string S, int index, bool unicode)
+    {
+        if (!unicode || index + 1 >= S.Length)
+            return index + 1;
+        var first = S[index];
+        if (first >= 0xD800 && first <= 0xDBFF)
+        {
+            var second = S[index + 1];
+            if (second >= 0xDC00 && second <= 0xDFFF)
+                return index + 2;
+        }
+        return index + 1;
+    }
+
+    // ECMA-262 7.3.18 SpeciesConstructor ( O, defaultConstructor ).
+    private JsValue SpeciesConstructor(JsValue O, ObjectHandle defaultConstructorHandle)
+    {
+        // 1. Assert: Type(O) is Object.
+        if (O.Tag != JsValueTag.Object)
+            return JsValue.FromObject(defaultConstructorHandle);
+        var obj = _heap.GetObject(O.AsObjectHandle());
+        // 2. Let C be ? Get(O, "constructor").
+        if (!TryGetPropertyValue(obj, O, "constructor", out var C))
+            return JsValue.FromObject(defaultConstructorHandle);
+        // 3. If C is undefined, return defaultConstructor.
+        if (C.Tag == JsValueTag.Undefined)
+            return JsValue.FromObject(defaultConstructorHandle);
+        // 4. If Type(C) is not Object, throw a TypeError exception.
+        if (C.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("SpeciesConstructor: 'constructor' is not an object."));
+        var cObj = _heap.GetObject(C.AsObjectHandle());
+        // 5. Let S be ? Get(C, @@species).
+        var speciesSymbol = GetWellKnownSymbol("species");
+        JsValue S = JsValue.Undefined;
+        if (speciesSymbol.Tag == JsValueTag.Symbol &&
+            cObj.TryGetOwnSymbolProperty(speciesSymbol.AsSymbolId(), out var speciesDesc))
+        {
+            if (speciesDesc.IsAccessor)
+            {
+                var getter = speciesDesc.Get;
+                if (getter.Tag != JsValueTag.Undefined)
+                    S = CallFunction(getter, Array.Empty<JsValue>(), C);
+            }
+            else
+            {
+                S = speciesDesc.Value;
+            }
+        }
+        // 6. If S is either undefined or null, return defaultConstructor.
+        if (S.Tag == JsValueTag.Undefined || S.Tag == JsValueTag.Null)
+            return JsValue.FromObject(defaultConstructorHandle);
+        // 7. If IsConstructor(S) is true, return S.
+        if (S.Tag == JsValueTag.Object && IsConstructableTarget(S.AsObjectHandle()))
+            return S;
+        // 8. Throw a TypeError exception.
+        throw new JsThrownException(CreateTypeError("SpeciesConstructor: @@species is not a constructor."));
+    }
+
+    // ECMA-262 7.2.8 IsRegExp ( argument ).
+    private bool IsRegExp(JsValue argument)
+    {
+        // 1. If Type(argument) is not Object, return false.
+        if (argument.Tag != JsValueTag.Object) return false;
+        // 2. Let matcher be ? Get(argument, @@match).
+        var obj = _heap.GetObject(argument.AsObjectHandle());
+        var matchSymbol = GetWellKnownSymbol("match");
+        JsValue matcher = JsValue.Undefined;
+        if (matchSymbol.Tag == JsValueTag.Symbol &&
+            obj.TryGetOwnSymbolProperty(matchSymbol.AsSymbolId(), out var matchDesc))
+        {
+            if (matchDesc.IsAccessor && matchDesc.Get.Tag != JsValueTag.Undefined)
+                matcher = CallFunction(matchDesc.Get, Array.Empty<JsValue>(), argument);
+            else
+                matcher = matchDesc.Value;
+        }
+        // 3. If matcher is not undefined, return ToBoolean(matcher).
+        if (matcher.Tag != JsValueTag.Undefined)
+            return IsTruthy(matcher);
+        // 4. If argument has a [[RegExpMatcher]] internal slot, return true.
+        if (obj is RegExpObject) return true;
+        // 5. Return false.
+        return false;
+    }
+
     // Proxy intercept helpers — ECMA-262 28.2 internal method dispatch.
     // Each method checks for a handler trap; when present the trap is called
     // with the proper arguments. When absent the operation falls through to
@@ -7563,14 +7684,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         // ECMA-402 §11 DateTimeFormat constructor.
         {
+            var prototypeHandle = EnsureDateTimeFormatPrototype();
             var ctor = new NativeFunctionObject(
                 "DateTimeFormat",
-                (_, _) => throw new JsThrownException(CreateTypeError("Intl.DateTimeFormat must be invoked with 'new'.")),
+                (thisValue, args) => ChainIntlService(thisValue, args, prototypeHandle, DateTimeFormatConstruct),
                 construct: args => DateTimeFormatConstruct(args),
                 length: 0);
             var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
             _heap.PushRoot(ctorHandle);
-            var prototypeHandle = EnsureDateTimeFormatPrototype();
             var prototype = _heap.GetObject(prototypeHandle);
             _ = ctor.DefineOwnProperty(
                 "prototype",
@@ -7580,6 +7701,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     Enumerable: false,
                     Configurable: false));
             _heap.WriteBarrier(ctorHandle, prototypeHandle);
+
+            // ECMA-402 §11.3 supportedLocalesOf.
+            var supportedLocalesOf = new NativeFunctionObject(
+                "supportedLocalesOf",
+                (_, args) => SupportedLocalesOf(args),
+                length: 1);
+            var supportedLocalesOfHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());
+            _ = ctor.DefineOwnProperty(
+                "supportedLocalesOf",
+                new JsPropertyDescriptor(
+                    JsValue.FromObject(supportedLocalesOfHandle),
+                    Writable: true,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(ctorHandle, supportedLocalesOfHandle);
+
             _ = prototype.DefineOwnProperty(
                 "constructor",
                 new JsPropertyDescriptor(
@@ -7600,17 +7737,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         // ECMA-402 §13 NumberFormat constructor.
         {
-            var ctor = new NativeFunctionObject(
-                "NumberFormat",
-                (_, _) => throw new JsThrownException(CreateTypeError("Intl.NumberFormat must be invoked with 'new'.")),
-                construct: args => NumberFormatConstruct(args),
-                length: 0);
-            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
-            _heap.PushRoot(ctorHandle);
-            // Shared prototype with resolvedOptions so that
-            // Intl.NumberFormat.prototype.resolvedOptions exists.
+            // Build shared prototype first so we can capture its handle for ChainIntlService.
             var nfProto = CreateOrdinaryObject();
             var nfProtoHandle = _heap.AllocateObject(nfProto, AllocationSite.Current());
+            _heap.PushRoot(nfProtoHandle);
             var roStub = new NativeFunctionObject("resolvedOptions", (_, _) =>
             {
                 var o = CreateOrdinaryObject();
@@ -7628,7 +7758,32 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             nfProto.DefineOwnProperty("format", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(fmtStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
             var ftpStub = new NativeFunctionObject("formatToParts", (_, _2) => { var e = JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current())); return e; }, length: 1);
             nfProto.DefineOwnProperty("formatToParts", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(ftpStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+
+            var ctor = new NativeFunctionObject(
+                "NumberFormat",
+                (thisValue, args) => ChainIntlService(thisValue, args, nfProtoHandle, NumberFormatConstruct),
+                construct: args => NumberFormatConstruct(args),
+                length: 0);
+            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
+            _heap.PushRoot(ctorHandle);
             _ = ctor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(nfProtoHandle), Writable: false, Enumerable: false, Configurable: false));
+            _heap.WriteBarrier(ctorHandle, nfProtoHandle);
+
+            // ECMA-402 §15.3 supportedLocalesOf.
+            var supportedLocalesOf = new NativeFunctionObject(
+                "supportedLocalesOf",
+                (_, args) => SupportedLocalesOf(args),
+                length: 1);
+            var supportedLocalesOfHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());
+            _ = ctor.DefineOwnProperty(
+                "supportedLocalesOf",
+                new JsPropertyDescriptor(
+                    JsValue.FromObject(supportedLocalesOfHandle),
+                    Writable: true,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(ctorHandle, supportedLocalesOfHandle);
+
             _ = intl.DefineOwnProperty(
                 "NumberFormat",
                 new JsPropertyDescriptor(

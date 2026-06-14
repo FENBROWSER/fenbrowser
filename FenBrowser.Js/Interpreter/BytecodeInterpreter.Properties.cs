@@ -18,11 +18,19 @@ public sealed partial class BytecodeInterpreter
     [MayExecuteJs]
     private JsValue GetReceiverProperty(JsValue receiver, string key)
     {
-        switch (receiver.Tag)
+        return GetReceiverPropertyWithReceiver(receiver, receiver, key);
+    }
+
+    // ECMA-262 28.1.6 Reflect.get and similar: target is the object whose
+    // [[Get]] is performed; receiver is the `this` value for accessor getters.
+    [MayExecuteJs]
+    private JsValue GetReceiverPropertyWithReceiver(JsValue target, JsValue receiver, string key)
+    {
+        switch (target.Tag)
         {
             case JsValueTag.Object:
             {
-                var obj = ResolveObject(receiver);
+                var obj = ResolveObject(target);
                 // ECMA-262 23.2.4.2 IntegerIndexedElementGet: TypedArray integer
                 // indices route to the underlying buffer, not the property table.
                 if (obj is TypedArrayObject ta && IsCanonicalIntegerIndex(key, out var taIdx))
@@ -53,10 +61,10 @@ public sealed partial class BytecodeInterpreter
             }
             case JsValueTag.HostObject:
                 // F.5 - route through HostObjectTable validation, then IHostHooks.
-                return GetHostObjectProperty(receiver, key);
+                return GetHostObjectProperty(target, key);
             case JsValueTag.String:
             {
-                var s = receiver.AsString();
+                var s = target.AsString();
                 if (key == "length")
                 {
                     return JsValue.FromNumber(s.Length);

@@ -15,6 +15,7 @@ public sealed partial class BytecodeInterpreter
     private ObjectHandle? _dateTimeFormatPrototypeHandle;
     private ObjectHandle? _durationFormatConstructorHandle;
     private ObjectHandle? _durationFormatPrototypeHandle;
+    private JsValue _intlFallbackSymbol = JsValue.Undefined; // %Intl%.[[FallbackSymbol]]
     private sealed record IntlPart(string Type, string Value, string? Unit = null);
     private sealed record NumberFormatState(
         string Locale,
@@ -38,6 +39,79 @@ public sealed partial class BytecodeInterpreter
         "years", "months", "weeks", "days", "hours",
         "minutes", "seconds", "milliseconds", "microseconds", "nanoseconds"
     };
+
+    // ECMA-402: ChainNumberFormat / ChainDateTimeFormat / etc.
+    // When an Intl constructor is called without `new`, creates the instance
+    // first, then checks OrdinaryHasInstance on the receiver. If the receiver
+    // is already an instance, tags it with %Intl%.[[FallbackSymbol]] and returns
+    // the receiver; otherwise returns the new instance.
+    private JsValue ChainIntlService(
+        JsValue thisValue,
+        IReadOnlyList<JsValue> args,
+        ObjectHandle prototypeHandle,
+        Func<IReadOnlyList<JsValue>, JsValue> construct)
+    {
+        var instance = construct(args);
+
+        if (thisValue.Tag == JsValueTag.Object)
+        {
+            var receiverHandle = thisValue.AsObjectHandle();
+            try
+            {
+                // OrdinaryHasInstance: check if the receiver's prototype chain
+                // contains the constructor's shared prototype (works for
+                // Object.create(Intl.Xxx.prototype) patterns), OR a prototype
+                // that carries a `format` method (works for instances created
+                // via our private-per-instance prototype pattern).
+                if (OrdinaryHasInstancePrototype(thisValue, prototypeHandle) ||
+                    InstanceHasIntlFormatMethod(receiverHandle))
+                {
+                    var receiver = _heap.GetObject(receiverHandle);
+                    var fallbackSymbol = EnsureIntlFallbackSymbol();
+                    receiver.DefineOwnSymbolProperty(
+                        fallbackSymbol.AsSymbolId(),
+                        new JsPropertyDescriptor(instance,
+                            Writable: false, Enumerable: false, Configurable: false));
+                    return thisValue;
+                }
+            }
+            catch (JsThrownException)
+            {
+                // If prototype chain walk throws (non-object prototype), fall through.
+            }
+        }
+
+        return instance;
+    }
+
+    // Walk the prototype chain of `objHandle` looking for a prototype that
+    // carries an own `format` method. Inserted by our per-instance prototype
+    // pattern for Intl constructors (NumberFormat, DateTimeFormat, etc.).
+    private bool InstanceHasIntlFormatMethod(ObjectHandle objHandle)
+    {
+        var current = _heap.GetObject(objHandle);
+        while (true)
+        {
+            if (current.TryGetOwnProperty("format", out _))
+            {
+                return true;
+            }
+            var protoHandle = current.PrototypeHandle;
+            if (!protoHandle.HasValue) break;
+            current = _heap.GetObject(protoHandle.Value);
+        }
+        return false;
+    }
+
+    private JsValue EnsureIntlFallbackSymbol()
+    {
+        if (_intlFallbackSymbol.Tag == JsValueTag.Undefined)
+        {
+            _intlFallbackSymbol = JsValue.FromSymbol("IntlLegacyConstructedSymbol");
+        }
+
+        return _intlFallbackSymbol;
+    }
 
     // ECMA-402 11.1.1 InitializeDateTimeFormat.
     private JsValue DateTimeFormatConstruct(IReadOnlyList<JsValue> args)
@@ -904,15 +978,32 @@ public sealed partial class BytecodeInterpreter
 
     private IntlDateTimeFormatOptions ParseDateTimeFormatOptions(string locale, JsValue optionsValue)
     {
-        if (optionsValue.Tag != JsValueTag.Object)
+        if (optionsValue.Tag == JsValueTag.Undefined)
         {
             return new IntlDateTimeFormatOptions(CalendarId: ParseCalendarId(locale));
         }
 
-        var optionsObject = _heap.GetObject(optionsValue.AsObjectHandle());
+        // ECMA-402: options must be converted via ToObject.
+        JsObject optionsObject;
+        JsValue optionsReceiver;
+        if (optionsValue.Tag == JsValueTag.Null)
+        {
+            throw new JsThrownException(CreateTypeError("Cannot convert null to object."));
+        }
+        if (optionsValue.Tag == JsValueTag.Object)
+        {
+            optionsObject = _heap.GetObject(optionsValue.AsObjectHandle());
+            optionsReceiver = optionsValue;
+        }
+        else
+        {
+            optionsObject = ToObject(optionsValue);
+            optionsReceiver = JsValue.FromObject(_heap.AllocateObject(optionsObject, AllocationSite.Current()));
+        }
+
         string? GetString(string name)
         {
-            if (!TryGetPropertyValue(optionsObject, optionsValue, name, out var value) || value.Tag == JsValueTag.Undefined)
+            if (!TryGetPropertyValue(optionsObject, optionsReceiver, name, out var value) || value.Tag == JsValueTag.Undefined)
             {
                 return null;
             }
@@ -922,7 +1013,7 @@ public sealed partial class BytecodeInterpreter
 
         bool? GetBool(string name)
         {
-            if (!TryGetPropertyValue(optionsObject, optionsValue, name, out var value) || value.Tag == JsValueTag.Undefined)
+            if (!TryGetPropertyValue(optionsObject, optionsReceiver, name, out var value) || value.Tag == JsValueTag.Undefined)
             {
                 return null;
             }
@@ -932,7 +1023,7 @@ public sealed partial class BytecodeInterpreter
 
         int? GetInt(string name)
         {
-            if (!TryGetPropertyValue(optionsObject, optionsValue, name, out var value) || value.Tag == JsValueTag.Undefined)
+            if (!TryGetPropertyValue(optionsObject, optionsReceiver, name, out var value) || value.Tag == JsValueTag.Undefined)
             {
                 return null;
             }
@@ -940,26 +1031,131 @@ public sealed partial class BytecodeInterpreter
             return (int)ToNumber(value);
         }
 
+        // ECMA-402 GetOption: localeMatcher must be "lookup" or "best fit".
+        var localeMatcher = GetString("localeMatcher");
+        if (localeMatcher is not null && localeMatcher is not "lookup" and not "best fit")
+            throw new JsThrownException(CreateRangeError($"Invalid localeMatcher: {localeMatcher}"));
+
+        // Calendar: read from options, then from locale u-ca- extension.
+        var calendar = GetString("calendar");
+        if (calendar is not null)
+        {
+            if (!IsWellFormedCalendarType(calendar))
+                throw new JsThrownException(CreateRangeError($"Invalid calendar: {calendar}"));
+        }
+        else
+        {
+            calendar = ParseCalendarId(locale);
+        }
+
+        // numberingSystem validation.
+        var optionsNumberingSystem = GetString("numberingSystem");
+        if (optionsNumberingSystem is not null && !IsWellFormedNumberingSystem(optionsNumberingSystem))
+            throw new JsThrownException(CreateRangeError($"Invalid numberingSystem: {optionsNumberingSystem}"));
+
+        // dateStyle validation.
+        var dateStyle = GetString("dateStyle");
+        if (dateStyle is not null && dateStyle is not "full" and not "long" and not "medium" and not "short")
+            throw new JsThrownException(CreateRangeError($"Invalid dateStyle: {dateStyle}"));
+
+        // timeStyle validation.
+        var timeStyle = GetString("timeStyle");
+        if (timeStyle is not null && timeStyle is not "full" and not "long" and not "medium" and not "short")
+            throw new JsThrownException(CreateRangeError($"Invalid timeStyle: {timeStyle}"));
+
+        // timeZoneName validation.
+        var timeZoneName = GetString("timeZoneName");
+        if (timeZoneName is not null && timeZoneName is not "long" and not "short" and not "shortOffset" and not "longOffset" and not "shortGeneric" and not "longGeneric")
+            throw new JsThrownException(CreateRangeError($"Invalid timeZoneName: {timeZoneName}"));
+
+        // hourCycle validation.
+        var hourCycle = GetString("hourCycle");
+        if (hourCycle is not null && hourCycle is not "h11" and not "h12" and not "h23" and not "h24")
+            throw new JsThrownException(CreateRangeError($"Invalid hourCycle: {hourCycle}"));
+
+        // dayPeriod validation.
+        var dayPeriod = GetString("dayPeriod");
+        if (dayPeriod is not null && dayPeriod is not "narrow" and not "short" and not "long")
+            throw new JsThrownException(CreateRangeError($"Invalid dayPeriod: {dayPeriod}"));
+
+        // weekday validation.
+        var weekday = GetString("weekday");
+        if (weekday is not null && weekday is not "narrow" and not "short" and not "long")
+            throw new JsThrownException(CreateRangeError($"Invalid weekday: {weekday}"));
+
+        // era validation.
+        var era = GetString("era");
+        if (era is not null && era is not "narrow" and not "short" and not "long")
+            throw new JsThrownException(CreateRangeError($"Invalid era: {era}"));
+
+        // year validation.
+        var year = GetString("year");
+        if (year is not null && year is not "numeric" and not "2-digit")
+            throw new JsThrownException(CreateRangeError($"Invalid year: {year}"));
+
+        // month validation.
+        var month = GetString("month");
+        if (month is not null && month is not "numeric" and not "2-digit" and not "long" and not "short" and not "narrow")
+            throw new JsThrownException(CreateRangeError($"Invalid month: {month}"));
+
+        // day validation.
+        var day = GetString("day");
+        if (day is not null && day is not "numeric" and not "2-digit")
+            throw new JsThrownException(CreateRangeError($"Invalid day: {day}"));
+
+        // hour validation.
+        var hour = GetString("hour");
+        if (hour is not null && hour is not "numeric" and not "2-digit")
+            throw new JsThrownException(CreateRangeError($"Invalid hour: {hour}"));
+
+        // minute validation.
+        var minute = GetString("minute");
+        if (minute is not null && minute is not "numeric" and not "2-digit")
+            throw new JsThrownException(CreateRangeError($"Invalid minute: {minute}"));
+
+        // second validation.
+        var second = GetString("second");
+        if (second is not null && second is not "numeric" and not "2-digit")
+            throw new JsThrownException(CreateRangeError($"Invalid second: {second}"));
+
+        // fractionalSecondDigits validation (1-3).
+        var fractionalSecondDigits = GetInt("fractionalSecondDigits");
+        if (fractionalSecondDigits.HasValue && (fractionalSecondDigits.Value < 1 || fractionalSecondDigits.Value > 3))
+            throw new JsThrownException(CreateRangeError($"Invalid fractionalSecondDigits: {fractionalSecondDigits}"));
+
+        // timeZone validation: must be a string if present.
+        var timeZoneId = GetString("timeZone");
+
+        var hour12 = GetBool("hour12");
+
         return new IntlDateTimeFormatOptions(
-            CalendarId: ParseCalendarId(locale),
-            TimeZoneId: GetString("timeZone"),
-            DateStyle: GetString("dateStyle"),
-            TimeStyle: GetString("timeStyle"),
-            HourCycle: GetString("hourCycle"),
-            Hour12: GetBool("hour12"),
-            Weekday: GetString("weekday"),
-            Era: GetString("era"),
-            Year: GetString("year"),
-            Month: GetString("month"),
-            Day: GetString("day"),
-            Hour: GetString("hour"),
-            Minute: GetString("minute"),
-            Second: GetString("second"),
-            FractionalSecondDigits: GetInt("fractionalSecondDigits"),
-            DayPeriod: GetString("dayPeriod"),
-            TimeZoneName: GetString("timeZoneName"));
+            CalendarId: calendar,
+            TimeZoneId: timeZoneId,
+            DateStyle: dateStyle,
+            TimeStyle: timeStyle,
+            HourCycle: hourCycle,
+            Hour12: hour12,
+            Weekday: weekday,
+            Era: era,
+            Year: year,
+            Month: month,
+            Day: day,
+            Hour: hour,
+            Minute: minute,
+            Second: second,
+            FractionalSecondDigits: fractionalSecondDigits,
+            DayPeriod: dayPeriod,
+            TimeZoneName: timeZoneName);
     }
 
+    // ECMA-402: Validate calendar type syntax (Unicode Locale Identifier type nonterminal).
+    // A valid calendar type is 3-8 alphanumeric chars, optionally followed by -<3-8 alphanumeric chars>.
+    private static bool IsWellFormedCalendarType(string calendar) =>
+        System.Text.RegularExpressions.Regex.IsMatch(
+            calendar, @"^[a-z0-9]{3,8}(-[a-z0-9]{3,8})*$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    // Parse the calendar id from a locale's `-u-ca-` Unicode extension.
     private static string? ParseCalendarId(string locale)
     {
         const string marker = "-u-ca-";
@@ -1584,6 +1780,7 @@ public sealed partial class BytecodeInterpreter
         string? style = null;
         string? currency = null;
         string? currencyDisplay = null;
+        string? currencySign = null;
         string? unit = null;
         string? unitDisplay = null;
         string notation = "standard";
@@ -1592,39 +1789,159 @@ public sealed partial class BytecodeInterpreter
         int? maximumFractionDigits = null;
         int? minimumSignificantDigits = null;
         int? maximumSignificantDigits = null;
-        bool useGrouping = true;
+        string useGrouping = "auto";
         string? signDisplay = null;
+        string? compactDisplay = null;
+        string? roundingMode = null;
+        int? roundingIncrement = null;
+        string? roundingPriority = null;
+        string? trailingZeroDisplay = null;
         // ECMA-402 resolves the numbering system from options.numberingSystem,
         // then the locale's `-u-nu-` Unicode extension, then "latn". The value is
         // always lower-cased (case is insignificant in BCP-47 extensions).
         string? optionsNumberingSystem = null;
 
-        if (optionsValue.Tag == JsValueTag.Object)
+        if (optionsValue.Tag != JsValueTag.Undefined)
         {
-            var options = _heap.GetObject(optionsValue.AsObjectHandle());
-            string? GetString(string name) => TryGetPropertyValue(options, optionsValue, name, out var value) && value.Tag != JsValueTag.Undefined ? ToStringValue(value) : null;
-            bool? GetBool(string name) => TryGetPropertyValue(options, optionsValue, name, out var value) && value.Tag != JsValueTag.Undefined ? IsTruthy(value) : null;
-            int? GetInt(string name) => TryGetPropertyValue(options, optionsValue, name, out var value) && value.Tag != JsValueTag.Undefined ? (int)ToNumber(value) : null;
+            // ECMA-402: options must be converted via ToObject.
+            JsObject optionsObj;
+            JsValue optionsReceiver;
+            if (optionsValue.Tag == JsValueTag.Null)
+            {
+                throw new JsThrownException(CreateTypeError("Cannot convert null to object."));
+            }
+            if (optionsValue.Tag == JsValueTag.Object)
+            {
+                optionsObj = _heap.GetObject(optionsValue.AsObjectHandle());
+                optionsReceiver = optionsValue;
+            }
+            else
+            {
+                optionsObj = ToObject(optionsValue);
+                optionsReceiver = JsValue.FromObject(_heap.AllocateObject(optionsObj, AllocationSite.Current()));
+            }
 
-            style = GetString("style");
-            notation = GetString("notation") ?? "standard";
-            if (style == "currency") { currency = GetString("currency"); currencyDisplay = GetString("currencyDisplay"); }
-            if (style == "unit") { unit = GetString("unit"); unitDisplay = GetString("unitDisplay"); }
-            minimumIntegerDigits = GetInt("minimumIntegerDigits") ?? 1;
-            minimumFractionDigits = GetInt("minimumFractionDigits");
-            maximumFractionDigits = GetInt("maximumFractionDigits");
-            minimumSignificantDigits = GetInt("minimumSignificantDigits");
-            maximumSignificantDigits = GetInt("maximumSignificantDigits");
-            useGrouping = GetBool("useGrouping") ?? true;
-            signDisplay = GetString("signDisplay");
+            string? GetString(string name) => TryGetPropertyValue(optionsObj, optionsReceiver, name, out var value) && value.Tag != JsValueTag.Undefined ? ToStringValue(value) : null;
+            bool? GetBool(string name) => TryGetPropertyValue(optionsObj, optionsReceiver, name, out var value) && value.Tag != JsValueTag.Undefined ? IsTruthy(value) : null;
+            int? GetInt(string name) => TryGetPropertyValue(optionsObj, optionsReceiver, name, out var value) && value.Tag != JsValueTag.Undefined ? (int)ToNumber(value) : null;
+
+            // ECMA-402 GetOption: localeMatcher must be "lookup" or "best fit".
+            var localeMatcher = GetString("localeMatcher");
+            if (localeMatcher is not null && localeMatcher is not "lookup" and not "best fit")
+                throw new JsThrownException(CreateRangeError($"Invalid localeMatcher: {localeMatcher}"));
+
+            // numberingSystem validation (syntactic check).
             optionsNumberingSystem = GetString("numberingSystem");
+            if (optionsNumberingSystem is not null && !IsWellFormedNumberingSystem(optionsNumberingSystem))
+                throw new JsThrownException(CreateRangeError($"Invalid numberingSystem: {optionsNumberingSystem}"));
+
+            // Style.
+            style = GetString("style");
+            if (style is not null && style is not "decimal" and not "currency" and not "percent" and not "unit")
+                throw new JsThrownException(CreateRangeError($"Invalid style: {style}"));
+
+            // Currency / currencyDisplay / currencySign.
+            currency = GetString("currency");
+            currencyDisplay = GetString("currencyDisplay");
+            if (currencyDisplay is not null && currencyDisplay is not "code" and not "symbol" and not "narrowSymbol" and not "name")
+                throw new JsThrownException(CreateRangeError($"Invalid currencyDisplay: {currencyDisplay}"));
+            currencySign = GetString("currencySign");
+            if (currencySign is not null && currencySign is not "standard" and not "accounting")
+                throw new JsThrownException(CreateRangeError($"Invalid currencySign: {currencySign}"));
+
+            // Unit / unitDisplay.
+            unit = GetString("unit");
+            unitDisplay = GetString("unitDisplay");
+            if (unitDisplay is not null && unitDisplay is not "long" and not "short" and not "narrow")
+                throw new JsThrownException(CreateRangeError($"Invalid unitDisplay: {unitDisplay}"));
+
+            // Notation.
+            notation = GetString("notation") ?? "standard";
+            if (notation is not "standard" and not "scientific" and not "engineering" and not "compact")
+                throw new JsThrownException(CreateRangeError($"Invalid notation: {notation}"));
+
+            // CompactDisplay (only meaningful for compact notation).
+            compactDisplay = GetString("compactDisplay");
+            if (compactDisplay is not null && compactDisplay is not "short" and not "long")
+                throw new JsThrownException(CreateRangeError($"Invalid compactDisplay: {compactDisplay}"));
+
+            // Digit options.
+            minimumIntegerDigits = GetInt("minimumIntegerDigits") ?? 1;
+            if (minimumIntegerDigits < 1 || minimumIntegerDigits > 21)
+                throw new JsThrownException(CreateRangeError($"Invalid minimumIntegerDigits: {minimumIntegerDigits}"));
+            minimumFractionDigits = GetInt("minimumFractionDigits");
+            if (minimumFractionDigits is < 0 or > 100)
+                throw new JsThrownException(CreateRangeError($"Invalid minimumFractionDigits: {minimumFractionDigits}"));
+            maximumFractionDigits = GetInt("maximumFractionDigits");
+            if (maximumFractionDigits is < 0 or > 100)
+                throw new JsThrownException(CreateRangeError($"Invalid maximumFractionDigits: {maximumFractionDigits}"));
+            minimumSignificantDigits = GetInt("minimumSignificantDigits");
+            if (minimumSignificantDigits is < 1 or > 21)
+                throw new JsThrownException(CreateRangeError($"Invalid minimumSignificantDigits: {minimumSignificantDigits}"));
+            maximumSignificantDigits = GetInt("maximumSignificantDigits");
+            if (maximumSignificantDigits is < 1 or > 21)
+                throw new JsThrownException(CreateRangeError($"Invalid maximumSignificantDigits: {maximumSignificantDigits}"));
+
+            // Rounding options (ES2023).
+            roundingIncrement = GetInt("roundingIncrement");
+            if (roundingIncrement.HasValue && !IsValidRoundingIncrement(roundingIncrement.Value))
+                throw new JsThrownException(CreateRangeError($"Invalid roundingIncrement: {roundingIncrement}"));
+            roundingMode = GetString("roundingMode");
+            if (roundingMode is not null && roundingMode is not "ceil" and not "floor" and not "expand" and not "trunc" and not "halfCeil" and not "halfFloor" and not "halfExpand" and not "halfTrunc" and not "halfEven")
+                throw new JsThrownException(CreateRangeError($"Invalid roundingMode: {roundingMode}"));
+            roundingPriority = GetString("roundingPriority");
+            if (roundingPriority is not null && roundingPriority is not "auto" and not "morePrecision" and not "lessPrecision")
+                throw new JsThrownException(CreateRangeError($"Invalid roundingPriority: {roundingPriority}"));
+            trailingZeroDisplay = GetString("trailingZeroDisplay");
+            if (trailingZeroDisplay is not null && trailingZeroDisplay is not "auto" and not "stripIfInteger")
+                throw new JsThrownException(CreateRangeError($"Invalid trailingZeroDisplay: {trailingZeroDisplay}"));
+
+            // RoundingIncrement conflicts.
+            if (roundingIncrement.HasValue && roundingIncrement.Value != 1)
+            {
+                if (!string.IsNullOrEmpty(roundingPriority) && roundingPriority != "auto")
+                    throw new JsThrownException(CreateTypeError("roundingIncrement conflict with roundingPriority"));
+                if (minimumSignificantDigits.HasValue || maximumSignificantDigits.HasValue)
+                    throw new JsThrownException(CreateTypeError("roundingIncrement conflict with significant digits"));
+                if (maximumFractionDigits.HasValue && minimumFractionDigits.HasValue && maximumFractionDigits.Value != minimumFractionDigits.Value)
+                    throw new JsThrownException(CreateRangeError("roundingIncrement requires equal min/max fraction digits"));
+            }
+
+            // UseGrouping — ES2023: can be "always", "auto", "min2", true, false.
+            var groupingValue = GetString("useGrouping");
+            if (groupingValue is not null)
+            {
+                if (groupingValue is "always" or "auto" or "min2")
+                    useGrouping = groupingValue;
+                else if (groupingValue == "true" || groupingValue == "false")
+                    useGrouping = groupingValue == "true" ? "auto" : "false";
+                else
+                    useGrouping = "auto";
+            }
+            else
+            {
+                var groupingBool = GetBool("useGrouping");
+                useGrouping = groupingBool is true ? "auto" : groupingBool is false ? "false" : "auto";
+            }
+
+            // SignDisplay.
+            signDisplay = GetString("signDisplay");
+            if (signDisplay is not null && signDisplay is not "auto" and not "never" and not "always" and not "exceptZero" and not "negative")
+                throw new JsThrownException(CreateRangeError($"Invalid signDisplay: {signDisplay}"));
         }
 
         var localeNumberingSystem = ExtractUnicodeKeyword(locale, "nu");
         var numberingSystem = (optionsNumberingSystem ?? localeNumberingSystem ?? "latn").ToLowerInvariant();
 
-        return new NumberFormatState(locale, style, currency, currencyDisplay, unit, unitDisplay, notation, minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits, minimumSignificantDigits, maximumSignificantDigits, useGrouping, signDisplay, numberingSystem);
+        return new NumberFormatState(locale, style, currency, currencyDisplay, unit, unitDisplay, notation, minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits, minimumSignificantDigits, maximumSignificantDigits, useGrouping != "false", signDisplay, numberingSystem);
     }
+
+    // ECMA-402 valid roundingIncrement values: 1, 2, 5, and their multiples up to 5000.
+    private static bool IsValidRoundingIncrement(int inc) => inc switch
+    {
+        1 or 2 or 5 or 10 or 20 or 25 or 50 or 100 or 200 or 250 or 500 or 1000 or 2000 or 2500 or 5000 => true,
+        _ => false
+    };
 
     // Extract a Unicode (`-u-`) extension keyword value from a BCP-47 locale,
     // e.g. ExtractUnicodeKeyword("en-US-u-nu-arab", "nu") -> "arab". Returns null
@@ -2642,6 +2959,153 @@ public sealed partial class BytecodeInterpreter
 
         var array = CreateArrayObject(values);
         return JsValue.FromObject(_heap.AllocateObject(array, AllocationSite.Current()));
+    }
+
+    // ECMA-402 §9.2.6 SupportedLocales (shared by all Intl services).
+    // Returns an array of locale strings from the requested locales that are
+    // structurally valid and supported (i.e., their primary language is not "zxx").
+    private JsValue SupportedLocalesOf(IReadOnlyList<JsValue> args)
+    {
+        var requestedLocales = CanonicalizeIntlLocaleList(args.Count > 0 ? args[0] : JsValue.Undefined);
+        var supported = requestedLocales
+            .Where(IsSupportedIntlLocale)
+            .Select(JsValue.FromString)
+            .ToArray();
+        var arrObj = CreateArrayFromElements(supported);
+        var arrHandle = _heap.AllocateObject(arrObj, AllocationSite.Current());
+        return JsValue.FromObject(arrHandle);
+    }
+
+    // CanonicalizeLocaleList for Intl services. Converts a locales argument into a
+    // deduplicated list of canonical BCP-47 language tags.
+    private List<string> CanonicalizeIntlLocaleList(JsValue localesValue)
+    {
+        var locales = new List<string>();
+        if (localesValue.Tag == JsValueTag.Undefined)
+            return locales;
+
+        if (localesValue.Tag == JsValueTag.Null)
+            throw new JsThrownException(CreateTypeError("Cannot convert null to object."));
+
+        if (localesValue.Tag == JsValueTag.String)
+        {
+            locales.Add(CanonicalizeIntlLocaleTag(ToStringValue(localesValue)));
+            return locales;
+        }
+
+        if (localesValue.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("locales argument must be an object or string."));
+
+        var localesObject = _heap.GetObject(localesValue.AsObjectHandle());
+        if (!TryGetPropertyValue(localesObject, localesValue, "length", out var lengthValue))
+            return locales;
+
+        var lengthNumber = ToNumber(lengthValue);
+        if (double.IsNaN(lengthNumber) || lengthNumber < 0)
+            lengthNumber = 0;
+
+        var length = (int)Math.Min(lengthNumber, int.MaxValue);
+        for (var i = 0; i < length; i++)
+        {
+            if (!TryGetPropertyValue(localesObject, localesValue, i.ToString(CultureInfo.InvariantCulture), out var element))
+                continue;
+
+            if (element.Tag is JsValueTag.Undefined or JsValueTag.Null or JsValueTag.Boolean or JsValueTag.Number or JsValueTag.Int32 or JsValueTag.Symbol)
+                throw new JsThrownException(CreateTypeError("Locale list elements must be strings or string-like objects."));
+
+            locales.Add(CanonicalizeIntlLocaleTag(ToStringValue(element)));
+        }
+
+        return locales.Distinct(StringComparer.Ordinal).ToList();
+    }
+
+    // BCP-47 canonicalisation: lower-case primary language, upper-case region,
+    // title-case script, lower-case extensions.
+    private string CanonicalizeIntlLocaleTag(string tag)
+    {
+        if (!IsStructurallyValidLocaleTag(tag))
+            throw new JsThrownException(CreateRangeError($"Invalid language tag: {tag}"));
+
+        var parts = tag.Split('-', StringSplitOptions.RemoveEmptyEntries);
+        var result = new List<string>(parts.Length);
+        var inUnicodeExtension = false;
+        foreach (var rawPart in parts)
+        {
+            var part = rawPart;
+            if (result.Count == 0)
+            {
+                result.Add(part.ToLowerInvariant());
+                continue;
+            }
+
+            if (part.Length == 1)
+            {
+                inUnicodeExtension = true;
+                result.Add(part.ToLowerInvariant());
+                continue;
+            }
+
+            if (!inUnicodeExtension && part.Length == 4 && part.All(char.IsLetter))
+            {
+                result.Add(char.ToUpperInvariant(part[0]) + part[1..].ToLowerInvariant());
+                continue;
+            }
+
+            if (!inUnicodeExtension && ((part.Length == 2 && part.All(char.IsLetter)) || (part.Length == 3 && part.All(char.IsDigit))))
+            {
+                result.Add(part.ToUpperInvariant());
+                continue;
+            }
+
+            result.Add(part.ToLowerInvariant());
+        }
+
+        return string.Join("-", result);
+    }
+
+    private static bool IsSupportedIntlLocale(string locale)
+    {
+        var primaryLanguage = locale.Split('-', 2)[0];
+        return !string.Equals(primaryLanguage, "zxx", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Structural validation for BCP-47 language tags.
+    private static bool IsStructurallyValidLocaleTag(string tag)
+    {
+        if (string.IsNullOrWhiteSpace(tag) || tag.Any(ch => ch > 0x7F))
+            return false;
+
+        if (tag.Contains('*', StringComparison.Ordinal) || tag.Contains('_', StringComparison.Ordinal))
+            return false;
+
+        var parts = tag.Split('-', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+            return false;
+
+        if (parts[0].Length is < 2 or > 8 || !parts[0].All(char.IsLetter))
+            return false;
+
+        if (parts[0].Length == 1 || (parts[0].Length == 4 && parts.Length > 1 && parts[1].Length == 3))
+            return false;
+
+        var seenSingletons = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 1; i < parts.Length; i++)
+        {
+            var part = parts[i];
+            if (part.Length == 1)
+            {
+                if (!char.IsLetterOrDigit(part[0]) || !seenSingletons.Add(part))
+                    return false;
+                if (i == parts.Length - 1)
+                    return false;
+                continue;
+            }
+
+            if (!part.All(char.IsLetterOrDigit))
+                return false;
+        }
+
+        return true;
     }
 
 }

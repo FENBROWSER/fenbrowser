@@ -1834,8 +1834,9 @@ public sealed class TemporalStub : IBuiltinModule
         if (rank <= 3) { se = n / 1_000_000_000L; n %= 1_000_000_000L; }
         if (rank <= 4) { ms = n / 1_000_000L; n %= 1_000_000L; }
         if (rank <= 5) { us = n / 1_000L; n %= 1_000L; }
-        return MakeDuration(ctx, h, 0, 0, 0, sign * (int)days, sign * (int)hr, sign * (int)mi, sign * (int)se,
-            sign * (int)ms, sign * (int)us, sign * (int)n);
+        // Use MakeDurationD to avoid int clamping for large day/hour values (up to 2^53).
+        return MakeDurationD(ctx, h, 0, 0, 0, sign * (double)days, sign * (double)hr, sign * (double)mi, sign * (double)se,
+            sign * (double)ms, sign * (double)us, sign * (double)n);
     }
 
     /// <summary>AddDurationToDateTime: time-of-day arithmetic with day carry, then AddISODate.</summary>
@@ -1974,13 +1975,12 @@ public sealed class TemporalStub : IBuiltinModule
     {
         // new Temporal.Duration(y?, mo?, w?, d?, h?, mi?, s?, ms?, µs?, ns?) —
         // ToIntegerIfIntegral each component, then IsValidDuration sign check.
+        // Store as doubles to avoid int32 clamping (spec max is ~2^53 equivalent seconds).
         var v = new double[10];
         for (int i = 0; i < 10; i++)
             v[i] = ToIntegerIfIntegral(ctx, i < args.Count ? args[i] : JsValue.Undefined);
         ValidateDuration(ctx, v);
-        return MakeDuration(ctx, h,
-            ToSafeInt(v[0]), ToSafeInt(v[1]), ToSafeInt(v[2]), ToSafeInt(v[3]), ToSafeInt(v[4]),
-            ToSafeInt(v[5]), ToSafeInt(v[6]), ToSafeInt(v[7]), ToSafeInt(v[8]), ToSafeInt(v[9]));
+        return MakeDurationD(ctx, h, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9]);
     }
 
     /// <summary>Temporal.Duration.from(arg) — handles string, Duration object (copy), and property bag.</summary>
@@ -2046,7 +2046,6 @@ public sealed class TemporalStub : IBuiltinModule
 
         // Safely parse a long (handles values larger than int range) then clamp
         long SafeLong(string str) => long.TryParse(str, out var v) ? v : 0L;
-        int SafeInt(string str) => int.TryParse(str, out var v) ? v : 0;
 
         var timeIdx = s.IndexOf('T');
         var datePart = timeIdx >= 0 ? s.Substring(0, timeIdx) : s;
@@ -2081,15 +2080,57 @@ public sealed class TemporalStub : IBuiltinModule
             if (i >= timePart.Length) return false;
             if (numStr.Contains('.'))
             {
-                var dotIdx = numStr.IndexOf('.');
-                var wholePart = numStr.Substring(0, dotIdx);
-                var fracPart = numStr.Substring(dotIdx + 1).PadRight(9, '0');
-                var whole = SafeInt(wholePart.Length > 0 ? wholePart : "0");
+                // Parse fractional duration using exact mathematical values per spec.
+                // The whole part goes to the designator's unit, the fractional remainder
+                // cascades through successively smaller units via truncation, with the
+                // final unit (nanoseconds) rounded halfExpand.
+                if (!decimal.TryParse(numStr, System.Globalization.NumberStyles.AllowDecimalPoint | System.Globalization.NumberStyles.AllowLeadingSign,
+                        System.Globalization.CultureInfo.InvariantCulture, out var decVal))
+                    return false;
+                long whole = (long)Math.Truncate(decVal);
+                decimal frac = decVal - whole;
+                if (frac < 0) { frac = -frac; } // work with absolute fractional part
                 switch (timePart[i])
                 {
-                    case 'H': hours = whole; minutes = SafeInt(fracPart.Substring(0,2)); seconds = SafeInt(fracPart.Substring(2,2)); break;
-                    case 'M': minutes = whole; seconds = SafeInt(fracPart.Substring(0,2)); millis = SafeInt(fracPart.Substring(2,3)); break;
-                    case 'S': seconds = whole; millis = SafeInt(fracPart.Substring(0,3)); micros = SafeInt(fracPart.Substring(3,3)); nanos = SafeInt(fracPart.Substring(6,3)); break;
+                    case 'H':
+                        hours = ToSafeInt(whole);
+                        {
+                            decimal mins = frac * 60m;
+                            minutes = ToSafeInt((long)Math.Truncate(mins));
+                            decimal secs = (mins - Math.Truncate(mins)) * 60m;
+                            seconds = ToSafeInt((long)Math.Truncate(secs));
+                            decimal msecs = (secs - Math.Truncate(secs)) * 1000m;
+                            millis = ToSafeInt((long)Math.Truncate(msecs));
+                            decimal usecs = (msecs - Math.Truncate(msecs)) * 1000m;
+                            micros = ToSafeInt((long)Math.Truncate(usecs));
+                            decimal nsecs = (usecs - Math.Truncate(usecs)) * 1000m;
+                            nanos = ToSafeInt((long)Math.Round(nsecs, MidpointRounding.ToEven));
+                        }
+                        break;
+                    case 'M':
+                        minutes = ToSafeInt(whole);
+                        {
+                            decimal secs = frac * 60m;
+                            seconds = ToSafeInt((long)Math.Truncate(secs));
+                            decimal msecs = (secs - Math.Truncate(secs)) * 1000m;
+                            millis = ToSafeInt((long)Math.Truncate(msecs));
+                            decimal usecs = (msecs - Math.Truncate(msecs)) * 1000m;
+                            micros = ToSafeInt((long)Math.Truncate(usecs));
+                            decimal nsecs = (usecs - Math.Truncate(usecs)) * 1000m;
+                            nanos = ToSafeInt((long)Math.Round(nsecs, MidpointRounding.ToEven));
+                        }
+                        break;
+                    case 'S':
+                        seconds = ToSafeInt(whole);
+                        {
+                            decimal msecs = frac * 1000m;
+                            millis = ToSafeInt((long)Math.Truncate(msecs));
+                            decimal usecs = (msecs - Math.Truncate(msecs)) * 1000m;
+                            micros = ToSafeInt((long)Math.Truncate(usecs));
+                            decimal nsecs = (usecs - Math.Truncate(usecs)) * 1000m;
+                            nanos = ToSafeInt((long)Math.Round(nsecs, MidpointRounding.ToEven));
+                        }
+                        break;
                 }
                 i++;
             }
@@ -2392,7 +2433,7 @@ public sealed class TemporalStub : IBuiltinModule
     // ─── Temporal.Duration ─────────────────────────────────
     private void InstallDuration(IBuiltinContext ctx, JsObject t, ObjectHandle tH, JsHeap h)
     {
-        var (cH, pH) = MakeCtor(ctx, h, t, tH, "Duration", 1, true,
+        var (cH, pH) = MakeCtor(ctx, h, t, tH, "Duration", 0, true,
             (cctx, hh, a) => ConstructDuration(cctx, hh, a));
         var p = h.GetObject(pH);
         foreach (var f in new[] { "years", "months", "weeks", "days", "hours", "minutes", "seconds", "milliseconds", "microseconds", "nanoseconds" })
@@ -2446,11 +2487,49 @@ public sealed class TemporalStub : IBuiltinModule
         var c = h.GetObject(cH);
         AddStatic(ctx, h, cH, c, "from", a => DurationFrom(ctx, h, a, pH), 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
-            if (a.Count < 2 || a[0].Tag != JsValueTag.Object || a[1].Tag != JsValueTag.Object) return JsValue.FromNumber(0);
-            double totalA = DurationTotalNs(h, h.GetObject(a[0].AsObjectHandle()));
-            double totalB = DurationTotalNs(h, h.GetObject(a[1].AsObjectHandle()));
+            var d1 = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
+            var d2 = ToTemporalDurationRecord(ctx, h, a.Count > 1 ? a[1] : JsValue.Undefined);
+            // Read options: GetOptionsObject, then relativeTo via ToRelativeTemporalObject.
+            var relTo = a.Count > 2 ? TryDecodeRelativeTo(ctx, h, a[2]) : null;
+            bool calUnits = d1.years != 0 || d1.months != 0 || d1.weeks != 0
+                || d2.years != 0 || d2.months != 0 || d2.weeks != 0;
+            if (calUnits && relTo is null)
+                throw new JsThrownException(ctx.CreateRangeError("relativeTo is required for calendar units"));
+
+            long totalA, totalB;
+            if (relTo is not null)
+            {
+                totalA = DurationTotalNsWithRelative(d1, relTo.Value);
+                totalB = DurationTotalNsWithRelative(d2, relTo.Value);
+            }
+            else
+            {
+                totalA = DurationDayTimeNs(d1);
+                totalB = DurationDayTimeNs(d2);
+            }
             return JsValue.FromNumber(totalA < totalB ? -1 : totalA > totalB ? 1 : 0);
         }, 2);
+    }
+
+    /// <summary>Convert a Duration to total nanoseconds using a relativeTo date for
+    /// calendar units (years/months/weeks).</summary>
+    private static long DurationTotalNsWithRelative(
+        (int years, int months, int weeks, int days, int hours, int minutes, int seconds, int millis, int micros, int nanos) dur,
+        (IsoDate date, string calId) relTo)
+    {
+        if (dur.years == 0 && dur.months == 0 && dur.weeks == 0)
+            return DurationDayTimeNs(dur);
+        var sys = CalendarMath.Get(relTo.calId);
+        sys ??= CalendarMath.Get("iso8601")!;
+        bool invalid;
+        var relDate = sys.Add(relTo.date, dur.years, dur.months, dur.weeks, 0, constrain: true, out invalid);
+        long dateDays = IsoMath.CivilToEpochDays(relDate.Year, relDate.Month, relDate.Day)
+                        - IsoMath.CivilToEpochDays(relTo.date.Year, relTo.date.Month, relTo.date.Day);
+        long totalDays = dateDays + dur.days;
+        long timeNs = dur.hours * 3_600_000_000_000L + dur.minutes * 60_000_000_000L
+            + dur.seconds * 1_000_000_000L + dur.millis * 1_000_000L
+            + dur.micros * 1_000L + dur.nanos;
+        return totalDays * 86_400_000_000_000L + timeNs;
     }
 
     /// <summary>Decode all Duration fields from _v object.</summary>

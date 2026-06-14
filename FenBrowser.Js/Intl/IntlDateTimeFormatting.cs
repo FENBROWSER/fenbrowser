@@ -140,7 +140,9 @@ internal static class IntlDateTimeFormatting
     // Time-related options and timeZoneName are ignored for date-only types.
     public static IntlDateTimeFormatResult FormatDateOnly(
         int year, int month, int day,
-        CultureInfo culture, IntlDateTimeFormatOptions options)
+        CultureInfo culture, IntlDateTimeFormatOptions options,
+        bool defaultIncludesYear = true,
+        bool defaultIncludesDay = true)
     {
         var dateTime = new DateTime(Math.Clamp(year, 1, 9999), Math.Clamp(month, 1, 12), Math.Clamp(day, 1, 31));
         var parts = new List<IntlDateTimePart>();
@@ -154,15 +156,25 @@ internal static class IntlDateTimeFormatting
 
         if (!hasDateStyle && !hasCoreDateComponents)
         {
-            options = options with
+            if (defaultIncludesYear && defaultIncludesDay)
             {
-                Year = "numeric",
-                Month = "numeric",
-                Day = "numeric",
-            };
+                options = options with { Year = "numeric", Month = "numeric", Day = "numeric" };
+            }
+            else if (defaultIncludesYear)
+            {
+                options = options with { Year = "numeric", Month = "numeric" };
+            }
+            else if (defaultIncludesDay)
+            {
+                options = options with { Month = "numeric", Day = "numeric" };
+            }
+            else
+            {
+                options = options with { Month = "numeric" };
+            }
         }
 
-        if (hasDateStyle)
+        if (!string.IsNullOrEmpty(options.DateStyle))
         {
             var text = BuildStyledString(dateTime, culture, options, TimeSpan.Zero, "UTC");
             return new IntlDateTimeFormatResult(text, Array.Empty<IntlDateTimePart>());

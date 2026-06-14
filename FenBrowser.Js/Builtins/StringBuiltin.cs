@@ -66,8 +66,31 @@ public sealed class StringBuiltin : IBuiltinModule
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "padStart", PadStart, length: 1);
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "padEnd", PadEnd, length: 1);
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "trim", (ctx, tv, _) => JsValue.FromString(RequireString(ctx, tv).Trim()));
-        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "trimStart", (ctx, tv, _) => JsValue.FromString(RequireString(ctx, tv).TrimStart()));
-        DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "trimEnd", (ctx, tv, _) => JsValue.FromString(RequireString(ctx, tv).TrimEnd()));
+
+        // trimStart / trimLeft and trimEnd / trimRight: Annex B.2.2.1 aliases
+        // sharing the same function object per spec.
+        var trimStartFn = new NativeFunctionObject("trimStart",
+            (thisValue, _) => JsValue.FromString(RequireString(capturedCtx, thisValue).TrimStart()), length: 0);
+        var trimStartFnHandle = heap.AllocateObject(trimStartFn, AllocationSite.Current());
+        trimStartFn.SetPrototype(capturedCtx.GetObjectPrototype());
+        var callHandle = capturedCtx.GetFunctionCallMethod();
+        trimStartFn.SetProperty("call", JsValue.FromObject(callHandle));
+        heap.WriteBarrier(trimStartFnHandle, callHandle);
+        protoObj.DefineOwnProperty("trimStart", new JsPropertyDescriptor(JsValue.FromObject(trimStartFnHandle), Writable: true, Enumerable: false, Configurable: true));
+        heap.WriteBarrier(prototypeHandle, trimStartFnHandle);
+        protoObj.DefineOwnProperty("trimLeft", new JsPropertyDescriptor(JsValue.FromObject(trimStartFnHandle), Writable: true, Enumerable: false, Configurable: true));
+        heap.WriteBarrier(prototypeHandle, trimStartFnHandle);
+
+        var trimEndFn = new NativeFunctionObject("trimEnd",
+            (thisValue, _) => JsValue.FromString(RequireString(capturedCtx, thisValue).TrimEnd()), length: 0);
+        var trimEndFnHandle = heap.AllocateObject(trimEndFn, AllocationSite.Current());
+        trimEndFn.SetPrototype(capturedCtx.GetObjectPrototype());
+        trimEndFn.SetProperty("call", JsValue.FromObject(callHandle));
+        heap.WriteBarrier(trimEndFnHandle, callHandle);
+        protoObj.DefineOwnProperty("trimEnd", new JsPropertyDescriptor(JsValue.FromObject(trimEndFnHandle), Writable: true, Enumerable: false, Configurable: true));
+        heap.WriteBarrier(prototypeHandle, trimEndFnHandle);
+        protoObj.DefineOwnProperty("trimRight", new JsPropertyDescriptor(JsValue.FromObject(trimEndFnHandle), Writable: true, Enumerable: false, Configurable: true));
+        heap.WriteBarrier(prototypeHandle, trimEndFnHandle);
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "toUpperCase", (ctx, tv, _) => JsValue.FromString(RequireString(ctx, tv).ToUpperInvariant()));
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "toLowerCase", (ctx, tv, _) => JsValue.FromString(RequireString(ctx, tv).ToLowerInvariant()));
         DefineProtoMethod(capturedCtx, heap, prototypeHandle, protoObj, "toLocaleUpperCase", (ctx, tv, _) => JsValue.FromString(RequireString(ctx, tv).ToUpperInvariant()));

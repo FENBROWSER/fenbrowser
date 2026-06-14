@@ -1709,6 +1709,9 @@ public sealed class Test262Runner
                      Object: realmObject,
                      Number: realmNumber,
                      BigInt: realmBigInt,
+                     RegExp: markRealmIntrinsic(function RegExp(p, f) {
+                       return new globalThis.RegExp(p, f);
+                     }, "RegExp", RegExp.prototype),
                      TypeError: TypeError,
                      Symbol: Symbol,
                      SuppressedError: typeof SuppressedError === "function" ? SuppressedError : undefined,
@@ -1735,7 +1738,7 @@ public sealed class Test262Runner
                    // eval plus the remaining standard intrinsics so cross-realm tests
                    // that read `realm.global.<Ctor>` / `realm.global.eval(...)` work.
                    realmGlobal.eval = function (s) { return eval(s); };
-                   ['Proxy','Reflect','RegExp','String','Date','Map','Set','WeakMap','WeakSet',
+                   ['Proxy','Reflect','String','Date','Map','Set','WeakMap','WeakSet',
                     'WeakRef','Promise','Error','RangeError','SyntaxError','ReferenceError',
                     'EvalError','URIError','AggregateError','Int8Array','Uint8Array',
                     'Uint8ClampedArray','Int16Array','Uint16Array','Int32Array','Uint32Array',
@@ -1756,7 +1759,12 @@ public sealed class Test262Runner
                      try { structuredClone(buffer, { transfer: [buffer] }); return; } catch (_e) {}
                    }
                    throw new Error('detachArrayBuffer is not supported');
-                 }
+                 },
+                 // Annex B [[IsHTMLDDA]] — a callable that returns null. Tests use it as
+                 // a stand-in for document.all: Object.defineProperty works on it, it is
+                 // callable (returning null), and get-method accessor tests that dispatch
+                 // @@match etc. observe null instead of undefined.
+                 IsHTMLDDA: function() { return null; }
                };
                function $DETACHBUFFER(buffer) { return $262.detachArrayBuffer(buffer); }
                var typedArrayConstructors = [
