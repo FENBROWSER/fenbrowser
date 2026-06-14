@@ -4586,6 +4586,10 @@ public sealed class JsParser
 
             if (IsPunctuator(","))
             {
+                // ECMA-262 13.2.5.1: SpreadElement cannot be followed by a comma
+                // (trailing comma after spread is a SyntaxError).
+                if (elements.Count > 0 && elements[^1] is SpreadElementExpressionNode)
+                    throw new JsParserException("Spread element cannot be followed by a trailing comma.");
                 Advance();
                 continue;
             }
