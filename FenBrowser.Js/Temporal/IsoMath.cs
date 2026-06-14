@@ -248,35 +248,34 @@ internal static class IsoMath
         int months = 0;
         if (largestUnit is "year" or "month")
         {
-            // Candidate years: difference of calendar years, adjusted so the
-            // intermediate (one + years) does not overshoot two.
-            int candidateYears = two.Year - one.Year;
-            if (candidateYears != 0)
+            if (largestUnit == "year")
             {
-                candidateYears -= sign;
+                // Candidate years: difference of calendar years, adjusted so the
+                // intermediate (one + years) does not overshoot two.
+                int candidateYears = two.Year - one.Year;
+                if (candidateYears != 0)
+                {
+                    candidateYears -= sign;
+                }
+
+                while (!IsoDateSurpasses(sign, one.Year + candidateYears, one.Month, one.Day, two))
+                {
+                    years = candidateYears;
+                    candidateYears += sign;
+                }
             }
 
-            while (!IsoDateSurpasses(sign, one.Year + candidateYears, one.Month, one.Day, two))
-            {
-                years = candidateYears;
-                candidateYears += sign;
-            }
-
+            // Month computation: for "year" largestUnit, anchor at (one + years);
+            // for "month" largestUnit, anchor at one.Year so months are the total
+            // calendar months (years is 0, collapsed into months).
+            int startYear = largestUnit == "year" ? one.Year + years : one.Year;
             int candidateMonths = sign;
-            var intermediate = BalanceYearMonth(one.Year + years, one.Month + candidateMonths);
+            var intermediate = BalanceYearMonth(startYear, one.Month + candidateMonths);
             while (!IsoDateSurpasses(sign, intermediate.Year, intermediate.Month, one.Day, two))
             {
                 months = candidateMonths;
                 candidateMonths += sign;
                 intermediate = BalanceYearMonth(intermediate.Year, intermediate.Month + sign);
-            }
-
-            // ECMA-262 CalendarDateUntil: years are always populated when the
-            // largestUnit is "year" or "month". Don't zero out years for "month".
-            if (largestUnit == "year")
-            {
-                // Only for "year": the caller expects years to be the primary output.
-                // For "month": years and months are both returned.
             }
         }
 

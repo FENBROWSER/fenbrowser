@@ -249,6 +249,84 @@ public sealed class TemporalStub : IBuiltinModule
         }
     }
 
+    /// <summary>Format a Temporal date-only type (PlainDate, PlainYearMonth, PlainMonthDay) to a locale string.</summary>
+    private static JsValue DateOnlyToLocaleString(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> args,
+        int year, int month, int day)
+    {
+        // timeStyle is not allowed for date-only types (check raw options before parsing)
+        if (args.Count > 1 && args[1].Tag == JsValueTag.Object && TryGetField(ctx, h, args[1], "timeStyle", out _))
+            throw new JsThrownException(ctx.CreateTypeError("timeStyle conflicts with date-only Temporal types."));
+
+        var locale = args.Count > 0 ? ToStrArg(ctx, args[0]) : string.Empty;
+        var opts = ParseDateTimeFormatOptions(locale, ctx, h, args.Count > 1 ? args[1] : JsValue.Undefined);
+
+        // Strip time-related fields for date-only types (they must not appear in the output)
+        opts = opts with { Hour = null, Minute = null, Second = null, FractionalSecondDigits = null, DayPeriod = null, TimeZoneName = null };
+
+        // Default to date components when nothing explicit is set
+        var hasExplicit = !string.IsNullOrEmpty(opts.DateStyle) ||
+                          !string.IsNullOrEmpty(opts.Weekday) || !string.IsNullOrEmpty(opts.Era) ||
+                          !string.IsNullOrEmpty(opts.Year) || !string.IsNullOrEmpty(opts.Month) ||
+                          !string.IsNullOrEmpty(opts.Day);
+        if (!hasExplicit)
+            opts = opts with { Year = "numeric", Month = "numeric", Day = "numeric" };
+
+        try
+        {
+            IntlDateTimeFormatting.ValidateOptions(opts);
+        }
+        catch (InvalidOperationException)
+        {
+            throw new JsThrownException(ctx.CreateTypeError("dateStyle/timeStyle conflicts with explicit component options."));
+        }
+
+        var culture = IntlDateTimeFormatting.ResolveCulture(locale);
+        var instant = new DateTimeOffset(year, month, day, 0, 0, 0, TimeSpan.Zero);
+        var result = IntlDateTimeFormatting.Format(instant, culture, opts);
+        return JsValue.FromString(result.Text);
+    }
+
+    /// <summary>Format a Temporal date-time type (PlainDateTime, ZonedDateTime) to a locale string.</summary>
+    private static JsValue DateTimeToLocaleString(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> args,
+        int year, int month, int day, int hour, int minute, int second, int millisecond, string? timeZoneId = null,
+        long? epochNs = null)
+    {
+        var locale = args.Count > 0 ? ToStrArg(ctx, args[0]) : string.Empty;
+        var opts = ParseDateTimeFormatOptions(locale, ctx, h, args.Count > 1 ? args[1] : JsValue.Undefined);
+
+        // If the user didn't provide a timeZone and one is available from the ZDT, use it.
+        if (string.IsNullOrEmpty(opts.TimeZoneId) && !string.IsNullOrEmpty(timeZoneId))
+            opts = opts with { TimeZoneId = timeZoneId };
+
+        try
+        {
+            IntlDateTimeFormatting.ValidateOptions(opts);
+        }
+        catch (InvalidOperationException)
+        {
+            throw new JsThrownException(ctx.CreateTypeError("dateStyle/timeStyle conflicts with explicit component options."));
+        }
+
+        var culture = IntlDateTimeFormatting.ResolveCulture(locale);
+
+        DateTimeOffset instant;
+        if (epochNs.HasValue)
+        {
+            // ZonedDateTime: use epoch nanos directly for accurate timezone conversion
+            instant = new DateTimeOffset(InstantToDateTime(epochNs.Value));
+        }
+        else
+        {
+            instant = new DateTimeOffset(year, month, day, hour, minute, second, TimeSpan.Zero);
+            // Add fractional seconds
+            if (millisecond > 0)
+                instant = instant.AddMilliseconds(millisecond);
+        }
+
+        var result = IntlDateTimeFormatting.Format(instant, culture, opts);
+        return JsValue.FromString(result.Text);
+    }
+
     /// <summary>Format a Duration as ISO 8601 string (e.g. "P1Y2M3DT4H5M6S", "-PT1H").</summary>
     private static JsValue FormatDuration(JsHeap h, JsObject o)
     {
@@ -645,14 +723,21 @@ public sealed class TemporalStub : IBuiltinModule
 
     private static void RequireNoTimeStyle(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> a)
     {
-        if (a.Count > 0 && a[0].Tag == JsValueTag.Object && TryGetField(ctx, h, a[0], "timeStyle", out _))
-            throw new JsThrownException(ctx.CreateTypeError("timeStyle conflicts with date-only Temporal types."));
+        // Options may be in a[0] (no locale) or a[1] (locale, options)
+        for (int i = 0; i < a.Count; i++)
+        {
+            if (a[i].Tag == JsValueTag.Object && TryGetField(ctx, h, a[i], "timeStyle", out _))
+                throw new JsThrownException(ctx.CreateTypeError("timeStyle conflicts with date-only Temporal types."));
+        }
     }
 
     private static void RequireNoDateStyle(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> a)
     {
-        if (a.Count > 0 && a[0].Tag == JsValueTag.Object && TryGetField(ctx, h, a[0], "dateStyle", out _))
-            throw new JsThrownException(ctx.CreateTypeError("dateStyle conflicts with time-only Temporal types."));
+        for (int i = 0; i < a.Count; i++)
+        {
+            if (a[i].Tag == JsValueTag.Object && TryGetField(ctx, h, a[i], "dateStyle", out _))
+                throw new JsThrownException(ctx.CreateTypeError("dateStyle conflicts with time-only Temporal types."));
+        }
     }
 
     /// <summary>Calendar-relative field view of an ISO date, or null for iso8601 / unsupported calendars.</summary>
@@ -672,6 +757,10 @@ public sealed class TemporalStub : IBuiltinModule
         return f is { EraYear: { } ey } ? JsValue.FromNumber(ey) : JsValue.Undefined;
     }
 
+    /// <summary>True when a calendar defines eras (EraFor returns a non-null era).</summary>
+    private static bool CalendarUsesEras(CalendarSystem sys)
+        => sys.EraFor(0, 0).Era is not null;
+
     /// <summary>
     /// CalendarResolveFields for a date bag in a non-ISO calendar: read era/eraYear/year,
     /// month/monthCode and day (in sorted key order), resolving to native (year, monthOrdinal, day).
@@ -690,6 +779,18 @@ public sealed class TemporalStub : IBuiltinModule
         bool hasYear = TryGetField(ctx, h, bag, "year", out var yearV);
 
         bool fresh = baseFields is null;
+        bool usesEras = CalendarUsesEras(sys);
+
+        // For calendars that do not use eras, era/eraYear are in
+        // NonIsoFieldKeysToIgnore — treat them as absent.
+        if (!usesEras && (hasEra || hasEraYear))
+        {
+            // Observe coercion of era/eraYear (spec requires it) even though ignored.
+            if (hasEra) _ = ctx.ToStringValue(eraV);
+            if (hasEraYear) _ = ToIntegerWithTruncation(ctx, eraYearV);
+            hasEra = false;
+            hasEraYear = false;
+        }
 
         // ── presence checks (TypeError), before any value validation (RangeError) ──
         // era and eraYear must be supplied together.
@@ -2603,7 +2704,14 @@ public sealed class TemporalStub : IBuiltinModule
         }, 0);
         AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => {
             RequireNoTimeStyle(ctx, h, a);
-            return FormatPlainDate(h, o);
+            var locale = a.Count > 0 ? ToStrArg(ctx, a[0]) : string.Empty;
+            var options = ParseDateTimeFormatOptions(locale, ctx, h, a.Count > 1 ? a[1] : JsValue.Undefined);
+            try { IntlDateTimeFormatting.ValidateOptions(options); } catch (InvalidOperationException) { throw new JsThrownException(ctx.CreateTypeError("dateStyle/timeStyle conflicts with explicit component options.")); }
+            try { IntlDateTimeFormatting.ValidateTemporalCalendar(GetVStr(h, o, "calendarId"), options); } catch (InvalidOperationException) { throw new JsThrownException(ctx.CreateRangeError("calendar mismatch")); }
+            var culture = IntlDateTimeFormatting.ResolveCulture(locale);
+            var dt = DecodeIsoDate(h, o);
+            var result = IntlDateTimeFormatting.FormatDateOnly(dt.Year, dt.Month, dt.Day, culture, options);
+            return JsValue.FromString(result.Text);
         }, 2);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainDate(h, o), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("PlainDate.prototype.valueOf throws.")), 0);
@@ -2942,7 +3050,20 @@ public sealed class TemporalStub : IBuiltinModule
             return JsValue.FromString($"{FormatIsoYear(date.Year)}-{date.Month:D2}-{date.Day:D2}" +
                 $"T{dayNs / 3_600_000_000_000L:D2}:{dayNs / 60_000_000_000L % 60:D2}{FormatSecondsPart(dayNs, opts)}{CalendarSuffix(h, o, opts)}");
         }, 0);
-        AddMethod(ctx, h, pH, p, "toLocaleString", (o, _) => FormatPlainDateTime(h, o), 0);
+        AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => {
+            var locale = a.Count > 0 ? ToStrArg(ctx, a[0]) : string.Empty;
+            var options = ParseDateTimeFormatOptions(locale, ctx, h, a.Count > 1 ? a[1] : JsValue.Undefined);
+            try { IntlDateTimeFormatting.ValidateOptions(options); } catch (InvalidOperationException) { throw new JsThrownException(ctx.CreateTypeError("dateStyle/timeStyle conflicts with explicit component options.")); }
+            try { IntlDateTimeFormatting.ValidateTemporalCalendar(GetVStr(h, o, "calendarId"), options); } catch (InvalidOperationException) { throw new JsThrownException(ctx.CreateRangeError("calendar mismatch")); }
+            var culture = IntlDateTimeFormatting.ResolveCulture(locale);
+            var dt = DecodeIsoDateLong(h, o);
+            var result = IntlDateTimeFormatting.FormatPlainDateTimeParts(
+                dt.Year, dt.Month, dt.Day,
+                (int)GetVNum(h, o, "hour"), (int)GetVNum(h, o, "minute"), (int)GetVNum(h, o, "second"),
+                (int)GetVNum(h, o, "millisecond"), (int)GetVNum(h, o, "microsecond"), (int)GetVNum(h, o, "nanosecond"),
+                culture, options);
+            return JsValue.FromString(result.Text);
+        }, 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainDateTime(h, o), 0);
         AddMethod(ctx, h, pH, p, "toZonedDateTime", (o, a) => {
             if (a.Count == 0 || a[0].Tag != JsValueTag.String)
@@ -3162,7 +3283,17 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainYearMonth(h, o), 0);
         AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => {
             RequireNoTimeStyle(ctx, h, a);
-            return FormatPlainYearMonth(h, o);
+            var locale = a.Count > 0 ? ToStrArg(ctx, a[0]) : string.Empty;
+            var options = ParseDateTimeFormatOptions(locale, ctx, h, a.Count > 1 ? a[1] : JsValue.Undefined);
+            try { IntlDateTimeFormatting.ValidateOptions(options); } catch (InvalidOperationException) { throw new JsThrownException(ctx.CreateTypeError("dateStyle/timeStyle conflicts with explicit component options.")); }
+            try { IntlDateTimeFormatting.ValidateTemporalCalendar(GetVStr(h, o, "calendarId"), options); } catch (InvalidOperationException) { throw new JsThrownException(ctx.CreateRangeError("calendar mismatch")); }
+            var culture = IntlDateTimeFormatting.ResolveCulture(locale);
+            int y = (int)GetVNum(h, o, "y");
+            int m = (int)GetVNum(h, o, "m");
+            // PlainYearMonth has a reference ISO day; use that for day-of-week
+            int d = (int)(GetVNum(h, o, "d"));
+            var result = IntlDateTimeFormatting.FormatDateOnly(y, m, d, culture, options);
+            return JsValue.FromString(result.Text);
         }, 2);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
@@ -3276,7 +3407,17 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainMonthDay(h, o), 0);
         AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => {
             RequireNoTimeStyle(ctx, h, a);
-            return FormatPlainMonthDay(h, o);
+            var locale = a.Count > 0 ? ToStrArg(ctx, a[0]) : string.Empty;
+            var options = ParseDateTimeFormatOptions(locale, ctx, h, a.Count > 1 ? a[1] : JsValue.Undefined);
+            try { IntlDateTimeFormatting.ValidateOptions(options); } catch (InvalidOperationException) { throw new JsThrownException(ctx.CreateTypeError("dateStyle/timeStyle conflicts with explicit component options.")); }
+            try { IntlDateTimeFormatting.ValidateTemporalCalendar(GetVStr(h, o, "calendarId"), options); } catch (InvalidOperationException) { throw new JsThrownException(ctx.CreateRangeError("calendar mismatch")); }
+            var culture = IntlDateTimeFormatting.ResolveCulture(locale);
+            var mc = GetVStr(h, o, "mc");
+            int m = mc.StartsWith("M") && int.TryParse(mc.Substring(1), out var parsed) ? parsed : 1;
+            int d = (int)GetVNum(h, o, "d");
+            // Use reference year 2000 for weekday computation
+            var result = IntlDateTimeFormatting.FormatDateOnly(2000, m, d, culture, options);
+            return JsValue.FromString(result.Text);
         }, 2);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
@@ -3305,31 +3446,56 @@ public sealed class TemporalStub : IBuiltinModule
                 }
                 // Property bag: day + (monthCode | month-with-year) required.
                 string cal = GetCalendarFromFields(ctx, h, arg);
-                if (!TryGetField(ctx, h, arg, "day", out var dayValue))
-                    throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.from: day is required."));
-                double d2 = ToIntegerWithTruncation(ctx, dayValue);
-                bool hasCode = TryGetField(ctx, h, arg, "monthCode", out _);
-                if (!hasCode && TryGetField(ctx, h, arg, "month", out _) && !TryGetField(ctx, h, arg, "year", out _))
-                    throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.from: month requires year (or use monthCode)."));
-                double m2 = GetMonthFromFields(ctx, h, arg);
-                double refYear = TryGetField(ctx, h, arg, "year", out var yv) && !hasCode ? ToIntegerWithTruncation(ctx, yv) : 1972;
-                var overflow = GetOverflowOption(ctx, h, a, 1);
-                int month2;
-                int day2;
-                if (refYear is < -999_999 or > 999_999)
-                    throw new JsThrownException(ctx.CreateRangeError("Year is out of the supported range."));
-                if (overflow == "constrain")
+                var calSys = CalendarMath.Get(cal);
+                double d2 = 0;
+                int month2, day2, refYear = 1972;
+                if (calSys is not null)
                 {
-                    month2 = (int)Math.Clamp(m2, 1, 12);
-                    day2 = (int)Math.Clamp(d2, 1, IsoMath.DaysInMonth((int)refYear, month2));
+                    // Non-ISO: delegate to calendar system for monthCode validation.
+                    var resolved = ResolveCalendarDateFields(ctx, h, arg, calSys, null, requireDay: true);
+                    // ResolveCalendarDateFields validates monthCode via sys.MonthFromCode
+                    // and returns a Gregorian-nativised (year, month, day). But PlainMonthDay
+                    // stores calendar-native fields — re-extract them in native space.
+                    refYear = resolved.Year;
+                    if (TryGetField(ctx, h, arg, "monthCode", out var mcV2) && mcV2.Tag == JsValueTag.String)
+                    {
+                        calSys.MonthFromCode(refYear, mcV2.AsString(), out month2, out _);
+                    }
+                    else
+                    {
+                        month2 = resolved.Month;
+                    }
+                    if (!TryGetField(ctx, h, arg, "day", out var dayV2))
+                        throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.from: day is required."));
+                    d2 = ToIntegerWithTruncation(ctx, dayV2);
+                    day2 = ToSafeInt(d2);
                 }
                 else
                 {
-                    if (m2 is < 1 or > 12 || d2 is < 1 or > 31 || !IsoMath.IsValidIsoDate((int)refYear, (int)m2, (int)d2))
-                        throw new JsThrownException(ctx.CreateRangeError("Invalid ISO month-day."));
-                    month2 = (int)m2;
-                    day2 = (int)d2;
+                    if (!TryGetField(ctx, h, arg, "day", out var dayValue))
+                        throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.from: day is required."));
+                    d2 = ToIntegerWithTruncation(ctx, dayValue);
+                    bool hasCode = TryGetField(ctx, h, arg, "monthCode", out _);
+                    if (!hasCode && TryGetField(ctx, h, arg, "month", out _) && !TryGetField(ctx, h, arg, "year", out _))
+                        throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.from: month requires year (or use monthCode)."));
+                    double m2 = GetMonthFromFields(ctx, h, arg);
+                    refYear = TryGetField(ctx, h, arg, "year", out var yv) && !hasCode ? (int)ToIntegerWithTruncation(ctx, yv) : 1972;
+                    var overflow = GetOverflowOption(ctx, h, a, 1);
+                    if (refYear is < -999_999 or > 999_999) throw new JsThrownException(ctx.CreateRangeError("Year is out of the supported range."));
+                    if (overflow == "constrain")
+                    {
+                        month2 = (int)Math.Clamp(m2, 1, 12);
+                        day2 = (int)Math.Clamp(d2, 1, IsoMath.DaysInMonth(refYear, month2));
+                    }
+                    else
+                    {
+                        if (m2 is < 1 or > 12 || d2 is < 1 or > 31 || !IsoMath.IsValidIsoDate(refYear, (int)m2, (int)d2))
+                            throw new JsThrownException(ctx.CreateRangeError("Invalid ISO month-day."));
+                        month2 = (int)m2;
+                        day2 = (int)d2;
+                    }
                 }
+                _ = GetOverflowOption(ctx, h, a, 1); // consume even for non-ISO
                 return AttachPrototype(h, MakePlainMonthDay(ctx, h, month2, day2, cal), pH);
             }
             throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.from: argument must be a string or property bag."));
@@ -3659,6 +3825,20 @@ public sealed class TemporalStub : IBuiltinModule
                 GetVStr(h, o, "calendarId")));
         }, 0);
         AddMethod(ctx, h, pH, p, "toString", (o, a) => FormatZonedDateTime(ctx, h, o, GetToStringOptions(ctx, h, a, 0)), 0);
+        AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => {
+            var locale = a.Count > 0 ? ToStrArg(ctx, a[0]) : string.Empty;
+            var options = ParseDateTimeFormatOptions(locale, ctx, h, a.Count > 1 ? a[1] : JsValue.Undefined);
+            try { IntlDateTimeFormatting.ValidateOptions(options); } catch (InvalidOperationException) { throw new JsThrownException(ctx.CreateTypeError("dateStyle/timeStyle conflicts with explicit component options.")); }
+            try { IntlDateTimeFormatting.ValidateTemporalCalendar(GetVStr(h, o, "calendarId"), options); } catch (InvalidOperationException) { throw new JsThrownException(ctx.CreateRangeError("calendar mismatch")); }
+            var culture = IntlDateTimeFormatting.ResolveCulture(locale);
+            long epochNs = DecodeInstantNanos(h, o);
+            // Use the ZonedDateTime's timezone, not the options timezone
+            string tz = GetVStr(h, o, "tz");
+            var instant = new DateTimeOffset(InstantToDateTime(epochNs));
+            var tzOptions = options with { TimeZoneId = tz };
+            var result = IntlDateTimeFormatting.Format(instant, culture, tzOptions);
+            return JsValue.FromString(result.Text);
+        }, 2);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatZonedDateTime(ctx, h, o, new ToStringOptions()), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
@@ -4203,8 +4383,22 @@ public sealed class TemporalStub : IBuiltinModule
         }
 
         var start = index + marker.Length;
-        var end = locale.IndexOf('-', start);
-        return end >= 0 ? locale[start..end] : locale[start..];
+        var remaining = locale[start..];
+        // Calendar IDs may contain hyphens (e.g. "islamic-tbla").
+        // Find the next BCP47 extension key boundary: "-" + 2 letters + "-"
+        int nextExt = remaining.Length;
+        for (int i = 0; i < remaining.Length - 3; i++)
+        {
+            if (remaining[i] == '-' &&
+                char.IsAsciiLetter(remaining[i + 1]) && char.IsAsciiLetter(remaining[i + 2]) &&
+                remaining[i + 3] == '-')
+            {
+                nextExt = i;
+                break;
+            }
+        }
+
+        return remaining[..nextExt];
     }
 
     private static bool TryGetStringProperty(IBuiltinContext ctx, JsHeap h, JsObject obj, JsValue receiver, string name, out string value)

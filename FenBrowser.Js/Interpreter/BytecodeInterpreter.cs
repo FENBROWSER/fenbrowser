@@ -7761,9 +7761,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 (_, args) =>
                 {
                     var key = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
-                    var values = key == "numberingSystem"
-                        ? new[] { JsValue.FromString("latn"), JsValue.FromString("arab"), JsValue.FromString("thai") }
-                        : Array.Empty<JsValue>();
+                    JsValue[] values;
+                    if (key == "calendar")
+                    {
+                        values = new[]
+                        {
+                            JsValue.FromString("buddhist"), JsValue.FromString("chinese"),
+                            JsValue.FromString("coptic"), JsValue.FromString("dangi"),
+                            JsValue.FromString("ethioaa"), JsValue.FromString("ethiopic"),
+                            JsValue.FromString("gregory"), JsValue.FromString("hebrew"),
+                            JsValue.FromString("indian"), JsValue.FromString("islamic"),
+                            JsValue.FromString("islamic-umalqura"), JsValue.FromString("islamic-tbla"),
+                            JsValue.FromString("islamic-civil"), JsValue.FromString("islamic-rgsa"),
+                            JsValue.FromString("iso8601"), JsValue.FromString("japanese"),
+                            JsValue.FromString("persian"), JsValue.FromString("roc"),
+                        };
+                    }
+                    else if (key == "numberingSystem")
+                    {
+                        values = new[] { JsValue.FromString("latn"), JsValue.FromString("arab"), JsValue.FromString("thai") };
+                    }
+                    else
+                    {
+                        values = Array.Empty<JsValue>();
+                    }
                     var arr = CreateArrayFromElements(values);
                     return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
                 },

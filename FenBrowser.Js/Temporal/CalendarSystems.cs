@@ -364,6 +364,14 @@ internal sealed class IslamicUmalquraCalendarSystem : CalendarSystem
 
     public override int DaysInMonthOrdinal(int year, int month)
     {
+        // When within the .NET UmAlQuraCalendar range, use the actual month
+        // lengths from the observation-based calendar. Outside that range,
+        // fall back to the arithmetic (tabular) Islamic formula.
+        if (InRange(year))
+        {
+            try { return _netCal.GetDaysInMonth(year, month); }
+            catch { }
+        }
         if (month == 12) return InLeapYear(year) ? 30 : 29;
         return month % 2 == 1 ? 30 : 29;
     }
@@ -535,7 +543,7 @@ internal sealed class PersianCalendarSystem : CalendarSystem
 
     public override long ToFixed(int year, int month, int day)
     {
-        long yPrime = year > 0 ? year - 474 : year - 473;
+        long yPrime = year - 474; // linear years — Temporal allows year 0
         long yearInCycle = Mod(yPrime, 2820) + 474;
         long rd = PersianEpochRd - 1
                   + 1029983 * FloorDiv(yPrime, 2820)
@@ -553,7 +561,7 @@ internal sealed class PersianCalendarSystem : CalendarSystem
         long d1 = Mod(d0, 1029983);
         long y2820 = d1 == 1029982 ? 2820 : FloorDiv(2816 * d1 + 1031337, 1028522);
         long year = 474 + 2820 * n2820 + y2820;
-        return year > 0 ? year : year - 1;
+        return year; // linear years — Temporal allows year 0
     }
 
     public override void FromFixed(long epochDay, out int year, out int month, out int day)

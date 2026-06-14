@@ -135,6 +135,107 @@ internal static class IntlDateTimeFormatting
         return new IntlDateTimeFormatResult(string.Concat(parts.Select(static part => part.Value)), parts);
     }
 
+    // ECMA-402: Format a date-only Temporal type (PlainDate, PlainYearMonth, PlainMonthDay).
+    // Timezone is NOT applied to shift the date — the date values are used as-is.
+    // Time-related options and timeZoneName are ignored for date-only types.
+    public static IntlDateTimeFormatResult FormatDateOnly(
+        int year, int month, int day,
+        CultureInfo culture, IntlDateTimeFormatOptions options)
+    {
+        var dateTime = new DateTime(Math.Clamp(year, 1, 9999), Math.Clamp(month, 1, 12), Math.Clamp(day, 1, 31));
+        var parts = new List<IntlDateTimePart>();
+        var hasDateStyle = !string.IsNullOrEmpty(options.DateStyle);
+        // Core date components that form a complete date; era alone is decorative and should trigger defaults.
+        var hasCoreDateComponents =
+            !string.IsNullOrEmpty(options.Weekday) ||
+            !string.IsNullOrEmpty(options.Year) ||
+            !string.IsNullOrEmpty(options.Month) ||
+            !string.IsNullOrEmpty(options.Day);
+
+        if (!hasDateStyle && !hasCoreDateComponents)
+        {
+            options = options with
+            {
+                Year = "numeric",
+                Month = "numeric",
+                Day = "numeric",
+            };
+        }
+
+        if (hasDateStyle)
+        {
+            var text = BuildStyledString(dateTime, culture, options, TimeSpan.Zero, "UTC");
+            return new IntlDateTimeFormatResult(text, Array.Empty<IntlDateTimePart>());
+        }
+
+        AppendDateParts(parts, dateTime, culture, options);
+        return new IntlDateTimeFormatResult(string.Concat(parts.Select(static part => part.Value)), parts);
+    }
+
+    // ECMA-402: Format a PlainDateTime (wall-clock date+time, no timezone).
+    // Timezone is NOT applied to shift the date/time. Sub-second precision (micro/nano) supported.
+    // timeZoneName is ignored (no timezone for PlainDateTime).
+    public static IntlDateTimeFormatResult FormatPlainDateTimeParts(
+        int year, int month, int day,
+        int hour, int minute, int second,
+        int millisecond, int microsecond, int nanosecond,
+        CultureInfo culture, IntlDateTimeFormatOptions options)
+    {
+        var dateTime = new DateTime(
+            Math.Clamp(year, 1, 9999), Math.Clamp(month, 1, 12), Math.Clamp(day, 1, 31),
+            Math.Clamp(hour, 0, 23), Math.Clamp(minute, 0, 59), Math.Clamp(second, 0, 59),
+            Math.Clamp(millisecond, 0, 999));
+        var parts = new List<IntlDateTimePart>();
+        var hasDateStyle = !string.IsNullOrEmpty(options.DateStyle);
+        var hasTimeStyle = !string.IsNullOrEmpty(options.TimeStyle);
+        // Core components that produce output; era alone is decorative
+        var hasDateOrTimeComponents =
+            !string.IsNullOrEmpty(options.Weekday) ||
+            !string.IsNullOrEmpty(options.Year) ||
+            !string.IsNullOrEmpty(options.Month) ||
+            !string.IsNullOrEmpty(options.Day) ||
+            !string.IsNullOrEmpty(options.Hour) ||
+            !string.IsNullOrEmpty(options.Minute) ||
+            !string.IsNullOrEmpty(options.Second) ||
+            options.FractionalSecondDigits.HasValue ||
+            !string.IsNullOrEmpty(options.DayPeriod);
+
+        if (!hasDateStyle && !hasTimeStyle && !hasDateOrTimeComponents)
+        {
+            options = options with
+            {
+                Year = "numeric",
+                Month = "numeric",
+                Day = "numeric",
+                Hour = "numeric",
+                Minute = "numeric",
+                Second = "numeric",
+            };
+        }
+
+        if (hasDateStyle || hasTimeStyle)
+        {
+            // For styled output, build the date/time strings using the culture patterns
+            var segments = new List<string>();
+            if (hasDateStyle)
+            {
+                segments.Add(BuildStyledString(dateTime, culture, options with { TimeStyle = null }, TimeSpan.Zero, "UTC"));
+            }
+            if (hasTimeStyle)
+            {
+                var timeOptions = options with { DateStyle = null };
+                var timePat = GetTimeStylePattern(culture, timeOptions.TimeStyle!);
+                segments.Add(dateTime.ToString(timePat, culture));
+            }
+            return new IntlDateTimeFormatResult(string.Join(" ", segments), Array.Empty<IntlDateTimePart>());
+        }
+
+        AppendDateParts(parts, dateTime, culture, options);
+        // Append time parts WITHOUT timezone offset/name
+        AppendPlainDateTimeTimeParts(parts, culture, options, hour, minute, second, millisecond, microsecond, nanosecond);
+        return new IntlDateTimeFormatResult(string.Concat(parts.Select(static part => part.Value)), parts);
+    }
+
     public static void ValidatePlainTimeOptions(IntlDateTimeFormatOptions options)
     {
         if (!string.IsNullOrEmpty(options.DateStyle))
@@ -484,6 +585,76 @@ internal static class IntlDateTimeFormatting
         }
     }
 
+    // Like AppendPlainTimeParts but appends after date parts (adds ", " separator)
+    // and never includes timeZoneName.
+    private static void AppendPlainDateTimeTimeParts(
+        List<IntlDateTimePart> parts,
+        CultureInfo culture,
+        IntlDateTimeFormatOptions options,
+        int hour,
+        int minute,
+        int second,
+        int millisecond,
+        int microsecond,
+        int nanosecond)
+    {
+        var hasHour = !string.IsNullOrEmpty(options.Hour);
+        var hasMinute = !string.IsNullOrEmpty(options.Minute);
+        var hasSecond = !string.IsNullOrEmpty(options.Second);
+        var hasFraction = options.FractionalSecondDigits.HasValue;
+        var hasTimeFields = hasHour || hasMinute || hasSecond || hasFraction || !string.IsNullOrEmpty(options.DayPeriod);
+
+        if (!hasTimeFields)
+        {
+            return;
+        }
+
+        if (parts.Count > 0)
+        {
+            parts.Add(new IntlDateTimePart("literal", ", "));
+        }
+
+        var use12Hour = ShouldUseTwelveHour(culture, options);
+        var hourCycle = ResolveHourCycle(culture, options, use12Hour);
+
+        if (hasHour)
+        {
+            parts.Add(new IntlDateTimePart("hour", FormatHour(hour, hourCycle)));
+        }
+
+        if (hasMinute)
+        {
+            if (hasHour)
+            {
+                parts.Add(new IntlDateTimePart("literal", ":"));
+            }
+            parts.Add(new IntlDateTimePart("minute", minute.ToString("D2", CultureInfo.InvariantCulture)));
+        }
+
+        if (hasSecond)
+        {
+            if (hasHour || hasMinute)
+            {
+                parts.Add(new IntlDateTimePart("literal", ":"));
+            }
+            parts.Add(new IntlDateTimePart("second", second.ToString("D2", CultureInfo.InvariantCulture)));
+        }
+
+        if (hasFraction)
+        {
+            var fractional = millisecond * 1_000_000 + microsecond * 1_000 + nanosecond;
+            var digits = Math.Clamp(options.FractionalSecondDigits!.Value, 1, 9);
+            parts.Add(new IntlDateTimePart("literal", "."));
+            parts.Add(new IntlDateTimePart("fractionalSecond", fractional.ToString("D9", CultureInfo.InvariantCulture)[..digits]));
+        }
+
+        if (use12Hour && (hasHour || !string.IsNullOrEmpty(options.DayPeriod)))
+        {
+            parts.Add(new IntlDateTimePart("literal", " "));
+            parts.Add(new IntlDateTimePart("dayPeriod", hour < 12 ? culture.DateTimeFormat.AMDesignator : culture.DateTimeFormat.PMDesignator));
+        }
+    }
+
     private static void AddLiteralIfNeeded(List<IntlDateTimePart> parts, ref bool first, string literal)
     {
         if (first || string.IsNullOrEmpty(literal))
@@ -613,5 +784,22 @@ internal static class IntlDateTimeFormatting
             new[] { "hh\\:mm", "h\\:mm", "hh\\:mm\\:ss", "h\\:mm\\:ss", "\\+hh\\:mm", "\\-hh\\:mm", "\\+hh\\:mm\\:ss", "\\-hh\\:mm\\:ss" },
             CultureInfo.InvariantCulture,
             out offset);
+    }
+
+    // ECMA-402: Validate that a Temporal object's calendar is compatible with the locale's calendar.
+    // If the Temporal calendar is "iso8601" or matches the locale calendar (or the resolved options calendar),
+    // it's OK. Otherwise throw an InvalidOperationException ("calendar mismatch" → RangeError).
+    public static void ValidateTemporalCalendar(string? temporalCalendarId, IntlDateTimeFormatOptions options)
+    {
+        if (string.IsNullOrEmpty(temporalCalendarId) || temporalCalendarId == "iso8601")
+            return; // ISO calendar adapts to any locale calendar
+
+        var resolvedCalendar = options.CalendarId ?? "gregory";
+
+        if (!string.Equals(temporalCalendarId, resolvedCalendar, StringComparison.OrdinalIgnoreCase)
+            && resolvedCalendar != "iso8601")
+        {
+            throw new InvalidOperationException("calendar mismatch");
+        }
     }
 }

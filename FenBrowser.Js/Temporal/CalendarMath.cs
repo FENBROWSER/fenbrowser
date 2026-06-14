@@ -159,35 +159,66 @@ internal abstract class CalendarSystem
         ToNative(one, out int y1, out int m1, out int d1);
         string code1 = MonthCodeFor(y1, m1);
         int years = 0, months = 0;
-        // Compute years and months for all calendar units (year/month/week).
+        // Compute years and months for calendar units (year/month).
         // ECMA-262 CalendarDateUntil: the result includes ALL larger units,
-        // not just the requested largestUnit.
-        if (largestUnit is "year" or "month" or "week")
+        // not just the requested largestUnit. When largestUnit is "month",
+        // years are collapsed into months (years=0, months=total calendar
+        // months). When largestUnit is "week", year/month computation is
+        // skipped entirely — only the epoch-day difference matters.
+        if (largestUnit is "year" or "month")
         {
-            ToNative(two, out int y2, out _, out _);
-            int candidateYears = y2 - y1;
-            if (candidateYears != 0) candidateYears -= sign;
-            while (true)
+            if (largestUnit == "year")
             {
-                int cy = y1 + candidateYears;
-                int co = OrdinalOfCode(cy, code1);
-                if (Surpasses(sign, (cy, co), d1, two)) break;
-                MonthFromCode(cy, code1, out _, out bool existsInCandidate);
-                bool atOrPastTarget = sign > 0 ? cy >= y2 : cy <= y2;
-                if (!existsInCandidate && atOrPastTarget) break;
-                years = candidateYears;
-                candidateYears += sign;
+                ToNative(two, out int y2, out _, out _);
+                int candidateYears = y2 - y1;
+                if (candidateYears != 0) candidateYears -= sign;
+                while (true)
+                {
+                    int cy = y1 + candidateYears;
+                    int co = OrdinalOfCode(cy, code1);
+                    if (Surpasses(sign, (cy, co), d1, two)) break;
+                    // When a leap-month code does not exist in the candidate
+                    // year, OrdinalOfCode constrains it to the base month.
+                    // If the base-month number matches the target month (e.g.
+                    // Chinese M04L → M04, both have nn=4), we cannot count a
+                    // whole year because the month code collapses to the same
+                    // base.  If the base numbers differ (e.g. Hebrew M05L →
+                    // M06, nn=5 vs nn=6), the constraint shifts to a different
+                    // month and the year CAN count.
+                    MonthFromCode(cy, code1, out _, out bool existsInCandidate);
+                    bool atOrPastTargetYear = sign > 0 ? cy >= y2 : cy <= y2;
+                    if (!existsInCandidate && atOrPastTargetYear)
+                    {
+                        ToNative(two, out _, out int tm, out _);
+                        if (ParseSimpleMonthCode(code1, out int nn, out _))
+                        {
+                            // Only break in the forward direction (sign > 0).
+                        // For the backward direction (sign < 0), the year
+                        // IS countable because the leap month "appeared" when
+                        // moving from common→leap year (e.g. M04(2000)→M04L(2001)).
+                        if (nn == tm && sign > 0) break;
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+                    years = candidateYears;
+                    candidateYears += sign;
+                }
             }
         }
 
-        if (largestUnit is "year" or "month" or "week")
+        if (largestUnit is "year" or "month")
         {
-            // Count whole calendar months from the (one + years) anchor — re-anchored
-            // on the source month CODE in that year (its ordinal can shift across a
-            // lunisolar leap year), then stepping ordinals (12 or 13 per year).
-            int anchorOrd = OrdinalOfCode(y1 + years, code1);
+            // Count whole calendar months from the anchor. For "year" largestUnit,
+            // anchor at (one + years) so months are the remainder after years.
+            // For "month" largestUnit, anchor at y1 so months are the total
+            // calendar months (years is 0, collapsed into months).
+            int startYear = largestUnit == "year" ? y1 + years : y1;
+            int anchorOrd = OrdinalOfCode(startYear, code1);
             int candidateMonths = sign;
-            var inter = BalanceYearMonth(y1 + years, anchorOrd + candidateMonths);
+            var inter = BalanceYearMonth(startYear, anchorOrd + candidateMonths);
             while (!Surpasses(sign, inter, d1, two))
             {
                 months = candidateMonths;

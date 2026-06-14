@@ -196,6 +196,14 @@ public sealed partial class BytecodeInterpreter
                     throw new JsThrownException(CreateTypeError("DateTimeFormat format requires a date argument."));
                 var dtCulture = IntlDateTimeFormatting.ResolveCulture("en-US");
                 var dtOpts = new IntlDateTimeFormatOptions();
+                if (TryGetTemporalPlainTime(fmtArgs, dtCulture, dtOpts, out var ptRes))
+                    return JsValue.FromString(ptRes.Text);
+                if (TryGetTemporalDateOnly(fmtArgs, dtCulture, dtOpts, out var doRes))
+                    return JsValue.FromString(doRes.Text);
+                if (TryGetTemporalPlainDateTime(fmtArgs, dtCulture, dtOpts, out var pdtRes))
+                    return JsValue.FromString(pdtRes.Text);
+                if (TryGetTemporalZonedDateTime(fmtArgs, dtCulture, dtOpts, out var zdtRes))
+                    return JsValue.FromString(zdtRes.Text);
                 if (TryGetDateTimeFormatInput(fmtArgs, out var instant))
                 {
                     var res = IntlDateTimeFormatting.Format(instant, dtCulture, dtOpts);
@@ -218,18 +226,18 @@ public sealed partial class BytecodeInterpreter
                     throw new JsThrownException(CreateTypeError("DateTimeFormat formatToParts requires a date argument."));
                 var dtCulture = IntlDateTimeFormatting.ResolveCulture("en-US");
                 var dtOpts = new IntlDateTimeFormatOptions();
+                if (TryGetTemporalPlainTime(fmtArgs, dtCulture, dtOpts, out var ptRes))
+                    return CreateIntlPartsArray(ptRes.Parts);
+                if (TryGetTemporalDateOnly(fmtArgs, dtCulture, dtOpts, out var doRes))
+                    return CreateIntlPartsArray(doRes.Parts);
+                if (TryGetTemporalPlainDateTime(fmtArgs, dtCulture, dtOpts, out var pdtRes))
+                    return CreateIntlPartsArray(pdtRes.Parts);
+                if (TryGetTemporalZonedDateTime(fmtArgs, dtCulture, dtOpts, out var zdtRes))
+                    return CreateIntlPartsArray(zdtRes.Parts);
                 if (TryGetDateTimeFormatInput(fmtArgs, out var instant))
                 {
                     var res = IntlDateTimeFormatting.Format(instant, dtCulture, dtOpts);
-                    var vals = new List<JsValue>(res.Parts.Count);
-                    foreach (var p in res.Parts)
-                    {
-                        var o = CreateOrdinaryObject();
-                        o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(p.Type), Writable: true, Enumerable: true, Configurable: true));
-                        o.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.FromString(p.Value), Writable: true, Enumerable: true, Configurable: true));
-                        vals.Add(JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current())));
-                    }
-                    return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(vals), AllocationSite.Current()));
+                    return CreateIntlPartsArray(res.Parts);
                 }
                 var empty = JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current()));
                 return empty;
@@ -265,16 +273,29 @@ public sealed partial class BytecodeInterpreter
     }
 
     // ECMA-402 11.3.2 Intl.DateTimeFormat.prototype.format(date).
+    // Routes each Temporal type to the correct formatting path.
     private JsValue DateTimeFormatPrototypeFormat(
         CultureInfo culture,
         IntlDateTimeFormatOptions options,
         IReadOnlyList<JsValue> args)
     {
+        // Temporal.PlainTime (time-only, no date fields)
         if (TryGetTemporalPlainTime(args, culture, options, out var plainTimeResult))
-        {
             return JsValue.FromString(plainTimeResult.Text);
-        }
 
+        // Temporal date-only types (PlainDate, PlainYearMonth, PlainMonthDay)
+        if (TryGetTemporalDateOnly(args, culture, options, out var dateOnlyResult))
+            return JsValue.FromString(dateOnlyResult.Text);
+
+        // Temporal.PlainDateTime (date+time, no timezone shift)
+        if (TryGetTemporalPlainDateTime(args, culture, options, out var plainDtResult))
+            return JsValue.FromString(plainDtResult.Text);
+
+        // Temporal.ZonedDateTime (epoch ns + tz → wall clock)
+        if (TryGetTemporalZonedDateTime(args, culture, options, out var zdtResult))
+            return JsValue.FromString(zdtResult.Text);
+
+        // Temporal.Instant, JS Date, or numeric timestamp
         if (!TryGetDateTimeFormatInput(args, out var instant))
             return JsValue.FromString("Invalid Date");
 
@@ -287,22 +308,31 @@ public sealed partial class BytecodeInterpreter
         IntlDateTimeFormatOptions options,
         IReadOnlyList<JsValue> args)
     {
+        // Temporal.PlainTime (time-only)
         if (TryGetTemporalPlainTime(args, culture, options, out var plainTimeResult))
         {
-            var plainPartValues = new List<JsValue>(plainTimeResult.Parts.Count);
-            foreach (var part in plainTimeResult.Parts)
-            {
-                var partObj = CreateOrdinaryObject();
-                _ = partObj.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(part.Type), Writable: true, Enumerable: true, Configurable: true));
-                _ = partObj.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.FromString(part.Value), Writable: true, Enumerable: true, Configurable: true));
-                var partHandle = _heap.AllocateObject(partObj, AllocationSite.Current());
-                plainPartValues.Add(JsValue.FromObject(partHandle));
-            }
-
-            var plainArray = CreateArrayObject(plainPartValues);
-            return JsValue.FromObject(_heap.AllocateObject(plainArray, AllocationSite.Current()));
+            return CreateIntlPartsArray(plainTimeResult.Parts);
         }
 
+        // Temporal date-only types (PlainDate, PlainYearMonth, PlainMonthDay)
+        if (TryGetTemporalDateOnly(args, culture, options, out var dateOnlyResult))
+        {
+            return CreateIntlPartsArray(dateOnlyResult.Parts);
+        }
+
+        // Temporal.PlainDateTime (date+time, no timezone shift)
+        if (TryGetTemporalPlainDateTime(args, culture, options, out var plainDtResult))
+        {
+            return CreateIntlPartsArray(plainDtResult.Parts);
+        }
+
+        // Temporal.ZonedDateTime
+        if (TryGetTemporalZonedDateTime(args, culture, options, out var zdtResult))
+        {
+            return CreateIntlPartsArray(zdtResult.Parts);
+        }
+
+        // Temporal.Instant, JS Date, or numeric timestamp
         if (!TryGetDateTimeFormatInput(args, out var instant))
         {
             var emptyArray = CreateArrayObject(Array.Empty<JsValue>());
@@ -310,8 +340,14 @@ public sealed partial class BytecodeInterpreter
         }
 
         var result = IntlDateTimeFormatting.Format(instant, culture, options);
-        var partValues = new List<JsValue>(result.Parts.Count);
-        foreach (var part in result.Parts)
+        return CreateIntlPartsArray(result.Parts);
+    }
+
+    // Helper to convert IntlDateTimePart list to an ArrayObject of {type, value} objects.
+    private JsValue CreateIntlPartsArray(IReadOnlyList<IntlDateTimePart> parts)
+    {
+        var partValues = new List<JsValue>(parts.Count);
+        foreach (var part in parts)
         {
             var partObj = CreateOrdinaryObject();
             _ = partObj.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(part.Type), Writable: true, Enumerable: true, Configurable: true));
@@ -319,7 +355,6 @@ public sealed partial class BytecodeInterpreter
             var partHandle = _heap.AllocateObject(partObj, AllocationSite.Current());
             partValues.Add(JsValue.FromObject(partHandle));
         }
-
         var array = CreateArrayObject(partValues);
         return JsValue.FromObject(_heap.AllocateObject(array, AllocationSite.Current()));
     }
@@ -700,6 +735,165 @@ public sealed partial class BytecodeInterpreter
             var microsecond = slots.TryGetProperty("microsecond", x => _heap.GetObject(x), out var microsDescriptor) ? (int)ToNumber(microsDescriptor.Value) : 0;
             var nanosecond = slots.TryGetProperty("nanosecond", x => _heap.GetObject(x), out var nanosDescriptor) ? (int)ToNumber(nanosDescriptor.Value) : 0;
             result = IntlDateTimeFormatting.FormatPlainTime(hour, minute, second, millisecond, microsecond, nanosecond, culture, options);
+            return true;
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new JsThrownException(CreateTypeError(ex.Message));
+        }
+    }
+
+    // ECMA-402: Detect Temporal.PlainDate / PlainYearMonth / PlainMonthDay (date-only types).
+    // Returns true and sets result if the arg is a date-only Temporal type.
+    private bool TryGetTemporalDateOnly(
+        IReadOnlyList<JsValue> args,
+        CultureInfo culture,
+        IntlDateTimeFormatOptions options,
+        out IntlDateTimeFormatResult result)
+    {
+        result = default!;
+        if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+            return false;
+
+        var obj = _heap.GetObject(args[0].AsObjectHandle());
+        if (!obj.TryGetProperty("_v", x => _heap.GetObject(x), out var slotsDesc) || slotsDesc.Value.Tag != JsValueTag.Object)
+            return false;
+        var slots = _heap.GetObject(slotsDesc.Value.AsObjectHandle());
+
+        // PlainTime is handled separately by TryGetTemporalPlainTime.
+        // ZonedDateTime has "tz" in _v; skip it.
+        if (slots.TryGetProperty("tz", x => _heap.GetObject(x), out _))
+            return false;
+        // Instant has "ens" but no date fields; skip it.
+        if (slots.TryGetProperty("ens", x => _heap.GetObject(x), out _) && !slots.TryGetProperty("y", x => _heap.GetObject(x), out _) && !slots.TryGetProperty("year", x => _heap.GetObject(x), out _))
+            return false;
+
+        // Date-only types: have calendarId and either (y,m,d) or (year,month,day) or (mc,d)
+        if (!slots.TryGetProperty("calendarId", x => _heap.GetObject(x), out _))
+        {
+            // PlainDateTime has calendarId but also has valid time fields — handled below.
+            if (!slots.TryGetProperty("hour", x => _heap.GetObject(x), out _))
+                return false; // not a Temporal type we recognize for date-only
+            return false; // has hour but no calendarId — PlainTime (already handled)
+        }
+
+        int y, m, d;
+
+        // PlainMonthDay: has mc (monthCode) and d but no y/year
+        if (slots.TryGetProperty("mc", x => _heap.GetObject(x), out var mcDesc))
+        {
+            var mc = mcDesc.Value.Tag == JsValueTag.String ? mcDesc.Value.AsString() : "";
+            m = mc.StartsWith("M") && int.TryParse(mc[1..], out var mp) ? mp : 1;
+            d = slots.TryGetProperty("d", x => _heap.GetObject(x), out var ddDesc) ? (int)ToNumber(ddDesc.Value) : 1;
+            y = 2000; // reference year for weekday
+            result = IntlDateTimeFormatting.FormatDateOnly(y, m, d, culture, options);
+            return true;
+        }
+
+        // PlainYearMonth: has y, m but no d (or d is reference ISO day)
+        if (slots.TryGetProperty("y", x => _heap.GetObject(x), out var yDesc) && slots.TryGetProperty("m", x => _heap.GetObject(x), out var mDesc))
+        {
+            if (!slots.TryGetProperty("hour", x => _heap.GetObject(x), out _) && !slots.TryGetProperty("day", x => _heap.GetObject(x), out _) && slots.TryGetProperty("d", x => _heap.GetObject(x), out var yrDayDesc))
+            {
+                // PlainYearMonth: has y, m, d (reference ISO day) but no day field
+                y = (int)ToNumber(yDesc.Value);
+                m = (int)ToNumber(mDesc.Value);
+                d = (int)ToNumber(yrDayDesc.Value);
+                result = IntlDateTimeFormatting.FormatDateOnly(y, m, d, culture, options);
+                return true;
+            }
+        }
+
+        // PlainDate: has y, m, d but no hour
+        if (slots.TryGetProperty("y", x => _heap.GetObject(x), out var yDesc2) &&
+            slots.TryGetProperty("m", x => _heap.GetObject(x), out var mDesc2) &&
+            slots.TryGetProperty("d", x => _heap.GetObject(x), out var dDesc2) &&
+            !slots.TryGetProperty("hour", x => _heap.GetObject(x), out _))
+        {
+            y = (int)ToNumber(yDesc2.Value);
+            m = (int)ToNumber(mDesc2.Value);
+            d = (int)ToNumber(dDesc2.Value);
+            result = IntlDateTimeFormatting.FormatDateOnly(y, m, d, culture, options);
+            return true;
+        }
+
+        return false;
+    }
+
+    // ECMA-402: Detect Temporal.PlainDateTime (date+time, no timezone).
+    private bool TryGetTemporalPlainDateTime(
+        IReadOnlyList<JsValue> args,
+        CultureInfo culture,
+        IntlDateTimeFormatOptions options,
+        out IntlDateTimeFormatResult result)
+    {
+        result = default!;
+        if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+            return false;
+
+        var obj = _heap.GetObject(args[0].AsObjectHandle());
+        if (!obj.TryGetProperty("_v", x => _heap.GetObject(x), out var slotsDesc) || slotsDesc.Value.Tag != JsValueTag.Object)
+            return false;
+        var slots = _heap.GetObject(slotsDesc.Value.AsObjectHandle());
+
+        // Must have both date fields (year/month/day) and time fields (hour)
+        if (!slots.TryGetProperty("hour", x => _heap.GetObject(x), out _))
+            return false;
+        if (!slots.TryGetProperty("year", x => _heap.GetObject(x), out _))
+            return false;
+        // ZonedDateTime has tz; skip
+        if (slots.TryGetProperty("tz", x => _heap.GetObject(x), out _))
+            return false;
+
+        try
+        {
+            int y = (int)ToNumber(slots.TryGetProperty("year", x => _heap.GetObject(x), out var yDesc) ? yDesc.Value : JsValue.Undefined);
+            int mo = (int)ToNumber(slots.TryGetProperty("month", x => _heap.GetObject(x), out var moDesc) ? moDesc.Value : JsValue.Undefined);
+            int d = (int)ToNumber(slots.TryGetProperty("day", x => _heap.GetObject(x), out var dDesc) ? dDesc.Value : JsValue.Undefined);
+            int hr = (int)ToNumber(slots.TryGetProperty("hour", x => _heap.GetObject(x), out var hrDesc) ? hrDesc.Value : JsValue.Undefined);
+            int mi = (int)ToNumber(slots.TryGetProperty("minute", x => _heap.GetObject(x), out var minDesc) ? minDesc.Value : JsValue.Undefined);
+            int se = (int)ToNumber(slots.TryGetProperty("second", x => _heap.GetObject(x), out var secDesc) ? secDesc.Value : JsValue.Undefined);
+            int ms = (int)ToNumber(slots.TryGetProperty("millisecond", x => _heap.GetObject(x), out var msDesc) ? msDesc.Value : JsValue.Undefined);
+            int us = (int)ToNumber(slots.TryGetProperty("microsecond", x => _heap.GetObject(x), out var usDesc) ? usDesc.Value : JsValue.Undefined);
+            int ns = (int)ToNumber(slots.TryGetProperty("nanosecond", x => _heap.GetObject(x), out var nsDesc) ? nsDesc.Value : JsValue.Undefined);
+            result = IntlDateTimeFormatting.FormatPlainDateTimeParts(y, mo, d, hr, mi, se, ms, us, ns, culture, options);
+            return true;
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new JsThrownException(CreateTypeError(ex.Message));
+        }
+    }
+
+    // ECMA-402: Detect Temporal.ZonedDateTime (epoch ns + timezone → wall time → format).
+    private bool TryGetTemporalZonedDateTime(
+        IReadOnlyList<JsValue> args,
+        CultureInfo culture,
+        IntlDateTimeFormatOptions options,
+        out IntlDateTimeFormatResult result)
+    {
+        result = default!;
+        if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
+            return false;
+
+        var obj = _heap.GetObject(args[0].AsObjectHandle());
+        if (!obj.TryGetProperty("_v", x => _heap.GetObject(x), out var slotsDesc) || slotsDesc.Value.Tag != JsValueTag.Object)
+            return false;
+        var slots = _heap.GetObject(slotsDesc.Value.AsObjectHandle());
+
+        // Must have both ens and tz
+        if (!slots.TryGetProperty("ens", x => _heap.GetObject(x), out _))
+            return false;
+        if (!slots.TryGetProperty("tz", x => _heap.GetObject(x), out var tzDesc))
+            return false;
+
+        try
+        {
+            var nanos = (long)ToNumber(slots.TryGetProperty("ens", x => _heap.GetObject(x), out var ensDesc) ? ensDesc.Value : JsValue.FromNumber(0));
+            var tz = tzDesc.Value.Tag == JsValueTag.String ? tzDesc.Value.AsString() : "UTC";
+            var instant = new DateTimeOffset(new DateTime(621355968000000000L + (nanos / 100L), DateTimeKind.Utc));
+            var tzOptions = options with { TimeZoneId = tz };
+            result = IntlDateTimeFormatting.Format(instant, culture, tzOptions);
             return true;
         }
         catch (InvalidOperationException ex)
@@ -2450,19 +2644,4 @@ public sealed partial class BytecodeInterpreter
         return JsValue.FromObject(_heap.AllocateObject(array, AllocationSite.Current()));
     }
 
-    private JsValue CreateIntlPartsArray(IReadOnlyList<IntlDateTimePart> parts)
-    {
-        var values = new List<JsValue>(parts.Count);
-        foreach (var part in parts)
-        {
-            var obj = CreateOrdinaryObject();
-            _ = obj.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(part.Type), Writable: true, Enumerable: true, Configurable: true));
-            _ = obj.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.FromString(part.Value), Writable: true, Enumerable: true, Configurable: true));
-            var handle = _heap.AllocateObject(obj, AllocationSite.Current());
-            values.Add(JsValue.FromObject(handle));
-        }
-
-        var array = CreateArrayObject(values);
-        return JsValue.FromObject(_heap.AllocateObject(array, AllocationSite.Current()));
-    }
 }
