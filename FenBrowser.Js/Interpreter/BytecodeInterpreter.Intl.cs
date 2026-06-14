@@ -24,6 +24,8 @@ public sealed partial class BytecodeInterpreter
         int MinimumIntegerDigits,
         int? MinimumFractionDigits,
         int? MaximumFractionDigits,
+        int? MinimumSignificantDigits,
+        int? MaximumSignificantDigits,
         bool UseGrouping,
         string? SignDisplay,
         string NumberingSystem);
@@ -351,8 +353,16 @@ public sealed partial class BytecodeInterpreter
         }
 
         Put("minimumIntegerDigits", JsValue.FromNumber(state.MinimumIntegerDigits));
-        Put("minimumFractionDigits", JsValue.FromNumber(minFraction));
-        Put("maximumFractionDigits", JsValue.FromNumber(maxFraction));
+        if (state.MinimumSignificantDigits.HasValue)
+        {
+            Put("minimumSignificantDigits", JsValue.FromNumber(state.MinimumSignificantDigits.Value));
+            Put("maximumSignificantDigits", JsValue.FromNumber(state.MaximumSignificantDigits ?? 21));
+        }
+        else
+        {
+            Put("minimumFractionDigits", JsValue.FromNumber(minFraction));
+            Put("maximumFractionDigits", JsValue.FromNumber(maxFraction));
+        }
         // ES2023 useGrouping resolves to a string/false; the legacy boolean true
         // default surfaces as "auto" (its previous meaning), false stays false.
         Put("useGrouping", state.UseGrouping ? JsValue.FromString("auto") : JsValue.FromBoolean(false));
@@ -1271,6 +1281,8 @@ public sealed partial class BytecodeInterpreter
         int minimumIntegerDigits = 1;
         int? minimumFractionDigits = null;
         int? maximumFractionDigits = null;
+        int? minimumSignificantDigits = null;
+        int? maximumSignificantDigits = null;
         bool useGrouping = true;
         string? signDisplay = null;
         // ECMA-402 resolves the numbering system from options.numberingSystem,
@@ -1291,6 +1303,8 @@ public sealed partial class BytecodeInterpreter
             minimumIntegerDigits = GetInt("minimumIntegerDigits") ?? 1;
             minimumFractionDigits = GetInt("minimumFractionDigits");
             maximumFractionDigits = GetInt("maximumFractionDigits");
+            minimumSignificantDigits = GetInt("minimumSignificantDigits");
+            maximumSignificantDigits = GetInt("maximumSignificantDigits");
             useGrouping = GetBool("useGrouping") ?? true;
             signDisplay = GetString("signDisplay");
             optionsNumberingSystem = GetString("numberingSystem");
@@ -1299,7 +1313,7 @@ public sealed partial class BytecodeInterpreter
         var localeNumberingSystem = ExtractUnicodeKeyword(locale, "nu");
         var numberingSystem = (optionsNumberingSystem ?? localeNumberingSystem ?? "latn").ToLowerInvariant();
 
-        return new NumberFormatState(locale, style, unit, unitDisplay, minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits, useGrouping, signDisplay, numberingSystem);
+        return new NumberFormatState(locale, style, unit, unitDisplay, minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits, minimumSignificantDigits, maximumSignificantDigits, useGrouping, signDisplay, numberingSystem);
     }
 
     // Extract a Unicode (`-u-`) extension keyword value from a BCP-47 locale,
@@ -1379,6 +1393,81 @@ public sealed partial class BytecodeInterpreter
         catch (CultureNotFoundException) { return CultureInfo.InvariantCulture; }
     }
 
+    // Format a number to parts using significant digits (ECMA-402 SetNumberFormatDigitOptions).
+    private IReadOnlyList<IntlPart> FormatNumberWithSignificantDigits(double absValue, bool negative,
+        int minSig, int maxSig, NumberFormatInfo nfi, NumberFormatState state)
+    {
+        if (absValue == 0)
+        {
+            // Zero with significant digits: "0" padded to minSig zeros.
+            var parts = new List<IntlPart>();
+            if (negative && state.SignDisplay != "never")
+                parts.Add(new IntlPart("minusSign", nfi.NegativeSign, state.Unit));
+            var zeros = new string('0', Math.Max(1, minSig));
+            parts.Add(new IntlPart("integer", ApplyNumberingSystem(zeros, state.NumberingSystem), state.Unit));
+            return parts;
+        }
+
+        // Compute the exponent and round to maxSig significant digits.
+        int exp = (int)Math.Floor(Math.Log10(absValue));
+        double scale = Math.Pow(10, maxSig - exp - 1);
+        double rounded = Math.Round(absValue * scale) / scale;
+
+        // Format with enough decimal places to capture all significant digits.
+        int fracDigits = Math.Max(0, maxSig - exp - 1);
+        string formatted = rounded.ToString("F" + fracDigits, CultureInfo.InvariantCulture);
+
+        // Parse into parts.
+        var result = new List<IntlPart>();
+        bool showSign = state.SignDisplay switch
+        {
+            "never" => false, "always" => true,"exceptZero" => absValue != 0, "negative" => negative, _ => negative
+        };
+        if (showSign && negative)
+            result.Add(new IntlPart("minusSign", nfi.NegativeSign, state.Unit));
+
+        // Insert grouping separators into integer part.
+        int dotIdx = formatted.IndexOf('.');
+        if (dotIdx < 0) dotIdx = formatted.Length;
+        string intPart = formatted[..dotIdx];
+        string fracPart = dotIdx < formatted.Length ? formatted[(dotIdx + 1)..] : "";
+
+        // Grouping for the integer part.
+        if (state.UseGrouping && intPart.Length > 3)
+        {
+            var nfiGroupSizes = nfi.NumberGroupSizes;
+            int groupSize = nfiGroupSizes.Length > 0 ? nfiGroupSizes[0] : 3;
+            var grouped = new List<string>();
+            int pos = intPart.Length;
+            while (pos > groupSize) { pos -= groupSize; grouped.Insert(0, intPart[pos..(pos + groupSize)]); }
+            grouped.Insert(0, intPart[..pos]);
+            for (int i = 0; i < grouped.Count; i++)
+            {
+                if (i > 0) result.Add(new IntlPart("group", nfi.NumberGroupSeparator, state.Unit));
+                result.Add(new IntlPart("integer", ApplyNumberingSystem(grouped[i], state.NumberingSystem), state.Unit));
+            }
+        }
+        else
+        {
+            result.Add(new IntlPart("integer", ApplyNumberingSystem(intPart, state.NumberingSystem), state.Unit));
+        }
+
+        // Fraction part — trim trailing zeros to minSig.
+        if (fracPart.Length > 0)
+        {
+            int keepDigits = Math.Max(fracPart.Length, minSig - intPart.Length);
+            while (fracPart.Length > keepDigits && fracPart.EndsWith("0"))
+                fracPart = fracPart[..^1];
+            if (fracPart.Length > 0)
+            {
+                result.Add(new IntlPart("decimal", nfi.NumberDecimalSeparator, state.Unit));
+                result.Add(new IntlPart("fraction", ApplyNumberingSystem(fracPart, state.NumberingSystem), state.Unit));
+            }
+        }
+
+        return result;
+    }
+
     private IReadOnlyList<IntlPart> FormatNumberToParts(JsValue value, NumberFormatState state)
     {
         // Extract numeric value.
@@ -1396,13 +1485,21 @@ public sealed partial class BytecodeInterpreter
         bool negative = number < 0;
         double absValue = Math.Abs(number);
 
+        // Handle significant digits mode.
+        bool hasSigDigits = state.MinimumSignificantDigits.HasValue || state.MaximumSignificantDigits.HasValue;
+        if (hasSigDigits)
+        {
+            int minSig = state.MinimumSignificantDigits ?? 1;
+            int maxSig = state.MaximumSignificantDigits ?? 21;
+            return FormatNumberWithSignificantDigits(absValue, negative, minSig, maxSig, nfi, state);
+        }
+
         // Compute fraction digits (CLDR defaults from NumberFormatInfo when unset).
         int minFrac = state.MinimumFractionDigits ?? (style == "currency" ? nfi.CurrencyDecimalDigits : style == "percent" ? 0 : 0);
         int maxFrac = state.MaximumFractionDigits ?? (style == "currency" ? nfi.CurrencyDecimalDigits : style == "percent" ? Math.Max(minFrac, 0) : 3);
         bool useGrouping = state.UseGrouping;
 
-        // Format using .NET's ICU-backed NumberFormatInfo.
-        // Format with maxFrac digits; then trim trailing zeros down to minFrac.
+        // Format using .NET's ICU-backed NumberFormatInfo with fraction digits.
         var cnf = (NumberFormatInfo)nfi.Clone();
         cnf.NumberDecimalDigits = maxFrac;
         cnf.CurrencyDecimalDigits = maxFrac;
@@ -1994,8 +2091,7 @@ public sealed partial class BytecodeInterpreter
                     SingularDurationUnit(unit),
                     unitStyle is "numeric" or "2-digit" ? null : unitStyle,
                     unitStyle == "2-digit" ? 2 : 1,
-                    null,
-                    null,
+                    null, null, null, null,
                     unitStyle is "numeric" or "2-digit" ? false : true,
                     suppressSign ? "never" : null,
                     numberingSystem);
