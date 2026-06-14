@@ -3370,7 +3370,10 @@ public sealed class BytecodeCompiler
                             };
                         // D=1 marks an object-literal accessor as enumerable.
                         var namedEnum = prop.Kind is ObjectPropertyKind.Getter or ObjectPropertyKind.Setter ? 1 : 0;
-                        _instructions.Add(new Instruction(namedOp, dest, nameIndex, valueReg, namedD != 0 ? namedD : namedEnum));
+                        if (namedOp == OpCode.SetPrototype)
+                            _instructions.Add(new Instruction(namedOp, dest, valueReg, 0, namedD));
+                        else
+                            _instructions.Add(new Instruction(namedOp, dest, nameIndex, valueReg, namedD != 0 ? namedD : namedEnum));
                     }
                 }
 
