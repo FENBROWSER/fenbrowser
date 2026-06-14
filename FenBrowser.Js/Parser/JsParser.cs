@@ -1843,7 +1843,9 @@ public sealed class JsParser
                     $"Invalid assignment target in for-of head{Where()}.");
             }
             Advance(); // of
-            var iterable = ParseExpression(0);
+            // ECMA-262 14.7.5: the RHS of for-of is AssignmentExpression, not
+            // Expression. Parse at bp=2 to reject comma expressions like `[], []`.
+            var iterable = ParseExpression(2);
             ExpectPunctuator(")");
             var forOfBody = ParseStatement(StatementBodyContext.IterationOrWith);
             ValidateIterationBodyNotLabelledFunction(forOfBody);
