@@ -11994,12 +11994,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var fn = comparator.Value;
             cmp = (a, b) =>
             {
-                var n = ToNumber(CallFunction(fn, new[] { a, b }, JsValue.Undefined));
-                if (double.IsNaN(n))
+                var result = CallFunction(fn, new[] { a, b }, JsValue.Undefined);
+                // ECMA-262: ToNumber or ToBigInt depending on the result.
+                if (result.Tag == JsValueTag.BigInt)
                 {
-                    return 0;
+                    var bi = result.AsBigInt();
+                    return bi < 0 ? -1 : bi > 0 ? 1 : 0;
                 }
-
+                var n = ToNumber(result);
+                if (double.IsNaN(n)) return 0;
                 return n < 0 ? -1 : n > 0 ? 1 : 0;
             };
         }
