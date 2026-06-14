@@ -2259,6 +2259,9 @@ public sealed class JsParser
                 if (IsIdentifierLike(Current()))
                 {
                     catchIdentifier = Advance().Text;
+                    // ECMA-262 13.15.1: `catch (eval)` and `catch (arguments)` in strict mode.
+                    if (_strictMode && (catchIdentifier == "eval" || catchIdentifier == "arguments"))
+                        throw new JsParserException($"'{catchIdentifier}' may not be used as a catch parameter in strict mode.");
                 }
                 else
                 {
@@ -2276,6 +2279,14 @@ public sealed class JsParser
             }
 
             var catchBlock = ParseBlockStatement();
+            // ECMA-262 13.15.1: catch parameter name must not conflict with
+            // LexicallyDeclaredNames in the catch block.
+            if (catchIdentifier != "<no-binding>" && catchIdentifier != "<pattern>")
+            {
+                var lexNames = CollectTopLevelLexicallyDeclaredNames(catchBlock.Statements);
+                if (lexNames.Contains(catchIdentifier))
+                    throw new JsParserException($"Catch parameter '{catchIdentifier}' conflicts with a lexical declaration in the catch block.");
+            }
             if (Current().Kind == TokenKind.Keyword && Current().Text == "finally")
             {
                 Advance(); // finally
