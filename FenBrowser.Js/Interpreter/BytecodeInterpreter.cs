@@ -7783,13 +7783,90 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var selectFn = new NativeFunctionObject("select", (_, a) =>
         {
             double n = a.Count > 0 ? ToNumber(a[0]) : 0;
-            // Basic English plural rules: "one" for 1, "other" otherwise.
-            return JsValue.FromString(n == 1 ? "one" : "other");
+            return JsValue.FromString(SelectPluralRule("en", n));
         }, length: 1);
         proto.DefineOwnProperty("select", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(selectFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+        var resOptsFn = new NativeFunctionObject("resolvedOptions", (_, _2) =>
+        {
+            var o = CreateOrdinaryObject();
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString("cardinal"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("minimumIntegerDigits", new JsPropertyDescriptor(JsValue.FromNumber(1), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("minimumFractionDigits", new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("maximumFractionDigits", new JsPropertyDescriptor(JsValue.FromNumber(3), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("pluralCategories", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(CreateArrayFromElements(new[] { JsValue.FromString("one"), JsValue.FromString("other") }), AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("roundingIncrement", new JsPropertyDescriptor(JsValue.FromNumber(1), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("roundingMode", new JsPropertyDescriptor(JsValue.FromString("halfExpand"), Writable: true, Enumerable: true, Configurable: true));
+            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
+        }, length: 0);
+        proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(resOptsFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
         var inst = CreateOrdinaryObject();
         inst.SetPrototype(ph);
         return JsValue.FromObject(_heap.AllocateObject(inst, AllocationSite.Current()));
+    }
+
+    // CLDR plural rules for major languages. Returns "zero"/"one"/"two"/"few"/"many"/"other".
+    private static string SelectPluralRule(string locale, double n)
+    {
+        double absN = Math.Abs(n);
+        long i = (long)Math.Floor(absN);
+        int v = 0; // number of visible fraction digits (simplified)
+        // Extract visible fraction digits from the double.
+        string str = absN.ToString("F6", System.Globalization.CultureInfo.InvariantCulture);
+        int dot = str.IndexOf('.');
+        if (dot >= 0) { v = str.Length - dot - 1; while (v > 0 && str[dot + v] == '0') v--; }
+
+        long iMod10 = i % 10, iMod100 = i % 100;
+        string lang = locale.Length >= 2 ? locale[..2].ToLowerInvariant() : "en";
+
+        switch (lang)
+        {
+            case "en": // English: one (i=1, v=0), other
+                return i == 1 && v == 0 ? "one" : "other";
+            case "fr": case "pt": case "es": // French/Portuguese/Spanish: one (i=0,1), other
+                return (i == 0 || i == 1) ? "one" : "other";
+            case "de": case "it": case "nl": case "sv": case "da": case "nb": case "nn": // German/Italian: one (i=1, v=0), other
+                return i == 1 && v == 0 ? "one" : "other";
+            case "ru": case "uk": case "be": case "sr": case "hr": case "bs": // Russian/Ukrainian: one, few, many, other
+                if (v == 0)
+                {
+                    if (iMod10 == 1 && iMod100 != 11) return "one";
+                    if (iMod10 >= 2 && iMod10 <= 4 && !(iMod100 >= 12 && iMod100 <= 14)) return "few";
+                    if (iMod10 == 0 || (iMod10 >= 5 && iMod10 <= 9) || (iMod100 >= 11 && iMod100 <= 14)) return "many";
+                }
+                return "other";
+            case "ar": // Arabic: zero, one, two, few, many, other
+                if (v == 0)
+                {
+                    if (i == 0) return "zero";
+                    if (i == 1) return "one";
+                    if (i == 2) return "two";
+                    if (iMod100 >= 3 && iMod100 <= 10) return "few";
+                    if (iMod100 >= 11 && iMod100 <= 99) return "many";
+                }
+                return "other";
+            case "ja": case "ko": case "zh": case "vi": case "th": case "id": case "ms": case "tr": // Asian: other only
+                return "other";
+            case "pl": // Polish: one, few, many, other
+                if (v == 0)
+                {
+                    if (i == 1) return "one";
+                    if (iMod10 >= 2 && iMod10 <= 4 && !(iMod100 >= 12 && iMod100 <= 14)) return "few";
+                    if ((iMod10 >= 0 && iMod10 <= 1) || (iMod10 >= 5 && iMod10 <= 9) || (iMod100 >= 12 && iMod100 <= 14)) return "many";
+                }
+                return "other";
+            case "ga": // Irish: one, two, few, many, other
+                if (v == 0)
+                {
+                    if (i == 1) return "one";
+                    if (i == 2) return "two";
+                    if (iMod10 >= 3 && iMod10 <= 6) return "few";
+                    if (iMod10 >= 7 && iMod10 <= 10) return "many";
+                }
+                return "other";
+            default:
+                return i == 1 && v == 0 ? "one" : "other";
+        }
     }
 
     private JsValue SegmenterConstruct()
