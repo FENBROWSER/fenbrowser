@@ -4690,8 +4690,9 @@ public sealed class JsParser
                     return false;
                 }
 
-                Advance(); // )
-                if (!(IsPunctuator("=") && PeekIsPunctuator(1, ">")))
+                var closeParen = Advance(); // )
+                // ECMA-262 14.2: [no LineTerminator here] between parameters and =>
+                if (!(IsPunctuator("=") && PeekIsPunctuator(1, ">")) || HasLineTerminatorBetween(closeParen, Current()))
                 {
                     _index = saved;
                     return false;
@@ -4789,8 +4790,9 @@ public sealed class JsParser
                 return false;
             }
 
-            Advance(); // )
-            if (!(IsPunctuator("=") && PeekIsPunctuator(1, ">")))
+            var cp2 = Advance(); // )
+            // ECMA-262 14.2: [no LineTerminator here] between parameters and =>
+            if (!(IsPunctuator("=") && PeekIsPunctuator(1, ">")) || HasLineTerminatorBetween(cp2, Current()))
             {
                 _index = saved;
                 return false;
