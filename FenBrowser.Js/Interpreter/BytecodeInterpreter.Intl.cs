@@ -1651,42 +1651,53 @@ public sealed partial class BytecodeInterpreter
         }
 
         string notation = state.Notation ?? "standard";
-        string formatted;
-        if (notation == "scientific")
+        if (notation is "scientific" or "engineering")
         {
-            if (absValue == 0) { formatted = "0E0"; }
-            else
+            // For scientific/engineering notation, format the full string and
+            // return as a single literal part. Full part parsing (exponentSeparator,
+            // exponentInteger, etc.) requires more granular handling.
+            string sciFormatted;
+            if (notation == "scientific")
             {
-                formatted = absValue.ToString("E" + maxFrac, CultureInfo.InvariantCulture);
-                int eIdx = formatted.IndexOf('E');
-                string mant = formatted[..eIdx].Replace(".", nfi.NumberDecimalSeparator);
-                string exp = formatted[(eIdx + 1)..];
-                if (exp.StartsWith("-")) exp = "-" + exp[1..].TrimStart('0');
-                else if (exp.StartsWith("+")) exp = exp[1..].TrimStart('0');
-                else exp = exp.TrimStart('0');
-                if (exp == "" || exp == "-") exp = exp == "-" ? "-0" : "0";
-                formatted = mant + "E" + exp;
+                if (absValue == 0) sciFormatted = "0E0";
+                else
+                {
+                    sciFormatted = absValue.ToString("E" + maxFrac, CultureInfo.InvariantCulture);
+                    int eIdx = sciFormatted.IndexOf('E');
+                    string mant = sciFormatted[..eIdx].Replace(".", nfi.NumberDecimalSeparator);
+                    string exp = sciFormatted[(eIdx + 1)..];
+                    if (exp.StartsWith("-")) exp = "-" + exp[1..].TrimStart('0');
+                    else if (exp.StartsWith("+")) exp = exp[1..].TrimStart('0');
+                    else exp = exp.TrimStart('0');
+                    if (exp == "" || exp == "-") exp = exp == "-" ? "-0" : "0";
+                    sciFormatted = mant + "E" + exp;
+                }
             }
+            else // engineering
+            {
+                if (absValue == 0) sciFormatted = "0E0";
+                else
+                {
+                    int engExp = ((int)Math.Floor(Math.Log10(absValue)) / 3) * 3;
+                    double mantissa = absValue / Math.Pow(10, engExp);
+                    if (mantissa >= 1000) { mantissa /= 1000; engExp += 3; }
+                    if (mantissa < 1) { mantissa *= 1000; engExp -= 3; }
+                    sciFormatted = mantissa.ToString("F" + maxFrac, CultureInfo.InvariantCulture).Replace(".", nfi.NumberDecimalSeparator) + "E" + engExp;
+                }
+            }
+            var sciParts = new List<IntlPart>();
+            if (showSign && negative)
+                sciParts.Add(new IntlPart("minusSign", nfi.NegativeSign, state.Unit));
+            sciParts.Add(new IntlPart("literal", ApplyNumberingSystem(sciFormatted, state.NumberingSystem), state.Unit));
+            return sciParts;
         }
-        else if (notation == "engineering")
+
+        string formatted = style switch
         {
-            if (absValue == 0) formatted = "0E0";
-            else
-            {
-                int engExp = ((int)Math.Floor(Math.Log10(absValue)) / 3) * 3;
-                double mantissa = absValue / Math.Pow(10, engExp);
-                if (mantissa >= 1000) { mantissa /= 1000; engExp += 3; }
-                if (mantissa < 1) { mantissa *= 1000; engExp -= 3; }
-                formatted = mantissa.ToString("F" + maxFrac, CultureInfo.InvariantCulture).Replace(".", nfi.NumberDecimalSeparator) + "E" + engExp;
-            }
-        }
-        else
-            formatted = style switch
-            {
-                "currency" => number.ToString("C", cnf),
-                "percent" => number.ToString("P", cnf),
-                _ => absValue.ToString("N", cnf),
-            };
+            "currency" => number.ToString("C", cnf),
+            "percent" => number.ToString("P", cnf),
+            _ => absValue.ToString("N", cnf),
+        };
         // Trim trailing zeros in fraction from maxFrac down to minFrac.
         string decSep = cnf.NumberDecimalSeparator;
         int decIdx = formatted.IndexOf(decSep, StringComparison.Ordinal);
