@@ -4502,7 +4502,7 @@ public sealed class JsParser
                     throw new JsParserException(
                         $"'{key}' is a reserved word and cannot be a shorthand property{Where()}.");
                 }
-                if (_strictMode && IsStrictModeFutureReservedWord(key))
+                if (key is not null && _strictMode && IsStrictModeFutureReservedWord(key))
                 {
                     throw new JsParserException(
                         $"'{key}' is a reserved word and cannot be a shorthand property in strict mode{Where()}.");
@@ -4523,13 +4523,13 @@ public sealed class JsParser
                 }
                 // ECMA-262 12.2.6.1: FutureReservedWords are disallowed as
                 // shorthand IdentifierReferences in strict mode.
-                if (_strictMode && IsStrictModeFutureReservedWord(key))
+                if (key is not null && _strictMode && IsStrictModeFutureReservedWord(key))
                 {
                     throw new JsParserException(
                         $"'{key}' is a reserved word and cannot be a shorthand property in strict mode{Where()}.");
                 }
 
-                value = new IdentifierExpressionNode(key, keyToken.Span);
+                value = new IdentifierExpressionNode(key!, keyToken.Span);
             }
             else
             {
@@ -4831,16 +4831,6 @@ public sealed class JsParser
             {
                 if (!IsSyntheticPatternBinding(p) && !seen.Add(p))
                     throw new JsParserException($"Duplicate parameter name '{p}' in arrow function.");
-            }
-        }
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var p in parameters)
-            {
-                if (!IsSyntheticPatternBinding(p) && !seen.Add(p))
-                {
-                    throw new JsParserException(
-                        $"Duplicate parameter name '{p}' is not allowed in this context.");
-                }
             }
         }
 

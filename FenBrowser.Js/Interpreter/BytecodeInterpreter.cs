@@ -979,6 +979,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.SetFunctionName:
                     ApplyFunctionName(frame.Registers[ins.A], frame.Registers[ins.B], prefix: null);
                     break;
+                case OpCode.SetElemDefine:
+                {
+                    var obj = _heap.GetObject(ResolveObjectHandle(frame.Registers[ins.A]));
+                    var key = ToPropertyKey(frame.Registers[ins.B]);
+                    var val = frame.Registers[ins.C];
+                    // ECMA-262 B.3.1: computed __proto__ must not trigger prototype setter.
+                    // Create a plain own data property instead of using SetPrototype.
+                    if (key == "__proto__")
+                    {
+                        // Remove any existing __proto__ accessor shadow, then set as own property.
+                        obj.DefineOwnProperty("__proto__", new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
+                    }
+                    else
+                    {
+                        obj.DefineOwnProperty(key, new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
+                    }
+                    break;
+                }
                 case OpCode.Jump:
                     // Tier-4 #24 (audit �3.2): a back-edge is a Jump
                     // whose target precedes the source IP. Saturating add

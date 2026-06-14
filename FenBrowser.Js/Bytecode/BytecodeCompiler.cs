@@ -3336,7 +3336,7 @@ public sealed class BytecodeCompiler
                         {
                             ObjectPropertyKind.Getter => OpCode.DefineGetterByReg,
                             ObjectPropertyKind.Setter => OpCode.DefineSetterByReg,
-                            _ => OpCode.SetElem,
+                            _ => OpCode.SetElemDefine,
                         };
                         // D=1 marks an object-literal accessor as enumerable (class
                         // accessors leave D=0 and stay non-enumerable).

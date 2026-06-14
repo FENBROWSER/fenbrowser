@@ -271,4 +271,5 @@ public enum OpCode : byte
 		// computed property name). A=function reg, B=key reg.
 		// Used by object literals: { [computedKey]: function() {} }.
 		SetFunctionName,
+		SetElemDefine,
 }
