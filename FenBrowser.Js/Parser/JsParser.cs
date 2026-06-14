@@ -4535,12 +4535,14 @@ public sealed class JsParser
                             asyncParameterDefaults.Add(null);
                             if (IsPunctuator("=") && !PeekIsPunctuator(1, ">"))
                             {
+                                // ECMA-262 14.1: rest parameters may not have a default.
+                                if (asyncRestParameterIndex == asyncParameters.Count - 1)
+                                {
+                                    throw new JsParserException("Rest parameter may not have a default value.");
+                                }
                                 Advance();
                                 var asyncDefault = ParseExpression(2);
-                                if (asyncRestParameterIndex != asyncParameters.Count - 1)
-                                {
-                                    asyncParameterDefaults[asyncParameterDefaults.Count - 1] = asyncDefault;
-                                }
+                                asyncParameterDefaults[asyncParameterDefaults.Count - 1] = asyncDefault;
                             }
                         }
                         catch (JsParserException)
@@ -4632,12 +4634,14 @@ public sealed class JsParser
                         parameterDefaults.Add(null);
                         if (IsPunctuator("=") && !PeekIsPunctuator(1, ">"))
                         {
+                            // ECMA-262 14.1: rest parameters may not have a default.
+                            if (restParameterIndex == parameters.Count - 1)
+                            {
+                                throw new JsParserException("Rest parameter may not have a default value.");
+                            }
                             Advance();
                             var arrowDefault = ParseExpression(2);
-                            if (restParameterIndex != parameters.Count - 1)
-                            {
-                                parameterDefaults[parameterDefaults.Count - 1] = arrowDefault;
-                            }
+                            parameterDefaults[parameterDefaults.Count - 1] = arrowDefault;
                         }
                     }
                     catch (JsParserException)
@@ -4690,6 +4694,38 @@ public sealed class JsParser
             parameterBindings.All(binding => binding is null) &&
             (parameterDefaults is null || parameterDefaults.All(def => def is null));
 
+        // ECMA-262 15.1.1: duplicate parameter names are forbidden in
+        // strict mode and whenever the param list is non-simple.
+        if (!hasSimpleParameterList || _strictMode)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var p in parameters)
+            {
+                if (!IsSyntheticPatternBinding(p) && !seen.Add(p))
+                {
+                    throw new JsParserException(
+                        $"Duplicate parameter name '{p}' is not allowed in this context.");
+                }
+            }
+        }
+
+        // ECMA-262 14.2.1: `eval` and `arguments` may not appear as
+        // parameter names in an arrow function with a strict body or
+        // in strict-mode code.
+        if (_strictMode)
+        {
+            foreach (var p in parameters)
+            {
+                if (IsSyntheticPatternBinding(p)) continue;
+                if (string.Equals(p, "eval", StringComparison.Ordinal) ||
+                    string.Equals(p, "arguments", StringComparison.Ordinal))
+                {
+                    throw new JsParserException(
+                        $"'{p}' may not be used as a parameter name in strict mode.");
+                }
+            }
+        }
+
         // ECMA-262 ArrowFunction: the body is parsed with its OWN [Yield]/[Await]
         // context, not the enclosing one. ConciseBody is [~Yield], and Await is +Await
         // only for an async arrow (AsyncConciseBody), ~Await otherwise. Without this,
@@ -4705,6 +4741,12 @@ public sealed class JsParser
                 allowAwaitExpression: isAsync,
                 () => ParseFunctionBlockBody(ParseBlockStatement));
             ValidateDirectivePrologueStrictStringEscapes(block.Statements);
+            // ECMA-262 14.2.1: SyntaxError if the body contains "use strict"
+            // and the parameter list is non-simple (destructuring, rest, defaults).
+            if (!hasSimpleParameterList && ContainsUseStrictDirective(block.Statements))
+            {
+                throw new JsParserException("A strict directive is not allowed with a non-simple parameter list.");
+            }
             return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span), IsAsync: isAsync, HasSimpleParameterList: hasSimpleParameterList, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings, ParameterDefaults: parameterDefaults);
         }
 
