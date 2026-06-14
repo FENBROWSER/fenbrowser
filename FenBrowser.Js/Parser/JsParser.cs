@@ -4817,11 +4817,16 @@ public sealed class JsParser
             parameterBindings.All(binding => binding is null) &&
             (parameterDefaults is null || parameterDefaults.All(def => def is null));
 
-        // ECMA-262 15.1.1: duplicate parameter names are forbidden in
-        // strict mode (including async arrows, which are implicitly strict)
-        // and whenever the param list is non-simple.
-        if (!hasSimpleParameterList || _strictMode || isAsync)
+        // ECMA-262 14.2.1: arrow functions use UniqueFormalParameters which
+        // ALWAYS forbid duplicate parameter names (even sloppy, simple lists).
         {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var p in parameters)
+            {
+                if (!IsSyntheticPatternBinding(p) && !seen.Add(p))
+                    throw new JsParserException($"Duplicate parameter name '{p}' in arrow function.");
+            }
+        }
             var seen = new HashSet<string>(StringComparer.Ordinal);
             foreach (var p in parameters)
             {
