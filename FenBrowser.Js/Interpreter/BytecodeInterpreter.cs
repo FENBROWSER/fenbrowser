@@ -7582,6 +7582,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 length: 0);
             var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
             _heap.PushRoot(ctorHandle);
+            // Shared prototype with resolvedOptions so that
+            // Intl.NumberFormat.prototype.resolvedOptions exists.
+            var nfProto = CreateOrdinaryObject();
+            var nfProtoHandle = _heap.AllocateObject(nfProto, AllocationSite.Current());
+            var roStub = new NativeFunctionObject("resolvedOptions", (_, _) =>
+            {
+                var o = CreateOrdinaryObject();
+                o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en-US"), Writable: true, Enumerable: true, Configurable: true));
+                o.DefineOwnProperty("numberingSystem", new JsPropertyDescriptor(JsValue.FromString("latn"), Writable: true, Enumerable: true, Configurable: true));
+                o.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString("decimal"), Writable: true, Enumerable: true, Configurable: true));
+                o.DefineOwnProperty("minimumIntegerDigits", new JsPropertyDescriptor(JsValue.FromNumber(1), Writable: true, Enumerable: true, Configurable: true));
+                o.DefineOwnProperty("minimumFractionDigits", new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: true, Configurable: true));
+                o.DefineOwnProperty("maximumFractionDigits", new JsPropertyDescriptor(JsValue.FromNumber(3), Writable: true, Enumerable: true, Configurable: true));
+                o.DefineOwnProperty("useGrouping", new JsPropertyDescriptor(JsValue.FromString("auto"), Writable: true, Enumerable: true, Configurable: true));
+                return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
+            }, length: 0);
+            nfProto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(roStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+            _ = ctor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(nfProtoHandle), Writable: false, Enumerable: false, Configurable: false));
             _ = intl.DefineOwnProperty(
                 "NumberFormat",
                 new JsPropertyDescriptor(
