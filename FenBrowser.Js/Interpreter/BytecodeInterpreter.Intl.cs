@@ -189,7 +189,19 @@ public sealed partial class BytecodeInterpreter
 
         var formatMethod = new NativeFunctionObject(
             "format",
-            (_, _) => JsValue.FromString("Invalid Date"),
+            (thisValue, fmtArgs) =>
+            {
+                if (fmtArgs.Count == 0 || fmtArgs[0].Tag == JsValueTag.Undefined)
+                    throw new JsThrownException(CreateTypeError("DateTimeFormat format requires a date argument."));
+                var dtCulture = IntlDateTimeFormatting.ResolveCulture("en-US");
+                var dtOpts = new IntlDateTimeFormatOptions();
+                if (TryGetDateTimeFormatInput(fmtArgs, out var instant))
+                {
+                    var res = IntlDateTimeFormatting.Format(instant, dtCulture, dtOpts);
+                    return JsValue.FromString(res.Text);
+                }
+                return JsValue.FromString("Invalid Date");
+            },
             length: 1);
         var formatHandle = _heap.AllocateObject(formatMethod, AllocationSite.Current());
         _ = prototype.DefineOwnProperty(
@@ -199,10 +211,27 @@ public sealed partial class BytecodeInterpreter
 
         var formatToPartsMethod = new NativeFunctionObject(
             "formatToParts",
-            (_, _) =>
+            (thisValue, fmtArgs) =>
             {
-                var emptyArray = CreateArrayObject(Array.Empty<JsValue>());
-                return JsValue.FromObject(_heap.AllocateObject(emptyArray, AllocationSite.Current()));
+                if (fmtArgs.Count == 0 || fmtArgs[0].Tag == JsValueTag.Undefined)
+                    throw new JsThrownException(CreateTypeError("DateTimeFormat formatToParts requires a date argument."));
+                var dtCulture = IntlDateTimeFormatting.ResolveCulture("en-US");
+                var dtOpts = new IntlDateTimeFormatOptions();
+                if (TryGetDateTimeFormatInput(fmtArgs, out var instant))
+                {
+                    var res = IntlDateTimeFormatting.Format(instant, dtCulture, dtOpts);
+                    var vals = new List<JsValue>(res.Parts.Count);
+                    foreach (var p in res.Parts)
+                    {
+                        var o = CreateOrdinaryObject();
+                        o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(p.Type), Writable: true, Enumerable: true, Configurable: true));
+                        o.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.FromString(p.Value), Writable: true, Enumerable: true, Configurable: true));
+                        vals.Add(JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current())));
+                    }
+                    return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(vals), AllocationSite.Current()));
+                }
+                var empty = JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current()));
+                return empty;
             },
             length: 1);
         var formatToPartsHandle = _heap.AllocateObject(formatToPartsMethod, AllocationSite.Current());
