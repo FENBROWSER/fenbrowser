@@ -4781,8 +4781,9 @@ public sealed class JsParser
             (parameterDefaults is null || parameterDefaults.All(def => def is null));
 
         // ECMA-262 15.1.1: duplicate parameter names are forbidden in
-        // strict mode and whenever the param list is non-simple.
-        if (!hasSimpleParameterList || _strictMode)
+        // strict mode (including async arrows, which are implicitly strict)
+        // and whenever the param list is non-simple.
+        if (!hasSimpleParameterList || _strictMode || isAsync)
         {
             var seen = new HashSet<string>(StringComparer.Ordinal);
             foreach (var p in parameters)
@@ -4797,8 +4798,8 @@ public sealed class JsParser
 
         // ECMA-262 14.2.1: `eval` and `arguments` may not appear as
         // parameter names in an arrow function with a strict body or
-        // in strict-mode code.
-        if (_strictMode)
+        // in strict-mode code. Async arrows are always strict.
+        if (_strictMode || isAsync)
         {
             foreach (var p in parameters)
             {
@@ -4808,6 +4809,11 @@ public sealed class JsParser
                 {
                     throw new JsParserException(
                         $"'{p}' may not be used as a parameter name in strict mode.");
+                }
+                if (isAsync && string.Equals(p, "await", StringComparison.Ordinal))
+                {
+                    throw new JsParserException(
+                        "'await' may not be used as a parameter name in an async function.");
                 }
             }
         }
@@ -4832,6 +4838,17 @@ public sealed class JsParser
             if (!hasSimpleParameterList && ContainsUseStrictDirective(block.Statements))
             {
                 throw new JsParserException("A strict directive is not allowed with a non-simple parameter list.");
+            }
+            // Async arrows forbid `await` as an identifier in the body.
+            if (isAsync)
+                ValidateRestrictedIdentifiersInStatements(block.Statements, forbidAwaitIdentifier: true, forbidYieldIdentifier: false);
+            // ECMA-262 14.2.1: parameter names must not conflict with
+            // lexical declarations in the function body.
+            var bodyLexicalNames = CollectTopLevelLexicallyDeclaredNames(block.Statements);
+            foreach (var p in parameters)
+            {
+                if (!IsSyntheticPatternBinding(p) && bodyLexicalNames.Contains(p))
+                    throw new JsParserException($"Parameter '{p}' conflicts with a lexical declaration in the arrow body.");
             }
             return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span), IsAsync: isAsync, HasSimpleParameterList: hasSimpleParameterList, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings, ParameterDefaults: parameterDefaults);
         }
