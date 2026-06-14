@@ -4683,7 +4683,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         BytecodeFunction compiled;
         try
         {
-            var program = JsParser.ParseScript(new SourceText(args[0].AsString(), "<eval>"));
+            var program = JsParser.ParseScript(new SourceText(args[0].AsString(), "<eval>"),
+                inheritedStrictMode: directEvalStrictMode);
             compiled = new BytecodeCompiler().CompileProgram(program, inheritedStrictMode: directEvalStrictMode);
             new BytecodeVerifier().Verify(compiled);
         }

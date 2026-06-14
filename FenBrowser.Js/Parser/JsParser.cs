@@ -92,9 +92,18 @@ public sealed class JsParser
 
     public static ProgramNode ParseScript(SourceText source)
     {
+        return ParseScript(source, inheritedStrictMode: false);
+    }
+
+    // ECMA-262 19.2.1.1: eval inherits the strictness of its calling context.
+    // When inheritedStrictMode is true, the parser starts in strict mode so
+    // early-error checks (e.g. 'var arguments' / 'var eval') fire during
+    // parsing — before compilation ever sees the AST.
+    public static ProgramNode ParseScript(SourceText source, bool inheritedStrictMode)
+    {
         var tokens = new JsLexer(source).LexAll();
         var parser = new JsParser(tokens);
-        return parser.ParseProgram(ProgramKind.Script);
+        return parser.ParseProgram(ProgramKind.Script, inheritedStrictMode);
     }
 
     public static ProgramNode ParseModule(SourceText source)
@@ -114,10 +123,10 @@ public sealed class JsParser
         return parser.ParseProgram(ProgramKind.Script);
     }
 
-    private ProgramNode ParseProgram(ProgramKind kind)
+    private ProgramNode ParseProgram(ProgramKind kind, bool inheritedStrictMode = false)
     {
         _moduleMode = kind == ProgramKind.Module;
-        _strictMode = kind == ProgramKind.Module;
+        _strictMode = kind == ProgramKind.Module || inheritedStrictMode;
         _allowYieldExpression = false;
         _allowAwaitExpression = true;
         var statements = new List<StatementNode>();
@@ -1343,11 +1352,15 @@ public sealed class JsParser
         // let/const declaration. Covers `let let;`, `const let = 1;`, and
         // ASI edge cases like `let\nlet;`.
         // ECMA-262 15.7.3: class static blocks disallow 'await' as a binding name.
+        // This covers both simple bindings (e.g. `const await = 0`) and destructuring
+        // patterns (e.g. `var [await] = []` / `var {await} = {}`).
         if (_classStaticBlockDepth > 0)
         {
             foreach (var d in declarators)
             {
-                if (!IsSyntheticPatternBinding(d.Identifier) && string.Equals(d.Identifier, "await", StringComparison.Ordinal))
+                if (d.BindingPattern is not null)
+                    ValidateBindingPatternAwait(d.BindingPattern);
+                else if (!IsSyntheticPatternBinding(d.Identifier) && string.Equals(d.Identifier, "await", StringComparison.Ordinal))
                     throw new JsParserException("'await' may not be used as a binding name inside a class static block.");
             }
         }
@@ -2289,6 +2302,9 @@ public sealed class JsParser
                     // ECMA-262 13.15.1: `catch (eval)` and `catch (arguments)` in strict mode.
                     if (_strictMode && (catchIdentifier == "eval" || catchIdentifier == "arguments"))
                         throw new JsParserException($"'{catchIdentifier}' may not be used as a catch parameter in strict mode.");
+                    // ECMA-262 15.7: `catch (await)` is forbidden in class static blocks.
+                    if (_classStaticBlockDepth > 0 && string.Equals(catchIdentifier, "await", StringComparison.Ordinal))
+                        throw new JsParserException("'await' may not be used as a binding name inside a class static block.");
                 }
                 else
                 {
@@ -3286,6 +3302,13 @@ public sealed class JsParser
             _strictMode = strictModeOverride.Value;
         }
 
+        // ECMA-262 15.7: 'await' may not be a binding identifier at the top level
+        // of a ClassStaticBlock, but nested functions/arrows inside the static block
+        // are not at the top level — they clear the restriction. Save and restore
+        // the depth so that declarations in nested functions are not rejected.
+        var previousClassStaticBlockDepth = _classStaticBlockDepth;
+        _classStaticBlockDepth = 0;
+
         try
         {
             var parameterInfo = ParseWithExpressionContext(
@@ -3330,6 +3353,7 @@ public sealed class JsParser
         finally
         {
             _strictMode = previousStrictMode;
+            _classStaticBlockDepth = previousClassStaticBlockDepth;
         }
     }
 
@@ -4881,6 +4905,13 @@ public sealed class JsParser
         // (e.g. `function m(){ let c=async()=>{ await u(); }; }` — pervasive in minified
         // bundles like x.com's main.js). Top-level async arrows only worked by accident
         // because the program default is [+Await].
+        // Arrow functions clear the ClassStaticBlock depth so that `await`
+        // as a binding identifier is only rejected at the static block's top
+        // level, not inside nested arrow functions (ECMA-262 15.7).
+        var previousClassStaticBlockDepth = _classStaticBlockDepth;
+        _classStaticBlockDepth = 0;
+        try
+        {
         if (IsPunctuator("{"))
         {
             var block = ParseWithExpressionContext(
@@ -4913,6 +4944,11 @@ public sealed class JsParser
             allowAwaitExpression: isAsync,
             () => ParseExpression(2));
         return new ArrowFunctionExpressionNode(parameters, null, bodyExpression, MergeSpan(start, bodyExpression.Span), IsAsync: isAsync, HasSimpleParameterList: hasSimpleParameterList, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings, ParameterDefaults: parameterDefaults);
+        }
+        finally
+        {
+            _classStaticBlockDepth = previousClassStaticBlockDepth;
+        }
     }
 
     private IReadOnlyList<ExpressionNode> ParseCallArguments()
@@ -5668,6 +5704,28 @@ public sealed class JsParser
 
     // ECMA-262: recursive validation of binding patterns for duplicate names.
     // `for (const [x, x] in {})` must throw SyntaxError.
+    internal static void ValidateBindingPatternAwait(BindingPatternNode pattern)
+    {
+        switch (pattern)
+        {
+            case IdentifierBindingPatternNode id:
+                if (!IsSyntheticPatternBinding(id.Name) && string.Equals(id.Name, "await", StringComparison.Ordinal))
+                    throw new JsParserException("'await' may not be used as a binding name inside a class static block.");
+                break;
+            case ArrayBindingPatternNode arr:
+                foreach (var el in arr.Elements)
+                {
+                    if (el.Target is { } t) ValidateBindingPatternAwait(t);
+                }
+                break;
+            case ObjectBindingPatternNode obj:
+                foreach (var prop in obj.Properties)
+                    ValidateBindingPatternAwait(prop.Target);
+                if (obj.Rest is { } r) ValidateBindingPatternAwait(r);
+                break;
+        }
+    }
+
     internal static void ValidateBindingPatternDuplicates(BindingPatternNode pattern, HashSet<string> seen)
     {
         switch (pattern)
