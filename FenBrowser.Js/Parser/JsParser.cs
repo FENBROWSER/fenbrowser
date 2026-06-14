@@ -1835,6 +1835,9 @@ public sealed class JsParser
 
             ValidateForOfDeclarationNoInitializer(initializer);
             ValidateForHeadDestructuringTarget(initializer);
+            // ECMA-262 14.7.5.1: LHS cannot be 'async' when followed by 'of'.
+            if (initializer is ExpressionStatementNode { Expression: IdentifierExpressionNode { Name: "async" } })
+                throw new JsParserException("'async' is not a valid left-hand side for for-of.");
             // ECMA-262 13.15.1: expression LHS of for-of must be a valid target.
             if (initializer is ExpressionStatementNode exprStmt &&
                 !IsValidAssignmentTarget(exprStmt.Expression))
