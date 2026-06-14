@@ -1806,6 +1806,13 @@ public sealed class JsParser
 
             ValidateForOfDeclarationNoInitializer(initializer);
             ValidateForHeadDestructuringTarget(initializer);
+            // ECMA-262 13.15.1: expression LHS of for-of must be a valid target.
+            if (initializer is ExpressionStatementNode exprStmt &&
+                !IsValidAssignmentTarget(exprStmt.Expression))
+            {
+                throw new JsParserException(
+                    $"Invalid assignment target in for-of head{Where()}.");
+            }
             Advance(); // of
             var iterable = ParseExpression(0);
             ExpectPunctuator(")");
@@ -1985,9 +1992,18 @@ public sealed class JsParser
             return;
         }
 
-        if (initializer is ExpressionStatementNode expressionStatement && expressionStatement.Expression is AssignmentExpressionNode)
+        if (initializer is ExpressionStatementNode expressionStatement)
         {
-            throw new JsParserException("for-in assignment initializers are not allowed.");
+            if (expressionStatement.Expression is AssignmentExpressionNode)
+            {
+                throw new JsParserException("for-in assignment initializers are not allowed.");
+            }
+            // ECMA-262 13.15.1: the LHS of for-in must be a valid assignment target.
+            if (!IsValidAssignmentTarget(expressionStatement.Expression))
+            {
+                throw new JsParserException(
+                    $"Invalid assignment target in for-in head{Where()}.");
+            }
         }
     }
 
@@ -5478,8 +5494,10 @@ public sealed class JsParser
         };
     }
 
+    // ECMA-262 13.4 UpdateExpression: prefix/postfix ++/-- can only be
+    // applied to identifiers and member expressions, not call expressions.
     private static bool IsUpdateTarget(ExpressionNode node) =>
-        node is IdentifierExpressionNode or MemberExpressionNode or CallExpressionNode;
+        node is IdentifierExpressionNode or MemberExpressionNode;
 
     // ECMA-262 13.15.1 — Simple AssignmentTargetType. Returns true for
     // anything that can sit on the LHS of `=` (or compound assignments).
@@ -5674,22 +5692,21 @@ public sealed class JsParser
         }
     }
 
+    // ECMA-262 13.15.1 Static Semantics: AssignmentTargetType.
+    // Returns true when the expression can appear on the LHS of `=`,
+    // `++`/`--`, or a compound assignment. CallExpression, optional
+    // chaining, arrow functions, and literal values are NOT valid
+    // assignment targets — the spec says these are early SyntaxErrors.
     private static bool IsValidAssignmentTarget(ExpressionNode node)
     {
         return node switch
         {
             IdentifierExpressionNode => true,
-            MemberExpressionNode => true,
-            // CallExpression = X is a runtime ReferenceError (after LHS
-            // side effects), not a parse error, in our existing behavior.
-            CallExpressionNode => true,
-            // Destructuring patterns parsed as array/object literals.
+            MemberExpressionNode m => m.Object is not SuperExpressionNode,
+            // Destructuring patterns parsed as array/object literals
+            // (assignment pattern, not expression).
             ArrayLiteralExpressionNode => true,
             ObjectLiteralExpressionNode => true,
-            // Optional chaining is not a valid assignment target per spec
-            // but conservative — allow for now to avoid breaking compound
-            // shapes we may use as patterns.
-            OptionalMemberExpressionNode => true,
             // Tolerate parenthesised wrappers around valid targets.
             ParenthesizedExpressionNode pe => IsValidAssignmentTarget(pe.Expression),
             _ => false,
