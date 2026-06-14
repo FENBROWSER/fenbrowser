@@ -408,59 +408,6 @@ public sealed class RegExpBuiltin : IBuiltinModule
         return canonical.ToString();
     }
 
-    // Annex B.2.5 — RegExp legacy static properties ($1-$9, input, lastMatch,
-    // lastParen, leftContext, rightContext and their $-aliases).
-    private static void InstallRegExpLegacyAccessors(
-        JsHeap heap, IBuiltinContext context,
-        NativeFunctionObject constructor, ObjectHandle constructorHandle)
-    {
-        void DefHidden(string n, string v) => constructor.DefineOwnProperty(n,
-            new JsPropertyDescriptor(JsValue.FromString(v), Writable: true, Enumerable: false, Configurable: true));
-        DefHidden("__regExpInput", ""); DefHidden("__regExpLastMatch", "");
-        DefHidden("__regExpLastParen", ""); DefHidden("__regExpLeftContext", "");
-        DefHidden("__regExpRightContext", "");
-        for (var i = 1; i <= 9; i++) DefHidden("__regExpParen" + i, "");
-
-        void ThrowIfWrong(JsValue tv) { if (tv.Tag != JsValueTag.Object || tv.AsObjectHandle() != constructorHandle) throw new JsThrownException(context.CreateTypeError("RegExp legacy static accessor called on incompatible receiver.")); }
-        string Read(string n) => context.TryGetPropertyValue(constructor, JsValue.FromObject(constructorHandle), n, out var v) && v.Tag == JsValueTag.String ? v.AsString() : "";
-        void Write(string n, string val) => constructor.DefineOwnProperty(n, new JsPropertyDescriptor(JsValue.FromString(val), Writable: true, Enumerable: false, Configurable: true));
-
-        void AddGetter(string name, string hidden)
-        {
-            var g = new NativeFunctionObject("get "+name, (tv, _) => { ThrowIfWrong(tv); return JsValue.FromString(Read(hidden)); }, 0);
-            var gh = heap.AllocateObject(g, AllocationSite.Current());
-            constructor.DefineOwnProperty(name, JsPropertyDescriptor.Accessor(JsValue.FromObject(gh), JsValue.Undefined, Enumerable: false, Configurable: true));
-            heap.WriteBarrier(constructorHandle, gh);
-        }
-
-        void AddAccessor(string name, string alias, string hidden, bool hasSetter)
-        {
-            var get = new NativeFunctionObject("get "+name, (tv, _) => { ThrowIfWrong(tv); return JsValue.FromString(Read(hidden)); }, 0);
-            var gh = heap.AllocateObject(get, AllocationSite.Current());
-            if (hasSetter)
-            {
-                var set = new NativeFunctionObject("set "+name, (tv, a) => { ThrowIfWrong(tv); Write(hidden, a.Count > 0 ? context.ToStringValue(a[0]) : "undefined"); return JsValue.Undefined; }, 1);
-                var sh = heap.AllocateObject(set, AllocationSite.Current());
-                constructor.DefineOwnProperty(name, JsPropertyDescriptor.Accessor(JsValue.FromObject(gh), JsValue.FromObject(sh), Enumerable: false, Configurable: true));
-                constructor.DefineOwnProperty(alias, JsPropertyDescriptor.Accessor(JsValue.FromObject(gh), JsValue.FromObject(sh), Enumerable: false, Configurable: true));
-                heap.WriteBarrier(constructorHandle, sh);
-            }
-            else
-            {
-                constructor.DefineOwnProperty(name, JsPropertyDescriptor.Accessor(JsValue.FromObject(gh), JsValue.Undefined, Enumerable: false, Configurable: true));
-                constructor.DefineOwnProperty(alias, JsPropertyDescriptor.Accessor(JsValue.FromObject(gh), JsValue.Undefined, Enumerable: false, Configurable: true));
-            }
-            heap.WriteBarrier(constructorHandle, gh);
-        }
-
-        for (var i = 1; i <= 9; i++) AddGetter("$" + i, "__regExpParen" + i);
-        AddAccessor("input", "$_", "__regExpInput", hasSetter: true);
-        AddAccessor("lastMatch", "$&", "__regExpLastMatch", hasSetter: false);
-        AddAccessor("lastParen", "$+", "__regExpLastParen", hasSetter: false);
-        AddAccessor("leftContext", "$`", "__regExpLeftContext", hasSetter: false);
-        AddAccessor("rightContext", "$'", "__regExpRightContext", hasSetter: false);
-    }
-
     private static string RegExpEscape(string s)
     {
         var sb = new StringBuilder(s.Length);
