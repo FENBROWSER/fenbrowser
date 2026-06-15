@@ -2221,6 +2221,7 @@ public sealed class JsParser
 
         ExpectPunctuator(")");
         var body = ParseStatement(StatementBodyContext.IterationOrWith);
+        ValidateIterationBodyNotLabelledFunction(body);
         return new ForStatementNode(initializer, test, update, body, MergeSpan(start.Span, body.Span));
     }
 
