@@ -3886,6 +3886,13 @@ public sealed class JsParser
             }
 
             var opToken = Advance();
+
+            // ECMA-262: ExponentiationExpression does not allow UnaryExpression
+            // on its left-hand side (only UpdateExpression). Unary operators like
+            // ~, !, delete, void, typeof cannot directly precede **.
+            if (opToken.Text == "**" && left is UnaryExpressionNode)
+                throw new JsParserException("Unary expression cannot be the left-hand side of exponentiation.");
+
             var right = ParseExpression(rightBp);
             var span = MergeSpan(left.Span, right.Span);
             left = new BinaryExpressionNode(opToken.Text, left, right, span);
