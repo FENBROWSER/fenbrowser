@@ -10729,7 +10729,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         existingDescriptor.Value,
                         existingDescriptor.Writable,
                         hasEnumerable ? enumerable : existingDescriptor.Enumerable,
-                        hasConfigurable ? configurable : existingDescriptor.Configurable);
+                        hasConfigurable ? configurable : existingDescriptor.Configurable)
+                    {
+                        HasConfigurable = hasConfigurable,
+                        HasEnumerable = hasEnumerable,
+                        HasWritable = hasWritableFlag,
+                        HasValue = hasValue,
+                    };
             }
             // Same-kind merge keeps unchanged attributes from `existing`.
             else if (newIsAccessor && existingIsAccessor)
@@ -10746,7 +10752,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     hasValue ? value : existingDescriptor.Value,
                     hasWritableFlag ? writable : existingDescriptor.Writable,
                     hasEnumerable ? enumerable : existingDescriptor.Enumerable,
-                    hasConfigurable ? configurable : existingDescriptor.Configurable);
+                    hasConfigurable ? configurable : existingDescriptor.Configurable)
+                {
+                    HasConfigurable = hasConfigurable,
+                    HasEnumerable = hasEnumerable,
+                    HasWritable = hasWritableFlag,
+                    HasValue = hasValue,
+                };
             }
             else
             {
@@ -10762,7 +10774,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         hasValue ? value : JsValue.Undefined,
                         hasWritableFlag ? writable : false,
                         hasEnumerable ? enumerable : existingDescriptor.Enumerable,
-                        hasConfigurable ? configurable : existingDescriptor.Configurable);
+                        hasConfigurable ? configurable : existingDescriptor.Configurable)
+                    {
+                        HasConfigurable = hasConfigurable,
+                        HasEnumerable = hasEnumerable,
+                        HasWritable = hasWritableFlag,
+                        HasValue = hasValue,
+                    };
             }
         }
         else
@@ -10774,7 +10792,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     hasSetter ? setter : JsValue.Undefined,
                     enumerable,
                     configurable)
-                : new JsPropertyDescriptor(hasValue ? value : JsValue.Undefined, writable, enumerable, configurable);
+                : new JsPropertyDescriptor(hasValue ? value : JsValue.Undefined, writable, enumerable, configurable)
+                {
+                    HasConfigurable = hasConfigurable,
+                    HasEnumerable = hasEnumerable,
+                    HasWritable = hasWritableFlag,
+                    HasValue = hasValue,
+                };
         }
 
         // ECMA-262 10.4.2.4 ArraySetLength: defining an Array's "length" is exotic —
@@ -10827,7 +10851,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
             else
             {
-                _ = target.DefineOwnProperty(key, descriptor);
+                var defined = target.DefineOwnProperty(key, descriptor);
+                // ECMA-262 6.1.7.3 / 10.4.5.3: [[DefineOwnProperty]] returning false is a
+                // rejection (e.g. Integer-Indexed Exotic Object rejecting a non-configurable
+                // descriptor). Object.defineProperty propagates this as a TypeError; the
+                // Reflect.defineProperty wrapper catches it and returns false.
+                if (!defined)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Cannot redefine property: " + key));
+                }
+
                 // ECMA-262 10.4.2.1 Array [[DefineOwnProperty]]: defining an array-index
                 // element at or beyond the current length extends "length" (matching
                 // what plain `arr[i] = v` assignment already does).
@@ -11076,7 +11110,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         if (obj is TypedArrayObject typedArray &&
-            IsCanonicalIntegerIndex(key, out var typedArrayIndex))
+            TypedArrayObject.IsCanonicalNumericIndex(key, out var typedArrayIndex))
         {
             return !typedArray.IsOutOfBounds() &&
                    typedArrayIndex >= 0 &&
@@ -11120,6 +11154,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     [MayExecuteJs]
     private bool SetPropertyValue(ObjectHandle ownerHandle, JsObject obj, string key, JsValue value, JsValue receiver)
     {
+        // ECMA-262 10.4.5.5 Integer-Indexed Exotic Object [[Set]]: canonical integer
+        // indices route through IntegerIndexedElementSet rather than the ordinary
+        // property path. This is needed for Reflect.set / Proxy set-trap fallthrough
+        // (the bytecode SetProperty opcode already handles TypedArrays before calling
+        // SetPropertyValue, so the duplicate check below is minimal).
+        if (obj is TypedArrayObject ta && TypedArrayObject.IsCanonicalNumericIndex(key, out var taIdx))
+        {
+            ta.SetElement(taIdx, value);
+            return true;
+        }
+
         // ECMA-262 10.4.2.4 ArraySetLength: assigning to an Array's "length" is an
         // exotic operation that deletes own array-index elements at or above the new
         // length (and fails on a non-configurable one). The ordinary data-property
@@ -14544,6 +14589,23 @@ fallbackArraySpecies:
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
+        // 25.1.5.1 get ArrayBuffer [ @@species ] — returns `this` so species-derived
+        // operations (slice, transfer) default to the ArrayBuffer constructor itself.
+        var speciesId = GetWellKnownSymbolId("species");
+        if (speciesId != 0)
+        {
+            var speciesGetter = new NativeFunctionObject("get [Symbol.species]", (thisValue, _args) => thisValue, length: 0);
+            var speciesGetterHandle = _heap.AllocateObject(speciesGetter, AllocationSite.Current());
+            _ = constructor.DefineOwnSymbolProperty(
+                speciesId,
+                JsPropertyDescriptor.Accessor(
+                    JsValue.FromObject(speciesGetterHandle),
+                    JsValue.Undefined,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(constructorHandle, speciesGetterHandle);
+        }
+
         // 25.1.5.2 get ArrayBuffer.prototype.byteLength
         var byteLengthGetter = new NativeFunctionObject("get byteLength", (thisValue, _2) =>
         {
@@ -14556,7 +14618,7 @@ fallbackArraySpecies:
             JsValue.FromObject(byteLengthGetterHandle), JsValue.Undefined, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, byteLengthGetterHandle);
 
-        // 25.1.5.3 ArrayBuffer.prototype.slice(begin, end)
+        // 25.1.5.3 ArrayBuffer.prototype.slice(begin, end) — species-aware.
         DefineNativePrototypeMethod(prototypeHandle, prototype, "slice", (thisValue, args) =>
         {
             if (thisValue.Tag != JsValueTag.Object || _heap.GetObject(thisValue.AsObjectHandle()) is not ArrayBufferObject buf)
@@ -14568,9 +14630,20 @@ fallbackArraySpecies:
             var end = args.Count > 1 ? (int)Math.Min(Math.Max(args[1].AsNumber(), 0), len) : len;
             if (end < begin) end = begin;
             var newLen = end - begin;
-            var clone = buf.Clone(begin, newLen);
-            clone.SetPrototype(EnsureArrayBufferPrototype());
-            return JsValue.FromObject(_heap.AllocateObject(clone, AllocationSite.Current()));
+            // 25.1.5.3 step 9: SpeciesConstructor(thisValue, %ArrayBuffer%).
+            var species = SpeciesConstructor(thisValue, constructorHandle);
+            var newObj = ConstructFunction(species, new[] { JsValue.FromNumber(newLen) });
+            if (newObj.Tag != JsValueTag.Object ||
+                _heap.GetObject(newObj.AsObjectHandle()) is not ArrayBufferObject newBuf)
+                throw new JsThrownException(CreateTypeError("ArrayBuffer.prototype.slice: species did not produce an ArrayBuffer."));
+            var copyLen = Math.Min(newBuf.ByteLength, newLen);
+            if (copyLen > 0)
+            {
+                var srcData = buf.Data;
+                var dstData = newBuf.Data;
+                Array.Copy(srcData, begin, dstData, 0, Math.Min(copyLen, dstData.Length));
+            }
+            return newObj;
         }, length: 2);
 
         // ES2024 25.1.5.X get ArrayBuffer.prototype.resizable
@@ -15551,6 +15624,8 @@ fallbackArraySpecies:
                 length: 0), AllocationSite.Current())),
             JsValue.Undefined, Enumerable: false, Configurable: true));
 
+        // 23.2.3.8 get %TypedArray%.prototype.byteOffset — returns the original
+        // [[ByteOffset]] even when the buffer is detached or the view is OOB.
         proto.DefineOwnProperty("byteOffset", JsPropertyDescriptor.Accessor(
             JsValue.FromObject(_heap.AllocateObject(new NativeFunctionObject("get byteOffset",
                 (thisValue, _2) => JsValue.FromNumber(RequireTypedArray(thisValue).ByteOffset),
@@ -15664,9 +15739,11 @@ fallbackArraySpecies:
         {
             var self = ValidateTypedArray(thisValue);
             var len = self.Length;
+            // 23.2.3.8.1: If end is undefined, use len; the `Undefined` tag check
+            // is essential because `(int)ToNumber(undefined)` is 0, not the default.
             var target = args.Count > 0 ? (int)ToNumber(args[0]) : 0;
             var start = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
-            var end = args.Count > 2 ? (int)ToNumber(args[2]) : len;
+            var end = args.Count > 2 && args[2].Tag != JsValueTag.Undefined ? (int)ToNumber(args[2]) : len;
             if (target < 0) target = Math.Max(len + target, 0);
             if (start < 0) start = Math.Max(len + start, 0);
             if (end < 0) end = Math.Max(len + end, 0);
@@ -15693,7 +15770,7 @@ fallbackArraySpecies:
             value = NormalizeTypedArrayElementValue(self.ElementType, value);
             var len = self.Length;
             var start = args.Count > 1 ? (int)ToNumber(args[1]) : 0;
-            var end = args.Count > 2 ? (int)ToNumber(args[2]) : len;
+            var end = args.Count > 2 && args[2].Tag != JsValueTag.Undefined ? (int)ToNumber(args[2]) : len;
             if (start < 0) start = Math.Max(len + start, 0);
             if (end < 0) end = Math.Max(len + end, 0);
             start = Math.Min(Math.Max(start, 0), len);
@@ -15921,8 +15998,32 @@ fallbackArraySpecies:
 
         DefineNativePrototypeMethod(protoHandle, proto, "toString", (thisValue, _) =>
             CallFunction(GetReceiverProperty(thisValue, "join"), Array.Empty<JsValue>(), thisValue), length: 0);
+        // 23.2.3.29 %TypedArray%.prototype.toLocaleString([reserved1 [, reserved2]])
+        // Calls toLocaleString() on each element (via Array.prototype.toLocaleString
+        // semantics adapted for TypedArrays), joining with ", " (the implementation-defined
+        // list-separator for the host's default locale, which is always ", " in our engine).
         DefineNativePrototypeMethod(protoHandle, proto, "toLocaleString", (thisValue, _) =>
-            CallFunction(GetReceiverProperty(thisValue, "join"), Array.Empty<JsValue>(), thisValue), length: 0);
+        {
+            var self = ValidateTypedArray(thisValue);
+            var sb = new System.Text.StringBuilder();
+            for (var i = 0; i < self.Length; i++)
+            {
+                if (i > 0) sb.Append(',');
+                var element = self.GetElement(i);
+                if (element.Tag is JsValueTag.Null or JsValueTag.Undefined)
+                {
+                    sb.Append(string.Empty);
+                }
+                else
+                {
+                    var elementObj = ToObjectValue(element);
+                    var toLocaleStringFn = GetReceiverProperty(elementObj, "toLocaleString");
+                    var result = CallFunction(toLocaleStringFn, Array.Empty<JsValue>(), elementObj);
+                    sb.Append(ToStringValue(result));
+                }
+            }
+            return JsValue.FromString(sb.ToString());
+        }, length: 0);
 
         DefineNativePrototypeMethod(protoHandle, proto, "reverse", (thisValue, _) =>
         {
@@ -16039,6 +16140,42 @@ fallbackArraySpecies:
             }
             for (var i = 0; i < values.Count; i++) self.SetElement(i, values[i]);
             return thisValue;
+        }, length: 1);
+
+        // 23.2.3.33 %TypedArray%.prototype.toSorted(comparefn)
+        // ES2023: returns a new TypedArray (via TypedArraySpeciesCreate) with the
+        // elements sorted, leaving the original unchanged.
+        DefineNativePrototypeMethod(protoHandle, proto, "toSorted", (thisValue, args) =>
+        {
+            var self = ValidateTypedArray(thisValue);
+            var comparer = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (comparer.Tag != JsValueTag.Undefined && !IsCallable(comparer))
+                throw new JsThrownException(CreateTypeError("TypedArray.prototype.toSorted: comparator must be a function or undefined."));
+            var values = new List<JsValue>(self.Length);
+            for (var i = 0; i < self.Length; i++) values.Add(self.GetElement(i));
+            try
+            {
+                values.Sort((a, b) =>
+                {
+                    if (IsCallable(comparer))
+                    {
+                        var v = CallFunction(comparer, new[] { a, b }, JsValue.Undefined);
+                        return CompareSortResult(v);
+                    }
+                    if (a.Tag == JsValueTag.BigInt && b.Tag == JsValueTag.BigInt)
+                        return BigInteger.Compare(a.AsBigInt(), b.AsBigInt());
+                    return ToNumber(a).CompareTo(ToNumber(b));
+                });
+            }
+            catch (InvalidOperationException ex) when (ex.InnerException is JsThrownException jse)
+            {
+                throw jse;
+            }
+            var result = TypedArraySpeciesCreate(
+                thisValue, self, elementSize, protoHandle,
+                new[] { JsValue.FromNumber(values.Count) }, out var sorted);
+            for (var i = 0; i < values.Count; i++) sorted.SetElement(i, values[i]);
+            return result;
         }, length: 1);
 
         DefineNativePrototypeMethod(protoHandle, proto, "with", (thisValue, args) =>

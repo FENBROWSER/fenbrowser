@@ -33,8 +33,12 @@ public sealed partial class BytecodeInterpreter
                 var obj = ResolveObject(target);
                 // ECMA-262 23.2.4.2 IntegerIndexedElementGet: TypedArray integer
                 // indices route to the underlying buffer, not the property table.
-                if (obj is TypedArrayObject ta && IsCanonicalIntegerIndex(key, out var taIdx))
+                // Uses CanonicalNumericIndexString semantics (including "-0" → index 0,
+                // but IntegerIndexedElementGet returns undefined for index -0).
+                if (obj is TypedArrayObject ta && TypedArrayObject.IsCanonicalNumericIndex(key, out var taIdx))
                 {
+                    // 10.4.5.8 step 6: if index = -0, return undefined (old spec).
+                    if (key == "-0") return JsValue.Undefined;
                     return ta.GetElement(taIdx);
                 }
                 if (obj is ProxyObject proxyGet)

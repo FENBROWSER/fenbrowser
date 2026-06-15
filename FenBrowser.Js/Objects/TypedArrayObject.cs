@@ -7,6 +7,9 @@ namespace FenBrowser.Js.Objects;
 // Abstract base for the 11 concrete typed array constructors. Provides
 // typed element access via GetElement/SetElement with per-ElementType
 // conversion per the spec's RawBytesToNumeric / NumericToRawBytes tables.
+// Also overrides JsObject virtuals to implement 10.4.5 Integer-Indexed
+// Exotic Object semantics ([[DefineOwnProperty]], [[Set]], [[Delete]],
+// [[GetOwnProperty]], [[HasProperty]], [[OwnPropertyKeys]]).
 public abstract class TypedArrayObject : TypedArrayView
 {
     public abstract TypedArrayElementType ElementType { get; }
@@ -15,6 +18,177 @@ public abstract class TypedArrayObject : TypedArrayView
     protected TypedArrayObject(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false)
         : base(buffer, byteOffset, byteLength, isLengthTracking)
     {
+    }
+
+    // ECMA-262 7.1.21 CanonicalNumericIndexString — returns the parsed non-negative
+    // integer if `key` is the canonical String representation of an integer index,
+    // otherwise -1. Leading zeros, overflow, and non-digit chars all disable the fast
+    // integer-index path (10.4.5.x exotic-object algorithms). "-0" maps to index 0.
+    public static bool IsCanonicalNumericIndex(string key, out int index)
+    {
+        index = -1;
+        if (string.IsNullOrEmpty(key)) return false;
+        // "-0" is the canonical representation of negative zero (index 0).
+        if (key == "-0") { index = 0; return true; }
+        // Leading-zero strings like "00", "01" are not canonical.
+        if (key.Length > 1 && key[0] == '0') return false;
+        var result = 0;
+        foreach (var c in key)
+        {
+            if (c < '0' || c > '9') return false;
+            if (result > (int.MaxValue - (c - '0')) / 10) return false;
+            result = result * 10 + (c - '0');
+        }
+        index = result;
+        return true;
+    }
+
+    // 10.4.5.7 IsValidIntegerIndex(O, index) — true when the buffer is not detached
+    // and the index is within [0, [[ArrayLength]]).
+    private bool IsValidIntegerIndex(int index)
+        => !IsViewDetached && !IsOutOfBounds() && index >= 0 && index < Length;
+
+    // 10.4.5.3 [[DefineOwnProperty]] (P, Desc) — Integer-Indexed Exotic Object.
+    // When P is a canonical numeric index:
+    //   - Valid (not-detached, in-range): reject accessor descriptors and
+    //     configurable/enumerable/writable: false; set the element value; return true.
+    //   - Detached buffer: return false (cannot define on detached TypedArray).
+    //   - Out of bounds (index >= Length or index < 0): return false.
+    //   - Non-canonical key: fall through to OrdinaryDefineOwnProperty.
+    // Returns false when the descriptor is rejected; the caller (ObjectDefineProperty)
+    // converts the false return to a TypeError throw for Object.defineProperty.
+    public override bool DefineOwnProperty(string key, JsPropertyDescriptor descriptor)
+    {
+        // ECMA-262 7.1.21: CanonicalNumericIndexString("-0") returns -0.
+        // The old spec (pre-aligned) rejects this at [[DefineOwnProperty]] step 3.b.iii.
+        // We treat "-0" as canonical (index 0) but reject the define per the old spec.
+        if (key == "-0")
+        {
+            if (descriptor.HasValue)
+                SetElement(0, descriptor.Value);
+            return false;
+        }
+
+        if (IsCanonicalNumericIndex(key, out var numericIndex))
+        {
+            // 10.4.5.3 step 3.b.i: valid integer index — validate descriptor constraints.
+            if (IsValidIntegerIndex(numericIndex))
+            {
+                // Reject accessor descriptors (step 3.b.i.1).
+                if (descriptor.IsAccessor) return false;
+                // Reject configurable: false, enumerable: false, writable: false
+                // (steps 3.b.i.2-4 — align-detached-buffer-semantics-with-web-reality).
+                if (descriptor.HasConfigurable && !descriptor.Configurable) return false;
+                if (descriptor.HasEnumerable && !descriptor.Enumerable) return false;
+                if (descriptor.HasWritable && !descriptor.Writable) return false;
+                // Step 3.b.i.5: if the descriptor carries a [[Value]] field, write it
+                // through IntegerIndexedElementSet (10.4.5.11).
+                if (descriptor.HasValue)
+                    SetElement(numericIndex, descriptor.Value);
+                return true;
+            }
+
+            // numericIndex is canonical but the index is invalid.
+            // If the buffer is detached, return false (cannot define properties on
+            // a detached Integer-Indexed Exotic Object).
+            if (IsViewDetached) return false;
+            // If the index is out of bounds (>= Length or < 0), return false.
+            if (numericIndex < 0 || numericIndex >= Length) return false;
+
+            // Should not reach here (IsValidIntegerIndex covers all non-detached cases).
+            // If we do, perform a no-op IntegerIndexedElementSet for any Value field
+            // and return true.
+            if (descriptor.HasValue)
+                SetElement(numericIndex, descriptor.Value);
+            return true;
+        }
+
+        return base.DefineOwnProperty(key, descriptor);
+    }
+
+    // 10.4.5.5 [[Set]] (P, V, Receiver) — Integer-Indexed Exotic Object.
+    // Canonical integer-index keys route through IntegerIndexedElementSet rather than
+    // the ordinary property store. Non-canonical keys fall through to OrdinarySet.
+    public override bool SetProperty(string key, JsValue value)
+    {
+        if (IsCanonicalNumericIndex(key, out var numericIndex))
+        {
+            SetElement(numericIndex, value);
+            return true;
+        }
+
+        return base.SetProperty(key, value);
+    }
+
+    // 10.4.5.2 [[Delete]] (P) — Integer-Indexed Exotic Object.
+    // Canonical integer indices cannot be deleted from a live (non-detached) TypedArray;
+    // detached and out-of-bounds indices return true so the operation appears to succeed.
+    // Non-canonical keys (including non-integer canonical indices like "1.1") are not
+    // TypedArray elements, so [[Delete]] always returns true for them (there is nothing
+    // to delete — per the spec, OrdinaryDelete returns true for undefined descriptors).
+    public override bool DeleteProperty(string key)
+    {
+        if (IsCanonicalNumericIndex(key, out var numericIndex))
+        {
+            if (IsViewDetached) return true;
+            if (!IsValidIntegerIndex(numericIndex)) return true;
+            // Valid integer index in a live buffer: cannot be deleted.
+            return false;
+        }
+
+        // Non-canonical key: delete the ordinary property if present.
+        // If the property doesn't exist (no own slot), return true per spec
+        // (OrdinaryDelete: if desc is undefined, return true).
+        if (base.DeleteProperty(key))
+            return true;
+        // Property didn't exist as an own property → delete succeeds by default.
+        return true;
+    }
+
+    // 10.4.5.4 [[GetOwnProperty]] (P) — Integer-Indexed Exotic Object.
+    // For a valid canonical integer index, synthesize a data-property descriptor with
+    // the element value, writable/enumerable/configurable = true. If an ordinary own
+    // property already shadows the index, return that instead (spec step ordering).
+    public override bool TryGetOwnProperty(string key, out JsPropertyDescriptor descriptor)
+    {
+        // OrdinaryGetOwnProperty has priority: a user-defined own property at this key
+        // shadows the synthetic integer-indexed descriptor.
+        if (base.TryGetOwnProperty(key, out descriptor))
+            return true;
+
+        if (IsCanonicalNumericIndex(key, out var numericIndex) && IsValidIntegerIndex(numericIndex))
+        {
+            descriptor = new JsPropertyDescriptor(
+                GetElement(numericIndex),
+                Writable: true,
+                Enumerable: true,
+                Configurable: true);
+            return true;
+        }
+
+        descriptor = default;
+        return false;
+    }
+
+    // 10.4.5.6 [[OwnPropertyKeys]] — Integer-Indexed Exotic Object.
+    // Yields the integer index keys "0", "1", … "length-1" (in ascending order) before
+    // any ordinary own properties. Subarray views also enumerate their local indices.
+    public override IEnumerable<KeyValuePair<string, JsPropertyDescriptor>> EnumerateOwnProperties()
+    {
+        // YIELD integer indices first (10.4.5.6 step 4).
+        if (!IsViewDetached && !IsOutOfBounds())
+        {
+            for (var i = 0; i < Length; i++)
+            {
+                yield return new KeyValuePair<string, JsPropertyDescriptor>(
+                    i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    new JsPropertyDescriptor(GetElement(i), Writable: true, Enumerable: true, Configurable: true));
+            }
+        }
+
+        // Then yield ordinary properties (if any).
+        foreach (var pair in base.EnumerateOwnProperties())
+            yield return pair;
     }
 
     public JsValue GetElement(int index)

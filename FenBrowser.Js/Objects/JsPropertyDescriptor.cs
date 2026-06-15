@@ -4,6 +4,13 @@ namespace FenBrowser.Js.Objects;
 
 public readonly record struct JsPropertyDescriptor
 {
+    // When true, the corresponding field was explicitly provided in the input descriptor.
+    // Needed by Integer-Indexed Exotic Object [[DefineOwnProperty]] (10.4.5.3) to
+    // distinguish "configurable not present" (default allowed) from "configurable: false" (rejected).
+    public bool HasConfigurable { get; init; }
+    public bool HasEnumerable { get; init; }
+    public bool HasWritable { get; init; }
+    public bool HasValue { get; init; }
     public JsPropertyDescriptor(JsValue Value, bool Writable, bool Enumerable, bool Configurable)
     {
         this.Value = Value;
@@ -13,6 +20,10 @@ public readonly record struct JsPropertyDescriptor
         Get = JsValue.Undefined;
         Set = JsValue.Undefined;
         IsAccessor = false;
+        HasConfigurable = true;
+        HasEnumerable = true;
+        HasWritable = true;
+        HasValue = true;
     }
 
     private JsPropertyDescriptor(
@@ -56,6 +67,29 @@ public readonly record struct JsPropertyDescriptor
             Configurable,
             Get,
             Set,
-            IsAccessor: true);
+            IsAccessor: true)
+        {
+            HasConfigurable = true,
+            HasEnumerable = true,
+            HasWritable = false,
+            HasValue = false,
+        };
+    }
+
+    // Data descriptor where only the Configurable/Enumerable/Writable flags were provided
+    // (no [[Value]] field). Used for partial descriptors in Integer-Indexed Exotic Objects.
+    public static JsPropertyDescriptor DataPartial(JsValue value, bool? writable, bool? enumerable, bool? configurable)
+    {
+        return new JsPropertyDescriptor(
+            value,
+            writable ?? false,
+            enumerable ?? false,
+            configurable ?? false)
+        {
+            HasValue = true,
+            HasWritable = writable.HasValue,
+            HasEnumerable = enumerable.HasValue,
+            HasConfigurable = configurable.HasValue,
+        };
     }
 }
