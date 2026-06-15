@@ -5570,38 +5570,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return constructorHandle;
     }
 
+    /// <summary>
+    /// ECMA-262 §22.2.9 — RegExp.escape (ES2025).
+    /// Delegates to the shared implementation in RegExpBuiltin for consistency.
+    /// </summary>
     private static string RegExpEscape(string s)
     {
-        var sb = new System.Text.StringBuilder(s.Length);
-        for (var i = 0; i < s.Length; i++)
-        {
-            var c = s[i];
-            // First-character ASCII letter/digit -> \xHH per ES2025 step 6.
-            if (i == 0 && ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')))
-            {
-                _ = sb.Append('\\').Append('x')
-                    .Append(((int)c).ToString("X2", System.Globalization.CultureInfo.InvariantCulture));
-                continue;
-            }
-            switch (c)
-            {
-                case '\t': _ = sb.Append("\\t"); continue;
-                case '\n': _ = sb.Append("\\n"); continue;
-                case '\v': _ = sb.Append("\\v"); continue;
-                case '\f': _ = sb.Append("\\f"); continue;
-                case '\r': _ = sb.Append("\\r"); continue;
-            }
-            // ECMA-262 SyntaxCharacter set plus '/'.
-            if ("^$\\.*+?()[]{}|/".IndexOf(c) >= 0)
-            {
-                _ = sb.Append('\\').Append(c);
-            }
-            else
-            {
-                _ = sb.Append(c);
-            }
-        }
-        return sb.ToString();
+        return RegExpBuiltin.RegExpEscapeString(s);
     }
 
     private void InstallPrototypeMethodsOnRegExpPrototype(ObjectHandle prototypeHandle, JsObject prototype)

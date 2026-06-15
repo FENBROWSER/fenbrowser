@@ -426,37 +426,186 @@ public sealed class RegExpBuiltin : IBuiltinModule
         return canonical.ToString();
     }
 
+    // ECMA-262 §22.2.9 — RegExp.escape and EncodeForRegExpEscape (ES2025)
+
+    /// <summary>Public entry point for RegExp.escape(string) — shared across builtin and interpreter.</summary>
+    public static string RegExpEscapeString(string s) => RegExpEscape(s);
+
     private static string RegExpEscape(string s)
     {
-        var sb = new StringBuilder(s.Length);
-        for (var i = 0; i < s.Length; i++)
+        var sb = new StringBuilder(s.Length * 2);
+        var first = true;
+        for (var i = 0; i < s.Length;)
         {
-            var c = s[i];
-            if (i == 0 && ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')))
+            int codePoint;
+            int advance;
+            if (char.IsHighSurrogate(s[i]) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]))
             {
-                sb.Append('\\').Append('x').Append(((int)c).ToString("X2", System.Globalization.CultureInfo.InvariantCulture));
-                continue;
-            }
-
-            switch (c)
-            {
-                case '\t': sb.Append("\\t"); continue;
-                case '\n': sb.Append("\\n"); continue;
-                case '\v': sb.Append("\\v"); continue;
-                case '\f': sb.Append("\\f"); continue;
-                case '\r': sb.Append("\\r"); continue;
-            }
-
-            if ("^$\\.*+?()[]{}|/".IndexOf(c) >= 0)
-            {
-                sb.Append('\\').Append(c);
+                codePoint = char.ConvertToUtf32(s[i], s[i + 1]);
+                advance = 2;
             }
             else
             {
-                sb.Append(c);
+                codePoint = s[i];
+                advance = 1;
             }
+
+            // Step 4.a of RegExp.escape: if escaped is empty and c is DecimalDigit or AsciiLetter
+            if (first && IsDecimalDigitOrAsciiLetter(codePoint))
+            {
+                sb.Append('\\').Append('x').Append(codePoint.ToString("x2"));
+                first = false;
+                i += advance;
+                continue;
+            }
+
+            first = false;
+            EncodeForRegExpEscape(codePoint, sb);
+            i += advance;
         }
 
         return sb.ToString();
+    }
+
+    private static bool IsDecimalDigitOrAsciiLetter(int cp)
+    {
+        return (cp >= '0' && cp <= '9') || (cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z');
+    }
+
+    /// <summary>
+    /// EncodeForRegExpEscape(c) per ES2025 §22.2.9.1:
+    /// 1. If c is a control character (Table 64) → \t \n \v \f \r
+    /// 2. If SyntaxCharacter or '/' → \ + UTF16EncodeCodePoint(c)
+    /// 3-5. If otherPunctuator, WhiteSpace, LineTerminator, or surrogate:
+    ///      ≤ 0xFF → \xHH; else → each code unit via UnicodeEscape
+    /// 6. Else → UTF16EncodeCodePoint(c) (literal)
+    /// </summary>
+    private static void EncodeForRegExpEscape(int codePoint, StringBuilder sb)
+    {
+        // Step 1: Control characters (Table 64)
+        switch (codePoint)
+        {
+            case '\t': sb.Append("\\t"); return;
+            case '\n': sb.Append("\\n"); return;
+            case '\v': sb.Append("\\v"); return;
+            case '\f': sb.Append("\\f"); return;
+            case '\r': sb.Append("\\r"); return;
+        }
+
+        // Step 2: SyntaxCharacter or SOLIDUS → \ followed by UTF16EncodeCodePoint(c)
+        if (IsRegExpSyntaxCharacter(codePoint) || codePoint == '/')
+        {
+            sb.Append('\\');
+            AppendUtf16EncodedCodePoint(codePoint, sb);
+            return;
+        }
+
+        // Steps 3-5: otherPunctuators, WhiteSpace, LineTerminator, surrogates
+        if (IsOtherPunctuator(codePoint) ||
+            IsRegExpWhiteSpace(codePoint) ||
+            IsLineTerminator(codePoint) ||
+            IsSurrogateCodePoint(codePoint))
+        {
+            if (codePoint <= 0xFF)
+            {
+                sb.Append("\\x");
+                sb.Append(codePoint.ToString("x2"));
+            }
+            else
+            {
+                AppendEachCodeUnitAsUnicodeEscape(codePoint, sb);
+            }
+            return;
+        }
+
+        // Step 6: Return UTF16EncodeCodePoint(c) — literal
+        AppendUtf16EncodedCodePoint(codePoint, sb);
+    }
+
+    private static bool IsRegExpSyntaxCharacter(int cp)
+    {
+        // ECMA-262 SyntaxCharacter: ^ $ \ . * + ? ( ) [ ] { } |
+        if (cp > 0xFF) return false;
+        var c = (char)cp;
+        return c is '^' or '$' or '\\' or '.' or '*' or '+' or '?' or '(' or ')' or '[' or ']' or '{' or '}' or '|';
+    }
+
+    private static bool IsOtherPunctuator(int cp)
+    {
+        // ",-=<>#&!%:;@~'`" + QUOTATION MARK (0x22)
+        if (cp > 0xFF) return false;
+        var c = (char)cp;
+        return c is ',' or '-' or '=' or '<' or '>' or '#' or '&' or '!' or '%' or ':'
+                or ';' or '@' or '~' or '\'' or '`' or '"';
+    }
+
+    /// <summary>
+    /// WhiteSpace per ES2025 RegExp.escape:
+    /// TAB(9), VT(11), FF(12), SPACE(20), NBSP(A0), ZWNBSP(FEFF),
+    /// plus any code point with both Unicode White_Space property AND Space_Separator category
+    /// (e.g. U+202F NARROW NO-BREAK SPACE, U+2000-U+200A en/em spaces, U+3000 IDEOGRAPHIC SPACE).
+    /// </summary>
+    internal static bool IsRegExpWhiteSpace(int cp)
+    {
+        // The four standalone whitespace chars
+        if (cp is 0x0009 or 0x000B or 0x000C or 0xFEFF) return true;
+        // USP = code points with both White_Space binary property AND Space_Separator general category.
+        // This includes SPACE(0x20), NBSP(0xA0), and others like U+2000-U+200A, U+202F, U+205F, U+3000.
+        // We use .NET's CharUnicodeInfo to check the SpaceSeparator category,
+        // then additionally filter for known White_Space code points.
+        if (cp is 0x0020 or 0x00A0) return true;
+        if (cp >= 0x2000 && cp <= 0x200A) return true; // EN QUAD..HAIR SPACE
+        if (cp is 0x202F or 0x205F or 0x3000) return true; // NARROW NO-BREAK, MEDIUM MATH, IDEOGRAPHIC
+        return false;
+    }
+
+    private static bool IsLineTerminator(int cp)
+    {
+        // LineTerminator: LF(0x0A), CR(0x0D), LS(0x2028), PS(0x2029)
+        return cp is 0x000A or 0x000D or 0x2028 or 0x2029;
+    }
+
+    private static bool IsSurrogateCodePoint(int cp)
+    {
+        return cp >= 0xD800 && cp <= 0xDFFF;
+    }
+
+    /// <summary>
+    /// UTF16EncodeCodePoint(c): for BMP → the single char; for supplementary → surrogate pair.
+    /// Used for literal output (step 6) and after backslash in step 2.
+    /// </summary>
+    private static void AppendUtf16EncodedCodePoint(int cp, StringBuilder sb)
+    {
+        if (cp <= 0xFFFF)
+        {
+            sb.Append((char)cp);
+        }
+        else
+        {
+            sb.Append((char)(((cp - 0x10000) >> 10) + 0xD800));
+            sb.Append((char)(((cp - 0x10000) & 0x3FF) + 0xDC00));
+        }
+    }
+
+    /// <summary>
+    /// For each code unit of UTF16EncodeCodePoint(cp), append UnicodeEscape(cu).
+    /// UnicodeEscape: \u + 4-digit lowercase hex.
+    /// </summary>
+    private static void AppendEachCodeUnitAsUnicodeEscape(int cp, StringBuilder sb)
+    {
+        if (cp <= 0xFFFF)
+        {
+            sb.Append("\\u");
+            sb.Append(cp.ToString("x4"));
+        }
+        else
+        {
+            var high = ((cp - 0x10000) >> 10) + 0xD800;
+            var low = ((cp - 0x10000) & 0x3FF) + 0xDC00;
+            sb.Append("\\u");
+            sb.Append(high.ToString("x4"));
+            sb.Append("\\u");
+            sb.Append(low.ToString("x4"));
+        }
     }
 }
