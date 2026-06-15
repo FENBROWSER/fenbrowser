@@ -5197,6 +5197,17 @@ public sealed class JsParser
             parameterBindings.All(binding => binding is null) &&
             (parameterDefaults is null || parameterDefaults.All(def => def is null));
 
+        // ECMA-262 14.2.1: arrow function parameter defaults must not contain
+        // SuperCall or SuperProperty.
+        if (parameterDefaults is not null)
+        {
+            foreach (var def in parameterDefaults)
+            {
+                if (def is not null && ContainsSuperCallInExpression(def))
+                    throw new JsParserException("super() calls and super.property access are not allowed in this context.");
+            }
+        }
+
         // ECMA-262 14.2.1: arrow functions use UniqueFormalParameters which
         // ALWAYS forbid duplicate parameter names (even sloppy, simple lists).
         {
@@ -5269,6 +5280,9 @@ public sealed class JsParser
                 if (!IsSyntheticPatternBinding(p) && bodyLexicalNames.Contains(p))
                     throw new JsParserException($"Parameter '{p}' conflicts with a lexical declaration in the arrow body.");
             }
+            // ECMA-262: SuperCall and SuperProperty are not allowed in arrow functions.
+            if (ContainsSuperCallInStatements(block.Statements))
+                throw new JsParserException("super() calls and super.property access are not allowed in this context.");
             return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span), IsAsync: isAsync, HasSimpleParameterList: hasSimpleParameterList, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings, ParameterDefaults: parameterDefaults);
         }
 
@@ -5276,6 +5290,9 @@ public sealed class JsParser
             allowYieldExpression: false,
             allowAwaitExpression: isAsync,
             () => ParseExpression(2));
+        // ECMA-262: SuperCall and SuperProperty are not allowed in arrow functions.
+        if (ContainsSuperCallInExpression(bodyExpression))
+            throw new JsParserException("super() calls and super.property access are not allowed in this context.");
         return new ArrowFunctionExpressionNode(parameters, null, bodyExpression, MergeSpan(start, bodyExpression.Span), IsAsync: isAsync, HasSimpleParameterList: hasSimpleParameterList, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings, ParameterDefaults: parameterDefaults);
         }
         finally
