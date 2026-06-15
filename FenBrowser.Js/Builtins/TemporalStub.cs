@@ -4025,10 +4025,10 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("ZonedDateTime.with: argument must be an object."));
             var bagValue = a[0];
-            // Validate options first.
-            RequireOptionsObject(ctx, a, 1);
-            _ = GetDisambiguationOption(ctx, h, a, 1);
-            _ = GetOffsetOption(ctx, h, a, 1);
+            // Spec: if argument is a Temporal object, throw TypeError (must be a property bag).
+            var bagObj = h.GetObject(bagValue.AsObjectHandle());
+            if (bagObj.TryGetOwnProperty("_v", out _))
+                throw new JsThrownException(ctx.CreateTypeError("ZonedDateTime.with: argument must be a property bag, not a Temporal object."));
             // RejectObjectWithCalendarOrTimeZone: read calendar, calendarId and timeZone first (observable order).
             bool hasCal = TryGetField(ctx, h, bagValue, "calendar", out _);
             bool hasCalId = TryGetField(ctx, h, bagValue, "calendarId", out _);
@@ -4044,7 +4044,18 @@ public sealed class TemporalStub : IBuiltinModule
             bool hasEra = TryGetField(ctx, h, bagValue, "era", out _);
             bool hasEraYear = TryGetField(ctx, h, bagValue, "eraYear", out _);
             bool hasDateField = hasYear || hasMonth || hasMonthCode || hasDay || hasEra || hasEraYear;
-            bool hasOffset = TryGetField(ctx, h, bagValue, "offset", out _);
+            bool hasOffset = TryGetField(ctx, h, bagValue, "offset", out var offsetVal);
+            if (hasOffset)
+            {
+                // Validate offset: must be a string in valid offset format (±HH:MM).
+                if (offsetVal.Tag != JsValueTag.String)
+                    throw new JsThrownException(ctx.CreateTypeError("offset must be a string."));
+                var offsetStr = offsetVal.AsString();
+                int oi = 0;
+                string oErr = "";
+                if (!TemporalIsoParser.TryParseUtcOffset(offsetStr, ref oi, subMinutePrecision: false, out _, ref oErr) || oi != offsetStr.Length)
+                    throw new JsThrownException(ctx.CreateRangeError($"'{offsetStr}' is not a valid offset string."));
+            }
             string[] timeFields = { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" };
             var timeValues = new double[timeFields.Length];
             bool anyTime = false;
@@ -4062,6 +4073,10 @@ public sealed class TemporalStub : IBuiltinModule
             }
             if (!hasDateField && !anyTime && !hasOffset)
                 throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
+            // Validate options (spec steps 4-7): options type, disambiguation, offset, overflow.
+            RequireOptionsObject(ctx, a, 1);
+            _ = GetDisambiguationOption(ctx, h, a, 1);
+            _ = GetOffsetOption(ctx, h, a, 1);
             var baseFields = CalFields(cal, curDate) ?? new CalendarFields(null, null, curDate.Year, curDate.Month, $"M{curDate.Month:D2}", curDate.Day, 0, 0, 0, 12, false);
             var date = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, out var overflow, baseFields, isWith: true);
             if (overflow == "reject")
