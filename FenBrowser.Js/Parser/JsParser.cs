@@ -446,6 +446,8 @@ public sealed class JsParser
                 SpreadElementExpressionNode spread => ContainsSuperCallOnlyInExpression(spread.Argument),
                 MemberExpressionNode member => ContainsSuperCallOnlyInExpression(member.Object) || (member.PropertyExpression is not null && ContainsSuperCallOnlyInExpression(member.PropertyExpression)),
                 OptionalMemberExpressionNode optMember => ContainsSuperCallOnlyInExpression(optMember.Object) || (optMember.PropertyExpression is not null && ContainsSuperCallOnlyInExpression(optMember.PropertyExpression)),
+                // delete super.x is valid syntax (runtime ReferenceError, not SyntaxError)
+                UnaryExpressionNode { Operator: "delete" } => false,
                 UnaryExpressionNode unary => ContainsSuperCallOnlyInExpression(unary.Operand),
                 ConditionalExpressionNode cond => ContainsSuperCallOnlyInExpression(cond.Test) || ContainsSuperCallOnlyInExpression(cond.Consequent) || ContainsSuperCallOnlyInExpression(cond.Alternate),
                 NewExpressionNode n => ContainsSuperCallOnlyInExpression(n.Callee) || n.Arguments.Any(ContainsSuperCallOnlyInExpression),
@@ -463,9 +465,13 @@ public sealed class JsParser
     private static bool ContainsSuperCallInExpressionCore(ExpressionNode expression) =>
         expression switch
         {
-            // super() and super.property — both are illegal outside method context
+            // super() and super.property — both are illegal outside method context.
+            // Exception: delete super.x / delete super[x] is a ReferenceError, not
+            // a SyntaxError — it must be accepted as valid syntax everywhere.
             SuperExpressionNode => true,
             CallExpressionNode { Callee: SuperExpressionNode } => true,
+            // Unary delete on super property: valid syntax, runtime ReferenceError.
+            UnaryExpressionNode { Operator: "delete"} => false,
             ParenthesizedExpressionNode parenthesized => ContainsSuperCallInExpression(parenthesized.Expression),
             BinaryExpressionNode binary => ContainsSuperCallInExpression(binary.Left) || ContainsSuperCallInExpression(binary.Right),
             AssignmentExpressionNode assignment => ContainsSuperCallInExpression(assignment.Left) || ContainsSuperCallInExpression(assignment.Right),
@@ -3116,7 +3122,7 @@ public sealed class JsParser
                 forbidYieldIdentifier: isGenerator,
                 strictMode: true,
                 rejectSuperCallInBody: kind != ClassMemberKind.Constructor,
-                allowSuperProperty: kind != ClassMemberKind.Constructor);
+                allowSuperProperty: true); // super.property valid in all class methods including constructors
             ValidateAccessorArity(kind == ClassMemberKind.Getter, kind == ClassMemberKind.Setter, parameterInfo);
             var fn = new FunctionExpressionNode(
                 memberName,
