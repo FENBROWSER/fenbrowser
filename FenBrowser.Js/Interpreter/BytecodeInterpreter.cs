@@ -7911,6 +7911,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     Enumerable: false,
                     Configurable: true));
             _heap.WriteBarrier(prototypeHandle, ctorHandle);
+
+            // Symbol.toStringTag
+            _ = prototype.DefineOwnSymbolProperty(GetWellKnownSymbolId("toStringTag"),
+                new JsPropertyDescriptor(JsValue.FromString("Intl.DateTimeFormat"), Writable: false, Enumerable: false, Configurable: true));
+
             _ = intl.DefineOwnProperty(
                 "DateTimeFormat",
                 new JsPropertyDescriptor(
@@ -8024,6 +8029,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _ = collatorProto.DefineOwnProperty("constructor",
                 new JsPropertyDescriptor(JsValue.FromObject(ctorHandle), Writable: true, Enumerable: false, Configurable: true));
             _heap.WriteBarrier(collatorProtoHandle, ctorHandle);
+            _ = collatorProto.DefineOwnSymbolProperty(GetWellKnownSymbolId("toStringTag"),
+                new JsPropertyDescriptor(JsValue.FromString("Intl.Collator"), Writable: false, Enumerable: false, Configurable: true));
 
             _ = intl.DefineOwnProperty(
                 "Collator",
@@ -8064,6 +8071,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _ = listFormatProto.DefineOwnProperty("constructor",
                 new JsPropertyDescriptor(JsValue.FromObject(ctorHandle), Writable: true, Enumerable: false, Configurable: true));
             _heap.WriteBarrier(listFormatProtoHandle, ctorHandle);
+            _ = listFormatProto.DefineOwnSymbolProperty(GetWellKnownSymbolId("toStringTag"),
+                new JsPropertyDescriptor(JsValue.FromString("Intl.ListFormat"), Writable: false, Enumerable: false, Configurable: true));
 
             _ = intl.DefineOwnProperty(
                 "ListFormat",
@@ -8214,6 +8223,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _ = prototype.DefineOwnProperty("constructor",
                 new JsPropertyDescriptor(JsValue.FromObject(prCtorHandle), Writable: true, Enumerable: false, Configurable: true));
             _heap.WriteBarrier(prototypeHandle, prCtorHandle);
+            _ = prototype.DefineOwnSymbolProperty(GetWellKnownSymbolId("toStringTag"),
+                new JsPropertyDescriptor(JsValue.FromString("Intl.PluralRules"), Writable: false, Enumerable: false, Configurable: true));
             var supportedLocalesOf = new NativeFunctionObject("supportedLocalesOf",
                 (_, a) => SupportedLocalesOf(a), length: 1);
             var supportedHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());
@@ -8241,6 +8252,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _ = prototype.DefineOwnProperty("constructor",
                 new JsPropertyDescriptor(JsValue.FromObject(segCtorHandle), Writable: true, Enumerable: false, Configurable: true));
             _heap.WriteBarrier(prototypeHandle, segCtorHandle);
+            _ = prototype.DefineOwnSymbolProperty(GetWellKnownSymbolId("toStringTag"),
+                new JsPropertyDescriptor(JsValue.FromString("Intl.Segmenter"), Writable: false, Enumerable: false, Configurable: true));
             var supportedLocalesOf = new NativeFunctionObject("supportedLocalesOf",
                 (_, a) => SupportedLocalesOf(a), length: 1);
             var supportedHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());
@@ -8268,6 +8281,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _ = prototype.DefineOwnProperty("constructor",
                 new JsPropertyDescriptor(JsValue.FromObject(dnCtorHandle), Writable: true, Enumerable: false, Configurable: true));
             _heap.WriteBarrier(prototypeHandle, dnCtorHandle);
+            _ = prototype.DefineOwnSymbolProperty(GetWellKnownSymbolId("toStringTag"),
+                new JsPropertyDescriptor(JsValue.FromString("Intl.DisplayNames"), Writable: false, Enumerable: false, Configurable: true));
             var supportedLocalesOf = new NativeFunctionObject("supportedLocalesOf",
                 (_, a) => SupportedLocalesOf(a), length: 1);
             var supportedHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());

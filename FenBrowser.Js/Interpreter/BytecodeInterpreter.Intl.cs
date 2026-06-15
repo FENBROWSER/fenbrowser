@@ -2568,7 +2568,8 @@ public sealed partial class BytecodeInterpreter
         else if (value.Tag == JsValueTag.String && double.TryParse(value.AsString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var n)) number = n;
         else number = ToNumber(value);
         if (double.IsNaN(number)) return new[] { new IntlPart("nan", "NaN") };
-        // ECMA-402: -0 should be treated as +0 for formatting (sign is controlled by signDisplay).
+        // ECMA-402: check for -0 BEFORE normalizing to +0 (sign is controlled by signDisplay).
+        bool isNegativeZero = double.IsNegative(number) && number == 0;
         if (number == 0) number = 0;
 
         var culture = ResolveNumberCulture(state.Locale);
@@ -2583,7 +2584,7 @@ public sealed partial class BytecodeInterpreter
             return new[] { new IntlPart("minusSign", nfi.NegativeSign, state.Unit), new IntlPart("infinity", "∞") };
 
         var style = state.Style ?? "decimal";
-        bool negative = number < 0;
+        bool negative = number < 0 || isNegativeZero;
         double absValue = Math.Abs(number);
 
         // Handle significant digits mode.
@@ -2598,7 +2599,7 @@ public sealed partial class BytecodeInterpreter
         // Compute fraction digits (CLDR defaults from NumberFormatInfo when unset).
         int minFrac = state.MinimumFractionDigits ?? (style == "currency" ? nfi.CurrencyDecimalDigits : style == "percent" ? 0 : 0);
         int maxFrac = state.MaximumFractionDigits ?? (style == "currency" ? nfi.CurrencyDecimalDigits : style == "percent" ? Math.Max(minFrac, 0) : 3);
-        bool useGrouping = state.UseGrouping;
+        bool useGrouping = state.UseGrouping; // primary bool flag
 
         // Format using .NET's ICU-backed NumberFormatInfo with fraction digits.
         var cnf = (NumberFormatInfo)nfi.Clone();
