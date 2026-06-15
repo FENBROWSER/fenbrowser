@@ -622,6 +622,21 @@ public sealed class TemporalStub : IBuiltinModule
         return s;
     }
 
+    /// <summary>ToTemporalOffset: options.offset, validated ("prefer"/"use"/"ignore"/"reject").</summary>
+    private static string GetOffsetOption(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> a, int i)
+    {
+        RequireOptionsObject(ctx, a, i);
+        if (i >= a.Count || a[i].Tag != JsValueTag.Object) return "prefer";
+        var optionsValue = a[i];
+        var obj = h.GetObject(optionsValue.AsObjectHandle());
+        if (!ctx.TryGetPropertyValue(obj, optionsValue, "offset", out var v) || v.Tag == JsValueTag.Undefined)
+            return "prefer";
+        var s = ctx.ToStringValue(v);
+        if (s is not ("prefer" or "use" or "ignore" or "reject"))
+            throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid value for offset."));
+        return s;
+    }
+
     /// <summary>Read a property through the full Get protocol (triggers accessors); false when absent/undefined.</summary>
     private static bool TryGetField(IBuiltinContext ctx, JsHeap h, JsValue bagValue, string name, out JsValue value)
     {
@@ -4010,6 +4025,10 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("ZonedDateTime.with: argument must be an object."));
             var bagValue = a[0];
+            // Validate options first.
+            RequireOptionsObject(ctx, a, 1);
+            _ = GetDisambiguationOption(ctx, h, a, 1);
+            _ = GetOffsetOption(ctx, h, a, 1);
             // RejectObjectWithCalendarOrTimeZone: read calendar, calendarId and timeZone first (observable order).
             bool hasCal = TryGetField(ctx, h, bagValue, "calendar", out _);
             bool hasCalId = TryGetField(ctx, h, bagValue, "calendarId", out _);
