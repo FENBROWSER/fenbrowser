@@ -638,6 +638,7 @@ public sealed class TemporalStub : IBuiltinModule
         bool hasCode = TryGetField(ctx, h, bagValue, "monthCode", out var codeValue) && codeValue.Tag != JsValueTag.Undefined;
         if (hasCode)
         {
+            codeValue = JsValue.FromString(ctx.ToStringValue(codeValue));
             if (codeValue.Tag != JsValueTag.String)
                 throw new JsThrownException(ctx.CreateTypeError("monthCode must be a string."));
             var mc = codeValue.AsString();
@@ -788,6 +789,10 @@ public sealed class TemporalStub : IBuiltinModule
             // Observe coercion of era/eraYear (spec requires it) even though ignored.
             if (hasEra) _ = ctx.ToStringValue(eraV);
             if (hasEraYear) _ = ToIntegerWithTruncation(ctx, eraYearV);
+            // NonIsoFieldKeysToIgnore removes era/eraYear for calendars without eras.
+            // If no other year-providing key remains, throw TypeError per spec.
+            if (!hasYear)
+                throw new JsThrownException(ctx.CreateTypeError("eraYear and era are invalid for this calendar"));
             hasEra = false;
             hasEraYear = false;
         }
@@ -808,6 +813,7 @@ public sealed class TemporalStub : IBuiltinModule
         int year;
         if (hasEra && hasEraYear)
         {
+            eraV = JsValue.FromString(ctx.ToStringValue(eraV));
             if (eraV.Tag != JsValueTag.String)
                 throw new JsThrownException(ctx.CreateTypeError("era must be a string."));
             int eraYear = ToSafeInt(ToIntegerWithTruncation(ctx, eraYearV));
@@ -827,6 +833,7 @@ public sealed class TemporalStub : IBuiltinModule
         int monthOrdinal;
         if (hasMonthCode)
         {
+            mcV = JsValue.FromString(ctx.ToStringValue(mcV));
             if (mcV.Tag != JsValueTag.String)
                 throw new JsThrownException(ctx.CreateTypeError("monthCode must be a string."));
             if (!sys.MonthFromCode(year, mcV.AsString(), out monthOrdinal, out bool exists))
@@ -842,7 +849,13 @@ public sealed class TemporalStub : IBuiltinModule
         }
         else
         {
-            monthOrdinal = baseFields!.Value.Month;
+            // When neither monthCode nor month is provided, preserve the monthCode
+            // from baseFields and re-resolve it for the new year. This is correct
+            // because month ordinals may shift between leap/common years (e.g. Hebrew
+            // M12 maps to ordinal 12 in a common year but 13 in a leap year).
+            string baseCode = baseFields!.Value.MonthCode;
+            if (!sys.MonthFromCode(year, baseCode, out monthOrdinal, out _))
+                monthOrdinal = baseFields.Value.Month; // fallback
         }
 
         int day = hasDay ? ToSafeInt(ToIntegerWithTruncation(ctx, dayV)) : (baseFields?.Day ?? 1);
@@ -3196,6 +3209,35 @@ public sealed class TemporalStub : IBuiltinModule
             if (arg.Tag == JsValueTag.Object)
             {
                 var obj = h.GetObject(arg.AsObjectHandle());
+                // ToTemporalDateTime step 2: check internal slots for fast path
+                // (read internal data, never observable getters).
+                if (TryGetInternalData(h, obj, out var idata))
+                {
+                    _ = GetOverflowOption(ctx, h, a, 1);
+                    if (HasOwn(h, idata, "year") && HasOwn(h, idata, "day"))
+                    {
+                        // PlainDateTime or ZonedDateTime — copy date + time from internal slots.
+                        return AttachPrototype(h, MakePlainDateTimeParts(ctx, h,
+                            ToSafeInt(GetVNum(h, obj, "year")), ToSafeInt(GetVNum(h, obj, "month")), ToSafeInt(GetVNum(h, obj, "day")),
+                            HasOwn(h, idata, "hour") ? ToSafeInt(GetVNum(h, obj, "hour")) : 0,
+                            HasOwn(h, idata, "minute") ? ToSafeInt(GetVNum(h, obj, "minute")) : 0,
+                            HasOwn(h, idata, "second") ? ToSafeInt(GetVNum(h, obj, "second")) : 0,
+                            HasOwn(h, idata, "millisecond") ? ToSafeInt(GetVNum(h, obj, "millisecond")) : 0,
+                            HasOwn(h, idata, "microsecond") ? ToSafeInt(GetVNum(h, obj, "microsecond")) : 0,
+                            HasOwn(h, idata, "nanosecond") ? ToSafeInt(GetVNum(h, obj, "nanosecond")) : 0,
+                            GetVStr(h, obj, "calendarId")), pH);
+                    }
+                    if (HasOwn(h, idata, "y") && HasOwn(h, idata, "d"))
+                    {
+                        // PlainDate — extract date, use midnight for time.
+                        var iso = DecodeIsoDate(h, obj);
+                        return AttachPrototype(h, MakePlainDateTimeParts(ctx, h,
+                            iso.Year, iso.Month, iso.Day, 0, 0, 0, 0, 0, 0,
+                            GetVStr(h, obj, "calendarId")), pH);
+                    }
+                    // PlainYearMonth, PlainMonthDay, PlainTime, Duration, Instant: not date-time-like.
+                    throw new JsThrownException(ctx.CreateTypeError("Cannot convert this Temporal object to a PlainDateTime."));
+                }
                 if (IsTemporalInstance(h, arg, pH))
                 {
                     _ = GetOverflowOption(ctx, h, a, 1);
