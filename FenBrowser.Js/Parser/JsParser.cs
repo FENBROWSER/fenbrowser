@@ -382,6 +382,84 @@ public sealed class JsParser
         }
     }
 
+    // ECMA-262: SuperCall (`super(...)`) is only valid in class constructors.
+    // SuperProperty (`super.x`, `super[x]`) is valid in all class methods but
+    // invalid in regular functions and object methods. We use two separate
+    // predicates so class methods (non-constructor) can reject SuperCall while
+    // allowing SuperProperty.
+    private static bool ContainsSuperCallOnlyInStatements(IReadOnlyList<StatementNode> statements)
+    {
+        foreach (var statement in statements)
+        {
+            if (ContainsSuperCallOnlyInStatement(statement))
+                return true;
+        }
+        return false;
+    }
+
+    private static bool ContainsSuperCallOnlyInStatement(StatementNode statement)
+    {
+        if (++_superCallScanDepth > MaxSuperCallScanDepth) { _superCallScanDepth--; return false; }
+        try
+        {
+            return statement switch
+            {
+                BlockStatementNode block => ContainsSuperCallOnlyInStatements(block.Statements),
+                ExpressionStatementNode es => ContainsSuperCallOnlyInExpression(es.Expression),
+                LabeledStatementNode labeled => ContainsSuperCallOnlyInStatement(labeled.Body),
+                VariableDeclarationStatementNode decl => decl.Declarators.Any(d => d.Initializer is not null && ContainsSuperCallOnlyInExpression(d.Initializer)),
+                IfStatementNode ifStmt => ContainsSuperCallOnlyInExpression(ifStmt.Test) || ContainsSuperCallOnlyInStatement(ifStmt.Consequent) || (ifStmt.Alternate is not null && ContainsSuperCallOnlyInStatement(ifStmt.Alternate)),
+                WhileStatementNode whileStmt => ContainsSuperCallOnlyInExpression(whileStmt.Test) || ContainsSuperCallOnlyInStatement(whileStmt.Body),
+                ForStatementNode forStmt => (forStmt.Initializer is not null && ContainsSuperCallOnlyInStatement(forStmt.Initializer)) || (forStmt.Test is not null && ContainsSuperCallOnlyInExpression(forStmt.Test)) || (forStmt.Update is not null && ContainsSuperCallOnlyInExpression(forStmt.Update)) || ContainsSuperCallOnlyInStatement(forStmt.Body),
+                ForInStatementNode forIn => ContainsSuperCallOnlyInStatement(forIn.Initializer) || ContainsSuperCallOnlyInExpression(forIn.Iterable) || ContainsSuperCallOnlyInStatement(forIn.Body),
+                ForOfStatementNode forOf => ContainsSuperCallOnlyInStatement(forOf.Initializer) || ContainsSuperCallOnlyInExpression(forOf.Iterable) || ContainsSuperCallOnlyInStatement(forOf.Body),
+                ForAwaitOfStatementNode forAwait => ContainsSuperCallOnlyInStatement(forAwait.Initializer) || ContainsSuperCallOnlyInExpression(forAwait.Iterable) || ContainsSuperCallOnlyInStatement(forAwait.Body),
+                ReturnStatementNode ret => ret.Argument is not null && ContainsSuperCallOnlyInExpression(ret.Argument),
+                ThrowStatementNode thr => ContainsSuperCallOnlyInExpression(thr.Argument),
+                TryCatchStatementNode tc => ContainsSuperCallOnlyInStatement(tc.TryBlock) || ContainsSuperCallOnlyInStatement(tc.CatchBlock),
+                TryFinallyStatementNode tf => ContainsSuperCallOnlyInStatement(tf.TryBlock) || ContainsSuperCallOnlyInStatement(tf.FinallyBlock),
+                TryCatchFinallyStatementNode tcf => ContainsSuperCallOnlyInStatement(tcf.TryBlock) || ContainsSuperCallOnlyInStatement(tcf.CatchBlock) || ContainsSuperCallOnlyInStatement(tcf.FinallyBlock),
+                SwitchStatementNode sw => sw.Cases.Any(c => (c.Test is not null && ContainsSuperCallOnlyInExpression(c.Test)) || ContainsSuperCallOnlyInStatements(c.Consequent)),
+                _ => false
+            };
+        }
+        finally { _superCallScanDepth--; }
+    }
+
+    private static bool ContainsSuperCallOnlyInExpression(ExpressionNode expression)
+    {
+        if (++_superCallScanDepth > MaxSuperCallScanDepth) { _superCallScanDepth--; return false; }
+        try
+        {
+            return expression switch
+            {
+                // Only flag `super(...)` calls — NOT `super.x` / `super[x]`.
+                CallExpressionNode { Callee: SuperExpressionNode } => true,
+                OptionalCallExpressionNode { Callee: SuperExpressionNode } => true,
+                ParenthesizedExpressionNode p => ContainsSuperCallOnlyInExpression(p.Expression),
+                BinaryExpressionNode bin => ContainsSuperCallOnlyInExpression(bin.Left) || ContainsSuperCallOnlyInExpression(bin.Right),
+                AssignmentExpressionNode assign => ContainsSuperCallOnlyInExpression(assign.Left) || ContainsSuperCallOnlyInExpression(assign.Right),
+                CallExpressionNode call => ContainsSuperCallOnlyInExpression(call.Callee) || call.Arguments.Any(ContainsSuperCallOnlyInExpression),
+                OptionalCallExpressionNode optCall => ContainsSuperCallOnlyInExpression(optCall.Callee) || optCall.Arguments.Any(ContainsSuperCallOnlyInExpression),
+                ObjectLiteralExpressionNode objLit => objLit.Properties.Any(p => (p.ComputedKey is not null && ContainsSuperCallOnlyInExpression(p.ComputedKey)) || ContainsSuperCallOnlyInExpression(p.Value)),
+                ArrayLiteralExpressionNode arrLit => arrLit.Elements.Any(ContainsSuperCallOnlyInExpression),
+                SpreadElementExpressionNode spread => ContainsSuperCallOnlyInExpression(spread.Argument),
+                MemberExpressionNode member => ContainsSuperCallOnlyInExpression(member.Object) || (member.PropertyExpression is not null && ContainsSuperCallOnlyInExpression(member.PropertyExpression)),
+                OptionalMemberExpressionNode optMember => ContainsSuperCallOnlyInExpression(optMember.Object) || (optMember.PropertyExpression is not null && ContainsSuperCallOnlyInExpression(optMember.PropertyExpression)),
+                UnaryExpressionNode unary => ContainsSuperCallOnlyInExpression(unary.Operand),
+                ConditionalExpressionNode cond => ContainsSuperCallOnlyInExpression(cond.Test) || ContainsSuperCallOnlyInExpression(cond.Consequent) || ContainsSuperCallOnlyInExpression(cond.Alternate),
+                NewExpressionNode n => ContainsSuperCallOnlyInExpression(n.Callee) || n.Arguments.Any(ContainsSuperCallOnlyInExpression),
+                TemplateLiteralExpressionNode tl => tl.Expressions.Any(ContainsSuperCallOnlyInExpression),
+                TaggedTemplateExpressionNode tt => ContainsSuperCallOnlyInExpression(tt.Tag) || ContainsSuperCallOnlyInExpression(tt.Template),
+                ImportCallExpressionNode ic => ContainsSuperCallOnlyInExpression(ic.Specifier),
+                ImportSourceExpressionNode iSrc => ContainsSuperCallOnlyInExpression(iSrc.Specifier),
+                ImportDeferExpressionNode iDef => ContainsSuperCallOnlyInExpression(iDef.Specifier),
+                _ => false
+            };
+        }
+        finally { _superCallScanDepth--; }
+    }
+
     private static bool ContainsSuperCallInExpressionCore(ExpressionNode expression) =>
         expression switch
         {
@@ -692,7 +770,8 @@ public sealed class JsParser
         bool forbidAwaitIdentifier,
         bool forbidYieldIdentifier,
         bool strictMode,
-        bool rejectSuperCallInBody)
+        bool rejectSuperCallInBody,
+        bool allowSuperProperty = false)
     {
         if (parameterInfo.RestHasInitializer)
         {
@@ -760,9 +839,19 @@ public sealed class JsParser
             }
         }
 
-        if (rejectSuperCallInBody && ContainsSuperCallInStatements(body.Statements))
+        if (rejectSuperCallInBody)
         {
-            throw new JsParserException("super() calls and super.property access are not allowed in this context.");
+            if (allowSuperProperty)
+            {
+                // Class methods (non-constructor): SuperProperty is valid,
+                // SuperCall (super(...)) is not. ECMA-262 15.7.2.1.
+                if (ContainsSuperCallOnlyInStatements(body.Statements))
+                    throw new JsParserException("super() calls are not allowed in this context.");
+            }
+            else if (ContainsSuperCallInStatements(body.Statements))
+            {
+                throw new JsParserException("super() calls and super.property access are not allowed in this context.");
+            }
         }
 
         // The body walk can only ever throw on a `await`/`yield` identifier, so when
@@ -2901,7 +2990,8 @@ public sealed class JsParser
                 forbidAwaitIdentifier: isAsync,
                 forbidYieldIdentifier: isGenerator,
                 strictMode: true,
-                rejectSuperCallInBody: kind != ClassMemberKind.Constructor);
+                rejectSuperCallInBody: kind != ClassMemberKind.Constructor,
+                allowSuperProperty: kind != ClassMemberKind.Constructor);
             ValidateAccessorArity(kind == ClassMemberKind.Getter, kind == ClassMemberKind.Setter, parameterInfo);
             var fn = new FunctionExpressionNode(
                 memberName,
