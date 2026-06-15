@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 🎯 test262 Status (always visible — run `python scripts/test262_dashboard.py` to refresh)
+
+Target: **100% pass rate**. Refresh batched store: `FRESH=1 bash scripts/run_full_batched.sh`
+
+```
+test262: 44821/53189 = 84.27% (8368 fail)
+Top clusters: RegExp(1184) intl402(921) Temporal(800) staging(737) module-code(376) class(373) annexB(355)
+```
+
 ## ⚠️ Current Reality (read first — the tree has diverged from older docs)
 
 Much of this file and the `docs/` Volumes describe the original architecture. The repo has since pivoted; these facts override anything below that conflicts:

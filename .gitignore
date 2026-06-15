@@ -38,6 +38,10 @@ bld/
 !scripts/run_test262_chunk_parallel.ps1
 !scripts/run_stage_recovery_baseline.ps1
 *.py
+!scripts/test262_dashboard.py
+!scripts/test262_report.py
+!scripts/temporal_triage.py
+!scripts/temporal_msg.py
 *.log
 *.png
 wpt/
