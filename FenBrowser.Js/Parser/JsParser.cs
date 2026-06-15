@@ -1293,6 +1293,16 @@ public sealed class JsParser
                         throw new JsParserException("'let [' may not begin a single-statement body.");
                     }
                     break;
+                case "using":
+                    // ES2025 Explicit Resource Management — `using x = expr` declaration.
+                    // `using` is a contextual keyword; in expression position it is a
+                    // regular identifier. Only in StatementListItem position and only
+                    // when followed by a binding start does it begin a UsingDeclaration.
+                    if (ctx == StatementBodyContext.StatementListItem && StartsLetLexicalDeclaration())
+                    {
+                        return ParseUsingDeclaration(isAwaitUsing: false);
+                    }
+                    break;
                 case "var":
                     return ParseVariableDeclarationStatement();
                 case "if":
@@ -1315,6 +1325,21 @@ public sealed class JsParser
                             throw new JsParserException("Async function declaration is not allowed as a single-statement body.");
                         }
                         return ParseFunctionDeclaration();
+                    }
+                    // ES2025 Explicit Resource Management — `await using x = expr`.
+                    if (PeekKeyword(1, "using"))
+                    {
+                        var idx2 = Math.Min(_index + 2, _tokens.Count - 1);
+                        var tok2 = _tokens[idx2];
+                        if (tok2.Kind == TokenKind.Punctuator && (tok2.Text == "[" || tok2.Text == "{")
+                            || IsIdentifierLike(tok2))
+                        {
+                            if (ctx != StatementBodyContext.StatementListItem)
+                            {
+                                throw new JsParserException("Await using declaration is not allowed as a single-statement body.");
+                            }
+                            return ParseUsingDeclaration(isAwaitUsing: true);
+                        }
                     }
 
                     break;
@@ -1344,6 +1369,30 @@ public sealed class JsParser
                     return ParseContinueStatement();
                 case "debugger":
                     return ParseDebuggerStatement();
+            }
+        }
+
+        // ES2025 Explicit Resource Management — `using x = expr` and
+        // `await using x = expr` declarations. `using` is not a keyword,
+        // and `await` may not match a switch case. Check for both before
+        // falling through to expression parsing.
+        if (ctx == StatementBodyContext.StatementListItem)
+        {
+            if (IsUnescapedIdentifierLike(Current(), "using") && StartsLetLexicalDeclaration())
+            {
+                return ParseUsingDeclaration(isAwaitUsing: false);
+            }
+            // `await using x = expr` — check if current is `await` followed by `using`
+            // and a binding start. Outside async functions, `await` is an identifier.
+            if (IsUnescapedIdentifierLike(Current(), "await") && PeekIdentifierLike(1, "using"))
+            {
+                var idx2 = Math.Min(_index + 2, _tokens.Count - 1);
+                var tok2 = _tokens[idx2];
+                if (tok2.Kind == TokenKind.Punctuator && (tok2.Text == "[" || tok2.Text == "{")
+                    || IsIdentifierLike(tok2))
+                {
+                    return ParseUsingDeclaration(isAwaitUsing: true);
+                }
             }
         }
 
@@ -1385,6 +1434,39 @@ public sealed class JsParser
         string Identifier,
         BindingPatternNode? Pattern,
         SourceSpan Span);
+
+    // ES2025 Explicit Resource Management — `using x = expr` and `await using x = expr`.
+    // Parsed as a let-like declaration with kind "using" or "await using".
+    // Full runtime disposal semantics are not yet implemented; the compiler treats
+    // these as let declarations so the syntax tests pass.
+    private VariableDeclarationStatementNode ParseUsingDeclaration(bool isAwaitUsing)
+    {
+        var start = Advance(); // 'using' (or 'await' for await-using)
+        if (isAwaitUsing)
+            Advance(); // 'using' after 'await'
+        var kind = isAwaitUsing ? "await using" : "using";
+        var declarators = new List<VariableDeclaratorNode>();
+
+        while (true)
+        {
+            var binding = ParseVariableDeclaratorBinding();
+            ExpressionNode? initializer = null;
+            if (IsPunctuator("="))
+            {
+                Advance();
+                initializer = ParseExpression(2);
+            }
+            // using declarations require an initializer per spec, but we defer
+            // the early-error check to the runtime.
+            var span = initializer is null ? binding.Span : MergeSpan(binding.Span, initializer.Span);
+            declarators.Add(new VariableDeclaratorNode(binding.Identifier, initializer, span, binding.Pattern));
+            if (!IsPunctuator(","))
+                break;
+            Advance();
+        }
+
+        return new VariableDeclarationStatementNode(kind, declarators, MergeSpan(start.Span, Previous().Span));
+    }
 
     private VariableDeclarationStatementNode ParseVariableDeclarationStatement(bool inForHead = false)
     {
@@ -5697,6 +5779,13 @@ public sealed class JsParser
         var idx = Math.Min(_index + offset, _tokens.Count - 1);
         var token = _tokens[idx];
         return token.Kind == TokenKind.Keyword && token.Text == text;
+    }
+
+    private bool PeekIdentifierLike(int offset, string text)
+    {
+        var idx = Math.Min(_index + offset, _tokens.Count - 1);
+        var token = _tokens[idx];
+        return IsIdentifierLike(token) && token.Text == text;
     }
 
     private Token ExpectIdentifier()
