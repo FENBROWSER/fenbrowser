@@ -8202,40 +8202,82 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _heap.WriteBarrier(handle, fnHandle);
         }
 
-        // ECMA-402 PluralRules constructor (basic .NET-backed).
+        // ECMA-402 PluralRules constructor.
         {
+            var prototypeHandle = EnsurePluralRulesPrototype();
+            var prototype = _heap.GetObject(prototypeHandle);
             var prCtor = new NativeFunctionObject("PluralRules",
                 (_, _) => throw new JsThrownException(CreateTypeError("PluralRules must be invoked with 'new'.")),
-                construct: _ => PluralRulesConstruct(),
+                construct: args => PluralRulesConstruct(args),
                 length: 0);
             var prCtorHandle = _heap.AllocateObject(prCtor, AllocationSite.Current());
             _heap.PushRoot(prCtorHandle);
+            _ = prCtor.DefineOwnProperty("prototype",
+                new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
+            _heap.WriteBarrier(prCtorHandle, prototypeHandle);
+            _ = prototype.DefineOwnProperty("constructor",
+                new JsPropertyDescriptor(JsValue.FromObject(prCtorHandle), Writable: true, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(prototypeHandle, prCtorHandle);
+            var supportedLocalesOf = new NativeFunctionObject("supportedLocalesOf",
+                (_, a) => SupportedLocalesOf(a), length: 1);
+            var supportedHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());
+            _ = prCtor.DefineOwnProperty("supportedLocalesOf",
+                new JsPropertyDescriptor(JsValue.FromObject(supportedHandle), Writable: true, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(prCtorHandle, supportedHandle);
             _ = intl.DefineOwnProperty("PluralRules",
                 new JsPropertyDescriptor(JsValue.FromObject(prCtorHandle), Writable: true, Enumerable: false, Configurable: true));
             _heap.WriteBarrier(handle, prCtorHandle);
         }
 
-        // ECMA-402 Segmenter constructor (basic stub).
+        // ECMA-402 Segmenter constructor.
         {
+            var prototypeHandle = EnsureSegmenterPrototype();
+            var prototype = _heap.GetObject(prototypeHandle);
             var segCtor = new NativeFunctionObject("Segmenter",
                 (_, _) => throw new JsThrownException(CreateTypeError("Segmenter must be invoked with 'new'.")),
-                construct: _ => SegmenterConstruct(),
+                construct: args => SegmenterConstruct(args),
                 length: 0);
             var segCtorHandle = _heap.AllocateObject(segCtor, AllocationSite.Current());
             _heap.PushRoot(segCtorHandle);
+            _ = segCtor.DefineOwnProperty("prototype",
+                new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
+            _heap.WriteBarrier(segCtorHandle, prototypeHandle);
+            _ = prototype.DefineOwnProperty("constructor",
+                new JsPropertyDescriptor(JsValue.FromObject(segCtorHandle), Writable: true, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(prototypeHandle, segCtorHandle);
+            var supportedLocalesOf = new NativeFunctionObject("supportedLocalesOf",
+                (_, a) => SupportedLocalesOf(a), length: 1);
+            var supportedHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());
+            _ = segCtor.DefineOwnProperty("supportedLocalesOf",
+                new JsPropertyDescriptor(JsValue.FromObject(supportedHandle), Writable: true, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(segCtorHandle, supportedHandle);
             _ = intl.DefineOwnProperty("Segmenter",
                 new JsPropertyDescriptor(JsValue.FromObject(segCtorHandle), Writable: true, Enumerable: false, Configurable: true));
             _heap.WriteBarrier(handle, segCtorHandle);
         }
 
-        // ECMA-402 DisplayNames constructor (basic .NET-backed).
+        // ECMA-402 DisplayNames constructor.
         {
+            var prototypeHandle = EnsureDisplayNamesPrototype();
+            var prototype = _heap.GetObject(prototypeHandle);
             var dnCtor = new NativeFunctionObject("DisplayNames",
                 (_, _) => throw new JsThrownException(CreateTypeError("DisplayNames must be invoked with 'new'.")),
                 construct: args => DisplayNamesConstruct(args),
                 length: 2);
             var dnCtorHandle = _heap.AllocateObject(dnCtor, AllocationSite.Current());
             _heap.PushRoot(dnCtorHandle);
+            _ = dnCtor.DefineOwnProperty("prototype",
+                new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
+            _heap.WriteBarrier(dnCtorHandle, prototypeHandle);
+            _ = prototype.DefineOwnProperty("constructor",
+                new JsPropertyDescriptor(JsValue.FromObject(dnCtorHandle), Writable: true, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(prototypeHandle, dnCtorHandle);
+            var supportedLocalesOf = new NativeFunctionObject("supportedLocalesOf",
+                (_, a) => SupportedLocalesOf(a), length: 1);
+            var supportedHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());
+            _ = dnCtor.DefineOwnProperty("supportedLocalesOf",
+                new JsPropertyDescriptor(JsValue.FromObject(supportedHandle), Writable: true, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(dnCtorHandle, supportedHandle);
             _ = intl.DefineOwnProperty("DisplayNames",
                 new JsPropertyDescriptor(JsValue.FromObject(dnCtorHandle), Writable: true, Enumerable: false, Configurable: true));
             _heap.WriteBarrier(handle, dnCtorHandle);
@@ -8245,34 +8287,54 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return handle;
     }
 
-    private JsValue PluralRulesConstruct()
+    private JsValue PluralRulesConstruct(IReadOnlyList<JsValue> args)
     {
-        var proto = CreateOrdinaryObject();
-        var ph = _heap.AllocateObject(proto, AllocationSite.Current());
-        _heap.PushRoot(ph);
-        var selectFn = new NativeFunctionObject("select", (_, a) =>
+        var locale = args.Count > 0 ? ToStringValue(args[0]) : "en";
+        var opts = args.Count > 1 && args[1].Tag == JsValueTag.Object ? _heap.GetObject(args[1].AsObjectHandle()) : null;
+        string type = "cardinal";
+        if (opts is not null)
         {
-            double n = a.Count > 0 ? ToNumber(a[0]) : 0;
-            return JsValue.FromString(SelectPluralRule("en", n));
-        }, length: 1);
-        proto.DefineOwnProperty("select", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(selectFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
-        var resOptsFn = new NativeFunctionObject("resolvedOptions", (_, _2) =>
-        {
-            var o = CreateOrdinaryObject();
-            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString("cardinal"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("minimumIntegerDigits", new JsPropertyDescriptor(JsValue.FromNumber(1), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("minimumFractionDigits", new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("maximumFractionDigits", new JsPropertyDescriptor(JsValue.FromNumber(3), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("pluralCategories", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(CreateArrayFromElements(new[] { JsValue.FromString("one"), JsValue.FromString("other") }), AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("roundingIncrement", new JsPropertyDescriptor(JsValue.FromNumber(1), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("roundingMode", new JsPropertyDescriptor(JsValue.FromString("halfExpand"), Writable: true, Enumerable: true, Configurable: true));
-            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
-        }, length: 0);
-        proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(resOptsFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+            if (TryGetPropertyValue(opts, args[1], "type", out var tv) && tv.Tag != JsValueTag.Undefined)
+                type = ToStringValue(tv);
+        }
+        var stateObj = CreateOrdinaryObject();
+        stateObj.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(locale), Writable: false, Enumerable: false, Configurable: false));
+        stateObj.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(type), Writable: false, Enumerable: false, Configurable: false));
+        var stateHandle = _heap.AllocateObject(stateObj, AllocationSite.Current());
+        var prototypeHandle = EnsurePluralRulesPrototype();
         var inst = CreateOrdinaryObject();
-        inst.SetPrototype(ph);
-        return JsValue.FromObject(_heap.AllocateObject(inst, AllocationSite.Current()));
+        inst.SetPrototype(prototypeHandle);
+        inst.DefineOwnProperty("__pluralRulesState",
+            new JsPropertyDescriptor(JsValue.FromObject(stateHandle), Writable: false, Enumerable: false, Configurable: false));
+        var instHandle = _heap.AllocateObject(inst, AllocationSite.Current());
+        _heap.WriteBarrier(instHandle, prototypeHandle);
+        _heap.WriteBarrier(instHandle, stateHandle);
+        return JsValue.FromObject(instHandle);
+    }
+
+    private JsValue SegmenterConstruct(IReadOnlyList<JsValue> args)
+    {
+        var locale = args.Count > 0 ? ToStringValue(args[0]) : "en";
+        var opts = args.Count > 1 && args[1].Tag == JsValueTag.Object ? _heap.GetObject(args[1].AsObjectHandle()) : null;
+        string granularity = "grapheme";
+        if (opts is not null)
+        {
+            if (TryGetPropertyValue(opts, args[1], "granularity", out var gv) && gv.Tag != JsValueTag.Undefined)
+                granularity = ToStringValue(gv);
+        }
+        var stateObj = CreateOrdinaryObject();
+        stateObj.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(locale), Writable: false, Enumerable: false, Configurable: false));
+        stateObj.DefineOwnProperty("granularity", new JsPropertyDescriptor(JsValue.FromString(granularity), Writable: false, Enumerable: false, Configurable: false));
+        var stateHandle = _heap.AllocateObject(stateObj, AllocationSite.Current());
+        var prototypeHandle = EnsureSegmenterPrototype();
+        var inst = CreateOrdinaryObject();
+        inst.SetPrototype(prototypeHandle);
+        inst.DefineOwnProperty("__segmenterState",
+            new JsPropertyDescriptor(JsValue.FromObject(stateHandle), Writable: false, Enumerable: false, Configurable: false));
+        var instHandle = _heap.AllocateObject(inst, AllocationSite.Current());
+        _heap.WriteBarrier(instHandle, prototypeHandle);
+        _heap.WriteBarrier(instHandle, stateHandle);
+        return JsValue.FromObject(instHandle);
     }
 
     // CLDR plural rules for major languages. Returns "zero"/"one"/"two"/"few"/"many"/"other".
@@ -8337,64 +8399,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             default:
                 return i == 1 && v == 0 ? "one" : "other";
         }
-    }
-
-    private JsValue SegmenterConstruct()
-    {
-        var proto = CreateOrdinaryObject();
-        var ph = _heap.AllocateObject(proto, AllocationSite.Current());
-        _heap.PushRoot(ph);
-        var segmentFn = new NativeFunctionObject("segment", (_, a) =>
-        {
-            var str = a.Count > 0 ? ToStringValue(a[0]) : "";
-            var segments = CreateOrdinaryObject();
-            var iterFn = new NativeFunctionObject("next", (_, _2) =>
-            {
-                // Simple character-by-character segmentation.
-                var idxObj = new JsObject();
-                // Store state on the segments object.
-                int idx = 0;
-                if (segments.TryGetOwnProperty("_idx", out var idxDesc))
-                    idx = (int)idxDesc.Value.AsNumber();
-                if (idx >= str.Length)
-                {
-                    var doneObj = CreateOrdinaryObject();
-                    doneObj.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
-                    return JsValue.FromObject(_heap.AllocateObject(doneObj, AllocationSite.Current()));
-                }
-                var seg = CreateOrdinaryObject();
-                seg.DefineOwnProperty("segment", new JsPropertyDescriptor(JsValue.FromString(str[idx].ToString()), Writable: true, Enumerable: true, Configurable: true));
-                seg.DefineOwnProperty("index", new JsPropertyDescriptor(JsValue.FromNumber(idx), Writable: true, Enumerable: true, Configurable: true));
-                seg.DefineOwnProperty("input", new JsPropertyDescriptor(JsValue.FromString(str), Writable: true, Enumerable: true, Configurable: true));
-                var result = CreateOrdinaryObject();
-                result.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(seg, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
-                result.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
-                segments.DefineOwnProperty("_idx", new JsPropertyDescriptor(JsValue.FromNumber(idx + 1), Writable: true, Enumerable: false, Configurable: false));
-                return JsValue.FromObject(_heap.AllocateObject(result, AllocationSite.Current()));
-            }, length: 0);
-            var iterObj = CreateOrdinaryObject();
-            var iterObjHandle = _heap.AllocateObject(iterObj, AllocationSite.Current());
-            iterObj.DefineOwnProperty("next", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(iterFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
-            // Self-referencing Symbol.iterator
-            var capturedHandle = iterObjHandle;
-            var symIter = new NativeFunctionObject("[Symbol.iterator]", (_, _2) => JsValue.FromObject(capturedHandle), length: 0);
-            var symHandle = _heap.AllocateObject(symIter, AllocationSite.Current());
-            var symId = ((IBuiltinContext)this).CreateWellKnownSymbol("iterator").AsSymbolId();
-            iterObj.DefineOwnSymbolProperty(symId, new JsPropertyDescriptor(JsValue.FromObject(symHandle), Writable: true, Enumerable: false, Configurable: true));
-            return JsValue.FromObject(iterObjHandle);
-        }, length: 1);
-        proto.DefineOwnProperty("segment", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(segmentFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
-        var segResFn = new NativeFunctionObject("resolvedOptions", (_, _2) =>
-        {
-            var o = CreateOrdinaryObject();
-            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("granularity", new JsPropertyDescriptor(JsValue.FromString("grapheme"), Writable: true, Enumerable: true, Configurable: true));
-            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
-        }, length: 0);
-        proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(segResFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
-        var inst = CreateOrdinaryObject();
-        inst.SetPrototype(ph);
-        return JsValue.FromObject(_heap.AllocateObject(inst, AllocationSite.Current()));
     }
 
     private JsValue DisplayNamesConstruct(IReadOnlyList<JsValue> args)

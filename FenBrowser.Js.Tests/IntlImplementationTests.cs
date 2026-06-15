@@ -79,14 +79,18 @@ public sealed class IntlImplementationTests
     }
 
     [Fact]
-    public void DateTimeFormat_MustBeConstructed()
+    public void DateTimeFormat_CanBeCalledWithoutNew_PerChainDateTimeFormat()
     {
-        Assert.Throws<JsThrownException>(() => Run("Intl.DateTimeFormat()"));
+        // ECMA-402 ChainDateTimeFormat: calling without new creates an instance.
+        var result = Run("Intl.DateTimeFormat('en-US').resolvedOptions()");
+        Assert.True(result.Tag == JsValueTag.Object);
     }
 
     [Fact]
-    public void NumberFormat_MustBeConstructed()
+    public void NumberFormat_CanBeCalledWithoutNew_PerChainNumberFormat()
     {
-        Assert.Throws<JsThrownException>(() => Run("Intl.NumberFormat()"));
+        // ECMA-402 ChainNumberFormat: calling without new creates an instance.
+        var result = Run("typeof Intl.NumberFormat('en-US').format(42)");
+        Assert.Equal("string", result.AsString());
     }
 }

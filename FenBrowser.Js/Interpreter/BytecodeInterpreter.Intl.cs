@@ -3304,11 +3304,22 @@ public sealed partial class BytecodeInterpreter
         }, length: 1);
         proto.DefineOwnProperty("segment", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(segmentFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
 
-        var segResFn = new NativeFunctionObject("resolvedOptions", (_, _2) =>
+        var segResFn = new NativeFunctionObject("resolvedOptions", (thisValue, _2) =>
         {
+            string locale = "en", granularity = "grapheme";
+            if (thisValue.Tag == JsValueTag.Object)
+            {
+                var recv = _heap.GetObject(thisValue.AsObjectHandle());
+                if (recv.TryGetProperty("__segmenterState", x => _heap.GetObject(x), out var sd) && sd.Value.Tag == JsValueTag.Object)
+                {
+                    var state = _heap.GetObject(sd.Value.AsObjectHandle());
+                    if (state.TryGetOwnProperty("locale", out var ld) && ld.Value.Tag == JsValueTag.String) locale = ld.Value.AsString();
+                    if (state.TryGetOwnProperty("granularity", out var gd) && gd.Value.Tag == JsValueTag.String) granularity = gd.Value.AsString();
+                }
+            }
             var o = CreateOrdinaryObject();
-            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("granularity", new JsPropertyDescriptor(JsValue.FromString("grapheme"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(locale), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("granularity", new JsPropertyDescriptor(JsValue.FromString(granularity), Writable: true, Enumerable: true, Configurable: true));
             return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
         }, length: 0);
         proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(segResFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
@@ -3326,18 +3337,40 @@ public sealed partial class BytecodeInterpreter
         var ph = _heap.AllocateObject(proto, AllocationSite.Current());
         _heap.PushRoot(ph);
 
-        var selectFn = new NativeFunctionObject("select", (_, a) =>
+        var selectFn = new NativeFunctionObject("select", (thisValue, a) =>
         {
+            string locale = "en";
+            if (thisValue.Tag == JsValueTag.Object)
+            {
+                var recv = _heap.GetObject(thisValue.AsObjectHandle());
+                if (recv.TryGetProperty("__pluralRulesState", x => _heap.GetObject(x), out var sd) && sd.Value.Tag == JsValueTag.Object)
+                {
+                    var state = _heap.GetObject(sd.Value.AsObjectHandle());
+                    if (state.TryGetOwnProperty("locale", out var ld) && ld.Value.Tag == JsValueTag.String)
+                        locale = ld.Value.AsString();
+                }
+            }
             double n = a.Count > 0 ? ToNumber(a[0]) : 0;
-            return JsValue.FromString(SelectPluralRule("en", n));
+            return JsValue.FromString(SelectPluralRule(locale, n));
         }, length: 1);
         proto.DefineOwnProperty("select", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(selectFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
 
-        var resOptsFn = new NativeFunctionObject("resolvedOptions", (_, _2) =>
+        var resOptsFn = new NativeFunctionObject("resolvedOptions", (thisValue, _2) =>
         {
+            string locale = "en", type = "cardinal";
+            if (thisValue.Tag == JsValueTag.Object)
+            {
+                var recv = _heap.GetObject(thisValue.AsObjectHandle());
+                if (recv.TryGetProperty("__pluralRulesState", x => _heap.GetObject(x), out var sd) && sd.Value.Tag == JsValueTag.Object)
+                {
+                    var state = _heap.GetObject(sd.Value.AsObjectHandle());
+                    if (state.TryGetOwnProperty("locale", out var ld) && ld.Value.Tag == JsValueTag.String) locale = ld.Value.AsString();
+                    if (state.TryGetOwnProperty("type", out var td) && td.Value.Tag == JsValueTag.String) type = td.Value.AsString();
+                }
+            }
             var o = CreateOrdinaryObject();
-            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString("cardinal"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(locale), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(type), Writable: true, Enumerable: true, Configurable: true));
             o.DefineOwnProperty("minimumIntegerDigits", new JsPropertyDescriptor(JsValue.FromNumber(1), Writable: true, Enumerable: true, Configurable: true));
             o.DefineOwnProperty("minimumFractionDigits", new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: true, Configurable: true));
             o.DefineOwnProperty("maximumFractionDigits", new JsPropertyDescriptor(JsValue.FromNumber(3), Writable: true, Enumerable: true, Configurable: true));
