@@ -779,6 +779,19 @@ public sealed class Test262Runner
             "testAtomics.js",
             "atomicsHelper.js",
             "temporalHelpers.js",
+            // SpiderMonkey staging harness includes
+            "nativeErrors.js",
+            "sm/assertThrowsValue.js",
+            "sm/non262-Date-shell.js",
+            "sm/non262-JSON-shell.js",
+            "sm/non262-Math-shell.js",
+            "sm/non262-Reflect-shell.js",
+            "sm/non262-Set-shell.js",
+            "sm/non262-Temporal-PlainMonthDay-shell.js",
+            "sm/non262-TypedArray-shell.js",
+            "sm/non262-expressions-shell.js",
+            "sm/non262-generators-shell.js",
+            "sm/non262-strict-shell.js",
         };
 
         Console.WriteLine($"Running runtime subset: total={subset.Count}, timeoutMs={timeoutMs}, root={rootPath}");
@@ -1912,6 +1925,21 @@ public sealed class Test262Runner
         "testAtomics.js",
         "testIntl.js",
         "testTypedArray.js",
+        // Standard harnesses not in prelude
+        "deepEqual.js",
+        "nativeErrors.js",
+        // SpiderMonkey staging harness includes
+        "sm/assertThrowsValue.js",
+        "sm/non262-Date-shell.js",
+        "sm/non262-JSON-shell.js",
+        "sm/non262-Math-shell.js",
+        "sm/non262-Reflect-shell.js",
+        "sm/non262-Set-shell.js",
+        "sm/non262-Temporal-PlainMonthDay-shell.js",
+        "sm/non262-TypedArray-shell.js",
+        "sm/non262-expressions-shell.js",
+        "sm/non262-generators-shell.js",
+        "sm/non262-strict-shell.js",
     };
 
     private static readonly ConcurrentDictionary<string, string> _includeFileCache = new(StringComparer.Ordinal);

@@ -41,8 +41,17 @@ public static class RegExpCompiler
             options |= RegexOptions.Singleline;
         }
 
-        var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
         var namedGroupMap = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        // UnicodeSets (v-flag) uses set operations (--, &&, ~~), \q{...} string literals,
+        // and property-of-strings escapes that .NET does not support. Use the native engine.
+        if (parsedFlags.UnicodeSets)
+        {
+            var neutralRegex = new System.Text.RegularExpressions.Regex("(?:)", options, CompileTimeout);
+            return new CompiledRegExp(pattern, normalizedFlags, neutralRegex, parsedFlags, namedGroupMap);
+        }
+
+        var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
         dotNetPattern = RewriteNamedGroupSyntaxForDotNet(dotNetPattern, namedGroupMap);
         if (parsedFlags.Unicode || parsedFlags.UnicodeSets)
         {

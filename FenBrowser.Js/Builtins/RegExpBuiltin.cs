@@ -174,23 +174,32 @@ public sealed class RegExpBuiltin : IBuiltinModule
         dotNetPattern = Regex.RegExpCompiler.RewriteForwardBackreferences(dotNetPattern);
 
         BclRegex regex;
-        try
+        // UnicodeSets (v-flag): set operations (--, &&, ~~), \q{...}, and
+        // property-of-strings escapes are unsupported by .NET. Use neutral.
+        if (hasV)
         {
-            regex = new BclRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
+            regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
         }
-        catch (ArgumentException ex)
+        else
         {
-            // .NET rejects some valid ECMAScript constructs (e.g. property names
-            // it doesn't know after the \p{} rewrite). When the pattern uses
-            // property escapes, fall back to a neutral BCL regex and let the
-            // native program do the matching, mirroring RegExpCompiler.Compile.
-            if (Regex.RegExpCompiler.ContainsUnicodePropertyEscape(pattern))
+            try
             {
-                regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
+                regex = new BclRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
             }
-            else
+            catch (ArgumentException ex)
             {
-                throw new JsThrownException(ctx.CreateSyntaxError(ex.Message));
+                // .NET rejects some valid ECMAScript constructs (e.g. property names
+                // it doesn't know after the \p{} rewrite). When the pattern uses
+                // property escapes, fall back to a neutral BCL regex and let the
+                // native program do the matching, mirroring RegExpCompiler.Compile.
+                if (Regex.RegExpCompiler.ContainsUnicodePropertyEscape(pattern))
+                {
+                    regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
+                }
+                else
+                {
+                    throw new JsThrownException(ctx.CreateSyntaxError(ex.Message));
+                }
             }
         }
 

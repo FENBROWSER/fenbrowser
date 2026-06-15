@@ -5804,23 +5804,28 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         dotNetPattern = RegExpCompiler.RewriteForwardBackreferences(dotNetPattern);
 
         BclRegex regex;
-        try
+        // UnicodeSets (v-flag): set operations, \q{...}, property-of-strings
+        // are unsupported by .NET. Use neutral BCL regex, native engine handles matching.
+        if (hasV)
         {
-            regex = new BclRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
+            regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
         }
-        catch (ArgumentException ex)
+        else
         {
-            // .NET rejects some valid ECMAScript constructs (e.g. property names
-            // it doesn't know after the \p{} rewrite). When the pattern uses
-            // property escapes, fall back to a neutral BCL regex and let the
-            // native program do the matching, mirroring RegExpCompiler.Compile.
-            if (RegExpCompiler.ContainsUnicodePropertyEscape(pattern))
+            try
             {
-                regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
+                regex = new BclRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
             }
-            else
+            catch (ArgumentException ex)
             {
-                throw new JsThrownException(CreateSyntaxError(ex.Message));
+                if (RegExpCompiler.ContainsUnicodePropertyEscape(pattern))
+                {
+                    regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
+                }
+                else
+                {
+                    throw new JsThrownException(CreateSyntaxError(ex.Message));
+                }
             }
         }
 
@@ -5991,23 +5996,28 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         dotNetPattern = RegExpCompiler.RewriteForwardBackreferences(dotNetPattern);
 
         BclRegex regex;
-        try
+        // UnicodeSets (v-flag): set operations, \q{...}, property-of-strings
+        // are unsupported by .NET. Use neutral BCL regex, native engine handles matching.
+        if (hasV)
         {
-            regex = new BclRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
+            regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
         }
-        catch (ArgumentException ex)
+        else
         {
-            // .NET rejects some valid ECMAScript constructs (e.g. property names
-            // it doesn't know after the \p{} rewrite). When the pattern uses
-            // property escapes, fall back to a neutral BCL regex and let the
-            // native program do the matching, mirroring RegExpCompiler.Compile.
-            if (RegExpCompiler.ContainsUnicodePropertyEscape(pattern))
+            try
             {
-                regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
+                regex = new BclRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
             }
-            else
+            catch (ArgumentException ex)
             {
-                throw new JsThrownException(CreateSyntaxError(ex.Message));
+                if (RegExpCompiler.ContainsUnicodePropertyEscape(pattern))
+                {
+                    regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
+                }
+                else
+                {
+                    throw new JsThrownException(CreateSyntaxError(ex.Message));
+                }
             }
         }
 

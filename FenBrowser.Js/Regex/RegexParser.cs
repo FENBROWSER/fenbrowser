@@ -662,15 +662,19 @@ public static class RegexParser
 
             while (!AtEnd && Peek != ']')
             {
-                // v-flag: ] is literal if preceded by set operation
-                // Non-v-flag: ] always closes the class
-                // We already handle set ops above so ] here means close
+                // v-flag set operations: stop when we see &&, --, or ~~
+                if (IsUnicodeSets && IsRawSetOperatorStart())
+                    break;
 
                 var ch = Peek;
 
                 // ClassAtom can be '-' (literal or range start)
                 if (ch == '-')
                 {
+                    // v-flag: if this is '--', stop — the set operation handler takes over
+                    if (IsUnicodeSets && Peek1 == '-')
+                        break;
+
                     Advance();
                     if (!AtEnd && Peek != ']')
                     {
@@ -689,6 +693,7 @@ public static class RegexParser
                 items.Add(classAtom);
 
                 // Check for range: ClassAtom '-' ClassAtom
+                // In v-flag mode, '--' is NOT a range start — it's the set difference operator above.
                 if (!AtEnd && Peek == '-' && Peek1 != ']')
                 {
                     Advance(); // consume '-'
@@ -874,6 +879,15 @@ public static class RegexParser
             var negated = pOrP == 'P';
             var (property, value) = ParsePropertyNameAndValue(body);
             return new ClassUnicodeProperty(property, value, negated);
+        }
+
+        /// <summary>Returns true if the next two characters are a set operator (&&, --, ~~).</summary>
+        private bool IsRawSetOperatorStart()
+        {
+            if (AtEnd) return false;
+            var c = Peek;
+            var c2 = Peek1;
+            return (c == '&' && c2 == '&') || (c == '-' && c2 == '-') || (c == '~' && c2 == '~');
         }
 
         private static int GetClassItemSingleCodePoint(ClassItem item)
