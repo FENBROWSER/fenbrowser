@@ -5031,15 +5031,20 @@ public sealed class TemporalStub : IBuiltinModule
         string? largest = null;
         double increment = 1;
         string mode = "halfExpand";
+        (IsoDate date, string calId)? relTo = null;
         if (a[0].Tag == JsValueTag.String)
         {
             smallest = NormalizeUnitName(ctx, a[0].AsString());
         }
         else if (a[0].Tag == JsValueTag.Object)
         {
-            // Option reads in alphabetical order per GetRoundingIncrementOption et al.
+            // ECMA-262 ToTemporalRoundingMode et al.: options must be read in
+            // spec order: largestUnit, relativeTo, roundingIncrement,
+            // roundingMode, smallestUnit.
             if (TryGetField(ctx, h, a[0], "largestUnit", out var lv))
                 largest = NormalizeUnitName(ctx, lv.Tag == JsValueTag.String ? lv.AsString() : ctx.ToStringValue(lv), allowAuto: true);
+            // relativeTo MUST be read after largestUnit, before roundingIncrement
+            relTo = TryDecodeRelativeTo(ctx, h, a[0]);
             if (TryGetField(ctx, h, a[0], "roundingIncrement", out var iv))
             {
                 increment = ToIntegerWithTruncation(ctx, iv);
@@ -5063,9 +5068,7 @@ public sealed class TemporalStub : IBuiltinModule
         }
 
         var dur = DecodeDuration(h, o);
-        // Decode relativeTo (already parsed above in the options object path).
-        var relTo = a.Count > 0 && a[0].Tag == JsValueTag.Object
-            ? TryDecodeRelativeTo(ctx, h, a[0]) : null;
+        // relativeTo already read above in spec order (after largestUnit, before rounding options).
         bool hasCalendarUnits = dur.years != 0 || dur.months != 0 || dur.weeks != 0
             || IsCalendarUnit(smallest) || (largest is not null && largest != "auto" && IsCalendarUnit(largest));
         if (hasCalendarUnits && relTo is null)
