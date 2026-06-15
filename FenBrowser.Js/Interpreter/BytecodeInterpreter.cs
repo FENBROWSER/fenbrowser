@@ -4373,6 +4373,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             .Register(new SymbolBuiltin())
             .Register(new DisposableStackBuiltin())
             .Register(new AsyncDisposableStackBuiltin())
+            .Register(new ShadowRealmBuiltin())
             .Register(new DateBuiltin())
             .Register(new RegExpBuiltin())
             .Register(new ObjectBuiltin())
