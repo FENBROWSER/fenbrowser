@@ -208,4 +208,49 @@ internal static class TemporalTimeZones
         ticks = Math.Clamp(ticks, minTicks + TimeSpan.TicksPerDay, maxTicks);
         return new DateTimeOffset(ticks, TimeSpan.Zero);
     }
+
+    /// <summary>
+    /// BigInteger version of EpochNsFromWall that handles the full Temporal
+    /// date range. For UTC the offset is always zero; for named zones outside
+    /// the ±292-year window no DST data exists, so offset is treated as zero.
+    /// </summary>
+    public static System.Numerics.BigInteger EpochNsFromWallBig(string canonicalId, IsoDate date, IsoTime time)
+    {
+        long days = IsoMath.ToEpochDays(date);
+        var wallNs = new System.Numerics.BigInteger(days) * NsPerDay + time.ToNanosecondsOfDay();
+
+        // Offset at this instant; for UTC/offsets this is exact regardless.
+        long offsetNs = 0;
+        if (wallNs >= long.MinValue && wallNs <= long.MaxValue)
+        {
+            offsetNs = GetOffsetNs(canonicalId, (long)wallNs);
+            var candidate = wallNs - offsetNs;
+            if (candidate >= long.MinValue && candidate <= long.MaxValue)
+            {
+                long offset2 = GetOffsetNs(canonicalId, (long)candidate);
+                if (offset2 != offsetNs)
+                    return wallNs - offset2;
+            }
+        } // else: outside long range → offset = 0 (no TZ data available)
+
+        return wallNs - offsetNs;
+    }
+
+    /// <summary>
+    /// BigInteger version of WallFromEpochNs: split epoch nanos into wall-clock
+    /// date/time at the given offset, without clamping to the long range.
+    /// </summary>
+    public static (IsoDate Date, IsoTime Time) WallFromEpochNsBig(System.Numerics.BigInteger epochNs, long offsetNs)
+    {
+        var local = epochNs + offsetNs;
+        var days = (long)System.Numerics.BigInteger.DivRem(local, NsPerDay, out var timeNsBig);
+        long timeNs = (long)timeNsBig;
+        // Adjust for negative time (DivRem truncates toward zero)
+        if (timeNs < 0) { days -= 1; timeNs += NsPerDay; }
+        var date = IsoMath.EpochDaysToCivil(days);
+        var time = new IsoTime(
+            (int)(timeNs / 3_600_000_000_000L), (int)(timeNs / 60_000_000_000L % 60), (int)(timeNs / 1_000_000_000L % 60),
+            (int)(timeNs / 1_000_000L % 1000), (int)(timeNs / 1_000L % 1000), (int)(timeNs % 1000));
+        return (date, time);
+    }
 }

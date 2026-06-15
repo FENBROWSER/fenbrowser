@@ -109,19 +109,22 @@ public sealed class TemporalStub : IBuiltinModule
 
     /// <summary>Reconstruct epoch nanoseconds from an Instant _v object.</summary>
     private static long DecodeInstantNanos(JsHeap h, JsObject o)
+        => ToSafeLong(DecodeInstantNanosBig(h, o));
+
+    private static System.Numerics.BigInteger DecodeInstantNanosBig(JsHeap h, JsObject o)
     {
         if (o.TryGetProperty("_v", x => h.GetObject(x), out var value) && value.Value.Tag == JsValueTag.Object)
         {
             var slots = h.GetObject(value.Value.AsObjectHandle());
             if (slots.TryGetProperty("ensBig", x => h.GetObject(x), out var exact) && exact.Value.Tag == JsValueTag.BigInt)
             {
-                return ToSafeLong(exact.Value.AsBigInt());
+                return exact.Value.AsBigInt();
             }
         }
 
         var ens = GetVNum(h, o, "ens");
-        if (double.IsNaN(ens) || double.IsInfinity(ens)) return 0L;
-        return ToSafeLong(new System.Numerics.BigInteger(ens));
+        if (double.IsNaN(ens) || double.IsInfinity(ens)) return System.Numerics.BigInteger.Zero;
+        return new System.Numerics.BigInteger(ens);
     }
 
     /// <summary>Compare fields of two _v objects. Returns -1, 0, or 1.</summary>
@@ -223,7 +226,7 @@ public sealed class TemporalStub : IBuiltinModule
         if (args.Count == 0 || args[0].Tag != JsValueTag.String)
             throw new JsThrownException(ctx.CreateTypeError("toZonedDateTimeISO requires a time zone string."));
         string tz = CanonicalizeTimeZoneId(ctx, args[0].AsString());
-        return MakeZonedDateTimeNs(ctx, h, DecodeInstantNanos(h, o), tz, "iso8601");
+        return MakeZonedDateTimeNsBig(ctx, h, DecodeInstantNanosBig(h, o), tz, "iso8601");
     }
 
     private static JsValue PlainTimeToLocaleString(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> args)
@@ -2795,8 +2798,8 @@ public sealed class TemporalStub : IBuiltinModule
                 throw new JsThrownException(ctx.CreateTypeError("toZonedDateTime: time zone is required."));
             }
             string tz = CanonicalizeTimeZoneId(ctx, tzRaw);
-            return AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", MakeZonedDateTimeNs(ctx, h,
-                TemporalTimeZones.EpochNsFromWall(tz, d, tm), tz, GetVStr(h, o, "calendarId")));
+            return AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", MakeZonedDateTimeNsBig(ctx, h,
+                TemporalTimeZones.EpochNsFromWallBig(tz, d, tm), tz, GetVStr(h, o, "calendarId")));
         }, 1);
         AddMethod(ctx, h, pH, p, "toString", (o, a) => {
             var opts = GetToStringOptions(ctx, h, a, 0);
@@ -3183,8 +3186,8 @@ public sealed class TemporalStub : IBuiltinModule
             string tz = CanonicalizeTimeZoneId(ctx, a[0].AsString());
             var time = new IsoTime((int)GetVNum(h, o, "hour"), (int)GetVNum(h, o, "minute"), (int)GetVNum(h, o, "second"),
                 (int)GetVNum(h, o, "millisecond"), (int)GetVNum(h, o, "microsecond"), (int)GetVNum(h, o, "nanosecond"));
-            return AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", MakeZonedDateTimeNs(ctx, h,
-                TemporalTimeZones.EpochNsFromWall(tz, DecodeIsoDateLong(h, o), time), tz, GetVStr(h, o, "calendarId")));
+            return AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", MakeZonedDateTimeNsBig(ctx, h,
+                TemporalTimeZones.EpochNsFromWallBig(tz, DecodeIsoDateLong(h, o), time), tz, GetVStr(h, o, "calendarId")));
         }, 1);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
@@ -3702,7 +3705,7 @@ public sealed class TemporalStub : IBuiltinModule
     }
 
     /// <summary>ToTemporalZonedDateTime: instance, ISO string with [tz], or property bag → epoch ns + zone + calendar.</summary>
-    private static (long EpochNs, string Tz, string Calendar) ToTemporalZonedRecord(IBuiltinContext ctx, JsHeap h, JsValue arg)
+    private static (System.Numerics.BigInteger EpochNs, string Tz, string Calendar) ToTemporalZonedRecord(IBuiltinContext ctx, JsHeap h, JsValue arg)
     {
         if (arg.Tag == JsValueTag.String)
         {
@@ -3717,20 +3720,20 @@ public sealed class TemporalStub : IBuiltinModule
             if (!IsoMath.IsoDateWithinLimits(date))
                 throw new JsThrownException(ctx.CreateRangeError("Date is outside the supported Temporal range."));
             var time = parsed.HasTime ? parsed.Time : IsoTime.Midnight;
-            long epochNs;
+            System.Numerics.BigInteger epochNs;
             if (parsed.HasUtcDesignator)
             {
-                long days = Math.Clamp(IsoMath.ToEpochDays(date), -106_751L, 106_751L);
-                epochNs = days * NsPerDay + time.ToNanosecondsOfDay();
+                long days = IsoMath.ToEpochDays(date);
+                epochNs = new System.Numerics.BigInteger(days) * NsPerDay + time.ToNanosecondsOfDay();
             }
             else if (parsed.HasOffset)
             {
-                long days = Math.Clamp(IsoMath.ToEpochDays(date), -106_751L, 106_751L);
-                epochNs = days * NsPerDay + time.ToNanosecondsOfDay() - parsed.OffsetNanoseconds;
+                long days = IsoMath.ToEpochDays(date);
+                epochNs = new System.Numerics.BigInteger(days) * NsPerDay + time.ToNanosecondsOfDay() - parsed.OffsetNanoseconds;
             }
             else
             {
-                epochNs = TemporalTimeZones.EpochNsFromWall(tz, date, time);
+                epochNs = TemporalTimeZones.EpochNsFromWallBig(tz, date, time);
             }
 
             return (epochNs, tz, cal);
@@ -3740,7 +3743,7 @@ public sealed class TemporalStub : IBuiltinModule
         {
             var obj = h.GetObject(arg.AsObjectHandle());
             if (TryGetInternalData(h, obj, out var data) && HasOwn(h, data, "tz"))
-                return (DecodeInstantNanos(h, obj), GetVStr(h, obj, "tz"), GetVStr(h, obj, "calendarId") is { Length: > 0 } c ? c : "iso8601");
+                return (DecodeInstantNanosBig(h, obj), GetVStr(h, obj, "tz"), GetVStr(h, obj, "calendarId") is { Length: > 0 } c ? c : "iso8601");
 
             // Property bag: timeZone required, plus a PlainDateTime-style bag.
             string bagCal = GetCalendarFromFields(ctx, h, arg);
@@ -3781,10 +3784,7 @@ public sealed class TemporalStub : IBuiltinModule
             var bagTime = new IsoTime(
                 (int)Math.Clamp(tv[0], 0, 23), (int)Math.Clamp(tv[1], 0, 59), (int)Math.Clamp(tv[2], 0, 59),
                 (int)Math.Clamp(tv[3], 0, 999), (int)Math.Clamp(tv[4], 0, 999), (int)Math.Clamp(tv[5], 0, 999));
-            long epochNsDiag = TemporalTimeZones.EpochNsFromWall(bagTz, bagDate, bagTime);
-            // DIAGNOSTIC
-            System.Console.Error.WriteLine($"DIAG2: bagDate=({bagDate.Year},{bagDate.Month},{bagDate.Day}) epochNs={epochNsDiag} tz={bagTz} cal={bagCal}");
-            return (epochNsDiag, bagTz, bagCal);
+            return (TemporalTimeZones.EpochNsFromWallBig(bagTz, bagDate, bagTime), bagTz, bagCal);
         }
 
         throw new JsThrownException(ctx.CreateTypeError("Cannot convert value to a Temporal.ZonedDateTime."));
@@ -3802,21 +3802,39 @@ public sealed class TemporalStub : IBuiltinModule
             throw new JsThrownException(ctx.CreateTypeError("ZonedDateTime constructor requires a time zone string."));
         string tz = CanonicalizeTimeZoneId(ctx, args[1].AsString());
         string cal = CalendarArg(ctx, args, 2);
-        return MakeZonedDateTimeNs(ctx, h, ToSafeLong(ns), tz, cal);
+        return MakeZonedDateTimeNsBig(ctx, h, ns, tz, cal);
     }
 
     /// <summary>Decode a ZonedDateTime's wall-clock time-of-day in nanoseconds.</summary>
     private static long ZonedWallTimeNs(JsHeap h, JsObject o) => DecodeTimeOfDayNs(h, o);
 
     /// <summary>Epoch ns of midnight (start of day) for the instance's wall date.</summary>
+    private static System.Numerics.BigInteger ZonedStartOfDayNsBig(JsHeap h, JsObject o)
+        => TemporalTimeZones.EpochNsFromWallBig(GetVStr(h, o, "tz"), DecodeIsoDateLong(h, o), IsoTime.Midnight);
+
     private static long ZonedStartOfDayNs(JsHeap h, JsObject o)
-        => TemporalTimeZones.EpochNsFromWall(GetVStr(h, o, "tz"), DecodeIsoDateLong(h, o), IsoTime.Midnight);
+        => ToSafeLong(ZonedStartOfDayNsBig(h, o));
 
     /// <summary>CreateTemporalZonedDateTime: epoch ns + zone + calendar, with the wall-clock fields cached in _v.</summary>
     private static JsValue MakeZonedDateTimeNs(IBuiltinContext ctx, JsHeap h, long epochNs, string tz, string calendarId)
+        => MakeZonedDateTimeNsBig(ctx, h, new System.Numerics.BigInteger(epochNs), tz, calendarId);
+
+    private static JsValue MakeZonedDateTimeNsBig(IBuiltinContext ctx, JsHeap h, System.Numerics.BigInteger epochNsBig, string tz, string calendarId)
     {
-        long offsetNs = TemporalTimeZones.GetOffsetNs(tz, epochNs);
-        var (date, time) = TemporalTimeZones.WallFromEpochNs(epochNs, offsetNs);
+        long offsetNs;
+        IsoDate date; IsoTime time;
+        if (epochNsBig >= long.MinValue && epochNsBig <= long.MaxValue)
+        {
+            long ens = (long)epochNsBig;
+            offsetNs = TemporalTimeZones.GetOffsetNs(tz, ens);
+            (date, time) = TemporalTimeZones.WallFromEpochNs(ens, offsetNs);
+        }
+        else
+        {
+            // Outside long range: offset = 0 (no TZ data available), compute wall directly.
+            offsetNs = 0;
+            (date, time) = TemporalTimeZones.WallFromEpochNsBig(epochNsBig, 0);
+        }
         var o = new JsObject();
         var d = new JsObject(); var dH = h.AllocateObject(d, AllocationSite.Current());
         d.SetProperty("year", JsValue.FromNumber(date.Year));
@@ -3828,11 +3846,13 @@ public sealed class TemporalStub : IBuiltinModule
         d.SetProperty("millisecond", JsValue.FromNumber(time.Millisecond));
         d.SetProperty("microsecond", JsValue.FromNumber(time.Microsecond));
         d.SetProperty("nanosecond", JsValue.FromNumber(time.Nanosecond));
-        d.SetProperty("epochSeconds", JsValue.FromNumber(Math.Floor(epochNs / 1_000_000_000.0)));
-        d.SetProperty("epochMilliseconds", JsValue.FromNumber(Math.Floor(epochNs / 1_000_000.0)));
-        d.SetProperty("epochMicroseconds", JsValue.FromNumber(Math.Floor(epochNs / 1_000.0)));
+        long epochNs = 0;
+        try { epochNs = (long)epochNsBig; } catch (OverflowException) { }
+        d.SetProperty("epochSeconds", JsValue.FromNumber((double)(epochNsBig / 1_000_000_000)));
+        d.SetProperty("epochMilliseconds", JsValue.FromNumber((double)(epochNsBig / 1_000_000)));
+        d.SetProperty("epochMicroseconds", JsValue.FromNumber((double)(epochNsBig / 1_000)));
         d.SetProperty("ens", JsValue.FromNumber((double)epochNs));
-        d.SetProperty("ensBig", JsValue.FromBigInt(epochNs));
+        d.SetProperty("ensBig", JsValue.FromBigInt(epochNsBig));
         d.SetProperty("offsetNanoseconds", JsValue.FromNumber(offsetNs));
         d.SetProperty("tz", JsValue.FromString(tz));
         d.SetProperty("calendarId", JsValue.FromString(string.IsNullOrEmpty(calendarId) ? "iso8601" : calendarId));
@@ -3919,32 +3939,32 @@ public sealed class TemporalStub : IBuiltinModule
                 (int)Math.Clamp(timeValues[0], 0, 23), (int)Math.Clamp(timeValues[1], 0, 59), (int)Math.Clamp(timeValues[2], 0, 59),
                 (int)Math.Clamp(timeValues[3], 0, 999), (int)Math.Clamp(timeValues[4], 0, 999), (int)Math.Clamp(timeValues[5], 0, 999));
             string tz = GetVStr(h, o, "tz");
-            return AttachPrototype(h, MakeZonedDateTimeNs(ctx, h,
-                TemporalTimeZones.EpochNsFromWall(tz, date, time), tz, GetVStr(h, o, "calendarId")), pH);
+            return AttachPrototype(h, MakeZonedDateTimeNsBig(ctx, h,
+                TemporalTimeZones.EpochNsFromWallBig(tz, date, time), tz, GetVStr(h, o, "calendarId")), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "withCalendar", (o, a) => {
             var cal = ToCalendarIdentifier(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            return AttachPrototype(h, MakeZonedDateTimeNs(ctx, h, DecodeInstantNanos(h, o), GetVStr(h, o, "tz"), cal), pH);
+            return AttachPrototype(h, MakeZonedDateTimeNsBig(ctx, h, DecodeInstantNanosBig(h, o), GetVStr(h, o, "tz"), cal), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "withTimeZone", (o, a) => {
             if (a.Count == 0 || a[0].Tag != JsValueTag.String)
                 throw new JsThrownException(ctx.CreateTypeError("withTimeZone: time zone must be a string."));
             var tz = CanonicalizeTimeZoneId(ctx, a[0].AsString());
-            return AttachPrototype(h, MakeZonedDateTimeNs(ctx, h, DecodeInstantNanos(h, o), tz, GetVStr(h, o, "calendarId")), pH);
+            return AttachPrototype(h, MakeZonedDateTimeNsBig(ctx, h, DecodeInstantNanosBig(h, o), tz, GetVStr(h, o, "calendarId")), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "withPlainDate", (o, a) => {
             var (date, _) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             var time = new IsoTime((int)GetVNum(h, o, "hour"), (int)GetVNum(h, o, "minute"), (int)GetVNum(h, o, "second"),
                 (int)GetVNum(h, o, "millisecond"), (int)GetVNum(h, o, "microsecond"), (int)GetVNum(h, o, "nanosecond"));
             string tz = GetVStr(h, o, "tz");
-            return AttachPrototype(h, MakeZonedDateTimeNs(ctx, h,
-                TemporalTimeZones.EpochNsFromWall(tz, date, time), tz, GetVStr(h, o, "calendarId")), pH);
+            return AttachPrototype(h, MakeZonedDateTimeNsBig(ctx, h,
+                TemporalTimeZones.EpochNsFromWallBig(tz, date, time), tz, GetVStr(h, o, "calendarId")), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "withPlainTime", (o, a) => {
             var time = a.Count > 0 && a[0].Tag != JsValueTag.Undefined ? ToTemporalTimeRecord(ctx, h, a[0]) : IsoTime.Midnight;
             string tz = GetVStr(h, o, "tz");
-            return AttachPrototype(h, MakeZonedDateTimeNs(ctx, h,
-                TemporalTimeZones.EpochNsFromWall(tz, DecodeIsoDateLong(h, o), time), tz, GetVStr(h, o, "calendarId")), pH);
+            return AttachPrototype(h, MakeZonedDateTimeNsBig(ctx, h,
+                TemporalTimeZones.EpochNsFromWallBig(tz, DecodeIsoDateLong(h, o), time), tz, GetVStr(h, o, "calendarId")), pH);
         }, 0);
         AddMethod(ctx, h, pH, p, "add", (o, a) => AddDurationToZoned(ctx, h, o, a, pH, 1), 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => AddDurationToZoned(ctx, h, o, a, pH, -1), 1);
@@ -3971,7 +3991,7 @@ public sealed class TemporalStub : IBuiltinModule
             return JsValue.FromBoolean(DecodeInstantNanos(h, o) == otherNs && tzEqual && calsEqual);
         }, 1);
         AddMethod(ctx, h, pH, p, "startOfDay", (o, _) =>
-            AttachPrototype(h, MakeZonedDateTimeNs(ctx, h, ZonedStartOfDayNs(h, o), GetVStr(h, o, "tz"), GetVStr(h, o, "calendarId")), pH), 0);
+            AttachPrototype(h, MakeZonedDateTimeNsBig(ctx, h, ZonedStartOfDayNsBig(h, o), GetVStr(h, o, "tz"), GetVStr(h, o, "calendarId")), pH), 0);
         AddMethod(ctx, h, pH, p, "getTimeZoneTransition", (o, a) => {
             // Direction is required: "next"/"previous" or { direction }.
             if (a.Count == 0 || a[0].Tag == JsValueTag.Undefined)
@@ -4044,7 +4064,7 @@ public sealed class TemporalStub : IBuiltinModule
             var (ns, tz, cal) = ToTemporalZonedRecord(ctx, h, a[0]);
             _ = GetOverflowOption(ctx, h, a, 1);
             _ = GetDisambiguationOption(ctx, h, a, 1);
-            return AttachPrototype(h, MakeZonedDateTimeNs(ctx, h, ns, tz, cal), pH);
+            return AttachPrototype(h, MakeZonedDateTimeNsBig(ctx, h, ns, tz, cal), pH);
         }, 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
             var (nsA, _, _) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
@@ -4059,7 +4079,7 @@ public sealed class TemporalStub : IBuiltinModule
         var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
         bool constrain = GetOverflowOption(ctx, h, a, 1) == "constrain";
         string tz = GetVStr(h, o, "tz");
-        long epochNs = DecodeInstantNanos(h, o);
+        var epochNsBig = DecodeInstantNanosBig(h, o);
         if (dur.years != 0 || dur.months != 0 || dur.weeks != 0 || dur.days != 0)
         {
             var date = DecodeIsoDateLong(h, o);
@@ -4069,11 +4089,11 @@ public sealed class TemporalStub : IBuiltinModule
                 throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range."));
             var time = new IsoTime((int)GetVNum(h, o, "hour"), (int)GetVNum(h, o, "minute"), (int)GetVNum(h, o, "second"),
                 (int)GetVNum(h, o, "millisecond"), (int)GetVNum(h, o, "microsecond"), (int)GetVNum(h, o, "nanosecond"));
-            epochNs = TemporalTimeZones.EpochNsFromWall(tz, newDate, time);
+            epochNsBig = TemporalTimeZones.EpochNsFromWallBig(tz, newDate, time);
         }
 
-        epochNs += sign * DurationToNanos(0, dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos);
-        return AttachPrototype(h, MakeZonedDateTimeNs(ctx, h, epochNs, tz, GetVStr(h, o, "calendarId")), pH);
+        epochNsBig += sign * DurationToNanos(0, dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos);
+        return AttachPrototype(h, MakeZonedDateTimeNsBig(ctx, h, epochNsBig, tz, GetVStr(h, o, "calendarId")), pH);
     }
 
     /// <summary>ZonedDateTime.prototype.round: round the wall time, re-resolve in the zone.</summary>
@@ -4264,10 +4284,19 @@ public sealed class TemporalStub : IBuiltinModule
     /// overflows int is preserved exactly.
     /// </summary>
     /// <summary>ZonedDateTime diff: calendar-aware for year/month/week/day, ns-balanced below.</summary>
+    private static JsValue ZdtDiff(IBuiltinContext ctx, JsHeap h, JsObject self, System.Numerics.BigInteger otherNs, string largest, int sign)
+        => ZdtDiffInternal(ctx, h, self, otherNs, largest, sign);
+
     private static JsValue ZdtDiff(IBuiltinContext ctx, JsHeap h, JsObject self, long otherNs, string largest, int sign)
+        => ZdtDiffInternal(ctx, h, self, new System.Numerics.BigInteger(otherNs), largest, sign);
+
+    private static JsValue ZdtDiffInternal(IBuiltinContext ctx, JsHeap h, JsObject self, System.Numerics.BigInteger otherNsBig, string largest, int sign)
     {
-        long selfNs = DecodeInstantNanos(h, self);
-        long diffNs = (sign > 0 ? otherNs - selfNs : selfNs - otherNs);
+        var selfNsBig = DecodeInstantNanosBig(h, self);
+        var diffNsBig = sign > 0 ? otherNsBig - selfNsBig : selfNsBig - otherNsBig;
+        long diffNs;
+        try { diffNs = (long)diffNsBig; }
+        catch (OverflowException) { diffNs = diffNsBig > System.Numerics.BigInteger.Zero ? long.MaxValue : long.MinValue; }
         if (diffNs == long.MinValue) diffNs = long.MinValue + 1;
         // Sub-day units: pure ns balancing.
         if (largest is "nanosecond" or "microsecond" or "millisecond" or "second" or "minute" or "hour")
@@ -4275,8 +4304,13 @@ public sealed class TemporalStub : IBuiltinModule
 
         // Day-or-above: extract wall dates, diff via calendar, then time remainder.
         const long DayNs = 86_400_000_000_000L;
-        long selfDay = selfNs >= 0 ? selfNs / DayNs : (selfNs + 1) / DayNs - 1;
-        long otherDay = otherNs >= 0 ? otherNs / DayNs : (otherNs + 1) / DayNs - 1;
+        // Compute epoch days using BigInteger for correct results outside long range.
+        long selfDay = (long)System.Numerics.BigInteger.DivRem(selfNsBig, DayNs, out var selfTimeBig);
+        long selfTimeNs = (long)selfTimeBig;
+        if (selfTimeNs < 0) { selfDay -= 1; selfTimeNs += DayNs; }
+        long otherDay = (long)System.Numerics.BigInteger.DivRem(otherNsBig, DayNs, out var otherTimeBig);
+        long otherTimeNs = (long)otherTimeBig;
+        if (otherTimeNs < 0) { otherDay -= 1; otherTimeNs += DayNs; }
         var selfDate = DecodeIsoDateLong(h, self);
         var otherDate = IsoMath.EpochDaysToCivil(otherDay);
 
@@ -4294,8 +4328,6 @@ public sealed class TemporalStub : IBuiltinModule
         }
 
         // Time-of-day remainder.
-        long selfTimeNs = selfNs - IsoMath.ToEpochDays(selfDate) * DayNs;
-        long otherTimeNs = otherNs - otherDay * DayNs;
         long timeR = sign > 0 ? otherTimeNs - selfTimeNs : selfTimeNs - otherTimeNs;
         long tDays = datePart.d + timeR / DayNs;
         long rem = timeR % DayNs;
