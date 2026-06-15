@@ -3055,6 +3055,14 @@ public sealed class JsParser
                     fieldInitializer = ParseExpression(0);
                 }
 
+                // ECMA-262 ClassStaticBlockDefinition Early Errors:
+                // Field name cannot be "constructor" (instance or static).
+                // Static field name cannot be "prototype".
+                if (string.Equals(memberName, "constructor", StringComparison.Ordinal))
+                    throw new JsParserException("Class field name 'constructor' is not allowed.");
+                if (isStatic && string.Equals(memberName, "prototype", StringComparison.Ordinal))
+                    throw new JsParserException("Static class field name 'prototype' is not allowed.");
+
                 if (IsPunctuator(";"))
                 {
                     Advance();
