@@ -4185,8 +4185,15 @@ public sealed class JsParser
 
         if (token.Kind == TokenKind.BigInt)
         {
+            var text = token.Text;
+            // ECMA-262: BigIntLiteralSuffix cannot follow LegacyOctalIntegerLiteral
+            // or NonOctalDecimalIntegerLiteral. Only DecimalIntegerLiteral and
+            // NonDecimalIntegerLiteral are valid BigInt bases.
+            // DecimalIntegerLiteral starting with '0' must be exactly '0' (or '0n').
+            if (text.Length > 2 && text[0] == '0' && text[1] != 'x' && text[1] != 'o' && text[1] != 'b' && text[1] != 'X' && text[1] != 'O' && text[1] != 'B')
+                throw new JsParserException("Invalid BigInt literal.");
             Advance();
-            return new BigIntLiteralExpressionNode(token.Text, token.Span);
+            return new BigIntLiteralExpressionNode(text, token.Span);
         }
 
         if (token.Kind == TokenKind.String)
