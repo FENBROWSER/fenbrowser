@@ -4094,6 +4094,8 @@ public sealed class JsParser
                 var prop = ExpectPropertyNameAfterDot();
                 if (string.Equals(prop.Text, "meta", StringComparison.Ordinal))
                 {
+                    if (!_moduleMode)
+                        throw new JsParserException("import.meta is only valid in module code.");
                     return new ImportMetaExpressionNode(MergeSpan(importToken.Span, prop.Span));
                 }
                 if (string.Equals(prop.Text, "source", StringComparison.Ordinal))
