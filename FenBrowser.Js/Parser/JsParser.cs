@@ -3918,6 +3918,10 @@ public sealed class JsParser
             if (IsPunctuator("("))
             {
                 Advance();
+                // ECMA-262: ImportCall arguments use [+In] — `in` is always an
+                // operator, never a for-in marker, even inside a for-header.
+                var savedNoIn = _noIn;
+                _noIn = false;
                 var specifier = ParseExpression(2);
                 // ECMA-262 13.3.10.1: optional trailing comma + assertion arg.
                 // We parse and discard a second argument so import(spec, {}) still
@@ -3933,6 +3937,7 @@ public sealed class JsParser
                             Advance();
                     }
                 }
+                _noIn = savedNoIn;
                 ExpectPunctuator(")");
                 return new ImportCallExpressionNode(specifier, MergeSpan(importToken.Span, Previous().Span));
             }
@@ -3949,6 +3954,8 @@ public sealed class JsParser
                     // import.source(AssignmentExpression) — ES2025 Import Source proposal.
                     // import.source without parens is a SyntaxError per the grammar.
                     ExpectPunctuator("(");
+                    var savedNoIn = _noIn;
+                    _noIn = false;
                     var specifier = ParseExpression(2);
                     // Optional trailing comma + import attributes (parse and discard).
                     if (IsPunctuator(","))
@@ -3962,6 +3969,7 @@ public sealed class JsParser
                                 Advance();
                         }
                     }
+                    _noIn = savedNoIn;
                     ExpectPunctuator(")");
                     return new ImportSourceExpressionNode(specifier, MergeSpan(importToken.Span, Previous().Span));
                 }
@@ -3970,6 +3978,8 @@ public sealed class JsParser
                     // import.defer(AssignmentExpression) — ES2025 Import Defer proposal.
                     // import.defer without parens is a SyntaxError per the grammar.
                     ExpectPunctuator("(");
+                    var savedNoIn = _noIn;
+                    _noIn = false;
                     var specifier = ParseExpression(2);
                     // Optional trailing comma + import attributes (parse and discard).
                     if (IsPunctuator(","))
@@ -3983,6 +3993,7 @@ public sealed class JsParser
                                 Advance();
                         }
                     }
+                    _noIn = savedNoIn;
                     ExpectPunctuator(")");
                     return new ImportDeferExpressionNode(specifier, MergeSpan(importToken.Span, Previous().Span));
                 }
