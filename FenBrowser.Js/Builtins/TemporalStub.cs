@@ -790,9 +790,6 @@ public sealed class TemporalStub : IBuiltinModule
             if (hasEra) _ = ctx.ToStringValue(eraV);
             if (hasEraYear) _ = ToIntegerWithTruncation(ctx, eraYearV);
             // NonIsoFieldKeysToIgnore removes era/eraYear for calendars without eras.
-            // If no other year-providing key remains, throw TypeError per spec.
-            if (!hasYear)
-                throw new JsThrownException(ctx.CreateTypeError("eraYear and era are invalid for this calendar"));
             hasEra = false;
             hasEraYear = false;
         }
@@ -3601,7 +3598,13 @@ public sealed class TemporalStub : IBuiltinModule
                 {
                     // Non-ISO: delegate to calendar system for monthCode validation.
                     // PlainMonthDay does not require year — use a reference year when absent.
-                    CalendarFields? mdBase = TryGetField(ctx, h, arg, "year", out _) || TryGetField(ctx, h, arg, "era", out _)
+                    bool hasYearField = TryGetField(ctx, h, arg, "year", out _);
+                    bool hasEraField = TryGetField(ctx, h, arg, "era", out _);
+                    bool hasMonthField = TryGetField(ctx, h, arg, "month", out _);
+                    if (hasMonthField && !hasYearField && !hasEraField)
+                        throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.from: month requires year (or use monthCode)."));
+
+                    CalendarFields? mdBase = hasYearField || hasEraField
                         ? null : new CalendarFields(null, null, 1972, 1, "M01", 1, 1, 31, 365, 12, false);
                     var resolved = ResolveCalendarDateFields(ctx, h, arg, calSys, mdBase, requireDay: true);
                     refYear = resolved.Year;
