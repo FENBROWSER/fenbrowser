@@ -7897,6 +7897,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             nfProto.DefineOwnProperty("format", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(fmtStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
             var ftpStub = new NativeFunctionObject("formatToParts", (_, _2) => { var e = JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current())); return e; }, length: 1);
             nfProto.DefineOwnProperty("formatToParts", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(ftpStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+            var frStub = new NativeFunctionObject("formatRange", (_, _2) => JsValue.FromString(""), length: 2);
+            nfProto.DefineOwnProperty("formatRange", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(frStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+            var frtpStub = new NativeFunctionObject("formatRangeToParts", (_, _2) => { var e = JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current())); return e; }, length: 2);
+            nfProto.DefineOwnProperty("formatRangeToParts", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(frtpStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
 
             var ctor = new NativeFunctionObject(
                 "NumberFormat",
@@ -7935,13 +7939,34 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         // ECMA-402 §10 Collator constructor.
         {
+            var collatorProtoHandle = EnsureCollatorPrototype();
+
             var ctor = new NativeFunctionObject(
                 "Collator",
-                (_, _) => throw new JsThrownException(CreateTypeError("Intl.Collator must be invoked with 'new'.")),
+                (thisValue, args) => ChainIntlService(thisValue, args, collatorProtoHandle, CollatorConstruct),
                 construct: args => CollatorConstruct(args),
                 length: 0);
             var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
             _heap.PushRoot(ctorHandle);
+
+            _ = ctor.DefineOwnProperty("prototype",
+                new JsPropertyDescriptor(JsValue.FromObject(collatorProtoHandle), Writable: false, Enumerable: false, Configurable: false));
+            _heap.WriteBarrier(ctorHandle, collatorProtoHandle);
+
+            var supportedLocalesOf = new NativeFunctionObject(
+                "supportedLocalesOf",
+                (_, supportedArgs) => SupportedLocalesOf(supportedArgs),
+                length: 1);
+            var supportedLocalesOfHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());
+            _ = ctor.DefineOwnProperty("supportedLocalesOf",
+                new JsPropertyDescriptor(JsValue.FromObject(supportedLocalesOfHandle), Writable: true, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(ctorHandle, supportedLocalesOfHandle);
+
+            var collatorProto = _heap.GetObject(collatorProtoHandle);
+            _ = collatorProto.DefineOwnProperty("constructor",
+                new JsPropertyDescriptor(JsValue.FromObject(ctorHandle), Writable: true, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(collatorProtoHandle, ctorHandle);
+
             _ = intl.DefineOwnProperty(
                 "Collator",
                 new JsPropertyDescriptor(
@@ -7954,13 +7979,34 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         // ECMA-402 Intl.ListFormat constructor.
         {
+            var listFormatProtoHandle = EnsureListFormatPrototype();
+
             var ctor = new NativeFunctionObject(
                 "ListFormat",
-                (_, _) => throw new JsThrownException(CreateTypeError("Intl.ListFormat must be invoked with 'new'.")),
+                (thisValue, args) => ChainIntlService(thisValue, args, listFormatProtoHandle, ListFormatConstruct),
                 construct: args => ListFormatConstruct(args),
                 length: 0);
             var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
             _heap.PushRoot(ctorHandle);
+
+            _ = ctor.DefineOwnProperty("prototype",
+                new JsPropertyDescriptor(JsValue.FromObject(listFormatProtoHandle), Writable: false, Enumerable: false, Configurable: false));
+            _heap.WriteBarrier(ctorHandle, listFormatProtoHandle);
+
+            var supportedLocalesOf = new NativeFunctionObject(
+                "supportedLocalesOf",
+                (_, supportedArgs) => SupportedLocalesOf(supportedArgs),
+                length: 1);
+            var supportedLocalesOfHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());
+            _ = ctor.DefineOwnProperty("supportedLocalesOf",
+                new JsPropertyDescriptor(JsValue.FromObject(supportedLocalesOfHandle), Writable: true, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(ctorHandle, supportedLocalesOfHandle);
+
+            var listFormatProto = _heap.GetObject(listFormatProtoHandle);
+            _ = listFormatProto.DefineOwnProperty("constructor",
+                new JsPropertyDescriptor(JsValue.FromObject(ctorHandle), Writable: true, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(listFormatProtoHandle, ctorHandle);
+
             _ = intl.DefineOwnProperty(
                 "ListFormat",
                 new JsPropertyDescriptor(

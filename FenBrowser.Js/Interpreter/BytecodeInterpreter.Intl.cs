@@ -1,3 +1,4 @@
+using FenBrowser.Js.Builtins;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Intl;
 using FenBrowser.Js.Objects;
@@ -15,6 +16,11 @@ public sealed partial class BytecodeInterpreter
     private ObjectHandle? _dateTimeFormatPrototypeHandle;
     private ObjectHandle? _durationFormatConstructorHandle;
     private ObjectHandle? _durationFormatPrototypeHandle;
+    private ObjectHandle? _collatorPrototypeHandle;
+    private ObjectHandle? _segmenterPrototypeHandle;
+    private ObjectHandle? _pluralRulesPrototypeHandle;
+    private ObjectHandle? _displayNamesPrototypeHandle;
+    private ObjectHandle? _listFormatPrototypeHandle;
     private JsValue _intlFallbackSymbol = JsValue.Undefined; // %Intl%.[[FallbackSymbol]]
     private sealed record IntlPart(string Type, string Value, string? Unit = null);
     private sealed record NumberFormatState(
@@ -477,6 +483,84 @@ public sealed partial class BytecodeInterpreter
             new JsPropertyDescriptor(JsValue.FromObject(resolvedOptionsHandle),
                 Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(protoHandle, resolvedOptionsHandle);
+
+        // ECMA-402 formatRange (ES2021 Intl.NumberFormat-v3)
+        var capturedState = state;
+        var formatRangeMethod = new NativeFunctionObject(
+            "formatRange",
+            (thisValue, rangeArgs) =>
+            {
+                // RequireInternalSlot / brand check: thisValue must be an object.
+                if (thisValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(CreateTypeError("Intl.NumberFormat.prototype.formatRange called on incompatible receiver."));
+                var xVal = rangeArgs.Count > 0 ? rangeArgs[0] : JsValue.Undefined;
+                var yVal = rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined;
+                if (xVal.Tag == JsValueTag.Undefined || yVal.Tag == JsValueTag.Undefined)
+                    throw new JsThrownException(CreateTypeError("formatRange requires two arguments."));
+                var x = ToNumber(xVal);
+                var y = ToNumber(yVal);
+                if (double.IsNaN(x) || double.IsNaN(y))
+                    throw new JsThrownException(CreateRangeError("formatRange requires finite numbers."));
+                // If x > y, swap them per spec (formatRange does not throw).
+                if (x > y) { var tmp = x; x = y; y = tmp; }
+                var xFormatted = FormatNumber(JsValue.FromNumber(x), capturedState);
+                var yFormatted = FormatNumber(JsValue.FromNumber(y), capturedState);
+                // Approximate sign (~) when values round to the same result.
+                if (xFormatted == yFormatted)
+                    return JsValue.FromString("∼" + xFormatted);
+                return JsValue.FromString(xFormatted + "–" + yFormatted);
+            },
+            length: 2);
+        var formatRangeHandle = _heap.AllocateObject(formatRangeMethod, AllocationSite.Current());
+        prototype.DefineOwnProperty("formatRange",
+            new JsPropertyDescriptor(JsValue.FromObject(formatRangeHandle),
+                Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, formatRangeHandle);
+
+        // ECMA-402 formatRangeToParts (ES2021 Intl.NumberFormat-v3)
+        var formatRangeToPartsMethod = new NativeFunctionObject(
+            "formatRangeToParts",
+            (thisValue, rangeArgs) =>
+            {
+                // RequireInternalSlot / brand check.
+                if (thisValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(CreateTypeError("Intl.NumberFormat.prototype.formatRangeToParts called on incompatible receiver."));
+                var xVal = rangeArgs.Count > 0 ? rangeArgs[0] : JsValue.Undefined;
+                var yVal = rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined;
+                if (xVal.Tag == JsValueTag.Undefined || yVal.Tag == JsValueTag.Undefined)
+                    throw new JsThrownException(CreateTypeError("formatRangeToParts requires two arguments."));
+                var x = ToNumber(xVal);
+                var y = ToNumber(yVal);
+                if (double.IsNaN(x) || double.IsNaN(y))
+                    throw new JsThrownException(CreateRangeError("formatRangeToParts requires finite numbers."));
+                // If x > y, swap them for range display.
+                if (x > y) { var tmp = x; x = y; y = tmp; }
+                var xParts = FormatNumberToParts(JsValue.FromNumber(x), capturedState);
+                var yParts = FormatNumberToParts(JsValue.FromNumber(y), capturedState);
+                var xFormatted = string.Concat(xParts.Select(static p => p.Value));
+                var yFormatted = string.Concat(yParts.Select(static p => p.Value));
+                if (xFormatted == yFormatted)
+                {
+                    var approxParts = new List<IntlPart> { new IntlPart("literal", "∼") };
+                    approxParts.AddRange(xParts);
+                    return CreateIntlPartsArray(approxParts);
+                }
+                var rangeParts = new List<IntlPart>();
+                // Map x parts to rangeStart
+                foreach (var p in xParts)
+                    rangeParts.Add(new IntlPart("rangeStart", p.Value, p.Unit));
+                rangeParts.Add(new IntlPart("literal", "–"));
+                // Map y parts to rangeEnd
+                foreach (var p in yParts)
+                    rangeParts.Add(new IntlPart("rangeEnd", p.Value, p.Unit));
+                return CreateIntlPartsArray(rangeParts);
+            },
+            length: 2);
+        var formatRangeToPartsHandle = _heap.AllocateObject(formatRangeToPartsMethod, AllocationSite.Current());
+        prototype.DefineOwnProperty("formatRangeToParts",
+            new JsPropertyDescriptor(JsValue.FromObject(formatRangeToPartsHandle),
+                Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, formatRangeToPartsHandle);
 
         var instance = CreateOrdinaryObject();
         instance.SetPrototype(protoHandle);
@@ -3106,6 +3190,235 @@ public sealed partial class BytecodeInterpreter
         }
 
         return true;
+    }
+
+    private ObjectHandle EnsureCollatorPrototype()
+    {
+        if (_collatorPrototypeHandle is { } existing)
+            return existing;
+
+        var proto = CreateOrdinaryObject();
+        var ph = _heap.AllocateObject(proto, AllocationSite.Current());
+        _heap.PushRoot(ph);
+
+        var compareMethod = new NativeFunctionObject("compare", (thisValue, cmpArgs) =>
+        {
+            string localeStr = "en-US";
+            if (thisValue.Tag == JsValueTag.Object)
+            {
+                var receiver = _heap.GetObject(thisValue.AsObjectHandle());
+                if (receiver.TryGetProperty("__collator_locale", x => _heap.GetObject(x), out var locDesc) &&
+                    locDesc.Value.Tag == JsValueTag.String)
+                    localeStr = locDesc.Value.AsString();
+            }
+            var cult = IntlDateTimeFormatting.ResolveCulture(localeStr);
+            var a = cmpArgs.Count > 0 ? ToStringValue(cmpArgs[0]) : string.Empty;
+            var b = cmpArgs.Count > 1 ? ToStringValue(cmpArgs[1]) : string.Empty;
+            var result = cult.CompareInfo.Compare(a, b, System.Globalization.CompareOptions.None);
+            return JsValue.FromNumber(result);
+        }, length: 2);
+        var compareHandle = _heap.AllocateObject(compareMethod, AllocationSite.Current());
+        _ = proto.DefineOwnProperty("compare",
+            new JsPropertyDescriptor(JsValue.FromObject(compareHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(ph, compareHandle);
+
+        var resolvedOptsMethod = new NativeFunctionObject("resolvedOptions", (thisValue, _2) =>
+        {
+            string localeStr = "en-US";
+            if (thisValue.Tag == JsValueTag.Object)
+            {
+                var receiver = _heap.GetObject(thisValue.AsObjectHandle());
+                if (receiver.TryGetProperty("__collator_locale", x => _heap.GetObject(x), out var locDesc) &&
+                    locDesc.Value.Tag == JsValueTag.String)
+                    localeStr = locDesc.Value.AsString();
+            }
+            var o = CreateOrdinaryObject();
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(localeStr), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("usage", new JsPropertyDescriptor(JsValue.FromString("sort"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("sensitivity", new JsPropertyDescriptor(JsValue.FromString("variant"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("ignorePunctuation", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("collation", new JsPropertyDescriptor(JsValue.FromString("default"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("numeric", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("caseFirst", new JsPropertyDescriptor(JsValue.FromString("false"), Writable: true, Enumerable: true, Configurable: true));
+            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
+        }, length: 0);
+        var resolvedOptsHandle = _heap.AllocateObject(resolvedOptsMethod, AllocationSite.Current());
+        _ = proto.DefineOwnProperty("resolvedOptions",
+            new JsPropertyDescriptor(JsValue.FromObject(resolvedOptsHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(ph, resolvedOptsHandle);
+
+        _collatorPrototypeHandle = ph;
+        return ph;
+    }
+
+    private ObjectHandle EnsureSegmenterPrototype()
+    {
+        if (_segmenterPrototypeHandle is { } existing)
+            return existing;
+
+        var proto = CreateOrdinaryObject();
+        var ph = _heap.AllocateObject(proto, AllocationSite.Current());
+        _heap.PushRoot(ph);
+
+        var segmentFn = new NativeFunctionObject("segment", (_, a) =>
+        {
+            var str = a.Count > 0 ? ToStringValue(a[0]) : "";
+            var segments = CreateOrdinaryObject();
+            segments.DefineOwnProperty("_str", new JsPropertyDescriptor(JsValue.FromString(str), Writable: false, Enumerable: false, Configurable: false));
+            segments.DefineOwnProperty("_idx", new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
+            var iterFn = new NativeFunctionObject("next", (_, _2) =>
+            {
+                var segsObj = _heap.GetObject(_.AsObjectHandle())!;
+                int idx = 0;
+                if (segsObj.TryGetOwnProperty("_idx", out var idxDesc))
+                    idx = (int)idxDesc.Value.AsNumber();
+                string storedStr = "";
+                if (segsObj.TryGetOwnProperty("_str", out var strDesc))
+                    storedStr = strDesc.Value.AsString();
+                if (idx >= storedStr.Length)
+                {
+                    var doneObj = CreateOrdinaryObject();
+                    doneObj.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+                    doneObj.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true));
+                    return JsValue.FromObject(_heap.AllocateObject(doneObj, AllocationSite.Current()));
+                }
+                var seg = CreateOrdinaryObject();
+                seg.DefineOwnProperty("segment", new JsPropertyDescriptor(JsValue.FromString(storedStr[idx].ToString()), Writable: true, Enumerable: true, Configurable: true));
+                seg.DefineOwnProperty("index", new JsPropertyDescriptor(JsValue.FromNumber(idx), Writable: true, Enumerable: true, Configurable: true));
+                seg.DefineOwnProperty("input", new JsPropertyDescriptor(JsValue.FromString(storedStr), Writable: true, Enumerable: true, Configurable: true));
+                var result = CreateOrdinaryObject();
+                result.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(seg, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
+                result.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
+                segsObj.DefineOwnProperty("_idx", new JsPropertyDescriptor(JsValue.FromNumber(idx + 1), Writable: true, Enumerable: false, Configurable: false));
+                return JsValue.FromObject(_heap.AllocateObject(result, AllocationSite.Current()));
+            }, length: 0);
+            var iterObj = CreateOrdinaryObject();
+            var iterObjHandle = _heap.AllocateObject(iterObj, AllocationSite.Current());
+            iterObj.DefineOwnProperty("next", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(iterFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+            var capturedHandle = iterObjHandle;
+            var symIter = new NativeFunctionObject("[Symbol.iterator]", (_, _2) => JsValue.FromObject(capturedHandle), length: 0);
+            var symHandle = _heap.AllocateObject(symIter, AllocationSite.Current());
+            var symId = ((IBuiltinContext)this).CreateWellKnownSymbol("iterator").AsSymbolId();
+            iterObj.DefineOwnSymbolProperty(symId, new JsPropertyDescriptor(JsValue.FromObject(symHandle), Writable: true, Enumerable: false, Configurable: true));
+            return JsValue.FromObject(iterObjHandle);
+        }, length: 1);
+        proto.DefineOwnProperty("segment", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(segmentFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+
+        var segResFn = new NativeFunctionObject("resolvedOptions", (_, _2) =>
+        {
+            var o = CreateOrdinaryObject();
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("granularity", new JsPropertyDescriptor(JsValue.FromString("grapheme"), Writable: true, Enumerable: true, Configurable: true));
+            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
+        }, length: 0);
+        proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(segResFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+
+        _segmenterPrototypeHandle = ph;
+        return ph;
+    }
+
+    private ObjectHandle EnsurePluralRulesPrototype()
+    {
+        if (_pluralRulesPrototypeHandle is { } existing)
+            return existing;
+
+        var proto = CreateOrdinaryObject();
+        var ph = _heap.AllocateObject(proto, AllocationSite.Current());
+        _heap.PushRoot(ph);
+
+        var selectFn = new NativeFunctionObject("select", (_, a) =>
+        {
+            double n = a.Count > 0 ? ToNumber(a[0]) : 0;
+            return JsValue.FromString(SelectPluralRule("en", n));
+        }, length: 1);
+        proto.DefineOwnProperty("select", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(selectFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+
+        var resOptsFn = new NativeFunctionObject("resolvedOptions", (_, _2) =>
+        {
+            var o = CreateOrdinaryObject();
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString("cardinal"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("minimumIntegerDigits", new JsPropertyDescriptor(JsValue.FromNumber(1), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("minimumFractionDigits", new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("maximumFractionDigits", new JsPropertyDescriptor(JsValue.FromNumber(3), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("pluralCategories", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(CreateArrayFromElements(new[] { JsValue.FromString("one"), JsValue.FromString("other") }), AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("roundingIncrement", new JsPropertyDescriptor(JsValue.FromNumber(1), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("roundingMode", new JsPropertyDescriptor(JsValue.FromString("halfExpand"), Writable: true, Enumerable: true, Configurable: true));
+            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
+        }, length: 0);
+        proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(resOptsFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+
+        _pluralRulesPrototypeHandle = ph;
+        return ph;
+    }
+
+    private ObjectHandle EnsureDisplayNamesPrototype()
+    {
+        if (_displayNamesPrototypeHandle is { } existing)
+            return existing;
+
+        var proto = CreateOrdinaryObject();
+        var ph = _heap.AllocateObject(proto, AllocationSite.Current());
+        _heap.PushRoot(ph);
+
+        var ofFn = new NativeFunctionObject("of", (_, a) =>
+        {
+            var code = a.Count > 0 ? ToStringValue(a[0]) : "";
+            return JsValue.FromString(code);
+        }, length: 1);
+        proto.DefineOwnProperty("of", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(ofFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+
+        var dnResFn = new NativeFunctionObject("resolvedOptions", (_, _2) =>
+        {
+            var o = CreateOrdinaryObject();
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString("long"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString("language"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("fallback", new JsPropertyDescriptor(JsValue.FromString("code"), Writable: true, Enumerable: true, Configurable: true));
+            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
+        }, length: 0);
+        proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(dnResFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+
+        _displayNamesPrototypeHandle = ph;
+        return ph;
+    }
+
+    private ObjectHandle EnsureListFormatPrototype()
+    {
+        if (_listFormatPrototypeHandle is { } existing)
+            return existing;
+
+        var proto = CreateOrdinaryObject();
+        var ph = _heap.AllocateObject(proto, AllocationSite.Current());
+        _heap.PushRoot(ph);
+
+        var formatFn = new NativeFunctionObject("format", (_, a) =>
+        {
+            var list = GetListFormatItems(a.Count > 0 ? a[0] : JsValue.Undefined);
+            var parts = FormatListToParts(list, new ListFormatState("en", "conjunction", "long"));
+            return JsValue.FromString(string.Concat(parts.Select(static p => p.Value)));
+        }, length: 1);
+        proto.DefineOwnProperty("format", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(formatFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+
+        var formatToPartsFn = new NativeFunctionObject("formatToParts", (_, a) =>
+        {
+            var list = GetListFormatItems(a.Count > 0 ? a[0] : JsValue.Undefined);
+            return CreateIntlPartsArray(FormatListToParts(list, new ListFormatState("en", "conjunction", "long")));
+        }, length: 1);
+        proto.DefineOwnProperty("formatToParts", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(formatToPartsFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+
+        var resOptsFn = new NativeFunctionObject("resolvedOptions", (_, _2) =>
+        {
+            var o = CreateOrdinaryObject();
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString("conjunction"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString("long"), Writable: true, Enumerable: true, Configurable: true));
+            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
+        }, length: 0);
+        proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(resOptsFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+
+        _listFormatPrototypeHandle = ph;
+        return ph;
     }
 
 }
