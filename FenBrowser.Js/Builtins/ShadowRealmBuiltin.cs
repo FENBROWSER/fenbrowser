@@ -50,7 +50,7 @@ public sealed class ShadowRealmBuiltin : IBuiltinModule
             length: 1);
         var evaluateHandle = heap.AllocateObject(evaluate, AllocationSite.Current());
         _ = prototype.DefineOwnProperty("evaluate",
-            new JsPropertyDescriptor(JsValue.FromObject(evaluateHandle), Writable: true, Enumerable: true, Configurable: true));
+            new JsPropertyDescriptor(JsValue.FromObject(evaluateHandle), Writable: true, Enumerable: false, Configurable: true));
 
         // ShadowRealm.prototype.importValue
         var importValue = new NativeFunctionObject("importValue", (_, _) =>
@@ -58,7 +58,7 @@ public sealed class ShadowRealmBuiltin : IBuiltinModule
             length: 2);
         var importValueHandle = heap.AllocateObject(importValue, AllocationSite.Current());
         _ = prototype.DefineOwnProperty("importValue",
-            new JsPropertyDescriptor(JsValue.FromObject(importValueHandle), Writable: true, Enumerable: true, Configurable: true));
+            new JsPropertyDescriptor(JsValue.FromObject(importValueHandle), Writable: true, Enumerable: false, Configurable: true));
 
         // @@toStringTag
         var toStringTag = context.CreateWellKnownSymbol("toStringTag");
@@ -66,7 +66,7 @@ public sealed class ShadowRealmBuiltin : IBuiltinModule
             new JsPropertyDescriptor(JsValue.FromString("ShadowRealm"), Writable: false, Enumerable: false, Configurable: true));
 
         var ctorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
-        return new[] { new BuiltinBinding("ShadowRealm", JsValue.FromObject(ctorHandle)) };
+        return new[] { BuiltinBinding.NonEnumerable("ShadowRealm", JsValue.FromObject(ctorHandle)) };
     }
 
     private static ObjectHandle GetFunctionPrototypeHandle(IBuiltinContext ctx)
