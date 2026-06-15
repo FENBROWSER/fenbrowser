@@ -2585,6 +2585,20 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.ImportMeta, dest, 0, 0));
                 return dest;
             }
+            case ImportSourceExpressionNode importSource:
+            {
+                var specReg = CompileExpression(importSource.Specifier);
+                var dest = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.ImportSource, dest, specReg, 0));
+                return dest;
+            }
+            case ImportDeferExpressionNode importDefer:
+            {
+                var specReg = CompileExpression(importDefer.Specifier);
+                var dest = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.ImportDefer, dest, specReg, 0));
+                return dest;
+            }
             case LogicalAssignmentExpressionNode logical:
                 return CompileLogicalAssignment(logical);
             case AssignmentExpressionNode assign when assign.Left is IdentifierExpressionNode id:

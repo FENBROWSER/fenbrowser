@@ -29,6 +29,16 @@ public sealed record ImportCallExpressionNode(ExpressionNode Specifier, SourceSp
 // tests parse and execute the surrounding harness without a parser error.
 public sealed record ImportMetaExpressionNode(SourceSpan Span) : ExpressionNode(Span);
 
+// ES2025 Import Source proposal — `import.source(specifier)`. Syntactic form
+// `import.source(AssignmentExpression)` that returns a rejected Promise (no
+// host module resolver wired yet). `import.source` without parens is a SyntaxError.
+public sealed record ImportSourceExpressionNode(ExpressionNode Specifier, SourceSpan Span) : ExpressionNode(Span);
+
+// ES2025 Import Defer proposal — `import.defer(specifier)`. Syntactic form
+// `import.defer(AssignmentExpression)` that returns a rejected Promise (no
+// host module resolver wired yet). `import.defer` without parens is a SyntaxError.
+public sealed record ImportDeferExpressionNode(ExpressionNode Specifier, SourceSpan Span) : ExpressionNode(Span);
+
 public sealed record ClassExpressionNode(string? Name, ExpressionNode? BaseClass, IReadOnlyList<ClassMemberNode> Members, SourceSpan Span) : ExpressionNode(Span);
 
 public sealed record NumericLiteralExpressionNode(double Value, string RawText, SourceSpan Span) : ExpressionNode(Span);

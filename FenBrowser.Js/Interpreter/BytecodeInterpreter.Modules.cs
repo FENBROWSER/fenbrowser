@@ -43,6 +43,46 @@ public sealed partial class BytecodeInterpreter
         return JsValue.FromObject(handle);
     }
 
+    internal JsValue HandleImportSource(JsValue specifier)
+    {
+        // ES2025 Import Source proposal — `import.source(specifier)` syntactic form.
+        // Returns a rejected Promise per DynamicImport pattern (no host module
+        // resolver wired yet). Per ECMA-262 ContinueDynamicImport semantics,
+        // the specifier is ToString'd before rejection so user-defined toString
+        // side effects are surfaced.
+        JsValue reason;
+        try
+        {
+            _ = ToStringValue(specifier);
+            reason = CreateTypeError("Dynamic import (source phase) is not supported in this host.");
+        }
+        catch (JsThrownException ex)
+        {
+            reason = ex.Value;
+        }
+        return BuildRejectedPromise(reason);
+    }
+
+    internal JsValue HandleImportDefer(JsValue specifier)
+    {
+        // ES2025 Import Defer proposal — `import.defer(specifier)` syntactic form.
+        // Returns a rejected Promise per DynamicImport pattern (no host module
+        // resolver wired yet). Per ECMA-262 ContinueDynamicImport semantics,
+        // the specifier is ToString'd before rejection so user-defined toString
+        // side effects are surfaced.
+        JsValue reason;
+        try
+        {
+            _ = ToStringValue(specifier);
+            reason = CreateTypeError("Dynamic import (defer phase) is not supported in this host.");
+        }
+        catch (JsThrownException ex)
+        {
+            reason = ex.Value;
+        }
+        return BuildRejectedPromise(reason);
+    }
+
     internal void PinIfObject(JsValue value)
     {
         if (value.Tag == JsValueTag.Object)

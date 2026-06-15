@@ -3847,11 +3847,43 @@ public sealed class JsParser
             {
                 Advance();
                 var prop = ExpectPropertyNameAfterDot();
-                if (!string.Equals(prop.Text, "meta", StringComparison.Ordinal))
+                if (string.Equals(prop.Text, "meta", StringComparison.Ordinal))
                 {
-                    throw new JsParserException($"Expected 'meta' after 'import.', found '{prop.Text}'.");
+                    return new ImportMetaExpressionNode(MergeSpan(importToken.Span, prop.Span));
                 }
-                return new ImportMetaExpressionNode(MergeSpan(importToken.Span, prop.Span));
+                if (string.Equals(prop.Text, "source", StringComparison.Ordinal))
+                {
+                    // import.source(AssignmentExpression) — ES2025 Import Source proposal.
+                    // import.source without parens is a SyntaxError per the grammar.
+                    ExpectPunctuator("(");
+                    var specifier = ParseExpression(2);
+                    // Optional trailing comma + import attributes (parse and discard).
+                    if (IsPunctuator(","))
+                    {
+                        Advance();
+                        if (!IsPunctuator(")"))
+                            _ = ParseExpression(2);
+                    }
+                    ExpectPunctuator(")");
+                    return new ImportSourceExpressionNode(specifier, MergeSpan(importToken.Span, Previous().Span));
+                }
+                if (string.Equals(prop.Text, "defer", StringComparison.Ordinal))
+                {
+                    // import.defer(AssignmentExpression) — ES2025 Import Defer proposal.
+                    // import.defer without parens is a SyntaxError per the grammar.
+                    ExpectPunctuator("(");
+                    var specifier = ParseExpression(2);
+                    // Optional trailing comma + import attributes (parse and discard).
+                    if (IsPunctuator(","))
+                    {
+                        Advance();
+                        if (!IsPunctuator(")"))
+                            _ = ParseExpression(2);
+                    }
+                    ExpectPunctuator(")");
+                    return new ImportDeferExpressionNode(specifier, MergeSpan(importToken.Span, Previous().Span));
+                }
+                throw new JsParserException($"Expected 'meta', 'source', or 'defer' after 'import.', found '{prop.Text}'.");
             }
             throw new JsParserException($"Unexpected token '{Current().Text}' ({Current().Kind}) after 'import'.");
         }
@@ -4205,6 +4237,14 @@ public sealed class JsParser
 
         var callee = ParsePrefix(40);
         callee = ParsePostfix(callee, minBindingPower: 35, allowCall: false);
+
+        // ECMA-262: ImportCall is a CallExpression, not a MemberExpression.
+        // `new import(x)`, `new import.source(x)`, `new import.defer(x)` are
+        // all SyntaxErrors — ImportCall cannot be preceded by `new`.
+        if (callee is ImportCallExpressionNode or ImportSourceExpressionNode or ImportDeferExpressionNode)
+        {
+            throw new JsParserException("ImportCall cannot be preceded by 'new'.");
+        }
 
         IReadOnlyList<ExpressionNode> args = Array.Empty<ExpressionNode>();
         if (IsPunctuator("("))

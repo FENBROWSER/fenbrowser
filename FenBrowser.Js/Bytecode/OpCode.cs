@@ -142,6 +142,16 @@ public enum OpCode : byte
     // the syntax tests that parse `import.meta` references.
     ImportMeta,
 
+    // ES2025 Import Source — `import.source(specifier)`. A=dest, B=spec reg.
+    // Returns a rejected Promise (mirrors DynamicImport — no host module
+    // resolver wired yet).
+    ImportSource,
+
+    // ES2025 Import Defer — `import.defer(specifier)`. A=dest, B=spec reg.
+    // Returns a rejected Promise (mirrors DynamicImport — no host module
+    // resolver wired yet).
+    ImportDefer,
+
     // H.3.2 - LoadSuperConstructor(A=dest reg). Reads the parent class from
     // the executing constructor's HomeObject prototype slot. ECMA-262
     // 13.3.7.4 GetSuperConstructor. Used by `super(...)` to obtain the

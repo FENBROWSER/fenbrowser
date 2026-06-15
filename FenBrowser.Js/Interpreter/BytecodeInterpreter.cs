@@ -1104,6 +1104,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.ImportMeta:
                     frame.Registers[ins.A] = HandleImportMeta();
                     break;
+                case OpCode.ImportSource:
+                    frame.Registers[ins.A] = HandleImportSource(frame.Registers[ins.B]);
+                    break;
+                case OpCode.ImportDefer:
+                    frame.Registers[ins.A] = HandleImportDefer(frame.Registers[ins.B]);
+                    break;
                 case OpCode.LoadSuperConstructor:
                     HandleLoadSuperConstructor(frame, ins);
                     break;
