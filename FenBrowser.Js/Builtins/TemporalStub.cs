@@ -2615,7 +2615,7 @@ public sealed class TemporalStub : IBuiltinModule
             return JsValue.FromBoolean(DecodeInstantNanos(h, o) == otherNs);
         }, 1);
         AddMethod(ctx, h, pH, p, "toString", (o, a) => FormatInstant(ctx, h, o, a), 0);
-        AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => InstantToLocaleString(ctx, h, o, a), 2);
+        AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => InstantToLocaleString(ctx, h, o, a), 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatInstant(h, o), 0);
         AddMethod(ctx, h, pH, p, "toZonedDateTimeISO", (o, a) =>
             AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", InstantToZonedDateTimeIso(ctx, h, o, a)), 1);
@@ -2677,12 +2677,21 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("with: argument must be an object."));
             var bagValue = a[0];
+            // RejectObjectWithCalendarOrTimeZone: read calendar and timeZone first (observable order).
+            bool hasCal = TryGetField(ctx, h, bagValue, "calendar", out _);
+            bool hasCalId = TryGetField(ctx, h, bagValue, "calendarId", out _);
+            bool hasTz = TryGetField(ctx, h, bagValue, "timeZone", out _);
+            if (hasCal || hasCalId || hasTz)
+                throw new JsThrownException(ctx.CreateTypeError("calendar and timeZone cannot be changed here; use withCalendar/withTimeZone."));
             var cur = DecodeIsoDate(h, o);
             string cal = CalId(h, o);
-            bool hasField = TryGetField(ctx, h, bagValue, "year", out _) || TryGetField(ctx, h, bagValue, "month", out _)
-                || TryGetField(ctx, h, bagValue, "monthCode", out _) || TryGetField(ctx, h, bagValue, "day", out _)
-                || TryGetField(ctx, h, bagValue, "era", out _) || TryGetField(ctx, h, bagValue, "eraYear", out _);
-            if (!hasField)
+            bool hasYear = TryGetField(ctx, h, bagValue, "year", out _);
+            bool hasMonth = TryGetField(ctx, h, bagValue, "month", out _);
+            bool hasMonthCode = TryGetField(ctx, h, bagValue, "monthCode", out _);
+            bool hasDay = TryGetField(ctx, h, bagValue, "day", out _);
+            bool hasEra = TryGetField(ctx, h, bagValue, "era", out _);
+            bool hasEraYear = TryGetField(ctx, h, bagValue, "eraYear", out _);
+            if (!hasYear && !hasMonth && !hasMonthCode && !hasDay && !hasEra && !hasEraYear)
                 throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
             var iso = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, CalFields(cal, cur) ?? new CalendarFields(null, null, cur.Year, cur.Month, $"M{cur.Month:D2}", cur.Day, 0, 0, 0, 12, false));
             return AttachPrototype(h, MakePlainDateYmd(ctx, h, iso.Year, iso.Month, iso.Day, cal), pH);
@@ -2739,7 +2748,7 @@ public sealed class TemporalStub : IBuiltinModule
             return AttachTemporalPrototypeByName(ctx, h, t, "PlainDateTime", MakePlainDateTimeParts(ctx, h,
                 d.Year, d.Month, d.Day, tm.Hour, tm.Minute, tm.Second, tm.Millisecond, tm.Microsecond, tm.Nanosecond,
                 GetVStr(h, o, "calendarId")));
-        }, 1);
+        }, 0);
         AddMethod(ctx, h, pH, p, "toPlainYearMonth", (o, _) => {
             string cal = CalId(h, o);
             var refIso = YearMonthReferenceIso(cal, DecodeIsoDate(h, o));
@@ -2791,7 +2800,7 @@ public sealed class TemporalStub : IBuiltinModule
             var dt = DecodeIsoDate(h, o);
             var result = IntlDateTimeFormatting.FormatDateOnly(dt.Year, dt.Month, dt.Day, culture, options);
             return JsValue.FromString(result.Text);
-        }, 2);
+        }, 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatPlainDate(h, o), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("PlainDate.prototype.valueOf throws.")), 0);
         var c = h.GetObject(cH);
@@ -2923,7 +2932,7 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => {
             RequireNoDateStyle(ctx, h, a);
             return PlainTimeToLocaleString(ctx, h, o, a);
-        }, 2);
+        }, 0);
         AddMethod(ctx, h, pH, p, "toString", (o, a) => {
             var opts = GetToStringOptions(ctx, h, a, 0);
             long dayNs = DecodeTimeOfDayNs(h, o);
@@ -3026,11 +3035,21 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("with: argument must be an object."));
             var bagValue = a[0];
+            // RejectObjectWithCalendarOrTimeZone: read calendar and timeZone first (observable order).
+            bool hasCal = TryGetField(ctx, h, bagValue, "calendar", out _);
+            bool hasCalId = TryGetField(ctx, h, bagValue, "calendarId", out _);
+            bool hasTz = TryGetField(ctx, h, bagValue, "timeZone", out _);
+            if (hasCal || hasCalId || hasTz)
+                throw new JsThrownException(ctx.CreateTypeError("calendar and timeZone cannot be changed here; use withCalendar/withTimeZone."));
             var curDate = DecodeIsoDateLong(h, o);
             string cal = CalId(h, o);
-            bool hasDateField = TryGetField(ctx, h, bagValue, "year", out _) || TryGetField(ctx, h, bagValue, "month", out _)
-                || TryGetField(ctx, h, bagValue, "monthCode", out _) || TryGetField(ctx, h, bagValue, "day", out _)
-                || TryGetField(ctx, h, bagValue, "era", out _) || TryGetField(ctx, h, bagValue, "eraYear", out _);
+            bool hasYear = TryGetField(ctx, h, bagValue, "year", out _);
+            bool hasMonth = TryGetField(ctx, h, bagValue, "month", out _);
+            bool hasMonthCode = TryGetField(ctx, h, bagValue, "monthCode", out _);
+            bool hasDay = TryGetField(ctx, h, bagValue, "day", out _);
+            bool hasEra = TryGetField(ctx, h, bagValue, "era", out _);
+            bool hasEraYear = TryGetField(ctx, h, bagValue, "eraYear", out _);
+            bool hasDateField = hasYear || hasMonth || hasMonthCode || hasDay || hasEra || hasEraYear;
             string[] timeFields = { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" };
             var timeValues = new double[timeFields.Length];
             bool anyTime = false;
@@ -3069,7 +3088,7 @@ public sealed class TemporalStub : IBuiltinModule
             var cur = DecodeIsoDateLong(h, o);
             return AttachPrototype(h, MakePlainDateTimeParts(ctx, h, cur.Year, cur.Month, cur.Day,
                 tm.Hour, tm.Minute, tm.Second, tm.Millisecond, tm.Microsecond, tm.Nanosecond, GetVStr(h, o, "calendarId")), pH);
-        }, 1);
+        }, 0);
         AddMethod(ctx, h, pH, p, "add", (o, a) => AddDurationToPlainDateTime(ctx, h, t, o, a, pH, 1), 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => AddDurationToPlainDateTime(ctx, h, t, o, a, pH, -1), 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
@@ -3281,11 +3300,19 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("PlainYearMonth.with: argument must be an object."));
             var bagValue = a[0];
+            // RejectObjectWithCalendarOrTimeZone: read calendar and timeZone first (observable order).
+            bool hasCal = TryGetField(ctx, h, bagValue, "calendar", out _);
+            bool hasCalId = TryGetField(ctx, h, bagValue, "calendarId", out _);
+            bool hasTz = TryGetField(ctx, h, bagValue, "timeZone", out _);
+            if (hasCal || hasCalId || hasTz)
+                throw new JsThrownException(ctx.CreateTypeError("calendar and timeZone cannot be changed here; use withCalendar/withTimeZone."));
             string cal = CalId(h, o);
-            bool hasField = TryGetField(ctx, h, bagValue, "year", out _) || TryGetField(ctx, h, bagValue, "month", out _)
-                || TryGetField(ctx, h, bagValue, "monthCode", out _) || TryGetField(ctx, h, bagValue, "era", out _)
-                || TryGetField(ctx, h, bagValue, "eraYear", out _);
-            if (!hasField)
+            bool hasYear = TryGetField(ctx, h, bagValue, "year", out _);
+            bool hasMonth = TryGetField(ctx, h, bagValue, "month", out _);
+            bool hasMonthCode = TryGetField(ctx, h, bagValue, "monthCode", out _);
+            bool hasEra = TryGetField(ctx, h, bagValue, "era", out _);
+            bool hasEraYear = TryGetField(ctx, h, bagValue, "eraYear", out _);
+            if (!hasYear && !hasMonth && !hasMonthCode && !hasEra && !hasEraYear)
                 throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
             var cur = DecodeYearMonthIso(h, o);
             var baseFields = CalFields(cal, cur) ?? new CalendarFields(null, null, cur.Year, cur.Month, $"M{cur.Month:D2}", cur.Day, 0, 0, 0, 12, false);
@@ -3373,7 +3400,7 @@ public sealed class TemporalStub : IBuiltinModule
             int d = (int)(GetVNum(h, o, "d"));
             var result = IntlDateTimeFormatting.FormatDateOnly(y, m, d, culture, options);
             return JsValue.FromString(result.Text);
-        }, 2);
+        }, 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
         AddStatic(ctx, h, cH, c, "from", a => {
@@ -3497,7 +3524,7 @@ public sealed class TemporalStub : IBuiltinModule
             // Use reference year 2000 for weekday computation
             var result = IntlDateTimeFormatting.FormatDateOnly(2000, m, d, culture, options);
             return JsValue.FromString(result.Text);
-        }, 2);
+        }, 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
         AddStatic(ctx, h, cH, c, "from", a => {
@@ -3528,13 +3555,13 @@ public sealed class TemporalStub : IBuiltinModule
                 var calSys = CalendarMath.Get(cal);
                 double d2 = 0;
                 int month2, day2, refYear = 1972;
-                if (calSys is not null)
+                if (calSys is not null && calSys.Id != "iso8601")
                 {
                     // Non-ISO: delegate to calendar system for monthCode validation.
-                    var resolved = ResolveCalendarDateFields(ctx, h, arg, calSys, null, requireDay: true);
-                    // ResolveCalendarDateFields validates monthCode via sys.MonthFromCode
-                    // and returns a Gregorian-nativised (year, month, day). But PlainMonthDay
-                    // stores calendar-native fields — re-extract them in native space.
+                    // PlainMonthDay does not require year — use a reference year when absent.
+                    CalendarFields? mdBase = TryGetField(ctx, h, arg, "year", out _) || TryGetField(ctx, h, arg, "era", out _)
+                        ? null : new CalendarFields(null, null, 1972, 1, "M01", 1, 1, 31, 365, 12, false);
+                    var resolved = ResolveCalendarDateFields(ctx, h, arg, calSys, mdBase, requireDay: true);
                     refYear = resolved.Year;
                     if (TryGetField(ctx, h, arg, "monthCode", out var mcV2) && mcV2.Tag == JsValueTag.String)
                     {
@@ -3544,7 +3571,7 @@ public sealed class TemporalStub : IBuiltinModule
                     {
                         month2 = resolved.Month;
                     }
-                    if (!TryGetField(ctx, h, arg, "day", out var dayV2))
+                    if (TryGetField(ctx, h, arg, "day", out var dayV2))
                         throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.from: day is required."));
                     d2 = ToIntegerWithTruncation(ctx, dayV2);
                     day2 = ToSafeInt(d2);
@@ -3783,11 +3810,21 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "with", (o, a) => {
             if (a.Count < 1 || a[0].Tag != JsValueTag.Object) throw new JsThrownException(ctx.CreateTypeError("ZonedDateTime.with: argument must be an object."));
             var bagValue = a[0];
+            // RejectObjectWithCalendarOrTimeZone: read calendar, calendarId and timeZone first (observable order).
+            bool hasCal = TryGetField(ctx, h, bagValue, "calendar", out _);
+            bool hasCalId = TryGetField(ctx, h, bagValue, "calendarId", out _);
+            bool hasTz = TryGetField(ctx, h, bagValue, "timeZone", out _);
+            if (hasCal || hasCalId || hasTz)
+                throw new JsThrownException(ctx.CreateTypeError("with: timeZone and calendar cannot be changed here; use withTimeZone/withCalendar."));
             var curDate = DecodeIsoDateLong(h, o);
             string cal = CalId(h, o);
-            bool hasDateField = TryGetField(ctx, h, bagValue, "year", out _) || TryGetField(ctx, h, bagValue, "month", out _)
-                || TryGetField(ctx, h, bagValue, "monthCode", out _) || TryGetField(ctx, h, bagValue, "day", out _)
-                || TryGetField(ctx, h, bagValue, "era", out _) || TryGetField(ctx, h, bagValue, "eraYear", out _);
+            bool hasYear = TryGetField(ctx, h, bagValue, "year", out _);
+            bool hasMonth = TryGetField(ctx, h, bagValue, "month", out _);
+            bool hasMonthCode = TryGetField(ctx, h, bagValue, "monthCode", out _);
+            bool hasDay = TryGetField(ctx, h, bagValue, "day", out _);
+            bool hasEra = TryGetField(ctx, h, bagValue, "era", out _);
+            bool hasEraYear = TryGetField(ctx, h, bagValue, "eraYear", out _);
+            bool hasDateField = hasYear || hasMonth || hasMonthCode || hasDay || hasEra || hasEraYear;
             bool hasOffset = TryGetField(ctx, h, bagValue, "offset", out _);
             string[] timeFields = { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" };
             var timeValues = new double[timeFields.Length];
@@ -3804,8 +3841,6 @@ public sealed class TemporalStub : IBuiltinModule
                     timeValues[fi] = GetVNum(h, o, timeFields[fi]);
                 }
             }
-            if (TryGetField(ctx, h, bagValue, "timeZone", out _) || TryGetField(ctx, h, bagValue, "calendar", out _))
-                throw new JsThrownException(ctx.CreateTypeError("with: timeZone and calendar cannot be changed here; use withTimeZone/withCalendar."));
             if (!hasDateField && !anyTime && !hasOffset)
                 throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
             var baseFields = CalFields(cal, curDate) ?? new CalendarFields(null, null, curDate.Year, curDate.Month, $"M{curDate.Month:D2}", curDate.Day, 0, 0, 0, 12, false);
@@ -3842,7 +3877,7 @@ public sealed class TemporalStub : IBuiltinModule
             string tz = GetVStr(h, o, "tz");
             return AttachPrototype(h, MakeZonedDateTimeNs(ctx, h,
                 TemporalTimeZones.EpochNsFromWall(tz, DecodeIsoDateLong(h, o), time), tz, GetVStr(h, o, "calendarId")), pH);
-        }, 1);
+        }, 0);
         AddMethod(ctx, h, pH, p, "add", (o, a) => AddDurationToZoned(ctx, h, o, a, pH, 1), 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => AddDurationToZoned(ctx, h, o, a, pH, -1), 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
@@ -3917,7 +3952,7 @@ public sealed class TemporalStub : IBuiltinModule
             var tzOptions = options with { TimeZoneId = tz };
             var result = IntlDateTimeFormatting.Format(instant, culture, tzOptions);
             return JsValue.FromString(result.Text);
-        }, 2);
+        }, 0);
         AddMethod(ctx, h, pH, p, "toJSON", (o, _) => FormatZonedDateTime(ctx, h, o, new ToStringOptions()), 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
         var c = h.GetObject(cH);
