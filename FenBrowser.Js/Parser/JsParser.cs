@@ -3893,7 +3893,22 @@ public sealed class JsParser
             if (opToken.Text == "**" && left is UnaryExpressionNode)
                 throw new JsParserException("Unary expression cannot be the left-hand side of exponentiation.");
 
+            // ECMA-262: NullishCoalescingExpression cannot contain && or ||, and
+            // LogicalAND/LogicalOR cannot contain ?? in either operand.
+            // Check left operand before parsing right.
+            if (opToken.Text == "??" && ContainsLogicalAndOr(left))
+                throw new JsParserException("Cannot chain ?? with && or || without parentheses.");
+            if ((opToken.Text == "&&" || opToken.Text == "||") && ContainsCoalesce(left))
+                throw new JsParserException("Cannot chain && or || with ?? without parentheses.");
+
             var right = ParseExpression(rightBp);
+
+            // Check right operand after parsing.
+            if (opToken.Text == "??" && ContainsLogicalAndOr(right))
+                throw new JsParserException("Cannot chain ?? with && or || without parentheses.");
+            if ((opToken.Text == "&&" || opToken.Text == "||") && ContainsCoalesce(right))
+                throw new JsParserException("Cannot chain && or || with ?? without parentheses.");
+
             var span = MergeSpan(left.Span, right.Span);
             left = new BinaryExpressionNode(opToken.Text, left, right, span);
         }
@@ -6259,6 +6274,14 @@ public sealed class JsParser
     // `++`/`--`, or a compound assignment. CallExpression, optional
     // chaining, arrow functions, and literal values are NOT valid
     // assignment targets — the spec says these are early SyntaxErrors.
+    private static bool ContainsLogicalAndOr(ExpressionNode? node) =>
+        node is BinaryExpressionNode bin &&
+        (bin.Operator is "&&" or "||" || ContainsLogicalAndOr(bin.Left) || ContainsLogicalAndOr(bin.Right));
+
+    private static bool ContainsCoalesce(ExpressionNode? node) =>
+        node is BinaryExpressionNode bin &&
+        (bin.Operator == "??" || ContainsCoalesce(bin.Left) || ContainsCoalesce(bin.Right));
+
     private static bool IsValidAssignmentTarget(ExpressionNode node)
     {
         return node switch
