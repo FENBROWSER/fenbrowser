@@ -2808,7 +2808,9 @@ public sealed class JsParser
             return;
         }
 
-        if (target is IdentifierExpressionNode { Name: "eval" or "arguments" } id)
+        // Unwrap parentheses: (arguments) = 1 is still an assignment to arguments.
+        var unwrapped = Unparenthesize(target);
+        if (unwrapped is IdentifierExpressionNode { Name: "eval" or "arguments" } id)
         {
             throw new JsParserException(
                 $"'{id.Name}' may not be assigned to in strict mode.");
