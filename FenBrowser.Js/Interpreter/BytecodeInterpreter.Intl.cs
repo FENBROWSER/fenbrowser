@@ -2309,6 +2309,10 @@ public sealed partial class BytecodeInterpreter
         };
     }
 
+    // ECMA-402 IsWellFormedCurrencyCode: exactly 3 ASCII letters [A-Za-z].
+    private static bool IsWellFormedCurrencyCode(string code) =>
+        code.Length == 3 && code.All(ch => ch is >= 'a' and <= 'z' or >= 'A' and <= 'Z');
+
     // ECMA-402 valid roundingIncrement values: 1, 2, 5, and their multiples up to 5000.
     private static bool IsValidRoundingIncrement(int inc) => inc switch
     {
