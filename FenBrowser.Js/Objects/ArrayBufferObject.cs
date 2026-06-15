@@ -40,6 +40,11 @@ public sealed class ArrayBufferObject : JsObject
     // ES2024: whether this buffer was created with maxByteLength (resizable).
     public bool IsResizable => _isResizable && !IsDetached;
 
+    // True when this buffer was produced by the %SharedArrayBuffer% constructor.
+    // Used by SharedArrayBuffer.prototype accessors/methods to distinguish
+    // SharedArrayBuffer instances from plain ArrayBuffer instances.
+    public bool IsSharedArrayBuffer { get; init; }
+
     // 25.1.5.2 [[ArrayBufferData]] — raw byte access.
     public byte[] Data
     {

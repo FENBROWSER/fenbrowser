@@ -1,6 +1,9 @@
 // ECMA-262 §22.2.1 — RegExp pattern parser (recursive descent).
 // Produces a RegexPattern AST using the types defined in RegexAst.cs.
 //
+
+using System.Text;
+
 // Grammar (simplified from §22.2.1):
 //   Pattern :: Disjunction
 //   Disjunction :: Alternative | Alternative | Disjunction
@@ -1034,8 +1037,10 @@ public static class RegexParser
         private string ParseGroupName()
         {
             var start = _pos;
-            while (!AtEnd && IsGroupNameChar(Peek))
-                Advance();
+            while (!AtEnd && TryConsumeGroupNameCodePoint())
+            {
+                // TryConsumeGroupNameCodePoint advances _pos on success
+            }
 
             if (_pos == start)
                 throw new RegexSyntaxError("Empty group name", _pos);
@@ -1043,11 +1048,59 @@ public static class RegexParser
             return _pattern[start.._pos];
         }
 
-        private static bool IsGroupNameChar(char c)
+        /// <summary>
+        /// If the next character(s) at _pos form a valid RegExpIdentifierName
+        /// code point, advance _pos and return true. Handles both BMP and
+        /// supplementary-plane characters via surrogate pairs.
+        /// </summary>
+        private bool TryConsumeGroupNameCodePoint()
         {
-            // ECMAScript: group names are IdentifierParts but also allow $
-            // For simplicity, we accept: letter, digit, _, $
-            return char.IsLetterOrDigit(c) || c == '_' || c == '$';
+            if (AtEnd) return false;
+            var ch = Peek;
+            int codePoint;
+            int advance;
+
+            if (char.IsHighSurrogate(ch) && _pos + 1 < _pattern.Length && char.IsLowSurrogate(_pattern[_pos + 1]))
+            {
+                codePoint = char.ConvertToUtf32(ch, _pattern[_pos + 1]);
+                advance = 2;
+            }
+            else
+            {
+                codePoint = ch;
+                advance = 1;
+            }
+
+            // Valid group name characters: $, _, letters (any Unicode), digits, ZWNJ, ZWJ.
+            // ECMA-262 22.2.2.2: RegExpIdentifierPart :: IdentifierPartChar | $ | ‌ | ‍
+            if (codePoint == '$' || codePoint == '_' || codePoint == 0x200C || codePoint == 0x200D)
+            {
+                _pos += advance;
+                return true;
+            }
+
+            try
+            {
+                var rune = new Rune((uint)codePoint);
+                var cat = Rune.GetUnicodeCategory(rune);
+                var valid = cat is >= System.Globalization.UnicodeCategory.UppercaseLetter and <= System.Globalization.UnicodeCategory.OtherLetter
+                                 or System.Globalization.UnicodeCategory.LetterNumber
+                                 or System.Globalization.UnicodeCategory.DecimalDigitNumber
+                                 or System.Globalization.UnicodeCategory.NonSpacingMark
+                                 or System.Globalization.UnicodeCategory.SpacingCombiningMark
+                                 or System.Globalization.UnicodeCategory.ConnectorPunctuation;
+                if (valid)
+                {
+                    _pos += advance;
+                    return true;
+                }
+            }
+            catch
+            {
+                // Invalid code point
+            }
+
+            return false;
         }
 
         // ─── Inline Modifiers ──────────────────────────────────

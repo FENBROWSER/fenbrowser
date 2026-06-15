@@ -3954,7 +3954,6 @@ public sealed class JsParser
             var flags = lastSlash + 1 < raw.Length ? raw.Substring(lastSlash + 1) : string.Empty;
             try
             {
-                Regex.RegExpCompiler.ValidatePattern(pattern, flags);
                 Regex.RegExpCompiler.ValidateLiteralSyntax(token.Text);
             }
             catch (Regex.RegexSyntaxError ex)

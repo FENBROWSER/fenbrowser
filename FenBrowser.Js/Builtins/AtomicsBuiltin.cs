@@ -27,6 +27,7 @@ public sealed class AtomicsBuiltin : IBuiltinModule
         var heap = context.Heap;
 
         var atomics = new JsObject();
+        atomics.SetPrototype(context.GetObjectPrototype());
         var handle = heap.AllocateObject(atomics, AllocationSite.Current());
         heap.PushRoot(handle);
 
@@ -44,6 +45,7 @@ public sealed class AtomicsBuiltin : IBuiltinModule
         Define(context, atomics, "wait", 4, args => Wait(context, args));
         Define(context, atomics, "waitAsync", 4, args => WaitAsync(context, args));
         Define(context, atomics, "notify", 3, args => Notify(context, args));
+        Define(context, atomics, "pause", 0, args => Pause(context, args));
 
         // 25.4.15 Atomics [ @@toStringTag ] = "Atomics"
         var toStringTagSymbol = context.CreateWellKnownSymbol("toStringTag");
@@ -298,6 +300,36 @@ public sealed class AtomicsBuiltin : IBuiltinModule
             _ = ToInteger(context, Arg(args, 2)); // coerce count for side effects.
         // No other agent can be waiting on this single-agent realm.
         return JsValue.FromNumber(0);
+    }
+
+    // 25.4.14 Atomics.pause ( [ iterationNumber ] ) — ES2024+.
+    // Pauses the calling agent for an implementation-defined duration.
+    // Spec requires iterationNumber to be a Number (not Boolean, String, etc.).
+    private static JsValue Pause(IBuiltinContext context, IReadOnlyList<JsValue> args)
+    {
+        var duration = Arg(args, 0);
+        if (duration.Tag != JsValueTag.Undefined)
+        {
+            // Step 1a: Type(iterationNumber) must be Number (not Boolean, String, Symbol, Object).
+            if (duration.Tag != JsValueTag.Number && duration.Tag != JsValueTag.Int32)
+                throw new JsThrownException(context.CreateTypeError("Atomics.pause: argument must be a Number."));
+            var n = duration.AsNumber();
+            // Step 1c: must be an integral Number (not NaN, not Infinity, not fractional).
+            if (double.IsNaN(n) || double.IsInfinity(n) || Math.Truncate(n) != n)
+                throw new JsThrownException(context.CreateTypeError("Atomics.pause: iterationNumber must be an integral Number."));
+            // Step 1d: if negative, throw RangeError.
+            if (n < 0)
+                throw new JsThrownException(context.CreateRangeError("Atomics.pause: iterationNumber must be non-negative."));
+            // Yield the thread for an implementation-defined fraction of n.
+            System.Threading.Thread.Yield();
+        }
+        else
+        {
+            // No duration specified: yield is the sanest default for a single-agent engine.
+            System.Threading.Thread.Yield();
+        }
+
+        return JsValue.Undefined;
     }
 
     // A 1-element TypedArray of the same element type, used to reproduce the exact

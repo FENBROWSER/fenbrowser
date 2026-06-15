@@ -155,7 +155,8 @@ public sealed class RegExpBuiltin : IBuiltinModule
         // ECMA-262 22.2.3.1: validate the pattern before creating the object.
         try
         {
-            Regex.RegExpCompiler.ValidatePattern(pattern, normalizedFlags);
+            var parsedFlags = Regex.RegexFlags.Parse(normalizedFlags.AsSpan());
+            Regex.RegExpCompiler.ValidatePatternEarlyErrors(pattern, parsedFlags);
         }
         catch (Regex.RegexSyntaxError ex)
         {
@@ -163,6 +164,8 @@ public sealed class RegExpBuiltin : IBuiltinModule
         }
 
         var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
+        var namedGroupMap = new Dictionary<string, string>(StringComparer.Ordinal);
+        dotNetPattern = Regex.RegExpCompiler.RewriteNamedGroupSyntaxForDotNet(dotNetPattern, namedGroupMap);
         if (hasU || hasV)
         {
             dotNetPattern = Regex.RegExpCompiler.RewriteUnicodeCodePointEscapes(dotNetPattern);
@@ -201,7 +204,21 @@ public sealed class RegExpBuiltin : IBuiltinModule
             throw new JsThrownException(ctx.CreateSyntaxError(ex.Message));
         }
 
-        var obj = new RegExpObject(pattern, normalizedFlags, regex, nativeProgram);
+        // Build reverse map: alias → original name for translating
+        // .NET group names back to ECMAScript names during exec.
+        Dictionary<string, string>? reverseMap = null;
+        if (namedGroupMap.Count > 0)
+        {
+            reverseMap = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var kvp in namedGroupMap)
+                reverseMap[kvp.Value] = kvp.Key;
+        }
+
+        var obj = new RegExpObject(pattern, normalizedFlags, regex, nativeProgram)
+        {
+            NamedGroupAliases = namedGroupMap.Count > 0 ? namedGroupMap : null,
+            NamedGroupReverseMap = reverseMap
+        };
         obj.SetPrototype(protoHandle);
         // source/flags and the individual flag booleans are accessor properties on
         // %RegExp.prototype% (installed by the interpreter's InstallRegExpFlagAccessors);

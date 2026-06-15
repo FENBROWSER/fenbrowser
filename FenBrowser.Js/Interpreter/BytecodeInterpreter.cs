@@ -5819,6 +5819,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (normalizedFlags.Contains('m', StringComparison.Ordinal)) options |= RegexOptions.Multiline;
         if (hasS) options |= RegexOptions.Singleline;
         var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
+        var namedGroupMapLiteral = new Dictionary<string, string>(StringComparer.Ordinal);
+        dotNetPattern = RegExpCompiler.RewriteNamedGroupSyntaxForDotNet(dotNetPattern, namedGroupMapLiteral);
         if (hasU || hasV)
         {
             dotNetPattern = RegExpCompiler.RewriteUnicodeCodePointEscapes(dotNetPattern);
@@ -5857,7 +5859,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateSyntaxError(ex.Message));
         }
 
-        var obj = new RegExpObject(pattern, normalizedFlags, regex, nativeProgram);
+        Dictionary<string, string>? reverseMapLiteral = null;
+        if (namedGroupMapLiteral.Count > 0)
+        {
+            reverseMapLiteral = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var kvp in namedGroupMapLiteral)
+                reverseMapLiteral[kvp.Value] = kvp.Key;
+        }
+
+        var obj = new RegExpObject(pattern, normalizedFlags, regex, nativeProgram)
+        {
+            NamedGroupAliases = namedGroupMapLiteral.Count > 0 ? namedGroupMapLiteral : null,
+            NamedGroupReverseMap = reverseMapLiteral
+        };
         // Use the prototype cached from the builtin during
         // InstallPrototypeMethodsOnRegExpPrototype, or resolve from global.
         obj.SetPrototype(_regexpPrototypeHandle ?? GetGlobalPrototype("RegExp"));
@@ -5958,6 +5972,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var flagsArg = args.Count > 1 ? args[1] : JsValue.Undefined;
         ResolveRegExpPatternAndFlags(patternArg, flagsArg, out var pattern, out var flags);
         var normalizedFlags = NormalizeRegExpFlags(flags);
+
+        // ECMA-262 22.2.3.1: validate the pattern before creating the object.
+        try
+        {
+            var parsedFlags = RegexFlags.Parse(normalizedFlags.AsSpan());
+            RegExpCompiler.ValidatePatternEarlyErrors(pattern, parsedFlags);
+        }
+        catch (RegexSyntaxError ex)
+        {
+            throw new JsThrownException(CreateSyntaxError(ex.Message));
+        }
+
         // ECMA-262 22.2.4 flags → RegexOptions mapping.
         // ECMAScript mode is the default; dotAll (s) conflicts with it and
         // Unicode (u) restricts \w/\d to ASCII in ECMAScript mode, so both
@@ -5980,6 +6006,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         if (hasS) options |= RegexOptions.Singleline;
         var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
+        var namedGroupMapCreate = new Dictionary<string, string>(StringComparer.Ordinal);
+        dotNetPattern = RegExpCompiler.RewriteNamedGroupSyntaxForDotNet(dotNetPattern, namedGroupMapCreate);
         if (hasU || hasV)
         {
             dotNetPattern = RegExpCompiler.RewriteUnicodeCodePointEscapes(dotNetPattern);
@@ -6018,7 +6046,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateSyntaxError(ex.Message));
         }
 
-        var obj = new RegExpObject(pattern, normalizedFlags, regex, nativeProgram);
+        Dictionary<string, string>? reverseMapCreate = null;
+        if (namedGroupMapCreate.Count > 0)
+        {
+            reverseMapCreate = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var kvp in namedGroupMapCreate)
+                reverseMapCreate[kvp.Value] = kvp.Key;
+        }
+
+        var obj = new RegExpObject(pattern, normalizedFlags, regex, nativeProgram)
+        {
+            NamedGroupAliases = namedGroupMapCreate.Count > 0 ? namedGroupMapCreate : null,
+            NamedGroupReverseMap = reverseMapCreate
+        };
         obj.SetPrototype(GetGlobalPrototype("RegExp"));
         // source/flags and the flag booleans live on %RegExp.prototype% as accessors
         // (InstallRegExpFlagAccessors); lastIndex is the only own data property (22.2.7.1).
@@ -6104,6 +6144,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var groupsObj = new JsObject();
         var groupNames = regexp.Regex.GetGroupNames();
         var hasNamedGroups = false;
+        var reverseMap = regexp.NamedGroupReverseMap;
         foreach (var name in groupNames)
         {
             if (int.TryParse(name, System.Globalization.NumberStyles.Integer,
@@ -6111,7 +6152,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             hasNamedGroups = true;
             var group = match.Groups[name];
             var gval = group.Success ? JsValue.FromString(group.Value) : JsValue.Undefined;
-            groupsObj.DefineOwnProperty(name,
+            // Translate .NET alias back to ECMAScript group name (e.g., "g1" → "$" or "π").
+            var ecmaName = reverseMap is not null && reverseMap.TryGetValue(name, out var mapped) ? mapped : name;
+            groupsObj.DefineOwnProperty(ecmaName,
                 new JsPropertyDescriptor(gval, Writable: true, Enumerable: true, Configurable: true));
         }
         // ECMA-262: groups is undefined when there are no named groups
@@ -6156,7 +6199,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var end = grp.Success ? JsValue.FromNumber(grp.Index + grp.Length) : JsValue.Undefined;
                     var pair = CreateArrayObject(new[] { start, end });
                     var pairH = _heap.AllocateObject(pair, AllocationSite.Current());
-                    igObj.DefineOwnProperty(name,
+                    // Translate .NET alias back to ECMAScript group name.
+                    var ecmaName = reverseMap is not null && reverseMap.TryGetValue(name, out var mapped) ? mapped : name;
+                    igObj.DefineOwnProperty(ecmaName,
                         new JsPropertyDescriptor(JsValue.FromObject(pairH), Writable: true, Enumerable: true, Configurable: true));
                 }
                 var igH = _heap.AllocateObject(igObj, AllocationSite.Current());
@@ -6226,6 +6271,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (normalizedFlags.Contains('m', StringComparison.Ordinal)) options |= RegexOptions.Multiline;
         if (hasS) options |= RegexOptions.Singleline;
         var dotNetPattern = RewriteEcmaCharacterClassEscapes(newPattern);
+        var namedGroupMapCompile = new Dictionary<string, string>(StringComparer.Ordinal);
+        dotNetPattern = RegExpCompiler.RewriteNamedGroupSyntaxForDotNet(dotNetPattern, namedGroupMapCompile);
         if (hasU || hasV)
         {
             dotNetPattern = RegExpCompiler.RewriteUnicodeCodePointEscapes(dotNetPattern);
@@ -6253,6 +6300,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
         }
         target.Recompile(newPattern, normalizedFlags, regex);
+        // Also update the named group alias maps on the target.
+        if (namedGroupMapCompile.Count > 0)
+        {
+            target.NamedGroupAliases = namedGroupMapCompile;
+            var reverse = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var kvp in namedGroupMapCompile)
+                reverse[kvp.Value] = kvp.Key;
+            target.NamedGroupReverseMap = reverse;
+        }
+        else
+        {
+            target.NamedGroupAliases = null;
+            target.NamedGroupReverseMap = null;
+        }
         // source/flags/flag-booleans are prototype accessors that read target.Flags
         // (just updated by Recompile). compile only needs to reset lastIndex to 0.
         _ = target.DefineOwnProperty("lastIndex",
@@ -6659,8 +6720,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 for (var i = 1; i < match.Groups.Count; i++)
                 { var g = match.Groups[i]; var v = g.Success ? JsValue.FromString(g.Value) : JsValue.Undefined; _ = record.DefineOwnProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture), new JsPropertyDescriptor(v, Writable: true, Enumerable: true, Configurable: true)); }
                 var mgroupsObj = new JsObject(); var mHasNamed = false;
+                var mRevMap = matchAllRx.NamedGroupReverseMap;
                 foreach (var mName in matchAllRx.Regex.GetGroupNames())
-                { if (int.TryParse(mName, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out _)) continue; mHasNamed = true; var mGrp = match.Groups[mName]; mgroupsObj.DefineOwnProperty(mName, new JsPropertyDescriptor(mGrp.Success ? JsValue.FromString(mGrp.Value) : JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true)); }
+                { if (int.TryParse(mName, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out _)) continue; mHasNamed = true; var mGrp = match.Groups[mName]; var mEcmaName = mRevMap is not null && mRevMap.TryGetValue(mName, out var mMapped) ? mMapped : mName; mgroupsObj.DefineOwnProperty(mEcmaName, new JsPropertyDescriptor(mGrp.Success ? JsValue.FromString(mGrp.Value) : JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true)); }
                 if (mHasNamed) _ = record.DefineOwnProperty("groups", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(mgroupsObj, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
                 else _ = record.DefineOwnProperty("groups", new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true));
                 _ = record.DefineOwnProperty("index", new JsPropertyDescriptor(JsValue.FromNumber(match.Index), Writable: true, Enumerable: true, Configurable: true));
@@ -14587,7 +14649,7 @@ fallbackArraySpecies:
         return _arrayBufferPrototypeHandle!.Value;
     }
 
-    // ECMA-262 25.2.3 — the %SharedArrayBuffer% constructor.
+    // ECMA-262 25.2.3 — the %SharedArrayBuffer% constructor (ES2024+ with grow support).
     private ObjectHandle EnsureSharedArrayBufferConstructor()
     {
         if (_sharedArrayBufferConstructorHandle is { } existing)
@@ -14597,15 +14659,43 @@ fallbackArraySpecies:
         var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
         _heap.PushRoot(prototypeHandle);
 
+        // SharedArrayBuffer constructor: SharedArrayBuffer(length [, options])
         var constructor = new NativeFunctionObject(
             "SharedArrayBuffer",
             (_, _2) => throw new JsThrownException(CreateTypeError("SharedArrayBuffer constructor must be invoked with 'new'.")),
             args =>
             {
-                var length = args.Count > 0 ? args[0].AsNumber() : 0;
-                if (double.IsNaN(length) || length < 0 || length > int.MaxValue)
+                // ECMA-262: ToIndex(length) then GetByteLengthOption(options).
+                var lengthArg = args.Count > 0 ? args[0] : JsValue.Undefined;
+                var length = (long)ToNumber(lengthArg);
+                if (double.IsNaN((double)length) || length < 0 || length > int.MaxValue)
                     throw new JsThrownException(CreateRangeError("Invalid SharedArrayBuffer length."));
-                var buf = new ArrayBufferObject((int)length);
+                var byteLength = (int)length;
+
+                // Parse options.maxByteLength (ES2024 25.2.3.1 GetByteLengthOption).
+                // Uses [[Get]] semantics so accessor getters fire (and their throws propagate).
+                int? maxByteLength = null;
+                if (args.Count > 1 && args[1].Tag == JsValueTag.Object)
+                {
+                    var options = _heap.GetObject(args[1].AsObjectHandle());
+                    if (TryGetPropertyValue(options, args[1], "maxByteLength", out var mblValue) &&
+                        mblValue.Tag != JsValueTag.Undefined)
+                    {
+                        var mblNum = ToNumber(mblValue);
+                        if (double.IsNaN(mblNum) || mblNum < 0 || double.IsInfinity(mblNum) || mblNum > int.MaxValue)
+                            throw new JsThrownException(CreateRangeError("Invalid SharedArrayBuffer maxByteLength."));
+                        maxByteLength = (int)mblNum;
+                        if (maxByteLength.Value < byteLength)
+                            throw new JsThrownException(CreateRangeError("maxByteLength must be >= length."));
+                    }
+                }
+
+                ArrayBufferObject buf;
+                if (maxByteLength.HasValue && maxByteLength.Value > 0)
+                    buf = new ArrayBufferObject(byteLength, maxByteLength.Value, resizable: true)
+                        { IsSharedArrayBuffer = true };
+                else
+                    buf = new ArrayBufferObject(byteLength) { IsSharedArrayBuffer = true };
                 buf.SetPrototype(prototypeHandle);
                 return JsValue.FromObject(_heap.AllocateObject(buf, AllocationSite.Current()));
             },
@@ -14616,10 +14706,21 @@ fallbackArraySpecies:
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
+        // RequireSharedArrayBuffer helper — validates thisValue is a SharedArrayBuffer.
+        ArrayBufferObject RequireSharedArrayBuffer(JsValue thisValue, string methodName)
+        {
+            if (thisValue.Tag != JsValueTag.Object ||
+                _heap.GetObject(thisValue.AsObjectHandle()) is not ArrayBufferObject buf ||
+                !buf.IsSharedArrayBuffer)
+                throw new JsThrownException(CreateTypeError(
+                    $"SharedArrayBuffer.prototype.{methodName} called on a non-SharedArrayBuffer."));
+            return buf;
+        }
+
+        // get SharedArrayBuffer.prototype.byteLength
         var byteLengthGetter = new NativeFunctionObject("get byteLength", (thisValue, _2) =>
         {
-            if (thisValue.Tag != JsValueTag.Object || _heap.GetObject(thisValue.AsObjectHandle()) is not ArrayBufferObject buf)
-                throw new JsThrownException(CreateTypeError("SharedArrayBuffer.prototype.byteLength called on non-SharedArrayBuffer."));
+            var buf = RequireSharedArrayBuffer(thisValue, "byteLength");
             return JsValue.FromNumber(buf.ByteLength);
         }, length: 0);
         var byteLengthGetterHandle = _heap.AllocateObject(byteLengthGetter, AllocationSite.Current());
@@ -14627,19 +14728,106 @@ fallbackArraySpecies:
             JsValue.FromObject(byteLengthGetterHandle), JsValue.Undefined, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, byteLengthGetterHandle);
 
+        // get SharedArrayBuffer.prototype.growable (ES2024)
+        var growableGetter = new NativeFunctionObject("get growable", (thisValue, _2) =>
+        {
+            var buf = RequireSharedArrayBuffer(thisValue, "growable");
+            return JsValue.FromBoolean(buf.IsResizable);
+        }, length: 0);
+        var growableGetterHandle = _heap.AllocateObject(growableGetter, AllocationSite.Current());
+        prototype.DefineOwnProperty("growable", JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(growableGetterHandle), JsValue.Undefined, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, growableGetterHandle);
+
+        // get SharedArrayBuffer.prototype.maxByteLength (ES2024)
+        var maxByteLengthGetter = new NativeFunctionObject("get maxByteLength", (thisValue, _2) =>
+        {
+            var buf = RequireSharedArrayBuffer(thisValue, "maxByteLength");
+            if (!buf.IsResizable)
+                return JsValue.FromNumber(buf.ByteLength);
+            return JsValue.FromNumber(buf.MaxByteLength);
+        }, length: 0);
+        var maxByteLengthGetterHandle = _heap.AllocateObject(maxByteLengthGetter, AllocationSite.Current());
+        prototype.DefineOwnProperty("maxByteLength", JsPropertyDescriptor.Accessor(
+            JsValue.FromObject(maxByteLengthGetterHandle), JsValue.Undefined, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, maxByteLengthGetterHandle);
+
+        // SharedArrayBuffer.prototype.grow(newLength) — ES2024
+        DefineNativePrototypeMethod(prototypeHandle, prototype, "grow", (thisValue, args) =>
+        {
+            var buf = RequireSharedArrayBuffer(thisValue, "grow");
+            if (!buf.IsResizable)
+                throw new JsThrownException(CreateTypeError("SharedArrayBuffer.prototype.grow: buffer is not resizable."));
+            if (buf.IsDetached)
+                throw new JsThrownException(CreateTypeError("SharedArrayBuffer.prototype.grow: buffer is detached."));
+            var newLenArg = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var newLen = (long)ToNumber(newLenArg);
+            if (double.IsNaN((double)newLen) || newLen < 0 || newLen > int.MaxValue)
+                throw new JsThrownException(CreateRangeError("SharedArrayBuffer.prototype.grow: invalid new length."));
+            if (newLen > buf.MaxByteLength)
+                throw new JsThrownException(CreateRangeError("SharedArrayBuffer.prototype.grow: new length exceeds maxByteLength."));
+            buf.Resize((int)newLen);
+            return JsValue.Undefined;
+        }, length: 1);
+
+        // SharedArrayBuffer.prototype.slice(start, end) — with species protocol
         DefineNativePrototypeMethod(prototypeHandle, prototype, "slice", (thisValue, args) =>
         {
-            if (thisValue.Tag != JsValueTag.Object || _heap.GetObject(thisValue.AsObjectHandle()) is not ArrayBufferObject buf)
-                throw new JsThrownException(CreateTypeError("SharedArrayBuffer.prototype.slice called on non-SharedArrayBuffer."));
+            var buf = RequireSharedArrayBuffer(thisValue, "slice");
             var len = buf.ByteLength;
-            var begin = args.Count > 0 ? (int)Math.Min(Math.Max(args[0].AsNumber(), 0), len) : 0;
-            var end = args.Count > 1 ? (int)Math.Min(Math.Max(args[1].AsNumber(), 0), len) : len;
-            if (end < begin) end = begin;
-            var newLen = end - begin;
-            var clone = buf.Clone(begin, newLen);
-            clone.SetPrototype(EnsureSharedArrayBufferPrototype());
-            return JsValue.FromObject(_heap.AllocateObject(clone, AllocationSite.Current()));
+            // ECMA-262 25.2.4.12 + 7.1.5 ToIntegerOrInfinity (NaN → 0, -0 → 0).
+            static double ToSliceIndex(double n) => double.IsNaN(n) || n == 0 ? 0
+                : double.IsInfinity(n) ? n : Math.Truncate(n);
+            var relativeStart = args.Count > 0 && args[0].Tag != JsValueTag.Undefined
+                ? ToSliceIndex(ToNumber(args[0])) : 0;
+            var first = double.IsNegativeInfinity(relativeStart) ? 0
+                : relativeStart < 0 ? Math.Max(len + relativeStart, 0)
+                : Math.Min(relativeStart, len);
+            double relativeEnd;
+            if (args.Count > 1 && args[1].Tag != JsValueTag.Undefined)
+                relativeEnd = ToSliceIndex(ToNumber(args[1]));
+            else
+                relativeEnd = len;
+            var final = double.IsNegativeInfinity(relativeEnd) ? 0
+                : relativeEnd < 0 ? Math.Max(len + relativeEnd, 0)
+                : Math.Min(relativeEnd, len);
+            var newLen = (int)Math.Max(final - first, 0);
+            var startOffset = (int)first;
+
+            // SpeciesConstructor protocol: use constructor[@@species] if available.
+            var species = SpeciesConstructor(thisValue, constructorHandle);
+            var newObj = ConstructFunction(species, new[] { JsValue.FromNumber(newLen) });
+            if (newObj.Tag != JsValueTag.Object ||
+                _heap.GetObject(newObj.AsObjectHandle()) is not ArrayBufferObject newBuf ||
+                !newBuf.IsSharedArrayBuffer)
+                throw new JsThrownException(CreateTypeError("SharedArrayBuffer.prototype.slice: species did not produce a SharedArrayBuffer."));
+            // ES2024: the species result must not be resizable, must not be the
+            // same buffer, and must not be smaller than the requested slice length.
+            if (newBuf.IsResizable)
+                throw new JsThrownException(CreateTypeError("SharedArrayBuffer.prototype.slice: species produced a resizable SharedArrayBuffer."));
+            if (ReferenceEquals(newBuf, buf))
+                throw new JsThrownException(CreateTypeError("SharedArrayBuffer.prototype.slice: species returned the same buffer."));
+            if (newBuf.ByteLength < newLen)
+                throw new JsThrownException(CreateTypeError("SharedArrayBuffer.prototype.slice: species produced a SharedArrayBuffer that is too small."));
+
+            // Copy data into the species-created buffer.
+            var copyLen = Math.Min(newBuf.ByteLength, newLen);
+            if (copyLen > 0)
+            {
+                var srcData = buf.Data;
+                var dstData = newBuf.Data;
+                Array.Copy(srcData, startOffset, dstData, 0, Math.Min(copyLen, dstData.Length));
+            }
+            return newObj;
         }, length: 2);
+
+        // ECMA-262 25.2.4.14 SharedArrayBuffer.prototype [ @@toStringTag ] = "SharedArrayBuffer"
+        var toStringTagSymbol = GetWellKnownSymbol("toStringTag");
+        if (toStringTagSymbol.Tag == JsValueTag.Symbol)
+        {
+            prototype.DefineOwnSymbolProperty(toStringTagSymbol.AsSymbolId(), new JsPropertyDescriptor(
+                JsValue.FromString("SharedArrayBuffer"), Writable: false, Enumerable: false, Configurable: true));
+        }
 
         _sharedArrayBufferConstructorHandle = constructorHandle;
         _sharedArrayBufferPrototypeHandle = prototypeHandle;

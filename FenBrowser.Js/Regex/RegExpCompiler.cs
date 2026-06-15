@@ -262,7 +262,7 @@ public static class RegExpCompiler
         flags = lastSlash + 1 < rawText.Length ? rawText[(lastSlash + 1)..] : string.Empty;
     }
 
-    private static void ValidatePatternEarlyErrors(string pattern, RegexFlags flags)
+    internal static void ValidatePatternEarlyErrors(string pattern, RegexFlags flags)
     {
         var namedGroups = new HashSet<string>(StringComparer.Ordinal);
         var namedReferences = new List<string>();
@@ -1311,7 +1311,7 @@ public static class RegExpCompiler
         return rewritten.ToString();
     }
 
-    private static string RewriteNamedGroupSyntaxForDotNet(string pattern, Dictionary<string, string> namedGroupMap)
+    internal static string RewriteNamedGroupSyntaxForDotNet(string pattern, Dictionary<string, string> namedGroupMap)
     {
         if (string.IsNullOrEmpty(pattern))
         {
