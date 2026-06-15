@@ -1191,6 +1191,7 @@ public sealed class TemporalStub : IBuiltinModule
         long epoch1 = IsoMath.ToEpochDays(d1), epoch2 = IsoMath.ToEpochDays(d2);
         long diffNs = (epoch2 - epoch1) * NsPerDay + t2Ns - t1Ns;
         int neg = negate ? -1 : 1;
+        int outSign = diffNs == 0 ? 0 : (neg * diffNs > 0 ? 1 : -1);
 
         string smallest = s.Smallest;
         if (smallest != "nanosecond" || s.Increment > 1)
@@ -1198,37 +1199,60 @@ public sealed class TemporalStub : IBuiltinModule
             int srank = DiffUnitRank(smallest);
             if (srank <= 2) // calendar unit (year, month, week, day)
             {
-                // Decompose date portion, round target unit, rebalance
+                // Decompose from earlier to later (positive direction), then apply
+                // rounding mode (adjusted for output sign) before applying outSign.
                 long absNs = Math.Abs(diffNs);
                 long absDays = absNs / NsPerDay;
                 long absRem = absNs % NsPerDay;
                 var endDate = IsoMath.EpochDaysToCivil(epoch1 + (diffNs >= 0 ? absDays : -absDays));
-                var diff = DifferenceDateDuration(cal, d1, endDate, smallest);
-                // Diff returns signed values; work with absolute magnitude for rounding
+                // Always decompose from earlier to later
+                var from = diffNs >= 0 ? d1 : endDate;
+                var to = diffNs >= 0 ? endDate : d1;
+                var diff = DifferenceDateDuration(cal, from, to, smallest);
                 long yR = Math.Abs(diff.Years), moR = Math.Abs(diff.Months), wR = Math.Abs(diff.Weeks), dR = Math.Abs(diff.Days);
                 double inc = s.Increment;
 
+                // When outSign < 0, some rounding modes need complementing because we
+                // round the positive magnitude then negate (ceil on -x = -floor on x, etc.)
+                string rMode = outSign >= 0 ? s.Mode : s.Mode switch {
+                    "ceil" => "floor", "floor" => "ceil",
+                    "halfCeil" => "halfFloor", "halfFloor" => "halfCeil",
+                    _ => s.Mode
+                };
+
                 if (smallest == "year")
                 {
-                    yR = RoundToIncrement(yR, moR, 12, (long)inc, s.Mode, out _, out _);
+                    yR = RoundToIncrement(yR, moR, 12, (long)inc, rMode, out _, out _);
                     moR = 0; wR = 0; dR = 0; absRem = 0;
                 }
                 else if (smallest == "month")
                 {
+                    // Use the "to" date's month length for fractional month rounding
+                    int dim = IsoMath.DaysInMonth(to.Year, Math.Max(1, to.Month));
                     long totMonths = yR * 12 + moR;
-                    int dim = IsoMath.DaysInMonth(endDate.Year, Math.Max(1, endDate.Month));
-                    totMonths = RoundToIncrement(totMonths, dR, dim, (long)inc, s.Mode, out _, out _);
+                    totMonths = RoundToIncrement(totMonths, dR, dim, (long)inc, rMode, out _, out _);
                     yR = 0; moR = totMonths; wR = 0; dR = 0; absRem = 0;
                 }
                 else if (smallest == "week")
                 {
-                    wR = RoundToIncrement(wR, dR, 7, (long)inc, s.Mode, out _, out _);
-                    dR = 0; absRem = 0;
+                    // Round (weeks*7 + days) + time fraction to the week increment
+                    long totalDayNs = (wR * 7 + dR) * NsPerDay + absRem;
+                    long roundedNs = RoundNsToIncrement(ctx, totalDayNs, (long)inc * 7 * NsPerDay, rMode);
+                    wR = roundedNs / (7 * NsPerDay);
+                    long remainNs = roundedNs % (7 * NsPerDay);
+                    if (remainNs < 0) { wR--; remainNs += 7 * NsPerDay; }
+                    dR = remainNs / NsPerDay;
+                    absRem = remainNs % NsPerDay;
                 }
                 else // day
                 {
                     long dayNs = dR * NsPerDay + absRem;
-                    dayNs = RoundNsToIncrement(ctx, dayNs, (long)inc * NsPerDay, s.Mode);
+                    // For time units, RoundNsToIncrement handles sign correctly
+                    dayNs = RoundNsToIncrement(ctx, outSign >= 0 ? dayNs : -dayNs, (long)inc * NsPerDay, outSign >= 0 ? s.Mode : (s.Mode switch {
+                        "ceil" => "floor", "floor" => "ceil",
+                        "halfCeil" => "halfFloor", "halfFloor" => "halfCeil",
+                        _ => s.Mode
+                    }));
                     dR = dayNs / NsPerDay;
                     absRem = dayNs % NsPerDay;
                     if (absRem < 0) { dR--; absRem += NsPerDay; }
@@ -1236,27 +1260,27 @@ public sealed class TemporalStub : IBuiltinModule
 
                 int remSign = absRem < 0 ? -1 : 1;
                 long a = Math.Abs(absRem);
-                return MakeDuration(ctx, h, neg * (int)yR, neg * (int)moR, neg * (int)wR, neg * ToSafeInt(dR),
-                    neg * remSign * (int)(a / 3_600_000_000_000L), neg * remSign * (int)(a / 60_000_000_000L % 60),
-                    neg * remSign * (int)(a / 1_000_000_000L % 60), neg * remSign * (int)(a / 1_000_000L % 1000),
-                    neg * remSign * (int)(a / 1_000L % 1000), neg * remSign * (int)(a % 1000));
+                return MakeDuration(ctx, h, outSign * (int)yR, outSign * (int)moR, outSign * (int)wR, outSign * ToSafeInt(dR),
+                    outSign * remSign * (int)(a / 3_600_000_000_000L), outSign * remSign * (int)(a / 60_000_000_000L % 60),
+                    outSign * remSign * (int)(a / 1_000_000_000L % 60), outSign * remSign * (int)(a / 1_000_000L % 1000),
+                    outSign * remSign * (int)(a / 1_000L % 1000), outSign * remSign * (int)(a % 1000));
             }
             // time unit → round total ns directly
             return MakeDiffDuration(ctx, h, neg * diffNs, s);
         }
 
         // No rounding → decompose using largestUnit
-        long dX = diffNs / NsPerDay, nsX = diffNs % NsPerDay;
-        if (nsX < 0) { dX--; nsX += NsPerDay; }
+        long absDiff = Math.Abs(diffNs);
+        long dX = absDiff / NsPerDay, nsX = absDiff % NsPerDay;
         int yyX = 0, mmX = 0, wwX = 0; long ddX = dX;
         int rX = DiffUnitRank(s.Largest);
-        if (rX <= 2) { var a2 = IsoMath.EpochDaysToCivil(epoch1 + dX); (yyX, mmX, wwX, ddX) = DifferenceDateDuration(cal, d1, a2, s.Largest); }
+        if (rX <= 2) { var a2 = IsoMath.EpochDaysToCivil(epoch1 + (diffNs >= 0 ? dX : -dX)); (yyX, mmX, wwX, ddX) = DifferenceDateDuration(cal, d1, a2, s.Largest); yyX = Math.Abs(yyX); mmX = Math.Abs(mmX); wwX = Math.Abs(wwX); ddX = Math.Abs(ddX); }
         else if (rX >= 4) { nsX += ddX * NsPerDay; ddX = 0; }
         int sX = nsX < 0 ? -1 : 1; long aX = Math.Abs(nsX);
-        return MakeDuration(ctx, h, neg * yyX, neg * mmX, neg * wwX, neg * ToSafeInt(ddX),
-            neg * sX * (int)(aX / 3_600_000_000_000L), neg * sX * (int)(aX / 60_000_000_000L % 60),
-            neg * sX * (int)(aX / 1_000_000_000L % 60), neg * sX * (int)(aX / 1_000_000L % 1000),
-            neg * sX * (int)(aX / 1_000L % 1000), neg * sX * (int)(aX % 1000));
+        return MakeDuration(ctx, h, outSign * yyX, outSign * mmX, outSign * wwX, outSign * ToSafeInt(ddX),
+            outSign * sX * (int)(aX / 3_600_000_000_000L), outSign * sX * (int)(aX / 60_000_000_000L % 60),
+            outSign * sX * (int)(aX / 1_000_000_000L % 60), outSign * sX * (int)(aX / 1_000_000L % 1000),
+            outSign * sX * (int)(aX / 1_000L % 1000), outSign * sX * (int)(aX % 1000));
     }
 
     /// <summary>ToTemporalInstant for method arguments: Instant/ZonedDateTime instance or ISO string → epoch ns.</summary>
@@ -2178,9 +2202,9 @@ public sealed class TemporalStub : IBuiltinModule
         while (i < timePart.Length)
         {
             int numStart = i;
-            while (i < timePart.Length && (char.IsDigit(timePart[i]) || timePart[i] == '.')) i++;
+            while (i < timePart.Length && (char.IsDigit(timePart[i]) || timePart[i] == '.' || timePart[i] == ',')) i++;
             if (i == numStart) return false;
-            var numStr = timePart.Substring(numStart, i - numStart);
+            var numStr = timePart.Substring(numStart, i - numStart).Replace(',', '.'); // ISO 8601 allows comma as decimal
             if (i >= timePart.Length) return false;
             if (numStr.Contains('.'))
             {

@@ -21,6 +21,7 @@ public sealed partial class BytecodeInterpreter
     private ObjectHandle? _pluralRulesPrototypeHandle;
     private ObjectHandle? _displayNamesPrototypeHandle;
     private ObjectHandle? _listFormatPrototypeHandle;
+    private ObjectHandle? _numberFormatPrototypeHandle;
     private JsValue _intlFallbackSymbol = JsValue.Undefined; // %Intl%.[[FallbackSymbol]]
     private sealed record IntlPart(string Type, string Value, string? Unit = null);
     private sealed record NumberFormatState(
@@ -28,16 +29,23 @@ public sealed partial class BytecodeInterpreter
         string? Style,
         string? Currency,
         string? CurrencyDisplay,
+        string? CurrencySign,
         string? Unit,
         string? UnitDisplay,
         string? Notation,
+        string? CompactDisplay,
         int MinimumIntegerDigits,
         int? MinimumFractionDigits,
         int? MaximumFractionDigits,
         int? MinimumSignificantDigits,
         int? MaximumSignificantDigits,
         bool UseGrouping,
+        string UseGroupingValue,
         string? SignDisplay,
+        string? RoundingMode,
+        int? RoundingIncrement,
+        string? RoundingPriority,
+        string? TrailingZeroDisplay,
         string NumberingSystem);
     private sealed record ListFormatState(string Locale, string Type, string Style);
     private static readonly string[] DurationUnits =
@@ -664,8 +672,13 @@ public sealed partial class BytecodeInterpreter
         var state = ParseNumberFormatState(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
 
         var prototype = CreateOrdinaryObject();
+        // Inherit from Intl.NumberFormat.prototype so instanceof works.
+        if (_numberFormatPrototypeHandle is { } shProto)
+            prototype.SetPrototype(shProto);
         var protoHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
         _heap.PushRoot(protoHandle);
+        if (_numberFormatPrototypeHandle is { } shProto2)
+            _heap.WriteBarrier(protoHandle, shProto2);
 
         var protoMethod = new NativeFunctionObject(
             "format",
@@ -831,13 +844,13 @@ public sealed partial class BytecodeInterpreter
         }
         // ES2023 useGrouping resolves to a string/false; the legacy boolean true
         // default surfaces as "auto" (its previous meaning), false stays false.
-        Put("useGrouping", state.UseGrouping ? JsValue.FromString("auto") : JsValue.FromBoolean(false));
+        Put("useGrouping", state.UseGrouping ? JsValue.FromString(state.UseGroupingValue) : JsValue.FromBoolean(false));
         Put("notation", JsValue.FromString(state.Notation ?? "standard"));
         Put("signDisplay", JsValue.FromString(state.SignDisplay ?? "auto"));
-        Put("roundingIncrement", JsValue.FromNumber(1));
-        Put("roundingMode", JsValue.FromString("halfExpand"));
-        Put("roundingPriority", JsValue.FromString("auto"));
-        Put("trailingZeroDisplay", JsValue.FromString("auto"));
+        Put("roundingIncrement", JsValue.FromNumber(state.RoundingIncrement ?? 1));
+        Put("roundingMode", JsValue.FromString(state.RoundingMode ?? "halfExpand"));
+        Put("roundingPriority", JsValue.FromString(state.RoundingPriority ?? "auto"));
+        Put("trailingZeroDisplay", JsValue.FromString(state.TrailingZeroDisplay ?? "auto"));
 
         _heap.PopRootsTo(rootMark);
         return JsValue.FromObject(handle);
@@ -2297,7 +2310,7 @@ public sealed partial class BytecodeInterpreter
         var localeNumberingSystem = ExtractUnicodeKeyword(locale, "nu");
         var numberingSystem = (optionsNumberingSystem ?? localeNumberingSystem ?? "latn").ToLowerInvariant();
 
-        return new NumberFormatState(locale, style, currency, currencyDisplay, unit, unitDisplay, notation, minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits, minimumSignificantDigits, maximumSignificantDigits, useGrouping != "false", signDisplay, numberingSystem);
+        return new NumberFormatState(locale, style, currency, currencyDisplay, currencySign, unit, unitDisplay, notation, compactDisplay, minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits, minimumSignificantDigits, maximumSignificantDigits, useGrouping != "false", useGrouping, signDisplay, roundingMode, roundingIncrement, roundingPriority, trailingZeroDisplay, numberingSystem);
     }
 
     // ECMA-402 valid roundingIncrement values: 1, 2, 5, and their multiples up to 5000.
@@ -3348,14 +3361,16 @@ public sealed partial class BytecodeInterpreter
                 var numberState = new NumberFormatState(
                     locale,
                     unitStyle is "numeric" or "2-digit" ? null : "unit",
-                    null, null,
+                    null, null, null,
                     SingularDurationUnit(unit),
                     unitStyle is "numeric" or "2-digit" ? null : unitStyle,
-                    "standard",
+                    "standard", null,
                     unitStyle == "2-digit" ? 2 : 1,
                     null, null, null, null,
                     unitStyle is "numeric" or "2-digit" ? false : true,
+                    unitStyle is "numeric" or "2-digit" ? "false" : "auto",
                     suppressSign ? "never" : null,
+                    null, null, null, null,
                     numberingSystem);
 
                 var parts = FormatNumericStringToPartsSimple(raw, numberState).ToList();

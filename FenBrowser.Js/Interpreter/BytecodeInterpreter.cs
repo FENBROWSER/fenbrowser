@@ -7927,6 +7927,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var nfProto = CreateOrdinaryObject();
             var nfProtoHandle = _heap.AllocateObject(nfProto, AllocationSite.Current());
             _heap.PushRoot(nfProtoHandle);
+            _numberFormatPrototypeHandle = nfProtoHandle;
             var roStub = new NativeFunctionObject("resolvedOptions", (_, _) =>
             {
                 var o = CreateOrdinaryObject();
@@ -7958,6 +7959,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _heap.PushRoot(ctorHandle);
             _ = ctor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(nfProtoHandle), Writable: false, Enumerable: false, Configurable: false));
             _heap.WriteBarrier(ctorHandle, nfProtoHandle);
+
+            // constructor on prototype
+            _ = nfProto.DefineOwnProperty("constructor",
+                new JsPropertyDescriptor(JsValue.FromObject(ctorHandle), Writable: true, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(nfProtoHandle, ctorHandle);
+
+            // Symbol.toStringTag on prototype (as Symbol-keyed own property)
+            var toStringTagId = GetWellKnownSymbolId("toStringTag");
+            nfProto.DefineOwnSymbolProperty(toStringTagId,
+                new JsPropertyDescriptor(JsValue.FromString("Intl.NumberFormat"), Writable: false, Enumerable: false, Configurable: true));
 
             // ECMA-402 §15.3 supportedLocalesOf.
             var supportedLocalesOf = new NativeFunctionObject(
