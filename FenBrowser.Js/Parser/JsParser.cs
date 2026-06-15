@@ -4579,7 +4579,8 @@ public sealed class JsParser
                     forbidAwaitIdentifier: false,
                     forbidYieldIdentifier: false,
                     strictMode: strictObjectMethod,
-                    rejectSuperCallInBody: true);
+                    rejectSuperCallInBody: true,
+                    allowSuperProperty: true);
                 ValidateAccessorArity(accessorKind.Text == "get", accessorKind.Text == "set", parameterInfo);
                 var accessorFnName = accessorKey ?? accessorKind.Text;
                 var accessorFn = new FunctionExpressionNode(accessorFnName, parameters, body, MergeSpan(accessorKind.Span, body.Span), HasSimpleParameterList: parameterInfo.IsSimple, RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults, IsMethod: true);
@@ -4639,7 +4640,8 @@ public sealed class JsParser
                     forbidAwaitIdentifier: true,
                     forbidYieldIdentifier: false,
                     strictMode: strictObjectMethod,
-                    rejectSuperCallInBody: true);
+                    rejectSuperCallInBody: true,
+                    allowSuperProperty: true);
                 var methodFnName = methodKey ?? "async";
                 var asyncMethodFn = new FunctionExpressionNode(
                     methodFnName,
@@ -4705,7 +4707,8 @@ public sealed class JsParser
                     forbidAwaitIdentifier: true,
                     forbidYieldIdentifier: true,
                     strictMode: strictObjectMethod,
-                    rejectSuperCallInBody: true);
+                    rejectSuperCallInBody: true,
+                    allowSuperProperty: true);
                 var methodFnName = methodKey ?? "async*";
                 var asyncMethodFn = new FunctionExpressionNode(
                     methodFnName,
@@ -4769,7 +4772,8 @@ public sealed class JsParser
                     forbidAwaitIdentifier: false,
                     forbidYieldIdentifier: true,
                     strictMode: strictObjectMethod,
-                    rejectSuperCallInBody: true);
+                    rejectSuperCallInBody: true,
+                    allowSuperProperty: true);
                 var methodFnName = methodKey ?? "*";
                 var methodFn = new FunctionExpressionNode(
                     methodFnName,
@@ -4847,7 +4851,8 @@ public sealed class JsParser
                     forbidAwaitIdentifier: false,
                     forbidYieldIdentifier: false,
                     strictMode: strictObjectMethod,
-                    rejectSuperCallInBody: true);
+                    rejectSuperCallInBody: true,
+                    allowSuperProperty: true);
                 value = new FunctionExpressionNode(key, parameters, body, MergeSpan(keyToken.Span, body.Span), HasSimpleParameterList: parameterInfo.IsSimple, RestParameterIndex: parameterInfo.RestParameterIndex, ParameterBindings: parameterInfo.ParameterBindings, ParameterDefaults: parameterInfo.ParameterDefaults, IsMethod: true);
             }
             else if (IsPunctuator(":"))
