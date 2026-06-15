@@ -531,12 +531,31 @@ internal sealed class IslamicCalendarSystem : CalendarSystem
     }
 }
 
-// Arithmetic Persian (Solar Hijri) calendar, 2820-year cycle (Dershowitz &
-// Reingold), matching ICU. Months 1-6 have 31 days, 7-11 have 30, month 12 has
-// 29 (30 in a leap year). Single era "ap".
+// Arithmetic Persian (Solar Hijri) calendar. Uses the official Iranian
+// calendar authority leap-year table for 1206–1498 AP (matching ICU/CLDR
+// and test262) and falls back to the Dershowitz & Reingold 2820-year cycle
+// for years outside that range. Months 1-6 have 31 days, 7-11 have 30,
+// month 12 has 29 (30 in a leap year). Single era "ap".
 internal sealed class PersianCalendarSystem : CalendarSystem
 {
     private const long PersianEpochRd = 226896;
+
+    // Official leap-year table published by the Iranian calendar authority
+    // for 1206–1498 AP. Source:
+    // https://calendar.ut.ac.ir/documents/2139738/7092644/Kabise+Shamsi+1206-1498.pdf
+    // Data: https://github.com/roozbehp/persiancalendar/blob/main/kabise.txt (CC0)
+    private static readonly HashSet<int> AuthoritativeLeapYears = new()
+    {
+        1210, 1214, 1218, 1222, 1226, 1230, 1234, 1238, 1243, 1247,
+        1251, 1255, 1259, 1263, 1267, 1271, 1276, 1280, 1284, 1288,
+        1292, 1296, 1300, 1304, 1309, 1313, 1317, 1321, 1325, 1329,
+        1333, 1337, 1342, 1346, 1350, 1354, 1358, 1362, 1366, 1370,
+        1375, 1379, 1383, 1387, 1391, 1395, 1399, 1403, 1408, 1412,
+        1416, 1420, 1424, 1428, 1432, 1436, 1441, 1445, 1449, 1453,
+        1457, 1461, 1465, 1469, 1474, 1478, 1482, 1486, 1490, 1494, 1498
+    };
+    private static readonly int _leapTableMinYear = 1206;
+    private static readonly int _leapTableMaxYear = 1498;
 
     public override string Id => "persian";
     public override int MonthsInYear(int year) => 12;
@@ -584,7 +603,18 @@ internal sealed class PersianCalendarSystem : CalendarSystem
     }
 
     public override bool InLeapYear(int year)
-        => ToFixed(year + 1, 1, 1) - ToFixed(year, 1, 1) == 366;
+    {
+        if (year >= _leapTableMinYear && year <= _leapTableMaxYear)
+            return AuthoritativeLeapYears.Contains(year);
+        // Fall back to the 2820-year-cycle arithmetic for years outside the authoritative table.
+        return ToFixed(year + 1, 1, 1) - ToFixed(year, 1, 1) == 366;
+    }
+
+    public override int DaysInYear(int year)
+    {
+        // Must match InLeapYear so that the two are consistent.
+        return InLeapYear(year) ? 366 : 365;
+    }
 
     public override (string?, int?) EraFor(int year, long epochDay) => ("ap", year);
     public override bool YearFromEra(string era, int eraYear, out int year)

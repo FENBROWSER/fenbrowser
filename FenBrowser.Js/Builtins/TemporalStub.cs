@@ -768,7 +768,7 @@ public sealed class TemporalStub : IBuiltinModule
     /// When <paramref name="baseFields"/> is given (the `with` path), absent fields fall back to it.
     /// </summary>
     private static (int Year, int Month, int Day) ResolveCalendarDateFields(
-        IBuiltinContext ctx, JsHeap h, JsValue bag, CalendarSystem sys, CalendarFields? baseFields, bool requireDay, bool readDay = true)
+        IBuiltinContext ctx, JsHeap h, JsValue bag, CalendarSystem sys, CalendarFields? baseFields, bool requireDay, bool readDay = true, bool isWith = false)
     {
         // PrepareTemporalFields reads keys in sorted order: day, era, eraYear, month, monthCode, year.
         JsValue dayV = JsValue.Undefined;
@@ -789,7 +789,10 @@ public sealed class TemporalStub : IBuiltinModule
             // Observe coercion of era/eraYear (spec requires it) even though ignored.
             if (hasEra) _ = ctx.ToStringValue(eraV);
             if (hasEraYear) _ = ToIntegerWithTruncation(ctx, eraYearV);
+            if (isWith)
+                throw new JsThrownException(ctx.CreateTypeError("eraYear and era are invalid for this calendar"));
             // NonIsoFieldKeysToIgnore removes era/eraYear for calendars without eras.
+            // For `from` (isWith=false) these keys are silently dropped.
             hasEra = false;
             hasEraYear = false;
         }
@@ -864,11 +867,11 @@ public sealed class TemporalStub : IBuiltinModule
     /// first, then the overflow option (matching the spec's observable operation order).
     /// </summary>
     private static IsoDate ResolveDateBagToIso(IBuiltinContext ctx, JsHeap h, JsValue bag, string calendar,
-        IReadOnlyList<JsValue> a, int optIdx, CalendarFields? baseFields = null, bool requireDay = true, bool readDay = true)
-        => ResolveDateBagToIso(ctx, h, bag, calendar, a, optIdx, out _, baseFields, requireDay, readDay);
+        IReadOnlyList<JsValue> a, int optIdx, CalendarFields? baseFields = null, bool requireDay = true, bool readDay = true, bool isWith = false)
+        => ResolveDateBagToIso(ctx, h, bag, calendar, a, optIdx, out _, baseFields, requireDay, readDay, isWith);
 
     private static IsoDate ResolveDateBagToIso(IBuiltinContext ctx, JsHeap h, JsValue bag, string calendar,
-        IReadOnlyList<JsValue> a, int optIdx, out string overflow, CalendarFields? baseFields = null, bool requireDay = true, bool readDay = true)
+        IReadOnlyList<JsValue> a, int optIdx, out string overflow, CalendarFields? baseFields = null, bool requireDay = true, bool readDay = true, bool isWith = false)
     {
         var sys = CalendarMath.Get(calendar);
         if (sys is null)
@@ -892,7 +895,7 @@ public sealed class TemporalStub : IBuiltinModule
             return RegulateIsoDate(ctx, y, m, d, overflow);
         }
 
-        var (year, monthOrdinal, day) = ResolveCalendarDateFields(ctx, h, bag, sys, baseFields, requireDay, readDay);
+        var (year, monthOrdinal, day) = ResolveCalendarDateFields(ctx, h, bag, sys, baseFields, requireDay, readDay, isWith);
         overflow = GetOverflowOption(ctx, h, a, optIdx);
         if (!sys.TryResolveToIso(year, monthOrdinal, day, overflow, out var iso))
             throw new JsThrownException(ctx.CreateRangeError("Date is outside the supported range or invalid for the calendar."));
@@ -2703,7 +2706,7 @@ public sealed class TemporalStub : IBuiltinModule
             bool hasEraYear = TryGetField(ctx, h, bagValue, "eraYear", out _);
             if (!hasYear && !hasMonth && !hasMonthCode && !hasDay && !hasEra && !hasEraYear)
                 throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
-            var iso = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, CalFields(cal, cur) ?? new CalendarFields(null, null, cur.Year, cur.Month, $"M{cur.Month:D2}", cur.Day, 0, 0, 0, 12, false));
+            var iso = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, CalFields(cal, cur) ?? new CalendarFields(null, null, cur.Year, cur.Month, $"M{cur.Month:D2}", cur.Day, 0, 0, 0, 12, false), isWith: true);
             return AttachPrototype(h, MakePlainDateYmd(ctx, h, iso.Year, iso.Month, iso.Day, cal), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "withCalendar", (o, a) => {
@@ -3078,7 +3081,7 @@ public sealed class TemporalStub : IBuiltinModule
             if (!hasDateField && !anyTime)
                 throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
             var baseFields = CalFields(cal, curDate) ?? new CalendarFields(null, null, curDate.Year, curDate.Month, $"M{curDate.Month:D2}", curDate.Day, 0, 0, 0, 12, false);
-            var date = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, out var overflow, baseFields);
+            var date = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, out var overflow, baseFields, isWith: true);
             if (overflow == "reject")
                 ValidateTime(ctx, timeValues[0], timeValues[1], timeValues[2], timeValues[3], timeValues[4], timeValues[5]);
             return AttachPrototype(h, MakePlainDateTimeParts(ctx, h, date.Year, date.Month, date.Day,
@@ -3355,7 +3358,7 @@ public sealed class TemporalStub : IBuiltinModule
                 throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
             var cur = DecodeYearMonthIso(h, o);
             var baseFields = CalFields(cal, cur) ?? new CalendarFields(null, null, cur.Year, cur.Month, $"M{cur.Month:D2}", cur.Day, 0, 0, 0, 12, false);
-            var iso = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, baseFields, requireDay: false, readDay: false);
+            var iso = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, baseFields, requireDay: false, readDay: false, isWith: true);
             iso = YearMonthReferenceIso(cal, iso);
             return AttachPrototype(h, MakePlainYearMonth(ctx, h, iso.Year, iso.Month, cal, iso.Day), pH);
         }, 1);
@@ -3616,10 +3619,26 @@ public sealed class TemporalStub : IBuiltinModule
                     {
                         month2 = resolved.Month;
                     }
-                    if (!TryGetField(ctx, h, arg, "day", out var dayV2))
-                        throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.from: day is required."));
-                    d2 = ToIntegerWithTruncation(ctx, dayV2);
-                    day2 = ToSafeInt(d2);
+                    day2 = resolved.Day;
+
+                    // Apply overflow handling (spec: read options after fields, before constraining).
+                    var overflowNonIso = GetOverflowOption(ctx, h, a, 1);
+                    if (overflowNonIso == "constrain")
+                    {
+                        int miy = calSys.MonthsInYear(refYear);
+                        month2 = Math.Clamp(month2, 1, miy);
+                        int dim = calSys.DaysInMonthOrdinal(refYear, month2);
+                        day2 = Math.Clamp(day2, 1, dim);
+                    }
+                    else if (overflowNonIso == "reject")
+                    {
+                        int miy = calSys.MonthsInYear(refYear);
+                        if (month2 < 1 || month2 > miy)
+                            throw new JsThrownException(ctx.CreateRangeError("Month is out of range."));
+                        int dim = calSys.DaysInMonthOrdinal(refYear, month2);
+                        if (day2 < 1 || day2 > dim)
+                            throw new JsThrownException(ctx.CreateRangeError("Day is out of range."));
+                    }
                 }
                 else
                 {
@@ -3646,7 +3665,6 @@ public sealed class TemporalStub : IBuiltinModule
                         day2 = (int)d2;
                     }
                 }
-                _ = GetOverflowOption(ctx, h, a, 1); // consume even for non-ISO
                 return AttachPrototype(h, MakePlainMonthDay(ctx, h, month2, day2, cal), pH);
             }
             throw new JsThrownException(ctx.CreateTypeError("PlainMonthDay.from: argument must be a string or property bag."));
@@ -3889,7 +3907,7 @@ public sealed class TemporalStub : IBuiltinModule
             if (!hasDateField && !anyTime && !hasOffset)
                 throw new JsThrownException(ctx.CreateTypeError("with: at least one temporal field is required."));
             var baseFields = CalFields(cal, curDate) ?? new CalendarFields(null, null, curDate.Year, curDate.Month, $"M{curDate.Month:D2}", curDate.Day, 0, 0, 0, 12, false);
-            var date = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, out var overflow, baseFields);
+            var date = ResolveDateBagToIso(ctx, h, bagValue, cal, a, 1, out var overflow, baseFields, isWith: true);
             if (overflow == "reject")
                 ValidateTime(ctx, timeValues[0], timeValues[1], timeValues[2], timeValues[3], timeValues[4], timeValues[5]);
             var time = new IsoTime(
