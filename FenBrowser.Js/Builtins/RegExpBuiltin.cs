@@ -334,6 +334,9 @@ public sealed class RegExpBuiltin : IBuiltinModule
         const string nonWhiteSpaceClass = @"[^\u0009-\u000D\u0020\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]";
         var rewritten = new StringBuilder(pattern.Length + 24);
         var inCharClass = false;
+        var classStartPos = -1;
+        var classContentStart = -1;
+        var classNegated = false;
 
         for (var i = 0; i < pattern.Length; i++)
         {
@@ -381,14 +384,35 @@ public sealed class RegExpBuiltin : IBuiltinModule
             if (ch == '[' && !inCharClass)
             {
                 inCharClass = true;
+                classStartPos = rewritten.Length;
+                classNegated = false;
                 rewritten.Append(ch);
+                if (i + 1 < pattern.Length && pattern[i + 1] == '^')
+                {
+                    classNegated = true;
+                    rewritten.Append('^');
+                    i++;
+                }
+                classContentStart = rewritten.Length;
                 continue;
             }
 
             if (ch == ']' && inCharClass)
             {
                 inCharClass = false;
-                rewritten.Append(ch);
+                if (rewritten.Length == classContentStart)
+                {
+                    // ECMAScript Annex B: empty character class.
+                    rewritten.Length = classStartPos;
+                    if (classNegated)
+                        rewritten.Append(@"[\s\S]");
+                    else
+                        rewritten.Append(@"[^\w\W]");
+                }
+                else
+                {
+                    rewritten.Append(ch);
+                }
                 continue;
             }
 
