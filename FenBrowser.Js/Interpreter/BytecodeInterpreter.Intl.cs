@@ -665,138 +665,119 @@ public sealed partial class BytecodeInterpreter
     }
 
     // ECMA-402 13.1.1 InitializeNumberFormat.
+    // Stores the resolved state as internal slots on the instance so the shared
+    // prototype methods can read them back. Instance inherits directly from the
+    // shared Intl.NumberFormat.prototype.
     private JsValue NumberFormatConstruct(IReadOnlyList<JsValue> args)
     {
         var locale = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? ToStringValue(args[0]) : string.Empty;
-        var culture = IntlDateTimeFormatting.ResolveCulture(locale);
         var state = ParseNumberFormatState(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
 
-        var prototype = CreateOrdinaryObject();
-        // Inherit from Intl.NumberFormat.prototype so instanceof works.
-        if (_numberFormatPrototypeHandle is { } shProto)
-            prototype.SetPrototype(shProto);
-        var protoHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
-        _heap.PushRoot(protoHandle);
-        if (_numberFormatPrototypeHandle is { } shProto2)
-            _heap.WriteBarrier(protoHandle, shProto2);
+        // Store the state as a JsObject so the shared proto methods can read it.
+        var stateObj = CreateOrdinaryObject();
+        void PutStr(string k, string? v) =>
+            stateObj.DefineOwnProperty(k, new JsPropertyDescriptor(v is not null ? JsValue.FromString(v) : JsValue.Undefined, Writable: false, Enumerable: false, Configurable: false));
+        void PutInt(string k, int? v) =>
+            stateObj.DefineOwnProperty(k, new JsPropertyDescriptor(v.HasValue ? JsValue.FromNumber(v.Value) : JsValue.Undefined, Writable: false, Enumerable: false, Configurable: false));
+        void PutBool(string k, bool v) =>
+            stateObj.DefineOwnProperty(k, new JsPropertyDescriptor(JsValue.FromBoolean(v), Writable: false, Enumerable: false, Configurable: false));
 
-        var protoMethod = new NativeFunctionObject(
-            "format",
-            (_, fmtArgs) => JsValue.FromString(FormatNumber(fmtArgs.Count > 0 ? fmtArgs[0] : JsValue.Undefined, state)),
-            length: 1);
-        var protoMethodHandle = _heap.AllocateObject(protoMethod, AllocationSite.Current());
-        prototype.DefineOwnProperty("format",
-            new JsPropertyDescriptor(JsValue.FromObject(protoMethodHandle),
-                Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(protoHandle, protoMethodHandle);
+        PutStr("locale", state.Locale);
+        PutStr("style", state.Style);
+        PutStr("currency", state.Currency);
+        PutStr("currencyDisplay", state.CurrencyDisplay);
+        PutStr("currencySign", state.CurrencySign);
+        PutStr("unit", state.Unit);
+        PutStr("unitDisplay", state.UnitDisplay);
+        PutStr("notation", state.Notation);
+        PutStr("compactDisplay", state.CompactDisplay);
+        PutInt("minIntDigits", state.MinimumIntegerDigits);
+        PutInt("minFracDigits", state.MinimumFractionDigits);
+        PutInt("maxFracDigits", state.MaximumFractionDigits);
+        PutInt("minSigDigits", state.MinimumSignificantDigits);
+        PutInt("maxSigDigits", state.MaximumSignificantDigits);
+        PutBool("useGrouping", state.UseGrouping);
+        PutStr("useGroupingValue", state.UseGroupingValue);
+        PutStr("signDisplay", state.SignDisplay);
+        PutStr("roundingMode", state.RoundingMode);
+        PutInt("roundingIncrement", state.RoundingIncrement);
+        PutStr("roundingPriority", state.RoundingPriority);
+        PutStr("trailingZeroDisplay", state.TrailingZeroDisplay);
+        PutStr("numberingSystem", state.NumberingSystem);
 
-        var formatToPartsMethod = new NativeFunctionObject(
-            "formatToParts",
-            (_, fmtArgs) =>
-            {
-                var parts = FormatNumberToParts(fmtArgs.Count > 0 ? fmtArgs[0] : JsValue.Undefined, state);
-                return CreateIntlPartsArray(parts);
-            },
-            length: 1);
-        var formatToPartsHandle = _heap.AllocateObject(formatToPartsMethod, AllocationSite.Current());
-        prototype.DefineOwnProperty("formatToParts",
-            new JsPropertyDescriptor(JsValue.FromObject(formatToPartsHandle),
-                Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(protoHandle, formatToPartsHandle);
+        var stateHandle = _heap.AllocateObject(stateObj, AllocationSite.Current());
+        _heap.PushRoot(stateHandle);
 
-        var resolvedOptionsMethod = new NativeFunctionObject(
-            "resolvedOptions",
-            (_, _) => NumberFormatResolvedOptions(state),
-            length: 0);
-        var resolvedOptionsHandle = _heap.AllocateObject(resolvedOptionsMethod, AllocationSite.Current());
-        prototype.DefineOwnProperty("resolvedOptions",
-            new JsPropertyDescriptor(JsValue.FromObject(resolvedOptionsHandle),
-                Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(protoHandle, resolvedOptionsHandle);
-
-        // ECMA-402 formatRange (ES2021 Intl.NumberFormat-v3)
-        var capturedState = state;
-        var formatRangeMethod = new NativeFunctionObject(
-            "formatRange",
-            (thisValue, rangeArgs) =>
-            {
-                // RequireInternalSlot / brand check: thisValue must be an object.
-                if (thisValue.Tag != JsValueTag.Object)
-                    throw new JsThrownException(CreateTypeError("Intl.NumberFormat.prototype.formatRange called on incompatible receiver."));
-                var xVal = rangeArgs.Count > 0 ? rangeArgs[0] : JsValue.Undefined;
-                var yVal = rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined;
-                if (xVal.Tag == JsValueTag.Undefined || yVal.Tag == JsValueTag.Undefined)
-                    throw new JsThrownException(CreateTypeError("formatRange requires two arguments."));
-                var x = ToNumber(xVal);
-                var y = ToNumber(yVal);
-                if (double.IsNaN(x) || double.IsNaN(y))
-                    throw new JsThrownException(CreateRangeError("formatRange requires finite numbers."));
-                // If x > y, swap them per spec (formatRange does not throw).
-                if (x > y) { var tmp = x; x = y; y = tmp; }
-                var xFormatted = FormatNumber(JsValue.FromNumber(x), capturedState);
-                var yFormatted = FormatNumber(JsValue.FromNumber(y), capturedState);
-                // Approximate sign (~) when values round to the same result.
-                if (xFormatted == yFormatted)
-                    return JsValue.FromString("∼" + xFormatted);
-                return JsValue.FromString(xFormatted + "–" + yFormatted);
-            },
-            length: 2);
-        var formatRangeHandle = _heap.AllocateObject(formatRangeMethod, AllocationSite.Current());
-        prototype.DefineOwnProperty("formatRange",
-            new JsPropertyDescriptor(JsValue.FromObject(formatRangeHandle),
-                Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(protoHandle, formatRangeHandle);
-
-        // ECMA-402 formatRangeToParts (ES2021 Intl.NumberFormat-v3)
-        var formatRangeToPartsMethod = new NativeFunctionObject(
-            "formatRangeToParts",
-            (thisValue, rangeArgs) =>
-            {
-                // RequireInternalSlot / brand check.
-                if (thisValue.Tag != JsValueTag.Object)
-                    throw new JsThrownException(CreateTypeError("Intl.NumberFormat.prototype.formatRangeToParts called on incompatible receiver."));
-                var xVal = rangeArgs.Count > 0 ? rangeArgs[0] : JsValue.Undefined;
-                var yVal = rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined;
-                if (xVal.Tag == JsValueTag.Undefined || yVal.Tag == JsValueTag.Undefined)
-                    throw new JsThrownException(CreateTypeError("formatRangeToParts requires two arguments."));
-                var x = ToNumber(xVal);
-                var y = ToNumber(yVal);
-                if (double.IsNaN(x) || double.IsNaN(y))
-                    throw new JsThrownException(CreateRangeError("formatRangeToParts requires finite numbers."));
-                // If x > y, swap them for range display.
-                if (x > y) { var tmp = x; x = y; y = tmp; }
-                var xParts = FormatNumberToParts(JsValue.FromNumber(x), capturedState);
-                var yParts = FormatNumberToParts(JsValue.FromNumber(y), capturedState);
-                var xFormatted = string.Concat(xParts.Select(static p => p.Value));
-                var yFormatted = string.Concat(yParts.Select(static p => p.Value));
-                if (xFormatted == yFormatted)
-                {
-                    var approxParts = new List<IntlPart> { new IntlPart("literal", "∼") };
-                    approxParts.AddRange(xParts);
-                    return CreateIntlPartsArray(approxParts);
-                }
-                var rangeParts = new List<IntlPart>();
-                // Map x parts to rangeStart
-                foreach (var p in xParts)
-                    rangeParts.Add(new IntlPart("rangeStart", p.Value, p.Unit));
-                rangeParts.Add(new IntlPart("literal", "–"));
-                // Map y parts to rangeEnd
-                foreach (var p in yParts)
-                    rangeParts.Add(new IntlPart("rangeEnd", p.Value, p.Unit));
-                return CreateIntlPartsArray(rangeParts);
-            },
-            length: 2);
-        var formatRangeToPartsHandle = _heap.AllocateObject(formatRangeToPartsMethod, AllocationSite.Current());
-        prototype.DefineOwnProperty("formatRangeToParts",
-            new JsPropertyDescriptor(JsValue.FromObject(formatRangeToPartsHandle),
-                Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(protoHandle, formatRangeToPartsHandle);
+        var prototypeHandle = _numberFormatPrototypeHandle ?? EnsureNumberFormatPrototypeHandle();
 
         var instance = CreateOrdinaryObject();
-        instance.SetPrototype(protoHandle);
+        instance.SetPrototype(prototypeHandle);
+        _ = instance.DefineOwnProperty(
+            "__numberFormatState",
+            new JsPropertyDescriptor(
+                JsValue.FromObject(stateHandle),
+                Writable: false, Enumerable: false, Configurable: false));
+
         var instanceHandle = _heap.AllocateObject(instance, AllocationSite.Current());
-        _heap.WriteBarrier(instanceHandle, protoHandle);
+        _heap.WriteBarrier(instanceHandle, prototypeHandle);
+        _heap.WriteBarrier(instanceHandle, stateHandle);
         return JsValue.FromObject(instanceHandle);
+    }
+
+    private NumberFormatState RebuildNumberFormatState(JsObject stateObj)
+    {
+        string? ReadStr(string k) =>
+            stateObj.TryGetOwnProperty(k, out var d) && d.Value.Tag == JsValueTag.String ? d.Value.AsString() : null;
+        int? ReadInt(string k) =>
+            stateObj.TryGetOwnProperty(k, out var d) && d.Value.Tag != JsValueTag.Undefined ? (int)d.Value.AsNumber() : null;
+        bool ReadBool(string k) =>
+            stateObj.TryGetOwnProperty(k, out var d) && d.Value.Tag != JsValueTag.Undefined && d.Value.AsBoolean();
+
+        return new NumberFormatState(
+            ReadStr("locale") ?? "en-US",
+            ReadStr("style"),
+            ReadStr("currency"),
+            ReadStr("currencyDisplay"),
+            ReadStr("currencySign"),
+            ReadStr("unit"),
+            ReadStr("unitDisplay"),
+            ReadStr("notation"),
+            ReadStr("compactDisplay"),
+            ReadInt("minIntDigits") ?? 1,
+            ReadInt("minFracDigits"),
+            ReadInt("maxFracDigits"),
+            ReadInt("minSigDigits"),
+            ReadInt("maxSigDigits"),
+            ReadBool("useGrouping"),
+            ReadStr("useGroupingValue") ?? "auto",
+            ReadStr("signDisplay"),
+            ReadStr("roundingMode"),
+            ReadInt("roundingIncrement"),
+            ReadStr("roundingPriority"),
+            ReadStr("trailingZeroDisplay"),
+            ReadStr("numberingSystem") ?? "latn");
+    }
+
+    private JsObject RequireNumberFormatState(JsValue thisValue)
+    {
+        if (thisValue.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("Intl.NumberFormat method called on incompatible receiver."));
+        var receiver = _heap.GetObject(thisValue.AsObjectHandle());
+        if (!receiver.TryGetProperty("__numberFormatState", x => _heap.GetObject(x), out var stateDesc) ||
+            stateDesc.Value.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("Intl.NumberFormat method called on incompatible receiver."));
+        return _heap.GetObject(stateDesc.Value.AsObjectHandle());
+    }
+
+    private ObjectHandle EnsureNumberFormatPrototypeHandle()
+    {
+        // The shared NumberFormat.prototype is created inline in EnsureIntlObject().
+        // If for some reason it doesn't exist yet, create a minimal one.
+        if (_numberFormatPrototypeHandle is { } existing) return existing;
+        var p = CreateOrdinaryObject();
+        var ph = _heap.AllocateObject(p, AllocationSite.Current());
+        _numberFormatPrototypeHandle = ph;
+        return ph;
     }
 
     // ECMA-402 15.5.1 Intl.NumberFormat.prototype.resolvedOptions. Returns a new
@@ -2313,6 +2294,21 @@ public sealed partial class BytecodeInterpreter
         return new NumberFormatState(locale, style, currency, currencyDisplay, currencySign, unit, unitDisplay, notation, compactDisplay, minimumIntegerDigits, minimumFractionDigits, maximumFractionDigits, minimumSignificantDigits, maximumSignificantDigits, useGrouping != "false", useGrouping, signDisplay, roundingMode, roundingIncrement, roundingPriority, trailingZeroDisplay, numberingSystem);
     }
 
+    // ISO 4217 currency → default fraction digits (CLDR secondary currency).
+    private static int GetCurrencyDefaultFractionDigits(string currencyCode)
+    {
+        return currencyCode.ToUpperInvariant() switch
+        {
+            // 0 decimal digits
+            "BIF" or "CLP" or "DJF" or "GNF" or "ISK" or "JPY" or "KMF" or "KRW" or "PYG" or "RWF"
+                or "UGX" or "UYI" or "VND" or "VUV" or "XAF" or "XOF" or "XPF" => 0,
+            // 3 decimal digits
+            "BHD" or "IQD" or "JOD" or "KWD" or "LYD" or "OMR" or "TND" => 3,
+            // Default 2
+            _ => 2,
+        };
+    }
+
     // ECMA-402 valid roundingIncrement values: 1, 2, 5, and their multiples up to 5000.
     private static bool IsValidRoundingIncrement(int inc) => inc switch
     {
@@ -2596,10 +2592,17 @@ public sealed partial class BytecodeInterpreter
             return FormatNumberWithSignificantDigits(absValue, negative, minSig, maxSig, nfi, state);
         }
 
-        // Compute fraction digits (CLDR defaults from NumberFormatInfo when unset).
-        int minFrac = state.MinimumFractionDigits ?? (style == "currency" ? nfi.CurrencyDecimalDigits : style == "percent" ? 0 : 0);
-        int maxFrac = state.MaximumFractionDigits ?? (style == "currency" ? nfi.CurrencyDecimalDigits : style == "percent" ? Math.Max(minFrac, 0) : 3);
-        bool useGrouping = state.UseGrouping; // primary bool flag
+        // Compute fraction digits with proper CLDR defaults.
+        int defaultFrac = style == "currency" ? GetCurrencyDefaultFractionDigits(state.Currency ?? "USD") :
+                          style == "percent" ? 0 : 0;
+        int minFrac = state.MinimumFractionDigits ?? defaultFrac;
+        int maxFrac = state.MaximumFractionDigits ?? (style == "currency" ? defaultFrac : style == "percent" ? Math.Max(minFrac, 0) : 3);
+
+        // useGrouping: ES2023 supports "always", "auto", "min2", and the legacy true/false.
+        bool useGrouping = state.UseGrouping;
+        string? useGroupingValue = state.UseGroupingValue;
+        // "min2" means at least 5 integer digits needed for grouping.
+        bool groupingMin2 = string.Equals(useGroupingValue, "min2", StringComparison.Ordinal);
 
         // Format using .NET's ICU-backed NumberFormatInfo with fraction digits.
         var cnf = (NumberFormatInfo)nfi.Clone();
@@ -2688,6 +2691,12 @@ public sealed partial class BytecodeInterpreter
             return sciParts;
         }
 
+        // Compact notation — formats with magnitude-based suffix.
+        if (notation == "compact")
+        {
+            return FormatCompactNumber(absValue, negative, isNegativeZero, state, nfi);
+        }
+
         string formatted = style switch
         {
             "currency" => number.ToString("C", cnf),
@@ -2717,12 +2726,16 @@ public sealed partial class BytecodeInterpreter
         // Parse formatted output into IntlParts.
         var parts = new List<IntlPart>();
         string signDisplay = state.SignDisplay ?? "auto";
-        bool showSign = signDisplay switch
+        // ECMA-402 sign display: for -0, treat as negative only if signDisplay says so.
+        bool showMinus = signDisplay switch
         {
-            "never" => false, "always" => true,
-            "exceptZero" => number != 0, "negative" => negative,
-            _ => negative
+            "never" => false,
+            "always" => true,
+            "exceptZero" => number != 0,
+            "negative" => negative,
+            _ => negative && (number != 0 || isNegativeZero) // auto: show minus only for negative non-zero
         };
+        bool showPlus = signDisplay == "always" && !negative;
 
         // Walk formatted string, classifying each character.
         int pos = 0;
@@ -2750,11 +2763,11 @@ public sealed partial class BytecodeInterpreter
         }
 
         // Sign
-        if (negParens || (showSign && negative))
+        if (negParens || showMinus)
         {
             parts.Add(new IntlPart("minusSign", nfi.NegativeSign, state.Unit));
         }
-        else if (showSign && !negative)
+        else if (showPlus)
         {
             parts.Add(new IntlPart("plusSign", nfi.PositiveSign, state.Unit));
         }
@@ -2808,6 +2821,48 @@ public sealed partial class BytecodeInterpreter
                 ApplyNumberingSystem(new string(digitBuf.ToArray()), state.NumberingSystem), state.Unit));
         }
 
+        // Post-process: apply minimum integer digits by padding the first integer part.
+        if (state.MinimumIntegerDigits > 1)
+        {
+            // Count total integer digits across all integer parts.
+            int totalIntDigits = 0;
+            foreach (var p in parts)
+                if (p.Type == "integer") totalIntDigits += p.Value.Length;
+            if (totalIntDigits < state.MinimumIntegerDigits)
+            {
+                int padCount = state.MinimumIntegerDigits - totalIntDigits;
+                // Find first integer part and prepend zeros.
+                for (int i = 0; i < parts.Count; i++)
+                {
+                    if (parts[i].Type == "integer")
+                    {
+                        parts[i] = new IntlPart("integer",
+                            ApplyNumberingSystem(new string('0', padCount) + new string(parts[i].Value.Where(ch => ch >= '0' && ch <= '9').ToArray()), state.NumberingSystem), parts[i].Unit);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // "min2" grouping: remove grouping separators when integer part has fewer than 5 digits.
+        if (groupingMin2)
+        {
+            int totalIntDigits = 0;
+            foreach (var p in parts)
+                if (p.Type == "integer") totalIntDigits += p.Value.Length;
+            if (totalIntDigits < 5)
+            {
+                // Remove group separators.
+                for (int i = parts.Count - 1; i >= 0; i--)
+                {
+                    if (parts[i].Type == "group")
+                    {
+                        parts.RemoveAt(i);
+                    }
+                }
+            }
+        }
+
         // Closing paren or trailing currency/percent.
         if (negParens)
         {
@@ -2832,6 +2887,100 @@ public sealed partial class BytecodeInterpreter
         }
 
         return parts;
+    }
+
+    // Compact notation: format with magnitude-based suffix (K, M, B, T for short).
+    private IReadOnlyList<IntlPart> FormatCompactNumber(double absValue, bool negative, bool isNegativeZero,
+        NumberFormatState state, NumberFormatInfo nfi)
+    {
+        bool compactShort = state.CompactDisplay is null or "short";
+        var (divisor, suffix) = GetCompactEntry(absValue, compactShort);
+        var scaled = absValue / divisor;
+        if (absValue == 0) scaled = 0;
+
+        // Format the scaled value with fraction digits.
+        int minFrac = state.MinimumFractionDigits ?? 0;
+        int maxFrac = state.MaximumFractionDigits ?? 2;
+
+        // Round to maxFrac places.
+        var rounded = Math.Round(scaled, maxFrac, MidpointRounding.AwayFromZero);
+        var fmtStr = rounded.ToString("F" + maxFrac, CultureInfo.InvariantCulture);
+        int dotIdx = fmtStr.IndexOf('.');
+        string intPart = dotIdx >= 0 ? fmtStr[..dotIdx] : fmtStr;
+        string fracPart = dotIdx >= 0 ? fmtStr[(dotIdx + 1)..] : "";
+
+        // Trim trailing zeros down to minFrac.
+        while (fracPart.Length > minFrac && fracPart.EndsWith("0"))
+            fracPart = fracPart[..^1];
+
+        var parts = new List<IntlPart>();
+
+        // Sign handling.
+        string signDisplay = state.SignDisplay ?? "auto";
+        bool showMinus = signDisplay switch
+        {
+            "never" => false,
+            "always" => true,
+            "exceptZero" => absValue != 0,
+            "negative" => negative && (absValue != 0 || isNegativeZero),
+            _ => negative && absValue != 0
+        };
+        bool showPlus = signDisplay == "always" && !negative;
+        if (showMinus)
+            parts.Add(new IntlPart("minusSign", nfi.NegativeSign, state.Unit));
+        else if (showPlus)
+            parts.Add(new IntlPart("plusSign", nfi.PositiveSign, state.Unit));
+
+        // Minimum integer digits padding.
+        if (state.MinimumIntegerDigits > 1 && intPart.Length < state.MinimumIntegerDigits)
+            intPart = intPart.PadLeft(state.MinimumIntegerDigits, '0');
+
+        // Grouping for integer part.
+        if (state.UseGrouping && intPart.Length > 3)
+        {
+            int groupSize = nfi.NumberGroupSizes.Length > 0 ? nfi.NumberGroupSizes[0] : 3;
+            var grouped = new List<string>();
+            int pos = intPart.Length;
+            while (pos > groupSize) { pos -= groupSize; grouped.Insert(0, intPart[pos..(pos + groupSize)]); }
+            grouped.Insert(0, intPart[..pos]);
+            for (int i = 0; i < grouped.Count; i++)
+            {
+                if (i > 0) parts.Add(new IntlPart("group", nfi.NumberGroupSeparator, state.Unit));
+                parts.Add(new IntlPart("integer", ApplyNumberingSystem(grouped[i], state.NumberingSystem), state.Unit));
+            }
+        }
+        else
+        {
+            parts.Add(new IntlPart("integer", ApplyNumberingSystem(intPart, state.NumberingSystem), state.Unit));
+        }
+
+        if (fracPart.Length > 0)
+        {
+            parts.Add(new IntlPart("decimal", nfi.NumberDecimalSeparator, state.Unit));
+            parts.Add(new IntlPart("fraction", ApplyNumberingSystem(fracPart, state.NumberingSystem), state.Unit));
+        }
+
+        // Compact suffix as separate part.
+        parts.Add(new IntlPart("compact", suffix, state.Unit));
+
+        return parts;
+    }
+
+    // Return the divisor and suffix for compact notation.
+    private static (double divisor, string suffix) GetCompactEntry(double absValue, bool short_)
+    {
+        // Thresholds roughly matching CLDR compact patterns.
+        if (absValue >= 1e15)
+            return short_ ? (1e15, "Q") : (1e15, " quadrillion");
+        if (absValue >= 1e12)
+            return short_ ? (1e12, "T") : (1e12, " trillion");
+        if (absValue >= 1e9)
+            return short_ ? (1e9, "B") : (1e9, " billion");
+        if (absValue >= 1e6)
+            return short_ ? (1e6, "M") : (1e6, " million");
+        if (absValue >= 1e3)
+            return short_ ? (1e3, "K") : (1e3, " thousand");
+        return short_ ? (1, "") : (1, "");
     }
 
     // ECMA-402: Format a BigInt string into IntlParts. BigInts are formatted as

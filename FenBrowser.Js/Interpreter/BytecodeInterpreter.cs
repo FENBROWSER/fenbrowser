@@ -7933,26 +7933,84 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var nfProtoHandle = _heap.AllocateObject(nfProto, AllocationSite.Current());
             _heap.PushRoot(nfProtoHandle);
             _numberFormatPrototypeHandle = nfProtoHandle;
-            var roStub = new NativeFunctionObject("resolvedOptions", (_, _) =>
+            // Shared prototype methods read state from instance's __numberFormatState slot.
+            var roStub = new NativeFunctionObject("resolvedOptions", (thisValue, _) =>
             {
-                var o = CreateOrdinaryObject();
-                o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en-US"), Writable: true, Enumerable: true, Configurable: true));
-                o.DefineOwnProperty("numberingSystem", new JsPropertyDescriptor(JsValue.FromString("latn"), Writable: true, Enumerable: true, Configurable: true));
-                o.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString("decimal"), Writable: true, Enumerable: true, Configurable: true));
-                o.DefineOwnProperty("minimumIntegerDigits", new JsPropertyDescriptor(JsValue.FromNumber(1), Writable: true, Enumerable: true, Configurable: true));
-                o.DefineOwnProperty("minimumFractionDigits", new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: true, Configurable: true));
-                o.DefineOwnProperty("maximumFractionDigits", new JsPropertyDescriptor(JsValue.FromNumber(3), Writable: true, Enumerable: true, Configurable: true));
-                o.DefineOwnProperty("useGrouping", new JsPropertyDescriptor(JsValue.FromString("auto"), Writable: true, Enumerable: true, Configurable: true));
-                return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
+                var stateObj = RequireNumberFormatState(thisValue);
+                var state = RebuildNumberFormatState(stateObj);
+                return NumberFormatResolvedOptions(state);
             }, length: 0);
             nfProto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(roStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
-            var fmtStub = new NativeFunctionObject("format", (_, _2) => JsValue.FromString(""), length: 1);
+            var fmtStub = new NativeFunctionObject("format", (thisValue, fmtArgs) =>
+            {
+                var stateObj = RequireNumberFormatState(thisValue);
+                var state = RebuildNumberFormatState(stateObj);
+                return JsValue.FromString(FormatNumber(fmtArgs.Count > 0 ? fmtArgs[0] : JsValue.Undefined, state));
+            }, length: 1);
             nfProto.DefineOwnProperty("format", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(fmtStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
-            var ftpStub = new NativeFunctionObject("formatToParts", (_, _2) => { var e = JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current())); return e; }, length: 1);
+            var ftpStub = new NativeFunctionObject("formatToParts", (thisValue, fmtArgs) =>
+            {
+                var stateObj = RequireNumberFormatState(thisValue);
+                var state = RebuildNumberFormatState(stateObj);
+                var parts = FormatNumberToParts(fmtArgs.Count > 0 ? fmtArgs[0] : JsValue.Undefined, state);
+                return CreateIntlPartsArray(parts);
+            }, length: 1);
             nfProto.DefineOwnProperty("formatToParts", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(ftpStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
-            var frStub = new NativeFunctionObject("formatRange", (_, _2) => JsValue.FromString(""), length: 2);
+            var frStub = new NativeFunctionObject("formatRange", (thisValue, rangeArgs) =>
+            {
+                var stateObj = RequireNumberFormatState(thisValue);
+                var state = RebuildNumberFormatState(stateObj);
+                if (thisValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(CreateTypeError("Intl.NumberFormat.prototype.formatRange called on incompatible receiver."));
+                var xVal = rangeArgs.Count > 0 ? rangeArgs[0] : JsValue.Undefined;
+                var yVal = rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined;
+                if (xVal.Tag == JsValueTag.Undefined || yVal.Tag == JsValueTag.Undefined)
+                    throw new JsThrownException(CreateTypeError("formatRange requires two arguments."));
+                var x = ToNumber(xVal);
+                var y = ToNumber(yVal);
+                if (double.IsNaN(x) || double.IsNaN(y))
+                    throw new JsThrownException(CreateRangeError("formatRange requires finite numbers."));
+                if (x > y) { var tmp = x; x = y; y = tmp; }
+                var xFormatted = FormatNumber(JsValue.FromNumber(x), state);
+                var yFormatted = FormatNumber(JsValue.FromNumber(y), state);
+                if (xFormatted == yFormatted)
+                    return JsValue.FromString("∼" + xFormatted);
+                return JsValue.FromString(xFormatted + "–" + yFormatted);
+            }, length: 2);
             nfProto.DefineOwnProperty("formatRange", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(frStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
-            var frtpStub = new NativeFunctionObject("formatRangeToParts", (_, _2) => { var e = JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current())); return e; }, length: 2);
+            var frtpStub = new NativeFunctionObject("formatRangeToParts", (thisValue, rangeArgs) =>
+            {
+                var stateObj = RequireNumberFormatState(thisValue);
+                var state = RebuildNumberFormatState(stateObj);
+                if (thisValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(CreateTypeError("Intl.NumberFormat.prototype.formatRangeToParts called on incompatible receiver."));
+                var xVal = rangeArgs.Count > 0 ? rangeArgs[0] : JsValue.Undefined;
+                var yVal = rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined;
+                if (xVal.Tag == JsValueTag.Undefined || yVal.Tag == JsValueTag.Undefined)
+                    throw new JsThrownException(CreateTypeError("formatRangeToParts requires two arguments."));
+                var x = ToNumber(xVal);
+                var y = ToNumber(yVal);
+                if (double.IsNaN(x) || double.IsNaN(y))
+                    throw new JsThrownException(CreateRangeError("formatRangeToParts requires finite numbers."));
+                if (x > y) { var tmp = x; x = y; y = tmp; }
+                var xParts = FormatNumberToParts(JsValue.FromNumber(x), state);
+                var yParts = FormatNumberToParts(JsValue.FromNumber(y), state);
+                var xFormatted = string.Concat(xParts.Select(static p => p.Value));
+                var yFormatted = string.Concat(yParts.Select(static p => p.Value));
+                if (xFormatted == yFormatted)
+                {
+                    var approxParts = new List<IntlPart> { new IntlPart("literal", "∼") };
+                    approxParts.AddRange(xParts);
+                    return CreateIntlPartsArray(approxParts);
+                }
+                var rangeParts = new List<IntlPart>();
+                foreach (var p in xParts)
+                    rangeParts.Add(new IntlPart("rangeStart", p.Value, p.Unit));
+                rangeParts.Add(new IntlPart("literal", "–"));
+                foreach (var p in yParts)
+                    rangeParts.Add(new IntlPart("rangeEnd", p.Value, p.Unit));
+                return CreateIntlPartsArray(rangeParts);
+            }, length: 2);
             nfProto.DefineOwnProperty("formatRangeToParts", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(frtpStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
 
             var ctor = new NativeFunctionObject(
