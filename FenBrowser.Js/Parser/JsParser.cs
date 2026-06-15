@@ -1907,11 +1907,14 @@ public sealed class JsParser
         var test = ParseExpression(0);
         ExpectPunctuator(")");
         var consequent = ParseStatement(StatementBodyContext.IfClauseOrLabel);
+        // ECMA-262: IsLabelledFunction(Statement) must be false for if-body.
+        ValidateIfBodyNotLabelledFunction(consequent);
         StatementNode? alternate = null;
         if (Current().Kind == TokenKind.Keyword && Current().Text == "else")
         {
             Advance();
             alternate = ParseStatement(StatementBodyContext.IfClauseOrLabel);
+            ValidateIfBodyNotLabelledFunction(alternate);
         }
 
         var endSpan = alternate?.Span ?? consequent.Span;
@@ -2283,6 +2286,19 @@ public sealed class JsParser
     }
 
     // ECMA-262 13.7.5 / 14.7 / 14.6: IterationStatement bodies must not be
+    // Labelled function declarations are not allowed as if-statement bodies.
+    // ECMA-262: IsLabelledFunction(Statement) must be false for the Statement
+    // in an IfStatement.
+    private static void ValidateIfBodyNotLabelledFunction(StatementNode body)
+    {
+        var stmt = body;
+        while (stmt is LabeledStatementNode labeled)
+            stmt = labeled.Body;
+        if (stmt is FunctionDeclarationNode)
+            throw new JsParserException(
+                "Labelled function declarations are not allowed as the body of an if statement.");
+    }
+
     // labelled function declarations (even nested labels like L1: L2: function f).
     private static void ValidateIterationBodyNotLabelledFunction(StatementNode body)
     {
