@@ -75,7 +75,8 @@ internal static class IntlDateTimeFormatting
             !string.IsNullOrEmpty(options.Minute) ||
             !string.IsNullOrEmpty(options.Second) ||
             options.FractionalSecondDigits.HasValue ||
-            !string.IsNullOrEmpty(options.DayPeriod))
+            !string.IsNullOrEmpty(options.DayPeriod) ||
+            !string.IsNullOrEmpty(options.TimeZoneName))
         {
             throw new InvalidOperationException("dateStyle/timeStyle conflicts with explicit component options.");
         }

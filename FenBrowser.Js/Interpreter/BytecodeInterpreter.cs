@@ -7938,8 +7938,31 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         // ECMA-402 §13 NumberFormat constructor.
         {
-            var nfProtoHandle = EnsureNumberFormatPrototype();
+            // Build shared prototype first so we can capture its handle for ChainIntlService.
+            var nfProto = CreateOrdinaryObject();
+            var nfProtoHandle = _heap.AllocateObject(nfProto, AllocationSite.Current());
             _heap.PushRoot(nfProtoHandle);
+            var roStub = new NativeFunctionObject("resolvedOptions", (_, _) =>
+            {
+                var o = CreateOrdinaryObject();
+                o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en-US"), Writable: true, Enumerable: true, Configurable: true));
+                o.DefineOwnProperty("numberingSystem", new JsPropertyDescriptor(JsValue.FromString("latn"), Writable: true, Enumerable: true, Configurable: true));
+                o.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString("decimal"), Writable: true, Enumerable: true, Configurable: true));
+                o.DefineOwnProperty("minimumIntegerDigits", new JsPropertyDescriptor(JsValue.FromNumber(1), Writable: true, Enumerable: true, Configurable: true));
+                o.DefineOwnProperty("minimumFractionDigits", new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: true, Configurable: true));
+                o.DefineOwnProperty("maximumFractionDigits", new JsPropertyDescriptor(JsValue.FromNumber(3), Writable: true, Enumerable: true, Configurable: true));
+                o.DefineOwnProperty("useGrouping", new JsPropertyDescriptor(JsValue.FromString("auto"), Writable: true, Enumerable: true, Configurable: true));
+                return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
+            }, length: 0);
+            nfProto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(roStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+            var fmtStub = new NativeFunctionObject("format", (_, _2) => JsValue.FromString(""), length: 1);
+            nfProto.DefineOwnProperty("format", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(fmtStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+            var ftpStub = new NativeFunctionObject("formatToParts", (_, _2) => { var e = JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current())); return e; }, length: 1);
+            nfProto.DefineOwnProperty("formatToParts", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(ftpStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+            var frStub = new NativeFunctionObject("formatRange", (_, _2) => JsValue.FromString(""), length: 2);
+            nfProto.DefineOwnProperty("formatRange", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(frStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+            var frtpStub = new NativeFunctionObject("formatRangeToParts", (_, _2) => { var e = JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current())); return e; }, length: 2);
+            nfProto.DefineOwnProperty("formatRangeToParts", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(frtpStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
 
             var ctor = new NativeFunctionObject(
                 "NumberFormat",
