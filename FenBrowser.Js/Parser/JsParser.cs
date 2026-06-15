@@ -3954,7 +3954,11 @@ public sealed class JsParser
         if (token.Kind == TokenKind.Punctuator && (token.Text == "!" || token.Text == "-" || token.Text == "+" || token.Text == "~"))
         {
             var op = Advance();
-            var operand = ParseExpression(40);
+            // ECMA-262: unary - and + allow ** to bind first so -a**b => -(a**b).
+            // Other unary operators (~, !) use high precedence, so ~a**b would
+            // produce (~a)**b which is rejected as a SyntaxError below.
+            var opBp = (op.Text == "-" || op.Text == "+") ? 32 : 40;
+            var operand = ParseExpression(opBp);
             return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
         }
 
