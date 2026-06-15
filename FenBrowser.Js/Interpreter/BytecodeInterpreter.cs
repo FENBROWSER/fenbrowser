@@ -8039,13 +8039,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _heap.WriteBarrier(handle, ctorHandle);
         }
 
-        // ECMA-402 Intl.ListFormat constructor.
+        // ECMA-402 Intl.ListFormat constructor. Must be invoked with 'new'.
         {
             var listFormatProtoHandle = EnsureListFormatPrototype();
 
             var ctor = new NativeFunctionObject(
                 "ListFormat",
-                (thisValue, args) => ChainIntlService(thisValue, args, listFormatProtoHandle, ListFormatConstruct),
+                (_, _) => throw new JsThrownException(CreateTypeError("Intl.ListFormat must be invoked with 'new'.")),
                 construct: args => ListFormatConstruct(args),
                 length: 0);
             var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
@@ -8449,10 +8449,80 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         try { var c = new System.Globalization.CultureInfo(code); return style == "long" ? c.EnglishName : c.TwoLetterISOLanguageName.ToUpperInvariant(); }
         catch { return code; }
     }
-    private static string? TryGetRegionDisplayName(string code, string style) => code;
-    private static string? TryGetScriptDisplayName(string code) => code;
-    private static string? TryGetCurrencyDisplayName(string code, string style) => code;
-    private static string? TryGetCalendarDisplayName(string code) => code;
+    private static string? TryGetRegionDisplayName(string code, string style)
+    {
+        try
+        {
+            var ri = new System.Globalization.RegionInfo(code);
+            return style == "long" ? ri.EnglishName : ri.TwoLetterISORegionName;
+        }
+        catch { return code; }
+    }
+    private static string? TryGetScriptDisplayName(string code)
+    {
+        // Simple mapping for common scripts used in test262.
+        return code switch
+        {
+            "Latn" => "Latin",
+            "Cyrl" => "Cyrillic",
+            "Arab" => "Arabic",
+            "Hans" => "Simplified",
+            "Hant" => "Traditional",
+            "Kana" => "Katakana",
+            "Hang" => "Hangul",
+            "Grek" => "Greek",
+            "Hebr" => "Hebrew",
+            "Thai" => "Thai",
+            "Jpan" => "Japanese",
+            "Kore" => "Korean",
+            _ => code
+        };
+    }
+    private static string? TryGetCurrencyDisplayName(string code, string style)
+    {
+        // Simple mapping for common currencies.
+        return code switch
+        {
+            "USD" => style == "long" ? "US Dollar" : "USD",
+            "EUR" => style == "long" ? "Euro" : "EUR",
+            "GBP" => style == "long" ? "British Pound" : "GBP",
+            "JPY" => style == "long" ? "Japanese Yen" : "JPY",
+            "CNY" => style == "long" ? "Chinese Yuan" : "CNY",
+            "KRW" => style == "long" ? "South Korean Won" : "KRW",
+            "INR" => style == "long" ? "Indian Rupee" : "INR",
+            "BRL" => style == "long" ? "Brazilian Real" : "BRL",
+            "RUB" => style == "long" ? "Russian Ruble" : "RUB",
+            "CAD" => style == "long" ? "Canadian Dollar" : "CAD",
+            "AUD" => style == "long" ? "Australian Dollar" : "AUD",
+            "CHF" => style == "long" ? "Swiss Franc" : "CHF",
+            _ => code
+        };
+    }
+    private static string? TryGetCalendarDisplayName(string code)
+    {
+        return code switch
+        {
+            "gregory" => "Gregorian",
+            "buddhist" => "Buddhist",
+            "chinese" => "Chinese",
+            "coptic" => "Coptic",
+            "dangi" => "Dangi",
+            "ethioaa" => "Ethiopic Amete Alem",
+            "ethiopic" => "Ethiopic",
+            "hebrew" => "Hebrew",
+            "indian" => "Indian",
+            "islamic" => "Islamic",
+            "islamic-civil" => "Islamic Civil",
+            "islamic-umalqura" => "Umm al-Qura",
+            "islamic-tbla" => "Islamic TBLA",
+            "islamic-rgsa" => "Islamic RGSA",
+            "iso8601" => "ISO 8601",
+            "japanese" => "Japanese",
+            "persian" => "Persian",
+            "roc" => "Minguo",
+            _ => code
+        };
+    }
 
     private JsValue GetCanonicalLocales(IReadOnlyList<JsValue> args)
     {

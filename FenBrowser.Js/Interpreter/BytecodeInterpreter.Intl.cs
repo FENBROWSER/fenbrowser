@@ -180,6 +180,48 @@ public sealed partial class BytecodeInterpreter
                 Configurable: true));
         _heap.WriteBarrier(protoHandle, resolvedOptionsHandle);
 
+        // ECMA-402 formatRange (ES2021 Intl.DateTimeFormat V3)
+        var formatRangeMethod = new NativeFunctionObject(
+            "formatRange",
+            (thisValue, rangeArgs) =>
+            {
+                if (thisValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(CreateTypeError("Intl.DateTimeFormat.prototype.formatRange called on incompatible receiver."));
+                var xVal = rangeArgs.Count > 0 ? rangeArgs[0] : JsValue.Undefined;
+                var yVal = rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined;
+                return DateTimeFormatFormatRangeCore(culture, options,
+                    new[] { xVal }, new[] { yVal }, parts: false);
+            },
+            length: 2);
+        var formatRangeHandle = _heap.AllocateObject(formatRangeMethod, AllocationSite.Current());
+        prototype.DefineOwnProperty(
+            "formatRange",
+            new JsPropertyDescriptor(
+                JsValue.FromObject(formatRangeHandle),
+                Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, formatRangeHandle);
+
+        // ECMA-402 formatRangeToParts (ES2021 Intl.DateTimeFormat V3)
+        var formatRangeToPartsMethod = new NativeFunctionObject(
+            "formatRangeToParts",
+            (thisValue, rangeArgs) =>
+            {
+                if (thisValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(CreateTypeError("Intl.DateTimeFormat.prototype.formatRangeToParts called on incompatible receiver."));
+                var xVal = rangeArgs.Count > 0 ? rangeArgs[0] : JsValue.Undefined;
+                var yVal = rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined;
+                return DateTimeFormatFormatRangeCore(culture, options,
+                    new[] { xVal }, new[] { yVal }, parts: true);
+            },
+            length: 2);
+        var formatRangeToPartsHandle = _heap.AllocateObject(formatRangeToPartsMethod, AllocationSite.Current());
+        prototype.DefineOwnProperty(
+            "formatRangeToParts",
+            new JsPropertyDescriptor(
+                JsValue.FromObject(formatRangeToPartsHandle),
+                Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, formatRangeToPartsHandle);
+
         var instance = CreateOrdinaryObject();
         instance.SetPrototype(protoHandle);
         var instanceHandle = _heap.AllocateObject(instance, AllocationSite.Current());
@@ -348,6 +390,40 @@ public sealed partial class BytecodeInterpreter
         _ = prototype.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(resolvedOptsHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, resolvedOptsHandle);
 
+        // ECMA-402 formatRange / formatRangeToParts stubs on shared prototype.
+        var formatRangeStub = new NativeFunctionObject(
+            "formatRange",
+            (thisValue, rangeArgs) =>
+            {
+                if (thisValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(CreateTypeError("Intl.DateTimeFormat.prototype.formatRange called on incompatible receiver."));
+                var xVal = rangeArgs.Count > 0 ? rangeArgs[0] : JsValue.Undefined;
+                var yVal = rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined;
+                if (xVal.Tag == JsValueTag.Undefined || yVal.Tag == JsValueTag.Undefined)
+                    throw new JsThrownException(CreateTypeError("formatRange requires two date arguments."));
+                return JsValue.FromString("");
+            },
+            length: 2);
+        var formatRangeStubHandle = _heap.AllocateObject(formatRangeStub, AllocationSite.Current());
+        _ = prototype.DefineOwnProperty("formatRange",
+            new JsPropertyDescriptor(JsValue.FromObject(formatRangeStubHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, formatRangeStubHandle);
+
+        var formatRangeToPartsStub = new NativeFunctionObject(
+            "formatRangeToParts",
+            (thisValue, rangeArgs) =>
+            {
+                if (thisValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(CreateTypeError("Intl.DateTimeFormat.prototype.formatRangeToParts called on incompatible receiver."));
+                var empty = JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current()));
+                return empty;
+            },
+            length: 2);
+        var formatRangeToPartsStubHandle = _heap.AllocateObject(formatRangeToPartsStub, AllocationSite.Current());
+        _ = prototype.DefineOwnProperty("formatRangeToParts",
+            new JsPropertyDescriptor(JsValue.FromObject(formatRangeToPartsStubHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, formatRangeToPartsStubHandle);
+
         _dateTimeFormatPrototypeHandle = prototypeHandle;
         return prototypeHandle;
     }
@@ -437,6 +513,147 @@ public sealed partial class BytecodeInterpreter
         }
         var array = CreateArrayObject(partValues);
         return JsValue.FromObject(_heap.AllocateObject(array, AllocationSite.Current()));
+    }
+
+    // ECMA-402 formatRange/formatRangeToParts core implementation for DateTimeFormat.
+    // Coerces both arguments to Temporal/Date values, formats each, and returns
+    // either the combined range string or a parts array with source annotations.
+    private JsValue DateTimeFormatFormatRangeCore(
+        CultureInfo culture,
+        IntlDateTimeFormatOptions options,
+        IReadOnlyList<JsValue> xArgs,
+        IReadOnlyList<JsValue> yArgs,
+        bool parts)
+    {
+        // ECMA-402 §11.6.1: if either argument is undefined, throw TypeError.
+        if (xArgs.Count == 0 || xArgs[0].Tag == JsValueTag.Undefined ||
+            yArgs.Count == 0 || yArgs[0].Tag == JsValueTag.Undefined)
+            throw new JsThrownException(CreateTypeError("formatRange requires two date arguments."));
+
+        // Check for NaN/Infinity Date values (from JS Date or numeric timestamp).
+        if (IsInvalidDateValue(xArgs[0]) || IsInvalidDateValue(yArgs[0]))
+            throw new JsThrownException(CreateRangeError("formatRange requires valid dates."));
+
+        // Coerce x and y to Temporal/Date values.
+        int xKind, yKind;
+        var xHas = TryGetDateTimeFormatRangeInput(xArgs, culture, options, out var xText, out var xPartsList, out xKind);
+        var yHas = TryGetDateTimeFormatRangeInput(yArgs, culture, options, out var yText, out var yPartsList, out yKind);
+
+        if (!xHas || !yHas)
+        {
+            if (!parts)
+                return JsValue.FromString(xHas ? xText : (yHas ? yText : ""));
+            var emptyArray = CreateArrayObject(Array.Empty<JsValue>());
+            return JsValue.FromObject(_heap.AllocateObject(emptyArray, AllocationSite.Current()));
+        }
+
+        // ECMA-402: throw RangeError for mixed Temporal types.
+        if (xKind != yKind && xKind >= 0 && yKind >= 0)
+            throw new JsThrownException(CreateRangeError("formatRange requires arguments of the same Temporal type."));
+
+        // ECMA-402: throw TypeError for ZonedDateTime in formatRangeToParts.
+        if (parts && (xKind == 4 || yKind == 4))
+            throw new JsThrownException(CreateTypeError("formatRangeToParts() does not support Temporal.ZonedDateTime"));
+
+        if (!parts)
+        {
+            if (xText == yText)
+                return JsValue.FromString(xText);
+            return JsValue.FromString(xText + "–" + yText);
+        }
+
+        // formatRangeToParts: annotate each part with source.
+        if (xText == yText)
+        {
+            var sharedParts = new List<JsValue>(xPartsList.Count);
+            foreach (var p in xPartsList)
+                sharedParts.Add(MakeRangePart(p, "shared"));
+            var arr = CreateArrayObject(sharedParts);
+            return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+        }
+
+        var rangeParts = new List<JsValue>();
+        foreach (var p in xPartsList)
+            rangeParts.Add(MakeRangePart(p, "startRange"));
+        rangeParts.Add(MakeRangeLiteralPart("–"));
+        foreach (var p in yPartsList)
+            rangeParts.Add(MakeRangePart(p, "endRange"));
+        var rangeArr = CreateArrayObject(rangeParts);
+        return JsValue.FromObject(_heap.AllocateObject(rangeArr, AllocationSite.Current()));
+    }
+
+    // Try to coerce a list of args to a formatted DateTime string + parts.
+    // Returns the Temporal type kind: 0=Date/ms, 1=date-only, 2=PlainDateTime,
+    // 3=PlainTime, 4=ZonedDateTime, -1=unknown/invalid.
+    private bool TryGetDateTimeFormatRangeInput(
+        IReadOnlyList<JsValue> args,
+        CultureInfo culture,
+        IntlDateTimeFormatOptions options,
+        out string text,
+        out List<IntlDateTimePart> partsList,
+        out int kind)
+    {
+        text = "";
+        partsList = new List<IntlDateTimePart>();
+        kind = -1;
+        if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
+            return false;
+
+        // Try each Temporal type.
+        if (TryGetTemporalPlainTime(args, culture, options, out var ptRes))
+        { text = ptRes.Text; partsList.AddRange(ptRes.Parts); kind = 3; return true; }
+        if (TryGetTemporalDateOnly(args, culture, options, out var doRes))
+        { text = doRes.Text; partsList.AddRange(doRes.Parts); kind = 1; return true; }
+        if (TryGetTemporalPlainDateTime(args, culture, options, out var pdtRes))
+        { text = pdtRes.Text; partsList.AddRange(pdtRes.Parts); kind = 2; return true; }
+        if (TryGetTemporalZonedDateTime(args, culture, options, out var zdtRes))
+        { text = zdtRes.Text; partsList.AddRange(zdtRes.Parts); kind = 4; return true; }
+
+        // JS Date or numeric timestamp.
+        if (TryGetDateTimeFormatInput(args, out var instant))
+        {
+            var result = IntlDateTimeFormatting.Format(instant, culture, options);
+            text = result.Text;
+            partsList.AddRange(result.Parts);
+            kind = 0;
+            return true;
+        }
+
+        return false;
+    }
+
+    // Make a { type, value, source } part object for formatRangeToParts.
+    private JsValue MakeRangePart(IntlDateTimePart part, string source)
+    {
+        var obj = CreateOrdinaryObject();
+        _ = obj.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(part.Type), Writable: true, Enumerable: true, Configurable: true));
+        _ = obj.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.FromString(part.Value), Writable: true, Enumerable: true, Configurable: true));
+        _ = obj.DefineOwnProperty("source", new JsPropertyDescriptor(JsValue.FromString(source), Writable: true, Enumerable: true, Configurable: true));
+        return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
+    }
+
+    // Check if a value is a NaN or Infinity Date/timestamp.
+    private bool IsInvalidDateValue(JsValue arg)
+    {
+        if (arg.Tag == JsValueTag.Number)
+            return double.IsNaN(arg.AsNumber()) || double.IsInfinity(arg.AsNumber());
+        if (arg.Tag == JsValueTag.Object)
+        {
+            var obj = _heap.GetObject(arg.AsObjectHandle());
+            if (obj is DateObject dateObj)
+                return double.IsNaN(dateObj.TimeValue) || double.IsInfinity(dateObj.TimeValue);
+        }
+        return false;
+    }
+
+    // Make a { type: "literal", value, source } part for a range literal separator.
+    private JsValue MakeRangeLiteralPart(string value)
+    {
+        var obj = CreateOrdinaryObject();
+        _ = obj.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString("literal"), Writable: true, Enumerable: true, Configurable: true));
+        _ = obj.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.FromString(value), Writable: true, Enumerable: true, Configurable: true));
+        _ = obj.DefineOwnProperty("source", new JsPropertyDescriptor(JsValue.FromString("shared"), Writable: true, Enumerable: true, Configurable: true));
+        return JsValue.FromObject(_heap.AllocateObject(obj, AllocationSite.Current()));
     }
 
     // ECMA-402 13.1.1 InitializeNumberFormat.
@@ -665,9 +882,78 @@ public sealed partial class BytecodeInterpreter
         var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
         var culture = IntlDateTimeFormatting.ResolveCulture(locale);
 
+        // Parse options from args[1] if present.
+        var optionsValue = args.Count > 1 ? args[1] : JsValue.Undefined;
+        string usage = "sort";
+        string sensitivity = "variant";
+        bool ignorePunctuation = false;
+        bool numeric = false;
+        string caseFirst = "false";
+        string? collationOverride = null;
+
+        if (optionsValue.Tag != JsValueTag.Undefined)
+        {
+            if (optionsValue.Tag == JsValueTag.Null)
+                throw new JsThrownException(CreateTypeError("Cannot convert null to object."));
+            JsObject optsObj;
+            JsValue optsReceiver;
+            if (optionsValue.Tag == JsValueTag.Object)
+            { optsObj = _heap.GetObject(optionsValue.AsObjectHandle()); optsReceiver = optionsValue; }
+            else
+            { optsObj = ToObject(optionsValue); optsReceiver = JsValue.FromObject(_heap.AllocateObject(optsObj, AllocationSite.Current())); }
+
+            string? GetS(string n) => TryGetPropertyValue(optsObj, optsReceiver, n, out var v) && v.Tag != JsValueTag.Undefined ? ToStringValue(v) : null;
+            bool? GetB(string n) => TryGetPropertyValue(optsObj, optsReceiver, n, out var v) && v.Tag != JsValueTag.Undefined ? IsTruthy(v) : null;
+
+            var lm = GetS("localeMatcher");
+            if (lm is not null && lm is not "lookup" and not "best fit")
+                throw new JsThrownException(CreateRangeError($"{lm} is an invalid localeMatcher option value."));
+
+            var u = GetS("usage");
+            if (u is not null)
+            {
+                if (u is not "sort" and not "search") throw new JsThrownException(CreateRangeError($"Invalid usage: {u}"));
+                usage = u;
+            }
+
+            var s = GetS("sensitivity");
+            if (s is not null)
+            {
+                if (s is not "base" and not "accent" and not "case" and not "variant") throw new JsThrownException(CreateRangeError($"Invalid sensitivity: {s}"));
+                sensitivity = s;
+            }
+
+            ignorePunctuation = GetB("ignorePunctuation") ?? false;
+            numeric = GetB("numeric") ?? false;
+
+            var cf = GetS("caseFirst");
+            if (cf is not null)
+            {
+                if (cf is not "upper" and not "lower" and not "false") throw new JsThrownException(CreateRangeError($"Invalid caseFirst: {cf}"));
+                caseFirst = cf;
+            }
+
+            collationOverride = GetS("collation");
+            if (collationOverride is not null && collationOverride is not "default" and not "search")
+                throw new JsThrownException(CreateRangeError($"Invalid collation: {collationOverride}"));
+        }
+
+        // Parse Unicode extension keys from locale. If the `co` key is present,
+        // it overrides the options collation (but options still win if explicitly set).
+        var localeCollation = ExtractUnicodeKeyword(locale, "co");
+        var localeNumeric = ExtractUnicodeKeyword(locale, "kn");
+        var localeCaseFirst = ExtractUnicodeKeyword(locale, "kf");
+        var resolvedCollation = collationOverride ?? localeCollation ?? "default";
+        var resolvedNumeric = numeric || HasUnicodeKeyTrue(locale, "kn");
+        var resolvedCaseFirst = caseFirst != "false" ? caseFirst :
+            (localeCaseFirst is "upper" or "lower" ? localeCaseFirst : "false");
+
         var prototype = CreateOrdinaryObject();
         var protoHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
         _heap.PushRoot(protoHandle);
+
+        // Store locale + options on the instance so compare/resolvedOptions can read them.
+        var capturedLocale = string.IsNullOrEmpty(locale) ? "en-US" : locale;
 
         var protoMethod = new NativeFunctionObject(
             "compare",
@@ -688,13 +974,13 @@ public sealed partial class BytecodeInterpreter
         var resolvedOptsMethod = new NativeFunctionObject("resolvedOptions", (_, _2) =>
         {
             var o = CreateOrdinaryObject();
-            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(string.IsNullOrEmpty(locale) ? "en-US" : locale), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("usage", new JsPropertyDescriptor(JsValue.FromString("sort"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("sensitivity", new JsPropertyDescriptor(JsValue.FromString("variant"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("ignorePunctuation", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("collation", new JsPropertyDescriptor(JsValue.FromString("default"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("numeric", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("caseFirst", new JsPropertyDescriptor(JsValue.FromString("false"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(capturedLocale), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("usage", new JsPropertyDescriptor(JsValue.FromString(usage), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("sensitivity", new JsPropertyDescriptor(JsValue.FromString(sensitivity), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("ignorePunctuation", new JsPropertyDescriptor(JsValue.FromBoolean(ignorePunctuation), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("collation", new JsPropertyDescriptor(JsValue.FromString(resolvedCollation), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("numeric", new JsPropertyDescriptor(JsValue.FromBoolean(resolvedNumeric), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("caseFirst", new JsPropertyDescriptor(JsValue.FromString(resolvedCaseFirst), Writable: true, Enumerable: true, Configurable: true));
             return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
         }, length: 0);
         var resolvedOptsHandle = _heap.AllocateObject(resolvedOptsMethod, AllocationSite.Current());
@@ -2074,13 +2360,79 @@ public sealed partial class BytecodeInterpreter
         return null;
     }
 
-    private static ListFormatState ParseListFormatState(string locale, JsValue optionsValue)
+    // Check if a Unicode extension key is present in the locale (even without a value).
+    // For keys like "kn" (numeric), mere presence means "true".
+    private static bool HasUnicodeKeyTrue(string locale, string key)
+    {
+        if (string.IsNullOrEmpty(locale)) return false;
+        var subtags = locale.Split('-');
+        for (var i = 0; i < subtags.Length; i++)
+        {
+            if (string.Equals(subtags[i], "u", StringComparison.OrdinalIgnoreCase) && i + 1 < subtags.Length)
+            {
+                for (var j = i + 1; j < subtags.Length; j++)
+                {
+                    if (subtags[j].Length == 1) break; // next singleton
+                    if (subtags[j].Length == 2 && string.Equals(subtags[j], key, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                    // Skip any value subtag (length > 2) that follows a key
+                    if (subtags[j].Length > 2 && j > i + 1 && subtags[j-1].Length == 2)
+                        continue;
+                }
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private ListFormatState ParseListFormatState(string locale, JsValue optionsValue)
     {
         string type = "conjunction";
         string style = "long";
-        if (optionsValue.Tag == JsValueTag.Object)
+
+        if (optionsValue.Tag == JsValueTag.Null)
+            throw new JsThrownException(CreateTypeError("Cannot convert null to object."));
+
+        if (optionsValue.Tag != JsValueTag.Undefined)
         {
-            // Parsing is intentionally shallow: DurationFormat helper paths only need type/style.
+            // ECMA-402: options must be converted via ToObject and read with GetOption
+            // For simplicity, read from the object directly.
+            JsObject optsObj;
+            if (optionsValue.Tag == JsValueTag.Object)
+                optsObj = _heap.GetObject(optionsValue.AsObjectHandle());
+            else
+                optsObj = ToObject(optionsValue);
+
+            string? GetOptStr(string name)
+            {
+                if (TryGetPropertyValue(optsObj, optionsValue, name, out var v) && v.Tag != JsValueTag.Undefined)
+                    return ToStringValue(v);
+                return null;
+            }
+
+            // localeMatcher validation.
+            var localeMatcher = GetOptStr("localeMatcher");
+            if (localeMatcher is not null && localeMatcher is not "lookup" and not "best fit")
+                throw new JsThrownException(CreateRangeError($"{localeMatcher} is an invalid localeMatcher option value"));
+
+            // type validation.
+            var optType = GetOptStr("type");
+            if (optType is not null)
+            {
+                if (optType is not "conjunction" and not "disjunction" and not "unit")
+                    throw new JsThrownException(CreateRangeError($"{optType} is an invalid type option value"));
+                type = optType;
+            }
+
+            // style validation.
+            var optStyle = GetOptStr("style");
+            if (optStyle is not null)
+            {
+                if (optStyle is not "long" and not "short" and not "narrow")
+                    throw new JsThrownException(CreateRangeError($"{optStyle} is an invalid style option value"));
+                style = optStyle;
+            }
         }
 
         return new ListFormatState(locale, type, style);
@@ -2257,42 +2609,68 @@ public sealed partial class BytecodeInterpreter
         string notation = state.Notation ?? "standard";
         if (notation is "scientific" or "engineering")
         {
-            // For scientific/engineering notation, format the full string and
-            // return as a single literal part. Full part parsing (exponentSeparator,
-            // exponentInteger, etc.) requires more granular handling.
-            string sciFormatted;
+            // ECMA-402: deconstruct scientific/engineering notation into proper
+            // parts: integer, decimal, fraction, exponentSeparator, exponentMinusSign,
+            // exponentInteger. Apply numbering system to digit substrings.
+            int sciExp;
+            double mantissa;
             if (notation == "scientific")
             {
-                if (absValue == 0) sciFormatted = "0E0";
+                if (absValue == 0) { mantissa = 0; sciExp = 0; }
                 else
                 {
-                    sciFormatted = absValue.ToString("E" + maxFrac, CultureInfo.InvariantCulture);
-                    int eIdx = sciFormatted.IndexOf('E');
-                    string mant = sciFormatted[..eIdx].Replace(".", nfi.NumberDecimalSeparator);
-                    string exp = sciFormatted[(eIdx + 1)..];
-                    if (exp.StartsWith("-")) exp = "-" + exp[1..].TrimStart('0');
-                    else if (exp.StartsWith("+")) exp = exp[1..].TrimStart('0');
-                    else exp = exp.TrimStart('0');
-                    if (exp == "" || exp == "-") exp = exp == "-" ? "-0" : "0";
-                    sciFormatted = mant + "E" + exp;
+                    sciExp = (int)Math.Floor(Math.Log10(absValue));
+                    mantissa = absValue / Math.Pow(10, sciExp);
                 }
             }
             else // engineering
             {
-                if (absValue == 0) sciFormatted = "0E0";
+                if (absValue == 0) { mantissa = 0; sciExp = 0; }
                 else
                 {
-                    int engExp = ((int)Math.Floor(Math.Log10(absValue)) / 3) * 3;
-                    double mantissa = absValue / Math.Pow(10, engExp);
-                    if (mantissa >= 1000) { mantissa /= 1000; engExp += 3; }
-                    if (mantissa < 1) { mantissa *= 1000; engExp -= 3; }
-                    sciFormatted = mantissa.ToString("F" + maxFrac, CultureInfo.InvariantCulture).Replace(".", nfi.NumberDecimalSeparator) + "E" + engExp;
+                    sciExp = ((int)Math.Floor(Math.Log10(absValue)) / 3) * 3;
+                    mantissa = absValue / Math.Pow(10, sciExp);
+                    if (mantissa >= 1000) { mantissa /= 1000; sciExp += 3; }
+                    if (mantissa < 1) { mantissa *= 1000; sciExp -= 3; }
                 }
             }
+
             var sciParts = new List<IntlPart>();
-            if (negative)
+            string signMode = state.SignDisplay ?? "auto";
+            bool showSciSign = signMode switch
+            {
+                "never" => false, "always" => true,
+                "exceptZero" => absValue != 0, "negative" => negative,
+                _ => negative
+            };
+            if (showSciSign && negative)
                 sciParts.Add(new IntlPart("minusSign", nfi.NegativeSign, state.Unit));
-            sciParts.Add(new IntlPart("literal", ApplyNumberingSystem(sciFormatted, state.NumberingSystem), state.Unit));
+
+            // Format mantissa with maxFrac decimal places.
+            string mantStr = mantissa.ToString("F" + maxFrac, CultureInfo.InvariantCulture);
+            int dotIdx = mantStr.IndexOf('.');
+            string mantInt = dotIdx >= 0 ? mantStr[..dotIdx] : mantStr;
+            string mantFrac = dotIdx >= 0 ? mantStr[(dotIdx + 1)..] : "";
+            // Trim trailing zeros in fraction down to minFrac.
+            int trimTo = Math.Max(minFrac, 0);
+            while (mantFrac.Length > trimTo && mantFrac.EndsWith("0"))
+                mantFrac = mantFrac[..^1];
+
+            sciParts.Add(new IntlPart("integer", ApplyNumberingSystem(mantInt, state.NumberingSystem), state.Unit));
+            if (mantFrac.Length > 0)
+            {
+                sciParts.Add(new IntlPart("decimal", nfi.NumberDecimalSeparator, state.Unit));
+                sciParts.Add(new IntlPart("fraction", ApplyNumberingSystem(mantFrac, state.NumberingSystem), state.Unit));
+            }
+
+            sciParts.Add(new IntlPart("exponentSeparator", "E", state.Unit));
+            if (sciExp < 0)
+            {
+                sciParts.Add(new IntlPart("exponentMinusSign", nfi.NegativeSign, state.Unit));
+                sciExp = -sciExp;
+            }
+            sciParts.Add(new IntlPart("exponentInteger", ApplyNumberingSystem(sciExp.ToString(CultureInfo.InvariantCulture), state.NumberingSystem), state.Unit));
+
             return sciParts;
         }
 
@@ -2629,22 +3007,56 @@ public sealed partial class BytecodeInterpreter
             parts.Add(new IntlPart("element", items[0]));
             return parts;
         }
+
+        // ECMA-402 CLDR list patterns. For each locale/type/style combination
+        // there are up to 3 sub-patterns: start, middle, end (for 3+ items)
+        // and a pair pattern (for exactly 2 items). Unit style never uses
+        // a conjunction word. Narrow style uses only spaces, no punctuation.
+        // Short style uses & for conjunction.
         bool isOr = string.Equals(state.Type, "disjunction", StringComparison.Ordinal);
+        bool isUnit = string.Equals(state.Type, "unit", StringComparison.Ordinal);
         bool narrow = state.Style == "narrow";
-        // English CLDR patterns
+        bool shortStyle = state.Style == "short";
+        bool longStyle = state.Style == "long";
+        // Determine the conjunction word and between-separator from CLDR English patterns.
+        string andWord;
+        if (isOr) andWord = "or";
+        else if (isUnit) andWord = "";
+        else if (shortStyle) andWord = "&";
+        else andWord = "and";
+
+        string between = narrow ? " " : ", ";
+
         for (var i = 0; i < items.Count; i++)
         {
             if (i > 0)
             {
                 if (i == items.Count - 1)
                 {
-                    // Last separator: ", and " or ", or "
-                    parts.Add(new IntlPart("literal", narrow ? " " : ", "));
-                    if (!narrow) parts.Add(new IntlPart("literal", isOr ? "or " : "and "));
+                    // Before the last element.
+                    if (items.Count == 2)
+                    {
+                        // Pair pattern: "{0} and {1}" (no comma before conjunction)
+                        if (!narrow && andWord.Length > 0)
+                            parts.Add(new IntlPart("literal", " " + andWord + " "));
+                        else
+                            parts.Add(new IntlPart("literal", " "));
+                    }
+                    else
+                    {
+                        // End pattern for 3+: ", and {2}" (Oxford comma in English)
+                        if (narrow || (isUnit && !longStyle))
+                            parts.Add(new IntlPart("literal", " "));
+                        else if (andWord.Length > 0)
+                            parts.Add(new IntlPart("literal", ", " + andWord + " "));
+                        else
+                            parts.Add(new IntlPart("literal", ", "));
+                    }
                 }
                 else
                 {
-                    parts.Add(new IntlPart("literal", narrow ? " " : ", "));
+                    // Middle separator.
+                    parts.Add(new IntlPart("literal", between));
                 }
             }
             parts.Add(new IntlPart("element", items[i]));
@@ -3316,6 +3728,26 @@ public sealed partial class BytecodeInterpreter
             var segments = CreateOrdinaryObject();
             segments.DefineOwnProperty("_str", new JsPropertyDescriptor(JsValue.FromString(str), Writable: false, Enumerable: false, Configurable: false));
             segments.DefineOwnProperty("_idx", new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
+            // Set [Symbol.toStringTag] = "Segments"
+            var stagSymId = ((IBuiltinContext)this).CreateWellKnownSymbol("toStringTag").AsSymbolId();
+            segments.DefineOwnSymbolProperty(stagSymId, new JsPropertyDescriptor(JsValue.FromString("Segments"), Writable: false, Enumerable: false, Configurable: true));
+            // Add containing() method stub.
+            var containingFn = new NativeFunctionObject("containing", (thisVal, cArgs) =>
+            {
+                if (cArgs.Count == 0) return JsValue.Undefined;
+                var idx = (int)ToNumber(cArgs[0]);
+                var segsObj = _heap.GetObject(thisVal.AsObjectHandle())!;
+                string storedStr2 = "";
+                if (segsObj.TryGetOwnProperty("_str", out var strDesc2))
+                    storedStr2 = strDesc2.Value.AsString();
+                if (idx < 0 || idx >= storedStr2.Length) return JsValue.Undefined;
+                var seg2 = CreateOrdinaryObject();
+                seg2.DefineOwnProperty("segment", new JsPropertyDescriptor(JsValue.FromString(storedStr2[idx].ToString()), Writable: true, Enumerable: true, Configurable: true));
+                seg2.DefineOwnProperty("index", new JsPropertyDescriptor(JsValue.FromNumber(idx), Writable: true, Enumerable: true, Configurable: true));
+                seg2.DefineOwnProperty("input", new JsPropertyDescriptor(JsValue.FromString(storedStr2), Writable: true, Enumerable: true, Configurable: true));
+                return JsValue.FromObject(_heap.AllocateObject(seg2, AllocationSite.Current()));
+            }, length: 1);
+            segments.DefineOwnProperty("containing", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(containingFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
             var iterFn = new NativeFunctionObject("next", (_, _2) =>
             {
                 var segsObj = _heap.GetObject(_.AsObjectHandle())!;
@@ -3373,6 +3805,8 @@ public sealed partial class BytecodeInterpreter
             return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
         }, length: 0);
         proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(segResFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+
+        DefineBuiltinToStringTag(proto, "Intl.Segmenter");
 
         _segmenterPrototypeHandle = ph;
         return ph;

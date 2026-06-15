@@ -3767,6 +3767,8 @@ public sealed class TemporalStub : IBuiltinModule
                 var (cy, cmo, cd) = ResolveCalendarDateFields(ctx, h, arg, bagSys, null, requireDay: true);
                 if (!bagSys.TryResolveToIso(cy, cmo, cd, "constrain", out bagDate))
                     throw new JsThrownException(ctx.CreateRangeError("Date is invalid for the calendar or outside the supported range."));
+                // DIAGNOSTIC (disabled): throw with resolved values
+                // throw new JsThrownException(ctx.CreateTypeError($"DIAG: bagCal={bagCal} bagSysId={bagSys.Id} cy={cy} cmo={cmo} cd={cd}"));
             }
             string[] timeFields = { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" };
             var tv = new double[timeFields.Length];
@@ -3779,7 +3781,10 @@ public sealed class TemporalStub : IBuiltinModule
             var bagTime = new IsoTime(
                 (int)Math.Clamp(tv[0], 0, 23), (int)Math.Clamp(tv[1], 0, 59), (int)Math.Clamp(tv[2], 0, 59),
                 (int)Math.Clamp(tv[3], 0, 999), (int)Math.Clamp(tv[4], 0, 999), (int)Math.Clamp(tv[5], 0, 999));
-            return (TemporalTimeZones.EpochNsFromWall(bagTz, bagDate, bagTime), bagTz, bagCal);
+            long epochNsDiag = TemporalTimeZones.EpochNsFromWall(bagTz, bagDate, bagTime);
+            // DIAGNOSTIC
+            System.Console.Error.WriteLine($"DIAG2: bagDate=({bagDate.Year},{bagDate.Month},{bagDate.Day}) epochNs={epochNsDiag} tz={bagTz} cal={bagCal}");
+            return (epochNsDiag, bagTz, bagCal);
         }
 
         throw new JsThrownException(ctx.CreateTypeError("Cannot convert value to a Temporal.ZonedDateTime."));
