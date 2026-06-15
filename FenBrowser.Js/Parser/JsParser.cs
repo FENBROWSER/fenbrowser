@@ -3928,6 +3928,9 @@ public sealed class JsParser
                     if (!IsPunctuator(")"))
                     {
                         _ = ParseExpression(2);
+                        // ECMA-262 13.3.10.1: trailing comma after second arg is valid.
+                        if (IsPunctuator(","))
+                            Advance();
                     }
                 }
                 ExpectPunctuator(")");
@@ -3952,7 +3955,12 @@ public sealed class JsParser
                     {
                         Advance();
                         if (!IsPunctuator(")"))
+                        {
                             _ = ParseExpression(2);
+                            // ECMA-262: trailing comma after second arg is valid.
+                            if (IsPunctuator(","))
+                                Advance();
+                        }
                     }
                     ExpectPunctuator(")");
                     return new ImportSourceExpressionNode(specifier, MergeSpan(importToken.Span, Previous().Span));
@@ -3968,7 +3976,12 @@ public sealed class JsParser
                     {
                         Advance();
                         if (!IsPunctuator(")"))
+                        {
                             _ = ParseExpression(2);
+                            // ECMA-262: trailing comma after second arg is valid.
+                            if (IsPunctuator(","))
+                                Advance();
+                        }
                     }
                     ExpectPunctuator(")");
                     return new ImportDeferExpressionNode(specifier, MergeSpan(importToken.Span, Previous().Span));
