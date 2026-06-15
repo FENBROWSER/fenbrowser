@@ -1993,6 +1993,22 @@ public sealed class JsParser
                     initializer = ParseVariableDeclarationStatement(inForHead: true);
                     initializerIsDeclaration = true;
                 }
+                else if (IsUnescapedIdentifierLike(Current(), "using") && StartsLetLexicalDeclaration())
+                {
+                    initializer = ParseUsingDeclaration(isAwaitUsing: false);
+                    initializerIsDeclaration = true;
+                }
+                else if (IsUnescapedIdentifierLike(Current(), "await") && PeekIdentifierLike(1, "using"))
+                {
+                    var idx2 = Math.Min(_index + 2, _tokens.Count - 1);
+                    var tok2 = _tokens[idx2];
+                    if ((tok2.Kind == TokenKind.Punctuator && (tok2.Text == "[" || tok2.Text == "{"))
+                        || IsIdentifierLike(tok2))
+                    {
+                        initializer = ParseUsingDeclaration(isAwaitUsing: true);
+                        initializerIsDeclaration = true;
+                    }
+                }
                 else
                 {
                     var initExpr = ParseExpression(0);
