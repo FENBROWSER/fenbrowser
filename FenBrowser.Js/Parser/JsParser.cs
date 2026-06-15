@@ -166,6 +166,7 @@ public sealed class JsParser
         // lexical name clashing with a var/function in the same scope). Run at parse
         // time so these surface as SyntaxError.
         LexicalDeclarationChecker.Check(program);
+        ModuleDeclarationChecker.Check(program);
         return program;
     }
 

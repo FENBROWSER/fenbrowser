@@ -31,6 +31,81 @@ internal static class ModuleDeclarationChecker
         CollectDeclaredNames(program.Body, declaredNames);
         CheckImportDuplicates(program.Body, importedLocalNames);
         CheckExportDuplicatesAndBindings(program.Body, exportedNames, importedLocalNames, declaredNames);
+
+        // ECMA-262 16.2.1.7.1: ContainsDuplicateLabels of ModuleItemList with « » must be false.
+        CheckDuplicateLabels(program.Body, new HashSet<string>(System.StringComparer.Ordinal));
+    }
+
+    // ECMA-262 ContainsDuplicateLabels for ModuleItemList
+    private static void CheckDuplicateLabels(IReadOnlyList<StatementNode> statements, HashSet<string> labelSet)
+    {
+        foreach (var stmt in statements)
+        {
+            CheckStatementDuplicateLabels(stmt, labelSet);
+        }
+    }
+
+    private static void CheckStatementDuplicateLabels(StatementNode stmt, HashSet<string> labelSet)
+    {
+        switch (stmt)
+        {
+            case LabeledStatementNode labeled:
+                if (!labelSet.Add(labeled.Label))
+                    throw new JsParserException($"Duplicate label '{labeled.Label}'.");
+                CheckStatementDuplicateLabels(labeled.Body, labelSet);
+                labelSet.Remove(labeled.Label);
+                break;
+            case BlockStatementNode block:
+                foreach (var s in block.Statements)
+                    CheckStatementDuplicateLabels(s, labelSet);
+                break;
+            case IfStatementNode ifStmt:
+                CheckStatementDuplicateLabels(ifStmt.Consequent, labelSet);
+                if (ifStmt.Alternate is { } elseStmt)
+                    CheckStatementDuplicateLabels(elseStmt, labelSet);
+                break;
+            case ForStatementNode forStmt:
+                if (forStmt.Body is { } body)
+                    CheckStatementDuplicateLabels(body, labelSet);
+                break;
+            case ForInStatementNode forIn:
+                CheckStatementDuplicateLabels(forIn.Body, labelSet);
+                break;
+            case ForOfStatementNode forOf:
+                CheckStatementDuplicateLabels(forOf.Body, labelSet);
+                break;
+            case WhileStatementNode whileStmt:
+                CheckStatementDuplicateLabels(whileStmt.Body, labelSet);
+                break;
+            case DoWhileStatementNode doWhile:
+                CheckStatementDuplicateLabels(doWhile.Body, labelSet);
+                break;
+            case SwitchStatementNode switchStmt:
+                foreach (var c in switchStmt.Cases)
+                    foreach (var s in c.Consequent)
+                        CheckStatementDuplicateLabels(s, labelSet);
+                break;
+            case TryCatchStatementNode tryCatch:
+                CheckStatementDuplicateLabels(tryCatch.TryBlock, labelSet);
+                if (tryCatch.CatchBlock is { } cb)
+                    CheckStatementDuplicateLabels(cb, labelSet);
+                break;
+            case TryFinallyStatementNode tryFinally:
+                CheckStatementDuplicateLabels(tryFinally.TryBlock, labelSet);
+                if (tryFinally.FinallyBlock is { } fb)
+                    CheckStatementDuplicateLabels(fb, labelSet);
+                break;
+            case TryCatchFinallyStatementNode tryCF:
+                CheckStatementDuplicateLabels(tryCF.TryBlock, labelSet);
+                if (tryCF.CatchBlock is { } cb2)
+                    CheckStatementDuplicateLabels(cb2, labelSet);
+                if (tryCF.FinallyBlock is { } fb2)
+                    CheckStatementDuplicateLabels(fb2, labelSet);
+                break;
+            case WithStatementNode withStmt:
+                CheckStatementDuplicateLabels(withStmt.Body, labelSet);
+                break;
+        }
     }
 
     private static void CollectDeclaredNames(IReadOnlyList<StatementNode> statements, HashSet<string> declared)
@@ -43,10 +118,10 @@ internal static class ModuleDeclarationChecker
                     CollectVarDeclaredNames(varDecl, declared);
                     break;
                 case FunctionDeclarationNode fn when fn.Name is { Length: > 0 }:
-                    declared.Add(fn.Name);
+                    AddDeclaredName(declared, fn.Name);
                     break;
                 case ClassDeclarationNode cls when cls.Name is { Length: > 0 }:
-                    declared.Add(cls.Name);
+                    AddDeclaredName(declared, cls.Name);
                     break;
                 // Export declarations may wrap an inner declaration whose names
                 // count as declared. Re-export forms and `export default` have
@@ -60,6 +135,22 @@ internal static class ModuleDeclarationChecker
         }
     }
 
+    private static void AddDeclaredName(HashSet<string> declared, string name)
+    {
+        // Skip synthetic bindings (e.g. __pattern0 from destructuring, *default* from export default)
+        if (name.StartsWith("__", StringComparison.Ordinal) || name.StartsWith("*", StringComparison.Ordinal))
+            return;
+        if (!declared.Add(name))
+        {
+            throw new JsParserException(
+                $"Identifier '{name}' has already been declared. (duplicate lexical declaration in module)");
+        }
+    }
+
+    private static bool IsSyntheticPatternBinding(string name) =>
+        name.StartsWith("__", StringComparison.Ordinal) ||
+        name.StartsWith("*", StringComparison.Ordinal);
+
     private static void CollectDeclaredNamesFromInner(StatementNode stmt, HashSet<string> declared)
     {
         switch (stmt)
@@ -68,10 +159,10 @@ internal static class ModuleDeclarationChecker
                 CollectVarDeclaredNames(varDecl, declared);
                 break;
             case FunctionDeclarationNode fn when fn.Name is { Length: > 0 }:
-                declared.Add(fn.Name);
+                AddDeclaredName(declared, fn.Name);
                 break;
             case ClassDeclarationNode cls when cls.Name is { Length: > 0 }:
-                declared.Add(cls.Name);
+                AddDeclaredName(declared, cls.Name);
                 break;
         }
     }
@@ -82,7 +173,7 @@ internal static class ModuleDeclarationChecker
         {
             foreach (var name in GetDeclaratorBoundNames(d))
             {
-                declared.Add(name);
+                AddDeclaredName(declared, name);
             }
         }
     }
@@ -130,7 +221,10 @@ internal static class ModuleDeclarationChecker
 
                 // For local exports (no ModuleRequest), verify the binding
                 // references a declared name (16.2.1.7.1 step 10).
-                if (entry.IsLocalExport && entry.LocalName is { } localName)
+                // Skip synthetic pattern names (destructuring patterns get
+                // individual names checked separately).
+                if (entry.IsLocalExport && entry.LocalName is { } localName
+                    && !IsSyntheticPatternBinding(localName))
                 {
                     if (!declared.Contains(localName) && !imported.Contains(localName))
                     {
