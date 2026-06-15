@@ -122,7 +122,7 @@ public sealed partial class BytecodeInterpreter
     // ECMA-402 11.1.1 InitializeDateTimeFormat.
     private JsValue DateTimeFormatConstruct(IReadOnlyList<JsValue> args)
     {
-        var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
+        var locale = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? ToStringValue(args[0]) : string.Empty;
         var culture = IntlDateTimeFormatting.ResolveCulture(locale);
         var options = ParseDateTimeFormatOptions(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
         try
@@ -442,7 +442,7 @@ public sealed partial class BytecodeInterpreter
     // ECMA-402 13.1.1 InitializeNumberFormat.
     private JsValue NumberFormatConstruct(IReadOnlyList<JsValue> args)
     {
-        var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
+        var locale = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? ToStringValue(args[0]) : string.Empty;
         var culture = IntlDateTimeFormatting.ResolveCulture(locale);
         var state = ParseNumberFormatState(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
 
@@ -1105,16 +1105,6 @@ public sealed partial class BytecodeInterpreter
             return IsTruthy(value);
         }
 
-        int? GetInt(string name)
-        {
-            if (!TryGetPropertyValue(optionsObject, optionsReceiver, name, out var value) || value.Tag == JsValueTag.Undefined)
-            {
-                return null;
-            }
-
-            return (int)ToNumber(value);
-        }
-
         // ECMA-402 GetOption: localeMatcher must be "lookup" or "best fit".
         var localeMatcher = GetString("localeMatcher");
         if (localeMatcher is not null && localeMatcher is not "lookup" and not "best fit")
@@ -1202,10 +1192,14 @@ public sealed partial class BytecodeInterpreter
         if (second is not null && second is not "numeric" and not "2-digit")
             throw new JsThrownException(CreateRangeError($"Invalid second: {second}"));
 
-        // fractionalSecondDigits validation (1-3).
-        var fractionalSecondDigits = GetInt("fractionalSecondDigits");
-        if (fractionalSecondDigits.HasValue && (fractionalSecondDigits.Value < 1 || fractionalSecondDigits.Value > 3))
-            throw new JsThrownException(CreateRangeError($"Invalid fractionalSecondDigits: {fractionalSecondDigits}"));
+        // fractionalSecondDigits validation (1-3, must be an integral Number).
+        double? fracSecRaw = null;
+        if (TryGetPropertyValue(optionsObject, optionsReceiver, "fractionalSecondDigits", out var fsdVal) && fsdVal.Tag != JsValueTag.Undefined)
+        {
+            fracSecRaw = ToNumber(fsdVal);
+            if (double.IsNaN(fracSecRaw.Value) || double.IsInfinity(fracSecRaw.Value) || Math.Floor(fracSecRaw.Value) != fracSecRaw.Value || fracSecRaw.Value < 1 || fracSecRaw.Value > 3)
+                throw new JsThrownException(CreateRangeError($"Invalid fractionalSecondDigits: {fsdVal}"));
+        }
 
         // timeZone validation: must be a string if present.
         var timeZoneId = GetString("timeZone");
@@ -1227,7 +1221,7 @@ public sealed partial class BytecodeInterpreter
             Hour: hour,
             Minute: minute,
             Second: second,
-            FractionalSecondDigits: fractionalSecondDigits,
+            FractionalSecondDigits: fracSecRaw.HasValue ? (int)fracSecRaw.Value : null,
             DayPeriod: dayPeriod,
             TimeZoneName: timeZoneName);
     }
@@ -2195,6 +2189,13 @@ public sealed partial class BytecodeInterpreter
 
     private IReadOnlyList<IntlPart> FormatNumberToParts(JsValue value, NumberFormatState state)
     {
+        // ECMA-402: BigInt values are formatted via their ToString representation.
+        if (value.Tag == JsValueTag.BigInt)
+        {
+            var bigIntStr = value.AsBigInt().ToString(CultureInfo.InvariantCulture);
+            return FormatBigIntStringToParts(bigIntStr, state);
+        }
+
         // Extract numeric value.
         double number;
         if (value.Tag == JsValueTag.Int32) number = value.AsInt32();
@@ -2436,6 +2437,55 @@ public sealed partial class BytecodeInterpreter
         {
             parts.Add(new IntlPart("literal", " ", state.Unit));
             parts.Add(new IntlPart("unit", GetUnitLabel(state.Unit!, state.UnitDisplay ?? "short", state.Locale), state.Unit));
+        }
+
+        return parts;
+    }
+
+    // ECMA-402: Format a BigInt string into IntlParts. BigInts are formatted as
+    // their decimal representation with grouping and signDisplay applied.
+    private IReadOnlyList<IntlPart> FormatBigIntStringToParts(string bigIntStr, NumberFormatState state)
+    {
+        bool negative = bigIntStr.StartsWith("-", StringComparison.Ordinal);
+        var digits = negative ? bigIntStr[1..] : bigIntStr;
+        var parts = new List<IntlPart>();
+
+        var signDisplay = state.SignDisplay ?? "auto";
+        bool showSign = signDisplay switch
+        {
+            "never" => false,
+            "always" => true,
+            "exceptZero" => digits != "0",
+            "negative" => negative,
+            _ => negative
+        };
+
+        if (showSign && negative)
+            parts.Add(new IntlPart("minusSign", "-", state.Unit));
+        else if (showSign && !negative && signDisplay == "always")
+            parts.Add(new IntlPart("plusSign", "+", state.Unit));
+
+        // Apply grouping separators.
+        if (state.UseGrouping && digits.Length > 3)
+        {
+            var groupSize = 3; // CLDR default
+            var grouped = new List<string>();
+            int pos = digits.Length;
+            while (pos > groupSize)
+            {
+                pos -= groupSize;
+                grouped.Insert(0, digits[pos..(pos + groupSize)]);
+            }
+            grouped.Insert(0, digits[..pos]);
+            for (int i = 0; i < grouped.Count; i++)
+            {
+                if (i > 0) parts.Add(new IntlPart("group", ",", state.Unit));
+                parts.Add(new IntlPart("integer", ApplyNumberingSystem(grouped[i], state.NumberingSystem), state.Unit));
+            }
+        }
+        else
+        {
+            parts.Add(new IntlPart("integer", ApplyNumberingSystem(digits, state.NumberingSystem), state.Unit));
         }
 
         return parts;
