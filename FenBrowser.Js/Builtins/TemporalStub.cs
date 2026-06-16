@@ -174,25 +174,19 @@ public sealed class TemporalStub : IBuiltinModule
 
     private static JsValue FormatInstant(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> args)
     {
-        var opts = GetToStringOptions(ctx, h, args, 0);
+        var opts = GetToStringOptions(ctx, h, args, 0, new[] { "fractionalSecondDigits", "roundingMode", "smallestUnit", "timeZone" });
         long epochNs = DecodeInstantNanos(h, o);
         long inc = PrecisionIncrementNs(opts);
         if (inc > 1) epochNs = RoundNsToIncrement(ctx, epochNs, inc, opts.RoundingMode);
 
         // timeZone option: render the wall clock in that zone with its offset.
-        if (args.Count > 0 && args[0].Tag == JsValueTag.Object)
+        if (opts.TimeZoneValue is not null)
         {
-            var optionsObject = h.GetObject(args[0].AsObjectHandle());
-            if (ctx.TryGetPropertyValue(optionsObject, args[0], "timeZone", out var tzv) && tzv.Tag != JsValueTag.Undefined)
-            {
-                if (tzv.Tag != JsValueTag.String)
-                    throw new JsThrownException(ctx.CreateTypeError("timeZone must be a string."));
-                string ctz = CanonicalizeTimeZoneId(ctx, tzv.AsString());
-                long offNs = TemporalTimeZones.GetOffsetNs(ctz, epochNs);
-                var (zd, zt) = TemporalTimeZones.WallFromEpochNs(epochNs, offNs);
-                return JsValue.FromString($"{FormatIsoYear(zd.Year)}-{zd.Month:D2}-{zd.Day:D2}T{zt.Hour:D2}:{zt.Minute:D2}" +
-                    $"{FormatSecondsPart(zt.ToNanosecondsOfDay(), opts)}{TemporalTimeZones.FormatOffset(offNs)}");
-            }
+            string ctz = CanonicalizeTimeZoneId(ctx, opts.TimeZoneValue);
+            long offNs = TemporalTimeZones.GetOffsetNs(ctz, epochNs);
+            var (zd, zt) = TemporalTimeZones.WallFromEpochNs(epochNs, offNs);
+            return JsValue.FromString($"{FormatIsoYear(zd.Year)}-{zd.Month:D2}-{zd.Day:D2}T{zt.Hour:D2}:{zt.Minute:D2}" +
+                $"{FormatSecondsPart(zt.ToNanosecondsOfDay(), opts)}{TemporalTimeZones.FormatOffset(offNs)}");
         }
 
         var (d, t) = TemporalTimeZones.WallFromEpochNs(epochNs, 0);
@@ -368,7 +362,7 @@ public sealed class TemporalStub : IBuiltinModule
     /// </summary>
     private static JsValue FormatDurationOpts(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> a)
     {
-        var opts = GetToStringOptions(ctx, h, a, 0);
+        var opts = GetToStringOptions(ctx, h, a, 0, new[] { "fractionalSecondDigits", "roundingMode", "smallestUnit" });
         // Duration toString does not accept "minute" as smallestUnit.
         if (opts.SmallestUnit == "minute")
             throw new JsThrownException(ctx.CreateRangeError("'minute' is not a valid smallestUnit for Duration.toString."));
@@ -1611,23 +1605,50 @@ public sealed class TemporalStub : IBuiltinModule
         }
         var opt = a[i];
 
-        // 1. largestUnit (may be "auto").
+        // 1. Read fields and cast them in spec order
+        string? lv_str = null;
         if (TryGetField(ctx, h, opt, "largestUnit", out var lv) && lv.Tag != JsValueTag.Undefined)
         {
-            var ls = lv.Tag == JsValueTag.String ? lv.AsString() : ctx.ToStringValue(lv);
-            if (ls != "auto")
+            lv_str = lv.Tag == JsValueTag.String ? lv.AsString() : ctx.ToStringValue(lv);
+        }
+
+        double? inc_val = null;
+        if (TryGetField(ctx, h, opt, "roundingIncrement", out var iv) && iv.Tag != JsValueTag.Undefined)
+        {
+            inc_val = ctx.ToNumber(iv);
+        }
+
+        string? mv_str = null;
+        if (TryGetField(ctx, h, opt, "roundingMode", out var mv) && mv.Tag != JsValueTag.Undefined)
+        {
+            mv_str = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
+        }
+
+        string? sv_str = null;
+        if (TryGetField(ctx, h, opt, "smallestUnit", out var sv) && sv.Tag != JsValueTag.Undefined)
+        {
+            sv_str = sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv);
+        }
+
+        // 2. Validate values in spec order
+        if (lv_str is not null)
+        {
+            if (lv_str != "auto")
             {
-                var norm = TryNormalizeUnit(ls);
+                var norm = TryNormalizeUnit(lv_str);
                 if (norm is null || Array.IndexOf(allowed, norm) < 0)
-                    throw new JsThrownException(ctx.CreateRangeError($"'{ls}' is not a valid value for largestUnit."));
+                    throw new JsThrownException(ctx.CreateRangeError($"'{lv_str}' is not a valid value for largestUnit."));
                 s.Largest = norm;
+            }
+            else
+            {
+                s.Largest = "auto";
             }
         }
 
-        // 2. roundingIncrement (ToTemporalRoundingIncrement: finite, integer-truncated, in [1,1e9]).
-        if (TryGetField(ctx, h, opt, "roundingIncrement", out var iv) && iv.Tag != JsValueTag.Undefined)
+        if (inc_val is not null)
         {
-            double inc = ctx.ToNumber(iv);
+            double inc = inc_val.Value;
             if (double.IsNaN(inc) || double.IsInfinity(inc))
                 throw new JsThrownException(ctx.CreateRangeError("roundingIncrement must be a finite number."));
             double trunc = Math.Truncate(inc);
@@ -1636,22 +1657,18 @@ public sealed class TemporalStub : IBuiltinModule
             s.Increment = (int)trunc;
         }
 
-        // 3. roundingMode (default trunc).
-        if (TryGetField(ctx, h, opt, "roundingMode", out var mv) && mv.Tag != JsValueTag.Undefined)
+        if (mv_str is not null)
         {
-            var ms = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
-            if (Array.IndexOf(ValidRoundingModes.Split(' '), ms) < 0)
-                throw new JsThrownException(ctx.CreateRangeError($"'{ms}' is not a valid rounding mode."));
-            s.Mode = ms;
+            if (Array.IndexOf(ValidRoundingModes.Split(' '), mv_str) < 0)
+                throw new JsThrownException(ctx.CreateRangeError($"'{mv_str}' is not a valid rounding mode."));
+            s.Mode = mv_str;
         }
 
-        // 4. smallestUnit (default fallbackSmallest).
-        if (TryGetField(ctx, h, opt, "smallestUnit", out var sv) && sv.Tag != JsValueTag.Undefined)
+        if (sv_str is not null)
         {
-            var ss = sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv);
-            var norm = TryNormalizeUnit(ss);
+            var norm = TryNormalizeUnit(sv_str);
             if (norm is null || Array.IndexOf(allowed, norm) < 0)
-                throw new JsThrownException(ctx.CreateRangeError($"'{ss}' is not a valid value for smallestUnit."));
+                throw new JsThrownException(ctx.CreateRangeError($"'{sv_str}' is not a valid value for smallestUnit."));
             s.Smallest = norm;
         }
 
@@ -1663,11 +1680,100 @@ public sealed class TemporalStub : IBuiltinModule
         if (DiffUnitRank(s.Largest) > DiffUnitRank(s.Smallest))
             throw new JsThrownException(ctx.CreateRangeError("largestUnit cannot be smaller than smallestUnit."));
 
-        // 8/9. ValidateTemporalRoundingIncrement against the smallestUnit's exclusive maximum.
+        // 8/9. ValidateRoundingIncrement against the smallestUnit's exclusive maximum.
         long max = MaxDurationRoundingIncrement(s.Smallest);
         if (max != 0 && (s.Increment >= max || max % s.Increment != 0))
             throw new JsThrownException(ctx.CreateRangeError("roundingIncrement does not divide evenly into the maximum."));
         return s;
+    }
+
+    private struct RoundingOptions
+    {
+        public string Smallest;
+        public double Increment;
+        public string Mode;
+    }
+
+    private static RoundingOptions GetRoundingOptions(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> a, string defaultMode = "halfExpand")
+    {
+        if (a.Count == 0 || a[0].Tag == JsValueTag.Undefined)
+            throw new JsThrownException(ctx.CreateTypeError("round requires a unit or options argument."));
+        var r = new RoundingOptions { Smallest = "", Increment = 1, Mode = defaultMode };
+        if (a[0].Tag == JsValueTag.String)
+        {
+            r.Smallest = NormalizeUnitName(ctx, a[0].AsString());
+            return r;
+        }
+        if (a[0].Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(ctx.CreateTypeError("round argument must be a string or options object."));
+        }
+        var opt = a[0];
+
+        JsValue iv = JsValue.Undefined;
+        JsValue mv = JsValue.Undefined;
+        JsValue sv = JsValue.Undefined;
+
+        TryGetField(ctx, h, opt, "roundingIncrement", out iv);
+        TryGetField(ctx, h, opt, "roundingMode", out mv);
+        TryGetField(ctx, h, opt, "smallestUnit", out sv);
+
+        if (iv.Tag != JsValueTag.Undefined)
+        {
+            double inc = ToIntegerWithTruncation(ctx, iv);
+            if (inc < 1 || inc > 1_000_000_000)
+                throw new JsThrownException(ctx.CreateRangeError("roundingIncrement out of range."));
+            r.Increment = inc;
+        }
+
+        if (mv.Tag != JsValueTag.Undefined)
+        {
+            var s = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
+            if (s is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
+                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid rounding mode."));
+            r.Mode = s;
+        }
+
+        if (sv.Tag == JsValueTag.Undefined)
+            throw new JsThrownException(ctx.CreateRangeError("smallestUnit is required."));
+        r.Smallest = NormalizeUnitName(ctx, sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv));
+
+        return r;
+    }
+
+    private static (IsoDate date, string calId)? DecodeRelativeToValue(IBuiltinContext ctx, JsHeap h, JsValue relVal)
+    {
+        if (relVal.Tag == JsValueTag.Undefined) return null;
+        if (relVal.Tag != JsValueTag.Object)
+        {
+            var str = ctx.ToStringValue(relVal);
+            if (TemporalIsoParser.TryParseDateTime(str, out var pdt, out _))
+                return (new IsoDate(pdt.Year, pdt.Month, pdt.Day), pdt.Calendar ?? "iso8601");
+            throw new JsThrownException(ctx.CreateRangeError("relativeTo string could not be parsed."));
+        }
+        var relObj = h.GetObject(relVal.AsObjectHandle());
+        string calId = CalId(h, relObj);
+        IsoDate date;
+        if (TryGetField(ctx, h, relVal, "epochNanoseconds", out var ensVal) && ensVal.Tag != JsValueTag.Undefined)
+        {
+            long epochNs = ensVal.Tag == JsValueTag.BigInt ? (long)ensVal.AsBigInt() : (long)ensVal.AsNumber();
+            long epochDay = epochNs / 86_400_000_000_000L;
+            if (epochNs < 0 && epochNs % 86_400_000_000_000L != 0) epochDay--;
+            date = IsoMath.EpochDaysToCivil(epochDay);
+        }
+        else if (relObj.TryGetOwnProperty("_v", out var vDesc) && vDesc.Value.Tag == JsValueTag.Object)
+        {
+            var data = h.GetObject(vDesc.Value.AsObjectHandle());
+            if (data.TryGetOwnProperty("y", out _))
+                date = DecodeIsoDate(h, relObj);
+            else
+                date = DecodeIsoDateLong(h, relObj);
+        }
+        else
+        {
+            date = DecodeIsoDateLong(h, relObj);
+        }
+        return (date, calId);
     }
 
     /// <summary>
@@ -1704,40 +1810,8 @@ public sealed class TemporalStub : IBuiltinModule
     /// </summary>
     private static long RoundInstantNs(IBuiltinContext ctx, JsHeap h, long epochNs, IReadOnlyList<JsValue> a)
     {
-        if (a.Count == 0 || a[0].Tag == JsValueTag.Undefined)
-            throw new JsThrownException(ctx.CreateTypeError("round requires a unit or options argument."));
-        string smallest;
-        double increment = 1;
-        string mode = "halfExpand";
-        if (a[0].Tag == JsValueTag.String)
-        {
-            smallest = NormalizeUnitName(ctx, a[0].AsString());
-        }
-        else if (a[0].Tag == JsValueTag.Object)
-        {
-            if (TryGetField(ctx, h, a[0], "roundingIncrement", out var iv))
-            {
-                increment = ToIntegerWithTruncation(ctx, iv);
-                if (increment < 1 || increment > 1_000_000_000)
-                    throw new JsThrownException(ctx.CreateRangeError("roundingIncrement out of range."));
-            }
-            if (TryGetField(ctx, h, a[0], "roundingMode", out var mv))
-            {
-                mode = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
-                if (mode is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
-                    throw new JsThrownException(ctx.CreateRangeError($"'{mode}' is not a valid rounding mode."));
-            }
-            if (!TryGetField(ctx, h, a[0], "smallestUnit", out var sv) || sv.Tag == JsValueTag.Undefined)
-                throw new JsThrownException(ctx.CreateRangeError("smallestUnit is required."));
-            smallest = NormalizeUnitName(ctx, sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv));
-        }
-        else
-        {
-            throw new JsThrownException(ctx.CreateTypeError("round argument must be a string or options object."));
-        }
-
-        // Instant supports only hour and smaller; calendar/day units are out of range.
-        long maximum = smallest switch
+        var opts = GetRoundingOptions(ctx, h, a);
+        long maximum = opts.Smallest switch
         {
             "hour" => 24L,
             "minute" => 1440L,
@@ -1745,57 +1819,19 @@ public sealed class TemporalStub : IBuiltinModule
             "millisecond" => 86_400_000L,
             "microsecond" => 86_400_000_000L,
             "nanosecond" => 86_400_000_000_000L,
-            _ => throw new JsThrownException(ctx.CreateRangeError($"'{smallest}' is not a valid smallestUnit for Instant.round.")),
+            _ => throw new JsThrownException(ctx.CreateRangeError($"'{opts.Smallest}' is not a valid smallestUnit for Instant.round.")),
         };
-        // ValidateTemporalRoundingIncrement with inclusive maximum.
-        if (increment > maximum || maximum % (long)increment != 0)
+        if (opts.Increment > maximum || maximum % (long)opts.Increment != 0)
             throw new JsThrownException(ctx.CreateRangeError("roundingIncrement does not divide evenly into the maximum."));
 
-        long incrementNs = (long)increment * UnitNs(smallest);
-        return RoundNsToIncrement(ctx, epochNs, incrementNs, mode);
+        long incrementNs = (long)opts.Increment * UnitNs(opts.Smallest);
+        return RoundNsToIncrement(ctx, epochNs, incrementNs, opts.Mode);
     }
 
-    /// <summary>
-    /// Temporal.PlainTime.prototype.round: validate smallestUnit (hour..nanosecond),
-    /// roundingIncrement (must divide its next-larger-unit maximum, exclusive), and
-    /// roundingMode, then round the time-of-day nanoseconds to the increment.
-    /// </summary>
     private static long RoundPlainTimeNs(IBuiltinContext ctx, JsHeap h, long timeNs, IReadOnlyList<JsValue> a)
     {
-        if (a.Count == 0 || a[0].Tag == JsValueTag.Undefined)
-            throw new JsThrownException(ctx.CreateTypeError("round requires a unit or options argument."));
-        string smallest;
-        double increment = 1;
-        string mode = "halfExpand";
-        if (a[0].Tag == JsValueTag.String)
-        {
-            smallest = NormalizeUnitName(ctx, a[0].AsString());
-        }
-        else if (a[0].Tag == JsValueTag.Object)
-        {
-            if (TryGetField(ctx, h, a[0], "roundingIncrement", out var iv))
-            {
-                increment = ToIntegerWithTruncation(ctx, iv);
-                if (increment < 1 || increment > 1_000_000_000)
-                    throw new JsThrownException(ctx.CreateRangeError("roundingIncrement out of range."));
-            }
-            if (TryGetField(ctx, h, a[0], "roundingMode", out var mv))
-            {
-                mode = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
-                if (mode is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
-                    throw new JsThrownException(ctx.CreateRangeError($"'{mode}' is not a valid rounding mode."));
-            }
-            if (!TryGetField(ctx, h, a[0], "smallestUnit", out var sv) || sv.Tag == JsValueTag.Undefined)
-                throw new JsThrownException(ctx.CreateRangeError("smallestUnit is required."));
-            smallest = NormalizeUnitName(ctx, sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv));
-        }
-        else
-        {
-            throw new JsThrownException(ctx.CreateTypeError("round argument must be a string or options object."));
-        }
-
-        // PlainTime supports hour and smaller; day and calendar units are out of range.
-        long maximum = smallest switch
+        var opts = GetRoundingOptions(ctx, h, a);
+        long maximum = opts.Smallest switch
         {
             "hour" => 24L,
             "minute" => 60L,
@@ -1803,65 +1839,26 @@ public sealed class TemporalStub : IBuiltinModule
             "millisecond" => 1000L,
             "microsecond" => 1000L,
             "nanosecond" => 1000L,
-            _ => throw new JsThrownException(ctx.CreateRangeError($"'{smallest}' is not a valid smallestUnit for PlainTime.round.")),
+            _ => throw new JsThrownException(ctx.CreateRangeError($"'{opts.Smallest}' is not a valid smallestUnit for PlainTime.round.")),
         };
-        // ValidateTemporalRoundingIncrement with exclusive maximum.
-        if (increment >= maximum || maximum % (long)increment != 0)
+        if (opts.Increment >= maximum || maximum % (long)opts.Increment != 0)
             throw new JsThrownException(ctx.CreateRangeError("roundingIncrement does not divide evenly into the maximum."));
 
-        long incrementNs = (long)increment * UnitNs(smallest);
-        return RoundNsToIncrement(ctx, timeNs, incrementNs, mode);
+        long incrementNs = (long)opts.Increment * UnitNs(opts.Smallest);
+        return RoundNsToIncrement(ctx, timeNs, incrementNs, opts.Mode);
     }
 
-    /// <summary>
-    /// Temporal.PlainDateTime.prototype.round time component: validate smallestUnit
-    /// (day..nanosecond), roundingIncrement, and roundingMode, then round the time-of-day
-    /// nanoseconds. Returns the carry in whole days plus the rounded time-of-day ns.
-    /// </summary>
     private static (long DayCarry, long TimeNs) RoundPlainDateTimeTime(IBuiltinContext ctx, JsHeap h, long timeNs, IReadOnlyList<JsValue> a)
     {
-        if (a.Count == 0 || a[0].Tag == JsValueTag.Undefined)
-            throw new JsThrownException(ctx.CreateTypeError("round requires a unit or options argument."));
-        string smallest;
-        double increment = 1;
-        string mode = "halfExpand";
-        if (a[0].Tag == JsValueTag.String)
+        var opts = GetRoundingOptions(ctx, h, a);
+        if (opts.Smallest == "day")
         {
-            smallest = NormalizeUnitName(ctx, a[0].AsString());
-        }
-        else if (a[0].Tag == JsValueTag.Object)
-        {
-            if (TryGetField(ctx, h, a[0], "roundingIncrement", out var iv))
-            {
-                increment = ToIntegerWithTruncation(ctx, iv);
-                if (increment < 1 || increment > 1_000_000_000)
-                    throw new JsThrownException(ctx.CreateRangeError("roundingIncrement out of range."));
-            }
-            if (TryGetField(ctx, h, a[0], "roundingMode", out var mv))
-            {
-                mode = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
-                if (mode is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
-                    throw new JsThrownException(ctx.CreateRangeError($"'{mode}' is not a valid rounding mode."));
-            }
-            if (!TryGetField(ctx, h, a[0], "smallestUnit", out var sv) || sv.Tag == JsValueTag.Undefined)
-                throw new JsThrownException(ctx.CreateRangeError("smallestUnit is required."));
-            smallest = NormalizeUnitName(ctx, sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv));
-        }
-        else
-        {
-            throw new JsThrownException(ctx.CreateTypeError("round argument must be a string or options object."));
-        }
-
-        if (smallest == "day")
-        {
-            // day rounding requires an increment of exactly 1; round to the nearest midnight.
-            if (increment != 1)
+            if (opts.Increment != 1)
                 throw new JsThrownException(ctx.CreateRangeError("roundingIncrement must be 1 for day rounding."));
-            long carry = RoundNsToIncrement(ctx, timeNs, NsPerDay, mode) / NsPerDay;
+            long carry = RoundNsToIncrement(ctx, timeNs, NsPerDay, opts.Mode) / NsPerDay;
             return (carry, 0L);
         }
-
-        long maximum = smallest switch
+        long maximum = opts.Smallest switch
         {
             "hour" => 24L,
             "minute" => 60L,
@@ -1869,12 +1866,12 @@ public sealed class TemporalStub : IBuiltinModule
             "millisecond" => 1000L,
             "microsecond" => 1000L,
             "nanosecond" => 1000L,
-            _ => throw new JsThrownException(ctx.CreateRangeError($"'{smallest}' is not a valid smallestUnit for PlainDateTime.round.")),
+            _ => throw new JsThrownException(ctx.CreateRangeError($"'{opts.Smallest}' is not a valid smallestUnit for PlainDateTime.round.")),
         };
-        if (increment >= maximum || maximum % (long)increment != 0)
+        if (opts.Increment >= maximum || maximum % (long)opts.Increment != 0)
             throw new JsThrownException(ctx.CreateRangeError("roundingIncrement does not divide evenly into the maximum."));
 
-        long rounded = RoundNsToIncrement(ctx, timeNs, (long)increment * UnitNs(smallest), mode);
+        long rounded = RoundNsToIncrement(ctx, timeNs, (long)opts.Increment * UnitNs(opts.Smallest), opts.Mode);
         long dayCarry = rounded / NsPerDay;
         long timeOfDay = rounded % NsPerDay;
         if (timeOfDay < 0) { timeOfDay += NsPerDay; dayCarry -= 1; }
@@ -1965,10 +1962,11 @@ public sealed class TemporalStub : IBuiltinModule
         public string CalendarName = "auto";       // auto|always|never|critical
         public string ShowOffset = "auto";         // auto|never
         public string TimeZoneName = "auto";       // auto|never|critical
+        public string? TimeZoneValue;              // Added for Instant.prototype.toString
     }
 
     /// <summary>Read toString options in alphabetical property order, each validated.</summary>
-    private static ToStringOptions GetToStringOptions(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> a, int i)
+    private static ToStringOptions GetToStringOptions(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> a, int i, string[] keys)
     {
         RequireOptionsObject(ctx, a, i);
         var r = new ToStringOptions();
@@ -1976,61 +1974,143 @@ public sealed class TemporalStub : IBuiltinModule
         var optionsValue = a[i];
         var obj = h.GetObject(optionsValue.AsObjectHandle());
 
-        if (ctx.TryGetPropertyValue(obj, optionsValue, "calendarName", out var cn) && cn.Tag != JsValueTag.Undefined)
-        {
-            var s = ctx.ToStringValue(cn);
-            if (s is not ("auto" or "always" or "never" or "critical"))
-                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid value for calendarName."));
-            r.CalendarName = s;
-        }
+        // 1. Read and cast all properties first in the order specified by keys
+        string? cn = null;
+        string? fdStr = null;
+        double? fdNum = null;
+        string? ofv = null;
+        string? rm = null;
+        string? su = null;
+        string? tzv = null;
+        string? tzn = null;
 
-        if (ctx.TryGetPropertyValue(obj, optionsValue, "fractionalSecondDigits", out var fd) && fd.Tag != JsValueTag.Undefined)
+        foreach (var key in keys)
         {
-            if (fd.Tag is JsValueTag.Number or JsValueTag.Int32)
+            switch (key)
             {
-                double n = fd.AsNumber();
-                if (double.IsNaN(n) || double.IsInfinity(n) || Math.Floor(n) < 0 || Math.Floor(n) > 9)
-                    throw new JsThrownException(ctx.CreateRangeError("fractionalSecondDigits is out of range."));
-                r.FractionalDigits = (int)Math.Floor(n);
+                case "calendarName":
+                    if (ctx.TryGetPropertyValue(obj, optionsValue, "calendarName", out var cnVal) && cnVal.Tag != JsValueTag.Undefined)
+                    {
+                        cn = ctx.ToStringValue(cnVal);
+                    }
+                    break;
+                case "fractionalSecondDigits":
+                    if (ctx.TryGetPropertyValue(obj, optionsValue, "fractionalSecondDigits", out var fdVal) && fdVal.Tag != JsValueTag.Undefined)
+                    {
+                        if (fdVal.Tag is JsValueTag.Number or JsValueTag.Int32)
+                        {
+                            double n = fdVal.AsNumber();
+                            if (double.IsNaN(n)) n = 0;
+                            else if (double.IsInfinity(n))
+                                throw new JsThrownException(ctx.CreateRangeError("fractionalSecondDigits cannot be infinity."));
+                            fdNum = Math.Floor(n);
+                        }
+                        else
+                        {
+                            fdStr = ctx.ToStringValue(fdVal);
+                        }
+                    }
+                    break;
+                case "offset":
+                    if (ctx.TryGetPropertyValue(obj, optionsValue, "offset", out var ofvVal) && ofvVal.Tag != JsValueTag.Undefined)
+                    {
+                        ofv = ctx.ToStringValue(ofvVal);
+                    }
+                    break;
+                case "roundingMode":
+                    if (ctx.TryGetPropertyValue(obj, optionsValue, "roundingMode", out var rmVal) && rmVal.Tag != JsValueTag.Undefined)
+                    {
+                        rm = ctx.ToStringValue(rmVal);
+                    }
+                    break;
+                case "smallestUnit":
+                    if (ctx.TryGetPropertyValue(obj, optionsValue, "smallestUnit", out var suVal) && suVal.Tag != JsValueTag.Undefined)
+                    {
+                        su = ctx.ToStringValue(suVal);
+                    }
+                    break;
+                case "timeZone":
+                    if (ctx.TryGetPropertyValue(obj, optionsValue, "timeZone", out var tzvVal) && tzvVal.Tag != JsValueTag.Undefined)
+                    {
+                        tzv = ctx.ToStringValue(tzvVal);
+                    }
+                    break;
+                case "timeZoneName":
+                    if (ctx.TryGetPropertyValue(obj, optionsValue, "timeZoneName", out var tznVal) && tznVal.Tag != JsValueTag.Undefined)
+                    {
+                        tzn = ctx.ToStringValue(tznVal);
+                    }
+                    break;
             }
-            else
+        }
+
+        // 2. Validate all read properties second in the order of keys
+        foreach (var key in keys)
+        {
+            switch (key)
             {
-                var s = ctx.ToStringValue(fd);
-                if (s != "auto")
-                    throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid value for fractionalSecondDigits."));
+                case "calendarName":
+                    if (cn is not null)
+                    {
+                        if (cn is not ("auto" or "always" or "never" or "critical"))
+                            throw new JsThrownException(ctx.CreateRangeError($"'{cn}' is not a valid value for calendarName."));
+                        r.CalendarName = cn;
+                    }
+                    break;
+                case "fractionalSecondDigits":
+                    if (fdNum is not null)
+                    {
+                        if (fdNum < 0 || fdNum > 9)
+                            throw new JsThrownException(ctx.CreateRangeError("fractionalSecondDigits is out of range."));
+                        r.FractionalDigits = (int)fdNum;
+                    }
+                    else if (fdStr is not null)
+                    {
+                        if (fdStr != "auto")
+                            throw new JsThrownException(ctx.CreateRangeError($"'{fdStr}' is not a valid value for fractionalSecondDigits."));
+                        r.FractionalDigits = -1;
+                    }
+                    break;
+                case "offset":
+                    if (ofv is not null)
+                    {
+                        if (ofv is not ("auto" or "never"))
+                            throw new JsThrownException(ctx.CreateRangeError($"'{ofv}' is not a valid value for offset."));
+                        r.ShowOffset = ofv;
+                    }
+                    break;
+                case "roundingMode":
+                    if (rm is not null)
+                    {
+                        if (rm is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
+                            throw new JsThrownException(ctx.CreateRangeError($"'{rm}' is not a valid rounding mode."));
+                        r.RoundingMode = rm;
+                    }
+                    break;
+                case "smallestUnit":
+                    if (su is not null)
+                    {
+                        var s = NormalizeUnitName(ctx, su);
+                        if (s is not ("minute" or "second" or "millisecond" or "microsecond" or "nanosecond"))
+                            throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid smallestUnit for toString."));
+                        r.SmallestUnit = s;
+                    }
+                    break;
+                case "timeZone":
+                    if (tzv is not null)
+                    {
+                        r.TimeZoneValue = tzv;
+                    }
+                    break;
+                case "timeZoneName":
+                    if (tzn is not null)
+                    {
+                        if (tzn is not ("auto" or "never" or "critical"))
+                            throw new JsThrownException(ctx.CreateRangeError($"'{tzn}' is not a valid value for timeZoneName."));
+                        r.TimeZoneName = tzn;
+                    }
+                    break;
             }
-        }
-
-        if (ctx.TryGetPropertyValue(obj, optionsValue, "offset", out var ofv) && ofv.Tag != JsValueTag.Undefined)
-        {
-            var s = ctx.ToStringValue(ofv);
-            if (s is not ("auto" or "never"))
-                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid value for offset."));
-            r.ShowOffset = s;
-        }
-
-        if (ctx.TryGetPropertyValue(obj, optionsValue, "roundingMode", out var rm) && rm.Tag != JsValueTag.Undefined)
-        {
-            var s = ctx.ToStringValue(rm);
-            if (s is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
-                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid rounding mode."));
-            r.RoundingMode = s;
-        }
-
-        if (ctx.TryGetPropertyValue(obj, optionsValue, "smallestUnit", out var su) && su.Tag != JsValueTag.Undefined)
-        {
-            var s = NormalizeUnitName(ctx, su.Tag == JsValueTag.String ? su.AsString() : ctx.ToStringValue(su));
-            if (s is not ("minute" or "second" or "millisecond" or "microsecond" or "nanosecond"))
-                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid smallestUnit for toString."));
-            r.SmallestUnit = s;
-        }
-
-        if (ctx.TryGetPropertyValue(obj, optionsValue, "timeZoneName", out var tzn) && tzn.Tag != JsValueTag.Undefined)
-        {
-            var s = ctx.ToStringValue(tzn);
-            if (s is not ("auto" or "never" or "critical"))
-                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid value for timeZoneName."));
-            r.TimeZoneName = s;
         }
 
         return r;
@@ -3043,7 +3123,7 @@ public sealed class TemporalStub : IBuiltinModule
                 TemporalTimeZones.EpochNsFromWallBig(tz, d, tm), tz, GetVStr(h, o, "calendarId")));
         }, 1);
         AddMethod(ctx, h, pH, p, "toString", (o, a) => {
-            var opts = GetToStringOptions(ctx, h, a, 0);
+            var opts = GetToStringOptions(ctx, h, a, 0, new[] { "calendarName" });
             var d = DecodeIsoDate(h, o);
             return JsValue.FromString($"{FormatIsoYear(d.Year)}-{d.Month:D2}-{d.Day:D2}{CalendarSuffix(h, o, opts)}");
         }, 0);
@@ -3191,7 +3271,7 @@ public sealed class TemporalStub : IBuiltinModule
             return PlainTimeToLocaleString(ctx, h, o, a);
         }, 0);
         AddMethod(ctx, h, pH, p, "toString", (o, a) => {
-            var opts = GetToStringOptions(ctx, h, a, 0);
+            var opts = GetToStringOptions(ctx, h, a, 0, new[] { "fractionalSecondDigits", "roundingMode", "smallestUnit" });
             long dayNs = DecodeTimeOfDayNs(h, o);
             long inc = PrecisionIncrementNs(opts);
             if (inc > 1) dayNs = RoundNsToIncrement(ctx, dayNs, inc, opts.RoundingMode) % NsPerDay;
@@ -3388,7 +3468,7 @@ public sealed class TemporalStub : IBuiltinModule
             (int)GetVNum(h, o, "hour"), (int)GetVNum(h, o, "minute"), (int)GetVNum(h, o, "second"),
             (int)GetVNum(h, o, "millisecond"), (int)GetVNum(h, o, "microsecond"), (int)GetVNum(h, o, "nanosecond"))), 0);
         AddMethod(ctx, h, pH, p, "toString", (o, a) => {
-            var opts = GetToStringOptions(ctx, h, a, 0);
+            var opts = GetToStringOptions(ctx, h, a, 0, new[] { "calendarName", "fractionalSecondDigits", "roundingMode", "smallestUnit" });
             var date = DecodeIsoDateLong(h, o);
             long dayNs = DecodeTimeOfDayNs(h, o);
             long inc = PrecisionIncrementNs(opts);
@@ -3665,7 +3745,7 @@ public sealed class TemporalStub : IBuiltinModule
             return AttachTemporalPrototypeByName(ctx, h, t, "PlainDate", MakePlainDateYmd(ctx, h, iso.Year, iso.Month, iso.Day, cal));
         }, 1);
         AddMethod(ctx, h, pH, p, "toString", (o, a) => {
-            var opts = GetToStringOptions(ctx, h, a, 0);
+            var opts = GetToStringOptions(ctx, h, a, 0, new[] { "calendarName" });
             var iso = DecodeYearMonthIso(h, o);
             string suffix = CalendarSuffix(h, o, opts);
             // With a calendar annotation the reference ISO day is included.
@@ -3821,7 +3901,7 @@ public sealed class TemporalStub : IBuiltinModule
             }
         }, 1);
         AddMethod(ctx, h, pH, p, "toString", (o, a) => {
-            var opts = GetToStringOptions(ctx, h, a, 0);
+            var opts = GetToStringOptions(ctx, h, a, 0, new[] { "calendarName" });
             var iso = DecodeIsoDate(h, o);
             string suffix = CalendarSuffix(h, o, opts);
             if (suffix.Length > 0)
@@ -4226,7 +4306,7 @@ public sealed class TemporalStub : IBuiltinModule
                 (int)GetVNum(h, o, "millisecond"), (int)GetVNum(h, o, "microsecond"), (int)GetVNum(h, o, "nanosecond"),
                 GetVStr(h, o, "calendarId")));
         }, 0);
-        AddMethod(ctx, h, pH, p, "toString", (o, a) => FormatZonedDateTime(ctx, h, o, GetToStringOptions(ctx, h, a, 0)), 0);
+        AddMethod(ctx, h, pH, p, "toString", (o, a) => FormatZonedDateTime(ctx, h, o, GetToStringOptions(ctx, h, a, 0, new[] { "calendarName", "fractionalSecondDigits", "offset", "roundingMode", "smallestUnit", "timeZoneName" })), 0);
         AddMethod(ctx, h, pH, p, "toLocaleString", (o, a) => {
             // ECMA-402: ZonedDateTime.toLocaleString must not accept a timeZone option —
             // the instance already has a time zone and options.timeZone is ignored.
@@ -4299,38 +4379,10 @@ public sealed class TemporalStub : IBuiltinModule
     /// <summary>ZonedDateTime.prototype.round: round the wall time, re-resolve in the zone.</summary>
     private static JsValue ZonedRound(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> a, ObjectHandle pH)
     {
-        if (a.Count == 0 || a[0].Tag == JsValueTag.Undefined)
-            throw new JsThrownException(ctx.CreateTypeError("round requires a unit or options argument."));
-        string? smallest = null;
-        double increment = 1;
-        string mode = "halfExpand";
-        if (a[0].Tag == JsValueTag.String)
-        {
-            smallest = NormalizeUnitName(ctx, a[0].AsString());
-        }
-        else if (a[0].Tag == JsValueTag.Object)
-        {
-            if (TryGetField(ctx, h, a[0], "roundingIncrement", out var iv))
-            {
-                increment = ToIntegerWithTruncation(ctx, iv);
-                if (increment < 1 || increment > 1_000_000_000)
-                    throw new JsThrownException(ctx.CreateRangeError("roundingIncrement out of range."));
-            }
-            if (TryGetField(ctx, h, a[0], "roundingMode", out var mv))
-            {
-                mode = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
-                if (mode is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
-                    throw new JsThrownException(ctx.CreateRangeError($"'{mode}' is not a valid rounding mode."));
-            }
-            if (TryGetField(ctx, h, a[0], "smallestUnit", out var sv))
-                smallest = NormalizeUnitName(ctx, sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv));
-            if (smallest is null)
-                throw new JsThrownException(ctx.CreateRangeError("round requires smallestUnit."));
-        }
-        else
-        {
-            throw new JsThrownException(ctx.CreateTypeError("round argument must be a string or options object."));
-        }
+        var opts = GetRoundingOptions(ctx, h, a);
+        var smallest = opts.Smallest;
+        var increment = opts.Increment;
+        var mode = opts.Mode;
 
         if (IsCalendarUnit(smallest))
             throw new JsThrownException(ctx.CreateRangeError($"'{smallest}' is not a valid value for smallest unit."));
@@ -5095,27 +5147,42 @@ public sealed class TemporalStub : IBuiltinModule
         }
         else if (a[0].Tag == JsValueTag.Object)
         {
-            // ECMA-262 ToTemporalRoundingMode et al.: options must be read in
-            // spec order: largestUnit, relativeTo, roundingIncrement,
-            // roundingMode, smallestUnit.
-            if (TryGetField(ctx, h, a[0], "largestUnit", out var lv))
+            // 1. Read all properties first in spec order
+            JsValue lv = JsValue.Undefined;
+            JsValue rtv = JsValue.Undefined;
+            JsValue iv = JsValue.Undefined;
+            JsValue mv = JsValue.Undefined;
+            JsValue sv = JsValue.Undefined;
+
+            TryGetField(ctx, h, a[0], "largestUnit", out lv);
+            TryGetField(ctx, h, a[0], "relativeTo", out rtv);
+            TryGetField(ctx, h, a[0], "roundingIncrement", out iv);
+            TryGetField(ctx, h, a[0], "roundingMode", out mv);
+            TryGetField(ctx, h, a[0], "smallestUnit", out sv);
+
+            // 2. Cast and validate in spec order
+            if (lv.Tag != JsValueTag.Undefined)
                 largest = NormalizeUnitName(ctx, lv.Tag == JsValueTag.String ? lv.AsString() : ctx.ToStringValue(lv), allowAuto: true);
-            // relativeTo MUST be read after largestUnit, before roundingIncrement
-            relTo = TryDecodeRelativeTo(ctx, h, a[0]);
-            if (TryGetField(ctx, h, a[0], "roundingIncrement", out var iv))
+
+            relTo = DecodeRelativeToValue(ctx, h, rtv);
+
+            if (iv.Tag != JsValueTag.Undefined)
             {
                 increment = ToIntegerWithTruncation(ctx, iv);
                 if (increment < 1 || increment > 1_000_000_000)
                     throw new JsThrownException(ctx.CreateRangeError("roundingIncrement out of range."));
             }
-            if (TryGetField(ctx, h, a[0], "roundingMode", out var mv))
+
+            if (mv.Tag != JsValueTag.Undefined)
             {
                 mode = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
                 if (mode is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
                     throw new JsThrownException(ctx.CreateRangeError($"'{mode}' is not a valid rounding mode."));
             }
-            if (TryGetField(ctx, h, a[0], "smallestUnit", out var sv))
+
+            if (sv.Tag != JsValueTag.Undefined)
                 smallest = NormalizeUnitName(ctx, sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv));
+
             if (smallest is null && (largest is null || largest == "auto"))
                 throw new JsThrownException(ctx.CreateRangeError("round requires smallestUnit or largestUnit."));
         }
@@ -5125,7 +5192,6 @@ public sealed class TemporalStub : IBuiltinModule
         }
 
         var dur = DecodeDuration(h, o);
-        // relativeTo already read above in spec order (after largestUnit, before rounding options).
         bool hasCalendarUnits = dur.years != 0 || dur.months != 0 || dur.weeks != 0
             || IsCalendarUnit(smallest) || (largest is not null && largest != "auto" && IsCalendarUnit(largest));
         if (hasCalendarUnits && relTo is null)
@@ -5151,7 +5217,6 @@ public sealed class TemporalStub : IBuiltinModule
         return MakeDurationBalancedNs(ctx, h, rounded, largestEff);
     }
 
-    /// <summary>Duration.prototype.total for day/time units, with optional relativeTo.</summary>
     private static JsValue DurationTotal(IBuiltinContext ctx, JsHeap h, JsObject o, IReadOnlyList<JsValue> a)
     {
         if (a.Count == 0 || a[0].Tag == JsValueTag.Undefined)
@@ -5164,8 +5229,13 @@ public sealed class TemporalStub : IBuiltinModule
         }
         else if (a[0].Tag == JsValueTag.Object)
         {
-            relTo = TryDecodeRelativeTo(ctx, h, a[0]);
-            if (!TryGetField(ctx, h, a[0], "unit", out var uv))
+            JsValue rtv = JsValue.Undefined;
+            JsValue uv = JsValue.Undefined;
+            TryGetField(ctx, h, a[0], "relativeTo", out rtv);
+            TryGetField(ctx, h, a[0], "unit", out uv);
+
+            relTo = DecodeRelativeToValue(ctx, h, rtv);
+            if (uv.Tag == JsValueTag.Undefined)
                 throw new JsThrownException(ctx.CreateRangeError("total requires a unit."));
             unit = NormalizeUnitName(ctx, uv.Tag == JsValueTag.String ? uv.AsString() : ctx.ToStringValue(uv));
         }
