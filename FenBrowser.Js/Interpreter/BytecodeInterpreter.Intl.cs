@@ -318,42 +318,35 @@ public sealed partial class BytecodeInterpreter
         var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
         _heap.PushRoot(prototypeHandle);
 
-        // ECMA-402 11.3.2: get DateTimeFormat.prototype.format — accessor property.
+        var formatMethod = new NativeFunctionObject(
+            "format",
+            (thisValue, fmtArgs) =>
+            {
+                if (fmtArgs.Count == 0 || fmtArgs[0].Tag == JsValueTag.Undefined)
+                    throw new JsThrownException(CreateTypeError("DateTimeFormat format requires a date argument."));
+                var dtCulture = IntlDateTimeFormatting.ResolveCulture("en-US");
+                var dtOpts = new IntlDateTimeFormatOptions();
+                if (TryGetTemporalPlainTime(fmtArgs, dtCulture, dtOpts, out var ptRes))
+                    return JsValue.FromString(ptRes.Text);
+                if (TryGetTemporalDateOnly(fmtArgs, dtCulture, dtOpts, out var doRes))
+                    return JsValue.FromString(doRes.Text);
+                if (TryGetTemporalPlainDateTime(fmtArgs, dtCulture, dtOpts, out var pdtRes))
+                    return JsValue.FromString(pdtRes.Text);
+                if (TryGetTemporalZonedDateTime(fmtArgs, dtCulture, dtOpts, out var zdtRes))
+                    return JsValue.FromString(zdtRes.Text);
+                if (TryGetDateTimeFormatInput(fmtArgs, out var instant))
+                {
+                    var res = IntlDateTimeFormatting.Format(instant, dtCulture, dtOpts);
+                    return JsValue.FromString(res.Text);
+                }
+                return JsValue.FromString("Invalid Date");
+            },
+            length: 1);
+        var formatHandle = _heap.AllocateObject(formatMethod, AllocationSite.Current());
         _ = prototype.DefineOwnProperty(
             "format",
-            JsPropertyDescriptor.Accessor(
-                JsValue.FromObject(_heap.AllocateObject(new NativeFunctionObject("get format", (thisValue, _2) =>
-                {
-                    // Brand check: thisValue must be a DateTimeFormat instance.
-                    if (thisValue.Tag != JsValueTag.Object)
-                        throw new JsThrownException(CreateTypeError(
-                            "Intl.DateTimeFormat.prototype.format getter called on incompatible receiver."));
-                    // Return a fresh function each time (spec says same function, simplified here).
-                    var fmtFn = new NativeFunctionObject("format", (_, fmtArgs) =>
-                    {
-                        if (fmtArgs.Count == 0 || fmtArgs[0].Tag == JsValueTag.Undefined)
-                            throw new JsThrownException(CreateTypeError("DateTimeFormat format requires a date argument."));
-                        var dtCulture = IntlDateTimeFormatting.ResolveCulture("en-US");
-                        var dtOpts = new IntlDateTimeFormatOptions();
-                        if (TryGetTemporalPlainTime(fmtArgs, dtCulture, dtOpts, out var ptRes))
-                            return JsValue.FromString(ptRes.Text);
-                        if (TryGetTemporalDateOnly(fmtArgs, dtCulture, dtOpts, out var doRes))
-                            return JsValue.FromString(doRes.Text);
-                        if (TryGetTemporalPlainDateTime(fmtArgs, dtCulture, dtOpts, out var pdtRes))
-                            return JsValue.FromString(pdtRes.Text);
-                        if (TryGetTemporalZonedDateTime(fmtArgs, dtCulture, dtOpts, out var zdtRes))
-                            return JsValue.FromString(zdtRes.Text);
-                        if (TryGetDateTimeFormatInput(fmtArgs, out var instant))
-                        {
-                            var res = IntlDateTimeFormatting.Format(instant, dtCulture, dtOpts);
-                            return JsValue.FromString(res.Text);
-                        }
-                        return JsValue.FromString("Invalid Date");
-                    }, length: 1);
-                    return JsValue.FromObject(_heap.AllocateObject(fmtFn, AllocationSite.Current()));
-                }, length: 0), AllocationSite.Current())),
-                JsValue.Undefined,
-                Enumerable: false, Configurable: true));
+            new JsPropertyDescriptor(JsValue.FromObject(formatHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, formatHandle);
 
         var formatToPartsMethod = new NativeFunctionObject(
             "formatToParts",
@@ -3830,18 +3823,6 @@ public sealed partial class BytecodeInterpreter
         return true;
     }
 
-    // ECMA-402 10.3.1: brand-check that the receiver has a Collator internal slot.
-    private void RequireCollatorInstance(JsValue thisValue)
-    {
-        if (thisValue.Tag != JsValueTag.Object ||
-            !_heap.GetObject(thisValue.AsObjectHandle()).TryGetProperty(
-                "__collator_locale", x => _heap.GetObject(x), out _))
-        {
-            throw new JsThrownException(CreateTypeError(
-                "Intl.Collator.prototype.compare getter called on incompatible receiver."));
-        }
-    }
-
     private ObjectHandle EnsureCollatorPrototype()
     {
         if (_collatorPrototypeHandle is { } existing)
@@ -3868,19 +3849,9 @@ public sealed partial class BytecodeInterpreter
             return JsValue.FromNumber(result);
         }, length: 2);
         var compareHandle = _heap.AllocateObject(compareMethod, AllocationSite.Current());
-        // ECMA-402 10.3.2: Intl.Collator.prototype.compare is an accessor property
-        // whose [[Get]] returns the compare function after brand-checking the receiver.
-        var compareGetter = new NativeFunctionObject("get compare",
-            (thisValue, _2) =>
-            {
-                RequireCollatorInstance(thisValue);
-                return JsValue.FromObject(compareHandle);
-            }, length: 0);
-        var compareGetterHandle = _heap.AllocateObject(compareGetter, AllocationSite.Current());
         _ = proto.DefineOwnProperty("compare",
-            JsPropertyDescriptor.Accessor(JsValue.FromObject(compareGetterHandle), JsValue.Undefined, Enumerable: false, Configurable: true));
+            new JsPropertyDescriptor(JsValue.FromObject(compareHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(ph, compareHandle);
-        _heap.WriteBarrier(ph, compareGetterHandle);
 
         var resolvedOptsMethod = new NativeFunctionObject("resolvedOptions", (thisValue, _2) =>
         {

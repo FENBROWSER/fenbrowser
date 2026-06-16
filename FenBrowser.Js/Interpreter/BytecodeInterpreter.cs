@@ -5211,12 +5211,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toTimeString", DatePrototypeToTimeString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toUTCString", DatePrototypeToUtcString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleString", DatePrototypeToLocaleString, length: 2);
-        // ECMA-402 B.1.1 Date.prototype.toLocaleDateString — both args optional, length 0
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleDateString",
-            DatePrototypeToLocaleDateString, length: 0);
-        // ECMA-402 B.2.1 Date.prototype.toLocaleTimeString — both args optional, length 0
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleTimeString",
-            DatePrototypeToLocaleTimeString, length: 0);
 
         // Annex B B.2.3 legacy aliases (audit �4.1).
         // B.2.3.1 Date.prototype.getYear: return year - 1900, NaN if invalid.
@@ -5348,72 +5342,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
         var culture = FenBrowser.Js.Intl.IntlDateTimeFormatting.ResolveCulture(locale);
         var options = ParseDateTimeFormatOptions(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
-        try
-        {
-            FenBrowser.Js.Intl.IntlDateTimeFormatting.ValidateOptions(options);
-        }
-        catch (InvalidOperationException)
-        {
-            throw new JsThrownException(CreateTypeError("dateStyle/timeStyle conflicts with explicit component options."));
-        }
-
-        var result = FenBrowser.Js.Intl.IntlDateTimeFormatting.Format(DateTimeOffset.FromUnixTimeMilliseconds((long)t), culture, options);
-        return JsValue.FromString(result.Text);
-    }
-
-    // ECMA-402 B.1.1 Date.prototype.toLocaleDateString([locales[, options]])
-    private JsValue DatePrototypeToLocaleDateString(JsValue thisValue, IReadOnlyList<JsValue> args)
-    {
-        var t = GetDateTimeValue(thisValue, "toLocaleDateString");
-        if (!double.IsFinite(t))
-            return JsValue.FromString("Invalid Date");
-
-        var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
-        var culture = FenBrowser.Js.Intl.IntlDateTimeFormatting.ResolveCulture(locale);
-        var options = ParseDateTimeFormatOptions(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
-        // ECMA-402 B.1.1 step 3: if no date/time components specified, default to date
-        if (options.DateStyle is null && options.TimeStyle is null &&
-            options.Weekday is null && options.Era is null && options.Year is null &&
-            options.Month is null && options.Day is null &&
-            options.Hour is null && options.Minute is null && options.Second is null &&
-            options.DayPeriod is null && options.TimeZoneName is null)
-        {
-            options = options with { DateStyle = "full" };
-        }
-
-        try
-        {
-            FenBrowser.Js.Intl.IntlDateTimeFormatting.ValidateOptions(options);
-        }
-        catch (InvalidOperationException)
-        {
-            throw new JsThrownException(CreateTypeError("dateStyle/timeStyle conflicts with explicit component options."));
-        }
-
-        var result = FenBrowser.Js.Intl.IntlDateTimeFormatting.Format(DateTimeOffset.FromUnixTimeMilliseconds((long)t), culture, options);
-        return JsValue.FromString(result.Text);
-    }
-
-    // ECMA-402 B.2.1 Date.prototype.toLocaleTimeString([locales[, options]])
-    private JsValue DatePrototypeToLocaleTimeString(JsValue thisValue, IReadOnlyList<JsValue> args)
-    {
-        var t = GetDateTimeValue(thisValue, "toLocaleTimeString");
-        if (!double.IsFinite(t))
-            return JsValue.FromString("Invalid Date");
-
-        var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
-        var culture = FenBrowser.Js.Intl.IntlDateTimeFormatting.ResolveCulture(locale);
-        var options = ParseDateTimeFormatOptions(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
-        // ECMA-402 B.2.1 step 3: if no date/time components specified, default to time
-        if (options.DateStyle is null && options.TimeStyle is null &&
-            options.Weekday is null && options.Era is null && options.Year is null &&
-            options.Month is null && options.Day is null &&
-            options.Hour is null && options.Minute is null && options.Second is null &&
-            options.DayPeriod is null && options.TimeZoneName is null)
-        {
-            options = options with { TimeStyle = "full" };
-        }
-
         try
         {
             FenBrowser.Js.Intl.IntlDateTimeFormatting.ValidateOptions(options);
@@ -8077,17 +8005,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 return NumberFormatResolvedOptions(state);
             }, length: 0);
             nfProto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(roStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
-            DefineNativePrototypeAccessor(nfProtoHandle, nfProto, "format", (thisValue, fmtArgs) =>
+            var fmtStub = new NativeFunctionObject("format", (thisValue, fmtArgs) =>
             {
                 var stateObj = RequireNumberFormatState(thisValue);
                 var state = RebuildNumberFormatState(stateObj);
                 return JsValue.FromString(FormatNumber(fmtArgs.Count > 0 ? fmtArgs[0] : JsValue.Undefined, state));
-            }, length: 1, brandCheck: (thisValue) =>
-            {
-                if (thisValue.Tag != JsValueTag.Object) return false;
-                var obj = _heap.GetObject(thisValue.AsObjectHandle());
-                return obj.TryGetProperty("__numberFormatState", x => _heap.GetObject(x), out _);
-            });
+            }, length: 1);
+            nfProto.DefineOwnProperty("format", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(fmtStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
             var ftpStub = new NativeFunctionObject("formatToParts", (thisValue, fmtArgs) =>
             {
                 var stateObj = RequireNumberFormatState(thisValue);
@@ -10542,51 +10466,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 Configurable: true));
         _heap.WriteBarrier(prototypeHandle, functionHandle);
         return functionHandle;
-    }
-
-    // Define an accessor (getter-only) property on the prototype, wrapping a stored
-    // function value. Used for Intl prototype methods that the spec marks as accessors
-    // (get Collator.prototype.compare, get NumberFormat.prototype.format, etc.).
-    // The getter brand-checks the receiver and returns the backing function object.
-    private ObjectHandle DefineNativePrototypeAccessor(
-        ObjectHandle prototypeHandle,
-        JsObject prototype,
-        string name,
-        Func<JsValue, IReadOnlyList<JsValue>, JsValue> backingCall,
-        int length = 1,
-        Func<JsValue, bool>? brandCheck = null)
-    {
-        var backingFn = new NativeFunctionObject(name, backingCall, length: length);
-        if (_functionPrototypeHandle is { } fnProto)
-        {
-            backingFn.SetPrototype(fnProto);
-        }
-
-        var backingHandle = _heap.AllocateObject(backingFn, AllocationSite.Current());
-        if (_functionPrototypeHandle is { } fnProtoHandle)
-        {
-            _heap.WriteBarrier(backingHandle, fnProtoHandle);
-        }
-
-        // The getter: brand-check the receiver, then return the backing function.
-        var getter = new NativeFunctionObject("get " + name, (thisValue, _) =>
-        {
-            if (brandCheck is not null && !brandCheck(thisValue))
-            {
-                throw new JsThrownException(CreateTypeError(
-                    $"Intl.{name} getter called on incompatible receiver."));
-            }
-            return JsValue.FromObject(backingHandle);
-        }, length: 0);
-        var getterHandle = _heap.AllocateObject(getter, AllocationSite.Current());
-
-        _ = prototype.DefineOwnProperty(
-            name,
-            JsPropertyDescriptor.Accessor(JsValue.FromObject(getterHandle), JsValue.Undefined,
-                Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(prototypeHandle, backingHandle);
-        _heap.WriteBarrier(prototypeHandle, getterHandle);
-        return backingHandle;
     }
 
     private ObjectHandle EnsureFunctionCallMethod()
