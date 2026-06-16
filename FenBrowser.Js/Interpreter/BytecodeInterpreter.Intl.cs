@@ -4037,6 +4037,45 @@ public sealed partial class BytecodeInterpreter
         }, length: 1);
         proto.DefineOwnProperty("select", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(selectFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
 
+        // ECMA-402 PluralRules.prototype.selectRange (ES2023)
+        var selectRangeFn = new NativeFunctionObject("selectRange", (thisValue, a) =>
+        {
+            string locale = "en";
+            if (thisValue.Tag == JsValueTag.Object)
+            {
+                var recv = _heap.GetObject(thisValue.AsObjectHandle());
+                if (recv.TryGetProperty("__pluralRulesState", x => _heap.GetObject(x), out var sd) && sd.Value.Tag == JsValueTag.Object)
+                {
+                    var state = _heap.GetObject(sd.Value.AsObjectHandle());
+                    if (state.TryGetOwnProperty("locale", out var ld) && ld.Value.Tag == JsValueTag.String)
+                        locale = ld.Value.AsString();
+                }
+            }
+            double x = a.Count > 0 ? ToNumber(a[0]) : double.NaN;
+            double y = a.Count > 1 ? ToNumber(a[1]) : double.NaN;
+            if (double.IsNaN(x) || double.IsNaN(y))
+                throw new JsThrownException(CreateTypeError("selectRange requires two finite numbers."));
+            if (x > y)
+                throw new JsThrownException(CreateRangeError("x must not be greater than y in selectRange."));
+            // Simplified: return the rule for the endpoint (spec has range-aware selection)
+            return JsValue.FromString(SelectPluralRule(locale, y));
+        }, length: 2);
+        // selectRange is an accessor per ECMA-402 (like other Intl prototype methods)
+        _ = proto.DefineOwnProperty("selectRange",
+            JsPropertyDescriptor.Accessor(
+                JsValue.FromObject(_heap.AllocateObject(new NativeFunctionObject("get selectRange", (thisValue, _2) =>
+                {
+                    if (thisValue.Tag != JsValueTag.Object ||
+                        !_heap.GetObject(thisValue.AsObjectHandle()).TryGetProperty(
+                            "__pluralRulesState", x => _heap.GetObject(x), out _))
+                    {
+                        throw new JsThrownException(CreateTypeError(
+                            "Intl.PluralRules.prototype.selectRange getter called on incompatible receiver."));
+                    }
+                    return JsValue.FromObject(_heap.AllocateObject(selectRangeFn, AllocationSite.Current()));
+                }, length: 0), AllocationSite.Current())),
+                JsValue.Undefined, Enumerable: false, Configurable: true));
+
         var resOptsFn = new NativeFunctionObject("resolvedOptions", (thisValue, _2) =>
         {
             string locale = "en", type = "cardinal";
