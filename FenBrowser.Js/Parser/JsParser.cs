@@ -2291,12 +2291,14 @@ public sealed class JsParser
         return false;
     }
 
-    // ECMA-262 13.7.5 / 14.7 / 14.6: IterationStatement bodies must not be
-    // Labelled function declarations are not allowed as if-statement bodies.
-    // ECMA-262: IsLabelledFunction(Statement) must be false for the Statement
-    // in an IfStatement.
+    // ECMA-262 Annex B.3.4: IsLabelledFunction(Statement) must be false for the
+    // Statement in an IfStatement. A bare (non-labelled) FunctionDeclaration IS
+    // allowed in non-strict mode per Annex B.3.3 — only a FunctionDeclaration
+    // wrapped in a label (e.g. L: function f(){}) is rejected here.
     private static void ValidateIfBodyNotLabelledFunction(StatementNode body)
     {
+        if (body is FunctionDeclarationNode)
+            return; // bare function, allowed per Annex B.3.3
         var stmt = body;
         while (stmt is LabeledStatementNode labeled)
             stmt = labeled.Body;
@@ -2305,9 +2307,14 @@ public sealed class JsParser
                 "Labelled function declarations are not allowed as the body of an if statement.");
     }
 
-    // labelled function declarations (even nested labels like L1: L2: function f).
+    // ECMA-262 Annex B.3.4: same rule for iteration-statement bodies.
+    // Bare FunctionDeclarations in iteration positions (for-in, for-of, while, do-while)
+    // are rejected elsewhere (ParseStatementCore requires IfClauseOrLabel context);
+    // this only catches labelled functions that slip through.
     private static void ValidateIterationBodyNotLabelledFunction(StatementNode body)
     {
+        if (body is FunctionDeclarationNode)
+            return; // bare function (will be rejected by caller's context check)
         var stmt = body;
         while (stmt is LabeledStatementNode labeled)
             stmt = labeled.Body;
