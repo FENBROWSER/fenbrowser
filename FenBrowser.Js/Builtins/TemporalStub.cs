@@ -902,7 +902,7 @@ public sealed class TemporalStub : IBuiltinModule
             throw new JsThrownException(ctx.CreateTypeError("month or monthCode is required."));
 
         var sys = CalendarMath.Get(calendar);
-        if (sys is null)
+        if (sys is null || calendar == "iso8601")
         {
             // iso8601 (or a calendar we do not yet model): ISO field semantics.
             double y = baseFields?.Year ?? 1972;
@@ -4699,12 +4699,14 @@ public sealed class TemporalStub : IBuiltinModule
 
     private static JsValue MakePlainMonthDay(IBuiltinContext ctx, JsHeap h, int y, int m, int d, string calendarId = "iso8601")
     {
+        string cal = string.IsNullOrEmpty(calendarId) ? "iso8601" : calendarId;
+        if (cal == "iso8601") y = 1972;
         var o = new JsObject();
         var dd = new JsObject(); var ddH = h.AllocateObject(dd, AllocationSite.Current());
         dd.SetProperty("y", JsValue.FromNumber(y));
         dd.SetProperty("m", JsValue.FromNumber(m));
         dd.SetProperty("d", JsValue.FromNumber(d));
-        dd.SetProperty("calendarId", JsValue.FromString(string.IsNullOrEmpty(calendarId) ? "iso8601" : calendarId));
+        dd.SetProperty("calendarId", JsValue.FromString(cal));
         o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.FromObject(ddH), false, false, false));
         return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
     }
