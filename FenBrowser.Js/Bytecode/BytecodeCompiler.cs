@@ -3746,6 +3746,38 @@ public sealed class BytecodeCompiler
                 case ClassDeclarationNode cd when cd.Name.Length > 0:
                     into.Add(cd.Name);
                     break;
+                // ECMA-262 B.3.3.3: for-in, for-of, and for(;;) heads create lexical
+                // bindings that conflict with Annex B function hoisting in the loop body.
+                case ForInStatementNode forIn:
+                    if (forIn.Initializer is VariableDeclarationStatementNode forInVar &&
+                        (string.Equals(forInVar.Kind, "let", StringComparison.Ordinal) ||
+                         string.Equals(forInVar.Kind, "const", StringComparison.Ordinal)))
+                    {
+                        foreach (var d in forInVar.Declarators)
+                            foreach (var n in GetDeclaratorBoundNames(d))
+                                into.Add(n);
+                    }
+                    break;
+                case ForOfStatementNode forOf:
+                    if (forOf.Initializer is VariableDeclarationStatementNode forOfVar &&
+                        (string.Equals(forOfVar.Kind, "let", StringComparison.Ordinal) ||
+                         string.Equals(forOfVar.Kind, "const", StringComparison.Ordinal)))
+                    {
+                        foreach (var d in forOfVar.Declarators)
+                            foreach (var n in GetDeclaratorBoundNames(d))
+                                into.Add(n);
+                    }
+                    break;
+                case ForStatementNode forStmt:
+                    if (forStmt.Initializer is VariableDeclarationStatementNode forVar &&
+                        (string.Equals(forVar.Kind, "let", StringComparison.Ordinal) ||
+                         string.Equals(forVar.Kind, "const", StringComparison.Ordinal)))
+                    {
+                        foreach (var d in forVar.Declarators)
+                            foreach (var n in GetDeclaratorBoundNames(d))
+                                into.Add(n);
+                    }
+                    break;
             }
         }
     }
