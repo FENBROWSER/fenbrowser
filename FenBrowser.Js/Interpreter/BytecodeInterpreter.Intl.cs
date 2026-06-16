@@ -2639,9 +2639,12 @@ public sealed partial class BytecodeInterpreter
         // Set currency symbol for the requested currency code.
         if (style == "currency")
         {
-            string code = state.Currency ?? "USD";
-            try { cnf.CurrencySymbol = System.Globalization.RegionInfo(code).CurrencySymbol; }
-            catch { cnf.CurrencySymbol = code switch { "USD" => "$", "EUR" => "€", "GBP" => "£", "JPY" => "¥", _ => code }; }
+            cnf.CurrencySymbol = (state.Currency ?? "USD") switch
+            {
+                "USD" => "$", "EUR" => "€", "GBP" => "£", "JPY" => "¥", "CNY" => "¥",
+                "KRW" => "₩", "INR" => "₹", "BRL" => "R$", "RUB" => "₽",
+                var c => c
+            };
         }
 
         string notation = state.Notation ?? "standard";
@@ -2720,8 +2723,8 @@ public sealed partial class BytecodeInterpreter
 
         string formatted = style switch
         {
-            "currency" => number.ToString("C", cnf),
-            "percent" => number.ToString("P", cnf),
+            "currency" => absValue.ToString("C", cnf),
+            "percent" => absValue.ToString("P", cnf),
             _ => absValue.ToString("N", cnf),
         };
         // Trim trailing zeros in fraction from maxFrac down to minFrac.
@@ -2738,10 +2741,11 @@ public sealed partial class BytecodeInterpreter
             while (fracEnd > fracStart + trimTo && formatted[fracEnd - 1] == '0')
                 fracEnd--;
             // Remove fraction and decimal if no fraction digits remain and none required.
+            string afterFraction = formatted[fracEnd..]; // preserve currency/literal suffix
             if (fracEnd == fracStart && trimTo == 0)
-                formatted = formatted[..decIdx];
+                formatted = formatted[..decIdx] + afterFraction;
             else
-                formatted = formatted[..decIdx] + decSep + formatted[fracStart..fracEnd];
+                formatted = formatted[..decIdx] + decSep + formatted[fracStart..fracEnd] + afterFraction;
         }
 
         // Parse formatted output into IntlParts.
@@ -2762,7 +2766,7 @@ public sealed partial class BytecodeInterpreter
 
         // Walk formatted string, classifying each character.
         int pos = 0;
-        string curSymbol = nfi.CurrencySymbol;
+        string curSymbol = cnf.CurrencySymbol;
 
         // Handle negative pattern: ($1.23) or -1.23 or 1.23-
         bool negParens = negative && formatted.StartsWith("(") && formatted.EndsWith(")");
@@ -2831,9 +2835,29 @@ public sealed partial class BytecodeInterpreter
                 parts.Add(new IntlPart("group", nfi.NumberGroupSeparator, state.Unit));
                 pos++;
             }
+            else if (style == "currency" && curSymbol.Length > 0 &&
+                     formatted.Substring(pos).StartsWith(curSymbol, StringComparison.Ordinal))
+            {
+                if (digitBuf.Count > 0)
+                {
+                    parts.Add(new IntlPart(inFraction ? "fraction" : "integer",
+                        ApplyNumberingSystem(new string(digitBuf.ToArray()), state.NumberingSystem), state.Unit));
+                    digitBuf.Clear();
+                }
+                parts.Add(new IntlPart("currency", curSymbol, state.Unit));
+                pos += curSymbol.Length;
+            }
             else
             {
-                parts.Add(new IntlPart("literal", c.ToString(), state.Unit));
+                if (digitBuf.Count > 0)
+                {
+                    parts.Add(new IntlPart(inFraction ? "fraction" : "integer",
+                        ApplyNumberingSystem(new string(digitBuf.ToArray()), state.NumberingSystem), state.Unit));
+                    digitBuf.Clear();
+                }
+                // Normalize ASCII space between number and currency to NBSP per CLDR.
+                var litVal = (c == ' ' && style == "currency") ? " " : c.ToString();
+                parts.Add(new IntlPart("literal", litVal, state.Unit));
                 pos++;
             }
         }
@@ -2891,15 +2915,10 @@ public sealed partial class BytecodeInterpreter
         {
             parts.Add(new IntlPart("literal", ")", state.Unit));
         }
-        // Trailing currency symbol
-        if (style == "currency" && !formatted.StartsWith(curSymbol, StringComparison.Ordinal))
+        // Any remaining characters (shouldn't normally happen since while loop processes everything)
+        if (pos < formatted.Length && !(negParens && formatted[pos] == ')'))
         {
-            var tail = formatted.Replace("(", "").Replace(")", "");
-            if (tail.Contains(curSymbol, StringComparison.Ordinal))
-            {
-                parts.Add(new IntlPart("literal", " ", state.Unit));
-                parts.Add(new IntlPart("currency", curSymbol, state.Unit));
-            }
+            parts.Add(new IntlPart("literal", formatted[pos..], state.Unit));
         }
 
         // Unit suffix.
