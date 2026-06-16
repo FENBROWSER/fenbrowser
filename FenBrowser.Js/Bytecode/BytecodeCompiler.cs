@@ -1479,6 +1479,22 @@ public sealed class BytecodeCompiler
             }
         }
 
+        // ECMA-262 14.7.5: `let`/`const` in for-head creates a lexical binding scoped
+        // to the loop body. EnterScope creates a new env record + the binding;
+        // InitVar initializes it each iteration; LeaveScope pops it at loop exit.
+        var isLexicalLoopHead = forInStmt.Initializer is VariableDeclarationStatementNode
+            { Kind: "let" or "const" };
+        if (isLexicalLoopHead && targetSlot >= 0)
+        {
+            // B=1 for const (immutable), B=0 for let (mutable)
+            var isConst = string.Equals(
+                ((VariableDeclarationStatementNode)forInStmt.Initializer).Kind, "const",
+                StringComparison.Ordinal);
+            // C=1: pre-initialize the binding so StoreVar works on each iteration.
+            _instructions.Add(new Instruction(OpCode.EnterScope, targetSlot, isConst ? 1 : 0, 1));
+            _openScopeDepth++;
+        }
+
         // Annex B B.3.5: sloppy-mode `for (var x = init in obj)` executes `init`
         // once before evaluating the RHS expression, then rebinds `x` per key.
         if (forInStmt.Initializer is VariableDeclarationStatementNode { Kind: "var", Declarators.Count: 1 } declaration &&
@@ -1502,6 +1518,8 @@ public sealed class BytecodeCompiler
         }
         else
         {
+            // StoreVar works for every iteration; the binding was already created
+            // by EnterScope per ECMA-262 14.7.5.
             EmitForBindingAssignment(targetSlot, targetPattern, keyReg);
         }
 
@@ -1535,6 +1553,12 @@ public sealed class BytecodeCompiler
         finally
         {
             _ = _loopStack.Pop();
+        }
+
+        if (isLexicalLoopHead)
+        {
+            _instructions.Add(new Instruction(OpCode.LeaveScope));
+            _openScopeDepth--;
         }
     }
 
@@ -1578,6 +1602,20 @@ public sealed class BytecodeCompiler
             {
                 throw new InvalidOperationException("Unsupported for-of initializer target.");
             }
+        }
+
+        // ECMA-262 14.7.5: `let`/`const` in for-of head creates a lexical binding
+        // scoped to the loop body.
+        var isLexicalLoopHead = forOfStmt.Initializer is VariableDeclarationStatementNode
+            { Kind: "let" or "const" };
+        if (isLexicalLoopHead && targetSlot >= 0)
+        {
+            var isConst = string.Equals(
+                ((VariableDeclarationStatementNode)forOfStmt.Initializer).Kind, "const",
+                StringComparison.Ordinal);
+            // C=1: pre-initialize the binding so StoreVar works on each iteration.
+            _instructions.Add(new Instruction(OpCode.EnterScope, targetSlot, isConst ? 1 : 0, 1));
+            _openScopeDepth++;
         }
 
         var sourceReg = CompileExpression(forOfStmt.Iterable);
@@ -1645,6 +1683,12 @@ public sealed class BytecodeCompiler
         finally
         {
             _ = _loopStack.Pop();
+        }
+
+        if (isLexicalLoopHead)
+        {
+            _instructions.Add(new Instruction(OpCode.LeaveScope));
+            _openScopeDepth--;
         }
     }
 
@@ -2113,15 +2157,15 @@ public sealed class BytecodeCompiler
         return (-1, declarator.BindingPattern);
     }
 
-    private void EmitForBindingAssignment(int slot, BindingPatternNode? pattern, int valueReg)
+    private void EmitForBindingAssignment(int slot, BindingPatternNode? pattern, int valueReg, bool useInitVar = false)
     {
         if (pattern is null)
         {
-            _instructions.Add(new Instruction(OpCode.StoreVar, valueReg, slot, 0));
+            _instructions.Add(new Instruction(useInitVar ? OpCode.InitVar : OpCode.StoreVar, valueReg, slot, 0));
             return;
         }
 
-        EmitBindingPatternAssignment(pattern, valueReg, OpCode.StoreVar);
+        EmitBindingPatternAssignment(pattern, valueReg, useInitVar ? OpCode.InitVar : OpCode.StoreVar);
     }
 
     private void CompileThrowStatement(ThrowStatementNode throwStmt)
