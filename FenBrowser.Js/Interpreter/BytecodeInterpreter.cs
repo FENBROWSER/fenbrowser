@@ -982,18 +982,26 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.SetElemDefine:
                 {
                     var obj = _heap.GetObject(ResolveObjectHandle(frame.Registers[ins.A]));
-                    var key = ToPropertyKey(frame.Registers[ins.B]);
+                    var keyValue = frame.Registers[ins.B];
                     var val = frame.Registers[ins.C];
-                    // ECMA-262 B.3.1: computed __proto__ must not trigger prototype setter.
-                    // Create a plain own data property instead of using SetPrototype.
-                    if (key == "__proto__")
+                    if (keyValue.Tag == JsValueTag.Symbol)
                     {
-                        // Remove any existing __proto__ accessor shadow, then set as own property.
-                        obj.DefineOwnProperty("__proto__", new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
+                        obj.DefineOwnSymbolProperty(keyValue.AsSymbolId(), new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
                     }
                     else
                     {
-                        obj.DefineOwnProperty(key, new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
+                        var key = ToPropertyKey(keyValue);
+                        // ECMA-262 B.3.1: computed __proto__ must not trigger prototype setter.
+                        // Create a plain own data property instead of using SetPrototype.
+                        if (key == "__proto__")
+                        {
+                            // Remove any existing __proto__ accessor shadow, then set as own property.
+                            obj.DefineOwnProperty("__proto__", new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
+                        }
+                        else
+                        {
+                            obj.DefineOwnProperty(key, new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
+                        }
                     }
                     break;
                 }
@@ -19267,78 +19275,162 @@ fallbackArraySpecies:
 
     private bool IsLessThan(JsValue left, JsValue right)
     {
-        if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.String)
-            return string.CompareOrdinal(left.AsString(), right.AsString()) < 0;
-        if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
-            return left.AsBigInt() < right.AsBigInt();
-        if (left.Tag == JsValueTag.BigInt && right.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        var px = ToPrimitive(left, PrimitiveHint.Number);
+        var py = ToPrimitive(right, PrimitiveHint.Number);
+
+        if (px.Tag == JsValueTag.String && py.Tag == JsValueTag.String)
+            return string.CompareOrdinal(px.AsString(), py.AsString()) < 0;
+
+        if (px.Tag == JsValueTag.BigInt && py.Tag == JsValueTag.String)
         {
-            var number = ToNumber(right);
-            return !double.IsNaN(number) && CompareBigIntAndDouble(left.AsBigInt(), number) < 0;
+            if (Builtins.BigIntBuiltin.TryParseStringToBigInt(py.AsString(), out var ny))
+                return px.AsBigInt() < ny;
+            return false;
         }
-        if (right.Tag == JsValueTag.BigInt && left.Tag is JsValueTag.Int32 or JsValueTag.Number)
+
+        if (px.Tag == JsValueTag.String && py.Tag == JsValueTag.BigInt)
         {
-            var number = ToNumber(left);
-            return !double.IsNaN(number) && CompareBigIntAndDouble(right.AsBigInt(), number) > 0;
+            if (Builtins.BigIntBuiltin.TryParseStringToBigInt(px.AsString(), out var nx))
+                return nx < py.AsBigInt();
+            return false;
         }
-        return ToNumber(left) < ToNumber(right);
+
+        if (px.Tag == JsValueTag.BigInt && py.Tag == JsValueTag.BigInt)
+            return px.AsBigInt() < py.AsBigInt();
+
+        if (px.Tag == JsValueTag.BigInt && py.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            var number = ToNumber(py);
+            return !double.IsNaN(number) && CompareBigIntAndDouble(px.AsBigInt(), number) < 0;
+        }
+
+        if (py.Tag == JsValueTag.BigInt && px.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            var number = ToNumber(px);
+            return !double.IsNaN(number) && CompareBigIntAndDouble(py.AsBigInt(), number) > 0;
+        }
+
+        return ToNumber(px) < ToNumber(py);
     }
 
     private bool IsGreaterThan(JsValue left, JsValue right)
     {
-        if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.String)
-            return string.CompareOrdinal(left.AsString(), right.AsString()) > 0;
-        if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
-            return left.AsBigInt() > right.AsBigInt();
-        if (left.Tag == JsValueTag.BigInt && right.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        var px = ToPrimitive(left, PrimitiveHint.Number);
+        var py = ToPrimitive(right, PrimitiveHint.Number);
+
+        if (px.Tag == JsValueTag.String && py.Tag == JsValueTag.String)
+            return string.CompareOrdinal(px.AsString(), py.AsString()) > 0;
+
+        if (px.Tag == JsValueTag.BigInt && py.Tag == JsValueTag.String)
         {
-            var number = ToNumber(right);
-            return !double.IsNaN(number) && CompareBigIntAndDouble(left.AsBigInt(), number) > 0;
+            if (Builtins.BigIntBuiltin.TryParseStringToBigInt(py.AsString(), out var ny))
+                return px.AsBigInt() > ny;
+            return false;
         }
-        if (right.Tag == JsValueTag.BigInt && left.Tag is JsValueTag.Int32 or JsValueTag.Number)
+
+        if (px.Tag == JsValueTag.String && py.Tag == JsValueTag.BigInt)
         {
-            var number = ToNumber(left);
-            return !double.IsNaN(number) && CompareBigIntAndDouble(right.AsBigInt(), number) < 0;
+            if (Builtins.BigIntBuiltin.TryParseStringToBigInt(px.AsString(), out var nx))
+                return nx > py.AsBigInt();
+            return false;
         }
-        return ToNumber(left) > ToNumber(right);
+
+        if (px.Tag == JsValueTag.BigInt && py.Tag == JsValueTag.BigInt)
+            return px.AsBigInt() > py.AsBigInt();
+
+        if (px.Tag == JsValueTag.BigInt && py.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            var number = ToNumber(py);
+            return !double.IsNaN(number) && CompareBigIntAndDouble(px.AsBigInt(), number) > 0;
+        }
+
+        if (py.Tag == JsValueTag.BigInt && px.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            var number = ToNumber(px);
+            return !double.IsNaN(number) && CompareBigIntAndDouble(py.AsBigInt(), number) < 0;
+        }
+
+        return ToNumber(px) > ToNumber(py);
     }
 
     private bool IsLessThanOrEqual(JsValue left, JsValue right)
     {
-        if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.String)
-            return string.CompareOrdinal(left.AsString(), right.AsString()) <= 0;
-        if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
-            return left.AsBigInt() <= right.AsBigInt();
-        if (left.Tag == JsValueTag.BigInt && right.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        var px = ToPrimitive(left, PrimitiveHint.Number);
+        var py = ToPrimitive(right, PrimitiveHint.Number);
+
+        if (px.Tag == JsValueTag.String && py.Tag == JsValueTag.String)
+            return string.CompareOrdinal(px.AsString(), py.AsString()) <= 0;
+
+        if (px.Tag == JsValueTag.BigInt && py.Tag == JsValueTag.String)
         {
-            var number = ToNumber(right);
-            return !double.IsNaN(number) && CompareBigIntAndDouble(left.AsBigInt(), number) <= 0;
+            if (Builtins.BigIntBuiltin.TryParseStringToBigInt(py.AsString(), out var ny))
+                return px.AsBigInt() <= ny;
+            return false;
         }
-        if (right.Tag == JsValueTag.BigInt && left.Tag is JsValueTag.Int32 or JsValueTag.Number)
+
+        if (px.Tag == JsValueTag.String && py.Tag == JsValueTag.BigInt)
         {
-            var number = ToNumber(left);
-            return !double.IsNaN(number) && CompareBigIntAndDouble(right.AsBigInt(), number) >= 0;
+            if (Builtins.BigIntBuiltin.TryParseStringToBigInt(px.AsString(), out var nx))
+                return nx <= py.AsBigInt();
+            return false;
         }
-        return ToNumber(left) <= ToNumber(right);
+
+        if (px.Tag == JsValueTag.BigInt && py.Tag == JsValueTag.BigInt)
+            return px.AsBigInt() <= py.AsBigInt();
+
+        if (px.Tag == JsValueTag.BigInt && py.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            var number = ToNumber(py);
+            return !double.IsNaN(number) && CompareBigIntAndDouble(px.AsBigInt(), number) <= 0;
+        }
+
+        if (py.Tag == JsValueTag.BigInt && px.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            var number = ToNumber(px);
+            return !double.IsNaN(number) && CompareBigIntAndDouble(py.AsBigInt(), number) >= 0;
+        }
+
+        return ToNumber(px) <= ToNumber(py);
     }
 
     private bool IsGreaterThanOrEqual(JsValue left, JsValue right)
     {
-        if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.String)
-            return string.CompareOrdinal(left.AsString(), right.AsString()) >= 0;
-        if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
-            return left.AsBigInt() >= right.AsBigInt();
-        if (left.Tag == JsValueTag.BigInt && right.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        var px = ToPrimitive(left, PrimitiveHint.Number);
+        var py = ToPrimitive(right, PrimitiveHint.Number);
+
+        if (px.Tag == JsValueTag.String && py.Tag == JsValueTag.String)
+            return string.CompareOrdinal(px.AsString(), py.AsString()) >= 0;
+
+        if (px.Tag == JsValueTag.BigInt && py.Tag == JsValueTag.String)
         {
-            var number = ToNumber(right);
-            return !double.IsNaN(number) && CompareBigIntAndDouble(left.AsBigInt(), number) >= 0;
+            if (Builtins.BigIntBuiltin.TryParseStringToBigInt(py.AsString(), out var ny))
+                return px.AsBigInt() >= ny;
+            return false;
         }
-        if (right.Tag == JsValueTag.BigInt && left.Tag is JsValueTag.Int32 or JsValueTag.Number)
+
+        if (px.Tag == JsValueTag.String && py.Tag == JsValueTag.BigInt)
         {
-            var number = ToNumber(left);
-            return !double.IsNaN(number) && CompareBigIntAndDouble(right.AsBigInt(), number) <= 0;
+            if (Builtins.BigIntBuiltin.TryParseStringToBigInt(px.AsString(), out var nx))
+                return nx >= py.AsBigInt();
+            return false;
         }
-        return ToNumber(left) >= ToNumber(right);
+
+        if (px.Tag == JsValueTag.BigInt && py.Tag == JsValueTag.BigInt)
+            return px.AsBigInt() >= py.AsBigInt();
+
+        if (px.Tag == JsValueTag.BigInt && py.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            var number = ToNumber(py);
+            return !double.IsNaN(number) && CompareBigIntAndDouble(px.AsBigInt(), number) >= 0;
+        }
+
+        if (py.Tag == JsValueTag.BigInt && px.Tag is JsValueTag.Int32 or JsValueTag.Number)
+        {
+            var number = ToNumber(px);
+            return !double.IsNaN(number) && CompareBigIntAndDouble(py.AsBigInt(), number) <= 0;
+        }
+
+        return ToNumber(px) >= ToNumber(py);
     }
 
     private static int CompareBigIntAndDouble(System.Numerics.BigInteger left, double right)

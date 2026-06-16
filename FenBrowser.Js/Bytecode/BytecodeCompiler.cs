@@ -1,4 +1,4 @@
-﻿using FenBrowser.Js.Ast;
+using FenBrowser.Js.Ast;
 using FenBrowser.Js.AstValidation;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Parser;
@@ -1484,21 +1484,23 @@ public sealed class BytecodeCompiler
         // InitVar initializes it each iteration; LeaveScope pops it at loop exit.
         var isLexicalLoopHead = forInStmt.Initializer is VariableDeclarationStatementNode
             { Kind: "let" or "const" };
-        if (isLexicalLoopHead && targetSlot >= 0)
+        List<int>? lexicalSlots = null;
+        bool isConst = false;
+        if (isLexicalLoopHead)
         {
-            // B=1 for const (immutable), B=0 for let (mutable)
-            var isConst = string.Equals(
-                ((VariableDeclarationStatementNode)forInStmt.Initializer).Kind, "const",
-                StringComparison.Ordinal);
-            // C=1: pre-initialize the binding so StoreVar works on each iteration.
-            _instructions.Add(new Instruction(OpCode.EnterScope, targetSlot, isConst ? 1 : 0, 1));
-            _openScopeDepth++;
+            var declaration = (VariableDeclarationStatementNode)forInStmt.Initializer;
+            isConst = string.Equals(declaration.Kind, "const", StringComparison.Ordinal);
+            lexicalSlots = new List<int>();
+            foreach (var boundName in GetDeclaratorBoundNames(declaration.Declarators[0]))
+            {
+                lexicalSlots.Add(GetOrCreateVariableSlot(boundName));
+            }
         }
 
         // Annex B B.3.5: sloppy-mode `for (var x = init in obj)` executes `init`
         // once before evaluating the RHS expression, then rebinds `x` per key.
-        if (forInStmt.Initializer is VariableDeclarationStatementNode { Kind: "var", Declarators.Count: 1 } declaration &&
-            declaration.Declarators[0].Initializer is { } initializerExpression)
+        if (forInStmt.Initializer is VariableDeclarationStatementNode { Kind: "var", Declarators.Count: 1 } declaration2 &&
+            declaration2.Declarators[0].Initializer is { } initializerExpression)
         {
             var initReg = CompileExpression(initializerExpression);
             EmitForBindingAssignment(targetSlot, targetPattern, initReg);
@@ -1512,21 +1514,35 @@ public sealed class BytecodeCompiler
         var keyReg = AllocateRegister();
         var nextIndex = _instructions.Count;
         _instructions.Add(new Instruction(OpCode.ForInNext, keyReg, iteratorReg, -1));
+
+        var scopeDepthBeforeIteration = _openScopeDepth;
+
+        if (isLexicalLoopHead && lexicalSlots is not null)
+        {
+            foreach (var slot in lexicalSlots)
+            {
+                _instructions.Add(new Instruction(OpCode.EnterScope, slot, isConst ? 1 : 0, 0));
+                _openScopeDepth++;
+            }
+        }
+
         if (targetMember is not null)
         {
             EmitMemberStore(targetMember, keyReg);
         }
         else
         {
-            // StoreVar works for every iteration; the binding was already created
-            // by EnterScope per ECMA-262 14.7.5.
-            EmitForBindingAssignment(targetSlot, targetPattern, keyReg);
+            EmitForBindingAssignment(targetSlot, targetPattern, keyReg, useInitVar: isLexicalLoopHead);
         }
 
         var ctx = new LoopContext
         {
             ContinueTarget = loopStart,
-            BreakJumpIndices = new List<int>(),ContinueJumpIndices = new List<int>(),ScopeDepthAtEntry = _openScopeDepth, Seq = _nestingSeq++};
+            BreakJumpIndices = new List<int>(),
+            ContinueJumpIndices = new List<int>(),
+            ScopeDepthAtEntry = scopeDepthBeforeIteration,
+            Seq = _nestingSeq++
+        };
         _loopStack.Push(ctx);
         if (_pendingLabel != null)
         {
@@ -1536,6 +1552,16 @@ public sealed class BytecodeCompiler
         try
         {
             CompileStatement(forInStmt.Body);
+
+            if (isLexicalLoopHead && lexicalSlots is not null)
+            {
+                foreach (var _ in lexicalSlots)
+                {
+                    _instructions.Add(new Instruction(OpCode.LeaveScope));
+                    _openScopeDepth--;
+                }
+            }
+
             _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
             var loopEnd = _instructions.Count;
             _instructions[nextIndex] = _instructions[nextIndex] with { C = loopEnd };
@@ -1553,12 +1579,6 @@ public sealed class BytecodeCompiler
         finally
         {
             _ = _loopStack.Pop();
-        }
-
-        if (isLexicalLoopHead)
-        {
-            _instructions.Add(new Instruction(OpCode.LeaveScope));
-            _openScopeDepth--;
         }
     }
 
@@ -1608,14 +1628,17 @@ public sealed class BytecodeCompiler
         // scoped to the loop body.
         var isLexicalLoopHead = forOfStmt.Initializer is VariableDeclarationStatementNode
             { Kind: "let" or "const" };
-        if (isLexicalLoopHead && targetSlot >= 0)
+        List<int>? lexicalSlots = null;
+        bool isConst = false;
+        if (isLexicalLoopHead)
         {
-            var isConst = string.Equals(
-                ((VariableDeclarationStatementNode)forOfStmt.Initializer).Kind, "const",
-                StringComparison.Ordinal);
-            // C=1: pre-initialize the binding so StoreVar works on each iteration.
-            _instructions.Add(new Instruction(OpCode.EnterScope, targetSlot, isConst ? 1 : 0, 1));
-            _openScopeDepth++;
+            var declaration = (VariableDeclarationStatementNode)forOfStmt.Initializer;
+            isConst = string.Equals(declaration.Kind, "const", StringComparison.Ordinal);
+            lexicalSlots = new List<int>();
+            foreach (var boundName in GetDeclaratorBoundNames(declaration.Declarators[0]))
+            {
+                lexicalSlots.Add(GetOrCreateVariableSlot(boundName));
+            }
         }
 
         var sourceReg = CompileExpression(forOfStmt.Iterable);
@@ -1626,19 +1649,35 @@ public sealed class BytecodeCompiler
         var valueReg = AllocateRegister();
         var nextIndex = _instructions.Count;
         _instructions.Add(new Instruction(OpCode.ForOfNext, valueReg, iteratorReg, -1));
+
+        var scopeDepthBeforeIteration = _openScopeDepth;
+
+        if (isLexicalLoopHead && lexicalSlots is not null)
+        {
+            foreach (var slot in lexicalSlots)
+            {
+                _instructions.Add(new Instruction(OpCode.EnterScope, slot, isConst ? 1 : 0, 0));
+                _openScopeDepth++;
+            }
+        }
+
         if (targetMember is not null)
         {
             EmitMemberStore(targetMember, valueReg);
         }
         else
         {
-            EmitForBindingAssignment(targetSlot, targetPattern, valueReg);
+            EmitForBindingAssignment(targetSlot, targetPattern, valueReg, useInitVar: isLexicalLoopHead);
         }
 
         var ctx = new LoopContext
         {
             ContinueTarget = loopStart,
-            BreakJumpIndices = new List<int>(),ContinueJumpIndices = new List<int>(),ScopeDepthAtEntry = _openScopeDepth, Seq = _nestingSeq++};
+            BreakJumpIndices = new List<int>(),
+            ContinueJumpIndices = new List<int>(),
+            ScopeDepthAtEntry = scopeDepthBeforeIteration,
+            Seq = _nestingSeq++
+        };
         _loopStack.Push(ctx);
         if (_pendingLabel != null)
         {
@@ -1648,6 +1687,16 @@ public sealed class BytecodeCompiler
         try
         {
             CompileStatement(forOfStmt.Body);
+
+            if (isLexicalLoopHead && lexicalSlots is not null)
+            {
+                foreach (var _ in lexicalSlots)
+                {
+                    _instructions.Add(new Instruction(OpCode.LeaveScope));
+                    _openScopeDepth--;
+                }
+            }
+
             _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
 
             // ECMA-262 13.7.5.13 step 5.b: a normal-completion break out of a
@@ -1683,12 +1732,6 @@ public sealed class BytecodeCompiler
         finally
         {
             _ = _loopStack.Pop();
-        }
-
-        if (isLexicalLoopHead)
-        {
-            _instructions.Add(new Instruction(OpCode.LeaveScope));
-            _openScopeDepth--;
         }
     }
 
