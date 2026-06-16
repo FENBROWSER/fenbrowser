@@ -983,6 +983,22 @@ public sealed partial class BytecodeInterpreter
 
         var instance = CreateOrdinaryObject();
         instance.SetPrototype(protoHandle);
+        // Store state on instance so shared prototype methods can read it.
+        _ = instance.DefineOwnProperty("__collator_locale",
+            new JsPropertyDescriptor(JsValue.FromString(string.IsNullOrEmpty(locale) ? "en-US" : locale),
+                Writable: false, Enumerable: false, Configurable: false));
+        _ = instance.DefineOwnProperty("__collator_usage",
+            new JsPropertyDescriptor(JsValue.FromString(usage), Writable: false, Enumerable: false, Configurable: false));
+        _ = instance.DefineOwnProperty("__collator_sensitivity",
+            new JsPropertyDescriptor(JsValue.FromString(sensitivity), Writable: false, Enumerable: false, Configurable: false));
+        _ = instance.DefineOwnProperty("__collator_ignorePunctuation",
+            new JsPropertyDescriptor(JsValue.FromBoolean(ignorePunctuation), Writable: false, Enumerable: false, Configurable: false));
+        _ = instance.DefineOwnProperty("__collator_collation",
+            new JsPropertyDescriptor(JsValue.FromString(resolvedCollation), Writable: false, Enumerable: false, Configurable: false));
+        _ = instance.DefineOwnProperty("__collator_numeric",
+            new JsPropertyDescriptor(JsValue.FromBoolean(resolvedNumeric), Writable: false, Enumerable: false, Configurable: false));
+        _ = instance.DefineOwnProperty("__collator_caseFirst",
+            new JsPropertyDescriptor(JsValue.FromString(resolvedCaseFirst), Writable: false, Enumerable: false, Configurable: false));
         var instanceHandle = _heap.AllocateObject(instance, AllocationSite.Current());
         _heap.WriteBarrier(instanceHandle, protoHandle);
         return JsValue.FromObject(instanceHandle);
@@ -3855,22 +3871,34 @@ public sealed partial class BytecodeInterpreter
 
         var resolvedOptsMethod = new NativeFunctionObject("resolvedOptions", (thisValue, _2) =>
         {
-            string localeStr = "en-US";
-            if (thisValue.Tag == JsValueTag.Object)
+            string ReadStr(string prop, string def)
             {
-                var receiver = _heap.GetObject(thisValue.AsObjectHandle());
-                if (receiver.TryGetProperty("__collator_locale", x => _heap.GetObject(x), out var locDesc) &&
-                    locDesc.Value.Tag == JsValueTag.String)
-                    localeStr = locDesc.Value.AsString();
+                if (thisValue.Tag == JsValueTag.Object)
+                {
+                    var r = _heap.GetObject(thisValue.AsObjectHandle());
+                    if (r.TryGetOwnProperty(prop, out var d) && d.Value.Tag == JsValueTag.String)
+                        return d.Value.AsString();
+                }
+                return def;
+            }
+            bool ReadBool(string prop, bool def)
+            {
+                if (thisValue.Tag == JsValueTag.Object)
+                {
+                    var r = _heap.GetObject(thisValue.AsObjectHandle());
+                    if (r.TryGetOwnProperty(prop, out var d) && d.Value.Tag != JsValueTag.Undefined)
+                        return d.Value.AsBoolean();
+                }
+                return def;
             }
             var o = CreateOrdinaryObject();
-            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(localeStr), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("usage", new JsPropertyDescriptor(JsValue.FromString("sort"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("sensitivity", new JsPropertyDescriptor(JsValue.FromString("variant"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("ignorePunctuation", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("collation", new JsPropertyDescriptor(JsValue.FromString("default"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("numeric", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("caseFirst", new JsPropertyDescriptor(JsValue.FromString("false"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(ReadStr("__collator_locale", "en-US")), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("usage", new JsPropertyDescriptor(JsValue.FromString(ReadStr("__collator_usage", "sort")), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("sensitivity", new JsPropertyDescriptor(JsValue.FromString(ReadStr("__collator_sensitivity", "variant")), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("ignorePunctuation", new JsPropertyDescriptor(JsValue.FromBoolean(ReadBool("__collator_ignorePunctuation", false)), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("collation", new JsPropertyDescriptor(JsValue.FromString(ReadStr("__collator_collation", "default")), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("numeric", new JsPropertyDescriptor(JsValue.FromBoolean(ReadBool("__collator_numeric", false)), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("caseFirst", new JsPropertyDescriptor(JsValue.FromString(ReadStr("__collator_caseFirst", "false")), Writable: true, Enumerable: true, Configurable: true));
             return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
         }, length: 0);
         var resolvedOptsHandle = _heap.AllocateObject(resolvedOptsMethod, AllocationSite.Current());
