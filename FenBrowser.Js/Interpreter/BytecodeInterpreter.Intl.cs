@@ -4034,6 +4034,31 @@ public sealed partial class BytecodeInterpreter
         }, length: 0);
         proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(resOptsFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
 
+        // ECMA-402 PluralRules.prototype.selectRange (data property for now)
+        var selectRangeFn = new NativeFunctionObject("selectRange", (thisValue, a) =>
+        {
+            string locale = "en";
+            if (thisValue.Tag == JsValueTag.Object)
+            {
+                var recv = _heap.GetObject(thisValue.AsObjectHandle());
+                if (recv.TryGetOwnProperty("__pluralRulesState", out var sd) && sd.Value.Tag == JsValueTag.Object)
+                {
+                    var state = _heap.GetObject(sd.Value.AsObjectHandle());
+                    if (state.TryGetOwnProperty("locale", out var ld) && ld.Value.Tag == JsValueTag.String)
+                        locale = ld.Value.AsString();
+                }
+            }
+            double x = a.Count > 0 ? ToNumber(a[0]) : double.NaN;
+            double y = a.Count > 1 ? ToNumber(a[1]) : double.NaN;
+            if (double.IsNaN(x) || double.IsNaN(y))
+                throw new JsThrownException(CreateTypeError("selectRange requires two finite numbers."));
+            if (x > y) { var tmp = x; x = y; y = tmp; }
+            return JsValue.FromString(SelectPluralRule(locale, y));
+        }, length: 2);
+        proto.DefineOwnProperty("selectRange", new JsPropertyDescriptor(
+            JsValue.FromObject(_heap.AllocateObject(selectRangeFn, AllocationSite.Current())),
+            Writable: true, Enumerable: false, Configurable: true));
+
         _pluralRulesPrototypeHandle = ph;
         return ph;
     }

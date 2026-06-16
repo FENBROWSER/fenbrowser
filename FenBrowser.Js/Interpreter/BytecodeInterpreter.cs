@@ -5211,6 +5211,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toTimeString", DatePrototypeToTimeString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toUTCString", DatePrototypeToUtcString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleString", DatePrototypeToLocaleString, length: 2);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleDateString",
+            DatePrototypeToLocaleDateString, length: 0);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleTimeString",
+            DatePrototypeToLocaleTimeString, length: 0);
 
         // Annex B B.2.3 legacy aliases (audit �4.1).
         // B.2.3.1 Date.prototype.getYear: return year - 1900, NaN if invalid.
@@ -5353,6 +5357,44 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         var result = FenBrowser.Js.Intl.IntlDateTimeFormatting.Format(DateTimeOffset.FromUnixTimeMilliseconds((long)t), culture, options);
         return JsValue.FromString(result.Text);
+    }
+
+    private JsValue DatePrototypeToLocaleDateString(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var t = GetDateTimeValue(thisValue, "toLocaleDateString");
+        if (!double.IsFinite(t)) return JsValue.FromString("Invalid Date");
+        var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
+        var culture = FenBrowser.Js.Intl.IntlDateTimeFormatting.ResolveCulture(locale);
+        var options = ParseDateTimeFormatOptions(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
+        if (options.DateStyle is null && options.TimeStyle is null && options.Weekday is null &&
+            options.Era is null && options.Year is null && options.Month is null && options.Day is null &&
+            options.Hour is null && options.Minute is null && options.Second is null &&
+            options.DayPeriod is null && options.TimeZoneName is null)
+            options = options with { DateStyle = "full" };
+        try { FenBrowser.Js.Intl.IntlDateTimeFormatting.ValidateOptions(options); }
+        catch (InvalidOperationException)
+        { throw new JsThrownException(CreateTypeError("dateStyle/timeStyle conflicts with explicit component options.")); }
+        var res = FenBrowser.Js.Intl.IntlDateTimeFormatting.Format(DateTimeOffset.FromUnixTimeMilliseconds((long)t), culture, options);
+        return JsValue.FromString(res.Text);
+    }
+
+    private JsValue DatePrototypeToLocaleTimeString(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var t = GetDateTimeValue(thisValue, "toLocaleTimeString");
+        if (!double.IsFinite(t)) return JsValue.FromString("Invalid Date");
+        var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
+        var culture = FenBrowser.Js.Intl.IntlDateTimeFormatting.ResolveCulture(locale);
+        var options = ParseDateTimeFormatOptions(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
+        if (options.DateStyle is null && options.TimeStyle is null && options.Weekday is null &&
+            options.Era is null && options.Year is null && options.Month is null && options.Day is null &&
+            options.Hour is null && options.Minute is null && options.Second is null &&
+            options.DayPeriod is null && options.TimeZoneName is null)
+            options = options with { TimeStyle = "full" };
+        try { FenBrowser.Js.Intl.IntlDateTimeFormatting.ValidateOptions(options); }
+        catch (InvalidOperationException)
+        { throw new JsThrownException(CreateTypeError("dateStyle/timeStyle conflicts with explicit component options.")); }
+        var res = FenBrowser.Js.Intl.IntlDateTimeFormatting.Format(DateTimeOffset.FromUnixTimeMilliseconds((long)t), culture, options);
+        return JsValue.FromString(res.Text);
     }
 
     private JsValue DatePrototypeToDateString(JsValue thisValue, IReadOnlyList<JsValue> args)
