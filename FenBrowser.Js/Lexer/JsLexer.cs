@@ -29,10 +29,12 @@ public sealed class JsLexer
     private bool _atLineStart = true;
     private Token? _lastSignificantToken;
     private Token? _pendingMalformedTrivia;
+    private readonly bool _moduleMode;
 
-    public JsLexer(SourceText source)
+    public JsLexer(SourceText source, bool moduleMode = false)
     {
         _source = source.Text;
+        _moduleMode = moduleMode;
     }
 
     public IReadOnlyList<Token> LexAll()
@@ -507,7 +509,9 @@ public sealed class JsLexer
                 continue;
             }
 
-            if (_atLineStart && _index + 2 < _source.Length && _source[_index] == '-' && _source[_index + 1] == '-' && _source[_index + 2] == '>')
+            // ECMA-262 B.1.3 HTML-like comments — only in non-module (script) code.
+            // Module code is always strict and does not support HTML comments.
+            if (!_moduleMode && _atLineStart && _index + 2 < _source.Length && _source[_index] == '-' && _source[_index + 1] == '-' && _source[_index + 2] == '>')
             {
                 _index += 3;
                 _column += 3;
@@ -520,7 +524,8 @@ public sealed class JsLexer
                 continue;
             }
 
-            if (_index + 3 < _source.Length && _source[_index] == '<' && _source[_index + 1] == '!' && _source[_index + 2] == '-' && _source[_index + 3] == '-')
+            // ECMA-262 B.1.3 HTML-like comments — only in non-module (script) code.
+            if (!_moduleMode && _index + 3 < _source.Length && _source[_index] == '<' && _source[_index + 1] == '!' && _source[_index + 2] == '-' && _source[_index + 3] == '-')
             {
                 _index += 4;
                 _column += 4;

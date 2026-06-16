@@ -109,7 +109,7 @@ public sealed class JsParser
 
     public static ProgramNode ParseModule(SourceText source)
     {
-        var tokens = new JsLexer(source).LexAll();
+        var tokens = new JsLexer(source, moduleMode: true).LexAll();
         var parser = new JsParser(tokens);
         return parser.ParseProgram(ProgramKind.Module);
     }
