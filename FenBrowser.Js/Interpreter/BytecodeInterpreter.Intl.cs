@@ -2943,12 +2943,12 @@ public sealed partial class BytecodeInterpreter
         bool showMinus = signDisplay switch
         {
             "never" => false,
-            "always" => true,
-            "exceptZero" => absValue != 0,
-            "negative" => negative && (absValue != 0 || isNegativeZero),
-            _ => negative && absValue != 0
+            "always" => negative || isNegativeZero,
+            "exceptZero" => negative && absValue != 0,
+            "negative" => negative && !isNegativeZero && absValue != 0,
+            _ => negative && !isNegativeZero && absValue != 0
         };
-        bool showPlus = signDisplay == "always" && !negative;
+        bool showPlus = signDisplay == "always" && !negative && !isNegativeZero;
         if (showMinus)
             parts.Add(new IntlPart("minusSign", nfi.NegativeSign, state.Unit));
         else if (showPlus)
