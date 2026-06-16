@@ -6802,6 +6802,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 throw new JsThrownException(CreateTypeError("RegExpExec: exec must return object or null."));
             }
             // c. Return result.
+            UpdateRegExpLegacyState(S, result);
             return result;
         }
         // 3. Perform ? RequireInternalSlot(R, [[RegExpMatcher]]).
@@ -6811,7 +6812,38 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateTypeError("RegExpExec: R is not a RegExp and has no callable exec."));
         }
         // 4. Return ? RegExpBuiltinExec(R, S).
-        return RegExpPrototypeExec(R, new[] { JsValue.FromString(S) });
+        var execResult = RegExpPrototypeExec(R, new[] { JsValue.FromString(S) });
+        UpdateRegExpLegacyState(S, execResult);
+        return execResult;
+    }
+
+    // Annex B B.2.4: update legacy static properties after a regex match.
+    private void UpdateRegExpLegacyState(string input, JsValue result)
+    {
+        RegExpBuiltin.LastRegExpInput = input;
+        if (result.Tag == JsValueTag.Null)
+        {
+            Array.Clear(RegExpBuiltin.LastCaptures);
+            return;
+        }
+        if (result.Tag == JsValueTag.Object)
+        {
+            var resultObj = _heap.GetObject(result.AsObjectHandle());
+            var resultVal = result;
+            // result[0] = full match
+            if (TryGetPropertyValue(resultObj, resultVal, "0", out var full))
+                RegExpBuiltin.LastCaptures[0] = ToStringValue(full);
+            else
+                RegExpBuiltin.LastCaptures[0] = string.Empty;
+            // result[1..9] = captures
+            for (int i = 1; i <= 9; i++)
+            {
+                if (TryGetPropertyValue(resultObj, resultVal, i.ToString(), out var cap))
+                    RegExpBuiltin.LastCaptures[i] = cap.Tag == JsValueTag.Undefined ? string.Empty : ToStringValue(cap);
+                else
+                    RegExpBuiltin.LastCaptures[i] = string.Empty;
+            }
+        }
     }
 
     // ECMA-262 22.2.5.2.1 step helper: AdvanceStringIndex.
