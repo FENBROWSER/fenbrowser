@@ -1296,8 +1296,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.EnterScope:
                 {
                     var newScope = new DeclarativeEnvironmentRecord(frame.Environment);
-                    // ECMA-262 14.2: every block creates a fresh lexical env-record.
-                    // ins.A is the variable-slot index for the let/const name.
+                    // ECMA-262 14.2 � every block creates a fresh lexical
+                    // env-record. ins.A is the variable-slot index for the
+                    // let/const name this EnterScope owns; SlotNameTable
+                    // resolves it. Slot 0 is a perfectly valid name slot
+                    // when the bound name is the function's first variable
+                    // (e.g. `function f(x){ {let x=...} }`), so we use the
+                    // slot-name presence rather than `slot != 0` as the
+                    // "has a binding to install" predicate.
                     var scopeName = SlotNameTable.GetName(function, ins.A);
                     if (scopeName != null)
                     {
@@ -1306,11 +1312,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             _ = newScope.CreateImmutableBinding(scopeName, strict: true);
                         else
                             _ = newScope.CreateMutableBinding(scopeName, deletable: true);
-                        // C=1: for-loop head binding — pre-initialize so StoreVar
-                        // (SetMutableBinding) works on each iteration. Regular block
-                        // bindings stay in TDZ (C=0).
-                        if (ins.C == 1)
-                            _ = newScope.InitializeBinding(scopeName, JsValue.Undefined);
+                        // Do NOT initialize - leave the binding in TDZ state.
                     }
                     frame.Environment = newScope;
                     break;
