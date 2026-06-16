@@ -89,25 +89,26 @@ public sealed class RegExpBuiltin : IBuiltinModule
         }, length: 1);
 
         // Annex B B.2.4: legacy static accessor properties ($1..$9, input, lastMatch, etc.)
-        InstallLegacyAccessors(heap, constructorHandle, constructor);
+        // DISABLED: NativeFunctionObject getters on the RegExp constructor cause crashes
+        // in Intl tests (Collator, NumberFormat, etc.) during property enumeration/access.
+        // InstallLegacyAccessors(heap, constructorHandle, constructor);
 
         return new[] { BuiltinBinding.NonEnumerable("RegExp", JsValue.FromObject(constructorHandle)) };
     }
 
     private static void InstallLegacyAccessors(JsHeap heap, ObjectHandle ctorHandle, JsObject ctor)
     {
-        // Helper to define a getter-only accessor
+        // Use the same proven pattern as InstallRegExpFlagAccessors.
         void DefineGetter(string name, Func<string> valueProvider)
         {
             var getter = new NativeFunctionObject("get " + name, (_, _2) =>
                 JsValue.FromString(valueProvider()), length: 0);
             var gh = heap.AllocateObject(getter, AllocationSite.Current());
-            ctor.DefineOwnProperty(name, JsPropertyDescriptor.Accessor(
+            _ = ctor.DefineOwnProperty(name, JsPropertyDescriptor.Accessor(
                 JsValue.FromObject(gh), JsValue.Undefined, Enumerable: false, Configurable: true));
             heap.WriteBarrier(ctorHandle, gh);
         }
 
-        // Helper to define a getter+setter accessor
         void DefineGetterSetter(string name, Func<string> getProvider)
         {
             var getter = new NativeFunctionObject("get " + name, (_, _2) =>
@@ -119,57 +120,32 @@ public sealed class RegExpBuiltin : IBuiltinModule
             }, length: 1);
             var gh = heap.AllocateObject(getter, AllocationSite.Current());
             var sh = heap.AllocateObject(setter, AllocationSite.Current());
-            ctor.DefineOwnProperty(name, JsPropertyDescriptor.Accessor(
+            _ = ctor.DefineOwnProperty(name, JsPropertyDescriptor.Accessor(
                 JsValue.FromObject(gh), JsValue.FromObject(sh), Enumerable: false, Configurable: true));
             heap.WriteBarrier(ctorHandle, gh);
             heap.WriteBarrier(ctorHandle, sh);
         }
 
-        // $1..$9 — captured groups (getter only)
-        for (int i = 1; i <= 9; i++)
-        {
-            var idx = i;
-            DefineGetter("$" + i, () => LastCaptures[idx]);
-        }
-
-        // input / $_ — getter+setter for the last input string
+        // $1..$9
+        for (int i = 1; i <= 9; i++) { var idx = i; DefineGetter("$" + i, () => LastCaptures[idx]); }
+        // input / $_
         DefineGetterSetter("input", () => LastRegExpInput);
         DefineGetterSetter("$_", () => LastRegExpInput);
-
-        // lastMatch / $& — full match text
+        // lastMatch / $&
         DefineGetter("lastMatch", () => LastCaptures[0]);
         DefineGetter("$&", () => LastCaptures[0]);
-
-        // lastParen / $+ — last capture group
-        DefineGetter("lastParen", () =>
-        {
-            for (int i = 9; i >= 1; i--)
-                if (LastCaptures[i].Length > 0)
-                    return LastCaptures[i];
-            return string.Empty;
-        });
-        DefineGetter("$+", () =>
-        {
-            for (int i = 9; i >= 1; i--)
-                if (LastCaptures[i].Length > 0)
-                    return LastCaptures[i];
-            return string.Empty;
-        });
-
-        // leftContext — text before the match
-        DefineGetter("leftContext", () =>
-        {
-            if (string.IsNullOrEmpty(LastCaptures[0]) || string.IsNullOrEmpty(LastRegExpInput))
-                return string.Empty;
+        // lastParen / $+
+        DefineGetter("lastParen", () => { for (int i = 9; i >= 1; i--) if (LastCaptures[i].Length > 0) return LastCaptures[i]; return string.Empty; });
+        DefineGetter("$+", () => { for (int i = 9; i >= 1; i--) if (LastCaptures[i].Length > 0) return LastCaptures[i]; return string.Empty; });
+        // leftContext
+        DefineGetter("leftContext", () => {
+            if (string.IsNullOrEmpty(LastCaptures[0]) || string.IsNullOrEmpty(LastRegExpInput)) return string.Empty;
             var idx = LastRegExpInput.IndexOf(LastCaptures[0], StringComparison.Ordinal);
             return idx > 0 ? LastRegExpInput[..idx] : string.Empty;
         });
-
-        // rightContext — text after the match
-        DefineGetter("rightContext", () =>
-        {
-            if (string.IsNullOrEmpty(LastCaptures[0]) || string.IsNullOrEmpty(LastRegExpInput))
-                return string.Empty;
+        // rightContext
+        DefineGetter("rightContext", () => {
+            if (string.IsNullOrEmpty(LastCaptures[0]) || string.IsNullOrEmpty(LastRegExpInput)) return string.Empty;
             var idx = LastRegExpInput.IndexOf(LastCaptures[0], StringComparison.Ordinal);
             if (idx < 0) return string.Empty;
             var end = idx + LastCaptures[0].Length;

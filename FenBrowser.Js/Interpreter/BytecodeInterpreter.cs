@@ -6802,7 +6802,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 throw new JsThrownException(CreateTypeError("RegExpExec: exec must return object or null."));
             }
             // c. Return result.
-            UpdateRegExpLegacyState(S, result);
             return result;
         }
         // 3. Perform ? RequireInternalSlot(R, [[RegExpMatcher]]).
@@ -6813,7 +6812,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         // 4. Return ? RegExpBuiltinExec(R, S).
         var execResult = RegExpPrototypeExec(R, new[] { JsValue.FromString(S) });
-        UpdateRegExpLegacyState(S, execResult);
         return execResult;
     }
 
@@ -6828,20 +6826,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         if (result.Tag == JsValueTag.Object)
         {
-            var resultObj = _heap.GetObject(result.AsObjectHandle());
-            var resultVal = result;
-            // result[0] = full match
-            if (TryGetPropertyValue(resultObj, resultVal, "0", out var full))
-                RegExpBuiltin.LastCaptures[0] = ToStringValue(full);
-            else
-                RegExpBuiltin.LastCaptures[0] = string.Empty;
-            // result[1..9] = captures
-            for (int i = 1; i <= 9; i++)
+            var resultHandle = result.AsObjectHandle();
+            // Pin result as root before accessing its properties, preventing GC
+            // from collecting it during property reads below.
+            var rootMark = _heap.RootCount;
+            _heap.PushRoot(resultHandle);
+            try
             {
-                if (TryGetPropertyValue(resultObj, resultVal, i.ToString(), out var cap))
-                    RegExpBuiltin.LastCaptures[i] = cap.Tag == JsValueTag.Undefined ? string.Empty : ToStringValue(cap);
+                var resultObj = _heap.GetObject(resultHandle);
+                var resultVal = result;
+                if (TryGetPropertyValue(resultObj, resultVal, "0", out var full))
+                    RegExpBuiltin.LastCaptures[0] = ToStringValue(full);
                 else
-                    RegExpBuiltin.LastCaptures[i] = string.Empty;
+                    RegExpBuiltin.LastCaptures[0] = string.Empty;
+                for (int i = 1; i <= 9; i++)
+                {
+                    if (TryGetPropertyValue(resultObj, resultVal, i.ToString(), out var cap))
+                        RegExpBuiltin.LastCaptures[i] = cap.Tag == JsValueTag.Undefined ? string.Empty : ToStringValue(cap);
+                    else
+                        RegExpBuiltin.LastCaptures[i] = string.Empty;
+                }
+            }
+            finally
+            {
+                _heap.PopRootsTo(rootMark);
             }
         }
     }
