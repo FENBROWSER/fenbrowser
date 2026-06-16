@@ -1052,10 +1052,19 @@ public sealed partial class BytecodeInterpreter
         prototype.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(lfResHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(protoHandle, lfResHandle);
 
+        // Store state so shared prototype methods can read it.
+        var lfState = CreateOrdinaryObject();
+        lfState.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(state.Locale ?? "en-US"), Writable: false, Enumerable: false, Configurable: false));
+        lfState.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(state.Type), Writable: false, Enumerable: false, Configurable: false));
+        lfState.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString(state.Style), Writable: false, Enumerable: false, Configurable: false));
+        var lfStateHandle = _heap.AllocateObject(lfState, AllocationSite.Current());
+
         var instance = CreateOrdinaryObject();
         instance.SetPrototype(protoHandle);
+        _ = instance.DefineOwnProperty("__listFormatState", new JsPropertyDescriptor(JsValue.FromObject(lfStateHandle), Writable: false, Enumerable: false, Configurable: false));
         var instanceHandle = _heap.AllocateObject(instance, AllocationSite.Current());
         _heap.WriteBarrier(instanceHandle, protoHandle);
+        _heap.WriteBarrier(instanceHandle, lfStateHandle);
         return JsValue.FromObject(instanceHandle);
     }
 
@@ -4153,27 +4162,48 @@ public sealed partial class BytecodeInterpreter
         var ph = _heap.AllocateObject(proto, AllocationSite.Current());
         _heap.PushRoot(ph);
 
-        var formatFn = new NativeFunctionObject("format", (_, a) =>
+        ListFormatState GetLFState(JsValue tv)
         {
+            if (tv.Tag == JsValueTag.Object)
+            {
+                var o = _heap.GetObject(tv.AsObjectHandle());
+                if (o.TryGetOwnProperty("__listFormatState", out var d) && d.Value.Tag == JsValueTag.Object)
+                {
+                    var s = _heap.GetObject(d.Value.AsObjectHandle());
+                    string l = "en-US", t = "conjunction", st = "long";
+                    if (s.TryGetOwnProperty("locale", out var ld) && ld.Value.Tag == JsValueTag.String) l = ld.Value.AsString();
+                    if (s.TryGetOwnProperty("type", out var td) && td.Value.Tag == JsValueTag.String) t = td.Value.AsString();
+                    if (s.TryGetOwnProperty("style", out var std) && std.Value.Tag == JsValueTag.String) st = std.Value.AsString();
+                    return new ListFormatState(l, t, st);
+                }
+            }
+            throw new JsThrownException(CreateTypeError("Intl.ListFormat method called on incompatible receiver."));
+        }
+
+        var formatFn = new NativeFunctionObject("format", (tv, a) =>
+        {
+            var state = GetLFState(tv);
             var list = GetListFormatItems(a.Count > 0 ? a[0] : JsValue.Undefined);
-            var parts = FormatListToParts(list, new ListFormatState("en", "conjunction", "long"));
+            var parts = FormatListToParts(list, state);
             return JsValue.FromString(string.Concat(parts.Select(static p => p.Value)));
         }, length: 1);
         proto.DefineOwnProperty("format", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(formatFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
 
-        var formatToPartsFn = new NativeFunctionObject("formatToParts", (_, a) =>
+        var formatToPartsFn = new NativeFunctionObject("formatToParts", (tv, a) =>
         {
+            var state = GetLFState(tv);
             var list = GetListFormatItems(a.Count > 0 ? a[0] : JsValue.Undefined);
-            return CreateIntlPartsArray(FormatListToParts(list, new ListFormatState("en", "conjunction", "long")));
+            return CreateIntlPartsArray(FormatListToParts(list, state));
         }, length: 1);
         proto.DefineOwnProperty("formatToParts", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(formatToPartsFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
 
-        var resOptsFn = new NativeFunctionObject("resolvedOptions", (_, _2) =>
+        var resOptsFn = new NativeFunctionObject("resolvedOptions", (tv, _2) =>
         {
+            var state = GetLFState(tv);
             var o = CreateOrdinaryObject();
-            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString("conjunction"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString("long"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(string.IsNullOrEmpty(state.Locale) ? "en-US" : state.Locale), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(state.Type), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString(state.Style), Writable: true, Enumerable: true, Configurable: true));
             return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
         }, length: 0);
         proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(resOptsFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
