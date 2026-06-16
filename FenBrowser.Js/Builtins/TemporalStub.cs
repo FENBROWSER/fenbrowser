@@ -1710,33 +1710,44 @@ public sealed class TemporalStub : IBuiltinModule
         }
         var opt = a[0];
 
-        JsValue iv = JsValue.Undefined;
-        JsValue mv = JsValue.Undefined;
-        JsValue sv = JsValue.Undefined;
+        double? incVal = null;
+        string? modeVal = null;
+        string? smallestVal = null;
 
-        TryGetField(ctx, h, opt, "roundingIncrement", out iv);
-        TryGetField(ctx, h, opt, "roundingMode", out mv);
-        TryGetField(ctx, h, opt, "smallestUnit", out sv);
-
-        if (iv.Tag != JsValueTag.Undefined)
+        // 1. Read and cast all properties first in alphabetical order
+        if (TryGetField(ctx, h, opt, "roundingIncrement", out var iv) && iv.Tag != JsValueTag.Undefined)
         {
-            double inc = ToIntegerWithTruncation(ctx, iv);
-            if (inc < 1 || inc > 1_000_000_000)
+            incVal = ToIntegerWithTruncation(ctx, iv);
+        }
+
+        if (TryGetField(ctx, h, opt, "roundingMode", out var mv) && mv.Tag != JsValueTag.Undefined)
+        {
+            modeVal = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
+        }
+
+        if (TryGetField(ctx, h, opt, "smallestUnit", out var sv) && sv.Tag != JsValueTag.Undefined)
+        {
+            smallestVal = sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv);
+        }
+
+        // 2. Validate all read properties second in alphabetical order
+        if (incVal is not null)
+        {
+            if (incVal < 1 || incVal > 1_000_000_000)
                 throw new JsThrownException(ctx.CreateRangeError("roundingIncrement out of range."));
-            r.Increment = inc;
+            r.Increment = incVal.Value;
         }
 
-        if (mv.Tag != JsValueTag.Undefined)
+        if (modeVal is not null)
         {
-            var s = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
-            if (s is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
-                throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid rounding mode."));
-            r.Mode = s;
+            if (modeVal is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
+                throw new JsThrownException(ctx.CreateRangeError($"'{modeVal}' is not a valid rounding mode."));
+            r.Mode = modeVal;
         }
 
-        if (sv.Tag == JsValueTag.Undefined)
+        if (smallestVal is null)
             throw new JsThrownException(ctx.CreateRangeError("smallestUnit is required."));
-        r.Smallest = NormalizeUnitName(ctx, sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv));
+        r.Smallest = NormalizeUnitName(ctx, smallestVal);
 
         return r;
     }
@@ -3514,6 +3525,7 @@ public sealed class TemporalStub : IBuiltinModule
         var c = h.GetObject(cH);
         AddStatic(ctx, h, cH, c, "from", a => {
             if (a.Count == 0) throw new JsThrownException(ctx.CreateTypeError("PlainDateTime.from requires at least 1 argument."));
+            var overflow = GetOverflowOption(ctx, h, a, 1);
             var arg = a[0];
             if (arg.Tag == JsValueTag.String)
             {
@@ -3523,7 +3535,6 @@ public sealed class TemporalStub : IBuiltinModule
                 if (!TemporalIsoParser.TryParseDateTime(s, out var parsed, out var parseError) || parsed.HasUtcDesignator)
                     throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for PlainDateTime: {parseError}"));
                 var parsedCal = CalendarFromAnnotation(ctx, parsed.Calendar);
-                _ = GetOverflowOption(ctx, h, a, 1);
                 if (!IsoMath.IsoDateWithinLimits(new IsoDate(parsed.Year, parsed.Month, parsed.Day)))
                     throw new JsThrownException(ctx.CreateRangeError("Date is outside the supported Temporal range."));
                 var tm = parsed.HasTime ? parsed.Time : IsoTime.Midnight;
@@ -3537,7 +3548,6 @@ public sealed class TemporalStub : IBuiltinModule
                 // (read internal data, never observable getters).
                 if (TryGetInternalData(h, obj, out var idata))
                 {
-                    _ = GetOverflowOption(ctx, h, a, 1);
                     if (HasOwn(h, idata, "year") && HasOwn(h, idata, "day"))
                     {
                         // PlainDateTime or ZonedDateTime — copy date + time from internal slots.
@@ -3564,7 +3574,6 @@ public sealed class TemporalStub : IBuiltinModule
                 }
                 if (IsTemporalInstance(h, arg, pH))
                 {
-                    _ = GetOverflowOption(ctx, h, a, 1);
                     return AttachPrototype(h, MakePlainDateTimeParts(ctx, h,
                         ToSafeInt(GetVNum(h, obj, "year")), ToSafeInt(GetVNum(h, obj, "month")), ToSafeInt(GetVNum(h, obj, "day")),
                         ToSafeInt(GetVNum(h, obj, "hour")), ToSafeInt(GetVNum(h, obj, "minute")), ToSafeInt(GetVNum(h, obj, "second")),
@@ -3596,7 +3605,6 @@ public sealed class TemporalStub : IBuiltinModule
                 double ms = TryGetField(ctx, h, arg, "millisecond", out var msv) ? ToIntegerWithTruncation(ctx, msv) : 0;
                 double us = TryGetField(ctx, h, arg, "microsecond", out var usv) ? ToIntegerWithTruncation(ctx, usv) : 0;
                 double ns = TryGetField(ctx, h, arg, "nanosecond", out var nsv) ? ToIntegerWithTruncation(ctx, nsv) : 0;
-                var overflow = GetOverflowOption(ctx, h, a, 1);
                 IsoDate date;
                 if (calSys is null)
                 {
@@ -3771,6 +3779,7 @@ public sealed class TemporalStub : IBuiltinModule
         var c = h.GetObject(cH);
         AddStatic(ctx, h, cH, c, "from", a => {
             if (a.Count == 0) throw new JsThrownException(ctx.CreateTypeError("PlainYearMonth.from requires at least 1 argument."));
+            var overflow = GetOverflowOption(ctx, h, a, 1);
             var arg = a[0];
             if (arg.Tag == JsValueTag.String)
             {
@@ -3778,7 +3787,6 @@ public sealed class TemporalStub : IBuiltinModule
                 if (!TemporalIsoParser.TryParseYearMonth(s, out var parsed, out var parseError) || parsed.HasUtcDesignator)
                     throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for PlainYearMonth: {parseError}"));
                 var parsedCal = CalendarFromAnnotation(ctx, parsed.Calendar);
-                _ = GetOverflowOption(ctx, h, a, 1);
                 if (!IsoMath.IsoDateWithinLimits(new IsoDate(parsed.Year, parsed.Month, 1)))
                     throw new JsThrownException(ctx.CreateRangeError("Year-month is outside the supported Temporal range."));
                 var refIso = YearMonthReferenceIso(parsedCal, new IsoDate(parsed.Year, parsed.Month, Math.Max(1, parsed.Day)));
@@ -3789,7 +3797,6 @@ public sealed class TemporalStub : IBuiltinModule
                 var obj = h.GetObject(arg.AsObjectHandle());
                 if (IsTemporalInstance(h, arg, pH))
                 {
-                    _ = GetOverflowOption(ctx, h, a, 1);
                     var iso = DecodeYearMonthIso(h, obj);
                     return AttachPrototype(h, MakePlainYearMonth(ctx, h, iso.Year, iso.Month, GetVStr(h, obj, "calendarId"), iso.Day), pH);
                 }
@@ -3799,8 +3806,7 @@ public sealed class TemporalStub : IBuiltinModule
                 if (ymSys is not null)
                 {
                     var (cy, cmo, _) = ResolveCalendarDateFields(ctx, h, arg, ymSys, null, requireDay: false);
-                    var ov = GetOverflowOption(ctx, h, a, 1);
-                    if (!ymSys.TryResolveToIso(cy, cmo, 1, ov, out var ymIso))
+                    if (!ymSys.TryResolveToIso(cy, cmo, 1, overflow, out var ymIso))
                         throw new JsThrownException(ctx.CreateRangeError("Year-month is invalid for the calendar or outside the supported range."));
                     return AttachPrototype(h, MakePlainYearMonth(ctx, h, ymIso.Year, ymIso.Month, cal, ymIso.Day), pH);
                 }
@@ -3808,7 +3814,6 @@ public sealed class TemporalStub : IBuiltinModule
                     throw new JsThrownException(ctx.CreateTypeError("PlainYearMonth.from: year is required."));
                 double y2 = ToIntegerWithTruncation(ctx, yearValue);
                 double m2 = GetMonthFromFields(ctx, h, arg);
-                var overflow = GetOverflowOption(ctx, h, a, 1);
                 if (y2 is < -999_999 or > 999_999)
                     throw new JsThrownException(ctx.CreateRangeError("Year is out of the supported range."));
                 int month2;
@@ -4341,9 +4346,10 @@ public sealed class TemporalStub : IBuiltinModule
         AddStatic(ctx, h, cH, c, "from", a => {
             if (a.Count == 0) throw new JsThrownException(ctx.CreateTypeError("ZonedDateTime.from requires at least 1 argument."));
             RequireOptionsObject(ctx, a, 1);
+            var disambiguation = GetDisambiguationOption(ctx, h, a, 1);
+            var offset = GetOffsetOption(ctx, h, a, 1);
+            var overflow = GetOverflowOption(ctx, h, a, 1);
             var (ns, tz, cal) = ToTemporalZonedRecord(ctx, h, a[0]);
-            _ = GetOverflowOption(ctx, h, a, 1);
-            _ = GetDisambiguationOption(ctx, h, a, 1);
             return AttachPrototype(h, MakeZonedDateTimeNsBig(ctx, h, ns, tz, cal), pH);
         }, 1);
         AddStatic(ctx, h, cH, c, "compare", a => {
@@ -5147,41 +5153,67 @@ public sealed class TemporalStub : IBuiltinModule
         }
         else if (a[0].Tag == JsValueTag.Object)
         {
-            // 1. Read all properties first in spec order
-            JsValue lv = JsValue.Undefined;
-            JsValue rtv = JsValue.Undefined;
-            JsValue iv = JsValue.Undefined;
-            JsValue mv = JsValue.Undefined;
-            JsValue sv = JsValue.Undefined;
+            string? lvStr = null;
+            JsValue rtvVal = JsValue.Undefined;
+            double? ivNum = null;
+            string? mvStr = null;
+            string? svStr = null;
 
-            TryGetField(ctx, h, a[0], "largestUnit", out lv);
-            TryGetField(ctx, h, a[0], "relativeTo", out rtv);
-            TryGetField(ctx, h, a[0], "roundingIncrement", out iv);
-            TryGetField(ctx, h, a[0], "roundingMode", out mv);
-            TryGetField(ctx, h, a[0], "smallestUnit", out sv);
-
-            // 2. Cast and validate in spec order
-            if (lv.Tag != JsValueTag.Undefined)
-                largest = NormalizeUnitName(ctx, lv.Tag == JsValueTag.String ? lv.AsString() : ctx.ToStringValue(lv), allowAuto: true);
-
-            relTo = DecodeRelativeToValue(ctx, h, rtv);
-
-            if (iv.Tag != JsValueTag.Undefined)
+            // 1. Read and cast all properties first in spec order
+            if (TryGetField(ctx, h, a[0], "largestUnit", out var lv) && lv.Tag != JsValueTag.Undefined)
             {
-                increment = ToIntegerWithTruncation(ctx, iv);
+                lvStr = NormalizeUnitName(ctx, lv.Tag == JsValueTag.String ? lv.AsString() : ctx.ToStringValue(lv), allowAuto: true);
+            }
+
+            if (TryGetField(ctx, h, a[0], "relativeTo", out var rtv) && rtv.Tag != JsValueTag.Undefined)
+            {
+                rtvVal = rtv;
+            }
+
+            if (TryGetField(ctx, h, a[0], "roundingIncrement", out var iv) && iv.Tag != JsValueTag.Undefined)
+            {
+                ivNum = ToIntegerWithTruncation(ctx, iv);
+            }
+
+            if (TryGetField(ctx, h, a[0], "roundingMode", out var mv) && mv.Tag != JsValueTag.Undefined)
+            {
+                mvStr = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
+            }
+
+            if (TryGetField(ctx, h, a[0], "smallestUnit", out var sv) && sv.Tag != JsValueTag.Undefined)
+            {
+                svStr = NormalizeUnitName(ctx, sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv));
+            }
+
+            // 2. Validate all read properties second in spec order
+            if (lvStr is not null)
+            {
+                largest = lvStr;
+            }
+
+            if (rtvVal.Tag != JsValueTag.Undefined)
+            {
+                relTo = DecodeRelativeToValue(ctx, h, rtvVal);
+            }
+
+            if (ivNum is not null)
+            {
+                increment = ivNum.Value;
                 if (increment < 1 || increment > 1_000_000_000)
                     throw new JsThrownException(ctx.CreateRangeError("roundingIncrement out of range."));
             }
 
-            if (mv.Tag != JsValueTag.Undefined)
+            if (mvStr is not null)
             {
-                mode = mv.Tag == JsValueTag.String ? mv.AsString() : ctx.ToStringValue(mv);
-                if (mode is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
-                    throw new JsThrownException(ctx.CreateRangeError($"'{mode}' is not a valid rounding mode."));
+                if (mvStr is not ("ceil" or "floor" or "expand" or "trunc" or "halfCeil" or "halfFloor" or "halfExpand" or "halfTrunc" or "halfEven"))
+                    throw new JsThrownException(ctx.CreateRangeError($"'{mvStr}' is not a valid rounding mode."));
+                mode = mvStr;
             }
 
-            if (sv.Tag != JsValueTag.Undefined)
-                smallest = NormalizeUnitName(ctx, sv.Tag == JsValueTag.String ? sv.AsString() : ctx.ToStringValue(sv));
+            if (svStr is not null)
+            {
+                smallest = svStr;
+            }
 
             if (smallest is null && (largest is null || largest == "auto"))
                 throw new JsThrownException(ctx.CreateRangeError("round requires smallestUnit or largestUnit."));
