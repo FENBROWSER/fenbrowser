@@ -34,6 +34,10 @@ internal static class ModuleDeclarationChecker
 
         // ECMA-262 16.2.1.7.1: ContainsDuplicateLabels of ModuleItemList with « » must be false.
         CheckDuplicateLabels(program.Body, new HashSet<string>(System.StringComparer.Ordinal));
+
+        // ECMA-262 15.2.1.1: It is a Syntax Error if ModuleItemList Contains super
+        // or Contains NewTarget.
+        CheckModuleTopLevelRestrictions(program.Body);
     }
 
     // ECMA-262 ContainsDuplicateLabels for ModuleItemList
@@ -248,6 +252,201 @@ internal static class ModuleDeclarationChecker
         else if (declarator.Identifier is { Length: > 0 })
         {
             yield return declarator.Identifier;
+        }
+    }
+
+    // ECMA-262 15.2.1.1: It is a Syntax Error if ModuleItemList Contains super
+    // or Contains NewTarget. Walk only top-level statement heads — don't descend
+    // into nested functions or classes where super and new.target are valid.
+    private static void CheckModuleTopLevelRestrictions(IReadOnlyList<StatementNode> statements)
+    {
+        foreach (var stmt in statements)
+        {
+            CheckStatementForModuleRestrictions(stmt);
+        }
+    }
+
+    private static void CheckStatementForModuleRestrictions(StatementNode stmt)
+    {
+        switch (stmt)
+        {
+            case ExpressionStatementNode exprStmt:
+                CheckExpressionForModuleRestrictions(exprStmt.Expression);
+                break;
+            case BlockStatementNode block:
+                CheckModuleTopLevelRestrictions(block.Statements);
+                break;
+            case IfStatementNode ifStmt:
+                CheckExpressionForModuleRestrictions(ifStmt.Test);
+                CheckStatementForModuleRestrictions(ifStmt.Consequent);
+                if (ifStmt.Alternate is { } elseStmt)
+                    CheckStatementForModuleRestrictions(elseStmt);
+                break;
+            case ForStatementNode forStmt:
+                if (forStmt.Initializer is ExpressionStatementNode initExpr)
+                    CheckExpressionForModuleRestrictions(initExpr.Expression);
+                if (forStmt.Test is { } test)
+                    CheckExpressionForModuleRestrictions(test);
+                if (forStmt.Update is { } update)
+                    CheckExpressionForModuleRestrictions(update);
+                if (forStmt.Body is { } body)
+                    CheckStatementForModuleRestrictions(body);
+                break;
+            case ForInStatementNode forIn:
+                CheckExpressionForModuleRestrictions(forIn.Iterable);
+                CheckStatementForModuleRestrictions(forIn.Body);
+                break;
+            case ForOfStatementNode forOf:
+                CheckExpressionForModuleRestrictions(forOf.Iterable);
+                CheckStatementForModuleRestrictions(forOf.Body);
+                break;
+            case WhileStatementNode whileStmt:
+                CheckExpressionForModuleRestrictions(whileStmt.Test);
+                CheckStatementForModuleRestrictions(whileStmt.Body);
+                break;
+            case DoWhileStatementNode doWhile:
+                CheckStatementForModuleRestrictions(doWhile.Body);
+                CheckExpressionForModuleRestrictions(doWhile.Test);
+                break;
+            case SwitchStatementNode switchStmt:
+                CheckExpressionForModuleRestrictions(switchStmt.Discriminant);
+                foreach (var c in switchStmt.Cases)
+                    foreach (var s in c.Consequent)
+                        CheckStatementForModuleRestrictions(s);
+                break;
+            case ReturnStatementNode returnStmt:
+                if (returnStmt.Argument is { } retExpr)
+                    CheckExpressionForModuleRestrictions(retExpr);
+                break;
+            case ThrowStatementNode throwStmt:
+                CheckExpressionForModuleRestrictions(throwStmt.Argument);
+                break;
+            case TryCatchStatementNode tryCatch:
+                CheckModuleTopLevelRestrictions(new[] { tryCatch.TryBlock });
+                if (tryCatch.CatchBlock is { } cb)
+                    CheckStatementForModuleRestrictions(cb);
+                break;
+            case TryFinallyStatementNode tryFinally:
+                CheckModuleTopLevelRestrictions(new[] { tryFinally.TryBlock });
+                if (tryFinally.FinallyBlock is { } fb)
+                    CheckStatementForModuleRestrictions(fb);
+                break;
+            case TryCatchFinallyStatementNode tryCF:
+                CheckModuleTopLevelRestrictions(new[] { tryCF.TryBlock });
+                if (tryCF.CatchBlock is { } cb2)
+                    CheckStatementForModuleRestrictions(cb2);
+                if (tryCF.FinallyBlock is { } fb2)
+                    CheckStatementForModuleRestrictions(fb2);
+                break;
+            case WithStatementNode withStmt:
+                CheckExpressionForModuleRestrictions(withStmt.Object);
+                CheckStatementForModuleRestrictions(withStmt.Body);
+                break;
+            case LabeledStatementNode labeled:
+                CheckStatementForModuleRestrictions(labeled.Body);
+                break;
+            // Don't descend into functions, classes, generators, async functions
+            // — super and new.target are valid inside those.
+            case FunctionDeclarationNode:
+            case ClassDeclarationNode:
+                break;
+            case ExportDeclarationNode export:
+                if (export.LocalDeclaration is { } inner)
+                {
+                    // Only check variable declarations within exports;
+                    // function/class exports don't have super/new.target at top level.
+                    if (inner is VariableDeclarationStatementNode varStmt)
+                        CheckVarDeclForModuleRestrictions(varStmt);
+                }
+                break;
+            case VariableDeclarationStatementNode varDecl:
+                CheckVarDeclForModuleRestrictions(varDecl);
+                break;
+        }
+    }
+
+    private static void CheckVarDeclForModuleRestrictions(VariableDeclarationStatementNode decl)
+    {
+        foreach (var d in decl.Declarators)
+        {
+            if (d.Initializer is { } init)
+                CheckExpressionForModuleRestrictions(init);
+        }
+    }
+
+    private static void CheckExpressionForModuleRestrictions(ExpressionNode expr)
+    {
+        switch (expr)
+        {
+            case SuperExpressionNode:
+                throw new JsParserException("'super' is not allowed at the top level of a module.");
+            case NewTargetExpressionNode:
+                throw new JsParserException("'new.target' is not allowed at the top level of a module.");
+            // Recurse into compound expressions but skip function/class expressions
+            // where super and new.target are valid.
+            case BinaryExpressionNode bin:
+                CheckExpressionForModuleRestrictions(bin.Left);
+                CheckExpressionForModuleRestrictions(bin.Right);
+                break;
+            case UnaryExpressionNode unary:
+                CheckExpressionForModuleRestrictions(unary.Operand);
+                break;
+            case ConditionalExpressionNode cond:
+                CheckExpressionForModuleRestrictions(cond.Test);
+                CheckExpressionForModuleRestrictions(cond.Consequent);
+                CheckExpressionForModuleRestrictions(cond.Alternate);
+                break;
+            case AssignmentExpressionNode assign:
+                CheckExpressionForModuleRestrictions(assign.Left);
+                CheckExpressionForModuleRestrictions(assign.Right);
+                break;
+            case LogicalAssignmentExpressionNode logAssign:
+                CheckExpressionForModuleRestrictions(logAssign.Target);
+                CheckExpressionForModuleRestrictions(logAssign.Value);
+                break;
+            case CallExpressionNode call:
+                CheckExpressionForModuleRestrictions(call.Callee);
+                foreach (var arg in call.Arguments)
+                    CheckExpressionForModuleRestrictions(arg);
+                break;
+            case NewExpressionNode newExpr:
+                CheckExpressionForModuleRestrictions(newExpr.Callee);
+                foreach (var arg in newExpr.Arguments)
+                    CheckExpressionForModuleRestrictions(arg);
+                break;
+            case MemberExpressionNode member:
+                CheckExpressionForModuleRestrictions(member.Object);
+                break;
+            case ArrayLiteralExpressionNode arr:
+                foreach (var el in arr.Elements)
+                    CheckExpressionForModuleRestrictions(el);
+                break;
+            case ObjectLiteralExpressionNode obj:
+                foreach (var prop in obj.Properties)
+                {
+                    if (prop.IsComputed && prop.ComputedKey is { } ck)
+                        CheckExpressionForModuleRestrictions(ck);
+                    CheckExpressionForModuleRestrictions(prop.Value);
+                }
+                break;
+            case SpreadElementExpressionNode spread:
+                CheckExpressionForModuleRestrictions(spread.Argument);
+                break;
+            case TemplateLiteralExpressionNode tmpl:
+                foreach (var exprPart in tmpl.Expressions)
+                    CheckExpressionForModuleRestrictions(exprPart);
+                break;
+            case TaggedTemplateExpressionNode tagged:
+                CheckExpressionForModuleRestrictions(tagged.Tag);
+                break;
+            case ParenthesizedExpressionNode paren:
+                CheckExpressionForModuleRestrictions(paren.Expression);
+                break;
+            // Don't descend into function/class/arrow expressions
+            case FunctionExpressionNode:
+            case ArrowFunctionExpressionNode:
+            case ClassExpressionNode:
+                break;
         }
     }
 

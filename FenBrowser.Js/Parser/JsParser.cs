@@ -2601,6 +2601,7 @@ public sealed class JsParser
         if (IsIdentifierLike(Current()))
         {
             defaultName = Advance().Text;
+            ValidateBindingIdentifier(defaultName);
             if (IsPunctuator(","))
             {
                 Advance();
@@ -2613,6 +2614,7 @@ public sealed class JsParser
             Advance();
             ExpectKeyword("as");
             var nsName = ExpectIdentifier().Text;
+            ValidateBindingIdentifier(nsName);
             entries.Add(new FenBrowser.Js.Modules.ImportEntry(
                 ModuleRequest: "", // filled in below
                 ImportName: FenBrowser.Js.Modules.ImportEntry.NamespaceImport,
@@ -2630,6 +2632,7 @@ public sealed class JsParser
                     Advance();
                     localName = ExpectIdentifier().Text;
                 }
+                ValidateBindingIdentifier(localName);
                 entries.Add(new FenBrowser.Js.Modules.ImportEntry(
                     ModuleRequest: "",
                     ImportName: importName,
@@ -5902,6 +5905,18 @@ public sealed class JsParser
         }
 
         return Advance();
+    }
+
+    // ECMA-262 12.1.1: In strict mode code, "eval" and "arguments" may not
+    // appear as a BindingIdentifier. Module code is always strict (15.2.1.1).
+    private static void ValidateBindingIdentifier(string name)
+    {
+        if (string.Equals(name, "eval", StringComparison.Ordinal) ||
+            string.Equals(name, "arguments", StringComparison.Ordinal))
+        {
+            throw new JsParserException(
+                $"'{name}' is not a valid binding identifier in strict mode.");
+        }
     }
 
     private Token ExpectPropertyNameAfterDot()
