@@ -2636,11 +2636,12 @@ public sealed partial class BytecodeInterpreter
             cnf.NumberGroupSizes = new int[] { 0 };
             cnf.CurrencyGroupSizes = new int[] { 0 };
         }
-        // For currency style without a specific currency code, use USD as default.
-        if (style == "currency" && string.IsNullOrEmpty(state.Currency))
+        // Set currency symbol for the requested currency code.
+        if (style == "currency")
         {
-            try { cnf.CurrencySymbol = new System.Globalization.RegionInfo("US").CurrencySymbol; }
-            catch { cnf.CurrencySymbol = "$"; }
+            string code = state.Currency ?? "USD";
+            try { cnf.CurrencySymbol = System.Globalization.RegionInfo(code).CurrencySymbol; }
+            catch { cnf.CurrencySymbol = code switch { "USD" => "$", "EUR" => "€", "GBP" => "£", "JPY" => "¥", _ => code }; }
         }
 
         string notation = state.Notation ?? "standard";
@@ -2746,16 +2747,18 @@ public sealed partial class BytecodeInterpreter
         // Parse formatted output into IntlParts.
         var parts = new List<IntlPart>();
         string signDisplay = state.SignDisplay ?? "auto";
-        // ECMA-402 sign display: for -0, treat as negative only if signDisplay says so.
+        // ECMA-402 sign display: -0 and values rounding to 0 should not show minus
+        // for "negative", "exceptZero", and "auto" modes.
+        bool roundsToZero = absValue < Math.Pow(10, -(maxFrac + 1));
         bool showMinus = signDisplay switch
         {
             "never" => false,
-            "always" => true,
-            "exceptZero" => number != 0,
-            "negative" => negative,
-            _ => negative && (number != 0 || isNegativeZero) // auto: show minus only for negative non-zero
+            "always" => negative || isNegativeZero,
+            "exceptZero" => negative && !roundsToZero,
+            "negative" => negative && !isNegativeZero && !roundsToZero,
+            _ => negative && !isNegativeZero && !roundsToZero // auto
         };
-        bool showPlus = signDisplay == "always" && !negative;
+        bool showPlus = signDisplay == "always" && !negative && !isNegativeZero;
 
         // Walk formatted string, classifying each character.
         int pos = 0;
