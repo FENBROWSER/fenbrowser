@@ -12400,7 +12400,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             else if (source.Tag == JsValueTag.Object)
             {
                 var obj = _heap.GetObject(source.AsObjectHandle());
-                var length = GetArrayLength(obj);
+                var lenDouble = GetArrayLengthDouble(obj);
+                ThrowIfArrayLengthExceedsLimit(lenDouble);
+                var length = (int)Math.Min(lenDouble, int.MaxValue);
                 for (var i = 0; i < length; i++)
                 {
                     var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
