@@ -18538,7 +18538,9 @@ fallbackArraySpecies:
         var regexp = args.Count > 0 ? args[0] : JsValue.Undefined;
 
         // Step 2: if regexp is not undefined and not null
-        if (regexp.Tag != JsValueTag.Undefined && regexp.Tag != JsValueTag.Null)
+        // Steps 2.a-2.d only apply when regexp is an Object; primitives skip to
+        // RegExpCreate (step 3), so Symbol.matchAll is never accessed on primitives.
+        if (regexp.Tag == JsValueTag.Object)
         {
             // Step 2.a: IsRegExp(regexp)
             if (IsRegExp(regexp))
