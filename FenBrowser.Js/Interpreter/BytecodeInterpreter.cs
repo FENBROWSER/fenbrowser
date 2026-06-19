@@ -6967,7 +6967,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var rxObj = _heap.GetObject(thisValue.AsObjectHandle());
         var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
         var limit = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
-            ? Math.Max(0, (int)ToNumber(args[1]))
+            ? (int)ToUint32(ToNumber(args[1]))
             : int.MaxValue;
 
         if (limit == 0)
@@ -18416,7 +18416,7 @@ fallbackArraySpecies:
     {
         var s = StringThisValue(thisValue);
         var limit = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
-            ? Math.Max(0, (int)ToNumber(args[1]))
+            ? (int)ToUint32(ToNumber(args[1]))
             : int.MaxValue;
 
         var items = new List<JsValue>();
