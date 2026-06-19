@@ -2728,10 +2728,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             length: 0);
 
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
+        constructor.SetPrototype(EnsureFunctionPrototype());
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        // ECMA-262 24.2.2.2 get Set [ @@species ] — returns the this value.
+        var setSpeciesSymId = GetWellKnownSymbolId("species");
+        if (setSpeciesSymId != 0)
+        {
+            var setSpeciesGetter = new NativeFunctionObject("get [Symbol.species]", (thisValue, _2) => thisValue, length: 0);
+            var setSpeciesGetterHandle = _heap.AllocateObject(setSpeciesGetter, AllocationSite.Current());
+            _ = constructor.DefineOwnSymbolProperty(
+                setSpeciesSymId,
+                JsPropertyDescriptor.Accessor(
+                    JsValue.FromObject(setSpeciesGetterHandle),
+                    JsValue.Undefined,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(constructorHandle, setSpeciesGetterHandle);
+        }
 
         // ECMA-262 24.2.3.1 add (returns the set for chaining).
         DefineNativePrototypeMethod(prototypeHandle, prototype, "add", (thisValue, args) =>
@@ -2775,8 +2792,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // [v, v] pairs per spec.
         var setValuesHandle = DefineNativePrototypeMethod(prototypeHandle, prototype, "values",
             (t, _) => CreateSetIterator(t, isEntries: false));
-        DefineNativePrototypeMethod(prototypeHandle, prototype, "keys",
-            (t, _) => CreateSetIterator(t, isEntries: false));
+        _ = prototype.DefineOwnProperty("keys",
+            new JsPropertyDescriptor(JsValue.FromObject(setValuesHandle), Writable: true, Enumerable: false, Configurable: true));
         DefineNativePrototypeMethod(prototypeHandle, prototype, "entries",
             (t, _) => CreateSetIterator(t, isEntries: true));
         prototype.DefineOwnSymbolProperty(GetWellKnownSymbolId("iterator"),
