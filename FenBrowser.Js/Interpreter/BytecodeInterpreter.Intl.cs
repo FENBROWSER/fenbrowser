@@ -131,6 +131,7 @@ public sealed partial class BytecodeInterpreter
     private JsValue DateTimeFormatConstruct(IReadOnlyList<JsValue> args)
     {
         var locale = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? ToStringValue(args[0]) : string.Empty;
+        if (!string.IsNullOrEmpty(locale)) locale = CanonicalizeIntlLocaleTag(locale);
         var culture = IntlDateTimeFormatting.ResolveCulture(locale);
         var options = ParseDateTimeFormatOptions(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
         try
@@ -671,6 +672,7 @@ public sealed partial class BytecodeInterpreter
     private JsValue NumberFormatConstruct(IReadOnlyList<JsValue> args)
     {
         var locale = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? ToStringValue(args[0]) : string.Empty;
+        if (!string.IsNullOrEmpty(locale)) locale = CanonicalizeIntlLocaleTag(locale);
         var state = ParseNumberFormatState(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
 
         // Store the state as a JsObject so the shared proto methods can read it.
@@ -873,7 +875,8 @@ public sealed partial class BytecodeInterpreter
     // ECMA-402 10.1.1 InitializeCollator.
     private JsValue CollatorConstruct(IReadOnlyList<JsValue> args)
     {
-        var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
+        var locale = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? ToStringValue(args[0]) : string.Empty;
+        if (!string.IsNullOrEmpty(locale)) locale = CanonicalizeIntlLocaleTag(locale);
         var culture = IntlDateTimeFormatting.ResolveCulture(locale);
 
         // Parse options from args[1] if present.
@@ -971,7 +974,8 @@ public sealed partial class BytecodeInterpreter
 
     private JsValue ListFormatConstruct(IReadOnlyList<JsValue> args)
     {
-        var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
+        var locale = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? ToStringValue(args[0]) : string.Empty;
+        if (!string.IsNullOrEmpty(locale)) locale = CanonicalizeIntlLocaleTag(locale);
         var state = ParseListFormatState(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
 
         // Use the shared ListFormat.prototype.
