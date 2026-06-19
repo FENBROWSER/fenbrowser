@@ -291,8 +291,9 @@ public static class RegexParser
                 return ParseUnicodePropertyEscape();
             }
 
-            // Named backreference: \k<name>
-            if (ch == 'k' && Peek1 == '<')
+            // Named backreference: \k<name> — only in Unicode mode (u/v flag).
+            // In non-Unicode mode, \k is an IdentityEscape (literal 'k').
+            if (ch == 'k' && Peek1 == '<' && IsUnicode)
             {
                 return ParseNamedBackReference();
             }
