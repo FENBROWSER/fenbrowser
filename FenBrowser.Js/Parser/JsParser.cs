@@ -6357,7 +6357,7 @@ public sealed class JsParser
         node is BinaryExpressionNode bin &&
         (bin.Operator == "??" || ContainsCoalesce(bin.Left) || ContainsCoalesce(bin.Right));
 
-    private static bool IsValidAssignmentTarget(ExpressionNode node)
+    private bool IsValidAssignmentTarget(ExpressionNode node)
     {
         return node switch
         {
@@ -6372,6 +6372,9 @@ public sealed class JsParser
                 arrLit.Elements.Any(e => e is SpreadElementExpressionNode || e is not ElisionExpressionNode),
             // Tolerate parenthesised wrappers around valid targets.
             ParenthesizedExpressionNode pe => IsValidAssignmentTarget(pe.Expression),
+            // Annex B: in non-strict mode, CallExpression is a valid assignment
+            // target (runtime ReferenceError, not parse-time SyntaxError).
+            CallExpressionNode => !_strictMode,
             _ => false,
         };
     }
