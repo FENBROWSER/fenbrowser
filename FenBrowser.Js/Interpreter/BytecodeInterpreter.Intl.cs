@@ -268,6 +268,7 @@ public sealed partial class BytecodeInterpreter
                 return JsValue.FromString("Invalid Date");
             },
             length: 1);
+            formatMethod.SetPrototype(EnsureFunctionPrototype());
         var formatHandle = _heap.AllocateObject(formatMethod, AllocationSite.Current());
         _ = prototype.DefineOwnProperty(
             "format",
@@ -298,6 +299,7 @@ public sealed partial class BytecodeInterpreter
                 var empty = JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current()));
                 return empty;
             },
+            formatToPartsMethod.SetPrototype(EnsureFunctionPrototype());
             length: 1);
         var formatToPartsHandle = _heap.AllocateObject(formatToPartsMethod, AllocationSite.Current());
         _ = prototype.DefineOwnProperty(
@@ -318,6 +320,7 @@ public sealed partial class BytecodeInterpreter
             o.DefineOwnProperty("hour", new JsPropertyDescriptor(JsValue.FromString("numeric"), Writable: true, Enumerable: true, Configurable: true));
             o.DefineOwnProperty("minute", new JsPropertyDescriptor(JsValue.FromString("numeric"), Writable: true, Enumerable: true, Configurable: true));
             o.DefineOwnProperty("second", new JsPropertyDescriptor(JsValue.FromString("numeric"), Writable: true, Enumerable: true, Configurable: true));
+            resolvedOptsStub.SetPrototype(EnsureFunctionPrototype());
             return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
         }, length: 0);
         var resolvedOptsHandle = _heap.AllocateObject(resolvedOptsStub, AllocationSite.Current());
@@ -335,6 +338,7 @@ public sealed partial class BytecodeInterpreter
                 var yVal = rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined;
                 if (xVal.Tag == JsValueTag.Undefined || yVal.Tag == JsValueTag.Undefined)
                     throw new JsThrownException(CreateTypeError("formatRange requires two date arguments."));
+            formatRangeStub.SetPrototype(EnsureFunctionPrototype());
                 return JsValue.FromString("");
             },
             length: 2);
@@ -349,6 +353,7 @@ public sealed partial class BytecodeInterpreter
             {
                 if (thisValue.Tag != JsValueTag.Object)
                     throw new JsThrownException(CreateTypeError("Intl.DateTimeFormat.prototype.formatRangeToParts called on incompatible receiver."));
+            formatRangeToPartsStub.SetPrototype(EnsureFunctionPrototype());
                 var empty = JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current()));
                 return empty;
             },
