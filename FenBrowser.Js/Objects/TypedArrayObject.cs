@@ -205,7 +205,19 @@ public abstract class TypedArrayObject : TypedArrayView
 
     public JsValue GetElement(int index)
     {
-        if (IsOutOfBounds() || index < 0 || index >= Length)
+        // Resizable buffers: use per-element bounds so in-bounds indices remain
+        // accessible after a shrink. Non-resizable: original view-level OOB check.
+        if (index < 0 || index >= Length)
+            return JsValue.Undefined;
+        if (IsViewDetached)
+            return JsValue.Undefined;
+        if (Buffer.IsResizable)
+        {
+            var elemEnd = (long)ByteOffset + (index + 1) * (long)ElementSize;
+            if (elemEnd > Buffer.ByteLength)
+                return JsValue.Undefined;
+        }
+        else if (IsOutOfBounds())
             return JsValue.Undefined;
         var offset = ByteOffset + index * ElementSize;
         var raw = Buffer.Data;
