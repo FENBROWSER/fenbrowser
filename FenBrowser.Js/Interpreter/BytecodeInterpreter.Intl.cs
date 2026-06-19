@@ -998,10 +998,17 @@ public sealed partial class BytecodeInterpreter
             var timestamp = DateArgToTimeClip(args[0]);
             if (double.IsNaN(timestamp))
                 return false;
-            instant = DateTimeOffset.FromUnixTimeMilliseconds((long)timestamp);
+            // Clamp to DateTimeOffset's representable range to avoid
+            // ArgumentOutOfRangeException from FromUnixTimeMilliseconds.
+            var ms = (long)Math.Clamp(timestamp, -315537897600000, 315537897600000);
+            instant = DateTimeOffset.FromUnixTimeMilliseconds(ms);
             return true;
         }
         catch (JsThrownException)
+        {
+            return false;
+        }
+        catch (ArgumentOutOfRangeException)
         {
             return false;
         }
