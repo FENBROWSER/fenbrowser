@@ -148,15 +148,18 @@ public sealed class ObjectAndBytecodeTests
         Assert.Equal("Px", result.AsString());
     }
 
-    [Theory]
-    [InlineData("class C { m() { this.#m; } }", "private-member-access")]
-    public void CompilerRejectsParserOnlyClassElements(string source, string featureName)
+    [Fact]
+    public void PrivateMemberAccessIsNowCompiled()
     {
+        // private-member-access was previously ParserOnly (Wave 1C enabled it).
+        // The compiler should now compile #field references using the private
+        // field opcodes (GetPrivateField/SetPrivateField/DefinePrivateField).
         var compiler = new BytecodeCompiler();
-
-        var ex = Assert.Throws<UnsupportedFeatureException>(() => compiler.CompileScript(new SourceText(source)));
-        Assert.Equal(featureName, ex.FeatureName);
-        Assert.Equal(FeatureSupportLevel.ParserOnly, ex.Level);
+        var fn = compiler.CompileScript(new SourceText(
+            "class C { #x = 1; m() { return this.#x; } } new C().m();"));
+        new BytecodeVerifier().Verify(fn);
+        var result = new BytecodeInterpreter().Execute(fn);
+        Assert.Equal(1.0, result.AsNumber());
     }
 
     [Fact]

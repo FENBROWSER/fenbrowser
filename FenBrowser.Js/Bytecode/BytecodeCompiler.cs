@@ -3001,7 +3001,8 @@ public sealed class BytecodeCompiler
                         else
                         {
                             var nameIndex = GetOrCreatePropertyName(memberCallee.Property);
-                            _instructions.Add(new Instruction(OpCode.GetPropByName, calleeReg, thisReg, nameIndex));
+                            var getOp = IsPrivateMangled(memberCallee.Property) ? OpCode.GetPrivateField : OpCode.GetPropByName;
+                            _instructions.Add(new Instruction(getOp, calleeReg, thisReg, nameIndex));
                         }
 
                         isMethodCall = true;
@@ -4461,10 +4462,11 @@ public sealed class BytecodeCompiler
 
     private static void ThrowIfPrivateMemberAccess(MemberExpressionNode member)
     {
-        if (!member.Computed && member.Property.StartsWith('#'))
-        {
-            throw new UnsupportedFeatureException("private-member-access", FeatureSupportLevel.ParserOnly, member.Span);
-        }
+        // Private member access is now fully supported. The PrivateNameRewriter
+        // mangles #field → __privN__field inside class bodies, and the interpreter
+        // handles GetPrivateField/SetPrivateField/DefinePrivateField opcodes with
+        // brand validation. Unmangled #field outside a class body is caught as a
+        // syntax error by the parser's early-error validation.
     }
 
     private int CompileTemplateLiteral(TemplateLiteralExpressionNode template)
@@ -4522,7 +4524,8 @@ public sealed class BytecodeCompiler
             else
             {
                 var nameIndex = GetOrCreatePropertyName(memberTag.Property);
-                _instructions.Add(new Instruction(OpCode.GetPropByName, calleeReg, thisReg, nameIndex));
+                var getOp = IsPrivateMangled(memberTag.Property) ? OpCode.GetPrivateField : OpCode.GetPropByName;
+                _instructions.Add(new Instruction(getOp, calleeReg, thisReg, nameIndex));
             }
 
             isMethodCall = true;
