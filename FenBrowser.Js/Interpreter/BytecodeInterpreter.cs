@@ -141,6 +141,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     ObjectHandle IBuiltinContext.MaterializeGeneratorFunctionConstructor() => EnsureGeneratorFunctionConstructor();
     string IBuiltinContext.CaptureCallStack(string errorName, string message) => FormatCallStack(errorName, message);
     ObjectHandle IBuiltinContext.MaterializeStructuredCloneFunction() => EnsureStructuredCloneFunction();
+    ObjectHandle IBuiltinContext.GetFunctionPrototype() => EnsureFunctionPrototype();
     ObjectHandle IBuiltinContext.MaterializeIntlObject() => EnsureIntlObject();
     JsValue IBuiltinContext.FormatNumberToLocaleString(double value, JsValue locales, JsValue options)
         => FormatNumberToLocaleString(value, locales, options);

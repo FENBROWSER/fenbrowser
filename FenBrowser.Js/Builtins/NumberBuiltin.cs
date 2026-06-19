@@ -334,6 +334,7 @@ public sealed class NumberBuiltin : IBuiltinModule
     {
         var captured = ctx;
         var fn = new NativeFunctionObject(name, (thisValue, args) => method(captured, thisValue, args), length: length);
+        fn.SetPrototype(ctx.GetFunctionPrototype());
         var fnHandle = heap.AllocateObject(fn, AllocationSite.Current());
         var callHandle = ctx.GetFunctionCallMethod();
         fn.SetProperty("call", JsValue.FromObject(callHandle));

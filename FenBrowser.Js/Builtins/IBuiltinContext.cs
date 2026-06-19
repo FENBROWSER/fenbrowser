@@ -94,6 +94,9 @@ public interface IBuiltinContext
     ObjectHandle MaterializeSuppressedErrorConstructor();
     ObjectHandle MaterializeStructuredCloneFunction();
 
+    // Returns the %Function.prototype% object handle.
+    ObjectHandle GetFunctionPrototype();
+
     // Intl (ECMA-402).
     ObjectHandle MaterializeIntlObject();
 
