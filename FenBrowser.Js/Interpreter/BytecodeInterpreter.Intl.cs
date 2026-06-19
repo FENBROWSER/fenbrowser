@@ -1902,46 +1902,7 @@ public sealed partial class BytecodeInterpreter
 
     private string CanonicalizeDurationLocaleTag(string tag)
     {
-        if (!IsStructurallyValidDurationLocaleTag(tag))
-        {
-            throw new JsThrownException(CreateRangeError($"Invalid language tag: {tag}"));
-        }
-
-        var parts = tag.Split('-', StringSplitOptions.RemoveEmptyEntries);
-        var result = new List<string>(parts.Length);
-        var inUnicodeExtension = false;
-        foreach (var rawPart in parts)
-        {
-            var part = rawPart;
-            if (result.Count == 0)
-            {
-                result.Add(part.ToLowerInvariant());
-                continue;
-            }
-
-            if (part.Length == 1)
-            {
-                inUnicodeExtension = true;
-                result.Add(part.ToLowerInvariant());
-                continue;
-            }
-
-            if (!inUnicodeExtension && part.Length == 4 && part.All(char.IsLetter))
-            {
-                result.Add(char.ToUpperInvariant(part[0]) + part[1..].ToLowerInvariant());
-                continue;
-            }
-
-            if (!inUnicodeExtension && (part.Length == 2 && part.All(char.IsLetter) || part.Length == 3 && part.All(char.IsDigit)))
-            {
-                result.Add(part.ToUpperInvariant());
-                continue;
-            }
-
-            result.Add(part.ToLowerInvariant());
-        }
-
-        return string.Join("-", result);
+        return CanonicalizeIntlLocaleTag(tag);
     }
 
     private static bool IsSupportedDurationLocale(string locale)
@@ -1950,69 +1911,10 @@ public sealed partial class BytecodeInterpreter
         return !string.Equals(primaryLanguage, "zxx", StringComparison.OrdinalIgnoreCase);
     }
 
+
     private static bool IsStructurallyValidDurationLocaleTag(string tag)
     {
-        if (string.IsNullOrWhiteSpace(tag) || tag.Any(ch => ch > 0x7F))
-        {
-            return false;
-        }
-
-        if (tag.Contains('*', StringComparison.Ordinal) || tag.Contains('_', StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        var parts = tag.Split('-', StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 0)
-        {
-            return false;
-        }
-
-        if (parts[0].Length is < 2 or > 8 || !parts[0].All(char.IsLetter))
-        {
-            return false;
-        }
-
-        if (parts[0].Length == 1 || (parts[0].Length == 4 && parts.Length > 1 && parts[1].Length == 3))
-        {
-            return false;
-        }
-
-        var seenSingletons = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var seenVariants = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        for (var i = 1; i < parts.Length; i++)
-        {
-            var part = parts[i];
-            if (part.Length == 1)
-            {
-                if (!char.IsLetterOrDigit(part[0]) || !seenSingletons.Add(part))
-                {
-                    return false;
-                }
-
-                if (i == parts.Length - 1)
-                {
-                    return false;
-                }
-
-                continue;
-            }
-
-            if (!part.All(char.IsLetterOrDigit))
-            {
-                return false;
-            }
-
-            if ((part.Length >= 5 && part.Length <= 8) || (part.Length == 4 && char.IsDigit(part[0])))
-            {
-                if (!seenVariants.Add(part))
-                {
-                    return false;
-                }
-            }
-        }
-
-        return true;
+        return IsStructurallyValidLocaleTag(tag);
     }
 
     private string GetDefaultDurationLocale()
