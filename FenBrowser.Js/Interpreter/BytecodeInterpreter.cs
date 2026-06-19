@@ -11898,7 +11898,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var constructor = new NativeFunctionObject(
             "Array",
             (_, args) => JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(args), AllocationSite.Current())),
-            args => JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(args), AllocationSite.Current())),
+            constructWithNewTarget: (args, newTarget) =>
+                JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(args, newTarget), AllocationSite.Current())),
             length: 1);
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
@@ -12258,9 +12259,29 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     }
 
     private JsObject CreateArrayObject(IReadOnlyList<JsValue> elements)
+        => CreateArrayObject(elements, JsValue.Undefined);
+
+    // ECMA-262 23.1.1.1: Array(len) / Array(...items) when called via `new`.
+    // If newTarget differs from the Array constructor, the returned object
+    // must inherit from newTarget.prototype (subclassing support).
+    private JsObject CreateArrayObject(IReadOnlyList<JsValue> elements, JsValue newTarget)
     {
+        var arrayPrototype = EnsureArrayPrototype();
         var obj = new ArrayObject();
-        obj.SetPrototype(EnsureArrayPrototype());
+        // Determine the correct prototype: for subclass construction,
+        // walk newTarget.prototype; otherwise use the standard %Array.prototype%.
+        ObjectHandle? proto = null;
+        if (newTarget.Tag == JsValueTag.Object)
+        {
+            var newTargetObj = _heap.GetObject(newTarget.AsObjectHandle());
+            if (newTargetObj.TryGetOwnProperty("prototype", out var pd) && pd is { HasValue: true })
+            {
+                var protoValue = pd.Value;
+                if (protoValue.Tag == JsValueTag.Object)
+                    proto = protoValue.AsObjectHandle();
+            }
+        }
+        obj.SetPrototype(proto ?? arrayPrototype);
         // ECMA-262 23.1.4.2: Array's 'length' must be {Writable: true,
         // Enumerable: false, Configurable: false}. Install via DefineOwn
         // up front so later SetProperty calls preserve those attrs.

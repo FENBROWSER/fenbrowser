@@ -554,31 +554,14 @@ public sealed partial class BytecodeInterpreter
             _directEvalStrictMode = frame.Function.IsStrictMode;
         }
 
-        // ECMA-262 super(...) where the base class is a native constructor (e.g. an
-        // abstract base such as Iterator): route through [[Construct]] with this frame's
-        // NewTarget rather than [[Call]] (which native bases reject). The derived
-        // instance (already created with the subclass prototype chain) remains `this`;
-        // the constructed object is discarded for these slot-less abstract bases.
+        // ECMA-262 super(...): route through [[Construct]] with this frame's
+        // NewTarget rather than [[Call]] so the base constructor receives the
+        // correct new.target (subclass) value.
         if (callee.Tag == JsValueTag.Object &&
             frame.SuperConstructorHandle is { } superHandle &&
             callee.AsObjectHandle() == superHandle)
         {
             frame.SuperConstructorHandle = null;
-            if (_heap.GetObject(callee.AsObjectHandle()) is NativeFunctionObject nativeBase && nativeBase.IsConstructor)
-            {
-                try
-                {
-                    _ = ConstructFunction(callee, args, frame.NewTarget);
-                    frame.Registers[destinationRegister] = JsValue.Undefined;
-                }
-                catch (JsThrownException ex)
-                {
-                    if (frame.CatchHandlers.Count == 0) throw;
-                    ThrowOrHandle(frame, ex.Value);
-                }
-                return;
-            }
-
             try
             {
                 var superResult = ConstructFunction(callee, args, frame.NewTarget);
@@ -631,7 +614,13 @@ public sealed partial class BytecodeInterpreter
     {
         try
         {
-            var constructed = ConstructFunction(constructor, args);
+            // ECMA-262 7.3.15: pass frame.NewTarget so subclass constructors
+            // receive the original new.target (e.g. Sub, not Array) when
+            // super(...args) is called inside a derived constructor.
+            var newTarget = frame.NewTarget.Tag != JsValueTag.Undefined
+                ? frame.NewTarget
+                : constructor;
+            var constructed = ConstructFunction(constructor, args, newTarget);
             frame.Registers[destinationRegister] = constructed;
         }
         catch (JsThrownException ex)
