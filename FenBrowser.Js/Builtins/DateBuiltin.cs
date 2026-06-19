@@ -30,6 +30,7 @@ public sealed class DateBuiltin : IBuiltinModule
             // Called with new: full ECMA-262 21.4.2.1 argument handling.
             args => capturedCtx.ConstructDate(args),
             length: 7);
+        constructor.SetPrototype(context.GetFunctionPrototype());
         constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
         heap.PushRoot(constructorHandle);
