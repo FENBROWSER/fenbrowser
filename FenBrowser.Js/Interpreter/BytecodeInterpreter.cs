@@ -8165,6 +8165,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var state = RebuildNumberFormatState(stateObj);
                 return NumberFormatResolvedOptions(state);
             }, length: 0);
+            roStub.SetPrototype(EnsureFunctionPrototype());
             nfProto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(roStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
             var fmtStub = new NativeFunctionObject("format", (thisValue, fmtArgs) =>
             {
@@ -8172,6 +8173,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var state = RebuildNumberFormatState(stateObj);
                 return JsValue.FromString(FormatNumber(fmtArgs.Count > 0 ? fmtArgs[0] : JsValue.Undefined, state));
             }, length: 1);
+            fmtStub.SetPrototype(EnsureFunctionPrototype());
             nfProto.DefineOwnProperty("format", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(fmtStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
             var ftpStub = new NativeFunctionObject("formatToParts", (thisValue, fmtArgs) =>
             {
@@ -8180,6 +8182,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var parts = FormatNumberToParts(fmtArgs.Count > 0 ? fmtArgs[0] : JsValue.Undefined, state);
                 return CreateIntlPartsArray(parts);
             }, length: 1);
+            ftpStub.SetPrototype(EnsureFunctionPrototype());
             nfProto.DefineOwnProperty("formatToParts", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(ftpStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
             var frStub = new NativeFunctionObject("formatRange", (thisValue, rangeArgs) =>
             {
@@ -8202,6 +8205,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     return JsValue.FromString("∼" + xFormatted);
                 return JsValue.FromString(xFormatted + "–" + yFormatted);
             }, length: 2);
+            frStub.SetPrototype(EnsureFunctionPrototype());
             nfProto.DefineOwnProperty("formatRange", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(frStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
             var frtpStub = new NativeFunctionObject("formatRangeToParts", (thisValue, rangeArgs) =>
             {
@@ -8236,6 +8240,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     rangeParts.Add(new IntlPart("rangeEnd", p.Value, p.Unit));
                 return CreateIntlPartsArray(rangeParts);
             }, length: 2);
+            frtpStub.SetPrototype(EnsureFunctionPrototype());
             nfProto.DefineOwnProperty("formatRangeToParts", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(frtpStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
 
             var ctor = new NativeFunctionObject(
