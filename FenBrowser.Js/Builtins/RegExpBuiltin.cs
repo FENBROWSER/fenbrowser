@@ -17,7 +17,7 @@ public sealed class RegExpBuiltin : IBuiltinModule
     // Updated by the interpreter via UpdateLegacyState after each successful match.
     internal static string LastRegExpInput = string.Empty;
     // [0] = full match, [1..9] = captured groups $1..$9
-    internal static readonly string[] LastCaptures = new string[10];
+    internal static readonly string[] LastCaptures = new string[] { "", "", "", "", "", "", "", "", "", "" };
 
     public IReadOnlyList<BuiltinBinding> GetBindings(IBuiltinContext context)
     {
@@ -89,16 +89,16 @@ public sealed class RegExpBuiltin : IBuiltinModule
         }, length: 1);
 
         // Annex B B.2.4: legacy static accessor properties ($1..$9, input, lastMatch, etc.)
-        // DISABLED: NativeFunctionObject getters on the RegExp constructor cause crashes
-        // in Intl tests (Collator, NumberFormat, etc.) during property enumeration/access.
-        // InstallLegacyAccessors(heap, constructorHandle, constructor);
+        InstallLegacyAccessors(heap, constructorHandle, constructor);
 
         return new[] { BuiltinBinding.NonEnumerable("RegExp", JsValue.FromObject(constructorHandle)) };
     }
 
     private static void InstallLegacyAccessors(JsHeap heap, ObjectHandle ctorHandle, JsObject ctor)
     {
-        // Use the same proven pattern as InstallRegExpFlagAccessors.
+        // B.2.4 legacy static accessors. Receiver-branding (TypeError for non-%RegExp%
+        // thisValue) is deferred — cross-realm / subclass / prop-desc-with-setter tests
+        // will fail until we have access to a proper TypeError factory here.
         void DefineGetter(string name, Func<string> valueProvider)
         {
             var getter = new NativeFunctionObject("get " + name, (_, _2) =>

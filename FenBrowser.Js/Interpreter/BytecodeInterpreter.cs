@@ -5282,14 +5282,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", DatePrototypeToString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toDateString", DatePrototypeToDateString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toTimeString", DatePrototypeToTimeString);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toUTCString", DatePrototypeToUtcString);
+        var toUtcFnHandle = DefineNativePrototypeMethod(prototypeHandle, prototype, "toUTCString", DatePrototypeToUtcString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleString", DatePrototypeToLocaleString, length: 2);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleDateString",
             DatePrototypeToLocaleDateString, length: 0);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleTimeString",
             DatePrototypeToLocaleTimeString, length: 0);
 
-        // Annex B B.2.3 legacy aliases (audit �4.1).
+        // Annex B B.2.3 legacy aliases.
         // B.2.3.1 Date.prototype.getYear: return year - 1900, NaN if invalid.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getYear",
             (t, _) => GetDateComponent(t, "getYear", tv => DateMath.YearFromTime(tv) - 1900));
@@ -5313,8 +5313,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var argsList = new List<JsValue> { JsValue.FromNumber(year) };
                 return SetDateField(t, "setYear", argsList, hasYear: true, hasMonth: false, hasDay: false);
             }, length: 1);
-        // B.2.3.3 Date.prototype.toGMTString � alias of toUTCString.
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toGMTString", DatePrototypeToUtcString);
+        // B.2.3.3 Date.prototype.toGMTString = Date.prototype.toUTCString (same function object).
+        _ = prototype.DefineOwnProperty("toGMTString",
+            new JsPropertyDescriptor(JsValue.FromObject(toUtcFnHandle), Writable: true, Enumerable: false, Configurable: true));
 
         // ECMA-262 21.4.4.45 Date.prototype [ @@toPrimitive ] ( hint ). Unlike the
         // default ordinary [[ToPrimitive]], "default" behaves like "string"; an
