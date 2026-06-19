@@ -8497,6 +8497,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 (_, _) => throw new JsThrownException(CreateTypeError("PluralRules must be invoked with 'new'.")),
                 construct: args => PluralRulesConstruct(args),
                 length: 0);
+            prCtor.SetPrototype(EnsureFunctionPrototype());
             var prCtorHandle = _heap.AllocateObject(prCtor, AllocationSite.Current());
             _heap.PushRoot(prCtorHandle);
             _ = prCtor.DefineOwnProperty("prototype",
@@ -8526,6 +8527,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 (_, _) => throw new JsThrownException(CreateTypeError("Segmenter must be invoked with 'new'.")),
                 construct: args => SegmenterConstruct(args),
                 length: 0);
+            segCtor.SetPrototype(EnsureFunctionPrototype());
             var segCtorHandle = _heap.AllocateObject(segCtor, AllocationSite.Current());
             _heap.PushRoot(segCtorHandle);
             _ = segCtor.DefineOwnProperty("prototype",
