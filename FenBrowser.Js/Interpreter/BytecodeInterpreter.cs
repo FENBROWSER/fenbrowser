@@ -6901,12 +6901,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     case '\'':
                         sb.Append(input.AsSpan(match.Index + match.Length)); i++; break;
                     case '<':
-                        // $<name> — named capture group
+                        // $<name> — named capture group. Translate ECMAScript group
+                        // name to .NET alias via the regex's forward alias map.
                         var endBracket = replacement.IndexOf('>', i + 2);
                         if (endBracket >= 0)
                         {
                             var name = replacement.Substring(i + 2, endBracket - i - 2);
-                            var namedGroup = match.Groups[name];
+                            var dotNetName = regexp.NamedGroupAliases is { } aliases && aliases.TryGetValue(name, out var alias) ? alias : name;
+                            var namedGroup = match.Groups[dotNetName];
                             sb.Append(namedGroup.Success ? namedGroup.Value : "");
                             i = endBracket;
                         }
