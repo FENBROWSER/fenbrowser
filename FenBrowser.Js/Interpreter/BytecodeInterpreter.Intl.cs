@@ -3813,54 +3813,126 @@ public sealed partial class BytecodeInterpreter
         var segmentFn = new NativeFunctionObject("segment", (_, a) =>
         {
             var str = a.Count > 0 ? ToStringValue(a[0]) : "";
+            // Pre-compute grapheme cluster boundaries using .NET StringInfo.
+            // Each segment is (startIndex, endIndex, segmentString).
+            var boundaries = new List<int> { 0 };
+            var segmentsList = new List<string>();
+            var te = StringInfo.GetTextElementEnumerator(str);
+            while (te.MoveNext())
+            {
+                var textEl = te.GetTextElement();
+                segmentsList.Add(textEl);
+                boundaries.Add(te.ElementIndex + textEl.Length);
+            }
+            // Store boundaries and segments as internal arrays on the Segments object.
             var segments = CreateOrdinaryObject();
             segments.DefineOwnProperty("_str", new JsPropertyDescriptor(JsValue.FromString(str), Writable: false, Enumerable: false, Configurable: false));
             segments.DefineOwnProperty("_idx", new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
+            // Store boundaries as a JS array for binary search in containing().
+            var boundaryArr = CreateArrayFromElements(boundaries.Select(b => JsValue.FromNumber(b)).ToArray());
+            segments.DefineOwnProperty("_boundaries", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(boundaryArr, AllocationSite.Current())), Writable: false, Enumerable: false, Configurable: false));
+            // Store segment strings as a JS array for fast iterator access.
+            var segStrArr = CreateArrayFromElements(segmentsList.Select(s => JsValue.FromString(s)).ToArray());
+            segments.DefineOwnProperty("_segments", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(segStrArr, AllocationSite.Current())), Writable: false, Enumerable: false, Configurable: false));
+            segments.DefineOwnProperty("_count", new JsPropertyDescriptor(JsValue.FromNumber(segmentsList.Count), Writable: false, Enumerable: false, Configurable: false));
             // Set [Symbol.toStringTag] = "Segments"
             var stagSymId = ((IBuiltinContext)this).CreateWellKnownSymbol("toStringTag").AsSymbolId();
             segments.DefineOwnSymbolProperty(stagSymId, new JsPropertyDescriptor(JsValue.FromString("Segments"), Writable: false, Enumerable: false, Configurable: true));
-            // Add containing() method stub.
+            // ECMA-402: Segments.prototype.containing(index).
             var containingFn = new NativeFunctionObject("containing", (thisVal, cArgs) =>
             {
                 if (cArgs.Count == 0) return JsValue.Undefined;
                 var idx = (int)ToNumber(cArgs[0]);
                 var segsObj = _heap.GetObject(thisVal.AsObjectHandle())!;
-                string storedStr2 = "";
-                if (segsObj.TryGetOwnProperty("_str", out var strDesc2))
-                    storedStr2 = strDesc2.Value.AsString();
-                if (idx < 0 || idx >= storedStr2.Length) return JsValue.Undefined;
-                var seg2 = CreateOrdinaryObject();
-                seg2.DefineOwnProperty("segment", new JsPropertyDescriptor(JsValue.FromString(storedStr2[idx].ToString()), Writable: true, Enumerable: true, Configurable: true));
-                seg2.DefineOwnProperty("index", new JsPropertyDescriptor(JsValue.FromNumber(idx), Writable: true, Enumerable: true, Configurable: true));
-                seg2.DefineOwnProperty("input", new JsPropertyDescriptor(JsValue.FromString(storedStr2), Writable: true, Enumerable: true, Configurable: true));
-                return JsValue.FromObject(_heap.AllocateObject(seg2, AllocationSite.Current()));
-            }, length: 1);
-            segments.DefineOwnProperty("containing", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(containingFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
-            var iterFn = new NativeFunctionObject("next", (_, _2) =>
-            {
-                var segsObj = _heap.GetObject(_.AsObjectHandle())!;
-                int idx = 0;
-                if (segsObj.TryGetOwnProperty("_idx", out var idxDesc))
-                    idx = (int)idxDesc.Value.AsNumber();
                 string storedStr = "";
                 if (segsObj.TryGetOwnProperty("_str", out var strDesc))
                     storedStr = strDesc.Value.AsString();
-                if (idx >= storedStr.Length)
+                if (idx < 0 || idx >= storedStr.Length) return JsValue.Undefined;
+                // Read boundaries array and find the segment containing `idx`.
+                List<int> bounds = new();
+                if (segsObj.TryGetOwnProperty("_boundaries", out var bDesc) && bDesc.Value.Tag == JsValueTag.Object)
+                {
+                    var bObj = _heap.GetObject(bDesc.Value.AsObjectHandle());
+                    int bLen = 0;
+                    if (bObj.TryGetOwnProperty("length", out var lDesc))
+                        bLen = (int)lDesc.Value.AsNumber();
+                    for (int i = 0; i < bLen; i++)
+                    {
+                        if (bObj.TryGetOwnProperty(i.ToString(), out var bi) && bi.Value.Tag != JsValueTag.Undefined)
+                            bounds.Add((int)bi.Value.AsNumber());
+                    }
+                }
+                // Binary search for the segment containing idx.
+                int lo = 0, hi = bounds.Count - 2;
+                while (lo <= hi)
+                {
+                    int mid = (lo + hi) / 2;
+                    if (idx >= bounds[mid] && idx < bounds[mid + 1])
+                    {
+                        lo = mid;
+                        break;
+                    }
+                    if (idx < bounds[mid]) hi = mid - 1;
+                    else lo = mid + 1;
+                }
+                if (lo >= bounds.Count - 1) lo = bounds.Count - 2;
+                if (lo < 0) lo = 0;
+                // Read the segment string from the segments array.
+                string segText = storedStr.Substring(bounds[lo], bounds[lo + 1] - bounds[lo]);
+                var resultObj = CreateOrdinaryObject();
+                resultObj.DefineOwnProperty("segment", new JsPropertyDescriptor(JsValue.FromString(segText), Writable: true, Enumerable: true, Configurable: true));
+                resultObj.DefineOwnProperty("index", new JsPropertyDescriptor(JsValue.FromNumber(bounds[lo]), Writable: true, Enumerable: true, Configurable: true));
+                resultObj.DefineOwnProperty("input", new JsPropertyDescriptor(JsValue.FromString(storedStr), Writable: true, Enumerable: true, Configurable: true));
+                return JsValue.FromObject(_heap.AllocateObject(resultObj, AllocationSite.Current()));
+            }, length: 1);
+            var containingHandle = _heap.AllocateObject(containingFn, AllocationSite.Current());
+            segments.DefineOwnProperty("containing", new JsPropertyDescriptor(JsValue.FromObject(containingHandle), Writable: true, Enumerable: false, Configurable: true));
+            // ECMA-402: Segment iterator — yields {segment, index, input} objects.
+            var iterFn = new NativeFunctionObject("next", (thisIter, _2) =>
+            {
+                var segsObj = _heap.GetObject(thisIter.AsObjectHandle())!;
+                int idx = 0;
+                if (segsObj.TryGetOwnProperty("_idx", out var idxDesc))
+                    idx = (int)idxDesc.Value.AsNumber();
+                int count = 0;
+                if (segsObj.TryGetOwnProperty("_count", out var cntDesc))
+                    count = (int)cntDesc.Value.AsNumber();
+                string storedStr = "";
+                if (segsObj.TryGetOwnProperty("_str", out var strDesc))
+                    storedStr = strDesc.Value.AsString();
+                if (idx >= count)
                 {
                     var doneObj = CreateOrdinaryObject();
                     doneObj.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
                     doneObj.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true));
                     return JsValue.FromObject(_heap.AllocateObject(doneObj, AllocationSite.Current()));
                 }
-                var seg = CreateOrdinaryObject();
-                seg.DefineOwnProperty("segment", new JsPropertyDescriptor(JsValue.FromString(storedStr[idx].ToString()), Writable: true, Enumerable: true, Configurable: true));
-                seg.DefineOwnProperty("index", new JsPropertyDescriptor(JsValue.FromNumber(idx), Writable: true, Enumerable: true, Configurable: true));
-                seg.DefineOwnProperty("input", new JsPropertyDescriptor(JsValue.FromString(storedStr), Writable: true, Enumerable: true, Configurable: true));
-                var result = CreateOrdinaryObject();
-                result.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(seg, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
-                result.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
+                // Read segment string and boundaries from the internal arrays.
+                int segStart = 0;
+                string segText = "";
+                // Read boundaries
+                if (segsObj.TryGetOwnProperty("_boundaries", out var bDesc) && bDesc.Value.Tag == JsValueTag.Object)
+                {
+                    var bObj = _heap.GetObject(bDesc.Value.AsObjectHandle());
+                    if (bObj.TryGetOwnProperty(idx.ToString(), out var bi) && bi.Value.Tag != JsValueTag.Undefined)
+                        segStart = (int)bi.Value.AsNumber();
+                }
+                // Read segment text
+                if (segsObj.TryGetOwnProperty("_segments", out var sDesc) && sDesc.Value.Tag == JsValueTag.Object)
+                {
+                    var sObj = _heap.GetObject(sDesc.Value.AsObjectHandle());
+                    if (sObj.TryGetOwnProperty(idx.ToString(), out var si) && si.Value.Tag != JsValueTag.Undefined)
+                        segText = si.Value.AsString();
+                }
+                var segResult = CreateOrdinaryObject();
+                segResult.DefineOwnProperty("segment", new JsPropertyDescriptor(JsValue.FromString(segText), Writable: true, Enumerable: true, Configurable: true));
+                segResult.DefineOwnProperty("index", new JsPropertyDescriptor(JsValue.FromNumber(segStart), Writable: true, Enumerable: true, Configurable: true));
+                segResult.DefineOwnProperty("input", new JsPropertyDescriptor(JsValue.FromString(storedStr), Writable: true, Enumerable: true, Configurable: true));
+                var iterResult = CreateOrdinaryObject();
+                iterResult.DefineOwnProperty("value", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(segResult, AllocationSite.Current())), Writable: true, Enumerable: true, Configurable: true));
+                iterResult.DefineOwnProperty("done", new JsPropertyDescriptor(JsValue.FromBoolean(false), Writable: true, Enumerable: true, Configurable: true));
                 segsObj.DefineOwnProperty("_idx", new JsPropertyDescriptor(JsValue.FromNumber(idx + 1), Writable: true, Enumerable: false, Configurable: false));
-                return JsValue.FromObject(_heap.AllocateObject(result, AllocationSite.Current()));
+                return JsValue.FromObject(_heap.AllocateObject(iterResult, AllocationSite.Current()));
             }, length: 0);
             var iterObj = CreateOrdinaryObject();
             var iterObjHandle = _heap.AllocateObject(iterObj, AllocationSite.Current());

@@ -8713,11 +8713,175 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
                     else if (key == "numberingSystem")
                     {
-                        values = new[] { JsValue.FromString("latn"), JsValue.FromString("arab"), JsValue.FromString("thai") };
+                        values = new[]
+                        {
+                            JsValue.FromString("adlm"), JsValue.FromString("ahom"),
+                            JsValue.FromString("arab"), JsValue.FromString("arabext"),
+                            JsValue.FromString("bali"), JsValue.FromString("beng"),
+                            JsValue.FromString("brah"), JsValue.FromString("cakm"),
+                            JsValue.FromString("cham"), JsValue.FromString("deva"),
+                            JsValue.FromString("fullwide"), JsValue.FromString("gong"),
+                            JsValue.FromString("gonm"), JsValue.FromString("gujr"),
+                            JsValue.FromString("guru"), JsValue.FromString("hmnp"),
+                            JsValue.FromString("java"), JsValue.FromString("kali"),
+                            JsValue.FromString("khmr"), JsValue.FromString("knda"),
+                            JsValue.FromString("lana"), JsValue.FromString("lanatham"),
+                            JsValue.FromString("laoo"), JsValue.FromString("latn"),
+                            JsValue.FromString("limb"), JsValue.FromString("mathbold"),
+                            JsValue.FromString("mlym"), JsValue.FromString("modi"),
+                            JsValue.FromString("mong"), JsValue.FromString("mtei"),
+                            JsValue.FromString("mymr"), JsValue.FromString("mymrshan"),
+                            JsValue.FromString("newa"), JsValue.FromString("olck"),
+                            JsValue.FromString("orya"), JsValue.FromString("rohg"),
+                            JsValue.FromString("saur"), JsValue.FromString("shrd"),
+                            JsValue.FromString("sind"), JsValue.FromString("sinh"),
+                            JsValue.FromString("sund"), JsValue.FromString("takr"),
+                            JsValue.FromString("talu"), JsValue.FromString("tamldec"),
+                            JsValue.FromString("telu"), JsValue.FromString("thai"),
+                            JsValue.FromString("tibt"), JsValue.FromString("tirh"),
+                            JsValue.FromString("vaii"), JsValue.FromString("wcho"),
+                            JsValue.FromString("zsye"), JsValue.FromString("zinh"),
+                            JsValue.FromString("zmth"), JsValue.FromString("zsym"),
+                        };
+                    }
+                    else if (key == "collation")
+                    {
+                        values = new[]
+                        {
+                            JsValue.FromString("big5han"), JsValue.FromString("compat"),
+                            JsValue.FromString("dict"), JsValue.FromString("direct"),
+                            JsValue.FromString("ducet"), JsValue.FromString("eor"),
+                            JsValue.FromString("gb2312"), JsValue.FromString("phonebk"),
+                            JsValue.FromString("pinyin"), JsValue.FromString("reformed"),
+                            JsValue.FromString("search"), JsValue.FromString("searchjl"),
+                            JsValue.FromString("standard"), JsValue.FromString("stroke"),
+                            JsValue.FromString("trad"), JsValue.FromString("unihan"),
+                            JsValue.FromString("zhuyin"),
+                        };
+                    }
+                    else if (key == "currency")
+                    {
+                        values = new[]
+                        {
+                            JsValue.FromString("AED"), JsValue.FromString("AFN"),
+                            JsValue.FromString("ALL"), JsValue.FromString("AMD"),
+                            JsValue.FromString("ANG"), JsValue.FromString("AOA"),
+                            JsValue.FromString("ARS"), JsValue.FromString("AUD"),
+                            JsValue.FromString("AWG"), JsValue.FromString("AZN"),
+                            JsValue.FromString("BAM"), JsValue.FromString("BBD"),
+                            JsValue.FromString("BDT"), JsValue.FromString("BGN"),
+                            JsValue.FromString("BHD"), JsValue.FromString("BIF"),
+                            JsValue.FromString("BMD"), JsValue.FromString("BND"),
+                            JsValue.FromString("BOB"), JsValue.FromString("BRL"),
+                            JsValue.FromString("BSD"), JsValue.FromString("BTN"),
+                            JsValue.FromString("BWP"), JsValue.FromString("BYN"),
+                            JsValue.FromString("BZD"), JsValue.FromString("CAD"),
+                            JsValue.FromString("CDF"), JsValue.FromString("CHF"),
+                            JsValue.FromString("CLP"), JsValue.FromString("CNY"),
+                            JsValue.FromString("COP"), JsValue.FromString("CRC"),
+                            JsValue.FromString("CUP"), JsValue.FromString("CVE"),
+                            JsValue.FromString("CZK"), JsValue.FromString("DJF"),
+                            JsValue.FromString("DKK"), JsValue.FromString("DOP"),
+                            JsValue.FromString("DZD"), JsValue.FromString("EGP"),
+                            JsValue.FromString("ERN"), JsValue.FromString("ETB"),
+                            JsValue.FromString("EUR"), JsValue.FromString("FJD"),
+                            JsValue.FromString("FKP"), JsValue.FromString("GBP"),
+                            JsValue.FromString("GEL"), JsValue.FromString("GHS"),
+                            JsValue.FromString("GIP"), JsValue.FromString("GMD"),
+                            JsValue.FromString("GNF"), JsValue.FromString("GTQ"),
+                            JsValue.FromString("GYD"), JsValue.FromString("HKD"),
+                            JsValue.FromString("HNL"), JsValue.FromString("HTG"),
+                            JsValue.FromString("HUF"), JsValue.FromString("IDR"),
+                            JsValue.FromString("ILS"), JsValue.FromString("INR"),
+                            JsValue.FromString("IQD"), JsValue.FromString("IRR"),
+                            JsValue.FromString("ISK"), JsValue.FromString("JMD"),
+                            JsValue.FromString("JOD"), JsValue.FromString("JPY"),
+                            JsValue.FromString("KES"), JsValue.FromString("KGS"),
+                            JsValue.FromString("KHR"), JsValue.FromString("KMF"),
+                            JsValue.FromString("KPW"), JsValue.FromString("KRW"),
+                            JsValue.FromString("KWD"), JsValue.FromString("KYD"),
+                            JsValue.FromString("KZT"), JsValue.FromString("LAK"),
+                            JsValue.FromString("LBP"), JsValue.FromString("LKR"),
+                            JsValue.FromString("LRD"), JsValue.FromString("LSL"),
+                            JsValue.FromString("LYD"), JsValue.FromString("MAD"),
+                            JsValue.FromString("MDL"), JsValue.FromString("MGA"),
+                            JsValue.FromString("MKD"), JsValue.FromString("MMK"),
+                            JsValue.FromString("MNT"), JsValue.FromString("MOP"),
+                            JsValue.FromString("MRU"), JsValue.FromString("MUR"),
+                            JsValue.FromString("MVR"), JsValue.FromString("MWK"),
+                            JsValue.FromString("MXN"), JsValue.FromString("MYR"),
+                            JsValue.FromString("MZN"), JsValue.FromString("NAD"),
+                            JsValue.FromString("NGN"), JsValue.FromString("NIO"),
+                            JsValue.FromString("NOK"), JsValue.FromString("NPR"),
+                            JsValue.FromString("NZD"), JsValue.FromString("OMR"),
+                            JsValue.FromString("PAB"), JsValue.FromString("PEN"),
+                            JsValue.FromString("PGK"), JsValue.FromString("PHP"),
+                            JsValue.FromString("PKR"), JsValue.FromString("PLN"),
+                            JsValue.FromString("PYG"), JsValue.FromString("QAR"),
+                            JsValue.FromString("RON"), JsValue.FromString("RSD"),
+                            JsValue.FromString("RUB"), JsValue.FromString("RWF"),
+                            JsValue.FromString("SAR"), JsValue.FromString("SBD"),
+                            JsValue.FromString("SCR"), JsValue.FromString("SDG"),
+                            JsValue.FromString("SEK"), JsValue.FromString("SGD"),
+                            JsValue.FromString("SHP"), JsValue.FromString("SLE"),
+                            JsValue.FromString("SOS"), JsValue.FromString("SRD"),
+                            JsValue.FromString("SSP"), JsValue.FromString("STN"),
+                            JsValue.FromString("SYP"), JsValue.FromString("SZL"),
+                            JsValue.FromString("THB"), JsValue.FromString("TJS"),
+                            JsValue.FromString("TMT"), JsValue.FromString("TND"),
+                            JsValue.FromString("TOP"), JsValue.FromString("TRY"),
+                            JsValue.FromString("TTD"), JsValue.FromString("TWD"),
+                            JsValue.FromString("TZS"), JsValue.FromString("UAH"),
+                            JsValue.FromString("UGX"), JsValue.FromString("USD"),
+                            JsValue.FromString("UYU"), JsValue.FromString("UZS"),
+                            JsValue.FromString("VES"), JsValue.FromString("VND"),
+                            JsValue.FromString("VUV"), JsValue.FromString("WST"),
+                            JsValue.FromString("XAF"), JsValue.FromString("XCD"),
+                            JsValue.FromString("XOF"), JsValue.FromString("XPF"),
+                            JsValue.FromString("YER"), JsValue.FromString("ZAR"),
+                            JsValue.FromString("ZMW"), JsValue.FromString("ZWL"),
+                        };
+                    }
+                    else if (key == "timeZone")
+                    {
+                        var tzValues = new List<JsValue>();
+                        foreach (var tz in TimeZoneInfo.GetSystemTimeZones())
+                            tzValues.Add(JsValue.FromString(tz.Id));
+                        tzValues.Sort((a, b) => string.CompareOrdinal(a.AsString(), b.AsString()));
+                        values = tzValues.ToArray();
+                    }
+                    else if (key == "unit")
+                    {
+                        values = new[]
+                        {
+                            JsValue.FromString("acre"), JsValue.FromString("bit"),
+                            JsValue.FromString("byte"), JsValue.FromString("celsius"),
+                            JsValue.FromString("centimeter"), JsValue.FromString("day"),
+                            JsValue.FromString("degree"), JsValue.FromString("fahrenheit"),
+                            JsValue.FromString("fluid-ounce"), JsValue.FromString("foot"),
+                            JsValue.FromString("gallon"), JsValue.FromString("gigabit"),
+                            JsValue.FromString("gigabyte"), JsValue.FromString("gram"),
+                            JsValue.FromString("hectare"), JsValue.FromString("hour"),
+                            JsValue.FromString("inch"), JsValue.FromString("kilobit"),
+                            JsValue.FromString("kilobyte"), JsValue.FromString("kilogram"),
+                            JsValue.FromString("kilometer"), JsValue.FromString("liter"),
+                            JsValue.FromString("megabit"), JsValue.FromString("megabyte"),
+                            JsValue.FromString("meter"), JsValue.FromString("microsecond"),
+                            JsValue.FromString("mile"), JsValue.FromString("mile-scandinavian"),
+                            JsValue.FromString("milliliter"), JsValue.FromString("millimeter"),
+                            JsValue.FromString("millisecond"), JsValue.FromString("minute"),
+                            JsValue.FromString("month"), JsValue.FromString("nanosecond"),
+                            JsValue.FromString("ounce"), JsValue.FromString("percent"),
+                            JsValue.FromString("petabyte"), JsValue.FromString("pound"),
+                            JsValue.FromString("second"), JsValue.FromString("stone"),
+                            JsValue.FromString("terabit"), JsValue.FromString("terabyte"),
+                            JsValue.FromString("week"), JsValue.FromString("yard"),
+                            JsValue.FromString("year"),
+                        };
                     }
                     else
                     {
-                        values = Array.Empty<JsValue>();
+                        throw new JsThrownException(CreateRangeError($"Invalid key: {key}"));
                     }
                     var arr = CreateArrayFromElements(values);
                     return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
