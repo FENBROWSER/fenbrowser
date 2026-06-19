@@ -143,96 +143,21 @@ public sealed partial class BytecodeInterpreter
             throw new JsThrownException(CreateTypeError("dateStyle/timeStyle conflicts with explicit component options."));
         }
 
-        var prototype = CreateOrdinaryObject();
-        var protoHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
-        _heap.PushRoot(protoHandle);
+        // Use shared Intl.DateTimeFormat.prototype. Instance state (locale,
+        // options) is stored on the object so shared prototype methods can read it.
+        var protoHandle = EnsureDateTimeFormatPrototype();
 
-        var protoMethod = new NativeFunctionObject(
-            "format",
-            (_, fmtArgs) => DateTimeFormatPrototypeFormat(culture, options, fmtArgs),
-            length: 1);
-        var protoMethodHandle = _heap.AllocateObject(protoMethod, AllocationSite.Current());
-        prototype.DefineOwnProperty(
-            "format",
-            new JsPropertyDescriptor(
-                JsValue.FromObject(protoMethodHandle),
-                Writable: true,
-                Enumerable: false,
-                Configurable: true));
-        _heap.WriteBarrier(protoHandle, protoMethodHandle);
-
-        var formatToPartsMethod = new NativeFunctionObject(
-            "formatToParts",
-            (_, fmtArgs) => DateTimeFormatPrototypeFormatToParts(culture, options, fmtArgs),
-            length: 1);
-        var formatToPartsHandle = _heap.AllocateObject(formatToPartsMethod, AllocationSite.Current());
-        prototype.DefineOwnProperty(
-            "formatToParts",
-            new JsPropertyDescriptor(
-                JsValue.FromObject(formatToPartsHandle),
-                Writable: true,
-                Enumerable: false,
-                Configurable: true));
-        _heap.WriteBarrier(protoHandle, formatToPartsHandle);
-
-        var resolvedOptionsMethod = new NativeFunctionObject(
-            "resolvedOptions",
-            (_, _) => DateTimeFormatResolvedOptions(locale, options),
-            length: 0);
-        var resolvedOptionsHandle = _heap.AllocateObject(resolvedOptionsMethod, AllocationSite.Current());
-        prototype.DefineOwnProperty(
-            "resolvedOptions",
-            new JsPropertyDescriptor(
-                JsValue.FromObject(resolvedOptionsHandle),
-                Writable: true,
-                Enumerable: false,
-                Configurable: true));
-        _heap.WriteBarrier(protoHandle, resolvedOptionsHandle);
-
-        // ECMA-402 formatRange (ES2021 Intl.DateTimeFormat V3)
-        var formatRangeMethod = new NativeFunctionObject(
-            "formatRange",
-            (thisValue, rangeArgs) =>
-            {
-                if (thisValue.Tag != JsValueTag.Object)
-                    throw new JsThrownException(CreateTypeError("Intl.DateTimeFormat.prototype.formatRange called on incompatible receiver."));
-                var xVal = rangeArgs.Count > 0 ? rangeArgs[0] : JsValue.Undefined;
-                var yVal = rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined;
-                return DateTimeFormatFormatRangeCore(culture, options,
-                    new[] { xVal }, new[] { yVal }, parts: false);
-            },
-            length: 2);
-        var formatRangeHandle = _heap.AllocateObject(formatRangeMethod, AllocationSite.Current());
-        prototype.DefineOwnProperty(
-            "formatRange",
-            new JsPropertyDescriptor(
-                JsValue.FromObject(formatRangeHandle),
-                Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(protoHandle, formatRangeHandle);
-
-        // ECMA-402 formatRangeToParts (ES2021 Intl.DateTimeFormat V3)
-        var formatRangeToPartsMethod = new NativeFunctionObject(
-            "formatRangeToParts",
-            (thisValue, rangeArgs) =>
-            {
-                if (thisValue.Tag != JsValueTag.Object)
-                    throw new JsThrownException(CreateTypeError("Intl.DateTimeFormat.prototype.formatRangeToParts called on incompatible receiver."));
-                var xVal = rangeArgs.Count > 0 ? rangeArgs[0] : JsValue.Undefined;
-                var yVal = rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined;
-                return DateTimeFormatFormatRangeCore(culture, options,
-                    new[] { xVal }, new[] { yVal }, parts: true);
-            },
-            length: 2);
-        var formatRangeToPartsHandle = _heap.AllocateObject(formatRangeToPartsMethod, AllocationSite.Current());
-        prototype.DefineOwnProperty(
-            "formatRangeToParts",
-            new JsPropertyDescriptor(
-                JsValue.FromObject(formatRangeToPartsHandle),
-                Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(protoHandle, formatRangeToPartsHandle);
+        // Store locale + serialized options state on the instance.
+        var stateObj = CreateOrdinaryObject();
+        stateObj.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(locale), Writable: false, Enumerable: false, Configurable: false));
+        if (options.TimeZoneId is not null) stateObj.DefineOwnProperty("timeZone", new JsPropertyDescriptor(JsValue.FromString(options.TimeZoneId), Writable: false, Enumerable: false, Configurable: false));
+        if (options.CalendarId is not null) stateObj.DefineOwnProperty("calendar", new JsPropertyDescriptor(JsValue.FromString(options.CalendarId), Writable: false, Enumerable: false, Configurable: false));
+        if (options.DateStyle is not null) stateObj.DefineOwnProperty("dateStyle", new JsPropertyDescriptor(JsValue.FromString(options.DateStyle), Writable: false, Enumerable: false, Configurable: false));
+        if (options.TimeStyle is not null) stateObj.DefineOwnProperty("timeStyle", new JsPropertyDescriptor(JsValue.FromString(options.TimeStyle), Writable: false, Enumerable: false, Configurable: false));
 
         var instance = CreateOrdinaryObject();
         instance.SetPrototype(protoHandle);
+        _ = instance.DefineOwnProperty("__dtf_state", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(stateObj, AllocationSite.Current())), Writable: false, Enumerable: false, Configurable: false));
         var instanceHandle = _heap.AllocateObject(instance, AllocationSite.Current());
         _heap.WriteBarrier(instanceHandle, protoHandle);
 
