@@ -942,50 +942,15 @@ public sealed partial class BytecodeInterpreter
         var resolvedCaseFirst = caseFirst != "false" ? caseFirst :
             (localeCaseFirst is "upper" or "lower" ? localeCaseFirst : "false");
 
-        var prototype = CreateOrdinaryObject();
-        var protoHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
-        _heap.PushRoot(protoHandle);
-
-        // Store locale + options on the instance so compare/resolvedOptions can read them.
+        // Use the shared Collator.prototype (like DisplayNames).
+        var protoHandle = EnsureCollatorPrototype();
         var capturedLocale = string.IsNullOrEmpty(locale) ? "en-US" : locale;
-
-        var protoMethod = new NativeFunctionObject(
-            "compare",
-            (_, cmpArgs) =>
-            {
-                var a = cmpArgs.Count > 0 ? ToStringValue(cmpArgs[0]) : string.Empty;
-                var b = cmpArgs.Count > 1 ? ToStringValue(cmpArgs[1]) : string.Empty;
-                var result = culture.CompareInfo.Compare(a, b, System.Globalization.CompareOptions.None);
-                return JsValue.FromNumber(result);
-            },
-            length: 2);
-        var protoMethodHandle = _heap.AllocateObject(protoMethod, AllocationSite.Current());
-        prototype.DefineOwnProperty("compare",
-            new JsPropertyDescriptor(JsValue.FromObject(protoMethodHandle),
-                Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(protoHandle, protoMethodHandle);
-
-        var resolvedOptsMethod = new NativeFunctionObject("resolvedOptions", (_, _2) =>
-        {
-            var o = CreateOrdinaryObject();
-            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(capturedLocale), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("usage", new JsPropertyDescriptor(JsValue.FromString(usage), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("sensitivity", new JsPropertyDescriptor(JsValue.FromString(sensitivity), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("ignorePunctuation", new JsPropertyDescriptor(JsValue.FromBoolean(ignorePunctuation), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("collation", new JsPropertyDescriptor(JsValue.FromString(resolvedCollation), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("numeric", new JsPropertyDescriptor(JsValue.FromBoolean(resolvedNumeric), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("caseFirst", new JsPropertyDescriptor(JsValue.FromString(resolvedCaseFirst), Writable: true, Enumerable: true, Configurable: true));
-            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
-        }, length: 0);
-        var resolvedOptsHandle = _heap.AllocateObject(resolvedOptsMethod, AllocationSite.Current());
-        prototype.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(resolvedOptsHandle), Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(protoHandle, resolvedOptsHandle);
 
         var instance = CreateOrdinaryObject();
         instance.SetPrototype(protoHandle);
         // Store state on instance so shared prototype methods can read it.
         _ = instance.DefineOwnProperty("__collator_locale",
-            new JsPropertyDescriptor(JsValue.FromString(string.IsNullOrEmpty(locale) ? "en-US" : locale),
+            new JsPropertyDescriptor(JsValue.FromString(capturedLocale),
                 Writable: false, Enumerable: false, Configurable: false));
         _ = instance.DefineOwnProperty("__collator_usage",
             new JsPropertyDescriptor(JsValue.FromString(usage), Writable: false, Enumerable: false, Configurable: false));
