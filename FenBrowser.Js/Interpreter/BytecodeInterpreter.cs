@@ -292,7 +292,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         _heap = heap ?? new JsHeap();
         _heap.AddRootSource(this);
+
+        // Wire Proxy trap delegates so ProxyObject.SetProperty/DeleteProperty
+        // dispatch through the interpreter's trap handlers.
+        ProxyObject.ProxySetTrap = ProxyObjSet;
+        ProxyObject.ProxyDeleteTrap = ProxyObjDelete;
+        ProxyObject.CreateTypeErrorFn = CreateTypeError;
     }
+
+    private bool ProxyObjSet(ProxyObject proxy, JsValue receiver, string prop, JsValue value)
+        => ProxySet(proxy, receiver, prop, value);
+
+    private bool ProxyObjDelete(ProxyObject proxy, string prop)
+        => ProxyDelete(proxy, prop);
 
     // Diagnostic-only: render a thrown JS value as a short "Name: message" string by
     // reading the (prototype-resolved) `name` and `message` properties when the value is

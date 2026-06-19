@@ -1,4 +1,5 @@
 using FenBrowser.Js.Heap;
+using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Objects;
@@ -20,6 +21,12 @@ public sealed class ProxyObject : JsObject
 
     public bool IsRevoked => HandlerHandle == null;
 
+    // Trap delegates set by the interpreter during engine init so that
+    // virtual methods (SetProperty/DeleteProperty) can dispatch through
+    // the Proxy [[Set]] / [[Delete]] internal methods.
+    internal static Func<ProxyObject, JsValue, string, JsValue, bool>? ProxySetTrap;
+    internal static Func<ProxyObject, string, bool>? ProxyDeleteTrap;
+
     public ProxyObject(ObjectHandle targetHandle, ObjectHandle handlerHandle)
     {
         TargetHandle = targetHandle;
@@ -29,6 +36,37 @@ public sealed class ProxyObject : JsObject
     public void Revoke()
     {
         HandlerHandle = null;
+    }
+
+    // ECMA-262 10.5.12 [[Set]] — if the handler has a "set" trap, call it;
+    // otherwise forward to the target.
+    public override bool SetProperty(string key, JsValue value)
+    {
+        if (IsRevoked) ThrowProxyError("Cannot perform 'set' on a revoked Proxy.");
+        if (ProxySetTrap is { } setter)
+            return setter(this, JsValue.FromObject(TargetHandle), key, value);
+        return base.SetProperty(key, value);
+    }
+
+    // ECMA-262 10.5.10 [[Delete]] — if the handler has a "deleteProperty" trap,
+    // call it; otherwise forward to the target.
+    public override bool DeleteProperty(string key)
+    {
+        if (IsRevoked) ThrowProxyError("Cannot perform 'deleteProperty' on a revoked Proxy.");
+        if (ProxyDeleteTrap is { } deleter)
+            return deleter(this, key);
+        return base.DeleteProperty(key);
+    }
+
+    // Set by the interpreter during initialization. Provides access to CreateTypeError
+    // so Proxy methods can throw proper JS TypeError objects.
+    internal static Func<string, JsValue>? CreateTypeErrorFn;
+
+    private static void ThrowProxyError(string msg)
+    {
+        if (CreateTypeErrorFn is { } fn)
+            throw new JsThrownException(fn(msg));
+        throw new NotImplementedException("Proxy trap dispatch not initialized.");
     }
 
     public override void Trace(IHeapTracer tracer)
