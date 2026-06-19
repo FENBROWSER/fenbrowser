@@ -55,8 +55,8 @@ def main():
         rows.append((k, tot, pa, tot - pa, round(100.0 * pa / tot, 1) if tot else 0.0))
     T = sum(r[1] for r in rows)
     P = sum(r[2] for r in rows)
-    below = sorted([r for r in rows if r[4] < 95.0], key=lambda r: -r[3])
-    at = [r for r in rows if r[4] >= 95.0]
+    below = sorted([r for r in rows if r[4] < 100.0], key=lambda r: -r[3])
+    perfect = [r for r in rows if r[4] >= 100.0]
 
     ts = datetime.date.today().isoformat()
     out = []
@@ -66,9 +66,9 @@ def main():
                "See the test262 results rule in AGENTS.md / CLAUDE.md.\n")
     out.append(f"- Snapshot: **{ts}**")
     out.append(f"- Overall: **{P}/{T} = {round(100*P/T,2) if T else 0}%**")
-    out.append(f"- Categories: **{len(rows)}** total, **{len(at)}** at/over 95%, "
-               f"**{len(below)}** below 95% (the worklist)\n")
-    out.append("## Below 95% — worklist (ranked by failures, biggest wins first)\n")
+    out.append(f"- Categories: **{len(rows)}** total, **{len(perfect)}** at 100%, "
+               f"**{len(below)}** below 100% (the worklist)\n")
+    out.append("## Below 100% — worklist (ranked by failures, biggest wins first)\n")
     out.append("| # | Category | Total | Pass | Fail | Pass% |")
     out.append("|--:|----------|------:|-----:|-----:|------:|")
     for i, (k, tot, pa, fa, pct) in enumerate(below, 1):
@@ -77,7 +77,7 @@ def main():
     with open(DOC, "w", encoding="utf-8") as fh:
         fh.write("\n".join(out))
     print(f"wrote {DOC}: {P}/{T} ({round(100*P/T,2) if T else 0}%), "
-          f"{len(below)} categories below 95%")
+          f"{len(below)} categories below 100%")
 
 
 if __name__ == "__main__":
