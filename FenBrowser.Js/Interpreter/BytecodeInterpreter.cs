@@ -8076,6 +8076,39 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         DefineIntrinsicFunction(handle, json, "parse", JsonParse, length: 2);
         DefineIntrinsicFunction(handle, json, "stringify", JsonStringify, length: 3);
 
+        // ES2024 25.5.2 JSON.rawJSON ( text )
+        // Returns a "raw JSON" object whose [[RawJSON]] slot holds pre-validated
+        // JSON source text. When stringified, raw JSON objects serialize their
+        // raw text verbatim (without quoting or escaping).
+        // Spec: Let jsonText be ? ToString(? JSON.stringify(text)).
+        DefineIntrinsicFunction(handle, json, "rawJSON", (_, args) =>
+        {
+            var textArg = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var jsonText = JsonStringify(JsValue.Undefined, new JsValue[] { textArg });
+            if (jsonText.Tag == JsValueTag.Undefined)
+                throw new JsThrownException(CreateSyntaxError("JSON.rawJSON: value cannot be serialized to JSON."));
+            var raw = new JsObject();
+            raw.DefineOwnProperty("__rawJson__", new JsPropertyDescriptor(jsonText,
+                Writable: false, Enumerable: false, Configurable: false));
+            raw.SetPrototype(EnsureObjectPrototype());
+            return JsValue.FromObject(_heap.AllocateObject(raw, AllocationSite.Current()));
+        }, length: 1);
+
+        // ES2024 25.5.3 JSON.isRawJSON ( value )
+        // Returns true if value is a raw JSON object created by JSON.rawJSON.
+        DefineIntrinsicFunction(handle, json, "isRawJSON", (_, args) =>
+        {
+            if (args.Count == 0) return JsValue.FromBoolean(false);
+            var v = args[0];
+            if (v.Tag != JsValueTag.Object) return JsValue.FromBoolean(false);
+            var obj = _heap.GetObject(v.AsObjectHandle());
+            // Check for the [[RawJSON]] internal slot marker.
+            if (obj.TryGetOwnProperty("__rawJson__", out var desc) &&
+                !desc.IsAccessor && desc.Value.Tag == JsValueTag.String)
+                return JsValue.FromBoolean(true);
+            return JsValue.FromBoolean(false);
+        }, length: 1);
+
         // ECMA-262 25.5.3 JSON [ @@toStringTag ] = "JSON".
         DefineBuiltinToStringTag(json, "JSON");
 
