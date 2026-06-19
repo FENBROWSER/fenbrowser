@@ -3759,9 +3759,11 @@ public sealed partial class BytecodeInterpreter
     // Structural validation for BCP-47 language tags.
     private static bool IsStructurallyValidLocaleTag(string tag)
     {
+        // ECMA-402 BCP-47 structural validation.
         if (string.IsNullOrWhiteSpace(tag) || tag.Any(ch => ch > 0x7F))
             return false;
 
+        // Underscores and wildcards are not allowed in well-formed BCP-47 tags.
         if (tag.Contains('*', StringComparison.Ordinal) || tag.Contains('_', StringComparison.Ordinal))
             return false;
 
@@ -3769,21 +3771,34 @@ public sealed partial class BytecodeInterpreter
         if (parts.Length == 0)
             return false;
 
-        if (parts[0].Length is < 2 or > 8 || !parts[0].All(char.IsLetter))
+        // Primary language subtag: 2-3 or 5-8 letters (also accept 4-letter ISO 639-6).
+        if (parts[0].Length == 1 || parts[0].Length > 8 || !parts[0].All(char.IsLetter))
             return false;
 
-        if (parts[0].Length == 1 || (parts[0].Length == 4 && parts.Length > 1 && parts[1].Length == 3))
+        // Special case: 4-letter primary language followed by 3-letter extlang
+        // is only valid if the second part is 3 letters. Otherwise skip this check.
+        if (parts[0].Length == 4 && parts.Length > 1 && parts[1].Length == 3 && !parts[1].All(char.IsLetter))
             return false;
 
         var seenSingletons = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        bool inPrivateUse = false;
         for (var i = 1; i < parts.Length; i++)
         {
             var part = parts[i];
             if (part.Length == 1)
             {
-                if (!char.IsLetterOrDigit(part[0]) || !seenSingletons.Add(part))
+                if (string.Equals(part, "x", StringComparison.OrdinalIgnoreCase))
+                    inPrivateUse = true;
+                // Outside private-use, singleton subtags must be alphanumeric and unique.
+                if (!inPrivateUse)
+                {
+                    if (!char.IsLetterOrDigit(part[0]) || !seenSingletons.Add(part))
+                        return false;
+                }
+                else if (!char.IsLetterOrDigit(part[0]))
                     return false;
-                if (i == parts.Length - 1)
+                // A singleton cannot be the last subtag (except inside private-use -x-).
+                if (i == parts.Length - 1 && !inPrivateUse)
                     return false;
                 continue;
             }
