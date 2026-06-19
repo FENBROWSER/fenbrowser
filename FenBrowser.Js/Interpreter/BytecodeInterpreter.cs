@@ -8691,23 +8691,56 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue DisplayNamesConstruct(IReadOnlyList<JsValue> args)
     {
-        var locale = args.Count > 0 ? ToStringValue(args[0]) : "en";
-        var opts = args.Count > 1 && args[1].Tag == JsValueTag.Object ? _heap.GetObject(args[1].AsObjectHandle()) : null;
-        string style = "long", type = "language";
-        if (opts is not null)
+        // ECMA-402 Intl.DisplayNames (locales, options)
+        // Step 3: Require options object.
+        if (args.Count < 2 || args[1].Tag is JsValueTag.Undefined or JsValueTag.Null)
+            throw new JsThrownException(CreateTypeError("DisplayNames options must be an object."));
+        if (args[1].Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("DisplayNames options must be an object."));
+
+        var opts = _heap.GetObject(args[1].AsObjectHandle());
+        var locale = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? ToStringValue(args[0]) : "";
+
+        // ECMA-402 GetOption helper.
+        string? GetStringOption(string property, string?[] validValues, string? fallback)
         {
-            if (TryGetPropertyValue(opts, args[1], "style", out var sv) && sv.Tag != JsValueTag.Undefined) style = ToStringValue(sv);
-            if (TryGetPropertyValue(opts, args[1], "type", out var tv) && tv.Tag != JsValueTag.Undefined) type = ToStringValue(tv);
+            JsValue raw = JsValue.Undefined;
+            if (opts.TryGetOwnProperty(property, out var pd) && pd.HasValue)
+                raw = pd.Value;
+            if (raw.Tag == JsValueTag.Undefined)
+                return fallback;
+            var s = ToStringValue(raw);
+            if (validValues.Length > 0 && !validValues.Contains(s))
+                throw new JsThrownException(CreateRangeError($"Invalid value '{s}' for DisplayNames option '{property}'."));
+            return s;
         }
-        // Use the shared DisplayNames.prototype, not a per-instance fresh object.
+
+        // Step 4: type is required.
+        var type = GetStringOption("type", new string?[] { "language", "region", "script", "currency", "calendar", "dateTimeField" }, null);
+        if (type is null)
+            throw new JsThrownException(CreateTypeError("DisplayNames 'type' option is required."));
+
+        // Step 6: fallback defaults to "code".
+        var fallback = GetStringOption("fallback", new string?[] { "code", "none" }, "code") ?? "code";
+
+        // Step 8: style defaults to "long".
+        var style = GetStringOption("style", new string?[] { "long", "short", "narrow" }, "long") ?? "long";
+
+        // Step 10: languageDisplay only valid when type is "language".
+        var languageDisplay = "dialect";
+        if (type == "language")
+            languageDisplay = GetStringOption("languageDisplay", new string?[] { "dialect", "standard" }, "dialect") ?? "dialect";
+
+        // Use the shared DisplayNames.prototype.
         var protoHandle = EnsureDisplayNamesPrototype();
         var inst = CreateOrdinaryObject();
         inst.SetPrototype(protoHandle);
-        // Stamp internal state so prototype methods can read it.
         var state = CreateOrdinaryObject();
         state.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(locale), Writable: true, Enumerable: true, Configurable: true));
         state.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString(style), Writable: true, Enumerable: true, Configurable: true));
         state.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(type), Writable: true, Enumerable: true, Configurable: true));
+        state.DefineOwnProperty("fallback", new JsPropertyDescriptor(JsValue.FromString(fallback), Writable: true, Enumerable: true, Configurable: true));
+        state.DefineOwnProperty("languageDisplay", new JsPropertyDescriptor(JsValue.FromString(languageDisplay), Writable: true, Enumerable: true, Configurable: true));
         inst.DefineOwnProperty("__displayNamesState", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(state, AllocationSite.Current())), Writable: false, Enumerable: false, Configurable: false));
         return JsValue.FromObject(_heap.AllocateObject(inst, AllocationSite.Current()));
     }
