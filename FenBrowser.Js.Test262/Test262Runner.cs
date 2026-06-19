@@ -936,6 +936,13 @@ public sealed class Test262Runner
                 // via its WallClockTimeoutMs check + InterruptCallback polling.
                 using var interruptTimer = new Timer(
                     _ => Volatile.Write(ref interruptRequested, 1), null, timeoutMs, Timeout.Infinite);
+                // Create the interpreter+heap OUTSIDE the timeout lambda so the
+                // reference can be released even when a test times out and the
+                // abandoned worker thread still runs. The InterruptCallback flag
+                // (set by the timer above) tells the interpreter to stop at the
+                // next opcode boundary; the lambda checks the flag before calling
+                // Execute so a timed-out test never enters the interpreter.
+                BytecodeInterpreter? perTestInterpreter = null;
                 var executeCompleted = RunWithPerTestTimeout(() =>
                 {
                     var overrideInvoker = RuntimeInvokerForTests;
@@ -945,25 +952,33 @@ public sealed class Test262Runner
                     }
                     else
                     {
+                        // Bail early if the interrupt was already fired —
+                        // the interpreter was never entered so no heap is pinned.
+                        if (Volatile.Read(ref interruptRequested) != 0)
+                            return;
                         var source = new SourceText(runtimeInput, file);
                         var function = parseAsModule
                             ? compiler.CompileProgram(JsParser.ParseModule(source))
                             : compiler.CompileScript(source);
-                        var interpreter = new BytecodeInterpreter(new JsHeap());
-                        interpreter.WallClockTimeoutMs = Math.Max(1, timeoutMs);
-                        interpreter.InterruptCallback = () => Volatile.Read(ref interruptRequested) == 0;
+                        perTestInterpreter = new BytecodeInterpreter(new JsHeap());
+                        perTestInterpreter.WallClockTimeoutMs = Math.Max(1, timeoutMs);
+                        perTestInterpreter.InterruptCallback = () => Volatile.Read(ref interruptRequested) == 0;
                         try
                         {
-                            _ = interpreter.Execute(function);
+                            _ = perTestInterpreter.Execute(function);
                         }
                         catch (JsThrownException thrown)
                         {
-                            thrown.Description ??= interpreter.DescribeThrownValue(thrown.Value);
+                            thrown.Description ??= perTestInterpreter.DescribeThrownValue(thrown.Value);
                             throw;
                         }
                     }
                 }, timeoutMs);
                 interruptTimer.Change(Timeout.Infinite, Timeout.Infinite); // disarm
+                // Release the interpreter reference immediately so the heap is
+                // eligible for GC even if a timed-out test's abandoned task still
+                // runs (the task checks interruptRequested before entering Execute).
+                perTestInterpreter = null;
                 if (!executeCompleted)
                 {
                     timedOut++;
@@ -1415,20 +1430,11 @@ public sealed class Test262Runner
                 }
 
                 // Each test allocates a throwaway JsHeap (and the bytecode/objects it
-                // produces). Without an explicit collection the runtime — especially
-                // server GC — defers reclamation and lets the working set climb into
-                // the tens of GB over a large directory. Force a periodic full
-                // collection so a single long-lived process stays bounded. This cannot
-                // reclaim heaps still pinned by a timed-out test's abandoned worker
-                // thread, but it caps the steady-state cost of the common case.
-                // Every 32 tests: chunked runs (CHUNK=100..250) never reached the
-                // previous 256-test cadence, so a single chunk of allocation-heavy
-                // tests (e.g. RegExp property-escapes building 1M-element arrays)
-                // deferred 10+ GB before process exit.
-                if ((completed & 0x1F) == 0)
-                {
-                    GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
-                }
+                // produces). Force a full compacting collection after every test so
+                // heap memory is reclaimed immediately — a single long-lived process
+                // with server GC would otherwise defer reclamation and let the working
+                // set climb into the tens of GB over a large directory.
+                GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
             }
         }
 
@@ -1876,7 +1882,7 @@ public sealed class Test262Runner
                  assert(resized, "TestIterationAndResize: resize condition should have been hit");
                }
                function isConstructor(fn) { try { new fn(); return true; } catch (_e) { return false; } }
-               var fnGlobalObject = globalThis;
+               function fnGlobalObject() { return globalThis; }
                var helpers = {
                  promiseHelper: function (promise) {
                    var result = { value: undefined, resolved: false, rejected: false };
