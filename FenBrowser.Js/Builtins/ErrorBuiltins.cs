@@ -67,8 +67,7 @@ public sealed class ErrorBuiltins : IBuiltinModule
                     new Objects.JsPropertyDescriptor(args.Count > 0 ? args[0] : JsValue.Undefined, Writable: true, Enumerable: false, Configurable: true));
                 err.DefineOwnProperty("suppressed",
                     new Objects.JsPropertyDescriptor(args.Count > 1 ? args[1] : JsValue.Undefined, Writable: true, Enumerable: false, Configurable: true));
-                err.DefineOwnProperty("stack",
-                    new Objects.JsPropertyDescriptor(JsValue.FromString(context.CaptureCallStack("SuppressedError", msgStr)), Writable: true, Enumerable: false, Configurable: true));
+                // stack is provided by Error.prototype.stack accessor
                 return JsValue.FromObject(heap2.AllocateObject(err, AllocationSite.Current()));
             }
             var suppressedErrorCtor = new NativeFunctionObject(
@@ -105,6 +104,37 @@ public sealed class ErrorBuiltins : IBuiltinModule
             new JsPropertyDescriptor(JsValue.FromString(name), Writable: true, Enumerable: false, Configurable: true));
         prototype.DefineOwnProperty("message",
             new JsPropertyDescriptor(JsValue.FromString(string.Empty), Writable: true, Enumerable: false, Configurable: true));
+
+        // ECMA-262 20.5.3.1 get/set Error.prototype.stack — only on %Error.prototype%,
+        // NOT on subclass prototypes (they inherit it via the prototype chain).
+        if (superProto is null)
+        {
+            var capturedCtx = ctx;
+            var stackGetter = new NativeFunctionObject("get stack", (thisValue, _) =>
+            {
+                var msg = string.Empty;
+                if (thisValue.Tag == JsValueTag.Object &&
+                    ctx.Heap.GetObject(thisValue.AsObjectHandle()).TryGetOwnProperty("message", out var msgDesc))
+                    msg = msgDesc.Value.Tag == JsValueTag.String ? msgDesc.Value.AsString() : string.Empty;
+                return JsValue.FromString(capturedCtx.CaptureCallStack(name, msg));
+            }, length: 0);
+            var stackSetter = new NativeFunctionObject("set stack", (thisValue, args) =>
+            {
+                if (thisValue.Tag != JsValueTag.Object) return JsValue.Undefined;
+                var val = args.Count > 0 ? args[0] : JsValue.Undefined;
+                ctx.Heap.GetObject(thisValue.AsObjectHandle()).DefineOwnProperty("stack",
+                    new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
+                return JsValue.Undefined;
+            }, length: 1);
+            var getterHandle = ctx.Heap.AllocateObject(stackGetter, AllocationSite.Current());
+            var setterHandle = ctx.Heap.AllocateObject(stackSetter, AllocationSite.Current());
+            prototype.DefineOwnProperty("stack",
+                JsPropertyDescriptor.Accessor(JsValue.FromObject(getterHandle), JsValue.FromObject(setterHandle),
+                    Enumerable: false, Configurable: true));
+            ctx.Heap.WriteBarrier(handle, getterHandle);
+            ctx.Heap.WriteBarrier(handle, setterHandle);
+        }
+
         return handle;
     }
 
@@ -203,8 +233,9 @@ public sealed class ErrorBuiltins : IBuiltinModule
             _ = err.DefineOwnProperty("message",
                 new Objects.JsPropertyDescriptor(JsValue.FromString(msg), Writable: true, Enumerable: false, Configurable: true));
         }
-        _ = err.DefineOwnProperty("stack",
-            new Objects.JsPropertyDescriptor(JsValue.FromString(ctx.CaptureCallStack(name, msg)), Writable: true, Enumerable: false, Configurable: true));
+        // ECMA-262: stack is provided by Error.prototype.stack accessor (getter
+        // captures call stack, setter creates own property). Don't set an own
+        // data property here — it would shadow the prototype accessor.
         return JsValue.FromObject(ctx.Heap.AllocateObject(err, AllocationSite.Current()));
     }
 
