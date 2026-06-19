@@ -10904,12 +10904,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var obj = _heap.GetObject(thisValue.AsObjectHandle());
+
+        // ECMA-262 20.2.3.5 step 3.d: for Proxy-wrapped functions, resolve the target.
+        if (obj is ProxyObject proxy)
+            return FunctionPrototypeToString(JsValue.FromObject(proxy.TargetHandle), args);
+
         return obj switch
         {
             NativeFunctionObject nfo => JsValue.FromString($"function {nfo.Name}() {{ [native code] }}"),
-            // ECMA-262 20.2.3.5: return the exact source text when the compiler
-            // captured it; otherwise fall back to native-code syntax (e.g. for the
-            // Function constructor or synthesised class constructors).
             JsFunctionObject jfo => JsValue.FromString(
                 jfo.Function.SourceText
                 ?? $"function {(jfo.Function.Name ?? string.Empty)}() {{ [native code] }}"),
