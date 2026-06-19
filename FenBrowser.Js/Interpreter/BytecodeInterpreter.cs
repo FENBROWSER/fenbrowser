@@ -8437,8 +8437,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var xFormatted = FormatNumber(JsValue.FromNumber(x), state);
                 var yFormatted = FormatNumber(JsValue.FromNumber(y), state);
                 if (xFormatted == yFormatted)
-                    return JsValue.FromString("∼" + xFormatted);
-                return JsValue.FromString(xFormatted + "–" + yFormatted);
+                    return JsValue.FromString("~" + xFormatted);
+                return JsValue.FromString(xFormatted + "-" + yFormatted);
             }, length: 2);
             frStub.SetPrototype(EnsureFunctionPrototype());
             nfProto.DefineOwnProperty("formatRange", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(frStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
@@ -8463,14 +8463,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var yFormatted = string.Concat(yParts.Select(static p => p.Value));
                 if (xFormatted == yFormatted)
                 {
-                    var approxParts = new List<IntlPart> { new IntlPart("literal", "∼") };
+                    var approxParts = new List<IntlPart> { new IntlPart("literal", "~") };
                     approxParts.AddRange(xParts);
                     return CreateIntlPartsArray(approxParts);
                 }
                 var rangeParts = new List<IntlPart>();
                 foreach (var p in xParts)
                     rangeParts.Add(new IntlPart("rangeStart", p.Value, p.Unit));
-                rangeParts.Add(new IntlPart("literal", "–"));
+                rangeParts.Add(new IntlPart("literal", "-"));
                 foreach (var p in yParts)
                     rangeParts.Add(new IntlPart("rangeEnd", p.Value, p.Unit));
                 return CreateIntlPartsArray(rangeParts);

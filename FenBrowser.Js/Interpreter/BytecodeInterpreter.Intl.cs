@@ -130,8 +130,8 @@ public sealed partial class BytecodeInterpreter
     // ECMA-402 11.1.1 InitializeDateTimeFormat.
     private JsValue DateTimeFormatConstruct(IReadOnlyList<JsValue> args)
     {
-        var locale = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? ToStringValue(args[0]) : string.Empty;
-        if (!string.IsNullOrEmpty(locale)) locale = CanonicalizeIntlLocaleTag(locale);
+        var locales = CanonicalizeIntlLocaleList(args.Count > 0 ? args[0] : JsValue.Undefined);
+        var locale = locales.Count > 0 ? locales[0] : string.Empty;
         var culture = IntlDateTimeFormatting.ResolveCulture(locale);
         var options = ParseDateTimeFormatOptions(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
         try
@@ -147,13 +147,34 @@ public sealed partial class BytecodeInterpreter
         // options) is stored on the object so shared prototype methods can read it.
         var protoHandle = EnsureDateTimeFormatPrototype();
 
-        // Store locale + serialized options state on the instance.
+        // Store locale + serialized options state on the instance so shared
+        // prototype methods (format, formatToParts, formatRange, etc.) can read them back.
         var stateObj = CreateOrdinaryObject();
-        stateObj.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(locale), Writable: false, Enumerable: false, Configurable: false));
-        if (options.TimeZoneId is not null) stateObj.DefineOwnProperty("timeZone", new JsPropertyDescriptor(JsValue.FromString(options.TimeZoneId), Writable: false, Enumerable: false, Configurable: false));
-        if (options.CalendarId is not null) stateObj.DefineOwnProperty("calendar", new JsPropertyDescriptor(JsValue.FromString(options.CalendarId), Writable: false, Enumerable: false, Configurable: false));
-        if (options.DateStyle is not null) stateObj.DefineOwnProperty("dateStyle", new JsPropertyDescriptor(JsValue.FromString(options.DateStyle), Writable: false, Enumerable: false, Configurable: false));
-        if (options.TimeStyle is not null) stateObj.DefineOwnProperty("timeStyle", new JsPropertyDescriptor(JsValue.FromString(options.TimeStyle), Writable: false, Enumerable: false, Configurable: false));
+        void PutStr(string k, string? v) =>
+            stateObj.DefineOwnProperty(k, new JsPropertyDescriptor(v is not null ? JsValue.FromString(v) : JsValue.Undefined, Writable: false, Enumerable: false, Configurable: false));
+        void PutInt(string k, int? v) =>
+            stateObj.DefineOwnProperty(k, new JsPropertyDescriptor(v.HasValue ? JsValue.FromNumber(v.Value) : JsValue.Undefined, Writable: false, Enumerable: false, Configurable: false));
+        void PutBool(string k, bool? v) =>
+            stateObj.DefineOwnProperty(k, new JsPropertyDescriptor(v.HasValue ? JsValue.FromBoolean(v.Value) : JsValue.Undefined, Writable: false, Enumerable: false, Configurable: false));
+
+        PutStr("locale", locale);
+        PutStr("timeZone", options.TimeZoneId);
+        PutStr("calendar", options.CalendarId);
+        PutStr("dateStyle", options.DateStyle);
+        PutStr("timeStyle", options.TimeStyle);
+        PutStr("hourCycle", options.HourCycle);
+        PutBool("hour12", options.Hour12);
+        PutStr("weekday", options.Weekday);
+        PutStr("era", options.Era);
+        PutStr("year", options.Year);
+        PutStr("month", options.Month);
+        PutStr("day", options.Day);
+        PutStr("hour", options.Hour);
+        PutStr("minute", options.Minute);
+        PutStr("second", options.Second);
+        PutInt("fractionalSecondDigits", options.FractionalSecondDigits);
+        PutStr("dayPeriod", options.DayPeriod);
+        PutStr("timeZoneName", options.TimeZoneName);
 
         var instance = CreateOrdinaryObject();
         instance.SetPrototype(protoHandle);
@@ -162,6 +183,51 @@ public sealed partial class BytecodeInterpreter
         _heap.WriteBarrier(instanceHandle, protoHandle);
 
         return JsValue.FromObject(instanceHandle);
+    }
+
+    // ECMA-402: Read the __dtf_state property from a DateTimeFormat instance,
+    // throwing TypeError for incompatible receivers.
+    private JsObject RequireDateTimeFormatState(JsValue thisValue)
+    {
+        if (thisValue.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("Intl.DateTimeFormat method called on incompatible receiver."));
+        var receiver = _heap.GetObject(thisValue.AsObjectHandle());
+        if (!receiver.TryGetProperty("__dtf_state", x => _heap.GetObject(x), out var stateDesc) ||
+            stateDesc.Value.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("Intl.DateTimeFormat method called on incompatible receiver."));
+        return _heap.GetObject(stateDesc.Value.AsObjectHandle());
+    }
+
+    // Rebuild the locale string and IntlDateTimeFormatOptions from a stored state object.
+    private (string locale, IntlDateTimeFormatOptions options) RebuildDateTimeFormatState(JsObject stateObj)
+    {
+        string? ReadStr(string k) =>
+            stateObj.TryGetOwnProperty(k, out var d) && d.Value.Tag == JsValueTag.String ? d.Value.AsString() : null;
+        int? ReadInt(string k) =>
+            stateObj.TryGetOwnProperty(k, out var d) && d.Value.Tag != JsValueTag.Undefined ? (int)d.Value.AsNumber() : null;
+        bool? ReadBool(string k) =>
+            stateObj.TryGetOwnProperty(k, out var d) && d.Value.Tag != JsValueTag.Undefined ? d.Value.AsBoolean() : null;
+
+        var locale = ReadStr("locale") ?? "";
+        var options = new IntlDateTimeFormatOptions(
+            CalendarId: ReadStr("calendar"),
+            TimeZoneId: ReadStr("timeZone"),
+            DateStyle: ReadStr("dateStyle"),
+            TimeStyle: ReadStr("timeStyle"),
+            HourCycle: ReadStr("hourCycle"),
+            Hour12: ReadBool("hour12"),
+            Weekday: ReadStr("weekday"),
+            Era: ReadStr("era"),
+            Year: ReadStr("year"),
+            Month: ReadStr("month"),
+            Day: ReadStr("day"),
+            Hour: ReadStr("hour"),
+            Minute: ReadStr("minute"),
+            Second: ReadStr("second"),
+            FractionalSecondDigits: ReadInt("fractionalSecondDigits"),
+            DayPeriod: ReadStr("dayPeriod"),
+            TimeZoneName: ReadStr("timeZoneName"));
+        return (locale, options);
     }
 
     // ECMA-402 11.5.1 Intl.DateTimeFormat.prototype.resolvedOptions. Returns a
@@ -248,24 +314,10 @@ public sealed partial class BytecodeInterpreter
             "format",
             (thisValue, fmtArgs) =>
             {
-                if (fmtArgs.Count == 0 || fmtArgs[0].Tag == JsValueTag.Undefined)
-                    throw new JsThrownException(CreateTypeError("DateTimeFormat format requires a date argument."));
-                var dtCulture = IntlDateTimeFormatting.ResolveCulture("en-US");
-                var dtOpts = new IntlDateTimeFormatOptions();
-                if (TryGetTemporalPlainTime(fmtArgs, dtCulture, dtOpts, out var ptRes))
-                    return JsValue.FromString(ptRes.Text);
-                if (TryGetTemporalDateOnly(fmtArgs, dtCulture, dtOpts, out var doRes))
-                    return JsValue.FromString(doRes.Text);
-                if (TryGetTemporalPlainDateTime(fmtArgs, dtCulture, dtOpts, out var pdtRes))
-                    return JsValue.FromString(pdtRes.Text);
-                if (TryGetTemporalZonedDateTime(fmtArgs, dtCulture, dtOpts, out var zdtRes))
-                    return JsValue.FromString(zdtRes.Text);
-                if (TryGetDateTimeFormatInput(fmtArgs, out var instant))
-                {
-                    var res = IntlDateTimeFormatting.Format(instant, dtCulture, dtOpts);
-                    return JsValue.FromString(res.Text);
-                }
-                return JsValue.FromString("Invalid Date");
+                var stateObj = RequireDateTimeFormatState(thisValue);
+                var (locale, dtOpts) = RebuildDateTimeFormatState(stateObj);
+                var dtCulture = IntlDateTimeFormatting.ResolveCulture(locale);
+                return DateTimeFormatPrototypeFormat(dtCulture, dtOpts, fmtArgs);
             },
             length: 1);
             formatMethod.SetPrototype(EnsureFunctionPrototype());
@@ -279,25 +331,10 @@ public sealed partial class BytecodeInterpreter
             "formatToParts",
             (thisValue, fmtArgs) =>
             {
-                if (fmtArgs.Count == 0 || fmtArgs[0].Tag == JsValueTag.Undefined)
-                    throw new JsThrownException(CreateTypeError("DateTimeFormat formatToParts requires a date argument."));
-                var dtCulture = IntlDateTimeFormatting.ResolveCulture("en-US");
-                var dtOpts = new IntlDateTimeFormatOptions();
-                if (TryGetTemporalPlainTime(fmtArgs, dtCulture, dtOpts, out var ptRes))
-                    return CreateIntlPartsArray(ptRes.Parts);
-                if (TryGetTemporalDateOnly(fmtArgs, dtCulture, dtOpts, out var doRes))
-                    return CreateIntlPartsArray(doRes.Parts);
-                if (TryGetTemporalPlainDateTime(fmtArgs, dtCulture, dtOpts, out var pdtRes))
-                    return CreateIntlPartsArray(pdtRes.Parts);
-                if (TryGetTemporalZonedDateTime(fmtArgs, dtCulture, dtOpts, out var zdtRes))
-                    return CreateIntlPartsArray(zdtRes.Parts);
-                if (TryGetDateTimeFormatInput(fmtArgs, out var instant))
-                {
-                    var res = IntlDateTimeFormatting.Format(instant, dtCulture, dtOpts);
-                    return CreateIntlPartsArray(res.Parts);
-                }
-                var empty = JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current()));
-                return empty;
+                var stateObj = RequireDateTimeFormatState(thisValue);
+                var (locale, dtOpts) = RebuildDateTimeFormatState(stateObj);
+                var dtCulture = IntlDateTimeFormatting.ResolveCulture(locale);
+                return DateTimeFormatPrototypeFormatToParts(dtCulture, dtOpts, fmtArgs);
             },
             length: 1);
         formatToPartsMethod.SetPrototype(EnsureFunctionPrototype());
@@ -307,61 +344,56 @@ public sealed partial class BytecodeInterpreter
             new JsPropertyDescriptor(JsValue.FromObject(formatToPartsHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, formatToPartsHandle);
 
-        var resolvedOptsStub = new NativeFunctionObject("resolvedOptions", (_, _) =>
+        var resolvedOptsMethod = new NativeFunctionObject("resolvedOptions", (thisValue, _) =>
         {
-            var o = CreateOrdinaryObject();
-            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en-US"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("calendar", new JsPropertyDescriptor(JsValue.FromString("gregory"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("numberingSystem", new JsPropertyDescriptor(JsValue.FromString("latn"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("timeZone", new JsPropertyDescriptor(JsValue.FromString("UTC"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("year", new JsPropertyDescriptor(JsValue.FromString("numeric"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("month", new JsPropertyDescriptor(JsValue.FromString("numeric"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("day", new JsPropertyDescriptor(JsValue.FromString("numeric"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("hour", new JsPropertyDescriptor(JsValue.FromString("numeric"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("minute", new JsPropertyDescriptor(JsValue.FromString("numeric"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("second", new JsPropertyDescriptor(JsValue.FromString("numeric"), Writable: true, Enumerable: true, Configurable: true));
-            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
+            var stateObj = RequireDateTimeFormatState(thisValue);
+            var (locale, dtOpts) = RebuildDateTimeFormatState(stateObj);
+            return DateTimeFormatResolvedOptions(locale, dtOpts);
         }, length: 0);
-        resolvedOptsStub.SetPrototype(EnsureFunctionPrototype());
-        var resolvedOptsHandle = _heap.AllocateObject(resolvedOptsStub, AllocationSite.Current());
+        resolvedOptsMethod.SetPrototype(EnsureFunctionPrototype());
+        var resolvedOptsHandle = _heap.AllocateObject(resolvedOptsMethod, AllocationSite.Current());
         _ = prototype.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(resolvedOptsHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, resolvedOptsHandle);
 
-        // ECMA-402 formatRange / formatRangeToParts stubs on shared prototype.
-        var formatRangeStub = new NativeFunctionObject(
+        // ECMA-402 formatRange / formatRangeToParts — read instance state and delegate to
+        // DateTimeFormatFormatRangeCore (which routes each Temporal/Date type correctly).
+        var formatRangeMethod = new NativeFunctionObject(
             "formatRange",
             (thisValue, rangeArgs) =>
             {
-                if (thisValue.Tag != JsValueTag.Object)
-                    throw new JsThrownException(CreateTypeError("Intl.DateTimeFormat.prototype.formatRange called on incompatible receiver."));
-                var xVal = rangeArgs.Count > 0 ? rangeArgs[0] : JsValue.Undefined;
-                var yVal = rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined;
-                if (xVal.Tag == JsValueTag.Undefined || yVal.Tag == JsValueTag.Undefined)
-                    throw new JsThrownException(CreateTypeError("formatRange requires two date arguments."));
-                return JsValue.FromString("");
+                var stateObj = RequireDateTimeFormatState(thisValue);
+                var (locale, dtOpts) = RebuildDateTimeFormatState(stateObj);
+                var dtCulture = IntlDateTimeFormatting.ResolveCulture(locale);
+                return DateTimeFormatFormatRangeCore(dtCulture, dtOpts,
+                    new[] { rangeArgs.Count > 0 ? rangeArgs[0] : JsValue.Undefined },
+                    new[] { rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined },
+                    parts: false);
             },
             length: 2);
-        formatRangeStub.SetPrototype(EnsureFunctionPrototype());
-        var formatRangeStubHandle = _heap.AllocateObject(formatRangeStub, AllocationSite.Current());
+        formatRangeMethod.SetPrototype(EnsureFunctionPrototype());
+        var formatRangeHandle = _heap.AllocateObject(formatRangeMethod, AllocationSite.Current());
         _ = prototype.DefineOwnProperty("formatRange",
-            new JsPropertyDescriptor(JsValue.FromObject(formatRangeStubHandle), Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(prototypeHandle, formatRangeStubHandle);
+            new JsPropertyDescriptor(JsValue.FromObject(formatRangeHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, formatRangeHandle);
 
-        var formatRangeToPartsStub = new NativeFunctionObject(
+        var formatRangeToPartsMethod = new NativeFunctionObject(
             "formatRangeToParts",
             (thisValue, rangeArgs) =>
             {
-                if (thisValue.Tag != JsValueTag.Object)
-                    throw new JsThrownException(CreateTypeError("Intl.DateTimeFormat.prototype.formatRangeToParts called on incompatible receiver."));
-                var empty = JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current()));
-                return empty;
+                var stateObj = RequireDateTimeFormatState(thisValue);
+                var (locale, dtOpts) = RebuildDateTimeFormatState(stateObj);
+                var dtCulture = IntlDateTimeFormatting.ResolveCulture(locale);
+                return DateTimeFormatFormatRangeCore(dtCulture, dtOpts,
+                    new[] { rangeArgs.Count > 0 ? rangeArgs[0] : JsValue.Undefined },
+                    new[] { rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined },
+                    parts: true);
             },
             length: 2);
-        formatRangeToPartsStub.SetPrototype(EnsureFunctionPrototype());
-        var formatRangeToPartsStubHandle = _heap.AllocateObject(formatRangeToPartsStub, AllocationSite.Current());
+        formatRangeToPartsMethod.SetPrototype(EnsureFunctionPrototype());
+        var formatRangeToPartsHandle = _heap.AllocateObject(formatRangeToPartsMethod, AllocationSite.Current());
         _ = prototype.DefineOwnProperty("formatRangeToParts",
-            new JsPropertyDescriptor(JsValue.FromObject(formatRangeToPartsStubHandle), Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(prototypeHandle, formatRangeToPartsStubHandle);
+            new JsPropertyDescriptor(JsValue.FromObject(formatRangeToPartsHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, formatRangeToPartsHandle);
 
         _dateTimeFormatPrototypeHandle = prototypeHandle;
         return prototypeHandle;
@@ -498,7 +530,7 @@ public sealed partial class BytecodeInterpreter
         {
             if (xText == yText)
                 return JsValue.FromString(xText);
-            return JsValue.FromString(xText + "–" + yText);
+            return JsValue.FromString(xText + "-" + yText);
         }
 
         // formatRangeToParts: annotate each part with source.
@@ -514,7 +546,7 @@ public sealed partial class BytecodeInterpreter
         var rangeParts = new List<JsValue>();
         foreach (var p in xPartsList)
             rangeParts.Add(MakeRangePart(p, "startRange"));
-        rangeParts.Add(MakeRangeLiteralPart("–"));
+        rangeParts.Add(MakeRangeLiteralPart("-"));
         foreach (var p in yPartsList)
             rangeParts.Add(MakeRangePart(p, "endRange"));
         var rangeArr = CreateArrayObject(rangeParts);
@@ -601,8 +633,8 @@ public sealed partial class BytecodeInterpreter
     // shared Intl.NumberFormat.prototype.
     private JsValue NumberFormatConstruct(IReadOnlyList<JsValue> args)
     {
-        var locale = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? ToStringValue(args[0]) : string.Empty;
-        if (!string.IsNullOrEmpty(locale)) locale = CanonicalizeIntlLocaleTag(locale);
+        var locales = CanonicalizeIntlLocaleList(args.Count > 0 ? args[0] : JsValue.Undefined);
+        var locale = locales.Count > 0 ? locales[0] : string.Empty;
         var state = ParseNumberFormatState(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
 
         // Store the state as a JsObject so the shared proto methods can read it.
@@ -805,8 +837,8 @@ public sealed partial class BytecodeInterpreter
     // ECMA-402 10.1.1 InitializeCollator.
     private JsValue CollatorConstruct(IReadOnlyList<JsValue> args)
     {
-        var locale = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? ToStringValue(args[0]) : string.Empty;
-        if (!string.IsNullOrEmpty(locale)) locale = CanonicalizeIntlLocaleTag(locale);
+        var locales = CanonicalizeIntlLocaleList(args.Count > 0 ? args[0] : JsValue.Undefined);
+        var locale = locales.Count > 0 ? locales[0] : string.Empty;
         var culture = IntlDateTimeFormatting.ResolveCulture(locale);
 
         // Parse options from args[1] if present.
@@ -904,8 +936,8 @@ public sealed partial class BytecodeInterpreter
 
     private JsValue ListFormatConstruct(IReadOnlyList<JsValue> args)
     {
-        var locale = args.Count > 0 && args[0].Tag != JsValueTag.Undefined ? ToStringValue(args[0]) : string.Empty;
-        if (!string.IsNullOrEmpty(locale)) locale = CanonicalizeIntlLocaleTag(locale);
+        var locales = CanonicalizeIntlLocaleList(args.Count > 0 ? args[0] : JsValue.Undefined);
+        var locale = locales.Count > 0 ? locales[0] : string.Empty;
         var state = ParseListFormatState(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
 
         // Use the shared ListFormat.prototype.
@@ -1998,6 +2030,10 @@ public sealed partial class BytecodeInterpreter
 
             // Currency / currencyDisplay / currencySign.
             currency = GetString("currency");
+            if (style == "currency" && currency is not null && !IsWellFormedCurrencyCode(currency))
+                throw new JsThrownException(CreateRangeError($"Invalid currency code: {currency}"));
+            if (style == "currency" && currency is null)
+                throw new JsThrownException(CreateTypeError("Currency code is required when style is 'currency'."));
             currencyDisplay = GetString("currencyDisplay");
             if (currencyDisplay is not null && currencyDisplay is not "code" and not "symbol" and not "narrowSymbol" and not "name")
                 throw new JsThrownException(CreateRangeError($"Invalid currencyDisplay: {currencyDisplay}"));
