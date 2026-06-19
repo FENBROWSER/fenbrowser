@@ -1791,7 +1791,19 @@ public sealed partial class BytecodeInterpreter
 
         if (localesValue.Tag != JsValueTag.Object)
         {
-            throw new JsThrownException(CreateTypeError("locales argument must be an object or string."));
+            // ECMA-402 9.2.1: coerce to Object. Number/Boolean wrappers have no
+            // length → empty list.
+            var obj = ToObject(localesValue);
+            var objHandle = _heap.AllocateObject(obj, AllocationSite.Current());
+            _heap.PushRoot(objHandle);
+            try
+            {
+                return CanonicalizeLocaleListForDuration(JsValue.FromObject(objHandle));
+            }
+            finally
+            {
+                _heap.PopRootsTo(_heap.RootCount - 1);
+            }
         }
 
         var localesObject = _heap.GetObject(localesValue.AsObjectHandle());
@@ -3532,8 +3544,23 @@ public sealed partial class BytecodeInterpreter
             return locales;
         }
 
+        // ECMA-402 9.2.1: coerce non-Object non-String to Object via ToObject.
+        // Numbers, Booleans, etc. become wrapper objects with no length → empty list.
         if (localesValue.Tag != JsValueTag.Object)
-            throw new JsThrownException(CreateTypeError("locales argument must be an object or string."));
+        {
+            var obj = ToObject(localesValue);
+            var objHandle = _heap.AllocateObject(obj, AllocationSite.Current());
+            _heap.PushRoot(objHandle);
+            try
+            {
+                var result = CanonicalizeIntlLocaleList(JsValue.FromObject(objHandle));
+                return result;
+            }
+            finally
+            {
+                _heap.PopRootsTo(_heap.RootCount - 1);
+            }
+        }
 
         var localesObject = _heap.GetObject(localesValue.AsObjectHandle());
         if (!TryGetPropertyValue(localesObject, localesValue, "length", out var lengthValue))
