@@ -15444,10 +15444,15 @@ fallbackArraySpecies:
             }
             catch (ArgumentOutOfRangeException)
             {
+                // ES2024 resizable ArrayBuffer: OOB DataView access throws TypeError.
+                if (view.Buffer.IsResizable && view.IsViewOutOfBounds())
+                    throw new JsThrownException(CreateTypeError("Offset is outside the bounds of the DataView."));
                 throw new JsThrownException(CreateRangeError("Offset is outside the bounds of the DataView."));
             }
             catch (OverflowException)
             {
+                if (view.Buffer.IsResizable && view.IsViewOutOfBounds())
+                    throw new JsThrownException(CreateTypeError("Offset is outside the bounds of the DataView."));
                 throw new JsThrownException(CreateRangeError("Offset is outside the bounds of the DataView."));
             }
             catch (InvalidOperationException ex) when (ex.Message.Contains("detached", StringComparison.OrdinalIgnoreCase))
@@ -15466,10 +15471,14 @@ fallbackArraySpecies:
             }
             catch (ArgumentOutOfRangeException)
             {
+                if (view.Buffer.IsResizable && view.IsViewOutOfBounds())
+                    throw new JsThrownException(CreateTypeError("Offset is outside the bounds of the DataView."));
                 throw new JsThrownException(CreateRangeError("Offset is outside the bounds of the DataView."));
             }
             catch (OverflowException)
             {
+                if (view.Buffer.IsResizable && view.IsViewOutOfBounds())
+                    throw new JsThrownException(CreateTypeError("Offset is outside the bounds of the DataView."));
                 throw new JsThrownException(CreateRangeError("Offset is outside the bounds of the DataView."));
             }
             catch (InvalidOperationException ex) when (ex.Message.Contains("detached", StringComparison.OrdinalIgnoreCase))
@@ -15526,20 +15535,31 @@ fallbackArraySpecies:
             GuardDataViewOp(thisValue, dv => JsValue.FromNumber(dv.GetFloat16(ReadByteOffset(args), ReadLittleEndian(args, 1)))), length: 1);
 
         // 25.3.1.2 SetViewValue - all setters
+        // DataView setter value-wrapping helpers: per SetViewValue, integer values
+        // are converted via ToNumber → Web IDL conversion (modular wrapping), not
+        // C# checked casts that throw OverflowException.
+        sbyte WrapInt8(double v) => unchecked((sbyte)(int)(long)v);
+        byte WrapUint8(double v) => unchecked((byte)(int)(long)v);
+        short WrapInt16(double v) => unchecked((short)(int)(long)v);
+        ushort WrapUint16(double v) => unchecked((ushort)(uint)(long)v);
+        int WrapInt32(double v) => unchecked((int)(long)v);
+        uint WrapUint32(double v) => unchecked((uint)(long)v);
+        float WrapFloat32(double v) => (float)v;
+
         DefineNativePrototypeMethod(protoHandle, proto, "setInt8", (thisValue, args) =>
-            GuardDataViewOpVoid(thisValue, dv => dv.SetInt8(ReadByteOffset(args), (sbyte)ReadNumberArg(args, 1))), length: 2);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetInt8(ReadByteOffset(args), WrapInt8(ReadNumberArg(args, 1)))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setUint8", (thisValue, args) =>
-            GuardDataViewOpVoid(thisValue, dv => dv.SetUint8(ReadByteOffset(args), (byte)ReadNumberArg(args, 1))), length: 2);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetUint8(ReadByteOffset(args), WrapUint8(ReadNumberArg(args, 1)))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setInt16", (thisValue, args) =>
-            GuardDataViewOpVoid(thisValue, dv => dv.SetInt16(ReadByteOffset(args), (short)ReadNumberArg(args, 1), ReadLittleEndian(args, 2))), length: 2);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetInt16(ReadByteOffset(args), WrapInt16(ReadNumberArg(args, 1)), ReadLittleEndian(args, 2))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setUint16", (thisValue, args) =>
-            GuardDataViewOpVoid(thisValue, dv => dv.SetUint16(ReadByteOffset(args), (ushort)ReadNumberArg(args, 1), ReadLittleEndian(args, 2))), length: 2);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetUint16(ReadByteOffset(args), WrapUint16(ReadNumberArg(args, 1)), ReadLittleEndian(args, 2))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setInt32", (thisValue, args) =>
-            GuardDataViewOpVoid(thisValue, dv => dv.SetInt32(ReadByteOffset(args), (int)ReadNumberArg(args, 1), ReadLittleEndian(args, 2))), length: 2);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetInt32(ReadByteOffset(args), WrapInt32(ReadNumberArg(args, 1)), ReadLittleEndian(args, 2))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setUint32", (thisValue, args) =>
-            GuardDataViewOpVoid(thisValue, dv => dv.SetUint32(ReadByteOffset(args), (uint)ReadNumberArg(args, 1), ReadLittleEndian(args, 2))), length: 2);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetUint32(ReadByteOffset(args), WrapUint32(ReadNumberArg(args, 1)), ReadLittleEndian(args, 2))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setFloat32", (thisValue, args) =>
-            GuardDataViewOpVoid(thisValue, dv => dv.SetFloat32(ReadByteOffset(args), (float)ReadNumberArg(args, 1), ReadLittleEndian(args, 2))), length: 2);
+            GuardDataViewOpVoid(thisValue, dv => dv.SetFloat32(ReadByteOffset(args), WrapFloat32(ReadNumberArg(args, 1)), ReadLittleEndian(args, 2))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setFloat64", (thisValue, args) =>
             GuardDataViewOpVoid(thisValue, dv => dv.SetFloat64(ReadByteOffset(args), ReadNumberArg(args, 1), ReadLittleEndian(args, 2))), length: 2);
         DefineNativePrototypeMethod(protoHandle, proto, "setBigInt64", (thisValue, args) =>
