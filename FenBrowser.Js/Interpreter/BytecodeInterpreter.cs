@@ -4227,6 +4227,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return ConstructFunction(target, callArgs, newTarget);
         }, length: 2);
 
+        // ECMA-262 28.1 Reflect [ @@toStringTag ] = "Reflect"
+        DefineBuiltinToStringTag(reflect, "Reflect");
+
         _reflectObjectHandle = handle;
         return handle;
     }
