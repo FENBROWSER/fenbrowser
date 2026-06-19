@@ -3929,7 +3929,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 return JsValue.FromBoolean(ProxyHas(hasProxy, key));
             }
-            return JsValue.FromBoolean(obj.TryGetProperty(key, h => _heap.GetObject(h), out var __));
+            // Use HasPropertyIncludingProxy for correct TypedArray exotic [[HasProperty]]
+            // behavior (e.g., "-0" key returns false per aligned spec).
+            return JsValue.FromBoolean(HasPropertyIncludingProxy(obj, key));
         }, length: 2);
 
         // 28.1.6 get
@@ -11497,6 +11499,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (obj is TypedArrayObject typedArray &&
             TypedArrayObject.IsCanonicalNumericIndex(key, out var typedArrayIndex))
         {
+            // Aligned spec: "-0" canonical numeric index returns -0; [[HasProperty]]
+            // step 2.b.ii: "If intIndex = -0, return false."
+            if (key == "-0")
+                return false;
             return !typedArray.IsOutOfBounds() &&
                    typedArrayIndex >= 0 &&
                    typedArrayIndex < typedArray.Length;
