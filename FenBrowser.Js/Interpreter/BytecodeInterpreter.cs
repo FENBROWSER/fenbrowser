@@ -6976,6 +6976,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // Fast path for real RegExp objects.
         if (rxObj is RegExpObject splitRx)
         {
+            // Coerce flags for observable side effects (getter can throw).
+            // The .NET Regex path below accesses flags via the compiled pattern;
+            // reading 'flags' here triggers the spec's Get(rx, "flags") step.
+            _ = ToStringValue(GetReceiverProperty(thisValue, "flags"));
+
             if (input.Length == 0)
             {
                 var m = splitRx.Regex.Match(input);
@@ -7011,7 +7016,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(parts), AllocationSite.Current()));
         }
 
-        // Fallback: simple split via RegExpExec.
+        // Fallback: simple split via RegExpExec. Must read flags first for
+        // observable coercion (getter can throw) per spec step 7-8.
+        var flags2 = ToStringValue(GetReceiverProperty(thisValue, "flags"));
+        if (flags2.Contains('y') || flags2.Contains('u'))
+            throw new JsThrownException(CreateTypeError("@@split requires neither 'u' nor 'y' flag."));
+
         var resultParts = new List<JsValue>();
         int start = 0;
         while (start <= input.Length)
