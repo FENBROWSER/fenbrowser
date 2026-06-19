@@ -54,6 +54,8 @@ public sealed class GlobalNumericFunctionsTests
     [InlineData("parseFloat('1e3');", 1000.0)]
     [InlineData("parseFloat('Infinity');", double.PositiveInfinity)]
     [InlineData("parseFloat('-Infinity');", double.NegativeInfinity)]
+    [InlineData("parseFloat('infinity');", double.NaN)]
+    [InlineData("parseFloat('+infinity');", double.NaN)]
     [InlineData("parseFloat('abc');", double.NaN)]
     public void ParseFloat(string source, double expected)
     {

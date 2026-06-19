@@ -49,6 +49,14 @@ public abstract class TypedArrayView : JsObject
         }
     }
 
+    // ES2024: Returns true when the view is out of bounds (buffer detached or
+    // the view extends beyond the buffer). Callers should throw TypeError when
+    // this is true for byteLength/byteOffset getters.
+    public bool IsViewOutOfBounds()
+    {
+        return Buffer.IsDetached || IsOutOfBounds();
+    }
+
     public bool IsViewDetached => Buffer.IsDetached;
 
     public bool IsOutOfBounds()

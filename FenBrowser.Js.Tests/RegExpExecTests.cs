@@ -115,4 +115,84 @@ public sealed class RegExpExecTests
         var result = Run("/abc/.exec('abc')[0];");
         Assert.Equal("abc", result.AsString());
     }
+
+    [Fact]
+    public void ReplaceUsesOwnExecOverride()
+    {
+        var result = Run("""
+            var r = /./;
+            r.exec = function() {
+              return { length: 1, 0: "x", index: 0 };
+            };
+            r[Symbol.replace]("a", "b");
+            """);
+        Assert.Equal("b", result.AsString());
+    }
+
+    [Fact]
+    public void ReplaceReadsNamedCapturesOnSpecPath()
+    {
+        var result = Run("""
+            var r = /./;
+            r.exec = function() {
+              return { length: 1, 0: "", index: 0, groups: { foo: "bar" } };
+            };
+            r[Symbol.replace]("a", "$<foo>");
+            """);
+        Assert.Equal("bara", result.AsString());
+    }
+
+    [Fact]
+    public void ReplaceBoxesPrimitiveNamedCapturesOnSpecPath()
+    {
+        var result = Run("""
+            var r = /./;
+            r.exec = function() {
+              return { length: 1, 0: "b", index: 1, groups: "123" };
+            };
+            r[Symbol.replace]("ab", "[$<length>]");
+            """);
+        Assert.Equal("a[3]", result.AsString());
+    }
+
+    [Fact]
+    public void ReplacePropagatesNamedCaptureToStringErrors()
+    {
+        var result = Run("""
+            var r = /./;
+            r.exec = function() {
+              return {
+                length: 1,
+                0: "",
+                index: 0,
+                groups: { foo: { toString: function() { throw "boom"; } } }
+              };
+            };
+            try {
+              r[Symbol.replace]("a", "$<foo>");
+              false;
+            } catch (e) {
+              e === "boom";
+            }
+            """);
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ReplaceThrowsWhenNamedCapturesCannotBeBoxed()
+    {
+        var result = Run("""
+            var r = /./;
+            r.exec = function() {
+              return { length: 1, 0: "", index: 0, groups: null };
+            };
+            try {
+              r[Symbol.replace]("bar", "");
+              false;
+            } catch (e) {
+              e instanceof TypeError;
+            }
+            """);
+        Assert.True(result.AsBoolean());
+    }
 }

@@ -44,15 +44,40 @@ public sealed class ErrorBuiltins : IBuiltinModule
             var capturedProto = protoHandle;
             var capturedCtx = context;
             var heap2 = context.Heap;
-            var constructor = new NativeFunctionObject(
+            // ECMA-262 20.5.12 SuppressedError(error, suppressed, message):
+            //   message (if not undefined), then error, then suppressed as
+            //   non-enumerable own data properties.
+            // ECMA-262 20.5.12 SuppressedError(error, suppressed, message):
+            //   Properties must be in order: message, error, suppressed.
+            //   We build the object manually (not via BuildErrorCore) so stack
+            //   comes last, satisfying the test's index-based assertions.
+            JsValue BuildSuppressedError(bool asConstruct, IReadOnlyList<JsValue> args)
+            {
+                var err = new JsObject();
+                err.ToStringTagSlot = BuiltinTagSlot.Error;
+                err.SetPrototype(capturedProto);
+                string msgStr = string.Empty;
+                if (args.Count > 2 && args[2].Tag != JsValueTag.Undefined)
+                {
+                    msgStr = context.ToStringValue(args[2]);
+                    err.DefineOwnProperty("message",
+                        new Objects.JsPropertyDescriptor(JsValue.FromString(msgStr), Writable: true, Enumerable: false, Configurable: true));
+                }
+                err.DefineOwnProperty("error",
+                    new Objects.JsPropertyDescriptor(args.Count > 0 ? args[0] : JsValue.Undefined, Writable: true, Enumerable: false, Configurable: true));
+                err.DefineOwnProperty("suppressed",
+                    new Objects.JsPropertyDescriptor(args.Count > 1 ? args[1] : JsValue.Undefined, Writable: true, Enumerable: false, Configurable: true));
+                err.DefineOwnProperty("stack",
+                    new Objects.JsPropertyDescriptor(JsValue.FromString(context.CaptureCallStack("SuppressedError", msgStr)), Writable: true, Enumerable: false, Configurable: true));
+                return JsValue.FromObject(heap2.AllocateObject(err, AllocationSite.Current()));
+            }
+            var suppressedErrorCtor = new NativeFunctionObject(
                 "SuppressedError",
-                (_, args) => BuildError(capturedCtx, capturedProto, "SuppressedError",
-                    args.Count > 2 ? new[] { args[2] } : Array.Empty<JsValue>()),
-                args => BuildError(capturedCtx, capturedProto, "SuppressedError",
-                    args.Count > 2 ? new[] { args[2] } : Array.Empty<JsValue>()),
+                (thisVal, args) => BuildSuppressedError(asConstruct: false, args),
+                args => BuildSuppressedError(asConstruct: true, args),
                 length: 3);
-            constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(protoHandle), Writable: false, Enumerable: false, Configurable: false));
-            var ctorHandle = heap2.AllocateObject(constructor, AllocationSite.Current());
+            suppressedErrorCtor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(protoHandle), Writable: false, Enumerable: false, Configurable: false));
+            var ctorHandle = heap2.AllocateObject(suppressedErrorCtor, AllocationSite.Current());
             heap2.PushRoot(ctorHandle);
             heap2.WriteBarrier(ctorHandle, protoHandle);
             var proto = heap2.GetObject(protoHandle);
@@ -145,18 +170,35 @@ public sealed class ErrorBuiltins : IBuiltinModule
 
     private static JsValue BuildError(IBuiltinContext ctx, ObjectHandle protoHandle, string name, IReadOnlyList<JsValue> args)
     {
+        var messageArg = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var err = BuildErrorCore(ctx, protoHandle, name, messageArg);
+        // ECMA-262 20.5.8.1 InstallErrorCause ( O, options )
+        if (args.Count > 1 && args[1].Tag == JsValueTag.Object)
+        {
+            var errObj = ctx.Heap.GetObject(err.AsObjectHandle());
+            var optionsObj = ctx.Heap.GetObject(args[1].AsObjectHandle());
+            if (ctx.TryGetPropertyValue(optionsObj, args[1], "cause", out var causeValue))
+            {
+                _ = errObj.DefineOwnProperty("cause",
+                    new Objects.JsPropertyDescriptor(causeValue, Writable: true, Enumerable: false, Configurable: true));
+            }
+        }
+        return err;
+    }
+
+    // Core error object construction: sets [[ErrorData]] tag, prototype, message
+    // (when not undefined), and stack. Does NOT handle options.cause or extra
+    // SuppressedError properties — callers add those after.
+    internal static JsValue BuildErrorCore(IBuiltinContext ctx, ObjectHandle protoHandle, string name, JsValue messageArg)
+    {
         var err = new JsObject();
         err.ToStringTagSlot = BuiltinTagSlot.Error;
         err.SetPrototype(protoHandle);
-        // ECMA-262 20.5.1.1 Error ( message ): only define `message` when the
-        // argument is not undefined, with attributes { w:t, e:f, c:t }. `name`
-        // is inherited from the prototype, not installed on each instance.
-        // `stack` is a host extension; keep it non-enumerable to match Chromium/SM.
         string msg = string.Empty;
-        bool hasMessage = args.Count > 0 && args[0].Tag != JsValueTag.Undefined;
+        bool hasMessage = messageArg.Tag != JsValueTag.Undefined;
         if (hasMessage)
         {
-            msg = ctx.ToStringValue(args[0]);
+            msg = ctx.ToStringValue(messageArg);
             _ = err.DefineOwnProperty("message",
                 new Objects.JsPropertyDescriptor(JsValue.FromString(msg), Writable: true, Enumerable: false, Configurable: true));
         }

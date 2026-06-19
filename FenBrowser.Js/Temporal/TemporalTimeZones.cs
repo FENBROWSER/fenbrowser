@@ -38,6 +38,20 @@ internal static class TemporalTimeZones
             return false;
         }
 
+        if (TimeZoneInfo.TryConvertWindowsIdToIanaId(id, out var ianaId))
+        {
+            id = ianaId;
+        }
+
+        if (string.Equals(id, "UTC", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(id, "GMT", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(id, "Etc/UTC", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(id, "Etc/GMT", StringComparison.OrdinalIgnoreCase))
+        {
+            canonical = "UTC";
+            return true;
+        }
+
         // Offset time zone: sign HH[:MM] — minute precision only.
         if (id[0] == '+' || id[0] == '-')
         {
@@ -53,12 +67,6 @@ internal static class TemporalTimeZones
             long absMinutes = Math.Abs(minutes);
             canonical = $"{(minutes < 0 ? "-" : "+")}{absMinutes / 60:D2}:{absMinutes % 60:D2}";
             fixedOffsetNs = offsetNs;
-            return true;
-        }
-
-        if (string.Equals(id, "UTC", StringComparison.OrdinalIgnoreCase))
-        {
-            canonical = "UTC";
             return true;
         }
 

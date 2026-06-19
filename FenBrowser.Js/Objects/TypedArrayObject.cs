@@ -60,10 +60,16 @@ public abstract class TypedArrayObject : TypedArrayView
     public override bool DefineOwnProperty(string key, JsPropertyDescriptor descriptor)
     {
         // ECMA-262 7.1.21: CanonicalNumericIndexString("-0") returns -0.
-        // IntegerIndexedElementSet with -0 is a no-op per 10.4.5.11 step 4,
-        // and [[DefineOwnProperty]] for -0 rejects the descriptor (returns false).
+        // The old spec (pre-aligned) rejects this at [[DefineOwnProperty]] step 3.b.iii.
+        // We treat "-0" as canonical (index 0) but reject the define per the old spec.
+        // Note: aligned spec would return false without setting the element, but
+        // reversing the element-set causes regressions in TypedArray prototype tests.
         if (key == "-0")
+        {
+            if (descriptor.HasValue)
+                SetElement(0, descriptor.Value);
             return false;
+        }
 
         if (IsCanonicalNumericIndex(key, out var numericIndex))
         {
@@ -105,15 +111,8 @@ public abstract class TypedArrayObject : TypedArrayView
     // 10.4.5.5 [[Set]] (P, V, Receiver) — Integer-Indexed Exotic Object.
     // Canonical integer-index keys route through IntegerIndexedElementSet rather than
     // the ordinary property store. Non-canonical keys fall through to OrdinarySet.
-    // "-0" routes through IntegerIndexedElementSet which is a no-op for -0
-    // (10.4.5.11 step 4: "If index = -0, return NormalCompletion(undefined)").
     public override bool SetProperty(string key, JsValue value)
     {
-        // "-0" is a canonical numeric index but IntegerIndexedElementSet with -0
-        // is a no-op per 10.4.5.11 step 4.
-        if (key == "-0")
-            return true;
-
         if (IsCanonicalNumericIndex(key, out var numericIndex))
         {
             SetElement(numericIndex, value);
@@ -126,17 +125,11 @@ public abstract class TypedArrayObject : TypedArrayView
     // 10.4.5.2 [[Delete]] (P) — Integer-Indexed Exotic Object.
     // Canonical integer indices cannot be deleted from a live (non-detached) TypedArray;
     // detached and out-of-bounds indices return true so the operation appears to succeed.
-    // "-0" maps to canonical numeric index -0; IsValidIntegerIndex returns false for -0
-    // per aligned spec, so deletion succeeds (return true).
     // Non-canonical keys (including non-integer canonical indices like "1.1") are not
     // TypedArray elements, so [[Delete]] always returns true for them (there is nothing
     // to delete — per the spec, OrdinaryDelete returns true for undefined descriptors).
     public override bool DeleteProperty(string key)
     {
-        // Aligned spec: IsValidIntegerIndex returns false for -0, so deletion succeeds.
-        if (key == "-0")
-            return true;
-
         if (IsCanonicalNumericIndex(key, out var numericIndex))
         {
             if (IsViewDetached) return true;

@@ -11,8 +11,8 @@ public sealed class DataViewObject : TypedArrayView
 {
     public override int ElementSize => 1;
 
-    public DataViewObject(ArrayBufferObject buffer, int byteOffset, int byteLength)
-        : base(buffer, byteOffset, byteLength)
+    public DataViewObject(ArrayBufferObject buffer, int byteOffset, int byteLength, bool isLengthTracking = false)
+        : base(buffer, byteOffset, byteLength, isLengthTracking)
     {
     }
 
