@@ -9666,12 +9666,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromObject(resultHandle);
         }, length: 1);
 
-        // ECMA-262 20.1.2.7 Object.fromEntries(iterable). The full spec walks an
-        // arbitrary iterable via @@iterator; this implementation accepts an Array of
-        // two-element entries (the overwhelmingly common case) until the full
-        // iterator protocol is wired. Each entry's [0] becomes the property key
-        // (coerced via ToPropertyKey) and [1] becomes the value. Non-Array or non-
-        // entry inputs surface as a TypeError, matching engines like V8 / SM.
+        // ECMA-262 20.1.2.7 Object.fromEntries(iterable). Walks the iterable via
+        // @@iterator, expecting each element to be an object with a "0" property (key)
+        // and a "1" property (value). The key is coerced via ToPropertyKey.
         DefineIntrinsicFunction(constructorHandle, constructor, "fromEntries", (_, args) =>
         {
             var iterable = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -9681,39 +9678,43 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     "Object.fromEntries: argument must be an iterable of entries."));
             }
 
-            var source = _heap.GetObject(iterable.AsObjectHandle());
-            if (source is not ArrayObject)
-            {
-                throw new JsThrownException(CreateTypeError(
-                    "Object.fromEntries: argument must be an Array (full iterator protocol pending)."));
-            }
-
-            var length = GetArrayLength(source);
             var result = CreateOrdinaryObject();
-            for (var i = 0; i < length; i++)
+            var resultHandle = _heap.AllocateObject(result, AllocationSite.Current());
+            var iter = CreateForOfIterator(iterable);
+            if (iter.Tag != JsValueTag.Object || _heap.GetObject(iter.AsObjectHandle()) is not ForOfIteratorObject forOf)
             {
-                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                if (!TryGetPropertyValue(source, iterable, key, out var entryValue) ||
-                    entryValue.Tag != JsValueTag.Object)
+                // Non-iterable or non-ForOf path: try array-like fallback.
+                var src = _heap.GetObject(iterable.AsObjectHandle());
+                var length = GetArrayLength(src);
+                for (var i = 0; i < length; i++)
                 {
-                    throw new JsThrownException(CreateTypeError(
-                        $"Object.fromEntries: entry at index {i} is not an object."));
+                    var idxKey = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    if (!TryGetPropertyValue(src, iterable, idxKey, out var entryValue) ||
+                        entryValue.Tag != JsValueTag.Object)
+                        throw new JsThrownException(CreateTypeError($"Object.fromEntries: entry at index {i} is not an object."));
+                    var entry = _heap.GetObject(entryValue.AsObjectHandle());
+                    if (!TryGetPropertyValue(entry, entryValue, "0", out var k) ||
+                        !TryGetPropertyValue(entry, entryValue, "1", out var v))
+                        throw new JsThrownException(CreateTypeError($"Object.fromEntries: entry at index {i} must have '0' and '1' properties."));
+                    var propKey = ToPropertyKey(k);
+                    result.SetProperty(propKey, v);
+                    if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
                 }
-
-                var entry = _heap.GetObject(entryValue.AsObjectHandle());
-                if (entry is not ArrayObject)
-                {
-                    throw new JsThrownException(CreateTypeError(
-                        $"Object.fromEntries: entry at index {i} is not an Array."));
-                }
-
-                TryGetPropertyValue(entry, entryValue, "0", out var entryKey);
-                TryGetPropertyValue(entry, entryValue, "1", out var entryValueSlot);
-                var keyName = ToPropertyKey(entryKey);
-                result.SetProperty(keyName, entryValueSlot);
+                return JsValue.FromObject(resultHandle);
             }
 
-            var resultHandle = _heap.AllocateObject(result, AllocationSite.Current());
+            while (forOf.TryMoveNext(out var entryValue))
+            {
+                if (entryValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(CreateTypeError("Object.fromEntries: each entry must be an object."));
+                var entry = _heap.GetObject(entryValue.AsObjectHandle());
+                if (!TryGetPropertyValue(entry, entryValue, "0", out var k) ||
+                    !TryGetPropertyValue(entry, entryValue, "1", out var v))
+                    throw new JsThrownException(CreateTypeError("Object.fromEntries: each entry must have '0' and '1' properties."));
+                var propKey = ToPropertyKey(k);
+                result.SetProperty(propKey, v);
+                if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
+            }
             return JsValue.FromObject(resultHandle);
         }, length: 1);
 
