@@ -17743,6 +17743,8 @@ fallbackArraySpecies:
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "split", StringPrototypeSplit, length: 2);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "replace", StringPrototypeReplace, length: 2);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "replaceAll", StringPrototypeReplaceAll, length: 2);
+        // ECMA-262 22.1.3.10 String.prototype.matchAll ( regexp )
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototypeObject, "matchAll", StringPrototypeMatchAll, length: 1);
         // ECMA-262 22.1.3.13 String.prototype.normalize([form]). Routes through
         // .NET String.Normalize which exposes the same four Unicode normalisation
         // forms (NFC default, NFD, NFKC, NFKD). Any other form value raises
@@ -18285,6 +18287,55 @@ fallbackArraySpecies:
         }
 
         return JsValue.FromString(result.ToString());
+    }
+
+    // ECMA-262 22.1.3.10 String.prototype.matchAll ( regexp )
+    private JsValue StringPrototypeMatchAll(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var O = ToStringValue(thisValue); // RequireObjectCoercible + ToString
+        var regexp = args.Count > 0 ? args[0] : JsValue.Undefined;
+
+        // Step 2: if regexp is not undefined and not null
+        if (regexp.Tag != JsValueTag.Undefined && regexp.Tag != JsValueTag.Null)
+        {
+            // Step 2.a: IsRegExp(regexp)
+            if (IsRegExp(regexp))
+            {
+                // Step 2.b.i-iii: require "g" flag
+                if (TryGetPropertyValue(_heap.GetObject(regexp.AsObjectHandle()), regexp, "flags", out var flagsVal))
+                {
+                    var flags = ToStringValue(flagsVal);
+                    if (!flags.Contains('g'))
+                        throw new JsThrownException(CreateTypeError("String.prototype.matchAll requires a regexp with the global flag."));
+                }
+            }
+            // Step 2.c: GetMethod(regexp, @@matchAll)
+            var matchAllSymId = GetWellKnownSymbolId("matchAll");
+            if (matchAllSymId != 0 &&
+                regexp.Tag == JsValueTag.Object &&
+                _heap.GetObject(regexp.AsObjectHandle()).TryGetSymbolProperty(matchAllSymId, h => _heap.GetObject(h), out var mDesc) &&
+                mDesc.Value.Tag != JsValueTag.Undefined &&
+                IsCallable(mDesc.Value))
+            {
+                // Step 2.d.i: call regexp[@@matchAll](O)
+                return CallFunction(mDesc.Value, new[] { JsValue.FromString(O) }, regexp);
+            }
+        }
+
+        // Step 3-4: create RegExp(regexp, "g") and invoke its @@matchAll
+        var ctor = JsValue.FromObject(EnsureRegExpConstructor());
+        var rx = ConstructFunction(ctor, new[] { regexp, JsValue.FromString("g") });
+        var rxObj = _heap.GetObject(rx.AsObjectHandle());
+        var rxMatchAllSymId = GetWellKnownSymbolId("matchAll");
+        if (rxMatchAllSymId != 0 &&
+            rxObj.TryGetSymbolProperty(rxMatchAllSymId, h => _heap.GetObject(h), out var rxMDesc) &&
+            rxMDesc.Value.Tag != JsValueTag.Undefined &&
+            IsCallable(rxMDesc.Value))
+        {
+            return CallFunction(rxMDesc.Value, new[] { JsValue.FromString(O) }, rx);
+        }
+
+        throw new JsThrownException(CreateTypeError("String.prototype.matchAll: could not invoke @@matchAll."));
     }
 
     private string ResolveStringReplacement(JsValue replacementValue, string source, int matchStart, string matched)
