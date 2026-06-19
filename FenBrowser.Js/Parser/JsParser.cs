@@ -165,7 +165,7 @@ public sealed class JsParser
         // ECMA-262 lexical-declaration early errors (duplicate let/const/class, or a
         // lexical name clashing with a var/function in the same scope). Run at parse
         // time so these surface as SyntaxError.
-        LexicalDeclarationChecker.Check(program);
+        LexicalDeclarationChecker.Check(program, _strictMode);
         ModuleDeclarationChecker.Check(program);
         return program;
     }
@@ -6099,8 +6099,10 @@ public sealed class JsParser
 
     // ECMA-262 13.4 UpdateExpression: prefix/postfix ++/-- can only be
     // applied to identifiers and member expressions, not call expressions.
-    private static bool IsUpdateTarget(ExpressionNode node) =>
-        node is IdentifierExpressionNode or MemberExpressionNode;
+    // Annex B: in non-strict mode, CallExpression is also a valid update
+    // target (runtime ReferenceError, not parse-time SyntaxError).
+    private bool IsUpdateTarget(ExpressionNode node) =>
+        node is IdentifierExpressionNode or MemberExpressionNode || (!_strictMode && node is CallExpressionNode);
 
     // ECMA-262 13.15.1 — Simple AssignmentTargetType. Returns true for
     // anything that can sit on the LHS of `=` (or compound assignments).

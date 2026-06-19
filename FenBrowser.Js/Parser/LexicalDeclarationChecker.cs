@@ -20,10 +20,13 @@ namespace FenBrowser.Js.Parser;
 // break working programs.
 internal static class LexicalDeclarationChecker
 {
-    public static void Check(ProgramNode program)
+    public static void Check(ProgramNode program, bool strictMode)
     {
+        _strictMode = strictMode;
         CheckScope(program.Body);
     }
+
+    private static bool _strictMode;
 
     // Validate one lexical scope (the statement list of a Script/FunctionBody/Block/
     // CaseBlock), then recurse into the nested scopes it contains.
@@ -324,9 +327,11 @@ internal static class LexicalDeclarationChecker
                 break;
             case SwitchStatementNode sw:
                 // A switch CaseBlock is a single lexical scope spanning all clauses.
+                // Annex B.3.3.5: in sloppy mode, duplicate FunctionDeclarations in a
+                // switch CaseBlock are allowed. Only treat functions as lexical in strict.
                 var caseStatements = new List<StatementNode>();
                 foreach (var c in sw.Cases) caseStatements.AddRange(c.Consequent);
-                CheckScope(caseStatements, treatFunctionsAsLexical: true);
+                CheckScope(caseStatements, treatFunctionsAsLexical: _strictMode);
                 break;
         }
     }
