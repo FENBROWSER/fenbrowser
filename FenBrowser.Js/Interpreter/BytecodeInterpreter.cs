@@ -12336,6 +12336,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             unscopables.DefineOwnProperty("includes", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
             unscopables.DefineOwnProperty("keys", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
             unscopables.DefineOwnProperty("values", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            // ES2023 change-array-by-copy
+            unscopables.DefineOwnProperty("toReversed", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            unscopables.DefineOwnProperty("toSorted", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            unscopables.DefineOwnProperty("toSpliced", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
             _ = prototype.DefineOwnSymbolProperty(unscopablesId,
                 new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(unscopables, AllocationSite.Current())),
                     Writable: false, Enumerable: false, Configurable: true));
