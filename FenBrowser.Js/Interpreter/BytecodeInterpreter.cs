@@ -15360,6 +15360,8 @@ fallbackArraySpecies:
         // ECMA-262 25.1.5.8 ArrayBuffer.prototype [ @@toStringTag ] = "ArrayBuffer"
         DefineBuiltinToStringTag(prototype, "ArrayBuffer");
 
+        constructor.SetPrototype(EnsureFunctionPrototype());
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         _arrayBufferConstructorHandle = constructorHandle;
         _arrayBufferPrototypeHandle = prototypeHandle;
         return constructorHandle;
@@ -15634,6 +15636,8 @@ fallbackArraySpecies:
                 new JsPropertyDescriptor(JsValue.FromString("DataView"), Writable: false, Enumerable: false, Configurable: true));
         }
 
+        constructor.SetPrototype(EnsureFunctionPrototype());
+        _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         _dataViewConstructorHandle = constructorHandle;
         _dataViewPrototypeHandle = prototypeHandle;
         return constructorHandle;
