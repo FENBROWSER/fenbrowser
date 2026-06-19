@@ -29,6 +29,7 @@ public sealed class SymbolBuiltin : IBuiltinModule
             },
             _ => throw new JsThrownException(context.CreateTypeError("Symbol is not a constructor.")),
             length: 0);
+        constructor.SetPrototype(context.GetFunctionPrototype());
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
 
         var handle = heap.AllocateObject(constructor, AllocationSite.Current());

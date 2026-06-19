@@ -118,6 +118,7 @@ public sealed class ErrorBuiltins : IBuiltinModule
             (_, args) => BuildError(capturedCtx, capturedProto, name, args),
             args => BuildError(capturedCtx, capturedProto, name, args),
             length: 1);
+        constructor.SetPrototype(ctx.GetFunctionPrototype());
         constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(protoHandle), Writable: false, Enumerable: false, Configurable: false));
         var ctorHandle = heap.AllocateObject(constructor, AllocationSite.Current());
         heap.PushRoot(ctorHandle);
