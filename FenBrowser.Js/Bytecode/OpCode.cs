@@ -282,4 +282,9 @@ public enum OpCode : byte
 		// Used by object literals: { [computedKey]: function() {} }.
 		SetFunctionName,
 		SetElemDefine,
+		// ECMA-262 15.7.10: computed field name evaluation at class-definition time
+		StoreFieldKey,
+
+		// Load a pre-computed field key from ComputedFieldKeys list.
+		LoadFieldKey,
 }

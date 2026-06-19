@@ -142,6 +142,14 @@ public sealed class BytecodeVerifier
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
                 ValidateRegister(ins.C, function.RegisterCount, ip, "C");
                 break;
+            case OpCode.StoreFieldKey:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                break;
+            case OpCode.LoadFieldKey:
+                ValidateRegister(ins.A, function.RegisterCount, ip, "A");
+                // B is an index into ComputedFieldKeys (validated at runtime)
+                break;
             case OpCode.Add:
             case OpCode.Sub:
             case OpCode.Mul:

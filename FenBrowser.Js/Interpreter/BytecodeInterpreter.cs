@@ -702,7 +702,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             // `this` stays uninitialized until super(...) runs InitThisBinding.
             frameEnv = new FunctionEnvironmentRecord(
-                ThisBindingStatus.Uninitialized, JsValue.Undefined, JsValue.Undefined, callee?.HomeObject, outerEnvironment);
+                ThisBindingStatus.Uninitialized,
+                callee?.SelfHandle is { } sh ? JsValue.FromObject(sh) : JsValue.Undefined,
+                JsValue.Undefined, callee?.HomeObject, outerEnvironment);
         }
         else if (function.Kind == FunctionKind.Arrow)
         {
@@ -719,7 +721,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // observe it. Previously this lived only in frame.ThisValue, which
             // is invisible to an inner arrow's own frame.
             var functionEnv = new FunctionEnvironmentRecord(
-                ThisBindingStatus.Uninitialized, JsValue.Undefined, JsValue.Undefined, callee?.HomeObject, outerEnvironment);
+                ThisBindingStatus.Uninitialized,
+                callee?.SelfHandle is { } sh ? JsValue.FromObject(sh) : JsValue.Undefined,
+                JsValue.Undefined, callee?.HomeObject, outerEnvironment);
             _ = functionEnv.BindThisValue(thisValue);
             // ECMA-262 15.2.5: a named function expression binds its own name (immutably)
             // in scope of its body so it can reference itself (e.g. for recursion).
@@ -1003,6 +1007,49 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             obj.DefineOwnProperty(key, new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
                         }
                     }
+                    break;
+                }
+                case OpCode.StoreFieldKey:
+                {
+                    // Push the computed property key onto the constructor
+                    // function's ComputedFieldKeys list during class definition.
+                    // ECMA-262 15.7.10 step 27: convert to property key via
+                    // ToPropertyKey so errors (ReferenceError, TypeError from
+                    // @@toPrimitive) surface at class-definition time.
+                    var rawKey = frame.Registers[ins.A];
+                    var propKey = ToPropertyKey(rawKey);
+                    var keyValue = rawKey.Tag == JsValueTag.Symbol
+                        ? rawKey
+                        : JsValue.FromString(propKey);
+                    var ctorValue = frame.Registers[ins.B];
+                    if (ctorValue.Tag == JsValueTag.Object)
+                    {
+                        var ctorObj = _heap.GetObject(ctorValue.AsObjectHandle());
+                        if (ctorObj is JsFunctionObject ctorFn)
+                        {
+                            ctorFn.ComputedFieldKeys.Add(keyValue);
+                        }
+                    }
+                    break;
+                }
+                case OpCode.LoadFieldKey:
+                {
+                    // Load a pre-computed field key by index during
+                    // instance construction. Keys are stored on the
+                    // JsFunctionObject by StoreFieldKey at class definition time.
+                    var idx = ins.B;
+                    JsValue key = JsValue.Undefined;
+                    if (frame.Environment is FunctionEnvironmentRecord fen &&
+                        fen.FunctionObject.Tag == JsValueTag.Object)
+                    {
+                        var calleeObj = _heap.GetObject(fen.FunctionObject.AsObjectHandle());
+                        if (calleeObj is JsFunctionObject calleeFn &&
+                            idx < calleeFn.ComputedFieldKeys.Count)
+                        {
+                            key = calleeFn.ComputedFieldKeys[idx];
+                        }
+                    }
+                    frame.Registers[ins.A] = key;
                     break;
                 }
                 case OpCode.Jump:

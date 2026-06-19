@@ -68,6 +68,11 @@ public sealed class BytecodeFunction
     // while `super()` walks the constructor's own [[Prototype]] chain.
     public bool IsClassConstructor { get; init; }
 
+    // ECMA-262 15.7.10: computed property names for class fields are evaluated
+    // at class-definition time. The resulting property keys are stored here and
+    // loaded in the constructor via LoadFieldKey instead of recomputing.
+    public List<JsValue> ComputedFieldKeys { get; init; } = new();
+
     internal Dictionary<int, PolymorphicInlineCache>? LoadICs { get; set; }
     internal Dictionary<int, PolymorphicInlineCache>? StoreICs { get; set; }
     internal Dictionary<int, CallICEntry>? CallICs { get; set; }

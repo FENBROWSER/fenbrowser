@@ -56,6 +56,13 @@ public sealed class BytecodeCompiler
     // Per-function brand tokens for private field access validation.
     private List<long> _brandTokens = new();
 
+    // Computed field names whose evaluation is deferred from the constructor
+    // to class-definition time (ECMA-262 15.7.10 step 27). Each entry is
+    // evaluated and stored via StoreFieldKey during class setup; the
+    // constructor loads them via LoadFieldKey instead of recomputing.
+    private List<ExpressionNode>? _computedFieldNames;
+    private int _computedFieldCount;
+
     private readonly List<Instruction> _instructions = new();
     private readonly List<JsValue> _constants = new();
     private readonly Dictionary<string, int> _variables = new(StringComparer.Ordinal);
@@ -935,6 +942,11 @@ public sealed class BytecodeCompiler
 
         // H.5 - public instance fields. ECMA-262 15.7.10 [[InitializeInstanceElements]]
         // runs on constructor entry (base) or right after super() returns (derived).
+        // Computed property names are evaluated at CLASS DEFINITION time, not
+        // deferred to the constructor. Collect them so we can emit StoreFieldKey
+        // during class setup and LoadFieldKey in the constructor.
+        _computedFieldNames = new List<ExpressionNode>();
+        _computedFieldCount = 0;
         var instanceFieldInits = new List<StatementNode>();
         foreach (var member in members)
         {
@@ -942,11 +954,16 @@ public sealed class BytecodeCompiler
             MemberExpressionNode lhs;
             if (member.ComputedName is not null)
             {
+                // Record the computed name expression for evaluation at class
+                // definition time. The constructor will load the pre-computed
+                // key via LoadFieldKey instead of recomputing the expression.
+                var fieldIndex = _computedFieldNames.Count;
+                _computedFieldNames.Add(member.ComputedName);
                 lhs = new MemberExpressionNode(
                     new ThisExpressionNode(member.Span),
-                    Property: string.Empty,
-                    Computed: true,
-                    PropertyExpression: member.ComputedName,
+                    Property: fieldIndex.ToString(),
+                    Computed: false,
+                    PropertyExpression: null,
                     member.Span);
             }
             else
@@ -1155,6 +1172,21 @@ public sealed class BytecodeCompiler
             _instructions.Add(new Instruction(OpCode.CallMethod0, discard, blockReg, classReg));
         }
 
+        // ECMA-262 15.7.10 step 27: evaluate computed field names at class
+        // definition time and store the property keys on the constructor
+        // function so the constructor can load them via LoadFieldKey.
+        if (_computedFieldNames is not null)
+        {
+            for (int i = 0; i < _computedFieldNames.Count; i++)
+            {
+                var keyReg = CompileExpression(_computedFieldNames[i]);
+                // ToPropertyKey: convert the expression result to a string/symbol key
+                keyReg = EmitToPropertyKey(keyReg);
+                _instructions.Add(new Instruction(OpCode.StoreFieldKey, keyReg, classReg, 0));
+            }
+            _computedFieldNames = null;
+        }
+
         return classReg;
         }
         finally
@@ -1172,7 +1204,7 @@ public sealed class BytecodeCompiler
             fnExpr.ParameterBindings,
             out var prologueCount,
             fnExpr.ParameterDefaults);
-        var childCompiler = new BytecodeCompiler { _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _isClassConstructor = this._isClassConstructor, _brandTokens = this._brandTokens };
+        var childCompiler = new BytecodeCompiler { _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _isClassConstructor = this._isClassConstructor, _brandTokens = this._brandTokens, _computedFieldNames = this._computedFieldNames };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             fnExpr.Parameters,
@@ -2227,27 +2259,50 @@ public sealed class BytecodeCompiler
         var catchEntry = _instructions.Count;
         PatchJump(pushHandlerIndex, catchEntry);
 
-        // ECMA-262 14.3 â€” catch creates a new EnvironmentRecord for the catch
-        // parameter. We add it as a var declaration so InstantiateVarDeclarations
-        // creates the binding in the function env (initialized to undefined,
-        // surviving generator save/restore). StoreVar then writes the actual
-        // exception value from register 0. The catch var is function-scoped
-        // rather than block-scoped; proper block scoping (EnterScope/LeaveScope)
-        // will replace this once those opcodes are fully debugged.
-        EmitCatchParameterBinding(tryCatchStmt.CatchIdentifier, tryCatchStmt.CatchPattern);
+        // ECMA-262 14.3: catch creates a new EnvironmentRecord for the catch
+        // parameter. For destructuring patterns, use EnterScope/LeaveScope to
+        // create proper block-scoped bindings (B.3.5). Simple identifiers keep
+        // the legacy var-scoped behaviour.
+        bool useBlockScope = tryCatchStmt.CatchPattern is not null;
+        List<int>? catchScopeSlots = null;
+        if (useBlockScope)
+        {
+            catchScopeSlots = new List<int>();
+            var names = new List<string>();
+            CollectBoundNames(tryCatchStmt.CatchPattern!, names);
+            foreach (var name in names)
+            {
+                var slot = GetOrCreateVariableSlot(name);
+                catchScopeSlots.Add(slot);
+                _instructions.Add(new Instruction(OpCode.EnterScope, slot, 0, 0));
+                _openScopeDepth++;
+            }
+        }
+
+        EmitCatchParameterBinding(tryCatchStmt.CatchIdentifier, tryCatchStmt.CatchPattern, useBlockScope);
         // The Catch block's completion starts empty; reset so an empty catch body
         // yields undefined rather than the exception value still sitting in reg 0.
         EmitCompletionReset();
         CompileStatement(tryCatchStmt.CatchBlock);
 
+        if (useBlockScope && catchScopeSlots is not null)
+        {
+            foreach (var _ in catchScopeSlots)
+            {
+                _instructions.Add(new Instruction(OpCode.LeaveScope, 0, 0, 0));
+                _openScopeDepth--;
+            }
+        }
+
         PatchJump(jumpAfterCatch, _instructions.Count);
     }
 
     // Bind the caught exception (in register 0) to the CatchParameter. A plain
-    // identifier stores straight into its slot; a BindingPattern destructures the
-    // exception value. Bound names are registered as var declarations to match the
-    // existing function-scoped catch-binding behaviour.
-    private void EmitCatchParameterBinding(string catchIdentifier, BindingPatternNode? catchPattern)
+    // identifier stores straight into its slot (var-scoped); a BindingPattern
+    // destructures the exception value into block-scoped bindings when
+    // useBlockScope is true (via InitVar + EnterScope), or var-scoped bindings
+    // (via StoreVar) otherwise.
+    private void EmitCatchParameterBinding(string catchIdentifier, BindingPatternNode? catchPattern, bool useBlockScope = false)
     {
         if (catchPattern is null)
         {
@@ -2262,14 +2317,17 @@ public sealed class BytecodeCompiler
         foreach (var name in names)
         {
             _ = GetOrCreateVariableSlot(name);
-            _varDeclarationNames.Add(name);
+            if (!useBlockScope)
+            {
+                _varDeclarationNames.Add(name);
+            }
         }
-
         // Copy the exception out of register 0 before destructuring, since pattern
         // assignment allocates and writes registers while extracting elements.
         var exReg = AllocateRegister();
         _instructions.Add(new Instruction(OpCode.Move, exReg, 0, 0));
-        EmitBindingPatternAssignment(catchPattern, exReg, OpCode.StoreVar);
+        var storeOp = useBlockScope ? OpCode.InitVar : OpCode.StoreVar;
+        EmitBindingPatternAssignment(catchPattern, exReg, storeOp);
     }
 
     // A Finally block's normal completion value is discarded (ECMA-262 14.15.3):
@@ -2333,9 +2391,35 @@ public sealed class BytecodeCompiler
         var catchFinallyHandler = _instructions.Count;
         _instructions.Add(new Instruction(OpCode.PushHandler, -1, 0, 0, D: -1));
 
-        EmitCatchParameterBinding(stmt.CatchIdentifier, stmt.CatchPattern);
+        // EnterScope/LeaveScope for destructuring catch patterns (B.3.5).
+        bool useBlockScope = stmt.CatchPattern is not null;
+        List<int>? catchScopeSlots = null;
+        if (useBlockScope)
+        {
+            catchScopeSlots = new List<int>();
+            var names = new List<string>();
+            CollectBoundNames(stmt.CatchPattern!, names);
+            foreach (var name in names)
+            {
+                var slot = GetOrCreateVariableSlot(name);
+                catchScopeSlots.Add(slot);
+                _instructions.Add(new Instruction(OpCode.EnterScope, slot, 0, 0));
+                _openScopeDepth++;
+            }
+        }
+
+        EmitCatchParameterBinding(stmt.CatchIdentifier, stmt.CatchPattern, useBlockScope);
         EmitCompletionReset();
         CompileStatement(stmt.CatchBlock);
+
+        if (useBlockScope && catchScopeSlots is not null)
+        {
+            foreach (var _ in catchScopeSlots)
+            {
+                _instructions.Add(new Instruction(OpCode.LeaveScope, 0, 0, 0));
+                _openScopeDepth--;
+            }
+        }
 
         _instructions.Add(new Instruction(OpCode.PopHandler, 0, 0, 0));
         _ = _finallyStack.Pop();
@@ -2724,6 +2808,12 @@ public sealed class BytecodeCompiler
                     var keyReg = CompileExpression(member.PropertyExpression!);
                     _instructions.Add(new Instruction(OpCode.SetElem, objectReg, keyReg, valueReg));
                 }
+                else if (TryGetComputedFieldIndex(member.Property, out var fieldIdx2))
+                {
+                    var keyReg = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.LoadFieldKey, keyReg, fieldIdx2, 0));
+                    _instructions.Add(new Instruction(OpCode.SetElem, objectReg, keyReg, valueReg));
+                }
                 else
                 {
                     var nameIndex = GetOrCreatePropertyName(member.Property);
@@ -2794,6 +2884,13 @@ public sealed class BytecodeCompiler
                 if (member.Computed)
                 {
                     var keyReg = CompileExpression(member.PropertyExpression!);
+                    _instructions.Add(new Instruction(OpCode.GetElem, dest, objectReg, keyReg));
+                }
+                else if (TryGetComputedFieldIndex(member.Property, out var fieldIdx))
+                {
+                    // Computed field name pre-evaluated at class definition time.
+                    var keyReg = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.LoadFieldKey, keyReg, fieldIdx, 0));
                     _instructions.Add(new Instruction(OpCode.GetElem, dest, objectReg, keyReg));
                 }
                 else
@@ -3726,8 +3823,18 @@ public sealed class BytecodeCompiler
                 break;
             case TryCatchStatementNode tryCatch:
                 CollectAnnexBInStatement(tryCatch.TryBlock, conflicts, result);
-                // The catch parameter is exempt (B.3.5), so it is not added to conflicts.
-                CollectAnnexBInStatement(tryCatch.CatchBlock, conflicts, result);
+                // B.3.5: only a simple BindingIdentifier catch parameter is exempt.
+                // Destructuring patterns add their BoundNames to the conflict set.
+                if (tryCatch.CatchPattern is not null)
+                {
+                    var catchConflicts = new HashSet<string>(conflicts, StringComparer.Ordinal);
+                    AddPatternNames(tryCatch.CatchPattern, catchConflicts);
+                    CollectAnnexBInStatement(tryCatch.CatchBlock, catchConflicts, result);
+                }
+                else
+                {
+                    CollectAnnexBInStatement(tryCatch.CatchBlock, conflicts, result);
+                }
                 break;
             case TryFinallyStatementNode tryFinally:
                 CollectAnnexBInStatement(tryFinally.TryBlock, conflicts, result);
@@ -3735,12 +3842,43 @@ public sealed class BytecodeCompiler
                 break;
             case TryCatchFinallyStatementNode tryCatchFinally:
                 CollectAnnexBInStatement(tryCatchFinally.TryBlock, conflicts, result);
-                CollectAnnexBInStatement(tryCatchFinally.CatchBlock, conflicts, result);
+                if (tryCatchFinally.CatchPattern is not null)
+                {
+                    var catchConflicts = new HashSet<string>(conflicts, StringComparer.Ordinal);
+                    AddPatternNames(tryCatchFinally.CatchPattern, catchConflicts);
+                    CollectAnnexBInStatement(tryCatchFinally.CatchBlock, catchConflicts, result);
+                }
+                else
+                {
+                    CollectAnnexBInStatement(tryCatchFinally.CatchBlock, conflicts, result);
+                }
                 CollectAnnexBInStatement(tryCatchFinally.FinallyBlock, conflicts, result);
                 break;
             default:
                 // ExpressionStatement, return, bare FunctionDeclaration (B.3.4 — not
                 // handled here), etc.: nothing to collect.
+                break;
+        }
+    }
+
+    // Collect bound names from a BindingPattern into a HashSet.
+    private static void AddPatternNames(BindingPatternNode pattern, HashSet<string> names)
+    {
+        switch (pattern)
+        {
+            case IdentifierBindingPatternNode id:
+                names.Add(id.Name);
+                break;
+            case ArrayBindingPatternNode arr:
+                foreach (var el in arr.Elements)
+                {
+                    if (el.Target is not null) AddPatternNames(el.Target, names);
+                }
+                break;
+            case ObjectBindingPatternNode obj:
+                foreach (var prop in obj.Properties)
+                    AddPatternNames(prop.Target, names);
+                if (obj.Rest is not null) AddPatternNames(obj.Rest, names);
                 break;
         }
     }
@@ -3926,6 +4064,15 @@ public sealed class BytecodeCompiler
         if (member.Computed)
         {
             var keyReg = CompileExpression(member.PropertyExpression!);
+            _instructions.Add(new Instruction(OpCode.SetElem, objectReg, keyReg, valueReg));
+            return;
+        }
+
+        if (TryGetComputedFieldIndex(member.Property, out var fieldIdx))
+        {
+            // Computed field name: load pre-evaluated key and use SetElem.
+            var keyReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.LoadFieldKey, keyReg, fieldIdx, 0));
             _instructions.Add(new Instruction(OpCode.SetElem, objectReg, keyReg, valueReg));
             return;
         }
@@ -4253,6 +4400,34 @@ public sealed class BytecodeCompiler
         // A concise method / accessor is an ordinary callable with no own
         // `prototype` and no [[Construct]] (ECMA-262 15.4 MethodDefinition).
         return isMethod ? FunctionKind.Method : FunctionKind.Ordinary;
+    }
+
+    /// <summary>
+    /// Checks whether <paramref name="property"/> is a computed field index
+    /// (stored in the AST as a stringified integer when the compiler defers
+    /// computed field name evaluation to class-definition time).
+    /// </summary>
+    private bool TryGetComputedFieldIndex(string property, out int index)
+    {
+        if (_computedFieldNames is not null &&
+            _computedFieldCount < _computedFieldNames.Count &&
+            int.TryParse(property, out index) &&
+            index >= 0 && index < _computedFieldNames.Count)
+        {
+            return true;
+        }
+        index = -1;
+        return false;
+    }
+
+    // Emit bytecode to convert a register value to a property key (ToPropertyKey).
+    // Returns the register holding the property key result.
+    private int EmitToPropertyKey(int valueReg)
+    {
+        // ToPropertyKey calls ToPrimitive(string) then ToString.
+        // For now, the StoreFieldKey + later SetElem/GetElem do ToPropertyKey
+        // implicitly. Return the value as-is.
+        return valueReg;
     }
 
     private static bool IsDirectEvalCallCallee(ExpressionNode callee)
