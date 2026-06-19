@@ -9998,9 +9998,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         continue;
                     }
 
-                    var value = TryGetPropertyValue(fromObj, fromValue, pair.Key, out var v)
-                        ? v
-                        : JsValue.Undefined;
+                    // Use [[Get]] (GetReceiverProperty) so accessor throws propagate.
+                    var value = GetReceiverProperty(fromValue, pair.Key);
                     if (!SetPropertyValue(toHandle, to, pair.Key, value, toValue))
                     {
                         throw new JsThrownException(CreateTypeError(
@@ -10009,6 +10008,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
 
                 // Symbol-keyed own enumerable properties follow the string keys.
+                // Must also use [[Set]] per spec, not [[DefineOwnProperty]].
                 foreach (var pair in fromObj.EnumerateOwnSymbolProperties())
                 {
                     if (!pair.Value.Enumerable)
@@ -10016,12 +10016,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         continue;
                     }
 
-                    var value = GetReceiverSymbolProperty(fromValue, pair.Key);
-                    to.DefineOwnSymbolProperty(pair.Key,
-                        new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
-                    if (value.Tag == JsValueTag.Object)
+                    var symValue = GetReceiverSymbolProperty(fromValue, pair.Key);
+                    if (!SetSymbolPropertyValue(toHandle, to, pair.Key, symValue, toValue))
                     {
-                        _heap.WriteBarrier(toHandle, value.AsObjectHandle());
+                        throw new JsThrownException(CreateTypeError(
+                            "Cannot assign to read-only symbol property."));
+                    }
+                    if (symValue.Tag == JsValueTag.Object)
+                    {
+                        _heap.WriteBarrier(toHandle, symValue.AsObjectHandle());
                     }
                 }
             }
