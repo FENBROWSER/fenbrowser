@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Target: **100% pass rate**. Refresh batched store: `FRESH=1 bash scripts/run_full_batched.sh`
 
 ```
-test262: 44821/53189 = 84.27% (8368 fail)
-Top clusters: RegExp(1184) intl402(921) Temporal(800) staging(737) module-code(376) class(373) annexB(355)
+test262: 46825/53188 = 88.04% (6363 fail)
+Top clusters: intl402(930) Temporal(623) staging(592) module-code(351) eval-code(191) annexB(176) class(166)
 ```
 
 ## ⚠️ Current Reality (read first — the tree has diverged from older docs)
