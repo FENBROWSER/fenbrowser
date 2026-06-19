@@ -974,48 +974,8 @@ public sealed partial class BytecodeInterpreter
         var locale = args.Count > 0 ? ToStringValue(args[0]) : string.Empty;
         var state = ParseListFormatState(locale, args.Count > 1 ? args[1] : JsValue.Undefined);
 
-        var prototype = CreateOrdinaryObject();
-        var protoHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
-        _heap.PushRoot(protoHandle);
-
-        var formatMethod = new NativeFunctionObject(
-            "format",
-            (_, fmtArgs) =>
-            {
-                var list = GetListFormatItems(fmtArgs.Count > 0 ? fmtArgs[0] : JsValue.Undefined);
-                var parts = FormatListToParts(list, state);
-                return JsValue.FromString(string.Concat(parts.Select(static p => p.Value)));
-            },
-            length: 1);
-        var formatHandle = _heap.AllocateObject(formatMethod, AllocationSite.Current());
-        prototype.DefineOwnProperty("format",
-            new JsPropertyDescriptor(JsValue.FromObject(formatHandle), Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(protoHandle, formatHandle);
-
-        var formatToPartsMethod = new NativeFunctionObject(
-            "formatToParts",
-            (_, fmtArgs) =>
-            {
-                var list = GetListFormatItems(fmtArgs.Count > 0 ? fmtArgs[0] : JsValue.Undefined);
-                return CreateIntlPartsArray(FormatListToParts(list, state));
-            },
-            length: 1);
-        var formatToPartsHandle = _heap.AllocateObject(formatToPartsMethod, AllocationSite.Current());
-        prototype.DefineOwnProperty("formatToParts",
-            new JsPropertyDescriptor(JsValue.FromObject(formatToPartsHandle), Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(protoHandle, formatToPartsHandle);
-
-        var lfResOpts = new NativeFunctionObject("resolvedOptions", (_, _2) =>
-        {
-            var o = CreateOrdinaryObject();
-            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(string.IsNullOrEmpty(state.Locale) ? "en-US" : state.Locale), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(state.Type), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString(state.Style), Writable: true, Enumerable: true, Configurable: true));
-            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
-        }, length: 0);
-        var lfResHandle = _heap.AllocateObject(lfResOpts, AllocationSite.Current());
-        prototype.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(lfResHandle), Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(protoHandle, lfResHandle);
+        // Use the shared ListFormat.prototype.
+        var protoHandle = EnsureListFormatPrototype();
 
         // Store state so shared prototype methods can read it.
         var lfState = CreateOrdinaryObject();
