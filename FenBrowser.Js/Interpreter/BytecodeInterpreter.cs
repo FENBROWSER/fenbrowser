@@ -15277,6 +15277,9 @@ fallbackArraySpecies:
             return JsValue.FromBoolean(false);
         }, length: 1);
 
+        // ECMA-262 25.1.5.8 ArrayBuffer.prototype [ @@toStringTag ] = "ArrayBuffer"
+        DefineBuiltinToStringTag(prototype, "ArrayBuffer");
+
         _arrayBufferConstructorHandle = constructorHandle;
         _arrayBufferPrototypeHandle = prototypeHandle;
         return constructorHandle;
