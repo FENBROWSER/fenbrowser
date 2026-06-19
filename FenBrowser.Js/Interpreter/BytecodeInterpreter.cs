@@ -4883,11 +4883,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         // ECMA-262 19.2.1.3 EvalDeclarationInstantiation — validate the eval body
-        // against the calling context's environment before executing.
-        if (directEvalEnvironment is not null)
-        {
-            ValidateEvalDeclarations(compiled, directEvalEnvironment, directEvalStrictMode);
-        }
+        // before executing. Super-check runs for ALL eval; declaration environment
+        // checks only for direct eval where the calling env is known.
+        ValidateEvalDeclarations(compiled, directEvalEnvironment, directEvalStrictMode);
 
         var globalHandle = EnsureGlobalObject();
         EnvironmentRecord env;
@@ -4914,7 +4912,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // ECMA-262 19.2.1.3 EvalDeclarationInstantiation ( body, varEnv, lexEnv, privateEnv, strict )
     // Validates that the eval body's declarations don't conflict with the calling
     // context's environment. Throws SyntaxError for violations.
-    private void ValidateEvalDeclarations(BytecodeFunction compiled, EnvironmentRecord callingEnv, bool strict)
+    private void ValidateEvalDeclarations(BytecodeFunction compiled, EnvironmentRecord? callingEnv, bool strict)
     {
         // Check for super references in the eval body. super() / super.x are only
         // valid inside a class method/constructor body; in eval they must be a
@@ -4933,7 +4931,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         // Step 6-14: for non-strict direct eval, var/function declarations must not
         // conflict with existing lexical bindings in any outer scope.
-        if (!strict)
+        if (!strict && callingEnv is not null)
         {
             var env = callingEnv;
             while (env is not null)
@@ -4947,21 +4945,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                                 $"Cannot declare var binding '{name}' — a lexical binding with that name already exists."));
                     }
                 }
-                else
-                {
-                    // GlobalEnvironmentRecord or ObjectEnvironmentRecord: any binding
-                    // here is effectively a non-lexical (var-like) binding, which is fine.
-                }
                 env = env.OuterEnv;
             }
         }
 
         // Step 15-18: lexical (let/const) declarations must not conflict with any
         // existing binding in the same var scope.
-        var allLexNames = new HashSet<string>(lexNames);
-        foreach (var n in constNames) allLexNames.Add(n);
         if (callingEnv is DeclarativeEnvironmentRecord callingDecl)
         {
+            var allLexNames = new HashSet<string>(lexNames);
+            foreach (var n in constNames) allLexNames.Add(n);
             foreach (var name in allLexNames)
             {
                 if (callingDecl.HasBinding(name))
