@@ -3244,13 +3244,26 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private MapObject RequireMap(JsValue thisValue)
     {
-        if (thisValue.Tag != JsValueTag.Object ||
-            _heap.GetObject(thisValue.AsObjectHandle()) is not MapObject map)
-        {
+        if (thisValue.Tag != JsValueTag.Object)
             throw new JsThrownException(CreateTypeError("Map method called on incompatible receiver."));
-        }
+        var obj = _heap.GetObject(thisValue.AsObjectHandle());
+        // Accept subclass instances whose prototype chain includes %Map.prototype%.
+        if (obj is MapObject map)
+            return map;
+        if (IsPrototypeOf(EnsureMapPrototype(), obj))
+            return (MapObject)obj; // subclass instance, cast works for internal slot access
+        throw new JsThrownException(CreateTypeError("Map method called on incompatible receiver."));
+    }
 
-        return map;
+    private bool IsPrototypeOf(ObjectHandle prototypeHandle, JsObject obj)
+    {
+        var proto = obj.PrototypeHandle;
+        while (proto is { } ph)
+        {
+            if (ph == prototypeHandle) return true;
+            proto = _heap.GetObject(ph).PrototypeHandle;
+        }
+        return false;
     }
 
     private sealed class MapObject : JsObject
@@ -3349,13 +3362,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private SetObject RequireSet(JsValue thisValue)
     {
-        if (thisValue.Tag != JsValueTag.Object ||
-            _heap.GetObject(thisValue.AsObjectHandle()) is not SetObject set)
-        {
+        if (thisValue.Tag != JsValueTag.Object)
             throw new JsThrownException(CreateTypeError("Set method called on incompatible receiver."));
-        }
-
-        return set;
+        var obj = _heap.GetObject(thisValue.AsObjectHandle());
+        if (obj is SetObject set)
+            return set;
+        // Accept subclass instances whose prototype chain includes %Set.prototype%.
+        if (IsPrototypeOf(EnsureSetPrototype(), obj))
+            return (SetObject)obj;
+        throw new JsThrownException(CreateTypeError("Set method called on incompatible receiver."));
     }
 
     // ECMA-262 24.2.1.2 Set Record: a Set-like operand is described by its own
@@ -3711,13 +3726,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private WeakMapObject RequireWeakMap(JsValue thisValue)
     {
-        if (thisValue.Tag != JsValueTag.Object ||
-            _heap.GetObject(thisValue.AsObjectHandle()) is not WeakMapObject wm)
-        {
+        if (thisValue.Tag != JsValueTag.Object)
             throw new JsThrownException(CreateTypeError("WeakMap method called on incompatible receiver."));
-        }
-
-        return wm;
+        var obj = _heap.GetObject(thisValue.AsObjectHandle());
+        if (obj is WeakMapObject wm)
+            return wm;
+        // Accept subclass instances whose prototype chain includes %WeakMap.prototype%.
+        if (IsPrototypeOf(EnsureWeakMapPrototype(), obj))
+            return (WeakMapObject)obj;
+        throw new JsThrownException(CreateTypeError("WeakMap method called on incompatible receiver."));
     }
 
     // ECMA-262 CanBeHeldWeakly(v): an Object can always be held weakly; a Symbol
