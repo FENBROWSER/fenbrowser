@@ -11938,14 +11938,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "push", ArrayPrototypePush, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toString", ArrayPrototypeToString);
-        // ECMA-262 23.1.3.32 Array.prototype.toLocaleString. The spec calls each
-        // element's toLocaleString through Invoke; here we approximate by calling
-        // the element's toString conversion (which goes through Number / Boolean /
-        // user toString as appropriate). Locale-sensitive output requires Intl which
-        // is not wired yet; per the Intl-not-present clause this is the documented
-        // fallback engines use.
+        // ECMA-262 23.1.3.32 Array.prototype.toLocaleString ( [ locales [ , options ] ] ).
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleString",
-            (t, a) => { _ = a; return ArrayPrototypeToString(t, a); });
+            (thisValue, args) => ArrayPrototypeToLocaleString(thisValue, args));
         // ECMA-262 23.1.3.18 Array.prototype.join, 23.1.3.16 indexOf, 23.1.3.14 includes.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "join", ArrayPrototypeJoin, length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "indexOf", ArrayPrototypeIndexOf, length: 1);
@@ -13841,6 +13836,44 @@ fallbackArraySpecies:
     {
         _ = args;
         return JsValue.FromString(JoinArrayElements(thisValue, ","));
+    }
+
+    // ECMA-262 23.1.3.32 Array.prototype.toLocaleString ( [ locales [ , options ] ] ).
+    // Invokes toLocaleString on each non-null/undefined element, passing locales
+    // and options as arguments per the Intl spec.
+    private JsValue ArrayPrototypeToLocaleString(JsValue thisValue, IReadOnlyList<JsValue> args)
+    {
+        var obj = ToObject(thisValue);
+        var length = GetArrayLength(obj);
+        var separator = ",";
+        var sb = new System.Text.StringBuilder();
+        JsValue locales = args.Count > 0 ? args[0] : JsValue.Undefined;
+        JsValue options = args.Count > 1 ? args[1] : JsValue.Undefined;
+        for (uint i = 0; i < length; i++)
+        {
+            if (i > 0) sb.Append(separator);
+            var element = GetReceiverProperty(thisValue, i.ToString());
+            if (element.Tag is JsValueTag.Undefined or JsValueTag.Null) continue;
+            var toLocaleFn = GetReceiverProperty(element, "toLocaleString");
+            if (toLocaleFn.Tag == JsValueTag.Undefined || toLocaleFn.Tag == JsValueTag.Null)
+            {
+                sb.Append(ToStringValue(element));
+            }
+            else
+            {
+                var callArgs = new List<JsValue> { locales, options };
+                try
+                {
+                    var result = CallFunction(toLocaleFn, callArgs, element);
+                    sb.Append(ToStringValue(result));
+                }
+                catch (JsThrownException)
+                {
+                    sb.Append(ToStringValue(element));
+                }
+            }
+        }
+        return JsValue.FromString(sb.ToString());
     }
 
     // ECMA-262 23.1.3.18 Array.prototype.join. Default separator is ",". Undefined
