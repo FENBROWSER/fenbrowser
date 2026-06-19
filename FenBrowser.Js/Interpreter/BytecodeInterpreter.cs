@@ -3669,10 +3669,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             length: 0);
 
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
+        constructor.SetPrototype(EnsureFunctionPrototype());
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        // ECMA-262 24.3.3.1 WeakMap.prototype [ @@toStringTag ] = "WeakMap"
+        DefineBuiltinToStringTag(prototype, "WeakMap");
 
         DefineNativePrototypeMethod(prototypeHandle, prototype, "set", (thisValue, args) =>
         {
@@ -3859,10 +3863,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             length: 0);
 
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
+        constructor.SetPrototype(EnsureFunctionPrototype());
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        // ECMA-262 24.4.3.1 WeakSet.prototype [ @@toStringTag ] = "WeakSet"
+        DefineBuiltinToStringTag(prototype, "WeakSet");
 
         DefineNativePrototypeMethod(prototypeHandle, prototype, "add", (thisValue, args) =>
         {
