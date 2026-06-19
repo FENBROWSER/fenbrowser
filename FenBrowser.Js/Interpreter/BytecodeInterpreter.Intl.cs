@@ -4131,19 +4131,43 @@ public sealed partial class BytecodeInterpreter
         var ph = _heap.AllocateObject(proto, AllocationSite.Current());
         _heap.PushRoot(ph);
 
-        var ofFn = new NativeFunctionObject("of", (_, a) =>
+        var ofFn = new NativeFunctionObject("of", (tv, a) =>
         {
             var code = a.Count > 0 ? ToStringValue(a[0]) : "";
-            return JsValue.FromString(code);
+            string type = "language", style = "long";
+            if (tv.Tag == JsValueTag.Object && _heap.GetObject(tv.AsObjectHandle()).TryGetOwnProperty("__displayNamesState", out var sd) && sd.Value.Tag == JsValueTag.Object)
+            {
+                var state = _heap.GetObject(sd.Value.AsObjectHandle());
+                if (state.TryGetOwnProperty("type", out var td) && td.Value.Tag == JsValueTag.String) type = td.Value.AsString();
+                if (state.TryGetOwnProperty("style", out var std) && std.Value.Tag == JsValueTag.String) style = std.Value.AsString();
+            }
+            string? result = type switch
+            {
+                "language" => TryGetLanguageDisplayName(code, style),
+                "region" => TryGetRegionDisplayName(code, style),
+                "script" => TryGetScriptDisplayName(code),
+                "currency" => TryGetCurrencyDisplayName(code, style),
+                "calendar" => TryGetCalendarDisplayName(code),
+                _ => code
+            };
+            return JsValue.FromString(result ?? code);
         }, length: 1);
         proto.DefineOwnProperty("of", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(ofFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
 
-        var dnResFn = new NativeFunctionObject("resolvedOptions", (_, _2) =>
+        var dnResFn = new NativeFunctionObject("resolvedOptions", (tv, _2) =>
         {
+            string locale = "en", style = "long", type = "language";
+            if (tv.Tag == JsValueTag.Object && _heap.GetObject(tv.AsObjectHandle()).TryGetOwnProperty("__displayNamesState", out var sd) && sd.Value.Tag == JsValueTag.Object)
+            {
+                var state = _heap.GetObject(sd.Value.AsObjectHandle());
+                if (state.TryGetOwnProperty("locale", out var ld) && ld.Value.Tag == JsValueTag.String) locale = ld.Value.AsString();
+                if (state.TryGetOwnProperty("style", out var std) && std.Value.Tag == JsValueTag.String) style = std.Value.AsString();
+                if (state.TryGetOwnProperty("type", out var td) && td.Value.Tag == JsValueTag.String) type = td.Value.AsString();
+            }
             var o = CreateOrdinaryObject();
-            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString("long"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString("language"), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(locale), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString(style), Writable: true, Enumerable: true, Configurable: true));
+            o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(type), Writable: true, Enumerable: true, Configurable: true));
             o.DefineOwnProperty("fallback", new JsPropertyDescriptor(JsValue.FromString("code"), Writable: true, Enumerable: true, Configurable: true));
             return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
         }, length: 0);

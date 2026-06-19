@@ -8699,36 +8699,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (TryGetPropertyValue(opts, args[1], "style", out var sv) && sv.Tag != JsValueTag.Undefined) style = ToStringValue(sv);
             if (TryGetPropertyValue(opts, args[1], "type", out var tv) && tv.Tag != JsValueTag.Undefined) type = ToStringValue(tv);
         }
-        var proto = CreateOrdinaryObject();
-        var ph = _heap.AllocateObject(proto, AllocationSite.Current());
-        _heap.PushRoot(ph);
-        var ofFn = new NativeFunctionObject("of", (_, a) =>
-        {
-            var code = a.Count > 0 ? ToStringValue(a[0]) : "";
-            string? result = type switch
-            {
-                "language" => TryGetLanguageDisplayName(code, style),
-                "region" => TryGetRegionDisplayName(code, style),
-                "script" => TryGetScriptDisplayName(code),
-                "currency" => TryGetCurrencyDisplayName(code, style),
-                "calendar" => TryGetCalendarDisplayName(code),
-                _ => code
-            };
-            return JsValue.FromString(result ?? code);
-        }, length: 1);
-        proto.DefineOwnProperty("of", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(ofFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
-        var dnResFn = new NativeFunctionObject("resolvedOptions", (_, _2) =>
-        {
-            var o = CreateOrdinaryObject();
-            o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString("en"), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString(style), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(type), Writable: true, Enumerable: true, Configurable: true));
-            o.DefineOwnProperty("fallback", new JsPropertyDescriptor(JsValue.FromString("code"), Writable: true, Enumerable: true, Configurable: true));
-            return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
-        }, length: 0);
-        proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(dnResFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+        // Use the shared DisplayNames.prototype, not a per-instance fresh object.
+        var protoHandle = EnsureDisplayNamesPrototype();
         var inst = CreateOrdinaryObject();
-        inst.SetPrototype(ph);
+        inst.SetPrototype(protoHandle);
+        // Stamp internal state so prototype methods can read it.
+        var state = CreateOrdinaryObject();
+        state.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(locale), Writable: true, Enumerable: true, Configurable: true));
+        state.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString(style), Writable: true, Enumerable: true, Configurable: true));
+        state.DefineOwnProperty("type", new JsPropertyDescriptor(JsValue.FromString(type), Writable: true, Enumerable: true, Configurable: true));
+        inst.DefineOwnProperty("__displayNamesState", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(state, AllocationSite.Current())), Writable: false, Enumerable: false, Configurable: false));
         return JsValue.FromObject(_heap.AllocateObject(inst, AllocationSite.Current()));
     }
 
