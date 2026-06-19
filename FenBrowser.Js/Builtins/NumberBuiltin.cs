@@ -221,8 +221,10 @@ public sealed class NumberBuiltin : IBuiltinModule
 
     private static JsValue NumberPrototypeToLocaleString(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
-        _ = args;
-        return NumberPrototypeToString(ctx, thisValue, Array.Empty<JsValue>());
+        var value = NumberThisValue(ctx, thisValue);
+        var locales = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var options = args.Count > 1 ? args[1] : JsValue.Undefined;
+        return ctx.FormatNumberToLocaleString(value, locales, options);
     }
 
     // 21.1.3.3 toFixed

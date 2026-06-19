@@ -142,6 +142,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     string IBuiltinContext.CaptureCallStack(string errorName, string message) => FormatCallStack(errorName, message);
     ObjectHandle IBuiltinContext.MaterializeStructuredCloneFunction() => EnsureStructuredCloneFunction();
     ObjectHandle IBuiltinContext.MaterializeIntlObject() => EnsureIntlObject();
+    JsValue IBuiltinContext.FormatNumberToLocaleString(double value, JsValue locales, JsValue options)
+        => FormatNumberToLocaleString(value, locales, options);
+    JsValue IBuiltinContext.FormatBigIntToLocaleString(System.Numerics.BigInteger value, JsValue locales, JsValue options)
+        => FormatBigIntToLocaleString(value, locales, options);
     ObjectHandle IBuiltinContext.MaterializeArrayBufferConstructor() => EnsureArrayBufferConstructor();
     ObjectHandle IBuiltinContext.MaterializeSharedArrayBufferConstructor() => EnsureSharedArrayBufferConstructor();
     ObjectHandle IBuiltinContext.MaterializeDataViewConstructor() => EnsureDataViewConstructor();

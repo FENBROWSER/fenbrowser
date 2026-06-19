@@ -158,6 +158,10 @@ internal sealed class TestBuiltinContext : IBuiltinContext
     public string CaptureCallStack(string errorName, string message) => errorName + ": " + message;
     public ObjectHandle MaterializeStructuredCloneFunction() => throw new NotSupportedException();
     public ObjectHandle MaterializeIntlObject() => throw new NotSupportedException();
+    public JsValue FormatNumberToLocaleString(double value, JsValue locales, JsValue options)
+        => JsValue.FromString(value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    public JsValue FormatBigIntToLocaleString(System.Numerics.BigInteger value, JsValue locales, JsValue options)
+        => JsValue.FromString(value.ToString(System.Globalization.CultureInfo.InvariantCulture));
     public ObjectHandle MaterializeArrayBufferConstructor() => throw new NotSupportedException();
     public ObjectHandle MaterializeSharedArrayBufferConstructor() => throw new NotSupportedException();
     public ObjectHandle MaterializeDataViewConstructor() => throw new NotSupportedException();

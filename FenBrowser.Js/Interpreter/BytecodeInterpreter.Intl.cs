@@ -2232,6 +2232,27 @@ public sealed partial class BytecodeInterpreter
         return new ListFormatState(locale, type, style);
     }
 
+    // ECMA-402 Number.prototype.toLocaleString / BigInt.prototype.toLocaleString.
+    private JsValue FormatNumberToLocaleString(double value, JsValue locales, JsValue options)
+    {
+        var locale = "en-US";
+        if (locales.Tag == JsValueTag.String) locale = CanonicalizeIntlLocaleTag(locales.AsString());
+        else if (locales.Tag == JsValueTag.Object) locale = GetDurationFormatLocale(locales);
+        var state = ParseNumberFormatState(locale, options);
+        var result = string.Concat(FormatNumberToParts(JsValue.FromNumber(value), state).Select(static p => p.Value));
+        return JsValue.FromString(result);
+    }
+
+    private JsValue FormatBigIntToLocaleString(System.Numerics.BigInteger value, JsValue locales, JsValue options)
+    {
+        var locale = "en-US";
+        if (locales.Tag == JsValueTag.String) locale = CanonicalizeIntlLocaleTag(locales.AsString());
+        else if (locales.Tag == JsValueTag.Object) locale = GetDurationFormatLocale(locales);
+        var state = ParseNumberFormatState(locale, options);
+        var result = string.Concat(FormatNumberToParts(JsValue.FromNumber((double)value), state).Select(static p => p.Value));
+        return JsValue.FromString(result);
+    }
+
     private string FormatNumber(JsValue value, NumberFormatState state)
     {
         return string.Concat(FormatNumberToParts(value, state).Select(static p => p.Value));

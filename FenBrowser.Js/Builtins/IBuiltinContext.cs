@@ -97,6 +97,10 @@ public interface IBuiltinContext
     // Intl (ECMA-402).
     ObjectHandle MaterializeIntlObject();
 
+    // ECMA-402 Number.prototype.toLocaleString / BigInt.prototype.toLocaleString.
+    JsValue FormatNumberToLocaleString(double value, JsValue locales, JsValue options);
+    JsValue FormatBigIntToLocaleString(System.Numerics.BigInteger value, JsValue locales, JsValue options);
+
     // TypedArray / ArrayBuffer / DataView constructors.
     ObjectHandle MaterializeArrayBufferConstructor();
     ObjectHandle MaterializeSharedArrayBufferConstructor();

@@ -65,6 +65,13 @@ public sealed class BigIntBuiltin : IBuiltinModule
             JsValue.FromBigInt(ThisBigIntValue(captured, thisValue)), length: 0);
         context.DefineIntrinsicFunction(prototypeHandle, prototype, "toString", (thisValue, args) =>
             JsValue.FromString(BigIntPrototypeToString(captured, thisValue, args)), length: 0);
+        context.DefineIntrinsicFunction(prototypeHandle, prototype, "toLocaleString", (thisValue, args) =>
+        {
+            var value = ThisBigIntValue(captured, thisValue);
+            var locales = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var options = args.Count > 1 ? args[1] : JsValue.Undefined;
+            return captured.FormatBigIntToLocaleString(value, locales, options);
+        }, length: 0);
 
         return new[] { BuiltinBinding.NonEnumerable("BigInt", JsValue.FromObject(constructorHandle)) };
     }
