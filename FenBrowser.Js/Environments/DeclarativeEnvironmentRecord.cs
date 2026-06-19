@@ -24,6 +24,17 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
         return _bindings.ContainsKey(name);
     }
 
+    // Returns true if the binding exists and is a lexical (non-deletable) binding.
+    public bool HasLexicalBinding(string name)
+    {
+        return _bindings.TryGetValue(name, out var b) && !b.IsDeletable;
+    }
+
+    public bool HasVarBinding(string name)
+    {
+        return _bindings.TryGetValue(name, out var b) && b.IsDeletable;
+    }
+
     public override BindingOpResult CreateMutableBinding(string name, bool deletable)
     {
         ArgumentNullException.ThrowIfNull(name);
