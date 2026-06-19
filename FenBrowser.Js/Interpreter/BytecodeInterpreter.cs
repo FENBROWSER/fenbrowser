@@ -8095,7 +8095,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 (thisValue, args) => ChainIntlService(thisValue, args, prototypeHandle, DateTimeFormatConstruct),
                 construct: args => DateTimeFormatConstruct(args),
                 length: 0);
-                ctor.SetPrototype(EnsureFunctionPrototype());            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
+            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
             _heap.PushRoot(ctorHandle);
             var prototype = _heap.GetObject(prototypeHandle);
             _ = ctor.DefineOwnProperty(
@@ -8237,7 +8237,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 (thisValue, args) => ChainIntlService(thisValue, args, nfProtoHandle, NumberFormatConstruct),
                 construct: args => NumberFormatConstruct(args),
                 length: 0);
-                ctor.SetPrototype(EnsureFunctionPrototype());            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
+            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
             _heap.PushRoot(ctorHandle);
             _ = ctor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(nfProtoHandle), Writable: false, Enumerable: false, Configurable: false));
             _heap.WriteBarrier(ctorHandle, nfProtoHandle);
@@ -8286,7 +8286,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 (thisValue, args) => ChainIntlService(thisValue, args, collatorProtoHandle, CollatorConstruct),
                 construct: args => CollatorConstruct(args),
                 length: 0);
-                ctor.SetPrototype(EnsureFunctionPrototype());            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
+            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
             _heap.PushRoot(ctorHandle);
 
             _ = ctor.DefineOwnProperty("prototype",
@@ -8328,7 +8328,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 (_, _) => throw new JsThrownException(CreateTypeError("Intl.ListFormat must be invoked with 'new'.")),
                 construct: args => ListFormatConstruct(args),
                 length: 0);
-                ctor.SetPrototype(EnsureFunctionPrototype());            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
+            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
             _heap.PushRoot(ctorHandle);
 
             _ = ctor.DefineOwnProperty("prototype",
@@ -8370,7 +8370,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 (_, _) => throw new JsThrownException(CreateTypeError("Intl.DurationFormat must be invoked with 'new'.")),
                 construct: args => DurationFormatConstruct(args),
                 length: 0);
-                ctor.SetPrototype(EnsureFunctionPrototype());            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
+            var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
             _heap.PushRoot(ctorHandle);
 
             _ = ctor.DefineOwnProperty(
