@@ -18300,22 +18300,47 @@ fallbackArraySpecies:
     // 22.1.3.31 / .32 / .33 trim / trimStart / trimEnd. The spec defines the
     // WhiteSpace and LineTerminator productions; the BCL's char.IsWhiteSpace is a
     // close-enough superset for almost every spec character.
+    // ECMA-262 22.1.3.29 String.prototype.trim — removes leading and trailing
+    // WhiteSpace and LineTerminator code points per the Unicode definition,
+    // NOT the .NET ASCII-only Trim(). Characters like U+00A0, U+FEFF, U+2000-
+    // U+200A, U+202F, U+205F, U+3000 must all be trimmed.
+    // ECMA-262 WhiteSpace + LineTerminator code points.
+    private static bool IsStrWhiteSpace(char c)
+    {
+        if (c <= 0x0020 && (c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r' || c == ' ')) return true;
+        var cp = (int)c;
+        return cp switch
+        {
+            0x00A0 or 0x1680 or 0xFEFF or 0x3000 or 0x205F or 0x202F => true, // NBSP, Ogham, BOM, Ideographic, MMSP, NNBSP
+            _ => (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 || cp == 0x2029 // Unicode spaces, LINE SEP, PARA SEP
+        };
+    }
+
+    private static string TrimEx(string s)
+    {
+        var start = 0; while (start < s.Length && IsStrWhiteSpace(s[start])) start++;
+        var end = s.Length - 1; while (end >= start && IsStrWhiteSpace(s[end])) end--;
+        return s[start..(end + 1)];
+    }
+    private static string TrimStartEx(string s) { var i = 0; while (i < s.Length && IsStrWhiteSpace(s[i])) i++; return s[i..]; }
+    private static string TrimEndEx(string s) { var i = s.Length - 1; while (i >= 0 && IsStrWhiteSpace(s[i])) i--; return s[..(i + 1)]; }
+
     private JsValue StringPrototypeTrim(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
-        return JsValue.FromString(StringThisValue(thisValue).Trim());
+        return JsValue.FromString(TrimEx(StringThisValue(thisValue)));
     }
 
     private JsValue StringPrototypeTrimStart(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
-        return JsValue.FromString(StringThisValue(thisValue).TrimStart());
+        return JsValue.FromString(TrimStartEx(StringThisValue(thisValue)));
     }
 
     private JsValue StringPrototypeTrimEnd(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         _ = args;
-        return JsValue.FromString(StringThisValue(thisValue).TrimEnd());
+        return JsValue.FromString(TrimEndEx(StringThisValue(thisValue)));
     }
 
     // 22.1.3.26 / .27 toUpperCase / toLowerCase use the invariant culture so output
