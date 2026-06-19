@@ -2227,10 +2227,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var returnValue = frame.Registers[ins.A];
                     if (function.IsDerivedConstructor &&
                         returnValue.Tag != JsValueTag.Object &&
-                        frame.Environment is FunctionEnvironmentRecord derivedEnv &&
-                        derivedEnv.GetThisBinding(out var derivedThis) == BindingOpResult.Ok)
+                        frame.Environment is FunctionEnvironmentRecord derivedEnv)
                     {
-                        return derivedThis;
+                        var thisBindingResult = derivedEnv.GetThisBinding(out var derivedThis);
+                        if (thisBindingResult == BindingOpResult.Ok)
+                        {
+                            return derivedThis;
+                        }
+                        // ECMA-262 9.2.2 step 9: if thisBinding has not been
+                        // initialized by a super() call, throw ReferenceError.
+                        if (thisBindingResult == BindingOpResult.TdzAccess)
+                        {
+                            ThrowReferenceError(frame,
+                                "Must call super constructor in derived class before accessing 'this' or returning from derived constructor.");
+                            break;
+                        }
                     }
 
                     return returnValue;
@@ -6439,7 +6450,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         // Fast path for real RegExp objects that haven't had global overridden.
         if (rxObj is RegExpObject fastRx &&
-            !rxObj.TryGetOwnProperty("global", out _))
+            !rxObj.TryGetOwnProperty("global", out _) &&
+            IsBuiltinRegExpExec(rxObj, thisValue))
         {
             if (replacement.Tag == JsValueTag.Object && IsCallable(replacement))
             {
@@ -6541,7 +6553,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             capGroups.Add(ToStringValue(cap));
                         else capGroups.Add("");
                     }
-                    acc.Append(GetSubstitutionSpec(input, matched, posInt, capGroups, replStr2));
+                    var namedCaptures = JsValue.Undefined;
+                    if (TryGetPropertyValue(erObj, execResult, "groups", out var groups))
+                    {
+                        namedCaptures = groups.Tag == JsValueTag.Undefined
+                            ? JsValue.Undefined
+                            : ToObjectValue(groups);
+                    }
+
+                    acc.Append(GetSubstitutionSpec(input, matched, posInt, capGroups, namedCaptures, replStr2));
                 }
                 nextPos = posInt + matched.Length;
             }
@@ -6550,8 +6570,23 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return JsValue.FromString(acc.ToString());
     }
 
+    private bool IsBuiltinRegExpExec(JsObject rxObj, JsValue receiver)
+    {
+        if (!TryGetPropertyValue(rxObj, receiver, "exec", out var exec) ||
+            exec.Tag != JsValueTag.Object ||
+            _regexpPrototypeHandle is not { } regexpPrototypeHandle)
+        {
+            return false;
+        }
+
+        var regexpPrototype = _heap.GetObject(regexpPrototypeHandle);
+        return regexpPrototype.TryGetOwnProperty("exec", out var builtinExec) &&
+               builtinExec.Value.Tag == JsValueTag.Object &&
+               exec.AsObjectHandle() == builtinExec.Value.AsObjectHandle();
+    }
+
     /// <summary>Simplified GetSubstitution for the spec-based @@replace path.</summary>
-    private static string GetSubstitutionSpec(string input, string matched, int position, List<string> captures, string replacement)
+    private string GetSubstitutionSpec(string input, string matched, int position, List<string> captures, JsValue namedCaptures, string replacement)
     {
         var sb = new System.Text.StringBuilder();
         for (var i = 0; i < replacement.Length; i++)
@@ -6567,7 +6602,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     case '\'': sb.Append(input.AsSpan(position + matched.Length)); i++; break;
                     case '<':
                         var eb = replacement.IndexOf('>', i + 2);
-                        if (eb >= 0) { i = eb; } else { sb.Append('$'); sb.Append('<'); i++; }
+                        if (namedCaptures.Tag == JsValueTag.Undefined)
+                        {
+                            sb.Append('$'); sb.Append('<'); i++;
+                        }
+                        else if (eb >= 0)
+                        {
+                            var groupName = replacement.Substring(i + 2, eb - i - 2);
+                            var namedObj = _heap.GetObject(namedCaptures.AsObjectHandle());
+                            if (TryGetPropertyValue(namedObj, namedCaptures, groupName, out var capture) &&
+                                capture.Tag != JsValueTag.Undefined)
+                            {
+                                sb.Append(ToStringValue(capture));
+                            }
+                            i = eb;
+                        }
+                        else { sb.Append('$'); sb.Append('<'); i++; }
                         break;
                     default:
                         if (c >= '0' && c <= '9')
@@ -10123,19 +10173,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
         _heap.WriteBarrier(prototypeHandle, callHandle);
 
-        // ECMA-262 20.2.3 / Annex B.2.2.1: Function.prototype.caller and
-        // Function.prototype.arguments are accessors that throw TypeError in
-        // strict mode and return null (caller) or null (arguments) in sloppy.
+        // ECMA-262 Annex B.2.2.1: Function.prototype.caller and
+        // Function.prototype.arguments are accessor properties whose [[Get]]
+        // and [[Set]] are both %ThrowTypeError%.
         var annexThrower = JsValue.FromObject(EnsureThrowTypeErrorIntrinsic());
-        var annexGetter = new NativeFunctionObject("get caller/arguments", (thisValue, _) =>
-        {
-            // In sloppy mode: return null. In strict mode: the accessor on the
-            // prototype already throws if the function is strict.
-            return JsValue.Null;
-        }, length: 0);
-        var annexGetterHandle = _heap.AllocateObject(annexGetter, AllocationSite.Current());
         var annexDesc = JsPropertyDescriptor.Accessor(
-            JsValue.FromObject(annexGetterHandle),
+            annexThrower,
             annexThrower,
             Enumerable: false,
             Configurable: true);
@@ -15202,10 +15245,11 @@ fallbackArraySpecies:
                 if (buf.IsDetached)
                     throw new JsThrownException(CreateTypeError("DataView: ArrayBuffer is detached."));
                 var byteOffset = args.Count > 1 ? ToIndexForView(args[1], "Invalid DataView byteOffset.") : 0;
-                var byteLength = args.Count > 2 ? ToIndexForView(args[2], "Invalid DataView byteLength.") : buf.ByteLength - byteOffset;
+                bool isAutoLength = args.Count <= 2 || args[2].Tag == JsValueTag.Undefined;
+                var byteLength = isAutoLength ? buf.ByteLength - byteOffset : ToIndexForView(args[2], "Invalid DataView byteLength.");
                 if (byteOffset + byteLength > buf.ByteLength)
                     throw new JsThrownException(CreateRangeError("DataView: offset + length exceeds ArrayBuffer bounds."));
-                var view = new DataViewObject(buf, byteOffset, byteLength);
+                var view = new DataViewObject(buf, byteOffset, byteLength, isLengthTracking: isAutoLength);
                 view.SetPrototype(prototypeHandle);
                 return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
             },
@@ -16783,6 +16827,11 @@ fallbackArraySpecies:
         for (var len = s.Length; len > 0; len--)
         {
             var prefix = s[..len];
+            if (IsCaseMismatchedInfinityToken(prefix))
+            {
+                continue;
+            }
+
             if (double.TryParse(prefix, System.Globalization.NumberStyles.Float,
                 System.Globalization.CultureInfo.InvariantCulture, out var v))
             {
@@ -16791,6 +16840,16 @@ fallbackArraySpecies:
         }
 
         return double.NaN;
+    }
+
+    private static bool IsCaseMismatchedInfinityToken(string prefix)
+    {
+        return (prefix.Equals("Infinity", StringComparison.OrdinalIgnoreCase) ||
+                prefix.Equals("+Infinity", StringComparison.OrdinalIgnoreCase) ||
+                prefix.Equals("-Infinity", StringComparison.OrdinalIgnoreCase)) &&
+               !prefix.Equals("Infinity", StringComparison.Ordinal) &&
+               !prefix.Equals("+Infinity", StringComparison.Ordinal) &&
+               !prefix.Equals("-Infinity", StringComparison.Ordinal);
     }
 
     private static bool IsIntegerNumber(IReadOnlyList<JsValue> args)
