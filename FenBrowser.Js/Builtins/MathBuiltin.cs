@@ -22,7 +22,7 @@ public sealed class MathBuiltin : IBuiltinModule
         ArgumentNullException.ThrowIfNull(context);
         var heap = context.Heap;
 
-        var math = CreateOrdinaryObject();
+        var math = CreateOrdinaryObject(context);
         var handle = heap.AllocateObject(math, AllocationSite.Current());
         heap.PushRoot(handle);
 
@@ -97,9 +97,11 @@ public sealed class MathBuiltin : IBuiltinModule
         return new[] { BuiltinBinding.NonEnumerable("Math", JsValue.FromObject(handle)) };
     }
 
-    private static JsObject CreateOrdinaryObject()
+    private static JsObject CreateOrdinaryObject(IBuiltinContext ctx = null!)
     {
-        return new JsObject();
+        var obj = new JsObject();
+        if (ctx != null) obj.SetPrototype(ctx.GetObjectPrototype());
+        return obj;
     }
 
     private static void DefineMathConstant(JsObject math, string name, double value)
