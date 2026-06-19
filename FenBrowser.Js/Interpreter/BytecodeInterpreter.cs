@@ -297,6 +297,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // dispatch through the interpreter's trap handlers.
         ProxyObject.ProxySetTrap = ProxyObjSet;
         ProxyObject.ProxyDeleteTrap = ProxyObjDelete;
+        ProxyObject.ProxyEnumerateTrap = ProxyObjEnumerate;
         ProxyObject.CreateTypeErrorFn = CreateTypeError;
     }
 
@@ -305,6 +306,37 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private bool ProxyObjDelete(ProxyObject proxy, string prop)
         => ProxyDelete(proxy, prop);
+
+    [MayExecuteJs]
+    private bool ProxyGetOwnProperty(ProxyObject proxy, string prop, out JsPropertyDescriptor descriptor)
+    {
+        var trap = TryGetProxyTrap(proxy, "getOwnPropertyDescriptor");
+        if (trap is not null)
+        {
+            var target = JsValue.FromObject(proxy.TargetHandle);
+            var key = JsValue.FromString(prop);
+            var result = CallFunction(trap.Value, new[] { target, key }, JsValue.FromObject(proxy.HandlerHandle!.Value));
+            if (result.Tag == JsValueTag.Undefined) { descriptor = default; return false; }
+            if (result.Tag != JsValueTag.Object)
+                throw new JsThrownException(CreateTypeError("Proxy getOwnPropertyDescriptor trap must return object or undefined."));
+            descriptor = ToPropertyDescriptor(result);
+            return true;
+        }
+        return TryGetOwnPropertyDescriptorForTarget(proxy.TargetHandle, prop, out descriptor);
+    }
+
+    private List<KeyValuePair<string, JsPropertyDescriptor>> ProxyObjEnumerate(ProxyObject proxy)
+    {
+        var result = new List<KeyValuePair<string, JsPropertyDescriptor>>();
+        var keys = ProxyOwnKeys(proxy);
+        foreach (var k in keys)
+        {
+            var key = ToPropertyKey(k);
+            if (ProxyGetOwnProperty(proxy, key, out var desc) && desc.Enumerable)
+                result.Add(new KeyValuePair<string, JsPropertyDescriptor>(key, desc));
+        }
+        return result;
+    }
 
     // Diagnostic-only: render a thrown JS value as a short "Name: message" string by
     // reading the (prototype-resolved) `name` and `message` properties when the value is

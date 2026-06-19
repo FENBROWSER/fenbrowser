@@ -26,6 +26,7 @@ public sealed class ProxyObject : JsObject
     // the Proxy [[Set]] / [[Delete]] internal methods.
     internal static Func<ProxyObject, JsValue, string, JsValue, bool>? ProxySetTrap;
     internal static Func<ProxyObject, string, bool>? ProxyDeleteTrap;
+    internal static Func<ProxyObject, List<System.Collections.Generic.KeyValuePair<string, JsPropertyDescriptor>>>? ProxyEnumerateTrap;
 
     public ProxyObject(ObjectHandle targetHandle, ObjectHandle handlerHandle)
     {
@@ -56,6 +57,17 @@ public sealed class ProxyObject : JsObject
         if (ProxyDeleteTrap is { } deleter)
             return deleter(this, key);
         return base.DeleteProperty(key);
+    }
+
+    // ECMA-262 10.5.11 [[OwnPropertyKeys]] — routes through the handler's "ownKeys"
+    // trap. Returns an enumerable of own string-keyed property descriptors for the
+    // target, filtered through the trap.
+    public override System.Collections.Generic.IEnumerable<System.Collections.Generic.KeyValuePair<string, JsPropertyDescriptor>> EnumerateOwnProperties()
+    {
+        if (IsRevoked) ThrowProxyError("Cannot enumerate own properties on a revoked Proxy.");
+        if (ProxyEnumerateTrap is { } en)
+            return en(this);
+        return base.EnumerateOwnProperties();
     }
 
     // Set by the interpreter during initialization. Provides access to CreateTypeError
