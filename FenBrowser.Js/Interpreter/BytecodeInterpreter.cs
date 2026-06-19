@@ -15418,6 +15418,15 @@ fallbackArraySpecies:
         // Prototype methods: getInt8 through setBigUint64
         InstallDataViewPrototypeMethods(prototypeHandle, prototype);
 
+        // 25.3.5.3 DataView.prototype[ @@toStringTag ] = "DataView"
+        var dvToStringTagSymbolId = GetWellKnownSymbolId("toStringTag");
+        if (dvToStringTagSymbolId != 0)
+        {
+            _ = prototype.DefineOwnSymbolProperty(
+                dvToStringTagSymbolId,
+                new JsPropertyDescriptor(JsValue.FromString("DataView"), Writable: false, Enumerable: false, Configurable: true));
+        }
+
         _dataViewConstructorHandle = constructorHandle;
         _dataViewPrototypeHandle = prototypeHandle;
         return constructorHandle;
