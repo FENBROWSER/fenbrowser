@@ -4923,6 +4923,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 throw new JsThrownException(CreateSyntaxError("'super' cannot be used in eval."));
         }
 
+        // ECMA-262: Additional Early Error Rules for Eval Inside Initializer.
+        // If the eval body contains an 'arguments' reference, it is a SyntaxError
+        // when direct eval is called inside a class field initializer.
+        // Detect via frame context: the calling function is a constructor.
+        if (callingEnv is not null && _activeFrames.Count > 0 && _activeFrames.Peek().Function?.Kind == FunctionKind.Constructor)
+        {
+            foreach (var name in compiled.PropertyNames)
+            {
+                if (name == "arguments")
+                    throw new JsThrownException(CreateSyntaxError(
+                        "'arguments' cannot be used in eval inside a class field initializer."));
+            }
+        }
+
         // Collect all var-scoped and function declarations from the eval body.
         var varNames = new HashSet<string>(compiled.VarDeclarationNames);
         var lexNames = new HashSet<string>(compiled.LexicalDeclarationNames);
