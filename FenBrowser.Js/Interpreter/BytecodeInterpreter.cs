@@ -4830,6 +4830,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var program = JsParser.ParseScript(new SourceText(args[0].AsString(), "<eval>"),
                 inheritedStrictMode: directEvalStrictMode);
             compiled = new BytecodeCompiler().CompileProgram(program, inheritedStrictMode: directEvalStrictMode);
+            compiled.IsEvalCode = true;
             new BytecodeVerifier().Verify(compiled);
         }
         catch (Exception ex) when (ex is JsParserException or UnsupportedFeatureException)

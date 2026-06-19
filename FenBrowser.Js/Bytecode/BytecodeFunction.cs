@@ -47,6 +47,10 @@ public sealed class BytecodeFunction
 
     public FunctionKind Kind { get; init; } = FunctionKind.Ordinary;
 
+    // True when this function was compiled from eval() source; var/function
+    // declarations use deletable bindings per Annex B B.3.3.3.
+    public bool IsEvalCode { get; set; }
+
     public bool IsStrictMode { get; init; }
 
     public required IReadOnlyList<BytecodeFunction> NestedFunctions { get; init; }

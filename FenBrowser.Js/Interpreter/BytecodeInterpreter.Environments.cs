@@ -13,11 +13,16 @@ public sealed partial class BytecodeInterpreter
 
     private void InstantiateVarDeclarations(BytecodeFunction function, InterpreterFrame frame)
     {
+        // For eval code, Annex B B.3.3.3 requires var/function bindings to be
+        // configurable (deletable) on the global scope so tests verifyProperty
+        // with { configurable: true }.
+        var isEval = function.IsEvalCode;
+
         foreach (var name in function.VarDeclarationNames)
         {
             if (frame.Environment is GlobalEnvironmentRecord global)
             {
-                var result = global.CreateGlobalVarBinding(name, deletable: false);
+                var result = global.CreateGlobalVarBinding(name, deletable: isEval);
                 if (result != BindingOpResult.Ok)
                 {
                     ThrowTypeError(frame, $"Cannot declare global var binding '{name}'.");
@@ -32,7 +37,7 @@ public sealed partial class BytecodeInterpreter
                 continue;
             }
 
-            var create = frame.Environment.CreateMutableBinding(name, deletable: false);
+            var create = frame.Environment.CreateMutableBinding(name, deletable: isEval);
             if (create != BindingOpResult.Ok)
             {
                 ThrowTypeError(frame, $"Cannot declare var binding '{name}'.");
