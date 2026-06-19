@@ -4916,6 +4916,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // context's environment. Throws SyntaxError for violations.
     private void ValidateEvalDeclarations(BytecodeFunction compiled, EnvironmentRecord callingEnv, bool strict)
     {
+        // Check for super references in the eval body. super() / super.x are only
+        // valid inside a class method/constructor body; in eval they must be a
+        // SyntaxError, not a runtime ReferenceError.
+        foreach (var ins in compiled.Instructions)
+        {
+            if (ins.OpCode == OpCode.LoadSuperProperty || ins.OpCode == OpCode.LoadSuperConstructor)
+                throw new JsThrownException(CreateSyntaxError("'super' cannot be used in eval."));
+        }
+
         // Collect all var-scoped and function declarations from the eval body.
         var varNames = new HashSet<string>(compiled.VarDeclarationNames);
         var lexNames = new HashSet<string>(compiled.LexicalDeclarationNames);
