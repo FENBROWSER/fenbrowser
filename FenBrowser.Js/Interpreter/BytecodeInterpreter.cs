@@ -3065,10 +3065,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             length: 0);
 
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
+        constructor.SetPrototype(EnsureFunctionPrototype());
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        // ECMA-262 24.1.2.2 get Map [ @@species ] — returns the this value.
+        var mapSpeciesSymId = GetWellKnownSymbolId("species");
+        if (mapSpeciesSymId != 0)
+        {
+            var mapSpeciesGetter = new NativeFunctionObject("get [Symbol.species]", (thisValue, _2) => thisValue, length: 0);
+            var mapSpeciesGetterHandle = _heap.AllocateObject(mapSpeciesGetter, AllocationSite.Current());
+            _ = constructor.DefineOwnSymbolProperty(
+                mapSpeciesSymId,
+                JsPropertyDescriptor.Accessor(
+                    JsValue.FromObject(mapSpeciesGetterHandle),
+                    JsValue.Undefined,
+                    Enumerable: false,
+                    Configurable: true));
+            _heap.WriteBarrier(constructorHandle, mapSpeciesGetterHandle);
+        }
 
         // 24.1.3.9 set (returns the map for chaining).
         DefineNativePrototypeMethod(prototypeHandle, prototype, "set", (thisValue, args) =>
