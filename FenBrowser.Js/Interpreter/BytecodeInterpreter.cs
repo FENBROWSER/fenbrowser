@@ -6709,17 +6709,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
             var replStr = ToStringValue(replacement);
             var global = fastRx.Flags.Contains('g', StringComparison.Ordinal);
-            if (global)
+            if (!global)
             {
-                var matches = fastRx.Regex.Matches(input);
-                if (matches.Count == 0) return JsValue.FromString(input);
-                var sb = new System.Text.StringBuilder();
-                var prevEnd = 0;
-                foreach (System.Text.RegularExpressions.Match m in matches)
-                { sb.Append(input.AsSpan(prevEnd, m.Index - prevEnd)); sb.Append(GetSubstitution(input, m, replStr, fastRx)); prevEnd = m.Index + m.Length; }
-                sb.Append(input.AsSpan(prevEnd));
-                return JsValue.FromString(sb.ToString());
+                // Non-global: simple single-match replacement via .NET.
+                var match = fastRx.Regex.Match(input);
+                if (!match.Success) return JsValue.FromString(input);
+                return JsValue.FromString(input.Substring(0, match.Index) + GetSubstitution(input, match, replStr, fastRx) + input.Substring(match.Index + match.Length));
             }
+            // Global regex with string replacement: use the spec path so that
+            // lastIndex ToLength coercion and empty-match advance happen per spec.
             else
             {
                 var match = fastRx.Regex.Match(input);
@@ -6735,8 +6733,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         bool fullUnicode = false;
         if (TryGetPropertyValue(rxObj, thisValue, "unicode", out var uVal))
             fullUnicode = IsTruthy(uVal);
-        if (replaceGlobal)
-            _ = rxObj.SetProperty("lastIndex", JsValue.FromNumber(0));
+        if (replaceGlobal && !rxObj.SetProperty("lastIndex", JsValue.FromNumber(0)))
+            throw new JsThrownException(CreateTypeError("Cannot set RegExp lastIndex."));
         var execResults = new List<JsValue>();
         while (true)
         {
@@ -6750,7 +6748,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 double ti = 0;
                 if (TryGetPropertyValue(rxObj, thisValue, "lastIndex", out var li))
                 { var n = ToNumber(li); if (!double.IsNaN(n) && n > 0) ti = Math.Min(Math.Truncate(n), 9007199254740991); }
-                _ = rxObj.SetProperty("lastIndex", JsValue.FromNumber(AdvanceStringIndex(input, ti > int.MaxValue ? int.MaxValue : (int)ti, fullUnicode)));
+                if (!rxObj.SetProperty("lastIndex", JsValue.FromNumber(AdvanceStringIndex(input, (int)ti, fullUnicode))))
+                    throw new JsThrownException(CreateTypeError("Cannot set RegExp lastIndex."));
             }
         }
         var acc = new System.Text.StringBuilder();
