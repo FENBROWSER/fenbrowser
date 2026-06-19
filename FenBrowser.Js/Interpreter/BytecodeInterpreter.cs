@@ -9933,9 +9933,26 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 obj.DefineOwnProperty(key, newDesc);
             }
 
+            // Freeze symbol-keyed properties (spec 20.1.2.6 step 6.b.ii).
+            FreezeOrSealSymbolProperties(obj, freezeWritable: true);
+
             obj.PreventExtensions();
             return target;
         }, length: 1);
+
+        // FreezeOrSealSymbolProperties helper: marks all own symbol-keyed properties
+        // as non-configurable (and optionally non-writable for freeze).
+        void FreezeOrSealSymbolProperties(JsObject obj, bool freezeWritable)
+        {
+            foreach (var symPair in obj.EnumerateOwnSymbolProperties())
+            {
+                var symDesc = symPair.Value;
+                var newSymDesc = symDesc.IsAccessor
+                    ? JsPropertyDescriptor.Accessor(symDesc.Get, symDesc.Set, symDesc.Enumerable, Configurable: false)
+                    : new JsPropertyDescriptor(symDesc.Value, freezeWritable ? false : symDesc.Writable, symDesc.Enumerable, Configurable: false);
+                obj.DefineOwnSymbolProperty(symPair.Key, newSymDesc);
+            }
+        }
 
         DefineIntrinsicFunction(constructorHandle, constructor, "isFrozen", (_, args) =>
         {
@@ -9995,6 +10012,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     : new JsPropertyDescriptor(desc.Value, desc.Writable, desc.Enumerable, Configurable: false);
                 obj.DefineOwnProperty(key, newDesc);
             }
+
+            // Seal symbol-keyed properties (spec 20.1.2.14 step 6.b.ii).
+            FreezeOrSealSymbolProperties(obj, freezeWritable: false);
 
             obj.PreventExtensions();
             return target;
