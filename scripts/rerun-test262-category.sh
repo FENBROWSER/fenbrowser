@@ -23,8 +23,11 @@ tag=$(echo "$sub" | sed 's#/#_#g')
 out="$OUTDIR/b_${tag}.json"; log="$OUTDIR/b_${tag}.log"
 mkdir -p "$OUTDIR"; : > "$log"
 
-echo "rerun: $sub  ->  $out"
-"$EXE" --runtime-subset --root "$ROOT" --test262 "$scope" --max 100000 --timeout-ms 2000 --out "$out" >"$log" 2>&1 &
+# Count tests and compute hard timeout: N×2s + 30s buffer
+N=$(find "$scope" -name '*.js' -type f 2>/dev/null | wc -l)
+HARD=$(( N * 2 + 30 ))
+echo "rerun: $sub ($N tests, hard_timeout=${HARD}s)  ->  $out"
+timeout "$HARD" "$EXE" --runtime-subset --root "$ROOT" --test262 "$scope" --max 100000 --timeout-ms 2000 --out "$out" >"$log" 2>&1 &
 pid=$!; winpid=$(cat "/proc/$pid/winpid" 2>/dev/null || echo "")
 while kill -0 "$pid" 2>/dev/null; do
   sleep 2

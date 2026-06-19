@@ -65,9 +65,13 @@ except Exception:
 " 2>/dev/null) && { printf '[%3d/%d] %-44s SKIP   %s (cached)\n' "$i" "$N" "$tag" "$done"; echo "$i ${tag} $done SKIP" >> "$PROG"; continue; }
   fi
 
-  printf '[%3d/%d] %-44s run ...\n' "$i" "$N" "$tag"
+  printf '[%3d/%d] %-44s run ...
+' "$i" "$N" "$tag"
+  # Count tests and compute hard timeout: N×2s + 30s buffer
+  n_tests=$(find "$b" -name '*.js' -type f 2>/dev/null | wc -l)
+  hard=$(( n_tests * 2 + 30 ))
   : > "$log"
-  "$EXE" --runtime-subset --root "$ROOT" --test262 "$b" --max 100000 --timeout-ms 2000 --out "$out" >"$log" 2>&1 &
+  timeout "$hard" "$EXE" --runtime-subset --root "$ROOT" --test262 "$b" --max 100000 --timeout-ms 2000 --out "$out" >"$log" 2>&1 &
   pid=$!
   winpid=$(cat "/proc/$pid/winpid" 2>/dev/null || echo "")
   stalled=0

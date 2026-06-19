@@ -21,14 +21,16 @@ for rel in "$@"; do
   base=$(echo "$rel" | sed 's#/#_#g')
   # Count scoped test files (recursive .js under the dir).
   total=$(find "$ROOT/test/$rel" -name '*.js' -type f 2>/dev/null | wc -l)
-  echo "=== $rel : $total tests, chunk=$CHUNK ==="
+  # Hard timeout: chunk_size × per-test-timeout + 30s buffer
+  HARD_TIMEOUT=$(( CHUNK * 2 + 30 ))
+  echo "=== $rel : $total tests, chunk=$CHUNK, hard_timeout=${HARD_TIMEOUT}s ==="
   skip=0; c=0
   while [ "$skip" -lt "$total" ]; do
     tag="${base}_c$(printf '%03d' "$c")"
     out="$OUTDIR/b_${tag}.json"; log="$OUTDIR/b_${tag}.log"
     printf '  chunk %-3d skip=%-5d ' "$c" "$skip"
     : > "$log"
-    "$EXE" --runtime-subset --root "$ROOT" --test262 "$ROOT/test/$rel" \
+    timeout "$HARD_TIMEOUT" "$EXE" --runtime-subset --root "$ROOT" --test262 "$ROOT/test/$rel" \
         --skip "$skip" --max "$CHUNK" --timeout-ms 2000 --out "$out" >"$log" 2>&1 &
     pid=$!; winpid=$(cat "/proc/$pid/winpid" 2>/dev/null || echo ""); stalled=0
     while kill -0 "$pid" 2>/dev/null; do

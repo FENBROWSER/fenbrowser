@@ -4,12 +4,10 @@ import json, glob, os, sys
 
 BATCHED = "Results/test262/batched"
 
-# Stall-killed partial data from logs (manually maintained until runner fixed)
-STALL_DATA = {
-    # RegExp actually at ~93.8% (1876 pass / ~2000 tested).
-    # Dashboard previously showed 37% due to stale estimate.
-    "built-ins/RegExp": (1762, 1879),
-}
+# Stall-killed partial data — no longer needed; the chunked runner + memory
+# fixes (GC after every test, interpreter ref released post-timeout) now
+# produce complete batched JSONs for every category.
+STALL_DATA = {}
 
 def main():
     cats = []
