@@ -4912,6 +4912,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // ECMA-262 19.2.1.3 EvalDeclarationInstantiation ( body, varEnv, lexEnv, privateEnv, strict )
     // Validates that the eval body's declarations don't conflict with the calling
     // context's environment. Throws SyntaxError for violations.
+    private static bool ContainsArgumentsRecursive(BytecodeFunction fn)
+    {
+        foreach (var name in fn.PropertyNames)
+            if (name == "arguments") return true;
+        foreach (var nested in fn.NestedFunctions)
+            if (ContainsArgumentsRecursive(nested)) return true;
+        return false;
+    }
+
     private void ValidateEvalDeclarations(BytecodeFunction compiled, EnvironmentRecord? callingEnv, bool strict)
     {
         // Check for super references in the eval body. super() / super.x are only
@@ -4924,17 +4933,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         // ECMA-262: Additional Early Error Rules for Eval Inside Initializer.
-        // If the eval body contains an 'arguments' reference, it is a SyntaxError
-        // when direct eval is called inside a class field initializer.
-        // Detect via frame context: the calling function is a constructor.
+        // If the eval body (or any nested function/arrow) contains an 'arguments'
+        // reference, it is a SyntaxError when direct eval is called inside a class
+        // field initializer. Recursively scan all nested functions.
         if (callingEnv is not null && _activeFrames.Count > 0 && _activeFrames.Peek().Function?.Kind == FunctionKind.Constructor)
         {
-            foreach (var name in compiled.PropertyNames)
-            {
-                if (name == "arguments")
-                    throw new JsThrownException(CreateSyntaxError(
-                        "'arguments' cannot be used in eval inside a class field initializer."));
-            }
+            if (ContainsArgumentsRecursive(compiled))
+                throw new JsThrownException(CreateSyntaxError(
+                    "'arguments' cannot be used in eval inside a class field initializer."));
         }
 
         // Collect all var-scoped and function declarations from the eval body.
