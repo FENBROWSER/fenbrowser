@@ -738,7 +738,10 @@ public sealed class JsParser
                     $"Block-scoped declaration '{name}' conflicts with a var declaration in the same block.");
             }
             // Conflict (b): let/const/class name vs function declaration.
-            if (letConstClassNames.Contains(name) && funcDeclNames.Contains(name))
+            // Annex B.3.1: in sloppy mode, function declarations in blocks that
+            // share a name with a let/const in an outer block are allowed —
+            // the function hoists to the enclosing function scope.
+            if (letConstClassNames.Contains(name) && funcDeclNames.Contains(name) && _strictMode)
             {
                 throw new JsParserException(
                     $"Block-scoped declaration '{name}' conflicts with a function declaration in the same block.");
