@@ -12317,6 +12317,30 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromBoolean(IsArrayValue(value));
         }, length: 1);
 
+        // ECMA-262 23.1.3.38 Array.prototype[ @@unscopables ] — list of method names
+        // excluded from `with` environment bindings. The object has null prototype.
+        var unscopablesId = GetWellKnownSymbolId("unscopables");
+        if (unscopablesId != 0)
+        {
+            var unscopables = new JsObject();
+            unscopables.DefineOwnProperty("at", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            unscopables.DefineOwnProperty("copyWithin", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            unscopables.DefineOwnProperty("entries", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            unscopables.DefineOwnProperty("fill", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            unscopables.DefineOwnProperty("find", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            unscopables.DefineOwnProperty("findIndex", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            unscopables.DefineOwnProperty("findLast", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            unscopables.DefineOwnProperty("findLastIndex", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            unscopables.DefineOwnProperty("flat", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            unscopables.DefineOwnProperty("flatMap", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            unscopables.DefineOwnProperty("includes", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            unscopables.DefineOwnProperty("keys", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            unscopables.DefineOwnProperty("values", new JsPropertyDescriptor(JsValue.FromBoolean(true), Writable: true, Enumerable: true, Configurable: true));
+            _ = prototype.DefineOwnSymbolProperty(unscopablesId,
+                new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(unscopables, AllocationSite.Current())),
+                    Writable: false, Enumerable: false, Configurable: true));
+        }
+
         _arrayPrototypeHandle = prototypeHandle;
         _arrayConstructorHandle = constructorHandle;
         return constructorHandle;
