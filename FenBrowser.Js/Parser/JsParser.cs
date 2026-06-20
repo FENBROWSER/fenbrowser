@@ -4672,7 +4672,10 @@ public sealed class JsParser
                     strictMode: strictObjectMethod,
                     rejectSuperCallInBody: true,
                     allowSuperProperty: true);
-                var methodFnName = methodKey ?? "async";
+                // ECMA-262: anonymous computed-key methods get name from
+                // the key at runtime via SetFunctionName. Use null so
+                // IsAnonymousFunctionDefinition detects them correctly.
+                var methodFnName = methodKey; // null for computed keys
                 var asyncMethodFn = new FunctionExpressionNode(
                     methodFnName,
                     parameters,
@@ -4739,7 +4742,7 @@ public sealed class JsParser
                     strictMode: strictObjectMethod,
                     rejectSuperCallInBody: true,
                     allowSuperProperty: true);
-                var methodFnName = methodKey ?? "async*";
+                var methodFnName = methodKey; // null for computed keys
                 var asyncMethodFn = new FunctionExpressionNode(
                     methodFnName,
                     parameters,
@@ -4804,7 +4807,7 @@ public sealed class JsParser
                     strictMode: strictObjectMethod,
                     rejectSuperCallInBody: true,
                     allowSuperProperty: true);
-                var methodFnName = methodKey ?? "*";
+                var methodFnName = methodKey; // null for computed keys
                 var methodFn = new FunctionExpressionNode(
                     methodFnName,
                     parameters,
