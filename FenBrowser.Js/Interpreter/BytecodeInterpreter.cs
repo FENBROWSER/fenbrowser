@@ -6188,11 +6188,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // Annex B B.2.4.1 RegExp.prototype.compile(pattern, flags) � mutate
         // this instance to act like a freshly constructed RegExp. Audit �4.1.
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "compile", RegExpPrototypeCompile, length: 2);
-        DefineRegExpSymbolMethod(prototypeHandle, prototype, "match", RegExpPrototypeSymbolMatch);
-        DefineRegExpSymbolMethod(prototypeHandle, prototype, "search", RegExpPrototypeSymbolSearch);
-        DefineRegExpSymbolMethod(prototypeHandle, prototype, "replace", RegExpPrototypeSymbolReplace);
-        DefineRegExpSymbolMethod(prototypeHandle, prototype, "split", RegExpPrototypeSymbolSplit);
-        DefineRegExpSymbolMethod(prototypeHandle, prototype, "matchAll", RegExpPrototypeSymbolMatchAll);
+        DefineRegExpSymbolMethod(prototypeHandle, prototype, "match", RegExpPrototypeSymbolMatch, length: 1);
+        DefineRegExpSymbolMethod(prototypeHandle, prototype, "search", RegExpPrototypeSymbolSearch, length: 1);
+        DefineRegExpSymbolMethod(prototypeHandle, prototype, "replace", RegExpPrototypeSymbolReplace, length: 2);
+        DefineRegExpSymbolMethod(prototypeHandle, prototype, "split", RegExpPrototypeSymbolSplit, length: 2);
+        DefineRegExpSymbolMethod(prototypeHandle, prototype, "matchAll", RegExpPrototypeSymbolMatchAll, length: 1);
         InstallRegExpFlagAccessors(prototypeHandle, prototype);
     }
 
@@ -6354,7 +6354,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         ObjectHandle prototypeHandle,
         JsObject prototype,
         string symbolName,
-        Func<JsValue, IReadOnlyList<JsValue>, JsValue> call)
+        Func<JsValue, IReadOnlyList<JsValue>, JsValue> call,
+        int length = 1)
     {
         var symbol = GetWellKnownSymbol(symbolName);
         if (symbol.Tag != JsValueTag.Symbol)
@@ -6362,7 +6363,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return;
         }
 
-        var fn = new NativeFunctionObject($"[Symbol.{symbolName}]", call, length: 1);
+        var fn = new NativeFunctionObject($"[Symbol.{symbolName}]", call, length: length);
         var fnHandle = _heap.AllocateObject(fn, AllocationSite.Current());
         var callHandle = EnsureFunctionCallMethod();
         _ = fn.SetProperty("call", JsValue.FromObject(callHandle));
@@ -17008,7 +17009,7 @@ fallbackArraySpecies:
             }
 
             return JsValue.Undefined;
-        }, length: 2);
+        }, length: 1);
 
         // 23.2.3.19 TypedArray.prototype.slice(begin, end): relative indices via
         // ToIntegerOrInfinity (Symbol → TypeError, negatives count from the end),
