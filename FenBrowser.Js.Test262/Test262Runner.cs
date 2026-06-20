@@ -1516,7 +1516,8 @@ public sealed class Test262Runner
                     'Float16Array','Float32Array','Float64Array','BigInt64Array','BigUint64Array',
                     'ArrayBuffer','SharedArrayBuffer','DataView','Math','JSON','Date',
                     'parseInt','parseFloat','isNaN','isFinite','encodeURI','decodeURI',
-                    'encodeURIComponent','decodeURIComponent'].forEach(function (n) {
+                    'encodeURIComponent','decodeURIComponent',
+                    'Intl','Temporal','Atomics'].forEach(function (n) {
                      if (realmGlobal[n] === undefined && typeof globalThis[n] !== 'undefined') {
                        realmGlobal[n] = globalThis[n];
                      }
