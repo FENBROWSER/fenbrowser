@@ -1284,6 +1284,7 @@ public sealed class Test262Runner
     // Cached harness prelude strings — built once, reused for every test.
     private static readonly string _cachedMinimalHarnessPrelude = """
                function Test262Error(message) { this.message = message; }
+               Test262Error.thrower = function(message) { throw new Test262Error(message); };
                function $DONOTEVALUATE() { throw new Test262Error("Test262: This statement should not be evaluated."); }
                """;
     private static readonly string _cachedHarnessPrelude = BuildRuntimeHarnessPreludeRaw();
@@ -1310,6 +1311,7 @@ public sealed class Test262Runner
         var prelude = """
 
                function Test262Error(message) { this.message = message; }
+               Test262Error.thrower = function(message) { throw new Test262Error(message); };
                function $DONOTEVALUATE() { throw new Test262Error("Test262: This statement should not be evaluated."); }
                var assert = function (condition, message) {
                  if (!condition) { throw new Test262Error(message || "assert failed"); }
@@ -1771,6 +1773,7 @@ public sealed class Test262Runner
         "deepEqual.js",
         "nativeErrors.js",
         "isConstructor.js",
+        "sta.js",
         // SpiderMonkey staging harness includes
         "sm/assertThrowsValue.js",
         "sm/non262-Date-shell.js",
