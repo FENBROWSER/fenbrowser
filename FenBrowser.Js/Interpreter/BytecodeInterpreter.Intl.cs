@@ -2783,7 +2783,7 @@ public sealed partial class BytecodeInterpreter
         NumberFormatState state, NumberFormatInfo nfi)
     {
         bool compactShort = state.CompactDisplay is null or "short";
-        var (divisor, suffix) = GetCompactEntry(absValue, compactShort);
+        var (divisor, suffix) = GetCompactEntry(absValue, compactShort, state.Locale);
         var scaled = absValue / divisor;
         if (absValue == 0) scaled = 0;
 
@@ -2855,21 +2855,61 @@ public sealed partial class BytecodeInterpreter
         return parts;
     }
 
-    // Return the divisor and suffix for compact notation.
-    private static (double divisor, string suffix) GetCompactEntry(double absValue, bool short_)
+    // Return the divisor and suffix for compact notation, keyed by locale.
+    private static (double divisor, string suffix) GetCompactEntry(double absValue, bool short_, string locale)
     {
-        // Thresholds roughly matching CLDR compact patterns.
+        var lang = locale.Length >= 2 ? locale[..2].ToLowerInvariant() : "en";
+        // CLDR compact suffix data for commonly-tested locales.
+        // Each entry: (threshold, shortSuffix, longSuffix).
+        // East Asian locales (ja, ko, zh) use 10^4 (万/億/兆) thresholds.
+        if (lang is "ja" or "ko" or "zh")
+        {
+            if (absValue >= 1e16)
+                return short_ ? (1e16, GetAsianSuffix(lang, 4, short_)) : (1e16, GetAsianSuffix(lang, 4, short_));
+            if (absValue >= 1e12)
+                return short_ ? (1e12, GetAsianSuffix(lang, 3, short_)) : (1e12, GetAsianSuffix(lang, 3, short_));
+            if (absValue >= 1e8)
+                return short_ ? (1e8, GetAsianSuffix(lang, 2, short_)) : (1e8, GetAsianSuffix(lang, 2, short_));
+            if (absValue >= 1e4)
+                return short_ ? (1e4, GetAsianSuffix(lang, 1, short_)) : (1e4, GetAsianSuffix(lang, 1, short_));
+            return (1, "");
+        }
+        // Western locales: use 10^3 (K/M/B/T) thresholds.
         if (absValue >= 1e15)
-            return short_ ? (1e15, "Q") : (1e15, " quadrillion");
+            return short_ ? (1e15, GetWesternSuffix(lang, 5, short_)) : (1e15, " " + GetWesternSuffix(lang, 5, false));
         if (absValue >= 1e12)
-            return short_ ? (1e12, "T") : (1e12, " trillion");
+            return short_ ? (1e12, GetWesternSuffix(lang, 4, short_)) : (1e12, " " + GetWesternSuffix(lang, 4, false));
         if (absValue >= 1e9)
-            return short_ ? (1e9, "B") : (1e9, " billion");
+            return short_ ? (1e9, GetWesternSuffix(lang, 3, short_)) : (1e9, " " + GetWesternSuffix(lang, 3, false));
         if (absValue >= 1e6)
-            return short_ ? (1e6, "M") : (1e6, " million");
+            return short_ ? (1e6, GetWesternSuffix(lang, 2, short_)) : (1e6, " " + GetWesternSuffix(lang, 2, false));
         if (absValue >= 1e3)
-            return short_ ? (1e3, "K") : (1e3, " thousand");
-        return short_ ? (1, "") : (1, "");
+            return short_ ? (1e3, GetWesternSuffix(lang, 1, short_)) : (1e3, " " + GetWesternSuffix(lang, 1, false));
+        return (1, "");
+    }
+
+    private static string GetWesternSuffix(string lang, int tier, bool short_)
+    {
+        // tier: 1=thousand, 2=million, 3=billion, 4=trillion, 5=quadrillion
+        return lang switch
+        {
+            "de" => short_ ? (tier switch { 1 => "Tsd.", 2 => "Mio.", 3 => "Mrd.", 4 => "Bio.", _ => "Brd." })
+                           : (tier switch { 1 => "Tausend", 2 => "Millionen", 3 => "Milliarden", 4 => "Billionen", _ => "Billiarden" }),
+            _ => short_ ? (tier switch { 1 => "K", 2 => "M", 3 => "B", 4 => "T", _ => "Q" })
+                       : (tier switch { 1 => "thousand", 2 => "million", 3 => "billion", 4 => "trillion", _ => "quadrillion" }),
+        };
+    }
+
+    private static string GetAsianSuffix(string lang, int tier, bool short_)
+    {
+        // tier: 1=万/만/萬 (10^4), 2=億/억/億 (10^8), 3=兆/조/兆 (10^12), 4=京/경/京 (10^16)
+        return lang switch
+        {
+            "ja" => tier switch { 1 => "万", 2 => "億", 3 => "兆", _ => "京" },
+            "ko" => tier switch { 1 => "만", 2 => "억", 3 => "조", _ => "경" },
+            "zh" => tier switch { 1 => "萬", 2 => "億", 3 => "兆", _ => "京" },
+            _ => "K"
+        };
     }
 
     // ECMA-402: Format a BigInt string into IntlParts. BigInts are formatted as
