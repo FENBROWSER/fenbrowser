@@ -2461,6 +2461,15 @@ public sealed class TemporalStub : IBuiltinModule
         if (rank <= 3) { se = n / 1_000_000_000L; n %= 1_000_000_000L; }
         if (rank <= 4) { ms = n / 1_000_000L; n %= 1_000_000L; }
         if (rank <= 5) { us = n / 1_000L; n %= 1_000L; }
+        // Validate that balanced values are within the representable range.
+        // Per ECMA-262, Duration fields must be finite doubles. Beyond 2^53,
+        // double cannot represent every integer; the spec throws RangeError
+        // when the balanced duration result exceeds the safe integer range.
+        var maxVal = new System.Numerics.BigInteger(9_007_199_254_740_991L); // 2^53 - 1
+        if (days > maxVal || hr > maxVal || mi > maxVal || se > maxVal ||
+            ms > maxVal || us > maxVal || n > maxVal)
+            throw new JsThrownException(ctx.CreateRangeError("Duration value is outside the supported range."));
+
         return MakeDuration(ctx, h, 0, 0, 0, sign * (double)days, sign * (double)hr, sign * (double)mi, sign * (double)se,
             sign * (double)ms, sign * (double)us, sign * (double)n);
     }
@@ -4426,6 +4435,9 @@ public sealed class TemporalStub : IBuiltinModule
                 if (!TryGetField(ctx, h, arg, "day", out var dayValue))
                     throw new JsThrownException(ctx.CreateTypeError("day is required."));
                 double d = ToIntegerWithTruncation(ctx, dayValue);
+                // ECMA-262 §13.44: month and day must be positive integers.
+                if (m < 1) throw new JsThrownException(ctx.CreateRangeError("Month must be a positive integer."));
+                if (d < 1) throw new JsThrownException(ctx.CreateRangeError("Day must be a positive integer."));
                 bagDate = RegulateIsoDate(ctx, y, m, d, "constrain");
             }
             else
@@ -4806,6 +4818,9 @@ public sealed class TemporalStub : IBuiltinModule
         }
 
         epochNsBig += sign * DurationToNanos(0, dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos);
+        // ECMA-262: the resulting ZonedDateTime instant must be within the representable range.
+        if (System.Numerics.BigInteger.Abs(epochNsBig) > MaxInstantNs)
+            throw new JsThrownException(ctx.CreateRangeError("Resulting instant is outside the representable range."));
         return AttachPrototype(h, MakeZonedDateTimeNsBig(ctx, h, epochNsBig, tz, GetVStr(h, o, "calendarId")), pH);
     }
 
@@ -4847,6 +4862,8 @@ public sealed class TemporalStub : IBuiltinModule
         long dayCarry = roundedTime / NsPerDay;
         roundedTime -= dayCarry * NsPerDay;
         var newDate = dayCarry == 0 ? date : IsoMath.EpochDaysToCivil(IsoMath.ToEpochDays(date) + dayCarry);
+        if (!IsoMath.IsoDateWithinLimits(newDate))
+            throw new JsThrownException(ctx.CreateRangeError("Rounded date is outside the representable range."));
         var newTime = new IsoTime(
             (int)(roundedTime / 3_600_000_000_000L), (int)(roundedTime / 60_000_000_000L % 60), (int)(roundedTime / 1_000_000_000L % 60),
             (int)(roundedTime / 1_000_000L % 1000), (int)(roundedTime / 1_000L % 1000), (int)(roundedTime % 1000));
