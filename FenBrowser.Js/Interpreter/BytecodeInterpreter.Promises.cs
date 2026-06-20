@@ -148,6 +148,59 @@ public sealed partial class BytecodeInterpreter
             return PromiseRace(thisValue, iterable);
         }, length: 1);
 
+        // 27.2.4.8 Promise.withResolvers() — ES2024.
+        // Returns { promise, resolve, reject } for the receiver constructor C.
+        DefineIntrinsicFunction(constructorHandle, constructor, "withResolvers", (thisValue, args) =>
+        {
+            if (thisValue.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Promise.withResolvers called on a non-object receiver."));
+            }
+            var capability = NewPromiseCapability(thisValue);
+            var obj = CreateOrdinaryObject();
+            // ECMA-262 27.2.4.8 step 3: OrdinaryObjectCreate(%Object.prototype%)
+            var rootMark = _heap.RootCount;
+            var objHandle = _heap.AllocateObject(obj, AllocationSite.Current());
+            _heap.PushRoot(objHandle);
+            try
+            {
+                CreateDataProperty(objHandle, obj, "promise", capability.Promise);
+                CreateDataProperty(objHandle, obj, "resolve", capability.Resolve);
+                CreateDataProperty(objHandle, obj, "reject", capability.Reject);
+            }
+            finally
+            {
+                _heap.PopRootsTo(rootMark);
+            }
+            return JsValue.FromObject(objHandle);
+        }, length: 0);
+
+        // 27.2.4.9 Promise.try(callbackfn) — ES2025.
+        // Calls callbackfn with no arguments and wraps the result in a Promise.
+        DefineIntrinsicFunction(constructorHandle, constructor, "try", (thisValue, args) =>
+        {
+            var callbackfn = args.Count > 0 ? args[0] : JsValue.Undefined;
+            if (!IsCallable(callbackfn))
+            {
+                throw new JsThrownException(CreateTypeError("Promise.try: argument is not callable."));
+            }
+            if (thisValue.Tag != JsValueTag.Object)
+            {
+                throw new JsThrownException(CreateTypeError("Promise.try called on a non-object receiver."));
+            }
+            var capability = NewPromiseCapability(thisValue);
+            try
+            {
+                var result = CallFunction(callbackfn, Array.Empty<JsValue>(), JsValue.Undefined);
+                _ = CallFunction(capability.Resolve, new[] { result }, JsValue.Undefined);
+            }
+            catch (JsThrownException ex)
+            {
+                _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
+            }
+            return capability.Promise;
+        }, length: 1);
+
         _promiseConstructorHandle = constructorHandle;
         return constructorHandle;
     }
