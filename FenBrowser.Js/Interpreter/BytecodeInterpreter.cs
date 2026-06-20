@@ -5429,6 +5429,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             (t, a) => SetTimeField(t, "setUTCMilliseconds", a, startIndex: 3), length: 1);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toISOString", DatePrototypeToIsoString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toJSON", DatePrototypeToJson, length: 1);
+        // ECMA-262 21.4.4.45 Date.prototype.toTemporalInstant()
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toTemporalInstant",
+            (thisValue, _) => DatePrototypeToTemporalInstant(thisValue), length: 0);
 
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "getFullYear",
             (t, _) => GetDateComponent(t, "getFullYear", DateMath.YearFromTime));
@@ -5728,6 +5731,40 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         return CallFunction(method, Array.Empty<JsValue>(), o);
+    }
+
+    // ECMA-262 21.4.4.45 Date.prototype.toTemporalInstant ( )
+    // Returns a Temporal.Instant representing the same instant as this Date value.
+    private JsValue DatePrototypeToTemporalInstant(JsValue thisValue)
+    {
+        var t = GetDateTimeValue(thisValue, "toTemporalInstant");
+        if (double.IsNaN(t))
+            throw new JsThrownException(CreateRangeError("Invalid time value."));
+        var ns = new System.Numerics.BigInteger((long)t) * 1_000_000;
+        // Build a Temporal.Instant with the expected internal slot layout.
+        var instant = CreateOrdinaryObject();
+        var data = new JsObject();
+        var dataH = _heap.AllocateObject(data, AllocationSite.Current());
+        data.SetProperty("epochNanoseconds", JsValue.FromBigInt(ns));
+        data.SetProperty("ensBig", JsValue.FromBigInt(ns));
+        data.SetProperty("epochSeconds", JsValue.FromNumber((double)(ns / 1_000_000_000)));
+        data.SetProperty("epochMilliseconds", JsValue.FromNumber((double)(ns / 1_000_000)));
+        data.SetProperty("epochMicroseconds", JsValue.FromNumber((double)(ns / 1_000)));
+        instant.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.FromObject(dataH), false, false, false));
+        // Attach Temporal.Instant.prototype for @@toStringTag and method access.
+        var globalObj = _heap.GetObject(EnsureGlobalObject());
+        if (globalObj.TryGetOwnProperty("Temporal", out var tDesc) &&
+            tDesc.Value.Tag == JsValueTag.Object)
+        {
+            var temporal = _heap.GetObject(tDesc.Value.AsObjectHandle());
+            if (temporal.TryGetOwnProperty("Instant", out var iDesc) && iDesc.Value.Tag == JsValueTag.Object)
+            {
+                var iCtor = _heap.GetObject(iDesc.Value.AsObjectHandle());
+                if (iCtor.TryGetOwnProperty("prototype", out var pDesc) && pDesc.Value.Tag == JsValueTag.Object)
+                    instant.SetPrototype(pDesc.Value.AsObjectHandle());
+            }
+        }
+        return JsValue.FromObject(_heap.AllocateObject(instant, AllocationSite.Current()));
     }
 
     // ECMA-262 21.4.4.36 Date.prototype.toISOString. Format is the Date Time String
