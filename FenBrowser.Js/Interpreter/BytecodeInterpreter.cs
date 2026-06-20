@@ -2569,6 +2569,97 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return protoHandle;
     }
 
+    // ECMA-262 24.1.5.2 %MapIteratorPrototype% — inherits from %Iterator.prototype%,
+    // exposes .next() returning {value, done} from a snapshot, and brands with
+    // @@toStringTag = "Map Iterator".
+    private ObjectHandle? _mapIteratorPrototypeHandle;
+
+    private ObjectHandle EnsureMapIteratorPrototype()
+    {
+        if (_mapIteratorPrototypeHandle is { } existing)
+            return existing;
+
+        var proto = CreateOrdinaryObject();
+        proto.SetPrototype(EnsureIteratorPrototype());
+        var protoHandle = _heap.AllocateObject(proto, AllocationSite.Current());
+        _heap.PushRoot(protoHandle);
+
+        // Same .next impl as ArrayIteratorPrototype — the underlying object is
+        // SnapshotIteratorObject which carries per-iteration snapshot data.
+        var next = new NativeFunctionObject("next", (thisValue, _) =>
+        {
+            if (thisValue.Tag != JsValueTag.Object)
+                throw new JsThrownException(CreateTypeError("Iterator.prototype.next called on non-object."));
+            var target = _heap.GetObject(thisValue.AsObjectHandle());
+            if (target is SnapshotIteratorObject snap)
+            {
+                if (snap.Index >= snap.Values.Count)
+                    return BuildIteratorResult(JsValue.Undefined, done: true);
+                return BuildIteratorResult(snap.Values[snap.Index++], done: false);
+            }
+            throw new JsThrownException(CreateTypeError("Iterator.prototype.next called on incompatible receiver."));
+        }, length: 0);
+        var nextHandle = _heap.AllocateObject(next, AllocationSite.Current());
+        _ = proto.DefineOwnProperty("next", new JsPropertyDescriptor(JsValue.FromObject(nextHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, nextHandle);
+
+        var selfIter = new NativeFunctionObject("[Symbol.iterator]", (thisValue, _2) => thisValue, length: 0);
+        var selfIterHandle = _heap.AllocateObject(selfIter, AllocationSite.Current());
+        proto.DefineOwnSymbolProperty(GetWellKnownSymbolId("iterator"),
+            new JsPropertyDescriptor(JsValue.FromObject(selfIterHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, selfIterHandle);
+
+        // ECMA-262 24.1.5.2.2 %MapIteratorPrototype% [ @@toStringTag ] = "Map Iterator".
+        DefineBuiltinToStringTag(proto, "Map Iterator");
+
+        _mapIteratorPrototypeHandle = protoHandle;
+        return protoHandle;
+    }
+
+    // ECMA-262 24.2.5.2 %SetIteratorPrototype% — same shape as MapIteratorPrototype
+    // with @@toStringTag = "Set Iterator".
+    private ObjectHandle? _setIteratorPrototypeHandle;
+
+    private ObjectHandle EnsureSetIteratorPrototype()
+    {
+        if (_setIteratorPrototypeHandle is { } existing)
+            return existing;
+
+        var proto = CreateOrdinaryObject();
+        proto.SetPrototype(EnsureIteratorPrototype());
+        var protoHandle = _heap.AllocateObject(proto, AllocationSite.Current());
+        _heap.PushRoot(protoHandle);
+
+        var next = new NativeFunctionObject("next", (thisValue, _) =>
+        {
+            if (thisValue.Tag != JsValueTag.Object)
+                throw new JsThrownException(CreateTypeError("Iterator.prototype.next called on non-object."));
+            var target = _heap.GetObject(thisValue.AsObjectHandle());
+            if (target is SnapshotIteratorObject snap)
+            {
+                if (snap.Index >= snap.Values.Count)
+                    return BuildIteratorResult(JsValue.Undefined, done: true);
+                return BuildIteratorResult(snap.Values[snap.Index++], done: false);
+            }
+            throw new JsThrownException(CreateTypeError("Iterator.prototype.next called on incompatible receiver."));
+        }, length: 0);
+        var nextHandle = _heap.AllocateObject(next, AllocationSite.Current());
+        _ = proto.DefineOwnProperty("next", new JsPropertyDescriptor(JsValue.FromObject(nextHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, nextHandle);
+
+        var selfIter = new NativeFunctionObject("[Symbol.iterator]", (thisValue, _2) => thisValue, length: 0);
+        var selfIterHandle = _heap.AllocateObject(selfIter, AllocationSite.Current());
+        proto.DefineOwnSymbolProperty(GetWellKnownSymbolId("iterator"),
+            new JsPropertyDescriptor(JsValue.FromObject(selfIterHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(protoHandle, selfIterHandle);
+
+        // ECMA-262 24.2.5.2.2 %SetIteratorPrototype% [ @@toStringTag ] = "Set Iterator".
+        DefineBuiltinToStringTag(proto, "Set Iterator");
+
+        _setIteratorPrototypeHandle = protoHandle;
+        return protoHandle;
+    }
+
     // Build the IteratorResult shape { value, done } the spec mandates for every
     // iterator's .next() return value.
     private JsValue BuildIteratorResult(JsValue value, bool done)
@@ -3564,7 +3655,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var iter = new SnapshotIteratorObject(values);
-        iter.SetPrototype(EnsureArrayIteratorPrototype());
+        iter.SetPrototype(EnsureSetIteratorPrototype());
         return JsValue.FromObject(_heap.AllocateObject(iter, AllocationSite.Current()));
     }
 
@@ -3591,7 +3682,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         var iter = new SnapshotIteratorObject(values);
-        iter.SetPrototype(EnsureArrayIteratorPrototype());
+        iter.SetPrototype(EnsureMapIteratorPrototype());
         return JsValue.FromObject(_heap.AllocateObject(iter, AllocationSite.Current()));
     }
 
