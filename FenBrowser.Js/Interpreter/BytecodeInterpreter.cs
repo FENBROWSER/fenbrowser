@@ -5751,7 +5751,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private string FormatTimePart(double t) =>
         string.Format(System.Globalization.CultureInfo.InvariantCulture,
-            "{0:D2}:{1:D2}:{2:D2} GMT+0000 (Coordinated Universal Time)",
+            "{0:D2}:{1:D2}:{2:D2} GMT+0000",
             DateMath.HoursFromTime(t), DateMath.MinFromTime(t), DateMath.SecFromTime(t));
 
     private JsValue DatePrototypeToString(JsValue thisValue, IReadOnlyList<JsValue> args)
