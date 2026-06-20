@@ -6372,7 +6372,10 @@ public sealed class JsParser
         return node switch
         {
             IdentifierExpressionNode => true,
-            MemberExpressionNode m => m.Object is not SuperExpressionNode,
+            // ECMA-262 13.15.1: super.prop is a valid assignment target (PutValue
+            // handles the super-base Reference per 6.2.4.9). Previously rejected,
+            // which caused ~10 tests to fail with parser errors.
+            MemberExpressionNode => true,
             // Destructuring patterns parsed as array/object literals
             // (assignment pattern, not expression). Empty patterns ({} or [])
             // are valid per ECMA-262 13.15.1 (they destructure nothing).
