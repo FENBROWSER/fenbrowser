@@ -2294,8 +2294,9 @@ public sealed class TemporalStub : IBuiltinModule
                         if (fdVal.Tag is JsValueTag.Number or JsValueTag.Int32)
                         {
                             double n = fdVal.AsNumber();
-                            if (double.IsNaN(n)) n = 0;
-                            else if (double.IsInfinity(n))
+                            if (double.IsNaN(n))
+                                throw new JsThrownException(ctx.CreateRangeError("fractionalSecondDigits cannot be NaN."));
+                            if (double.IsInfinity(n))
                                 throw new JsThrownException(ctx.CreateRangeError("fractionalSecondDigits cannot be infinity."));
                             fdNum = Math.Floor(n);
                         }
