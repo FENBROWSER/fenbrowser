@@ -649,14 +649,6 @@ public static class RegexParser
             return combined;
         }
 
-        // Placeholder marker item for v-flag set operations (internal to compiler).
-        // Not part of the public AST spec.
-        private sealed class ClassSetOpMarker : ClassItem
-        {
-            public readonly int OpKind; // 0=Intersection, 1=Difference, 2=SymmetricDifference
-            public ClassSetOpMarker(int opKind) => OpKind = opKind;
-        }
-
         private List<ClassItem> ParseClassRanges()
         {
             var items = new List<ClassItem>();

@@ -515,6 +515,14 @@ public static class RegexCompiler
 
         private void EmitCharacterClass(CharacterClassNode cc)
         {
+            // v-flag set operations: if the items contain a ClassSetOpMarker,
+            // resolve both sides to code-point sets and emit the result.
+            if (_flags.UnicodeSets && cc.Items.Any(i => i is ClassSetOpMarker))
+            {
+                EmitCharacterClassWithSetOp(cc);
+                return;
+            }
+
             if (cc.Negated)
             {
                 // Negated class [^...]: match any char NOT in the set.
@@ -629,6 +637,146 @@ public static class RegexCompiler
                 var nextPos = i + 1 < splitPositions.Count ? splitPositions[i + 1] : altStarts[i + 1];
                 PatchSplit(splitPositions[i], altStarts[i], nextPos);
                 PatchJump(altJumps[i], endPos);
+            }
+        }
+
+        // v-flag set operations: resolve both sides to code-point sets,
+        // compute the set operation, and emit the resulting character class.
+        private void EmitCharacterClassWithSetOp(CharacterClassNode cc)
+        {
+            // Split items at the ClassSetOpMarker(s).
+            var leftItems = new List<ClassItem>();
+            var rightItems = new List<ClassItem>();
+            int opKind = 0; // 0=Intersection, 1=Difference, 2=SymmetricDifference
+            bool foundMarker = false;
+            foreach (var item in cc.Items)
+            {
+                if (item is ClassSetOpMarker marker)
+                {
+                    foundMarker = true;
+                    opKind = marker.OpKind;
+                    continue;
+                }
+                if (!foundMarker) leftItems.Add(item);
+                else rightItems.Add(item);
+            }
+            // Resolve both sides to sorted unique code-point lists.
+            var leftCps = ResolveClassItemsToCodePoints(leftItems);
+            var rightCps = ResolveClassItemsToCodePoints(rightItems);
+            // Compute the set operation result.
+            HashSet<int> result;
+            switch (opKind)
+            {
+                case 0: // Intersection: left ∩ right
+                    result = new HashSet<int>(leftCps);
+                    result.IntersectWith(rightCps);
+                    break;
+                case 1: // Difference: left \ right
+                    result = new HashSet<int>(leftCps);
+                    result.ExceptWith(rightCps);
+                    break;
+                case 2: // SymmetricDifference: (left ∪ right) \ (left ∩ right)
+                    result = new HashSet<int>(leftCps);
+                    result.SymmetricExceptWith(rightCps);
+                    break;
+                default:
+                    result = new HashSet<int>(leftCps);
+                    break;
+            }
+            if (cc.Negated)
+            {
+                // Negated set operation: complement the result.
+                // This is uncommon; emit as peek-negated items.
+                var allCps = new HashSet<int>();
+                for (int cp = 0; cp <= 0x10FFFF; cp++) allCps.Add(cp);
+                allCps.ExceptWith(result);
+                result = allCps;
+            }
+            // Emit the final set as a character class.
+            var sorted = result.OrderBy(cp => cp).ToList();
+            if (sorted.Count == 0)
+            {
+                Emit(RegexOpCode.CharRange, 1, 0); // impossible range
+                return;
+            }
+            // Merge consecutive code points into ranges.
+            var ranges = new List<(int start, int end)>();
+            int rangeStart = sorted[0], rangeEnd = sorted[0];
+            for (int i = 1; i < sorted.Count; i++)
+            {
+                if (sorted[i] == rangeEnd + 1) { rangeEnd = sorted[i]; }
+                else { ranges.Add((rangeStart, rangeEnd)); rangeStart = sorted[i]; rangeEnd = sorted[i]; }
+            }
+            ranges.Add((rangeStart, rangeEnd));
+            // Emit as alternation over ranges and single chars.
+            if (ranges.Count == 1 && ranges[0].start == ranges[0].end)
+            {
+                Emit(RegexOpCode.Char, ranges[0].start, b: _flags.IgnoreCase ? 1 : 0);
+                return;
+            }
+            var splitPositions = new List<int>();
+            for (int i = 0; i < ranges.Count - 1; i++) splitPositions.Add(ReserveSplit());
+            var altStarts = new int[ranges.Count];
+            var altJumps = new int[ranges.Count];
+            for (int i = 0; i < ranges.Count; i++)
+            {
+                altStarts[i] = CurrentPos;
+                var (s, e) = ranges[i];
+                if (s == e) Emit(RegexOpCode.Char, s, b: _flags.IgnoreCase ? 1 : 0);
+                else Emit(RegexOpCode.CharRange, s, e);
+                if (i < ranges.Count - 1) altJumps[i] = ReserveJump();
+            }
+            var endPos2 = CurrentPos;
+            for (int i = 0; i < ranges.Count - 1; i++)
+            {
+                var nextPos = i + 1 < splitPositions.Count ? splitPositions[i + 1] : altStarts[i + 1];
+                PatchSplit(splitPositions[i], altStarts[i], nextPos);
+                PatchJump(altJumps[i], endPos2);
+            }
+        }
+
+        // Resolve a list of ClassItems to the set of code points they match.
+        private static HashSet<int> ResolveClassItemsToCodePoints(List<ClassItem> items)
+        {
+            var cps = new HashSet<int>();
+            foreach (var item in items)
+            {
+                switch (item)
+                {
+                    case ClassLiteralChar lc: cps.Add(lc.Value); break;
+                    case ClassRange cr: for (int cp = cr.Start; cp <= cr.End; cp++) cps.Add(cp); break;
+                    case ClassEscape ce: cps.Add(ce.CodePoint); break;
+                    case ClassClassEscape cce: AddClassEscapeCps(cps, cce.Kind); break;
+                    case ClassUnicodeProperty cup: AddUnicodePropertyCps(cps, cup); break;
+                    // String literals and other items are ignored for now.
+                }
+            }
+            return cps;
+        }
+
+        private static void AddClassEscapeCps(HashSet<int> cps, char kind)
+        {
+            switch (kind)
+            {
+                case 'd': for (int cp = '0'; cp <= '9'; cp++) cps.Add(cp); break;
+                case 'D': for (int cp = 0; cp <= 0x10FFFF; cp++) if (cp < '0' || cp > '9') cps.Add(cp); break;
+                case 'w': for (int cp = '0'; cp <= '9'; cp++) cps.Add(cp); for (int cp = 'A'; cp <= 'Z'; cp++) cps.Add(cp); for (int cp = 'a'; cp <= 'z'; cp++) cps.Add(cp); cps.Add('_'); break;
+                case 'W': for (int cp = 0; cp <= 0x10FFFF; cp++) if (!(cp >= '0' && cp <= '9' || cp >= 'A' && cp <= 'Z' || cp >= 'a' && cp <= 'z' || cp == '_')) cps.Add(cp); break;
+                case 's': cps.Add(0x0009); cps.Add(0x000A); cps.Add(0x000B); cps.Add(0x000C); cps.Add(0x000D); cps.Add(0x0020); cps.Add(0x00A0); cps.Add(0x1680); cps.Add(0x2000); cps.Add(0x2001); cps.Add(0x2002); cps.Add(0x2003); cps.Add(0x2004); cps.Add(0x2005); cps.Add(0x2006); cps.Add(0x2007); cps.Add(0x2008); cps.Add(0x2009); cps.Add(0x200A); cps.Add(0x2028); cps.Add(0x2029); cps.Add(0x202F); cps.Add(0x205F); cps.Add(0x3000); cps.Add(0xFEFF); break;
+                case 'S': for (int cp = 0; cp <= 0x10FFFF; cp++) cps.Add(cp); cps.Remove(0x0009); cps.Remove(0x000A); cps.Remove(0x000B); cps.Remove(0x000C); cps.Remove(0x000D); cps.Remove(0x0020); break;
+            }
+        }
+
+        private static void AddUnicodePropertyCps(HashSet<int> cps, ClassUnicodeProperty cup)
+        {
+            // Query the Unicode property-escape database for all code points.
+            // Build the query key from Property and optional Value.
+            string body = cup.Value is not null ? $"{cup.Property}={cup.Value}" : cup.Property;
+            for (int cp = 0; cp <= 0x10FFFF; cp++)
+            {
+                if (UnicodePropertyEscapeData.TryHasPropertyCodePoint(body, cp, out var hasProperty) &&
+                    hasProperty != cup.Negated)
+                    cps.Add(cp);
             }
         }
 

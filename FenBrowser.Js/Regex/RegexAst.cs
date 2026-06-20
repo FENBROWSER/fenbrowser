@@ -288,3 +288,12 @@ public sealed class ClassUnicodeProperty : ClassItem
         Negated = negated;
     }
 }
+
+// Marker item for v-flag set operations in character classes.
+// Placed by the parser between left-hand and right-hand ClassItem lists.
+// OpKind: 0=Intersection (&&), 1=Difference (--), 2=SymmetricDifference (~~).
+internal sealed class ClassSetOpMarker : ClassItem
+{
+    public readonly int OpKind;
+    public ClassSetOpMarker(int opKind) => OpKind = opKind;
+}
