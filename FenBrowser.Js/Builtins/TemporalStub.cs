@@ -635,14 +635,19 @@ public sealed class TemporalStub : IBuiltinModule
     }
 
     /// <summary>ToTemporalOffset: options.offset, validated ("prefer"/"use"/"ignore"/"reject").</summary>
-    private static string GetOffsetOption(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> a, int i)
+    private static string GetOffsetOption(
+        IBuiltinContext ctx,
+        JsHeap h,
+        IReadOnlyList<JsValue> a,
+        int i,
+        string defaultValue = "prefer")
     {
         RequireOptionsObject(ctx, a, i);
-        if (i >= a.Count || a[i].Tag != JsValueTag.Object) return "prefer";
+        if (i >= a.Count || a[i].Tag != JsValueTag.Object) return defaultValue;
         var optionsValue = a[i];
         var obj = h.GetObject(optionsValue.AsObjectHandle());
         if (!ctx.TryGetPropertyValue(obj, optionsValue, "offset", out var v) || v.Tag == JsValueTag.Undefined)
-            return "prefer";
+            return defaultValue;
         var s = ctx.ToStringValue(v);
         if (s is not ("prefer" or "use" or "ignore" or "reject"))
             throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid value for offset."));
@@ -4401,7 +4406,12 @@ public sealed class TemporalStub : IBuiltinModule
     }
 
     /// <summary>ToTemporalZonedDateTime: instance, ISO string with [tz], or property bag → epoch ns + zone + calendar.</summary>
-    private static (System.Numerics.BigInteger EpochNs, string Tz, string Calendar) ToTemporalZonedRecord(IBuiltinContext ctx, JsHeap h, JsValue arg)
+    private static (System.Numerics.BigInteger EpochNs, string Tz, string Calendar) ToTemporalZonedRecord(
+        IBuiltinContext ctx,
+        JsHeap h,
+        JsValue arg,
+        string offsetOption = "reject",
+        string disambiguation = "compatible")
     {
         if (arg.Tag == JsValueTag.String)
         {
@@ -4420,7 +4430,7 @@ public sealed class TemporalStub : IBuiltinModule
                 long days = IsoMath.ToEpochDays(date);
                 epochNs = new System.Numerics.BigInteger(days) * NsPerDay + time.ToNanosecondsOfDay();
             }
-            else if (parsed.HasOffset)
+            else if (parsed.HasOffset && offsetOption != "ignore")
             {
                 long days = IsoMath.ToEpochDays(date);
                 epochNs = new System.Numerics.BigInteger(days) * NsPerDay + time.ToNanosecondsOfDay() - parsed.OffsetNanoseconds;
@@ -4428,16 +4438,22 @@ public sealed class TemporalStub : IBuiltinModule
                     ? (long)epochNs
                     : (epochNs < 0 ? long.MinValue : long.MaxValue);
                 long offsetNs = TemporalTimeZones.GetOffsetNs(tz, epochNsClamped);
-                if (!StringOffsetMatchesTimeZone(
+                bool matches = StringOffsetMatchesTimeZone(
                         tz,
                         offsetNs,
                         parsed.OffsetNanoseconds,
-                        parsed.OffsetSubMinuteSyntax))
+                        parsed.OffsetSubMinuteSyntax);
+                if (!matches && offsetOption == "reject")
                     throw new JsThrownException(ctx.CreateRangeError("Offset and time zone offset mismatch."));
+                bool minuteRoundedNamedOffset = !parsed.OffsetSubMinuteSyntax && tz.Length > 0 && tz[0] is not ('+' or '-');
+                if (offsetOption != "use" && (offsetNs != parsed.OffsetNanoseconds || minuteRoundedNamedOffset) &&
+                    !TemporalTimeZones.TryResolveEpochNsFromWallBig(tz, date, time, disambiguation, out epochNs))
+                    throw new JsThrownException(ctx.CreateRangeError("Wall time is ambiguous or does not exist in the time zone."));
             }
             else
             {
-                epochNs = TemporalTimeZones.EpochNsFromWallBig(tz, date, time);
+                if (!TemporalTimeZones.TryResolveEpochNsFromWallBig(tz, date, time, disambiguation, out epochNs))
+                    throw new JsThrownException(ctx.CreateRangeError("Wall time is ambiguous or does not exist in the time zone."));
             }
 
             if (System.Numerics.BigInteger.Abs(epochNs) > MaxInstantNs)
@@ -4510,7 +4526,7 @@ public sealed class TemporalStub : IBuiltinModule
             }
 
             System.Numerics.BigInteger epochNs;
-            if (offsetNs.HasValue)
+            if (offsetNs.HasValue && offsetOption != "ignore")
             {
                 System.Numerics.BigInteger wallNs = new System.Numerics.BigInteger(IsoMath.ToEpochDays(bagDate)) * NsPerDay + bagTime.ToNanosecondsOfDay();
                 epochNs = wallNs - offsetNs.Value;
@@ -4518,12 +4534,17 @@ public sealed class TemporalStub : IBuiltinModule
                     ? (long)epochNs
                     : (epochNs < 0 ? long.MinValue : long.MaxValue);
                 long actualOffset = TemporalTimeZones.GetOffsetNs(bagTz, epochNsClamped);
-                if (actualOffset != offsetNs.Value)
+                bool matches = actualOffset == offsetNs.Value;
+                if (!matches && offsetOption == "reject")
                     throw new JsThrownException(ctx.CreateRangeError("Offset and time zone offset mismatch."));
+                if (!matches && offsetOption == "prefer" &&
+                    !TemporalTimeZones.TryResolveEpochNsFromWallBig(bagTz, bagDate, bagTime, disambiguation, out epochNs))
+                    throw new JsThrownException(ctx.CreateRangeError("Wall time is ambiguous or does not exist in the time zone."));
             }
             else
             {
-                epochNs = TemporalTimeZones.EpochNsFromWallBig(bagTz, bagDate, bagTime);
+                if (!TemporalTimeZones.TryResolveEpochNsFromWallBig(bagTz, bagDate, bagTime, disambiguation, out epochNs))
+                    throw new JsThrownException(ctx.CreateRangeError("Wall time is ambiguous or does not exist in the time zone."));
             }
 
             if (System.Numerics.BigInteger.Abs(epochNs) > MaxInstantNs)
@@ -4610,8 +4631,9 @@ public sealed class TemporalStub : IBuiltinModule
         var (cH, pH) = MakeCtor(ctx, h, t, tH, "ZonedDateTime", 2, true,
             (cctx, hh, a) => ConstructZonedDateTime(cctx, hh, a));
         var p = h.GetObject(pH);
-        foreach (var f in new[] { "day", "epochMicroseconds", "epochMilliseconds", "epochNanoseconds", "epochSeconds", "hour", "microsecond", "millisecond", "minute", "month", "nanosecond", "offsetNanoseconds", "second", "year" })
+        foreach (var f in new[] { "day", "epochMicroseconds", "epochMilliseconds", "epochSeconds", "hour", "microsecond", "millisecond", "minute", "month", "nanosecond", "offsetNanoseconds", "second", "year" })
             AddGetter(ctx, h, pH, p, f, o => GetV(h, o, f));
+        AddGetter(ctx, h, pH, p, "epochNanoseconds", o => GetV(h, o, "ensBig"));
         AddGetter(ctx, h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
         AddGetter(ctx, h, pH, p, "monthCode", o => { var iso = DecodeIsoDateLong(h, o); return JsValue.FromString(CalFields(CalId(h, o), iso)?.MonthCode ?? $"M{iso.Month:D2}"); });
         AddGetter(ctx, h, pH, p, "dayOfWeek", o => JsValue.FromNumber(IsoMath.DayOfWeek(DecodeIsoDateLong(h, o))));
@@ -4821,9 +4843,9 @@ public sealed class TemporalStub : IBuiltinModule
             if (a.Count == 0) throw new JsThrownException(ctx.CreateTypeError("ZonedDateTime.from requires at least 1 argument."));
             RequireOptionsObject(ctx, a, 1);
             var disambiguation = GetDisambiguationOption(ctx, h, a, 1);
-            var offset = GetOffsetOption(ctx, h, a, 1);
+            var offset = GetOffsetOption(ctx, h, a, 1, "reject");
             var overflow = GetOverflowOption(ctx, h, a, 1);
-            var (ns, tz, cal) = ToTemporalZonedRecord(ctx, h, a[0]);
+            var (ns, tz, cal) = ToTemporalZonedRecord(ctx, h, a[0], offset, disambiguation);
             return AttachPrototype(h, MakeZonedDateTimeNsBig(ctx, h, ns, tz, cal), pH);
         }, 1);
         AddStatic(ctx, h, cH, c, "compare", a => {

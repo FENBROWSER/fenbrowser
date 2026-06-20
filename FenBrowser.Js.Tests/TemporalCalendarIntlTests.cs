@@ -143,4 +143,54 @@ public sealed class TemporalCalendarIntlTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void ZonedDateTimeFromHonorsOffsetAndDisambiguationOptions()
+    {
+        var result = Run("""
+            const use = Temporal.ZonedDateTime.from(
+                "2020-11-01T04:00-07:00[America/Los_Angeles]",
+                { offset: "use" });
+            const ignore = Temporal.ZonedDateTime.from(
+                "2020-11-01T04:00-12:00[America/Los_Angeles]",
+                { offset: "ignore" });
+            const earlier = Temporal.ZonedDateTime.from(
+                "2020-03-08T02:30[America/Los_Angeles]",
+                { offset: "ignore", disambiguation: "earlier" });
+            const later = Temporal.ZonedDateTime.from(
+                "2020-03-08T02:30[America/Los_Angeles]",
+                { offset: "ignore", disambiguation: "later" });
+            let rejected = false;
+            try {
+                Temporal.ZonedDateTime.from(
+                    "2020-03-08T02:30[America/Los_Angeles]",
+                    { offset: "ignore", disambiguation: "reject" });
+            } catch (e) {
+                rejected = e instanceof RangeError;
+            }
+
+            use.hour === 3 && ignore.hour === 4 &&
+                earlier.hour === 1 && later.hour === 3 && rejected;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ZonedDateTimeFromPreservesHistoricalSubMinuteOffsets()
+    {
+        var epochMatches = Run("""
+            Temporal.ZonedDateTime.from(
+                "1970-01-01T12:00-00:44:30[Africa/Monrovia]",
+                { offset: "use" }).epochNanoseconds === 45_870_000_000_000n;
+            """);
+        var offsetMatches = Run("""
+            Temporal.ZonedDateTime.from(
+                "1970-01-01T12:00-00:44:30[Africa/Monrovia]",
+                { offset: "use" }).offset === "-00:44:30";
+            """);
+
+        Assert.True(epochMatches.AsBoolean());
+        Assert.True(offsetMatches.AsBoolean());
+    }
 }

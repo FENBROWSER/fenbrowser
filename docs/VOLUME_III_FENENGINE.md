@@ -8534,12 +8534,16 @@ Verification:
   - Named Temporal time zones now resolve through Noda Time's embedded IANA TZDB rather than platform `TimeZoneInfo`.
   - Canonical identifiers are case-insensitive at the API boundary and normalized through TZDB aliases.
   - Historical offsets preserve second precision, including pre-standard-time transitions required by Temporal.
+  - Wall-clock gaps and overlaps resolve through TZDB using Temporal's `compatible`, `earlier`, `later`, and `reject` disambiguation modes.
 - `FenBrowser.Js/Builtins/TemporalStub.cs`
   - Minute-only offsets in ZonedDateTime strings may match named-zone offsets after Temporal half-expand minute rounding.
   - Second-bearing string offsets, fixed-offset zones, and property-bag offsets remain exact.
+  - `ZonedDateTime.from` applies `use`, `ignore`, `prefer`, and `reject` offset semantics instead of validating every input as `reject`.
+  - ZonedDateTime offset text and `epochNanoseconds` preserve their exact second precision and BigInt value.
 
 Verification:
 
 - `dotnet build FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -c Release --nologo`: pass.
-- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --filter "FullyQualifiedName~TemporalCalendarIntlTests" --logger "console;verbosity=minimal"`: pass (`6/6`).
-- `intl402/Temporal`: offset-mismatch failures reduced from `13` to `2`; category improved from `1733/2029` to `1734/2029`.
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --filter "FullyQualifiedName~TemporalCalendarIntlTests" --logger "console;verbosity=minimal"`: pass (`8/8`).
+- `intl402/Temporal/ZonedDateTime/from/zoneddatetime-sub-minute-offset.js`: pass (`1/1`).
+- `intl402/Temporal`: category improved from `1734/2029` to `1753/2029`; remaining failures `276`.

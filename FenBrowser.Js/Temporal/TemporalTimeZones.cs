@@ -180,12 +180,23 @@ internal static class TemporalTimeZones
         return (date, time);
     }
 
-    /// <summary>"±HH:MM" display form of an offset (rounded toward zero to minutes).</summary>
+    /// <summary>Temporal offset display form, preserving sub-minute precision.</summary>
     public static string FormatOffset(long offsetNs)
     {
-        long minutes = offsetNs / 60_000_000_000L;
-        long absMinutes = Math.Abs(minutes);
-        return $"{(offsetNs < 0 ? "-" : "+")}{absMinutes / 60:D2}:{absMinutes % 60:D2}";
+        long absolute = Math.Abs(offsetNs);
+        long hours = absolute / 3_600_000_000_000L;
+        long minutes = absolute / 60_000_000_000L % 60;
+        long seconds = absolute / 1_000_000_000L % 60;
+        long fraction = absolute % 1_000_000_000L;
+        string result = $"{(offsetNs < 0 ? "-" : "+")}{hours:D2}:{minutes:D2}";
+        if (seconds != 0 || fraction != 0)
+        {
+            result += $":{seconds:D2}";
+            if (fraction != 0)
+                result += "." + fraction.ToString("D9").TrimEnd('0');
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -213,6 +224,64 @@ internal static class TemporalTimeZones
         } // else: outside long range → offset = 0 (no TZ data available)
 
         return wallNs - offsetNs;
+    }
+
+    /// <summary>Resolve a wall time using Temporal's disambiguation option.</summary>
+    public static bool TryResolveEpochNsFromWallBig(
+        string canonicalId,
+        IsoDate date,
+        IsoTime time,
+        string disambiguation,
+        out System.Numerics.BigInteger epochNs)
+    {
+        long days = IsoMath.ToEpochDays(date);
+        var wallNs = new System.Numerics.BigInteger(days) * NsPerDay + time.ToNanosecondsOfDay();
+
+        if (canonicalId == "UTC" || canonicalId.Length > 0 && canonicalId[0] is '+' or '-')
+        {
+            epochNs = EpochNsFromWallBig(canonicalId, date, time);
+            return true;
+        }
+
+        var zone = DateTimeZoneProviders.Tzdb.GetZoneOrNull(canonicalId);
+        if (zone is null || date.Year is < 1 or > 9999)
+        {
+            epochNs = EpochNsFromWallBig(canonicalId, date, time);
+            return true;
+        }
+
+        var local = new LocalDateTime(date.Year, date.Month, date.Day, time.Hour, time.Minute, time.Second)
+            .PlusNanoseconds(time.Millisecond * 1_000_000L + time.Microsecond * 1_000L + time.Nanosecond);
+        var mapping = zone.MapLocal(local);
+
+        if (mapping.Count == 1)
+        {
+            epochNs = wallNs - mapping.EarlyInterval.WallOffset.Seconds * 1_000_000_000L;
+            return true;
+        }
+
+        if (disambiguation == "reject")
+        {
+            epochNs = default;
+            return false;
+        }
+
+        if (mapping.Count == 2)
+        {
+            var offset = disambiguation == "later"
+                ? mapping.LateInterval.WallOffset
+                : mapping.EarlyInterval.WallOffset;
+            epochNs = wallNs - offset.Seconds * 1_000_000_000L;
+            return true;
+        }
+
+        // In a gap, the pre-transition offset moves the wall time forward and
+        // the post-transition offset moves it backward.
+        var gapOffset = disambiguation == "earlier"
+            ? mapping.LateInterval.WallOffset
+            : mapping.EarlyInterval.WallOffset;
+        epochNs = wallNs - gapOffset.Seconds * 1_000_000_000L;
+        return true;
     }
 
     /// <summary>
