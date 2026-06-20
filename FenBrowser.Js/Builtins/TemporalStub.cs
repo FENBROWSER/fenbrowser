@@ -1089,7 +1089,8 @@ public sealed class TemporalStub : IBuiltinModule
                 throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for PlainMonthDay: {parseError}"));
             var parsedCal = CalendarFromAnnotation(ctx, parsed.Calendar);
             _ = GetOverflowOption(ctx, h, a, optIdx);
-            return (new IsoDate(parsed.Year, parsed.Month, parsed.Day), parsedCal);
+            var parsedDate = new IsoDate(parsed.Year, parsed.Month, parsed.Day);
+            return (FindMonthDayReferenceDate(ctx, parsedCal, parsedDate), parsedCal);
         }
         if (arg.Tag == JsValueTag.Object)
         {
@@ -1116,9 +1117,32 @@ public sealed class TemporalStub : IBuiltinModule
             // Property bag
             string cal = GetCalendarFromFields(ctx, h, arg);
             var iso = ResolveDateBagToIso(ctx, h, arg, cal, a, optIdx, requireDay: true, readDay: true, requireYear: false);
-            return (iso, cal);
+            return (FindMonthDayReferenceDate(ctx, cal, iso), cal);
         }
         throw new JsThrownException(ctx.CreateTypeError("Argument must be a string or property bag."));
+    }
+
+    private static IsoDate FindMonthDayReferenceDate(IBuiltinContext ctx, string calendarId, IsoDate validatedDate)
+    {
+        if (calendarId == "iso8601")
+            return new IsoDate(1972, validatedDate.Month, validatedDate.Day);
+
+        var system = CalendarMath.Get(calendarId);
+        var target = system?.ToFields(validatedDate);
+        if (system is null || target is null)
+            return validatedDate;
+
+        long first = IsoMath.CivilToEpochDays(1972, 12, 31);
+        long last = IsoMath.CivilToEpochDays(1573, 1, 1);
+        for (long epochDay = first; epochDay >= last; epochDay--)
+        {
+            var candidate = IsoMath.EpochDaysToCivil(epochDay);
+            var fields = system.ToFields(candidate);
+            if (fields.MonthCode == target.Value.MonthCode && fields.Day == target.Value.Day)
+                return candidate;
+        }
+
+        throw new JsThrownException(ctx.CreateRangeError("No valid PlainMonthDay reference date was found."));
     }
 
     /// <summary>ToTemporalTime: PlainTime/PlainDateTime instance, ISO time string, or property bag → wall-clock time.</summary>

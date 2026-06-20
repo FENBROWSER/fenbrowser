@@ -8544,15 +8544,17 @@ Verification:
   - ZonedDateTime offset text and `epochNanoseconds` preserve their exact second precision and BigInt value.
   - ZonedDateTime `year`, `month`, and `day` getters project the ISO wall date through the attached calendar.
   - ZonedDateTime differences decompose both instants in the instance's time zone, preserve calendar month-end asymmetry, and calculate the time remainder from the exact zoned calendar anchor.
+  - PlainMonthDay property bags and annotated strings validate calendar fields at the input date, then store the latest matching ISO reference date at or before 1972.
 
 Verification:
 
 - `dotnet build FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -c Release --nologo`: pass.
-- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --filter "FullyQualifiedName~TemporalCalendarIntlTests" --logger "console;verbosity=minimal"`: pass (`12/12`).
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --filter "FullyQualifiedName~TemporalCalendarIntlTests" --logger "console;verbosity=minimal"`: pass (`13/13`).
 - `intl402/Temporal/ZonedDateTime/from/zoneddatetime-sub-minute-offset.js`: pass (`1/1`).
 - `intl402/Temporal/ZonedDateTime/prototype/add`: pass (`74/76`).
 - `intl402/Temporal/ZonedDateTime/prototype/subtract`: pass (`75/76`).
 - `intl402/Temporal/ZonedDateTime/supported-values-of.js`: pass (`1/1`).
 - `intl402/Temporal/ZonedDateTime/prototype/since`: pass (`64/67`).
 - `intl402/Temporal/ZonedDateTime/prototype/until`: pass (`62/66`).
-- `intl402/Temporal`: category improved from `1734/2029` to `1852/2029`; remaining failures `177`.
+- `intl402/Temporal/PlainMonthDay/from`: pass (`45/56`).
+- `intl402/Temporal`: category improved from `1734/2029` to `1860/2029`; remaining failures `169`.

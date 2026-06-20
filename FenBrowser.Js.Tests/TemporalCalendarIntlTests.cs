@@ -274,4 +274,24 @@ public sealed class TemporalCalendarIntlTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void PlainMonthDayPropertyBagsUseTheLatestReferenceDateBefore1973()
+    {
+        var result = Run("""
+            const gregory = Temporal.PlainMonthDay.from({
+                year: 2021, monthCode: "M02", day: 29, calendar: "gregory"
+            });
+            const hebrew = Temporal.PlainMonthDay.from({
+                year: 5781, monthCode: "M02", day: 30, calendar: "hebrew"
+            });
+            const fromString = Temporal.PlainMonthDay.from("2023-01-01[u-ca=hebrew]");
+
+            gregory.referenceISOYear === 1972 && gregory.day === 28 &&
+                hebrew.referenceISOYear === 1972 && hebrew.day === 29 &&
+                fromString.referenceISOYear === 1972;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }
