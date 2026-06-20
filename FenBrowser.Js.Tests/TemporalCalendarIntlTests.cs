@@ -357,4 +357,24 @@ public sealed class TemporalCalendarIntlTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void PlainYearMonthRejectsMissingLeapMonthDuringArithmetic()
+    {
+        var result = Run("""
+            const leap = Temporal.PlainYearMonth.from({
+                year: 5784, monthCode: "M05L", calendar: "hebrew"
+            });
+            let addRejected = false;
+            let subtractRejected = false;
+            try { leap.add({ years: 1 }, { overflow: "reject" }); }
+            catch (e) { addRejected = e instanceof RangeError; }
+            try { leap.subtract({ years: 1 }, { overflow: "reject" }); }
+            catch (e) { subtractRejected = e instanceof RangeError; }
+
+            addRejected && subtractRejected;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }

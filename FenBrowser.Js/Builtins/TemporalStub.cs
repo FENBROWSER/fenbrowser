@@ -4139,16 +4139,20 @@ public sealed class TemporalStub : IBuiltinModule
         }, 1);
         AddMethod(ctx, h, pH, p, "add", (o, a) => {
             var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            _ = GetOverflowOption(ctx, h, a, 1);
+            bool constrain = GetOverflowOption(ctx, h, a, 1) == "constrain";
             // PlainYearMonth.add anchors at the first day of the month, so the day never overflows.
-            var res = AddDateInCalendar(CalId(h, o), DecodeYearMonthIso(h, o), dur.years, dur.months, dur.weeks, dur.days, constrain: true, out _);
+            var res = AddDateInCalendar(CalId(h, o), DecodeYearMonthIso(h, o), dur.years, dur.months, dur.weeks, dur.days, constrain, out var invalid);
+            if (invalid)
+                throw new JsThrownException(ctx.CreateRangeError("Resulting year-month is invalid under overflow=reject."));
             res = YearMonthReferenceIso(CalId(h, o), res);
             return AttachPrototype(h, MakePlainYearMonth(ctx, h, res.Year, res.Month, GetVStr(h, o, "calendarId"), res.Day), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => {
             var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
-            _ = GetOverflowOption(ctx, h, a, 1);
-            var res = AddDateInCalendar(CalId(h, o), DecodeYearMonthIso(h, o), -dur.years, -dur.months, -dur.weeks, -dur.days, constrain: true, out _);
+            bool constrain = GetOverflowOption(ctx, h, a, 1) == "constrain";
+            var res = AddDateInCalendar(CalId(h, o), DecodeYearMonthIso(h, o), -dur.years, -dur.months, -dur.weeks, -dur.days, constrain, out var invalid);
+            if (invalid)
+                throw new JsThrownException(ctx.CreateRangeError("Resulting year-month is invalid under overflow=reject."));
             res = YearMonthReferenceIso(CalId(h, o), res);
             return AttachPrototype(h, MakePlainYearMonth(ctx, h, res.Year, res.Month, GetVStr(h, o, "calendarId"), res.Day), pH);
         }, 1);

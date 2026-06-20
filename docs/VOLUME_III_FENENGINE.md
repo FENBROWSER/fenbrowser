@@ -8547,12 +8547,13 @@ Verification:
   - ZonedDateTime `year`, `month`, and `day` getters project the ISO wall date through the attached calendar.
   - ZonedDateTime differences decompose both instants in the instance's time zone, preserve calendar month-end asymmetry, and calculate the time remainder from the exact zoned calendar anchor.
   - PlainMonthDay property bags and annotated strings validate calendar fields at the input date, then store the latest matching ISO reference date at or before 1972.
+  - PlainYearMonth addition and subtraction honor `overflow: "reject"` for leap months and propagate invalid calendar results as `RangeError`.
   - Historical wall-time conversion uses integer floor division so negative-era nanosecond instants remain on the correct side of midnight and transitions.
 
 Verification:
 
 - `dotnet build FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -c Release --nologo`: pass.
-- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --filter "FullyQualifiedName~TemporalCalendarIntlTests" --logger "console;verbosity=minimal"`: pass (`16/16`).
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --filter "FullyQualifiedName~TemporalCalendarIntlTests" --logger "console;verbosity=minimal"`: pass (`17/17`).
 - `intl402/Temporal/ZonedDateTime/from/zoneddatetime-sub-minute-offset.js`: pass (`1/1`).
 - `intl402/Temporal/ZonedDateTime/prototype/add`: pass (`74/76`).
 - `intl402/Temporal/ZonedDateTime/prototype/subtract`: pass (`75/76`).
@@ -8563,4 +8564,6 @@ Verification:
 - `intl402/Temporal/ZonedDateTime/prototype/getTimeZoneTransition`: pass (`9/9`).
 - `intl402/Temporal/ZonedDateTime/prototype/hoursInDay`: pass (`5/5`).
 - `intl402/Temporal/ZonedDateTime/prototype/startOfDay`: pass (`4/4`).
-- `intl402/Temporal`: category improved from `1734/2029` to `1880/2029`; remaining failures `149`.
+- `intl402/Temporal/PlainYearMonth/prototype/add`: pass (`41/41`).
+- `intl402/Temporal/PlainYearMonth/prototype/subtract`: pass (`41/41`).
+- `intl402/Temporal`: category improved from `1734/2029` to `1894/2029`; remaining failures `135`.
