@@ -926,6 +926,8 @@ public sealed class TemporalStub : IBuiltinModule
             if (!hasDay && requireDay && baseFields is null)
                 throw new JsThrownException(ctx.CreateTypeError("day is required."));
             double d = hasDay ? ToIntegerWithTruncation(ctx, dv) : (baseFields?.Day ?? 1);
+            if (m < 1) throw new JsThrownException(ctx.CreateRangeError("Month must be a positive integer."));
+            if (d < 1) throw new JsThrownException(ctx.CreateRangeError("Day must be a positive integer."));
             return RegulateIsoDate(ctx, y, m, d, overflow);
         }
 
