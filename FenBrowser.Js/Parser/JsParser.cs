@@ -6374,12 +6374,10 @@ public sealed class JsParser
             IdentifierExpressionNode => true,
             MemberExpressionNode m => m.Object is not SuperExpressionNode,
             // Destructuring patterns parsed as array/object literals
-            // (assignment pattern, not expression). Must have at least one
-            // property/element or a rest element to be a valid target.
-            ObjectLiteralExpressionNode objLit => objLit.Properties.Count > 0,
-            ArrayLiteralExpressionNode arrLit =>
-                arrLit.Elements.Count > 0 &&
-                arrLit.Elements.Any(e => e is SpreadElementExpressionNode || e is not ElisionExpressionNode),
+            // (assignment pattern, not expression). Empty patterns ({} or [])
+            // are valid per ECMA-262 13.15.1 (they destructure nothing).
+            ObjectLiteralExpressionNode => true,
+            ArrayLiteralExpressionNode => true,
             // Tolerate parenthesised wrappers around valid targets.
             ParenthesizedExpressionNode pe => IsValidAssignmentTarget(pe.Expression),
             // Annex B: in non-strict mode, CallExpression is a valid assignment
