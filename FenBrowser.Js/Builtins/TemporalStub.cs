@@ -1062,6 +1062,8 @@ public sealed class TemporalStub : IBuiltinModule
             if (!TryGetField(ctx, h, arg, "day", out var dayValue))
                 throw new JsThrownException(ctx.CreateTypeError("day is required."));
             double d = ToIntegerWithTruncation(ctx, dayValue);
+            if (m < 1) throw new JsThrownException(ctx.CreateRangeError("Month must be a positive integer."));
+            if (d < 1) throw new JsThrownException(ctx.CreateRangeError("Day must be a positive integer."));
             return (RegulateIsoDate(ctx, y, m, d, "constrain"), bagCal);
         }
 
@@ -1274,6 +1276,8 @@ public sealed class TemporalStub : IBuiltinModule
                 if (!TryGetField(ctx, h, arg, "day", out var dayValue))
                     throw new JsThrownException(ctx.CreateTypeError("day is required."));
                 double d = ToIntegerWithTruncation(ctx, dayValue);
+                if (m < 1) throw new JsThrownException(ctx.CreateRangeError("Month must be a positive integer."));
+                if (d < 1) throw new JsThrownException(ctx.CreateRangeError("Day must be a positive integer."));
                 bagDate = RegulateIsoDate(ctx, y, m, d, "constrain");
             }
             string[] timeFields = { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" };
