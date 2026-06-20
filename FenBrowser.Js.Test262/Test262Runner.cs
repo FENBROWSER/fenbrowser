@@ -1552,10 +1552,10 @@ public sealed class Test262Runner
                    var _startTime = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
                    var _agent = {
                      start: function(script) {
-                       // Single-agent: run the script synchronously via eval so
-                       // it inherits the current lexical scope (where $262 is
-                       // defined). new Function() would lose access to $262.
-                       try { eval(script); } catch (e) { /* agent errors are silent */ }
+                       // Single-agent: run via indirect eval in global scope so
+                       // the script can see globalThis.$262 (set after this object
+                       // is fully constructed).
+                       try { (1, eval)(script); } catch (e) { /* agent errors are silent */ }
                      },
                      broadcast: function(sab) {
                        _broadcastSab = sab;
@@ -1618,6 +1618,8 @@ public sealed class Test262Runner
                    return _agent;
                  })()
                };
+               // Expose $262 globally so agent scripts started via eval() can access it.
+               if (typeof globalThis !== 'undefined') globalThis.$262 = $262;
                function $DETACHBUFFER(buffer) { return $262.detachArrayBuffer(buffer); }
                var typedArrayConstructors = [
                  Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array,
