@@ -282,6 +282,20 @@ public sealed class TemporalCalendarIntlTests
     }
 
     [Fact]
+    public void TemporalDurationBalancingUsesFloat64PrecisionWithoutOverflow()
+    {
+        var result = Run("""
+            const duration = new Temporal.Duration(
+                0, 0, 0, 0, 0, 0, 0, 0, Number.MAX_SAFE_INTEGER, 0);
+            const balanced = duration.add({ microseconds: Number.MAX_SAFE_INTEGER - 1 });
+            balanced.microseconds === 18014398509481980 &&
+                balanced.toString() === "PT18014398509.48198S";
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ZonedDateTimeDifferenceUsesCalendarAnchorsAndZoneWallTime()
     {
         var result = Run("""

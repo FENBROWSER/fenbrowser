@@ -350,10 +350,13 @@ public sealed class TemporalStub : IBuiltinModule
             sb.Append('T');
             if (d.hours != 0) sb.Append($"{Math.Abs(d.hours)}H");
             if (d.minutes != 0) sb.Append($"{Math.Abs(d.minutes)}M");
-            long frac = (long)Math.Abs(d.millis) * 1_000_000L + (long)Math.Abs(d.micros) * 1_000L + (long)Math.Abs(d.nanos);
-            if (d.seconds != 0 || frac != 0)
+            var secondNs = System.Numerics.BigInteger.Abs(
+                DurationToNanos(0, 0, 0, d.seconds, d.millis, d.micros, d.nanos));
+            var wholeSeconds = secondNs / 1_000_000_000L;
+            long frac = (long)(secondNs % 1_000_000_000L);
+            if (secondNs != 0)
             {
-                sb.Append(Math.Abs(d.seconds));
+                sb.Append(wholeSeconds);
                 if (frac != 0) { sb.Append('.'); sb.Append(frac.ToString("D9").TrimEnd('0')); }
                 sb.Append('S');
             }
@@ -377,19 +380,20 @@ public sealed class TemporalStub : IBuiltinModule
         bool negative = d.years < 0 || d.months < 0 || d.weeks < 0 || d.days < 0 || d.hours < 0
             || d.minutes < 0 || d.seconds < 0 || d.millis < 0 || d.micros < 0 || d.nanos < 0;
 
-        // Combine sub-second fields and the seconds field, then round the fraction to the precision.
-        long secs = (long)d.seconds;
-        long fracNs = (long)d.millis * 1_000_000L + (long)d.micros * 1_000L + (long)d.nanos;
-        secs += fracNs / 1_000_000_000L; fracNs %= 1_000_000_000L;
+        // Combine seconds and sub-second fields without overflowing the range
+        // permitted for float64-representable Duration components.
+        var secondNs = DurationToNanos(0, 0, 0, d.seconds, d.millis, d.micros, d.nanos);
         long inc = PrecisionIncrementNs(opts);
-        if (inc > 1) fracNs = (long)RoundNsToIncrement(ctx, fracNs, inc, opts.RoundingMode);
-        secs += fracNs / 1_000_000_000L; fracNs %= 1_000_000_000L;
+        if (inc > 1) secondNs = RoundNsToIncrement(ctx, secondNs, inc, opts.RoundingMode);
+        var absSecondNs = System.Numerics.BigInteger.Abs(secondNs);
+        var secs = absSecondNs / 1_000_000_000L;
+        long fracNs = (long)(absSecondNs % 1_000_000_000L);
 
         int digits = opts.SmallestUnit switch
         {
             "second" => 0, "millisecond" => 3, "microsecond" => 6, "nanosecond" => 9, _ => opts.FractionalDigits,
         };
-        long absFrac = Math.Abs(fracNs);
+        long absFrac = fracNs;
         string fracStr = digits switch
         {
             < 0 => absFrac == 0 ? "" : $".{absFrac:D9}".TrimEnd('0'),
@@ -402,14 +406,14 @@ public sealed class TemporalStub : IBuiltinModule
         if (d.months != 0) sb.Append($"{Math.Abs(d.months)}M");
         if (d.weeks != 0) sb.Append($"{Math.Abs(d.weeks)}W");
         if (d.days != 0) sb.Append($"{Math.Abs(d.days)}D");
-        bool emitSeconds = secs != 0 || fracNs != 0 || digits >= 0;
+        bool emitSeconds = secondNs != 0 || digits >= 0;
         bool emitTime = d.hours != 0 || d.minutes != 0 || emitSeconds;
         if (emitTime)
         {
             sb.Append('T');
             if (d.hours != 0) sb.Append($"{Math.Abs(d.hours)}H");
             if (d.minutes != 0) sb.Append($"{Math.Abs(d.minutes)}M");
-            if (emitSeconds) sb.Append($"{Math.Abs(secs)}{fracStr}S");
+            if (emitSeconds) sb.Append($"{secs}{fracStr}S");
         }
         else if (sb.Length == 1)
         {
@@ -2500,19 +2504,18 @@ public sealed class TemporalStub : IBuiltinModule
         if (rank <= 3) { se = n / 1_000_000_000L; n %= 1_000_000_000L; }
         if (rank <= 4) { ms = n / 1_000_000L; n %= 1_000_000L; }
         if (rank <= 5) { us = n / 1_000L; n %= 1_000L; }
-        // ECMA-262 §7.5.28 IsValidDuration: each component must be < 2^53,
-        // and the normalized total in seconds must also be < 2^53.
-        var maxVal = new System.Numerics.BigInteger(9_007_199_254_740_991L); // 2^53 - 1
-        if (days > maxVal || hr > maxVal || mi > maxVal || se > maxVal ||
-            ms > maxVal || us > maxVal || n > maxVal)
-            throw new JsThrownException(ctx.CreateRangeError("Duration value is outside the supported range."));
-        // Normalized total in seconds (days × 86400 + hours × 3600 + ...).
-        var totalSeconds = days * 86400 + hr * 3600 + mi * 60 + se;
-        if (totalSeconds > maxVal)
-            throw new JsThrownException(ctx.CreateRangeError("Duration value is outside the supported range."));
-
-        return MakeDuration(ctx, h, 0, 0, 0, sign * (double)days, sign * (double)hr, sign * (double)mi, sign * (double)se,
-            sign * (double)ms, sign * (double)us, sign * (double)n);
+        // Components use their float64 mathematical values; validate the
+        // normalized duration range after that required precision step.
+        var values = new[]
+        {
+            0d, 0d, 0d, BigIntBuiltin.ToNumberValue(sign * days), BigIntBuiltin.ToNumberValue(sign * hr),
+            BigIntBuiltin.ToNumberValue(sign * mi), BigIntBuiltin.ToNumberValue(sign * se),
+            BigIntBuiltin.ToNumberValue(sign * ms), BigIntBuiltin.ToNumberValue(sign * us),
+            BigIntBuiltin.ToNumberValue(sign * n)
+        };
+        ValidateDuration(ctx, values);
+        return MakeDuration(ctx, h, values[0], values[1], values[2], values[3], values[4],
+            values[5], values[6], values[7], values[8], values[9]);
     }
 
     /// <summary>AddDurationToDateTime: time-of-day arithmetic with day carry, then AddISODate.</summary>

@@ -15183,7 +15183,7 @@ fallbackArraySpecies:
         }
 
         return value.Tag == JsValueTag.BigInt
-            ? (double)value.AsBigInt()
+            ? BigIntBuiltin.ToNumberValue(value.AsBigInt())
             : ToNumber(value);
     }
 

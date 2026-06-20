@@ -12,6 +12,18 @@ public sealed class BigIntBuiltin : IBuiltinModule
 {
     private const double MaxSafeInteger = 9007199254740991d; // 2^53 - 1
 
+    internal static double ToNumberValue(BigInteger value)
+    {
+        try
+        {
+            return double.Parse(value.ToString(CultureInfo.InvariantCulture), NumberStyles.Float, CultureInfo.InvariantCulture);
+        }
+        catch (OverflowException)
+        {
+            return value.Sign < 0 ? double.NegativeInfinity : double.PositiveInfinity;
+        }
+    }
+
     public string Name => "BigInt";
 
     public IReadOnlyList<BuiltinBinding> GetBindings(IBuiltinContext context)

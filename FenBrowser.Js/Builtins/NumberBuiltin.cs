@@ -103,7 +103,7 @@ public sealed class NumberBuiltin : IBuiltinModule
     private static double ToNumberConstructorValue(IBuiltinContext context, JsValue value)
     {
         return value.Tag == JsValueTag.BigInt
-            ? (double)value.AsBigInt()
+            ? BigIntBuiltin.ToNumberValue(value.AsBigInt())
             : context.ToNumber(value);
     }
 

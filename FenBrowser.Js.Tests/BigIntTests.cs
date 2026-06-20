@@ -236,7 +236,13 @@ public sealed class BigIntTests
     [Fact]
     public void NumberConstructorConvertsBigInt()
     {
-        Assert.True(Run("Number(1n) === 1 && Number(-2n) === -2;").AsBoolean());
+        Assert.True(Run("""
+            Number(1n) === 1 &&
+                Number(-2n) === -2 &&
+                Number(8692288669465520373761n) === 8692288669465520_373_761 &&
+                Number(10n ** 1000n) === Infinity &&
+                Number(-(10n ** 1000n)) === -Infinity;
+            """).AsBoolean());
     }
 
     [Fact]
