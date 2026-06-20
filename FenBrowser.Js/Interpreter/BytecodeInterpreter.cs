@@ -9101,13 +9101,35 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue SegmenterConstruct(IReadOnlyList<JsValue> args)
     {
-        var locale = args.Count > 0 ? ToStringValue(args[0]) : "en";
-        var opts = args.Count > 1 && args[1].Tag == JsValueTag.Object ? _heap.GetObject(args[1].AsObjectHandle()) : null;
-        string granularity = "grapheme";
-        if (opts is not null)
+        // ECMA-402 §18.3.1 InitializeSegmenter: locale list handling.
+        var locales = CanonicalizeIntlLocaleList(args.Count > 0 ? args[0] : JsValue.Undefined);
+        var locale = locales.Count > 0 ? locales[0] : "en";
+        // Step 3: options must be convertible via ToObject (null → TypeError).
+        JsValue optsValue = args.Count > 1 ? args[1] : JsValue.Undefined;
+        JsObject? opts = null;
+        if (optsValue.Tag != JsValueTag.Undefined)
         {
-            if (TryGetPropertyValue(opts, args[1], "granularity", out var gv) && gv.Tag != JsValueTag.Undefined)
-                granularity = ToStringValue(gv);
+            if (optsValue.Tag == JsValueTag.Null)
+                throw new JsThrownException(CreateTypeError("Cannot convert null to object."));
+            opts = optsValue.Tag == JsValueTag.Object
+                ? _heap.GetObject(optsValue.AsObjectHandle()) : ToObject(optsValue);
+        }
+        // Step 4-5: localeMatcher validation.
+        if (opts is not null &&
+            TryGetPropertyValue(opts, optsValue, "localeMatcher", out var lmVal) && lmVal.Tag != JsValueTag.Undefined)
+        {
+            var lm = ToStringValue(lmVal);
+            if (lm is not "best fit" and not "lookup")
+                throw new JsThrownException(CreateRangeError($"Invalid localeMatcher: {lm}"));
+        }
+        // Step 7: granularity option — must be "grapheme", "word", or "sentence".
+        string granularity = "grapheme";
+        if (opts is not null &&
+            TryGetPropertyValue(opts, optsValue, "granularity", out var gv) && gv.Tag != JsValueTag.Undefined)
+        {
+            granularity = ToStringValue(gv);
+            if (granularity is not "grapheme" and not "word" and not "sentence")
+                throw new JsThrownException(CreateRangeError($"Invalid granularity: {granularity}"));
         }
         var stateObj = CreateOrdinaryObject();
         stateObj.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(locale), Writable: false, Enumerable: false, Configurable: false));

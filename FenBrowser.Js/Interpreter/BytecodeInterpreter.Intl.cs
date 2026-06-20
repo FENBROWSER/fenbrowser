@@ -3809,6 +3809,17 @@ public sealed partial class BytecodeInterpreter
         return ph;
     }
 
+    private JsObject RequireSegmenterState(JsValue thisValue)
+    {
+        if (thisValue.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("Intl.Segmenter method called on incompatible receiver."));
+        var receiver = _heap.GetObject(thisValue.AsObjectHandle());
+        if (!receiver.TryGetProperty("__segmenterState", x => _heap.GetObject(x), out var stateDesc) ||
+            stateDesc.Value.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("Intl.Segmenter method called on incompatible receiver."));
+        return _heap.GetObject(stateDesc.Value.AsObjectHandle());
+    }
+
     private ObjectHandle EnsureSegmenterPrototype()
     {
         if (_segmenterPrototypeHandle is { } existing)
@@ -3849,15 +3860,21 @@ public sealed partial class BytecodeInterpreter
             // ECMA-402: Segments.prototype.containing(index).
             var containingFn = new NativeFunctionObject("containing", (thisVal, cArgs) =>
             {
+                // Validate receiver is a Segments object (has _str and _boundaries).
+                if (thisVal.Tag != JsValueTag.Object) return JsValue.Undefined;
+                var segsObj = _heap.GetObject(thisVal.AsObjectHandle());
+                if (!segsObj.TryGetOwnProperty("_str", out var strDesc))
+                    return JsValue.Undefined;
+                string storedStr = strDesc.Value.AsString();
                 if (cArgs.Count == 0) return JsValue.Undefined;
-                var idx = (int)ToNumber(cArgs[0]);
-                var segsObj = _heap.GetObject(thisVal.AsObjectHandle())!;
-                string storedStr = "";
-                if (segsObj.TryGetOwnProperty("_str", out var strDesc))
-                    storedStr = strDesc.Value.AsString();
+                if (cArgs[0].Tag == JsValueTag.Undefined) return JsValue.Undefined;
+                var idxDbl = ToNumber(cArgs[0]);
+                if (double.IsNaN(idxDbl) || double.IsInfinity(idxDbl)) return JsValue.Undefined;
+                int idx = (int)idxDbl;
                 if (idx < 0 || idx >= storedStr.Length) return JsValue.Undefined;
-                // Read boundaries array and find the segment containing `idx`.
+                // Read pre-computed boundaries and segments from stored arrays.
                 List<int> bounds = new();
+                List<string> segTexts = new();
                 if (segsObj.TryGetOwnProperty("_boundaries", out var bDesc) && bDesc.Value.Tag == JsValueTag.Object)
                 {
                     var bObj = _heap.GetObject(bDesc.Value.AsObjectHandle());
@@ -3865,31 +3882,31 @@ public sealed partial class BytecodeInterpreter
                     if (bObj.TryGetOwnProperty("length", out var lDesc))
                         bLen = (int)lDesc.Value.AsNumber();
                     for (int i = 0; i < bLen; i++)
-                    {
                         if (bObj.TryGetOwnProperty(i.ToString(), out var bi) && bi.Value.Tag != JsValueTag.Undefined)
                             bounds.Add((int)bi.Value.AsNumber());
-                    }
                 }
-                // Binary search for the segment containing idx.
-                int lo = 0, hi = bounds.Count - 2;
-                while (lo <= hi)
+                if (segsObj.TryGetOwnProperty("_segments", out var sDesc) && sDesc.Value.Tag == JsValueTag.Object)
                 {
-                    int mid = (lo + hi) / 2;
-                    if (idx >= bounds[mid] && idx < bounds[mid + 1])
-                    {
-                        lo = mid;
-                        break;
-                    }
-                    if (idx < bounds[mid]) hi = mid - 1;
-                    else lo = mid + 1;
+                    var sObj = _heap.GetObject(sDesc.Value.AsObjectHandle());
+                    int sLen = 0;
+                    if (sObj.TryGetOwnProperty("length", out var slDesc))
+                        sLen = (int)slDesc.Value.AsNumber();
+                    for (int i = 0; i < sLen; i++)
+                        if (sObj.TryGetOwnProperty(i.ToString(), out var si) && si.Value.Tag != JsValueTag.Undefined)
+                            segTexts.Add(si.Value.AsString());
                 }
-                if (lo >= bounds.Count - 1) lo = bounds.Count - 2;
-                if (lo < 0) lo = 0;
-                // Read the segment string from the segments array.
-                string segText = storedStr.Substring(bounds[lo], bounds[lo + 1] - bounds[lo]);
+                if (bounds.Count < 2 || segTexts.Count == 0) return JsValue.Undefined;
+                // Find the segment containing idx using binary search on boundaries.
+                int segIdx = -1;
+                for (int i = 0; i < segTexts.Count; i++)
+                {
+                    if (idx >= bounds[i] && idx < bounds[i + 1])
+                    { segIdx = i; break; }
+                }
+                if (segIdx < 0) return JsValue.Undefined;
                 var resultObj = CreateOrdinaryObject();
-                resultObj.DefineOwnProperty("segment", new JsPropertyDescriptor(JsValue.FromString(segText), Writable: true, Enumerable: true, Configurable: true));
-                resultObj.DefineOwnProperty("index", new JsPropertyDescriptor(JsValue.FromNumber(bounds[lo]), Writable: true, Enumerable: true, Configurable: true));
+                resultObj.DefineOwnProperty("segment", new JsPropertyDescriptor(JsValue.FromString(segTexts[segIdx]), Writable: true, Enumerable: true, Configurable: true));
+                resultObj.DefineOwnProperty("index", new JsPropertyDescriptor(JsValue.FromNumber(bounds[segIdx]), Writable: true, Enumerable: true, Configurable: true));
                 resultObj.DefineOwnProperty("input", new JsPropertyDescriptor(JsValue.FromString(storedStr), Writable: true, Enumerable: true, Configurable: true));
                 return JsValue.FromObject(_heap.AllocateObject(resultObj, AllocationSite.Current()));
             }, length: 1);
@@ -3956,17 +3973,10 @@ public sealed partial class BytecodeInterpreter
 
         var segResFn = new NativeFunctionObject("resolvedOptions", (thisValue, _2) =>
         {
+            var state = RequireSegmenterState(thisValue);
             string locale = "en", granularity = "grapheme";
-            if (thisValue.Tag == JsValueTag.Object)
-            {
-                var recv = _heap.GetObject(thisValue.AsObjectHandle());
-                if (recv.TryGetProperty("__segmenterState", x => _heap.GetObject(x), out var sd) && sd.Value.Tag == JsValueTag.Object)
-                {
-                    var state = _heap.GetObject(sd.Value.AsObjectHandle());
-                    if (state.TryGetOwnProperty("locale", out var ld) && ld.Value.Tag == JsValueTag.String) locale = ld.Value.AsString();
-                    if (state.TryGetOwnProperty("granularity", out var gd) && gd.Value.Tag == JsValueTag.String) granularity = gd.Value.AsString();
-                }
-            }
+            if (state.TryGetOwnProperty("locale", out var ld) && ld.Value.Tag == JsValueTag.String) locale = ld.Value.AsString();
+            if (state.TryGetOwnProperty("granularity", out var gd) && gd.Value.Tag == JsValueTag.String) granularity = gd.Value.AsString();
             var o = CreateOrdinaryObject();
             o.DefineOwnProperty("locale", new JsPropertyDescriptor(JsValue.FromString(locale), Writable: true, Enumerable: true, Configurable: true));
             o.DefineOwnProperty("granularity", new JsPropertyDescriptor(JsValue.FromString(granularity), Writable: true, Enumerable: true, Configurable: true));
