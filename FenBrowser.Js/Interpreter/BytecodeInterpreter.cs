@@ -15459,11 +15459,15 @@ fallbackArraySpecies:
                 return JsValue.FromObject(handle);
             },
             length: 1);
+        constructor.SetPrototype(EnsureFunctionPrototype());
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
+
+        // ECMA-262 26.1.3.4 WeakRef.prototype [ @@toStringTag ] = "WeakRef"
+        DefineBuiltinToStringTag(prototype, "WeakRef");
 
         DefineNativePrototypeMethod(prototypeHandle, prototype, "deref", (thisValue, _) =>
         {

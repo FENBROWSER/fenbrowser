@@ -1768,6 +1768,7 @@ public sealed class Test262Runner
         // Standard harnesses not in prelude
         "deepEqual.js",
         "nativeErrors.js",
+        "isConstructor.js",
         // SpiderMonkey staging harness includes
         "sm/assertThrowsValue.js",
         "sm/non262-Date-shell.js",
