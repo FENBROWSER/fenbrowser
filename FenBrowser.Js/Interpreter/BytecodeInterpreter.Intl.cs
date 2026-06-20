@@ -311,7 +311,7 @@ public sealed partial class BytecodeInterpreter
         _heap.PushRoot(prototypeHandle);
 
         var formatMethod = new NativeFunctionObject(
-            "format",
+            "",
             (thisValue, fmtArgs) =>
             {
                 var stateObj = RequireDateTimeFormatState(thisValue);
@@ -328,7 +328,7 @@ public sealed partial class BytecodeInterpreter
         _heap.WriteBarrier(prototypeHandle, formatHandle);
 
         var formatToPartsMethod = new NativeFunctionObject(
-            "formatToParts",
+            "",
             (thisValue, fmtArgs) =>
             {
                 var stateObj = RequireDateTimeFormatState(thisValue);
@@ -1485,7 +1485,7 @@ public sealed partial class BytecodeInterpreter
         _heap.PushRoot(prototypeHandle);
 
         var formatMethod = new NativeFunctionObject(
-            "format",
+            "",
             (thisValue, args) => DurationFormatPrototypeFormat(thisValue, args),
             length: 1);
         var formatHandle = _heap.AllocateObject(formatMethod, AllocationSite.Current());
@@ -1495,7 +1495,7 @@ public sealed partial class BytecodeInterpreter
         _heap.WriteBarrier(prototypeHandle, formatHandle);
 
         var formatToPartsMethod = new NativeFunctionObject(
-            "formatToParts",
+            "",
             (thisValue, args) => DurationFormatPrototypeFormatToParts(thisValue, args),
             length: 1);
         var formatToPartsHandle = _heap.AllocateObject(formatToPartsMethod, AllocationSite.Current());
@@ -3810,7 +3810,7 @@ public sealed partial class BytecodeInterpreter
         var ph = _heap.AllocateObject(proto, AllocationSite.Current());
         _heap.PushRoot(ph);
 
-        var compareMethod = new NativeFunctionObject("compare", (thisValue, cmpArgs) =>
+        var compareMethod = new NativeFunctionObject("", (thisValue, cmpArgs) =>
         {
             string localeStr = "en-US";
             if (thisValue.Tag == JsValueTag.Object)
@@ -4217,7 +4217,7 @@ public sealed partial class BytecodeInterpreter
             throw new JsThrownException(CreateTypeError("Intl.ListFormat method called on incompatible receiver."));
         }
 
-        var formatFn = new NativeFunctionObject("format", (tv, a) =>
+        var formatFn = new NativeFunctionObject("", (tv, a) =>
         {
             var state = GetLFState(tv);
             var list = GetListFormatItems(a.Count > 0 ? a[0] : JsValue.Undefined);
@@ -4226,7 +4226,7 @@ public sealed partial class BytecodeInterpreter
         }, length: 1);
         proto.DefineOwnProperty("format", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(formatFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
 
-        var formatToPartsFn = new NativeFunctionObject("formatToParts", (tv, a) =>
+        var formatToPartsFn = new NativeFunctionObject("", (tv, a) =>
         {
             var state = GetLFState(tv);
             var list = GetListFormatItems(a.Count > 0 ? a[0] : JsValue.Undefined);

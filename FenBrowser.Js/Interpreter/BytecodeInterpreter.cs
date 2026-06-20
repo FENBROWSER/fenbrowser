@@ -8748,7 +8748,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }, length: 0);
             roStub.SetPrototype(EnsureFunctionPrototype());
             nfProto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(roStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
-            var fmtStub = new NativeFunctionObject("format", (thisValue, fmtArgs) =>
+            var fmtStub = new NativeFunctionObject("", (thisValue, fmtArgs) =>
             {
                 var stateObj = RequireNumberFormatState(thisValue);
                 var state = RebuildNumberFormatState(stateObj);
@@ -8756,7 +8756,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }, length: 1);
             fmtStub.SetPrototype(EnsureFunctionPrototype());
             nfProto.DefineOwnProperty("format", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(fmtStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
-            var ftpStub = new NativeFunctionObject("formatToParts", (thisValue, fmtArgs) =>
+            var ftpStub = new NativeFunctionObject("", (thisValue, fmtArgs) =>
             {
                 var stateObj = RequireNumberFormatState(thisValue);
                 var state = RebuildNumberFormatState(stateObj);
