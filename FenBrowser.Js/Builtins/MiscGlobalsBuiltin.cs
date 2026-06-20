@@ -39,6 +39,10 @@ public sealed class MiscGlobalsBuiltin : IBuiltinModule
         bindings.Add(BuiltinBinding.NonEnumerable("FinalizationRegistry", JsValue.FromObject(context.MaterializeFinalizationRegistryConstructor())));
         bindings.Add(BuiltinBinding.NonEnumerable("structuredClone", JsValue.FromObject(context.MaterializeStructuredCloneFunction())));
 
+        // AsyncFunction, AsyncGeneratorFunction constructors
+        bindings.Add(BuiltinBinding.NonEnumerable("AsyncFunction", JsValue.FromObject(context.MaterializeAsyncFunctionConstructor())));
+        bindings.Add(BuiltinBinding.NonEnumerable("AsyncGeneratorFunction", JsValue.FromObject(context.MaterializeAsyncGeneratorFunctionConstructor())));
+
         return bindings;
     }
 }

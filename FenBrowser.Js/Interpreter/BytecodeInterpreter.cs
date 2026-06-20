@@ -140,6 +140,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     ObjectHandle IBuiltinContext.MaterializeAggregateErrorConstructor() => EnsureAggregateErrorConstructor();
     ObjectHandle IBuiltinContext.MaterializeSuppressedErrorConstructor() => GetGlobalConstructorHandle("SuppressedError");
     ObjectHandle IBuiltinContext.MaterializeGeneratorFunctionConstructor() => EnsureGeneratorFunctionConstructor();
+    ObjectHandle IBuiltinContext.MaterializeAsyncFunctionConstructor() => EnsureAsyncFunctionConstructor();
+    ObjectHandle IBuiltinContext.MaterializeAsyncGeneratorFunctionConstructor() => EnsureAsyncGeneratorFunctionConstructor();
     string IBuiltinContext.CaptureCallStack(string errorName, string message) => FormatCallStack(errorName, message);
     ObjectHandle IBuiltinContext.MaterializeStructuredCloneFunction() => EnsureStructuredCloneFunction();
     ObjectHandle IBuiltinContext.GetFunctionPrototype() => EnsureFunctionPrototype();
@@ -192,6 +194,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private ObjectHandle? _generatorIteratorHandle;
     private ObjectHandle? _asyncGeneratorPrototypeHandle;
     private ObjectHandle? _asyncGeneratorAsyncIteratorHandle;
+    private ObjectHandle? _asyncFunctionPrototypeHandle;
+    private ObjectHandle? _asyncFunctionConstructorHandle;
+    private ObjectHandle? _asyncGeneratorFunctionPrototypeHandle;
+    private ObjectHandle? _asyncGeneratorFunctionConstructorHandle;
     private ObjectHandle? _uriErrorPrototypeHandle;
     private ObjectHandle? _referenceErrorConstructorHandle;
     private ObjectHandle? _referenceErrorPrototypeHandle;
@@ -11161,6 +11167,70 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return handle;
     }
 
+    private ObjectHandle EnsureAsyncFunctionPrototype()
+    {
+        if (_asyncFunctionPrototypeHandle is { } existing) return existing;
+        // Create constructor and prototype together so the circular
+        // constructor↔prototype link can be established immediately.
+        var ctor = new NativeFunctionObject(
+            "AsyncFunction",
+            (_, args) => CreateDynamicFunction(args, FunctionKind.Async),
+            args => CreateDynamicFunction(args, FunctionKind.Async),
+            length: 1);
+        ctor.SetPrototype(EnsureFunctionPrototype());
+        var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
+        _heap.PushRoot(ctorHandle);
+        _asyncFunctionConstructorHandle = ctorHandle;
+
+        var prototype = CreateOrdinaryObject();
+        prototype.SetPrototype(EnsureFunctionPrototype());
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(ctorHandle), Writable: true, Enumerable: false, Configurable: true));
+        var ph = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(ph);
+        _heap.WriteBarrier(ph, ctorHandle);
+        _asyncFunctionPrototypeHandle = ph;
+        _ = ctor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(ph), Writable: false, Enumerable: false, Configurable: false));
+        return ph;
+    }
+
+    private ObjectHandle EnsureAsyncFunctionConstructor()
+    {
+        _ = EnsureAsyncFunctionPrototype();
+        return _asyncFunctionConstructorHandle!.Value;
+    }
+
+    private ObjectHandle EnsureAsyncGeneratorFunctionPrototype()
+    {
+        if (_asyncGeneratorFunctionPrototypeHandle is { } existing) return existing;
+        var ctor = new NativeFunctionObject(
+            "AsyncGeneratorFunction",
+            (_, args) => CreateDynamicFunction(args, FunctionKind.AsyncGenerator),
+            args => CreateDynamicFunction(args, FunctionKind.AsyncGenerator),
+            length: 1);
+        ctor.SetPrototype(EnsureFunctionPrototype());
+        var ctorHandle = _heap.AllocateObject(ctor, AllocationSite.Current());
+        _heap.PushRoot(ctorHandle);
+        _asyncGeneratorFunctionConstructorHandle = ctorHandle;
+
+        var prototype = CreateOrdinaryObject();
+        prototype.SetPrototype(EnsureFunctionPrototype());
+        _ = prototype.DefineOwnProperty("prototype", new JsPropertyDescriptor(
+            JsValue.FromObject(EnsureAsyncGeneratorPrototype()), Writable: true, Enumerable: false, Configurable: false));
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(ctorHandle), Writable: true, Enumerable: false, Configurable: true));
+        var ph = _heap.AllocateObject(prototype, AllocationSite.Current());
+        _heap.PushRoot(ph);
+        _heap.WriteBarrier(ph, ctorHandle);
+        _asyncGeneratorFunctionPrototypeHandle = ph;
+        _ = ctor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(ph), Writable: false, Enumerable: false, Configurable: false));
+        return ph;
+    }
+
+    private ObjectHandle EnsureAsyncGeneratorFunctionConstructor()
+    {
+        _ = EnsureAsyncGeneratorFunctionPrototype();
+        return _asyncGeneratorFunctionConstructorHandle!.Value;
+    }
+
     private string FormatCallStack(string errorName, string message)
     {
         return errorName + ": " + message;
@@ -11183,6 +11253,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var functionPrototype = function.Kind switch
         {
             FunctionKind.Generator => EnsureGeneratorFunctionPrototype(),
+            FunctionKind.AsyncGenerator => EnsureAsyncGeneratorFunctionPrototype(),
+            FunctionKind.Async => EnsureAsyncFunctionPrototype(),
             _ => EnsureFunctionPrototype()
         };
         fnObj.SetPrototype(functionPrototype);

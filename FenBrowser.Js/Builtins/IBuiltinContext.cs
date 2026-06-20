@@ -80,6 +80,8 @@ public interface IBuiltinContext
     ObjectHandle MaterializeArrayConstructor();
     ObjectHandle MaterializeFunctionConstructor();
     ObjectHandle MaterializeGeneratorFunctionConstructor();
+    ObjectHandle MaterializeAsyncFunctionConstructor();
+    ObjectHandle MaterializeAsyncGeneratorFunctionConstructor();
     ObjectHandle MaterializeSetConstructor();
     ObjectHandle MaterializeMapConstructor();
     ObjectHandle MaterializeWeakMapConstructor();
