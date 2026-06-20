@@ -155,6 +155,8 @@ internal sealed class TestBuiltinContext : IBuiltinContext
     public ObjectHandle MaterializeAggregateErrorConstructor() => throw new NotSupportedException();
     public ObjectHandle MaterializeSuppressedErrorConstructor() => throw new NotSupportedException();
     public ObjectHandle MaterializeGeneratorFunctionConstructor() => throw new NotSupportedException();
+    public ObjectHandle MaterializeAsyncFunctionConstructor() => throw new NotSupportedException();
+    public ObjectHandle MaterializeAsyncGeneratorFunctionConstructor() => throw new NotSupportedException();
     public string CaptureCallStack(string errorName, string message) => errorName + ": " + message;
     public ObjectHandle GetFunctionPrototype() => throw new NotSupportedException();
     public ObjectHandle MaterializeStructuredCloneFunction() => throw new NotSupportedException();

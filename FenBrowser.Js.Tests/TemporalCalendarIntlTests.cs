@@ -254,6 +254,18 @@ public sealed class TemporalCalendarIntlTests
     }
 
     [Fact]
+    public void TemporalTimeZonesCanonicalizeUtcAndMapTheSystemDefault()
+    {
+        var result = Run("""
+            const zoned = new Temporal.Instant(0n).toZonedDateTimeISO("uTc");
+            const defaultId = Temporal.Now.timeZoneId();
+            zoned.timeZoneId === "UTC" && typeof defaultId === "string" && defaultId.length > 0;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ZonedDateTimeDifferenceUsesCalendarAnchorsAndZoneWallTime()
     {
         var result = Run("""

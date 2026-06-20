@@ -43,6 +43,26 @@ internal static class TemporalTimeZones
         return result.Distinct(StringComparer.Ordinal);
     }
 
+    public static string GetSystemDefaultId(string systemId)
+    {
+        if (TryCanonicalize(systemId, out var canonical, out _))
+        {
+            return canonical;
+        }
+
+        var mapping = TzdbDateTimeZoneSource.Default.WindowsMapping.MapZones
+            .FirstOrDefault(zone =>
+                string.Equals(zone.WindowsId, systemId, StringComparison.OrdinalIgnoreCase) &&
+                zone.Territory == "001");
+        var ianaId = mapping?.TzdbIds.FirstOrDefault();
+        if (ianaId is not null && TryCanonicalize(ianaId, out canonical, out _))
+        {
+            return canonical;
+        }
+
+        return "UTC";
+    }
+
     /// <summary>
     /// Validate and canonicalize a time zone identifier. Returns false for
     /// unknown identifiers. Offset identifiers normalize to "±HH:MM" and

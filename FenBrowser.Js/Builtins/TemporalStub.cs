@@ -3037,31 +3037,32 @@ public sealed class TemporalStub : IBuiltinModule
         now.DefineOwnSymbolProperty(nowTag.AsSymbolId(), new JsPropertyDescriptor(
             JsValue.FromString("Temporal.Now"), Writable: false, Enumerable: false, Configurable: true));
 
-        AddNowStatic(ctx, h, nH, now, "timeZoneId", _ => JsValue.FromString(CanonicalizeTimeZoneId(ctx, TimeZoneInfo.Local.Id)));
+        string systemTimeZoneId = TemporalTimeZones.GetSystemDefaultId(TimeZoneInfo.Local.Id);
+        AddNowStatic(ctx, h, nH, now, "timeZoneId", _ => JsValue.FromString(systemTimeZoneId));
         AddNowStatic(ctx, h, nH, now, "instant", _ => AttachTemporalPrototypeByName(ctx, h, t, "Instant", MakeInstant(ctx, h, DateTime.UtcNow)));
         AddNowStatic(ctx, h, nH, now, "plainDateISO", a => {
-            string tz = ResolveTimeZoneId(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined, TimeZoneInfo.Local.Id);
+            string tz = ResolveTimeZoneId(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined, systemTimeZoneId);
             long ns = (DateTime.UtcNow.Ticks - Epoch.Ticks) * 100L;
             long offsetNs = TemporalTimeZones.GetOffsetNs(tz, ns);
             (IsoDate date, IsoTime time) = TemporalTimeZones.WallFromEpochNs(ns, offsetNs);
             return AttachTemporalPrototypeByName(ctx, h, t, "PlainDate", MakePlainDateYmd(ctx, h, date.Year, date.Month, date.Day, "iso8601"));
         });
         AddNowStatic(ctx, h, nH, now, "plainTimeISO", a => {
-            string tz = ResolveTimeZoneId(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined, TimeZoneInfo.Local.Id);
+            string tz = ResolveTimeZoneId(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined, systemTimeZoneId);
             long ns = (DateTime.UtcNow.Ticks - Epoch.Ticks) * 100L;
             long offsetNs = TemporalTimeZones.GetOffsetNs(tz, ns);
             (IsoDate date, IsoTime time) = TemporalTimeZones.WallFromEpochNs(ns, offsetNs);
             return AttachTemporalPrototypeByName(ctx, h, t, "PlainTime", MakePlainTime(ctx, h, time.Hour, time.Minute, time.Second, time.Millisecond, time.Microsecond, time.Nanosecond));
         });
         AddNowStatic(ctx, h, nH, now, "plainDateTimeISO", a => {
-            string tz = ResolveTimeZoneId(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined, TimeZoneInfo.Local.Id);
+            string tz = ResolveTimeZoneId(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined, systemTimeZoneId);
             long ns = (DateTime.UtcNow.Ticks - Epoch.Ticks) * 100L;
             long offsetNs = TemporalTimeZones.GetOffsetNs(tz, ns);
             (IsoDate date, IsoTime time) = TemporalTimeZones.WallFromEpochNs(ns, offsetNs);
             return AttachTemporalPrototypeByName(ctx, h, t, "PlainDateTime", MakePlainDateTimeParts(ctx, h, date.Year, date.Month, date.Day, time.Hour, time.Minute, time.Second, time.Millisecond, time.Microsecond, time.Nanosecond, "iso8601"));
         });
         AddNowStatic(ctx, h, nH, now, "zonedDateTimeISO", a => {
-            string tz = ResolveTimeZoneId(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined, TimeZoneInfo.Local.Id);
+            string tz = ResolveTimeZoneId(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined, systemTimeZoneId);
             long ns = (DateTime.UtcNow.Ticks - Epoch.Ticks) * 100L;
             return AttachTemporalPrototypeByName(ctx, h, t, "ZonedDateTime", MakeZonedDateTimeNs(ctx, h, ns, tz, "iso8601"));
         });
@@ -4393,7 +4394,7 @@ public sealed class TemporalStub : IBuiltinModule
     private static string CanonicalizeTimeZoneId(IBuiltinContext ctx, string id)
     {
         if (TemporalTimeZones.TryCanonicalize(id, out var canonical, out var fixedOffsetNs))
-            return fixedOffsetNs.HasValue ? canonical : id;
+            return fixedOffsetNs.HasValue || canonical == "UTC" ? canonical : id;
 
         // An ISO date-time string also names a zone: its [tz] annotation,
         // or UTC for a 'Z' designator, or its numeric offset.

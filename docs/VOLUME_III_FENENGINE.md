@@ -8532,11 +8532,13 @@ Verification:
 
 - `FenBrowser.Js/Temporal/TemporalTimeZones.cs`
   - Named Temporal time zones now resolve through Noda Time's embedded IANA TZDB rather than platform `TimeZoneInfo`.
+  - `Temporal.Now` maps the host's system time-zone identifier through CLDR's Windows-to-IANA mapping before entering the IANA-only Temporal path.
   - Canonical identifiers are case-insensitive at the API boundary and normalized through TZDB aliases.
   - Historical offsets preserve second precision, including pre-standard-time transitions required by Temporal.
   - Wall-clock gaps and overlaps resolve through TZDB using Temporal's `compatible`, `earlier`, `later`, and `reject` disambiguation modes.
   - `Intl.supportedValuesOf("timeZone")` publishes the sorted canonical TZDB identifiers accepted by Temporal, including `UTC`.
   - ZonedDateTime preserves the caller's IANA identifier or link spelling for `timeZoneId` and serialization, while TZDB canonical keys drive offset lookup and zone equality.
+  - UTC spellings are the exception to identifier preservation and normalize to `UTC`, as required by Temporal.
   - `getTimeZoneTransition` returns strict next/previous UTC-offset transitions, skips rule-only interval changes, and returns `null` for fixed zones or exhausted TZDB ranges.
   - Date-only zoned conversions, `startOfDay`, `hoursInDay`, omitted `plainTime`, and day rounding use the first valid instant of the civil date; whole-day skips advance to the next valid date boundary.
 - `FenBrowser.Js/Builtins/TemporalStub.cs`
@@ -8553,7 +8555,8 @@ Verification:
 Verification:
 
 - `dotnet build FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -c Release --nologo`: pass.
-- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --filter "FullyQualifiedName~TemporalCalendarIntlTests" --logger "console;verbosity=minimal"`: pass (`17/17`).
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~TemporalCalendarIntlTests"`: pass (`18/18`).
+- `built-ins/Temporal`: category improved from `4004/4604` to `4139/4604`; remaining failures `465`, with zero timeouts.
 - `intl402/Temporal/ZonedDateTime/from/zoneddatetime-sub-minute-offset.js`: pass (`1/1`).
 - `intl402/Temporal/ZonedDateTime/prototype/add`: pass (`74/76`).
 - `intl402/Temporal/ZonedDateTime/prototype/subtract`: pass (`75/76`).
