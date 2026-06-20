@@ -2584,13 +2584,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var protoHandle = _heap.AllocateObject(proto, AllocationSite.Current());
         _heap.PushRoot(protoHandle);
 
-        // Same .next impl as ArrayIteratorPrototype — the underlying object is
-        // SnapshotIteratorObject which carries per-iteration snapshot data.
+        // Live Map iterator: .next() reads from the live source Map, so
+        // additions during iteration are visible per ECMA-262 24.1.5.1.
         var next = new NativeFunctionObject("next", (thisValue, _) =>
         {
             if (thisValue.Tag != JsValueTag.Object)
                 throw new JsThrownException(CreateTypeError("Iterator.prototype.next called on non-object."));
             var target = _heap.GetObject(thisValue.AsObjectHandle());
+            if (target is LiveMapSetIteratorObject live)
+                return LiveMapIteratorNext(live);
             if (target is SnapshotIteratorObject snap)
             {
                 if (snap.Index >= snap.Values.Count)
@@ -2635,6 +2637,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (thisValue.Tag != JsValueTag.Object)
                 throw new JsThrownException(CreateTypeError("Iterator.prototype.next called on non-object."));
             var target = _heap.GetObject(thisValue.AsObjectHandle());
+            if (target is LiveMapSetIteratorObject live)
+            {
+                if (live.IsExhausted)
+                    return BuildIteratorResult(JsValue.Undefined, done: true);
+                var source = _heap.GetObject(live.SourceHandle);
+                if (source is not SetObject set)
+                    return BuildIteratorResult(JsValue.Undefined, done: true);
+                var entries = set.Snapshot();
+                if (live.Index >= entries.Count)
+                {
+                    live.IsExhausted = true;
+                    return BuildIteratorResult(JsValue.Undefined, done: true);
+                }
+                var val = entries[live.Index++];
+                if (live.Kind == MapSetIteratorKind.SetEntries)
+                {
+                    var pair = CreateArrayFromElements(new[] { val, val });
+                    return BuildIteratorResult(JsValue.FromObject(_heap.AllocateObject(pair, AllocationSite.Current())), done: false);
+                }
+                return BuildIteratorResult(val, done: false);
+            }
             if (target is SnapshotIteratorObject snap)
             {
                 if (snap.Index >= snap.Values.Count)
@@ -2658,6 +2681,32 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         _setIteratorPrototypeHandle = protoHandle;
         return protoHandle;
+    }
+
+    private JsValue LiveMapIteratorNext(LiveMapSetIteratorObject live)
+    {
+        if (live.IsExhausted)
+            return BuildIteratorResult(JsValue.Undefined, done: true);
+        var source = _heap.GetObject(live.SourceHandle);
+        if (source is MapObject map)
+        {
+            var entries = map.Snapshot();
+            if (live.Index >= entries.Count)
+            {
+                live.IsExhausted = true;
+                return BuildIteratorResult(JsValue.Undefined, done: true);
+            }
+            var (k, v) = entries[live.Index++];
+            return live.Kind switch
+            {
+                MapSetIteratorKind.MapKeys => BuildIteratorResult(k, done: false),
+                MapSetIteratorKind.MapValues => BuildIteratorResult(v, done: false),
+                _ => BuildIteratorResult(
+                    JsValue.FromObject(_heap.AllocateObject(CreateArrayFromElements(new[] { k, v }), AllocationSite.Current())),
+                    done: false)
+            };
+        }
+        return BuildIteratorResult(JsValue.Undefined, done: true);
     }
 
     // Build the IteratorResult shape { value, done } the spec mandates for every
@@ -3639,22 +3688,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue CreateSetIterator(JsValue receiver, bool isEntries)
     {
         var set = RequireSet(receiver);
-        var snap = set.Snapshot();
-        var values = new List<JsValue>(snap.Count);
-        for (var i = 0; i < snap.Count; i++)
-        {
-            if (isEntries)
-            {
-                var pair = CreateArrayFromElements(new[] { snap[i], snap[i] });
-                values.Add(JsValue.FromObject(_heap.AllocateObject(pair, AllocationSite.Current())));
-            }
-            else
-            {
-                values.Add(snap[i]);
-            }
-        }
-
-        var iter = new SnapshotIteratorObject(values);
+        var kind = isEntries ? MapSetIteratorKind.SetEntries : MapSetIteratorKind.SetValues;
+        var iter = new LiveMapSetIteratorObject(receiver.AsObjectHandle(), kind);
         iter.SetPrototype(EnsureSetIteratorPrototype());
         return JsValue.FromObject(_heap.AllocateObject(iter, AllocationSite.Current()));
     }
@@ -3663,25 +3698,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private JsValue CreateMapIterator(JsValue receiver, MapIteratorKind kind)
     {
-        var map = RequireMap(receiver);
-        var snap = map.Snapshot();
-        var values = new List<JsValue>(snap.Count);
-        for (var i = 0; i < snap.Count; i++)
+        var map = RequireMap(receiver); // validates the receiver is a Map
+        var iterKind = kind switch
         {
-            switch (kind)
-            {
-                case MapIteratorKind.Key: values.Add(snap[i].Item1); break;
-                case MapIteratorKind.Value: values.Add(snap[i].Item2); break;
-                default:
-                {
-                    var pair = CreateArrayFromElements(new[] { snap[i].Item1, snap[i].Item2 });
-                    values.Add(JsValue.FromObject(_heap.AllocateObject(pair, AllocationSite.Current())));
-                    break;
-                }
-            }
-        }
-
-        var iter = new SnapshotIteratorObject(values);
+            MapIteratorKind.Key => MapSetIteratorKind.MapKeys,
+            MapIteratorKind.Value => MapSetIteratorKind.MapValues,
+            _ => MapSetIteratorKind.MapEntries
+        };
+        var iter = new LiveMapSetIteratorObject(receiver.AsObjectHandle(), iterKind);
         iter.SetPrototype(EnsureMapIteratorPrototype());
         return JsValue.FromObject(_heap.AllocateObject(iter, AllocationSite.Current()));
     }
@@ -3694,6 +3718,29 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         public IReadOnlyList<JsValue> Values { get; }
         public int Index { get; set; }
         public SnapshotIteratorObject(IReadOnlyList<JsValue> values) => Values = values;
+    }
+
+    // ECMA-262 24.1.5 / 24.2.5 — live Map/Set iterator. Stores a handle to the
+    // source collection and an index cursor; .next() reads from the live entries
+    // list so additions during iteration are visible (per spec).
+    private sealed class LiveMapSetIteratorObject : JsObject
+    {
+        public ObjectHandle SourceHandle { get; }
+        public int Index { get; set; }
+        public bool IsExhausted { get; set; }
+        // For Set: Values or Entries. For Map: Keys, Values, or Entries.
+        public MapSetIteratorKind Kind { get; }
+        public LiveMapSetIteratorObject(ObjectHandle sourceHandle, MapSetIteratorKind kind)
+        {
+            SourceHandle = sourceHandle;
+            Kind = kind;
+        }
+    }
+
+    private enum MapSetIteratorKind
+    {
+        SetValues, SetEntries,
+        MapKeys, MapValues, MapEntries
     }
 
     private sealed class SetObject : JsObject
