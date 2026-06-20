@@ -8540,10 +8540,13 @@ Verification:
   - Second-bearing string offsets, fixed-offset zones, and property-bag offsets remain exact.
   - `ZonedDateTime.from` applies `use`, `ignore`, `prefer`, and `reject` offset semantics instead of validating every input as `reject`.
   - ZonedDateTime offset text and `epochNanoseconds` preserve their exact second precision and BigInt value.
+  - ZonedDateTime `year`, `month`, and `day` getters project the ISO wall date through the attached calendar.
 
 Verification:
 
 - `dotnet build FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -c Release --nologo`: pass.
-- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --filter "FullyQualifiedName~TemporalCalendarIntlTests" --logger "console;verbosity=minimal"`: pass (`8/8`).
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --filter "FullyQualifiedName~TemporalCalendarIntlTests" --logger "console;verbosity=minimal"`: pass (`9/9`).
 - `intl402/Temporal/ZonedDateTime/from/zoneddatetime-sub-minute-offset.js`: pass (`1/1`).
-- `intl402/Temporal`: category improved from `1734/2029` to `1753/2029`; remaining failures `276`.
+- `intl402/Temporal/ZonedDateTime/prototype/add`: pass (`74/76`).
+- `intl402/Temporal/ZonedDateTime/prototype/subtract`: pass (`75/76`).
+- `intl402/Temporal`: category improved from `1734/2029` to `1799/2029`; remaining failures `230`.

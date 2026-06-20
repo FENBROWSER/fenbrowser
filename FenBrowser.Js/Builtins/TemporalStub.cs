@@ -4631,10 +4631,13 @@ public sealed class TemporalStub : IBuiltinModule
         var (cH, pH) = MakeCtor(ctx, h, t, tH, "ZonedDateTime", 2, true,
             (cctx, hh, a) => ConstructZonedDateTime(cctx, hh, a));
         var p = h.GetObject(pH);
-        foreach (var f in new[] { "day", "epochMicroseconds", "epochMilliseconds", "epochSeconds", "hour", "microsecond", "millisecond", "minute", "month", "nanosecond", "offsetNanoseconds", "second", "year" })
+        foreach (var f in new[] { "epochMicroseconds", "epochMilliseconds", "epochSeconds", "hour", "microsecond", "millisecond", "minute", "nanosecond", "offsetNanoseconds", "second" })
             AddGetter(ctx, h, pH, p, f, o => GetV(h, o, f));
         AddGetter(ctx, h, pH, p, "epochNanoseconds", o => GetV(h, o, "ensBig"));
         AddGetter(ctx, h, pH, p, "calendarId", o => { var cid = GetVStr(h, o, "calendarId"); return JsValue.FromString(string.IsNullOrEmpty(cid) ? "iso8601" : cid); });
+        AddGetter(ctx, h, pH, p, "year", o => { var iso = DecodeIsoDateLong(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), iso)?.Year ?? iso.Year); });
+        AddGetter(ctx, h, pH, p, "month", o => { var iso = DecodeIsoDateLong(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), iso)?.Month ?? iso.Month); });
+        AddGetter(ctx, h, pH, p, "day", o => { var iso = DecodeIsoDateLong(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), iso)?.Day ?? iso.Day); });
         AddGetter(ctx, h, pH, p, "monthCode", o => { var iso = DecodeIsoDateLong(h, o); return JsValue.FromString(CalFields(CalId(h, o), iso)?.MonthCode ?? $"M{iso.Month:D2}"); });
         AddGetter(ctx, h, pH, p, "dayOfWeek", o => JsValue.FromNumber(IsoMath.DayOfWeek(DecodeIsoDateLong(h, o))));
         AddGetter(ctx, h, pH, p, "dayOfYear", o => { var dt = DecodeIsoDateLong(h, o); return JsValue.FromNumber(CalFields(CalId(h, o), dt)?.DayOfYear ?? IsoMath.DayOfYear(dt)); });

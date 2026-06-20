@@ -193,4 +193,26 @@ public sealed class TemporalCalendarIntlTests
         Assert.True(epochMatches.AsBoolean());
         Assert.True(offsetMatches.AsBoolean());
     }
+
+    [Fact]
+    public void ZonedDateTimeDateGettersUseTheAttachedCalendar()
+    {
+        var result = Run("""
+            const value = Temporal.ZonedDateTime.from({
+                year: 1716,
+                monthCode: "M12",
+                day: 1,
+                hour: 12,
+                timeZone: "UTC",
+                calendar: "coptic"
+            });
+            const previous = value.add({ days: -1 });
+            const shifted = previous.add({ months: 6 });
+
+            value.year === 1716 && value.month === 12 && value.day === 1 &&
+                shifted.day === Math.min(previous.day, shifted.daysInMonth);
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }
