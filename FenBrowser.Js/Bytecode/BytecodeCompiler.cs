@@ -3270,7 +3270,11 @@ public sealed class BytecodeCompiler
 
                 if (unary.Operator == "delete")
                 {
-                    if (unary.Operand is IdentifierExpressionNode identifier)
+                    // delete <id> and delete (<id>) both use Delete op so unresolvable
+                    // references return true in sloppy mode instead of throwing.
+                    var deleteOperand = unary.Operand is ParenthesizedExpressionNode parenDel
+                        ? parenDel.Expression : unary.Operand;
+                    if (deleteOperand is IdentifierExpressionNode identifier)
                     {
                         var deleteDest = AllocateRegister();
                         var slot = GetOrCreateVariableSlot(identifier.Name);
@@ -3303,7 +3307,11 @@ public sealed class BytecodeCompiler
                     return defaultDeleteResult;
                 }
 
-                if (unary.Operator == "typeof" && unary.Operand is IdentifierExpressionNode typeofIdentifier)
+                // typeof <id> and typeof (<id>) both use TypeOfName so unresolvable
+                // references return "undefined" instead of throwing ReferenceError.
+                var typeofOperand = unary.Operand is ParenthesizedExpressionNode paren
+                    ? paren.Expression : unary.Operand;
+                if (unary.Operator == "typeof" && typeofOperand is IdentifierExpressionNode typeofIdentifier)
                 {
                     var destTypeOf = AllocateRegister();
                     var slotTypeOf = GetOrCreateVariableSlot(typeofIdentifier.Name);
