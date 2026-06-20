@@ -1459,6 +1459,11 @@ public sealed class JsParser
         while (true)
         {
             var binding = ParseVariableDeclaratorBinding();
+            // ES2025: using declarations only allow BindingIdentifier, not
+            // destructuring patterns (ArrayBindingPattern or ObjectBindingPattern).
+            if (binding.Pattern is not null)
+                throw new JsParserException(
+                    $"using declarations cannot use destructuring patterns.");
             ExpressionNode? initializer = null;
             if (IsPunctuator("="))
             {
