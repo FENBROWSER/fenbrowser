@@ -16,6 +16,8 @@ public sealed class Test262Runner
     public static Func<SourceText, bool, Task>? ParseInvokerForTests { get; set; }
     public static Func<string, string, bool, Task>? RuntimeInvokerForTests { get; set; }
 
+    private Test262ProgressWriter? _progressWriter;
+
     public int Run(
         string rootPath,
         bool list,
@@ -36,7 +38,8 @@ public sealed class Test262Runner
         string? featuresCsv,
         string? supportedFeaturesCsv,
         bool test262Shallow = false,
-        int skip = 0)
+        int skip = 0,
+        string? progressFilePath = null)
     {
         var manifest = new Test262Manifest { RootPath = rootPath };
         var files = manifest.EnumerateTestFiles().OrderBy(p => p, StringComparer.Ordinal).ToList();
@@ -66,13 +69,23 @@ public sealed class Test262Runner
             Console.WriteLine($"Dry-run result written: {outputPath}");
         }
 
+        // Init progress writer if requested.
+        if (progressFilePath is not null)
+        {
+            _progressWriter = new Test262ProgressWriter(progressFilePath);
+        }
+
         if (parserSubset)
         {
+            var tag = DeriveBatchTag(outputPath, test262Path);
+            _progressWriter?.WriteBatchStart(tag, "parser-subset", test262Path ?? rootPath, Math.Min(files.Count, max), timeoutMs);
             RunParserSubset(rootPath, outputPath, files, max, timeoutMs, engine, expectationsPath, expectations, supportedFeaturesCsv, skip);
         }
 
         if (runtimeSubset)
         {
+            var tag = DeriveBatchTag(outputPath, test262Path);
+            _progressWriter?.WriteBatchStart(tag, "runtime-subset", test262Path ?? rootPath, Math.Min(files.Count, max), timeoutMs);
             RunRuntimeSubset(rootPath, outputPath, files, max, timeoutMs, engine, expectationsPath, expectations, supportedFeaturesCsv, skip);
         }
 
@@ -200,7 +213,7 @@ public sealed class Test262Runner
         return filtered;
     }
 
-    private static void RunParserSubset(string rootPath, string outputPath, IReadOnlyList<string> files, int max, int timeoutMs, string engine, string? expectationsPath, Test262Expectations? expectations, string? supportedFeaturesCsv, int skip = 0)
+    private void RunParserSubset(string rootPath, string outputPath, IReadOnlyList<string> files, int max, int timeoutMs, string engine, string? expectationsPath, Test262Expectations? expectations, string? supportedFeaturesCsv, int skip = 0)
     {
         var startedAtUtc = DateTime.UtcNow;
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -220,9 +233,10 @@ public sealed class Test262Runner
         var unexpectedPasses = 0;
         var failures = new List<object>();
         var unexpectedPassesList = new List<object>();
-        var tests = new List<object>(subset.Count);
+        var tests = new List<TestEntry>(subset.Count);
         foreach (var file in subset)
         {
+            var testSw = System.Diagnostics.Stopwatch.StartNew();
             var relativePath = Path.GetRelativePath(rootPath, file).Replace('\\', '/');
             var sourceText = File.ReadAllText(file);
             var frontmatter = Test262Frontmatter.Parse(sourceText);
@@ -234,6 +248,7 @@ public sealed class Test262Runner
             if (IsInvalidParserSubsetConfiguration(frontmatter, out var invalidReason))
             {
                 invalidTestConfiguration++;
+                testSw.Stop();
                 failures.Add(new
                 {
                     path = file,
@@ -242,22 +257,12 @@ public sealed class Test262Runner
                     message = invalidReason
                 });
 
-                tests.Add(new
-                {
-                    path = relativePath,
-                    status = "InvalidTestConfiguration",
-                    durationMs = 0,
-                    features = frontmatter.Features,
-                    flags = frontmatter.Flags,
-                    includes = frontmatter.Includes,
-                    negative = frontmatter.Negative,
-                    esid = frontmatter.Esid,
-                    description = frontmatter.Description,
-                    info = frontmatter.Info,
-                    locale = frontmatter.Locale,
-                    category = "host-not-applicable",
-                    message = invalidReason
-                });
+                var te = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                te.Status = "InvalidTestConfiguration";
+                te.DurationMs = testSw.ElapsedMilliseconds;
+                te.Category = "host-not-applicable";
+                te.Message = invalidReason;
+                tests.Add(te);
                 continue;
             }
 
@@ -265,6 +270,7 @@ public sealed class Test262Runner
             if (unsupportedFeature is not null)
             {
                 unsupported++;
+                testSw.Stop();
                 var expected = FindMatchingExpectation(expectations, relativePath, "UnsupportedFeature");
                 if (expected is not null)
                 {
@@ -285,22 +291,12 @@ public sealed class Test262Runner
                     expiresAtMilestone = expected?.ExpiresAtMilestone
                 });
 
-                tests.Add(new
-                {
-                    path = relativePath,
-                    status = expected is null ? "UnsupportedFeature" : "ExpectedFailure",
-                    durationMs = 0,
-                    features = frontmatter.Features,
-                    flags = frontmatter.Flags,
-                    includes = frontmatter.Includes,
-                    negative = frontmatter.Negative,
-                    esid = frontmatter.Esid,
-                    description = frontmatter.Description,
-                    info = frontmatter.Info,
-                    locale = frontmatter.Locale,
-                    category = "parser-missing",
-                    message = $"Feature '{unsupportedFeature}' is not in supported feature set."
-                });
+                var te = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                te.Status = expected is null ? "UnsupportedFeature" : "ExpectedFailure";
+                te.DurationMs = testSw.ElapsedMilliseconds;
+                te.Category = "parser-missing";
+                te.Message = $"Feature '{unsupportedFeature}' is not in supported feature set.";
+                tests.Add(te);
                 continue;
             }
 
@@ -309,28 +305,18 @@ public sealed class Test262Runner
                 if (expectsSyntaxError && onlyStrict && ContainsLegacyOctalEscape(sourceText))
                 {
                     passed++;
-                    tests.Add(new
-                    {
-                        path = relativePath,
-                        status = "Passed",
-                        durationMs = 0,
-                        features = frontmatter.Features,
-                        flags = frontmatter.Flags,
-                        includes = frontmatter.Includes,
-                        negative = frontmatter.Negative,
-                        esid = frontmatter.Esid,
-                        description = frontmatter.Description,
-                        info = frontmatter.Info,
-                        locale = frontmatter.Locale,
-                        category = (string?)null,
-                        message = (string?)null
-                    });
+                    testSw.Stop();
+                    var te = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                    te.Status = "Passed";
+                    te.DurationMs = testSw.ElapsedMilliseconds;
+                    tests.Add(te);
                     continue;
                 }
 
                 var source = new SourceText(parserInput, file);
-                var parseCompleted = RunWithPerTestTimeout(() =>
+                var parseCompleted = RunWithPerTestTimeout(token =>
                 {
+                    token.ThrowIfCancellationRequested();
                     var overrideInvoker = ParseInvokerForTests;
                     if (overrideInvoker is not null)
                     {
@@ -345,6 +331,7 @@ public sealed class Test262Runner
                         JsParser.ParseScript(source);
                     }
                 }, timeoutMs);
+                testSw.Stop();
                 if (!parseCompleted)
                 {
                     timedOut++;
@@ -367,22 +354,12 @@ public sealed class Test262Runner
                         expiresAtMilestone = expected?.ExpiresAtMilestone
                     });
 
-                    tests.Add(new
-                    {
-                        path = relativePath,
-                        status = expected is null ? "TimedOut" : "ExpectedFailure",
-                        durationMs = timeoutMs,
-                        features = frontmatter.Features,
-                        flags = frontmatter.Flags,
-                        includes = frontmatter.Includes,
-                        negative = frontmatter.Negative,
-                        esid = frontmatter.Esid,
-                        description = frontmatter.Description,
-                        info = frontmatter.Info,
-                        locale = frontmatter.Locale,
-                        category = "timeout",
-                        message = $"Parsing exceeded timeout of {timeoutMs} ms."
-                    });
+                    var toutTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                    toutTe.Status = expected is null ? "TimedOut" : "ExpectedFailure";
+                    toutTe.DurationMs = testSw.ElapsedMilliseconds;
+                    toutTe.Category = "timeout";
+                    toutTe.Message = $"Parsing exceeded timeout of {timeoutMs} ms.";
+                    tests.Add(toutTe);
                     continue;
                 }
 
@@ -398,22 +375,12 @@ public sealed class Test262Runner
                         expected = false
                     });
 
-                    tests.Add(new
-                    {
-                        path = relativePath,
-                        status = "Failed",
-                        durationMs = 0,
-                        features = frontmatter.Features,
-                        flags = frontmatter.Flags,
-                        includes = frontmatter.Includes,
-                        negative = frontmatter.Negative,
-                        esid = frontmatter.Esid,
-                        description = frontmatter.Description,
-                        info = frontmatter.Info,
-                        locale = frontmatter.Locale,
-                        category = "parser-bug",
-                        message = "Expected parser to fail with SyntaxError due to test262 negative metadata, but parse succeeded."
-                    });
+                    var peTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                    peTe.Status = "Failed";
+                    peTe.DurationMs = testSw.ElapsedMilliseconds;
+                    peTe.Category = "parser-bug";
+                    peTe.Message = "Expected parser to fail with SyntaxError due to test262 negative metadata, but parse succeeded.";
+                    tests.Add(peTe);
                     continue;
                 }
 
@@ -436,45 +403,23 @@ public sealed class Test262Runner
                             expiresAtMilestone = expected.ExpiresAtMilestone
                         });
 
-                        tests.Add(new
-                        {
-                            path = relativePath,
-                            status = "UnexpectedPass",
-                            durationMs = 0,
-                            features = frontmatter.Features,
-                            flags = frontmatter.Flags,
-                            includes = frontmatter.Includes,
-                            negative = frontmatter.Negative,
-                            esid = frontmatter.Esid,
-                            description = frontmatter.Description,
-                            info = frontmatter.Info,
-                            locale = frontmatter.Locale,
-                            category = (string?)null,
-                            message = $"Unexpected pass for expectation '{expected.Status}'."
-                        });
+                        var upTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                        upTe.Status = "UnexpectedPass";
+                        upTe.DurationMs = testSw.ElapsedMilliseconds;
+                        upTe.Message = $"Unexpected pass for expectation '{expected.Status}'.";
+                        tests.Add(upTe);
                         continue;
                     }
                 }
 
-                tests.Add(new
-                {
-                    path = relativePath,
-                    status = "Passed",
-                    durationMs = 0,
-                    features = frontmatter.Features,
-                    flags = frontmatter.Flags,
-                    includes = frontmatter.Includes,
-                    negative = frontmatter.Negative,
-                    esid = frontmatter.Esid,
-                    description = frontmatter.Description,
-                    info = frontmatter.Info,
-                    locale = frontmatter.Locale,
-                    category = (string?)null,
-                    message = (string?)null
-                });
+                var passTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                passTe.Status = "Passed";
+                passTe.DurationMs = testSw.ElapsedMilliseconds;
+                tests.Add(passTe);
             }
             catch (UnsupportedFeatureException ex)
             {
+                testSw.Stop();
                 unsupported++;
                 var expected = expectations?.Entries.FirstOrDefault(e => e.Matches(relativePath, "UnsupportedFeature"));
                 if (expected is not null)
@@ -496,44 +441,23 @@ public sealed class Test262Runner
                     expiresAtMilestone = expected?.ExpiresAtMilestone
                 });
 
-                tests.Add(new
-                {
-                    path = relativePath,
-                    status = expected is null ? "UnsupportedFeature" : "ExpectedFailure",
-                    durationMs = 0,
-                    features = frontmatter.Features,
-                    flags = frontmatter.Flags,
-                    includes = frontmatter.Includes,
-                    negative = frontmatter.Negative,
-                    esid = frontmatter.Esid,
-                    description = frontmatter.Description,
-                    info = frontmatter.Info,
-                    locale = frontmatter.Locale,
-                    category = "parser-missing",
-                    message = ex.Message
-                });
+                var ufeTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                ufeTe.Status = expected is null ? "UnsupportedFeature" : "ExpectedFailure";
+                ufeTe.DurationMs = testSw.ElapsedMilliseconds;
+                ufeTe.Category = "parser-missing";
+                ufeTe.Message = ex.Message;
+                tests.Add(ufeTe);
             }
             catch (JsParserException ex)
             {
+                testSw.Stop();
                 if (expectsSyntaxError)
                 {
                     passed++;
-                    tests.Add(new
-                    {
-                        path = relativePath,
-                        status = "Passed",
-                        durationMs = 0,
-                        features = frontmatter.Features,
-                        flags = frontmatter.Flags,
-                        includes = frontmatter.Includes,
-                        negative = frontmatter.Negative,
-                        esid = frontmatter.Esid,
-                        description = frontmatter.Description,
-                        info = frontmatter.Info,
-                        locale = frontmatter.Locale,
-                        category = (string?)null,
-                        message = (string?)null
-                    });
+                    var passedTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                    passedTe.Status = "Passed";
+                    passedTe.DurationMs = testSw.ElapsedMilliseconds;
+                    tests.Add(passedTe);
                     continue;
                 }
 
@@ -557,25 +481,16 @@ public sealed class Test262Runner
                     expiresAtMilestone = expected?.ExpiresAtMilestone
                 });
 
-                tests.Add(new
-                {
-                    path = relativePath,
-                    status = expected is null ? "Failed" : "ExpectedFailure",
-                    durationMs = 0,
-                    features = frontmatter.Features,
-                    flags = frontmatter.Flags,
-                    includes = frontmatter.Includes,
-                    negative = frontmatter.Negative,
-                    esid = frontmatter.Esid,
-                    description = frontmatter.Description,
-                    info = frontmatter.Info,
-                    locale = frontmatter.Locale,
-                    category = "parser-bug",
-                    message = ex.Message
-                });
+                var jpeTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                jpeTe.Status = expected is null ? "Failed" : "ExpectedFailure";
+                jpeTe.DurationMs = testSw.ElapsedMilliseconds;
+                jpeTe.Category = "parser-bug";
+                jpeTe.Message = ex.Message;
+                tests.Add(jpeTe);
             }
             catch (Exception ex)
             {
+                testSw.Stop();
                 crashes++;
                 var expected = expectations?.Entries.FirstOrDefault(e => e.Matches(relativePath, "Crash"));
                 if (expected is not null)
@@ -596,26 +511,20 @@ public sealed class Test262Runner
                     expiresAtMilestone = expected?.ExpiresAtMilestone
                 });
 
-                tests.Add(new
-                {
-                    path = relativePath,
-                    status = expected is null ? "Crashed" : "ExpectedFailure",
-                    durationMs = 0,
-                    features = frontmatter.Features,
-                    flags = frontmatter.Flags,
-                    includes = frontmatter.Includes,
-                    negative = frontmatter.Negative,
-                    esid = frontmatter.Esid,
-                    description = frontmatter.Description,
-                    info = frontmatter.Info,
-                    locale = frontmatter.Locale,
-                    category = "crash",
-                    message = ex.Message
-                });
+                var crTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                crTe.Status = expected is null ? "Crashed" : "ExpectedFailure";
+                crTe.DurationMs = testSw.ElapsedMilliseconds;
+                crTe.Category = "crash";
+                crTe.Message = ex.Message;
+                tests.Add(crTe);
             }
         }
 
         stopwatch.Stop();
+        _progressWriter?.WriteBatchComplete(subset.Count, passed,
+            parserErrors, crashes, timedOut, unsupported,
+            unexpectedPasses, expectedFailures, stopwatch.ElapsedMilliseconds);
+        _progressWriter?.Dispose();
         Test262ResultWriter.WriteParserSubset(
             outputPath,
             commit,
@@ -714,7 +623,7 @@ public sealed class Test262Runner
         return false;
     }
 
-    private static void RunRuntimeSubset(
+    private void RunRuntimeSubset(
         string rootPath,
         string outputPath,
         IReadOnlyList<string> files,
@@ -745,7 +654,7 @@ public sealed class Test262Runner
         var unexpectedPasses = 0;
         var failures = new List<object>();
         var unexpectedPassesList = new List<object>();
-        var tests = new List<object>(subset.Count);
+        var tests = new List<TestEntry>(subset.Count);
         var completed = 0;
         var progressEvery = Math.Max(25, Math.Min(200, subset.Count / 50));
         var nextProgressAt = progressEvery;
@@ -803,6 +712,7 @@ public sealed class Test262Runner
             // state (register/instruction buffers, scope stacks). A prior test that threw
             // mid-compile would otherwise leave it dirty and crash a later compilation.
             var compiler = new BytecodeCompiler();
+            var testSw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 var relativePath = Path.GetRelativePath(rootPath, file).Replace('\\', '/');
@@ -816,23 +726,14 @@ public sealed class Test262Runner
                 if (IsInvalidRuntimeSubsetConfiguration(frontmatter, out var invalidReason))
                 {
                     invalidTestConfiguration++;
+                    testSw.Stop();
                     failures.Add(new { path = file, relativePath, classification = "invalid-test-configuration", message = invalidReason });
-                    tests.Add(new
-                    {
-                        path = relativePath,
-                        status = "InvalidTestConfiguration",
-                        durationMs = 0,
-                        features = frontmatter.Features,
-                        flags = frontmatter.Flags,
-                        includes = frontmatter.Includes,
-                        negative = frontmatter.Negative,
-                        esid = frontmatter.Esid,
-                        description = frontmatter.Description,
-                        info = frontmatter.Info,
-                        locale = frontmatter.Locale,
-                        category = "host-not-applicable",
-                        message = invalidReason
-                    });
+                    var ivTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                    ivTe.Status = "InvalidTestConfiguration";
+                    ivTe.DurationMs = testSw.ElapsedMilliseconds;
+                    ivTe.Category = "host-not-applicable";
+                    ivTe.Message = invalidReason;
+                    tests.Add(ivTe);
                     continue;
                 }
 
@@ -840,23 +741,14 @@ public sealed class Test262Runner
             if (unsupportedHarnessInclude is not null)
             {
                 harnessUnsupported++;
+                testSw.Stop();
                 failures.Add(new { path = file, relativePath, classification = "harness-unsupported", include = unsupportedHarnessInclude, message = $"Harness include '{unsupportedHarnessInclude}' is not supported in runtime-subset mode." });
-                tests.Add(new
-                {
-                    path = relativePath,
-                    status = "HarnessUnsupported",
-                    durationMs = 0,
-                    features = frontmatter.Features,
-                    flags = frontmatter.Flags,
-                    includes = frontmatter.Includes,
-                    negative = frontmatter.Negative,
-                    esid = frontmatter.Esid,
-                    description = frontmatter.Description,
-                    info = frontmatter.Info,
-                    locale = frontmatter.Locale,
-                    category = "host-not-applicable",
-                    message = $"Harness include '{unsupportedHarnessInclude}' is not supported in runtime-subset mode."
-                });
+                var uhTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                uhTe.Status = "HarnessUnsupported";
+                uhTe.DurationMs = testSw.ElapsedMilliseconds;
+                uhTe.Category = "host-not-applicable";
+                uhTe.Message = $"Harness include '{unsupportedHarnessInclude}' is not supported in runtime-subset mode.";
+                tests.Add(uhTe);
                 continue;
             }
 
@@ -864,6 +756,7 @@ public sealed class Test262Runner
             if (unsupportedFeature is not null)
             {
                 unsupported++;
+                testSw.Stop();
                 var expected = FindMatchingExpectation(expectations, relativePath, "UnsupportedFeature");
                 if (expected is not null)
                 {
@@ -883,22 +776,12 @@ public sealed class Test262Runner
                     expectedArea = expected?.Area,
                     expiresAtMilestone = expected?.ExpiresAtMilestone
                 });
-                tests.Add(new
-                {
-                    path = relativePath,
-                    status = expected is null ? "UnsupportedFeature" : "ExpectedFailure",
-                    durationMs = 0,
-                    features = frontmatter.Features,
-                    flags = frontmatter.Flags,
-                    includes = frontmatter.Includes,
-                    negative = frontmatter.Negative,
-                    esid = frontmatter.Esid,
-                    description = frontmatter.Description,
-                    info = frontmatter.Info,
-                    locale = frontmatter.Locale,
-                    category = "runtime-missing",
-                    message = $"Feature '{unsupportedFeature}' is not in supported feature set."
-                });
+                var ufTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                ufTe.Status = expected is null ? "UnsupportedFeature" : "ExpectedFailure";
+                ufTe.DurationMs = testSw.ElapsedMilliseconds;
+                ufTe.Category = "runtime-missing";
+                ufTe.Message = $"Feature '{unsupportedFeature}' is not in supported feature set.";
+                tests.Add(ufTe);
                 continue;
             }
 
@@ -935,17 +818,16 @@ public sealed class Test262Runner
                 var interruptRequested = 0;
                 // Fire interrupt after timeoutMs so the interpreter self-terminates
                 // via its WallClockTimeoutMs check + InterruptCallback polling.
+                // The CancellationTokenSource in RunWithPerTestTimeout provides
+                // proper cleanup — when the timeout fires, the CTS cancels the token,
+                // the InterruptCallback returns false, and the interpreter exits at
+                // the next opcode boundary. The task completes cleanly (no leak).
                 using var interruptTimer = new Timer(
                     _ => Volatile.Write(ref interruptRequested, 1), null, timeoutMs, Timeout.Infinite);
-                // Create the interpreter+heap OUTSIDE the timeout lambda so the
-                // reference can be released even when a test times out and the
-                // abandoned worker thread still runs. The InterruptCallback flag
-                // (set by the timer above) tells the interpreter to stop at the
-                // next opcode boundary; the lambda checks the flag before calling
-                // Execute so a timed-out test never enters the interpreter.
                 BytecodeInterpreter? perTestInterpreter = null;
-                var executeCompleted = RunWithPerTestTimeout(() =>
+                var executeCompleted = RunWithPerTestTimeout(token =>
                 {
+                    token.ThrowIfCancellationRequested();
                     var overrideInvoker = RuntimeInvokerForTests;
                     if (overrideInvoker is not null)
                     {
@@ -953,9 +835,7 @@ public sealed class Test262Runner
                     }
                     else
                     {
-                        // Bail early if the interrupt was already fired —
-                        // the interpreter was never entered so no heap is pinned.
-                        if (Volatile.Read(ref interruptRequested) != 0)
+                        if (Volatile.Read(ref interruptRequested) != 0 || token.IsCancellationRequested)
                             return;
                         var source = new SourceText(runtimeInput, file);
                         var function = parseAsModule
@@ -963,7 +843,8 @@ public sealed class Test262Runner
                             : compiler.CompileScript(source);
                         perTestInterpreter = new BytecodeInterpreter(new JsHeap());
                         perTestInterpreter.WallClockTimeoutMs = Math.Max(1, timeoutMs);
-                        perTestInterpreter.InterruptCallback = () => Volatile.Read(ref interruptRequested) == 0;
+                        perTestInterpreter.InterruptCallback = () =>
+                            Volatile.Read(ref interruptRequested) == 0 && !token.IsCancellationRequested;
                         try
                         {
                             _ = perTestInterpreter.Execute(function);
@@ -976,10 +857,8 @@ public sealed class Test262Runner
                     }
                 }, timeoutMs);
                 interruptTimer.Change(Timeout.Infinite, Timeout.Infinite); // disarm
-                // Release the interpreter reference immediately so the heap is
-                // eligible for GC even if a timed-out test's abandoned task still
-                // runs (the task checks interruptRequested before entering Execute).
                 perTestInterpreter = null;
+                testSw.Stop();
                 if (!executeCompleted)
                 {
                     timedOut++;
@@ -997,22 +876,12 @@ public sealed class Test262Runner
                         expectedArea = expected?.Area,
                         expiresAtMilestone = expected?.ExpiresAtMilestone
                     });
-                    tests.Add(new
-                    {
-                        path = relativePath,
-                        status = expected is null ? "TimedOut" : "ExpectedFailure",
-                        durationMs = timeoutMs,
-                        features = frontmatter.Features,
-                        flags = frontmatter.Flags,
-                        includes = frontmatter.Includes,
-                        negative = frontmatter.Negative,
-                        esid = frontmatter.Esid,
-                        description = frontmatter.Description,
-                        info = frontmatter.Info,
-                        locale = frontmatter.Locale,
-                        category = "timeout",
-                        message = $"Runtime execution exceeded timeout of {timeoutMs} ms."
-                    });
+                    var toTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                    toTe.Status = expected is null ? "TimedOut" : "ExpectedFailure";
+                    toTe.DurationMs = testSw.ElapsedMilliseconds;
+                    toTe.Category = "timeout";
+                    toTe.Message = $"Runtime execution exceeded timeout of {timeoutMs} ms.";
+                    tests.Add(toTe);
                     continue;
                 }
 
@@ -1037,22 +906,12 @@ public sealed class Test262Runner
                         expectedArea = expected?.Area,
                         expiresAtMilestone = expected?.ExpiresAtMilestone
                     });
-                    tests.Add(new
-                    {
-                        path = relativePath,
-                        status = expected is null ? "Failed" : "ExpectedFailure",
-                        durationMs = 0,
-                        features = frontmatter.Features,
-                        flags = frontmatter.Flags,
-                        includes = frontmatter.Includes,
-                        negative = frontmatter.Negative,
-                        esid = frontmatter.Esid,
-                        description = frontmatter.Description,
-                        info = frontmatter.Info,
-                        locale = frontmatter.Locale,
-                        category = "runtime-semantic-bug",
-                        message = "Expected failure did not occur in runtime-subset execution."
-                    });
+                    var efTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                    efTe.Status = expected is null ? "Failed" : "ExpectedFailure";
+                    efTe.DurationMs = testSw.ElapsedMilliseconds;
+                    efTe.Category = "runtime-semantic-bug";
+                    efTe.Message = "Expected failure did not occur in runtime-subset execution.";
+                    tests.Add(efTe);
                     continue;
                 }
 
@@ -1064,64 +923,30 @@ public sealed class Test262Runner
                     {
                         unexpectedPasses++;
                         unexpectedPassesList.Add(new { path = file, relativePath, expectedStatus = expected.Status, expectedReason = expected.Reason, expectedOwner = expected.Owner, expectedArea = expected.Area, expiresAtMilestone = expected.ExpiresAtMilestone });
-                        tests.Add(new
-                        {
-                            path = relativePath,
-                            status = "UnexpectedPass",
-                            durationMs = 0,
-                            features = frontmatter.Features,
-                            flags = frontmatter.Flags,
-                            includes = frontmatter.Includes,
-                            negative = frontmatter.Negative,
-                            esid = frontmatter.Esid,
-                            description = frontmatter.Description,
-                            info = frontmatter.Info,
-                            locale = frontmatter.Locale,
-                            category = (string?)null,
-                            message = $"Unexpected pass for expectation '{expected.Status}'."
-                        });
+                        var upTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                        upTe.Status = "UnexpectedPass";
+                        upTe.DurationMs = testSw.ElapsedMilliseconds;
+                        upTe.Message = $"Unexpected pass for expectation '{expected.Status}'.";
+                        tests.Add(upTe);
                         continue;
                     }
                 }
 
-                tests.Add(new
-                {
-                    path = relativePath,
-                    status = "Passed",
-                    durationMs = 0,
-                    features = frontmatter.Features,
-                    flags = frontmatter.Flags,
-                    includes = frontmatter.Includes,
-                    negative = frontmatter.Negative,
-                    esid = frontmatter.Esid,
-                    description = frontmatter.Description,
-                    info = frontmatter.Info,
-                    locale = frontmatter.Locale,
-                    category = (string?)null,
-                    message = (string?)null
-                });
+                var passTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                passTe.Status = "Passed";
+                passTe.DurationMs = testSw.ElapsedMilliseconds;
+                tests.Add(passTe);
             }
             catch (UnsupportedFeatureException ex)
             {
+                testSw.Stop();
                 if (expectsSyntaxError || expectsRuntimeThrow)
                 {
                     passed++;
-                    tests.Add(new
-                    {
-                        path = relativePath,
-                        status = "Passed",
-                        durationMs = 0,
-                        features = frontmatter.Features,
-                        flags = frontmatter.Flags,
-                        includes = frontmatter.Includes,
-                        negative = frontmatter.Negative,
-                        esid = frontmatter.Esid,
-                        description = frontmatter.Description,
-                        info = frontmatter.Info,
-                        locale = frontmatter.Locale,
-                        category = (string?)null,
-                        message = (string?)null
-                    });
+                    var passedTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                    passedTe.Status = "Passed";
+                    passedTe.DurationMs = testSw.ElapsedMilliseconds;
+                    tests.Add(passedTe);
                     continue;
                 }
 
@@ -1145,44 +970,23 @@ public sealed class Test262Runner
                     expectedArea = expected?.Area,
                     expiresAtMilestone = expected?.ExpiresAtMilestone
                 });
-                tests.Add(new
-                {
-                    path = relativePath,
-                    status = expected is null ? "UnsupportedFeature" : "ExpectedFailure",
-                    durationMs = 0,
-                    features = frontmatter.Features,
-                    flags = frontmatter.Flags,
-                    includes = frontmatter.Includes,
-                    negative = frontmatter.Negative,
-                    esid = frontmatter.Esid,
-                    description = frontmatter.Description,
-                    info = frontmatter.Info,
-                    locale = frontmatter.Locale,
-                    category = "runtime-missing",
-                    message = ex.Message
-                });
+                var ufeTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                ufeTe.Status = expected is null ? "UnsupportedFeature" : "ExpectedFailure";
+                ufeTe.DurationMs = testSw.ElapsedMilliseconds;
+                ufeTe.Category = "runtime-missing";
+                ufeTe.Message = ex.Message;
+                tests.Add(ufeTe);
             }
             catch (JsParserException ex)
             {
+                testSw.Stop();
                 if (expectsSyntaxError)
                 {
                     passed++;
-                    tests.Add(new
-                    {
-                        path = relativePath,
-                        status = "Passed",
-                        durationMs = 0,
-                        features = frontmatter.Features,
-                        flags = frontmatter.Flags,
-                        includes = frontmatter.Includes,
-                        negative = frontmatter.Negative,
-                        esid = frontmatter.Esid,
-                        description = frontmatter.Description,
-                        info = frontmatter.Info,
-                        locale = frontmatter.Locale,
-                        category = (string?)null,
-                        message = (string?)null
-                    });
+                    var passedTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                    passedTe.Status = "Passed";
+                    passedTe.DurationMs = testSw.ElapsedMilliseconds;
+                    tests.Add(passedTe);
                     continue;
                 }
 
@@ -1205,44 +1009,23 @@ public sealed class Test262Runner
                     expectedArea = expected?.Area,
                     expiresAtMilestone = expected?.ExpiresAtMilestone
                 });
-                tests.Add(new
-                {
-                    path = relativePath,
-                    status = expected is null ? "Failed" : "ExpectedFailure",
-                    durationMs = 0,
-                    features = frontmatter.Features,
-                    flags = frontmatter.Flags,
-                    includes = frontmatter.Includes,
-                    negative = frontmatter.Negative,
-                    esid = frontmatter.Esid,
-                    description = frontmatter.Description,
-                    info = frontmatter.Info,
-                    locale = frontmatter.Locale,
-                    category = "parser-bug",
-                    message = ex.Message
-                });
+                var jpeTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                jpeTe.Status = expected is null ? "Failed" : "ExpectedFailure";
+                jpeTe.DurationMs = testSw.ElapsedMilliseconds;
+                jpeTe.Category = "parser-bug";
+                jpeTe.Message = ex.Message;
+                tests.Add(jpeTe);
             }
             catch (JsThrownException ex)
             {
+                testSw.Stop();
                 if (expectsRuntimeThrow)
                 {
                     passed++;
-                    tests.Add(new
-                    {
-                        path = relativePath,
-                        status = "Passed",
-                        durationMs = 0,
-                        features = frontmatter.Features,
-                        flags = frontmatter.Flags,
-                        includes = frontmatter.Includes,
-                        negative = frontmatter.Negative,
-                        esid = frontmatter.Esid,
-                        description = frontmatter.Description,
-                        info = frontmatter.Info,
-                        locale = frontmatter.Locale,
-                        category = (string?)null,
-                        message = (string?)null
-                    });
+                    var passedTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                    passedTe.Status = "Passed";
+                    passedTe.DurationMs = testSw.ElapsedMilliseconds;
+                    tests.Add(passedTe);
                     continue;
                 }
 
@@ -1266,45 +1049,24 @@ public sealed class Test262Runner
                     expectedArea = expected?.Area,
                     expiresAtMilestone = expected?.ExpiresAtMilestone
                 });
-                tests.Add(new
-                {
-                    path = relativePath,
-                    status = expected is null ? "Failed" : "ExpectedFailure",
-                    durationMs = 0,
-                    features = frontmatter.Features,
-                    flags = frontmatter.Flags,
-                    includes = frontmatter.Includes,
-                    negative = frontmatter.Negative,
-                    esid = frontmatter.Esid,
-                    description = frontmatter.Description,
-                    info = frontmatter.Info,
-                    locale = frontmatter.Locale,
-                    category = "runtime-semantic-bug",
-                    message = "Unhandled runtime throw.",
-                    details = FormatThrownValue(ex.Value)
-                });
+                var jteTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                jteTe.Status = expected is null ? "Failed" : "ExpectedFailure";
+                jteTe.DurationMs = testSw.ElapsedMilliseconds;
+                jteTe.Category = "runtime-semantic-bug";
+                jteTe.Message = "Unhandled runtime throw.";
+                jteTe.Details = FormatThrownValue(ex.Value);
+                tests.Add(jteTe);
             }
             catch (InvalidOperationException ex)
             {
+                testSw.Stop();
                 if (expectsRuntimeThrow)
                 {
                     passed++;
-                    tests.Add(new
-                    {
-                        path = relativePath,
-                        status = "Passed",
-                        durationMs = 0,
-                        features = frontmatter.Features,
-                        flags = frontmatter.Flags,
-                        includes = frontmatter.Includes,
-                        negative = frontmatter.Negative,
-                        esid = frontmatter.Esid,
-                        description = frontmatter.Description,
-                        info = frontmatter.Info,
-                        locale = frontmatter.Locale,
-                        category = (string?)null,
-                        message = (string?)null
-                    });
+                    var passedTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                    passedTe.Status = "Passed";
+                    passedTe.DurationMs = testSw.ElapsedMilliseconds;
+                    tests.Add(passedTe);
                     continue;
                 }
 
@@ -1327,44 +1089,23 @@ public sealed class Test262Runner
                     expectedArea = expected?.Area,
                     expiresAtMilestone = expected?.ExpiresAtMilestone
                 });
-                tests.Add(new
-                {
-                    path = relativePath,
-                    status = expected is null ? "Failed" : "ExpectedFailure",
-                    durationMs = 0,
-                    features = frontmatter.Features,
-                    flags = frontmatter.Flags,
-                    includes = frontmatter.Includes,
-                    negative = frontmatter.Negative,
-                    esid = frontmatter.Esid,
-                    description = frontmatter.Description,
-                    info = frontmatter.Info,
-                    locale = frontmatter.Locale,
-                    category = "runtime-missing",
-                    message = ex.Message
-                });
+                var ioeTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                ioeTe.Status = expected is null ? "Failed" : "ExpectedFailure";
+                ioeTe.DurationMs = testSw.ElapsedMilliseconds;
+                ioeTe.Category = "runtime-missing";
+                ioeTe.Message = ex.Message;
+                tests.Add(ioeTe);
             }
                 catch (Exception ex)
                 {
+                    testSw.Stop();
                     if (expectsRuntimeThrow)
                     {
                         passed++;
-                        tests.Add(new
-                        {
-                            path = relativePath,
-                            status = "Passed",
-                            durationMs = 0,
-                            features = frontmatter.Features,
-                            flags = frontmatter.Flags,
-                            includes = frontmatter.Includes,
-                            negative = frontmatter.Negative,
-                            esid = frontmatter.Esid,
-                            description = frontmatter.Description,
-                            info = frontmatter.Info,
-                            locale = frontmatter.Locale,
-                            category = (string?)null,
-                            message = (string?)null
-                        });
+                        var passedTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                        passedTe.Status = "Passed";
+                        passedTe.DurationMs = testSw.ElapsedMilliseconds;
+                        tests.Add(passedTe);
                         continue;
                     }
 
@@ -1387,22 +1128,12 @@ public sealed class Test262Runner
                         expectedArea = expected?.Area,
                         expiresAtMilestone = expected?.ExpiresAtMilestone
                     });
-                    tests.Add(new
-                    {
-                        path = relativePath,
-                        status = expected is null ? "Crashed" : "ExpectedFailure",
-                        durationMs = 0,
-                        features = frontmatter.Features,
-                        flags = frontmatter.Flags,
-                        includes = frontmatter.Includes,
-                        negative = frontmatter.Negative,
-                        esid = frontmatter.Esid,
-                        description = frontmatter.Description,
-                        info = frontmatter.Info,
-                        locale = frontmatter.Locale,
-                        category = "crash",
-                        message = ex.Message
-                    });
+                    var crTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
+                    crTe.Status = expected is null ? "Crashed" : "ExpectedFailure";
+                    crTe.DurationMs = testSw.ElapsedMilliseconds;
+                    crTe.Category = "crash";
+                    crTe.Message = ex.Message;
+                    tests.Add(crTe);
                 }
             }
             finally
@@ -1410,6 +1141,11 @@ public sealed class Test262Runner
                 completed++;
                 if (completed == subset.Count || completed >= nextProgressAt || stopwatch.Elapsed - lastProgressElapsed >= TimeSpan.FromSeconds(5))
                 {
+                    var elapsed = stopwatch.Elapsed;
+                    var remaining = Math.Max(0, subset.Count - completed);
+                    var etaMs = completed > 0
+                        ? (long)((elapsed.TotalMilliseconds / completed) * remaining)
+                        : 0L;
                     WriteRuntimeProgress(
                         completed,
                         subset.Count,
@@ -1421,7 +1157,10 @@ public sealed class Test262Runner
                         unsupported,
                         harnessUnsupported,
                         invalidTestConfiguration,
-                        stopwatch.Elapsed);
+                        elapsed);
+                    _progressWriter?.WriteHeartbeat(completed, subset.Count, passed,
+                        runtimeErrors + parserErrors, crashes, timedOut, unsupported,
+                        (long)elapsed.TotalMilliseconds, etaMs);
                     while (completed >= nextProgressAt)
                     {
                         nextProgressAt += progressEvery;
@@ -1431,15 +1170,24 @@ public sealed class Test262Runner
                 }
 
                 // Each test allocates a throwaway JsHeap (and the bytecode/objects it
-                // produces). Force a full compacting collection after every test so
-                // heap memory is reclaimed immediately — a single long-lived process
-                // with server GC would otherwise defer reclamation and let the working
-                // set climb into the tens of GB over a large directory.
-                GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+                // produces). A Gen 0 collection after each test reclaims the fresh
+                // garbage cheaply (no compaction). A full Gen 2 compacting collection
+                // every 200 tests keeps the overall heap bounded without destroying
+                // throughput — heavy Array/Temporal tests were spending > 1 s/test
+                // purely in the compacting GC when it ran after every single test.
+                GC.Collect(0, GCCollectionMode.Forced, blocking: true);
+                if (completed % 200 == 0)
+                {
+                    GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+                }
             }
         }
 
         stopwatch.Stop();
+        _progressWriter?.WriteBatchComplete(subset.Count, passed,
+            parserErrors + runtimeErrors, crashes, timedOut, unsupported,
+            unexpectedPasses, expectedFailures, stopwatch.ElapsedMilliseconds);
+        _progressWriter?.Dispose();
         Test262ResultWriter.WriteRuntimeSubset(
             outputPath,
             commit,
@@ -1499,22 +1247,25 @@ public sealed class Test262Runner
         return string.Equals(phase, "runtime", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool RunWithPerTestTimeout(Action action, int timeoutMs)
+    private static bool RunWithPerTestTimeout(Action<CancellationToken> action, int timeoutMs)
     {
+        using var cts = new CancellationTokenSource(timeoutMs + 500);
         ExceptionDispatchInfo? captured = null;
         var task = Task.Run(() =>
         {
-            try { action(); }
+            try { action(cts.Token); }
+            catch (OperationCanceledException)
+            {
+                // Expected when the CTS fires after timeoutMs+500ms.
+                // The CancellationToken in the interpreter's InterruptCallback
+                // ensures the interpreter exits at the next opcode boundary.
+                // The task then completes cleanly — no abandoned thread leak.
+            }
             catch (Exception ex) { captured = ExceptionDispatchInfo.Capture(ex); }
         });
 
-        // WhenAny gives wall-clock timeout. Add 500ms grace period so the
-        // interpreter's WallClockTimeoutMs + InterruptCallback have time
-        // to tear down the test before the external timeout fires.
-        var deadlineMs = Math.Max(1, timeoutMs + 500);
-        var first = Task.WhenAny(task, Task.Delay(deadlineMs)).GetAwaiter().GetResult();
-        if (first != task)
-            return false;
+        try { task.Wait(cts.Token); }
+        catch (OperationCanceledException) { return false; }
 
         captured?.Throw();
         return true;
@@ -1795,12 +1546,12 @@ public sealed class Test262Runner
                    var _broadcastSab = null;
                    var _receiveCallbacks = [];
                    var _startTime = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
-                   return {
+                   var _agent = {
                      start: function(script) {
-                       // Single-agent: run the script synchronously in this context.
-                       // Multi-agent isolation isn't available, but this lets tests
-                       // that don't depend on actual cross-agent wake-ups to pass.
-                       try { (new Function(script))(); } catch (e) { /* agent errors are silent */ }
+                       // Single-agent: run the script synchronously via eval so
+                       // it inherits the current lexical scope (where $262 is
+                       // defined). new Function() would lose access to $262.
+                       try { eval(script); } catch (e) { /* agent errors are silent */ }
                      },
                      broadcast: function(sab) {
                        _broadcastSab = sab;
@@ -1832,6 +1583,18 @@ public sealed class Test262Runner
                      sleep: function(ms) {
                        // Single-agent: sleep is a no-op; no other agent can act during sleep.
                      },
+                     // waitUntil: in a single-agent world with synchronous broadcast,
+                     // we can't spin-wait (blocks the only thread). Return immediately;
+                     // the broadcast callback has already run by the time this is called.
+                     waitUntil: function(ta, index, expected) {
+                       return Atomics.load(ta, index);
+                     },
+                     tryYield: function() {
+                       // Single-agent: yield is a no-op.
+                     },
+                     trySleep: function(ms) {
+                       // Single-agent: sleep is a no-op.
+                     },
                      timeouts: {
                        long: 60000,
                        short: 1000,
@@ -1848,6 +1611,7 @@ public sealed class Test262Runner
                        p.then(check);
                      }
                    };
+                   return _agent;
                  })()
                };
                function $DETACHBUFFER(buffer) { return $262.detachArrayBuffer(buffer); }
@@ -2167,5 +1931,25 @@ public sealed class Test262Runner
             JsValueTag.HostObject => "thrown=host-object",
             _ => $"thrown={value.Tag}"
         };
+    }
+
+    /// <summary>
+    /// Derive a human-readable batch tag from the output path or scope.
+    /// e.g. "Results/test262/batched/b_built-ins_Array.json" → "built-ins_Array"
+    /// </summary>
+    private static string DeriveBatchTag(string outputPath, string? scopePath)
+    {
+        // Try the output filename first
+        var name = Path.GetFileNameWithoutExtension(outputPath);
+        if (name.StartsWith("b_", StringComparison.OrdinalIgnoreCase))
+            name = name.Substring(2);
+        if (!string.IsNullOrWhiteSpace(name))
+            return name;
+
+        // Fall back to scope path
+        if (!string.IsNullOrWhiteSpace(scopePath))
+            return scopePath.Replace('\\', '/').Trim('/');
+
+        return "unknown";
     }
 }
