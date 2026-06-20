@@ -314,6 +314,23 @@ public sealed class TemporalCalendarIntlTests
     }
 
     [Fact]
+    public void PlainYearMonthToPlainDateRequiresAnObjectWithDay()
+    {
+        var result = Run("""
+            const yearMonth = Temporal.PlainYearMonth.from("2002-01");
+            const date = yearMonth.toPlainDate({ day: 22 });
+            let missingDayRejected = false;
+            let primitiveRejected = false;
+            try { yearMonth.toPlainDate({}); } catch (error) { missingDayRejected = error instanceof TypeError; }
+            try { yearMonth.toPlainDate(null); } catch (error) { primitiveRejected = error instanceof TypeError; }
+            date.year === 2002 && date.month === 1 && date.day === 22 &&
+                missingDayRejected && primitiveRejected;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ZonedDateTimeDifferenceUsesCalendarAnchorsAndZoneWallTime()
     {
         var result = Run("""

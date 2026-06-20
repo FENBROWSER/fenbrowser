@@ -4184,9 +4184,11 @@ public sealed class TemporalStub : IBuiltinModule
             return JsValue.FromBoolean(self.Year == oy && self.Month == om && self.Day == od && calsEqual);
         }, 1);
         AddMethod(ctx, h, pH, p, "toPlainDate", (o, a) => {
-            int day = 1;
-            if (a.Count > 0 && a[0].Tag == JsValueTag.Object && TryGetField(ctx, h, a[0], "day", out var dv))
-                day = ToSafeInt(ToIntegerWithTruncation(ctx, dv));
+            if (a.Count == 0 || a[0].Tag != JsValueTag.Object)
+                throw new JsThrownException(ctx.CreateTypeError("toPlainDate requires an object argument."));
+            if (!TryGetField(ctx, h, a[0], "day", out var dayValue))
+                throw new JsThrownException(ctx.CreateTypeError("toPlainDate requires a day field."));
+            int day = ToSafeInt(ToIntegerWithTruncation(ctx, dayValue));
             string cal = CalId(h, o);
             var iso = DecodeYearMonthIso(h, o);
             var sys = CalendarMath.Get(cal);
