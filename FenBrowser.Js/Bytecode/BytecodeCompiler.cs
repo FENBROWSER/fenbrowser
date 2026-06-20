@@ -940,6 +940,20 @@ public sealed class BytecodeCompiler
         FunctionExpressionNode constructorFn = explicitCtor
             ?? SynthesizeDefaultConstructor(className, isDerived);
 
+        // ECMA-262 15.7.14: the class constructor's name is the class name
+        // (or "" for anonymous classes), never "constructor". The parser
+        // gives the explicit ctor name "constructor"; override it here.
+        if (constructorFn.Name == "constructor")
+        {
+            constructorFn = new FunctionExpressionNode(
+                className,
+                constructorFn.Parameters,
+                constructorFn.Body,
+                constructorFn.Span,
+                IsAsync: constructorFn.IsAsync,
+                IsGenerator: constructorFn.IsGenerator);
+        }
+
         // H.5 - public instance fields. ECMA-262 15.7.10 [[InitializeInstanceElements]]
         // runs on constructor entry (base) or right after super() returns (derived).
         // Computed property names are evaluated at CLASS DEFINITION time, not
