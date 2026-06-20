@@ -34,12 +34,23 @@ public sealed partial class BytecodeInterpreter
 
             if (frame.Environment.HasBinding(name))
             {
+                // ECMA-262: for eval code, a var declaration that conflicts
+                // with an existing lexical binding must be a SyntaxError.
+                if (isEval && frame.Environment is DeclarativeEnvironmentRecord declEnv &&
+                    declEnv.HasLexicalBinding(name))
+                    throw new JsThrownException(CreateSyntaxError(
+                        $"Cannot declare var binding '{name}' — a lexical binding with that name already exists."));
                 continue;
             }
 
             var create = frame.Environment.CreateMutableBinding(name, deletable: isEval);
             if (create != BindingOpResult.Ok)
             {
+                // ECMA-262: for eval code, redeclaration of a lexical binding
+                // must be a SyntaxError, not a TypeError (detected early).
+                if (isEval)
+                    throw new JsThrownException(CreateSyntaxError(
+                        $"Cannot declare var binding '{name}' — a lexical binding with that name already exists."));
                 ThrowTypeError(frame, $"Cannot declare var binding '{name}'.");
                 return;
             }
