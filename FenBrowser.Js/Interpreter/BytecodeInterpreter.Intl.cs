@@ -1140,29 +1140,29 @@ public sealed partial class BytecodeInterpreter
 
         int y, m, d;
 
-        // PlainMonthDay: has mc (monthCode) and d but no y/year
-        if (slots.TryGetProperty("mc", x => _heap.GetObject(x), out var mcDesc))
+        string temporalType = slots.TryGetProperty("__temporalType", x => _heap.GetObject(x), out var typeDesc)
+            && typeDesc.Value.Tag == JsValueTag.String
+            ? typeDesc.Value.AsString()
+            : "";
+
+        if (temporalType == "PlainMonthDay")
         {
-            var mc = mcDesc.Value.Tag == JsValueTag.String ? mcDesc.Value.AsString() : "";
-            m = mc.StartsWith("M") && int.TryParse(mc[1..], out var mp) ? mp : 1;
+            y = slots.TryGetProperty("y", x => _heap.GetObject(x), out var mdYearDesc) ? (int)ToNumber(mdYearDesc.Value) : 1972;
+            m = slots.TryGetProperty("m", x => _heap.GetObject(x), out var mdMonthDesc) ? (int)ToNumber(mdMonthDesc.Value) : 1;
             d = slots.TryGetProperty("d", x => _heap.GetObject(x), out var ddDesc) ? (int)ToNumber(ddDesc.Value) : 1;
-            y = 2000; // reference year for weekday
-            result = IntlDateTimeFormatting.FormatDateOnly(y, m, d, culture, options);
+            result = IntlDateTimeFormatting.FormatDateOnly(y, m, d, culture, options, defaultIncludesYear: false);
             return true;
         }
 
-        // PlainYearMonth: has y, m but no d (or d is reference ISO day)
-        if (slots.TryGetProperty("y", x => _heap.GetObject(x), out var yDesc) && slots.TryGetProperty("m", x => _heap.GetObject(x), out var mDesc))
+        if (temporalType == "PlainYearMonth"
+            && slots.TryGetProperty("y", x => _heap.GetObject(x), out var yDesc)
+            && slots.TryGetProperty("m", x => _heap.GetObject(x), out var mDesc))
         {
-            if (!slots.TryGetProperty("hour", x => _heap.GetObject(x), out _) && !slots.TryGetProperty("day", x => _heap.GetObject(x), out _) && slots.TryGetProperty("d", x => _heap.GetObject(x), out var yrDayDesc))
-            {
-                // PlainYearMonth: has y, m, d (reference ISO day) but no day field
-                y = (int)ToNumber(yDesc.Value);
-                m = (int)ToNumber(mDesc.Value);
-                d = (int)ToNumber(yrDayDesc.Value);
-                result = IntlDateTimeFormatting.FormatDateOnly(y, m, d, culture, options);
-                return true;
-            }
+            y = (int)ToNumber(yDesc.Value);
+            m = (int)ToNumber(mDesc.Value);
+            d = slots.TryGetProperty("d", x => _heap.GetObject(x), out var yrDayDesc) ? (int)ToNumber(yrDayDesc.Value) : 1;
+            result = IntlDateTimeFormatting.FormatDateOnly(y, m, d, culture, options, defaultIncludesDay: false);
+            return true;
         }
 
         // PlainDate: has y, m, d but no hour

@@ -4173,13 +4173,13 @@ public sealed class TemporalStub : IBuiltinModule
             var locale = a.Count > 0 ? ToStrArg(ctx, a[0]) : string.Empty;
             var options = ParseDateTimeFormatOptions(locale, ctx, h, a.Count > 1 ? a[1] : JsValue.Undefined);
             try { IntlDateTimeFormatting.ValidateOptions(options); } catch (InvalidOperationException) { throw new JsThrownException(ctx.CreateTypeError("dateStyle/timeStyle conflicts with explicit component options.")); }
-            try { IntlDateTimeFormatting.ValidateTemporalCalendar(GetVStr(h, o, "calendarId"), options); } catch (InvalidOperationException) { throw new JsThrownException(ctx.CreateRangeError("calendar mismatch")); }
+            try { IntlDateTimeFormatting.ValidateTemporalCalendar(GetVStr(h, o, "calendarId"), options, allowIsoCalendar: false); } catch (InvalidOperationException) { throw new JsThrownException(ctx.CreateRangeError("calendar mismatch")); }
             var culture = IntlDateTimeFormatting.ResolveCulture(locale);
             int y = (int)GetVNum(h, o, "y");
             int m = (int)GetVNum(h, o, "m");
             // PlainYearMonth has a reference ISO day; use that for day-of-week
             int d = (int)(GetVNum(h, o, "d"));
-            var result = IntlDateTimeFormatting.FormatDateOnly(y, m, d, culture, options);
+            var result = IntlDateTimeFormatting.FormatDateOnly(y, m, d, culture, options, defaultIncludesDay: false);
             return JsValue.FromString(result.Text);
         }, 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
@@ -4331,10 +4331,10 @@ public sealed class TemporalStub : IBuiltinModule
             var locale = a.Count > 0 ? ToStrArg(ctx, a[0]) : string.Empty;
             var options = ParseDateTimeFormatOptions(locale, ctx, h, a.Count > 1 ? a[1] : JsValue.Undefined);
             try { IntlDateTimeFormatting.ValidateOptions(options); } catch (InvalidOperationException) { throw new JsThrownException(ctx.CreateTypeError("dateStyle/timeStyle conflicts with explicit component options.")); }
-            try { IntlDateTimeFormatting.ValidateTemporalCalendar(CalId(h, o), options); } catch (InvalidOperationException) { throw new JsThrownException(ctx.CreateRangeError("calendar mismatch")); }
+            try { IntlDateTimeFormatting.ValidateTemporalCalendar(CalId(h, o), options, allowIsoCalendar: false); } catch (InvalidOperationException) { throw new JsThrownException(ctx.CreateRangeError("calendar mismatch")); }
             var culture = IntlDateTimeFormatting.ResolveCulture(locale);
             var iso = DecodeIsoDate(h, o);
-            var result = IntlDateTimeFormatting.FormatDateOnly(iso.Year, iso.Month, iso.Day, culture, options);
+            var result = IntlDateTimeFormatting.FormatDateOnly(iso.Year, iso.Month, iso.Day, culture, options, defaultIncludesYear: false);
             return JsValue.FromString(result.Text);
         }, 0);
         AddMethod(ctx, h, pH, p, "valueOf", (_, _2) => throw new JsThrownException(ctx.CreateTypeError("valueOf throws.")), 0);
@@ -5245,6 +5245,7 @@ public sealed class TemporalStub : IBuiltinModule
         d.SetProperty("m", JsValue.FromNumber(m));
         d.SetProperty("y", JsValue.FromNumber(y));
         d.SetProperty("calendarId", JsValue.FromString(string.IsNullOrEmpty(calendarId) ? "iso8601" : calendarId));
+        d.SetProperty("__temporalType", JsValue.FromString("PlainYearMonth"));
         o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.FromObject(dH), false, false, false));
         return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
     }
@@ -5282,6 +5283,7 @@ public sealed class TemporalStub : IBuiltinModule
         dd.SetProperty("m", JsValue.FromNumber(m));
         dd.SetProperty("y", JsValue.FromNumber(y));
         dd.SetProperty("calendarId", JsValue.FromString(cal));
+        dd.SetProperty("__temporalType", JsValue.FromString("PlainMonthDay"));
         o.DefineOwnProperty("_v", new JsPropertyDescriptor(JsValue.FromObject(ddH), false, false, false));
         return JsValue.FromObject(h.AllocateObject(o, AllocationSite.Current()));
     }

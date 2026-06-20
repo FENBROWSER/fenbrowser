@@ -80,4 +80,35 @@ public sealed class TemporalCalendarIntlTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void PartialDateLocaleFormattingOmitsReferenceFieldsAndRequiresMatchingCalendar()
+    {
+        var result = Run("""
+            const monthDay = Temporal.PlainMonthDay.from({ monthCode: "M12", day: 26, calendar: "gregory" });
+            const yearMonth = new Temporal.PlainDate(2024, 12, 26, "gregory").toPlainYearMonth();
+            const monthDayText = monthDay.toLocaleString("en-US");
+            const yearMonthText = yearMonth.toLocaleString("en-US");
+
+            let monthDayMismatch = false;
+            let yearMonthMismatch = false;
+            try {
+                Temporal.PlainMonthDay.from({ monthCode: "M01", day: 1, calendar: "iso8601" }).toLocaleString();
+            } catch (e) {
+                monthDayMismatch = e instanceof RangeError;
+            }
+            try {
+                new Temporal.PlainDate(2000, 1, 1, "iso8601").toPlainYearMonth().toLocaleString();
+            } catch (e) {
+                yearMonthMismatch = e instanceof RangeError;
+            }
+
+            !monthDayText.includes("1972") &&
+                !yearMonthText.includes("26") &&
+                monthDayMismatch &&
+                yearMonthMismatch;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }

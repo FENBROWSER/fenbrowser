@@ -814,15 +814,19 @@ internal static class IntlDateTimeFormatting
     // ECMA-402: Validate that a Temporal object's calendar is compatible with the locale's calendar.
     // If the Temporal calendar is "iso8601" or matches the locale calendar (or the resolved options calendar),
     // it's OK. Otherwise throw an InvalidOperationException ("calendar mismatch" → RangeError).
-    public static void ValidateTemporalCalendar(string? temporalCalendarId, IntlDateTimeFormatOptions options)
+    public static void ValidateTemporalCalendar(
+        string? temporalCalendarId,
+        IntlDateTimeFormatOptions options,
+        bool allowIsoCalendar = true)
     {
-        if (string.IsNullOrEmpty(temporalCalendarId) || temporalCalendarId == "iso8601")
-            return; // ISO calendar adapts to any locale calendar
+        if (string.IsNullOrEmpty(temporalCalendarId))
+            return;
 
         var resolvedCalendar = options.CalendarId ?? "gregory";
+        if (allowIsoCalendar && temporalCalendarId == "iso8601")
+            return;
 
-        if (!string.Equals(temporalCalendarId, resolvedCalendar, StringComparison.OrdinalIgnoreCase)
-            && resolvedCalendar != "iso8601")
+        if (!string.Equals(temporalCalendarId, resolvedCalendar, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("calendar mismatch");
         }
