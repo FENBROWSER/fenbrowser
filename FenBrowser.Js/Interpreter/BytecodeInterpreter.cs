@@ -2408,6 +2408,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _ = obj.DefineOwnProperty("callee", descriptor);
             WriteDescriptorBarrier(handle, descriptor);
         }
+        else if (callee is not null)
+        {
+            // ECMA-262 10.4.4.6: sloppy-mode arguments object has callee data
+            // property pointing to the currently executing function.
+            var calleeDesc = new JsPropertyDescriptor(
+                JsValue.FromObject(callee.OwnerHandle!.Value),
+                Writable: true,
+                Enumerable: false,
+                Configurable: true);
+            _ = obj.DefineOwnProperty("callee", calleeDesc);
+            WriteDescriptorBarrier(handle, calleeDesc);
+        }
 
         return JsValue.FromObject(handle);
     }
