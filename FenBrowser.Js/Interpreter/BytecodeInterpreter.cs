@@ -7863,6 +7863,52 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
             }
 
+            // ECMA-262 28.2.2.11 [[OwnPropertyKeys]] invariant checks.
+            // 1. No duplicate entries.
+            var seen = new HashSet<string>();
+            foreach (var k in keys)
+            {
+                var strKey = k.Tag == JsValueTag.Symbol ? $"@@{k.AsSymbolId()}" : k.AsString();
+                if (!seen.Add(strKey))
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Proxy ownKeys trap returned duplicate entries."));
+                }
+            }
+
+            // 2. Non-extensible target: all own property keys must be present.
+            if (!IsTargetExtensible(proxy.TargetHandle))
+            {
+                var targetObjForKeys = _heap.GetObject(proxy.TargetHandle);
+                foreach (var ownProp in targetObjForKeys.EnumerateOwnProperties())
+                {
+                    if (!seen.Contains(ownProp.Key))
+                    {
+                        throw new JsThrownException(CreateTypeError(
+                            "Proxy ownKeys trap must include all own property keys for a non-extensible target."));
+                    }
+                }
+                foreach (var ownSym in targetObjForKeys.EnumerateOwnSymbolProperties())
+                {
+                    var symKey = $"@@{ownSym.Key}";
+                    if (!seen.Contains(symKey))
+                    {
+                        throw new JsThrownException(CreateTypeError(
+                            "Proxy ownKeys trap must include all own symbol keys for a non-extensible target."));
+                    }
+                }
+            }
+
+            // 3. Non-configurable own properties must be in the result.
+            foreach (var ownProp in _heap.GetObject(proxy.TargetHandle).EnumerateOwnProperties())
+            {
+                if (!ownProp.Value.Configurable && !seen.Contains(ownProp.Key))
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Proxy ownKeys trap must report a non-configurable own property."));
+                }
+            }
+
             return keys;
         }
 
