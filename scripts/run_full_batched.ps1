@@ -4,6 +4,7 @@
 # Aggregates pass/total into Results/test262/batched/_batched_total.json.
 #
 # Run from repo root:  pwsh scripts/run_full_batched.ps1
+$env:TEST262_PROGRESS = "1"
 param(
     [string]$Test262Root = "C:\Users\udayk\Videos\test262",
     [string]$Exe = ".\FenBrowser.Js.Test262\bin\Release\net10.0\FenBrowser.Js.Test262.exe",

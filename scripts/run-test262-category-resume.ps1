@@ -15,6 +15,7 @@ param(
     [switch]$Fresh
 )
 
+$env:TEST262_PROGRESS = "1"
 $ErrorActionPreference = "Stop"
 
 $sourceRoot = (Resolve-Path $Test262Root).Path

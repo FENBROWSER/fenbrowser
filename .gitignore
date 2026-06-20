@@ -69,6 +69,9 @@ test262_results.md
 *.trx
 *.xml
 
+# Python venv for test262 web dashboard
+scripts/.test262_venv/
+
 # Temp and IDE files
 .codex-temp/
 .testrun/

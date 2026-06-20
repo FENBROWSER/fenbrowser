@@ -39,7 +39,7 @@ public static class Test262ResultWriter
         int unexpectedPasses,
         IReadOnlyList<object> failures,
         IReadOnlyList<object> unexpectedPassesList,
-        IReadOnlyList<object> tests,
+        IReadOnlyList<TestEntry> tests,
         string? expectationsPath)
     {
         var payload = new
@@ -100,7 +100,11 @@ public static class Test262ResultWriter
             tests
         };
 
-        var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
+        var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        });
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath) ?? ".");
         File.WriteAllText(outputPath, json);
     }
@@ -124,7 +128,7 @@ public static class Test262ResultWriter
         int unexpectedPasses,
         IReadOnlyList<object> failures,
         IReadOnlyList<object> unexpectedPassesList,
-        IReadOnlyList<object> tests,
+        IReadOnlyList<TestEntry> tests,
         string? expectationsPath)
     {
         var payload = new
@@ -186,7 +190,11 @@ public static class Test262ResultWriter
             tests
         };
 
-        var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
+        var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        });
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath) ?? ".");
         File.WriteAllText(outputPath, json);
     }

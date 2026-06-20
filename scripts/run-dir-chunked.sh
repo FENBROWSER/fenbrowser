@@ -10,6 +10,7 @@
 # Usage: bash scripts/run-dir-chunked.sh <reldir> [<reldir> ...]
 #   env: CHUNK (default 250), STALL_TIMEOUT_SEC (default 60)
 set -u
+export TEST262_PROGRESS=1
 EXE="./FenBrowser.Js.Test262/bin/Release/net10.0/FenBrowser.Js.Test262.exe"
 ROOT="C:/Users/udayk/Videos/test262"
 OUTDIR="Results/test262/batched"

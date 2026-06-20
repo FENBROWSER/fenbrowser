@@ -208,7 +208,8 @@ public sealed class ErrorBuiltins : IBuiltinModule
         {
             var errObj = ctx.Heap.GetObject(err.AsObjectHandle());
             var optionsObj = ctx.Heap.GetObject(args[1].AsObjectHandle());
-            if (ctx.TryGetPropertyValue(optionsObj, args[1], "cause", out var causeValue))
+            if (ctx.TryGetPropertyValue(optionsObj, args[1], "cause", out var causeValue) &&
+                causeValue.Tag != JsValueTag.Undefined)
             {
                 _ = errObj.DefineOwnProperty("cause",
                     new Objects.JsPropertyDescriptor(causeValue, Writable: true, Enumerable: false, Configurable: true));

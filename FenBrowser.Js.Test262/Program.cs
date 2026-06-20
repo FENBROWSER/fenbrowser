@@ -26,6 +26,7 @@ string? test262File = null;
 var test262Shallow = false;
 string? featuresCsv = null;
 string? supportedFeaturesCsv = null;
+string? progressFilePath = null;
 
 for (var i = 0; i < args.Length; i++)
 {
@@ -95,6 +96,9 @@ for (var i = 0; i < args.Length; i++)
         case "--previous" when i + 1 < args.Length:
             previousPath = args[++i];
             break;
+        case "--progress-file" when i + 1 < args.Length:
+            progressFilePath = args[++i];
+            break;
     }
 }
 
@@ -110,5 +114,12 @@ if ((list || dryRun || parserSubset || runtimeSubset) && !Directory.Exists(root)
     return 3;
 }
 
+// Auto-derive progress file path when TEST262_PROGRESS=1 env var is set.
+if (progressFilePath == null &&
+    string.Equals(Environment.GetEnvironmentVariable("TEST262_PROGRESS"), "1", StringComparison.OrdinalIgnoreCase))
+{
+    progressFilePath = Path.ChangeExtension(outPath, null) + "_progress.jsonl";
+}
+
 var runner = new Test262Runner();
-return runner.Run(root, list, dryRun, parserSubset, runtimeSubset, dashboard, verifyGates, outPath, max, timeoutMs, engine, expectationsPath, inputPath, previousPath, test262Path, test262File, featuresCsv, supportedFeaturesCsv, test262Shallow, skip);
+return runner.Run(root, list, dryRun, parserSubset, runtimeSubset, dashboard, verifyGates, outPath, max, timeoutMs, engine, expectationsPath, inputPath, previousPath, test262Path, test262File, featuresCsv, supportedFeaturesCsv, test262Shallow, skip, progressFilePath);

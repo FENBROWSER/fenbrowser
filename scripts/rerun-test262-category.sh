@@ -8,6 +8,7 @@
 #
 # Arg is a path relative to <test262>/test/. Includes the stall-kill watchdog.
 set -u
+export TEST262_PROGRESS=1
 EXE="./FenBrowser.Js.Test262/bin/Release/net10.0/FenBrowser.Js.Test262.exe"
 ROOT="C:/Users/udayk/Videos/test262"
 OUTDIR="Results/test262/batched"

@@ -2,6 +2,7 @@
 # Memory-safe full test262 run: one process per directory batch so RAM is
 # released between batches. Aggregates pass/total into _batched_total.json.
 set -u
+export TEST262_PROGRESS=1
 EXE="./FenBrowser.Js.Test262/bin/Release/net10.0/FenBrowser.Js.Test262.exe"
 ROOT="C:/Users/udayk/Videos/test262"
 OUTDIR="Results/test262/batched"
