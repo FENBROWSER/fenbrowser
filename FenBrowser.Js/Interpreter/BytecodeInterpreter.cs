@@ -20202,14 +20202,19 @@ fallbackArraySpecies:
 
     private ObjectHandle ResolveObjectHandle(JsValue value)
     {
-        if (value.Tag != JsValueTag.Object)
+        if (value.Tag == JsValueTag.Undefined)
         {
-            throw new JsThrownException(CreateTypeError(
-                value.Tag == JsValueTag.Undefined
-                    ? "Cannot read properties of undefined."
-                    : value.Tag == JsValueTag.Null
-                        ? "Cannot read properties of null."
-                        : $"Cannot convert {value.Tag} to object."));
+            throw new JsThrownException(CreateTypeError("Cannot read properties of undefined."));
+        }
+        if (value.Tag == JsValueTag.Null)
+        {
+            throw new JsThrownException(CreateTypeError("Cannot read properties of null."));
+        }
+        // Primitives (String, Number, Boolean, Symbol, BigInt) are auto-boxed
+        // when used as objects — same semantics as ECMA-262 ToObject.
+        if (value.Tag != JsValueTag.Object && value.Tag != JsValueTag.HostObject)
+        {
+            value = CreateObjectFromValue(value);
         }
 
         return value.AsObjectHandle();
