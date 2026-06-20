@@ -7304,11 +7304,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(parts), AllocationSite.Current()));
         }
 
-        // Fallback: simple split via RegExpExec. Must read flags first for
+        // Fallback: simple split via RegExpExec. Flags must be read for
         // observable coercion (getter can throw) per spec step 7-8.
+        // Note: the old ES2015 restriction that forbade 'u' and 'y' flags
+        // was removed in ES2022 (tc39/ecma262#2186).
         var flags2 = ToStringValue(GetReceiverProperty(thisValue, "flags"));
-        if (flags2.Contains('y') || flags2.Contains('u'))
-            throw new JsThrownException(CreateTypeError("@@split requires neither 'u' nor 'y' flag."));
 
         var resultParts = new List<JsValue>();
         int start = 0;
