@@ -547,7 +547,7 @@ public sealed class BytecodeCompiler
             functionDecl.ParameterBindings,
             out var prologueCount,
             functionDecl.ParameterDefaults);
-        var childCompiler = new BytecodeCompiler();
+        var childCompiler = new BytecodeCompiler { _brandTokens = this._brandTokens };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
             functionDecl.Parameters,
@@ -3367,7 +3367,7 @@ public sealed class BytecodeCompiler
                 // ECMA-262 NamedEvaluation: an anonymous function expression adopts
                 // the binding/assignment name; a named expression keeps its own name.
                 var fnExprName = fnExpr.Name ?? ConsumeNameHint();
-                var childCompiler = new BytecodeCompiler();
+                var childCompiler = new BytecodeCompiler { _brandTokens = this._brandTokens };
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
                     fnExpr.Parameters,
@@ -3423,7 +3423,7 @@ public sealed class BytecodeCompiler
                 // ECMA-262 NamedEvaluation: arrows are always anonymous, so they take
                 // the binding/assignment name when one is in scope, else the empty name.
                 var arrowName = ConsumeNameHint() ?? string.Empty;
-                var childCompiler = new BytecodeCompiler();
+                var childCompiler = new BytecodeCompiler { _brandTokens = this._brandTokens };
                 var nestedFunction = childCompiler.CompileProgramCore(
                     nestedProgram,
                     arrow.Parameters,
