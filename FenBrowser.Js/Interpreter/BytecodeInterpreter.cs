@@ -5636,7 +5636,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toDateString", DatePrototypeToDateString);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toTimeString", DatePrototypeToTimeString);
         var toUtcFnHandle = DefineNativePrototypeMethod(prototypeHandle, prototype, "toUTCString", DatePrototypeToUtcString);
-        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleString", DatePrototypeToLocaleString, length: 2);
+        _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleString", DatePrototypeToLocaleString, length: 0);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleDateString",
             DatePrototypeToLocaleDateString, length: 0);
         _ = DefineNativePrototypeMethod(prototypeHandle, prototype, "toLocaleTimeString",
@@ -6044,6 +6044,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         var yearDigits = pos - 1;
         if (yearDigits < 4) return null; // at least 4-digit year
+        if (sign < 0 && year == 0) return null; // reject -000000 (year 0 is positive per ES2022)
         if (sign < 0) year = -year;
         // Expect '-'
         if (pos >= text.Length || text[pos] != '-') return null;
