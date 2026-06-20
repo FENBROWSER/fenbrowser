@@ -1,3 +1,6 @@
+using NodaTime;
+using NodaTime.TimeZones;
+
 namespace FenBrowser.Js.Temporal;
 
 // Temporal time zone support: identifier validation/canonicalization,
@@ -12,16 +15,19 @@ internal static class TemporalTimeZones
 {
     private const long NsPerDay = 86_400_000_000_000L;
 
-    private static readonly Dictionary<string, string> _ianaLinks = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly Dictionary<string, string> _tzdbIds = BuildTzdbIdMap();
+
+    private static Dictionary<string, string> BuildTzdbIdMap()
     {
-        // Common IANA time zone links tested in test262
-        ["Asia/Calcutta"] = "Asia/Kolkata",
-        ["Australia/Canberra"] = "Australia/Sydney",
-        ["Asia/Ulan_Bator"] = "Asia/Ulaanbaatar",
-        ["America/Atka"] = "America/Adak",
-        ["Etc/GMT"] = "UTC",
-        ["Europe/Nicosia"] = "Asia/Nicosia",
-    };
+        var source = TzdbDateTimeZoneSource.Default;
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var id in DateTimeZoneProviders.Tzdb.Ids)
+        {
+            result[id] = source.CanonicalIdMap.TryGetValue(id, out var canonical) ? canonical : id;
+        }
+
+        return result;
+    }
 
     /// <summary>
     /// Validate and canonicalize a time zone identifier. Returns false for
@@ -36,11 +42,6 @@ internal static class TemporalTimeZones
         if (string.IsNullOrEmpty(id))
         {
             return false;
-        }
-
-        if (TimeZoneInfo.TryConvertWindowsIdToIanaId(id, out var ianaId))
-        {
-            id = ianaId;
         }
 
         if (string.Equals(id, "UTC", StringComparison.OrdinalIgnoreCase) ||
@@ -77,26 +78,13 @@ internal static class TemporalTimeZones
         }
 
         // Resolve IANA link→canonical before .NET lookup (Windows may not resolve links).
-        if (_ianaLinks.TryGetValue(id, out var linkedId))
-            id = linkedId;
-
-        try
+        if (_tzdbIds.TryGetValue(id, out var canonicalId))
         {
-            var zone = TimeZoneInfo.FindSystemTimeZoneById(id);
-            // Preserve the IANA capitalization the lookup matched; .NET keeps
-            // the request's casing in Id, so prefer the canonical-cased form
-            // only when the match was case-insensitive.
-            canonical = string.Equals(zone.Id, id, StringComparison.OrdinalIgnoreCase) ? zone.Id : id;
+            canonical = canonicalId;
             return true;
         }
-        catch (TimeZoneNotFoundException)
-        {
-            return false;
-        }
-        catch (InvalidTimeZoneException)
-        {
-            return false;
-        }
+
+        return false;
     }
 
     // TZLeadingChar TZChar* components separated by '/'; rejects strings
@@ -146,19 +134,13 @@ internal static class TemporalTimeZones
             return 0;
         }
 
-        try
+        var zone = DateTimeZoneProviders.Tzdb.GetZoneOrNull(canonicalId);
+        if (zone is not null)
         {
-            var zone = TimeZoneInfo.FindSystemTimeZoneById(canonicalId);
-            return zone.GetUtcOffset(EpochNsToDateTimeOffsetClamped(epochNs)).Ticks * 100L;
+            return zone.GetUtcOffset(Instant.FromUnixTimeTicks(epochNs / 100L)).Seconds * 1_000_000_000L;
         }
-        catch (TimeZoneNotFoundException)
-        {
-            return 0;
-        }
-        catch (InvalidTimeZoneException)
-        {
-            return 0;
-        }
+
+        return 0;
     }
 
     /// <summary>
@@ -204,17 +186,6 @@ internal static class TemporalTimeZones
         long minutes = offsetNs / 60_000_000_000L;
         long absMinutes = Math.Abs(minutes);
         return $"{(offsetNs < 0 ? "-" : "+")}{absMinutes / 60:D2}:{absMinutes % 60:D2}";
-    }
-
-    private static DateTimeOffset EpochNsToDateTimeOffsetClamped(long epochNs)
-    {
-        // DateTimeOffset covers years 1-9999; clamp outside instants so named
-        // zone lookups stay valid (fixed-offset behavior at the extremes).
-        const long minTicks = 0;
-        long ticks = epochNs / 100L + DateTime.UnixEpoch.Ticks;
-        long maxTicks = DateTime.MaxValue.Ticks - TimeSpan.TicksPerDay;
-        ticks = Math.Clamp(ticks, minTicks + TimeSpan.TicksPerDay, maxTicks);
-        return new DateTimeOffset(ticks, TimeSpan.Zero);
     }
 
     /// <summary>

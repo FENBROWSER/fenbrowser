@@ -111,4 +111,36 @@ public sealed class TemporalCalendarIntlTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void ZonedDateTimeStringOffsetsAllowNamedZoneMinuteRoundingOnly()
+    {
+        var result = Run("""
+            const rounded = Temporal.ZonedDateTime.from("1970-01-01T00:00:00-00:45[Africa/Monrovia]");
+            const exact = Temporal.ZonedDateTime.from("1970-01-01T00:00:00-00:44:30[Africa/Monrovia]");
+            let secondsRejected = false;
+            let propertyBagRejected = false;
+            try {
+                Temporal.ZonedDateTime.from("1970-01-01T00:00:00-00:45:00[Africa/Monrovia]");
+            } catch (e) {
+                secondsRejected = e instanceof RangeError;
+            }
+            try {
+                Temporal.ZonedDateTime.from({
+                    year: 1970,
+                    month: 1,
+                    day: 1,
+                    offset: "-00:45",
+                    timeZone: "Africa/Monrovia"
+                });
+            } catch (e) {
+                propertyBagRejected = e instanceof RangeError;
+            }
+            rounded.epochNanoseconds === exact.epochNanoseconds &&
+                secondsRejected &&
+                propertyBagRejected;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }

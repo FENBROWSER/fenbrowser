@@ -15,6 +15,7 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <PackageReference Include="NodaTime" Version="3.3.2" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="Regex\unicode_property_escapes.generated.json" />

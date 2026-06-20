@@ -8527,3 +8527,19 @@ Verification:
 Verification:
 
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~TemplateLiteralTests|FullyQualifiedName~BytecodeExecutionTests" --no-restore --logger "console;verbosity=minimal"`: pass (`188/188`) on `2026-05-16`.
+
+## 2.314 FenJS Temporal TZDB Integration (2026-06-20)
+
+- `FenBrowser.Js/Temporal/TemporalTimeZones.cs`
+  - Named Temporal time zones now resolve through Noda Time's embedded IANA TZDB rather than platform `TimeZoneInfo`.
+  - Canonical identifiers are case-insensitive at the API boundary and normalized through TZDB aliases.
+  - Historical offsets preserve second precision, including pre-standard-time transitions required by Temporal.
+- `FenBrowser.Js/Builtins/TemporalStub.cs`
+  - Minute-only offsets in ZonedDateTime strings may match named-zone offsets after Temporal half-expand minute rounding.
+  - Second-bearing string offsets, fixed-offset zones, and property-bag offsets remain exact.
+
+Verification:
+
+- `dotnet build FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -c Release --nologo`: pass.
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --filter "FullyQualifiedName~TemporalCalendarIntlTests" --logger "console;verbosity=minimal"`: pass (`6/6`).
+- `intl402/Temporal`: offset-mismatch failures reduced from `13` to `2`; category improved from `1733/2029` to `1734/2029`.

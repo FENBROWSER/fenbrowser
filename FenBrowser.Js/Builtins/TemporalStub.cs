@@ -4381,6 +4381,25 @@ public sealed class TemporalStub : IBuiltinModule
         throw new JsThrownException(ctx.CreateRangeError($"'{id}' is not a valid time zone."));
     }
 
+    private static bool StringOffsetMatchesTimeZone(
+        string timeZone,
+        long timeZoneOffsetNs,
+        long parsedOffsetNs,
+        bool offsetHasSubMinuteSyntax)
+    {
+        if (timeZoneOffsetNs == parsedOffsetNs)
+            return true;
+
+        if (offsetHasSubMinuteSyntax || timeZone.Length == 0 || timeZone[0] is '+' or '-')
+            return false;
+
+        const long minuteNs = 60_000_000_000L;
+        long roundedMinutes = timeZoneOffsetNs >= 0
+            ? (timeZoneOffsetNs + minuteNs / 2) / minuteNs
+            : (timeZoneOffsetNs - minuteNs / 2) / minuteNs;
+        return roundedMinutes * minuteNs == parsedOffsetNs;
+    }
+
     /// <summary>ToTemporalZonedDateTime: instance, ISO string with [tz], or property bag → epoch ns + zone + calendar.</summary>
     private static (System.Numerics.BigInteger EpochNs, string Tz, string Calendar) ToTemporalZonedRecord(IBuiltinContext ctx, JsHeap h, JsValue arg)
     {
@@ -4409,7 +4428,11 @@ public sealed class TemporalStub : IBuiltinModule
                     ? (long)epochNs
                     : (epochNs < 0 ? long.MinValue : long.MaxValue);
                 long offsetNs = TemporalTimeZones.GetOffsetNs(tz, epochNsClamped);
-                if (offsetNs != parsed.OffsetNanoseconds)
+                if (!StringOffsetMatchesTimeZone(
+                        tz,
+                        offsetNs,
+                        parsed.OffsetNanoseconds,
+                        parsed.OffsetSubMinuteSyntax))
                     throw new JsThrownException(ctx.CreateRangeError("Offset and time zone offset mismatch."));
             }
             else

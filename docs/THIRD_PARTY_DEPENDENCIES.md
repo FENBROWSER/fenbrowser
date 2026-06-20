@@ -27,9 +27,9 @@ This document provides an exhaustive analysis of every third-party library used 
 
 | Metric                        | Value                             |
 | ----------------------------- | --------------------------------- |
-| **Total Direct Dependencies** | 13 packages                       |
-| **Unique Libraries**          | 7 distinct libraries              |
-| **Runtime Dependencies**      | 9 packages                        |
+| **Total Direct Dependencies** | 14 packages                       |
+| **Unique Libraries**          | 8 distinct libraries              |
+| **Runtime Dependencies**      | 10 packages                       |
 | **Test-Only Dependencies**    | 4 packages                        |
 | **Target Framework**          | .NET 8.0 (host), .NET 9.0 (tests) |
 
@@ -62,6 +62,7 @@ FenBrowser follows these principles when selecting dependencies:
 | xunit.runner.visualstudio    | 2.8.2   |      |           |      |          |   ✓   |
 | Microsoft.NET.Test.Sdk       | 17.12.0 |      |           |      |          |   ✓   |
 | coverlet.collector           | 6.0.2   |      |           |      |          |   ✓   |
+| NodaTime                     | 3.3.2   |      |     ✓     |      |          |       |
 
 ---
 
@@ -126,6 +127,15 @@ SkiaSharp is the .NET binding for Google's Skia 2D graphics library. Skia is the
 ## FenBrowser.FenEngine Dependencies
 
 The FenEngine project contains the core browser engine: HTML parsing, CSS computation, layout algorithms, and rendering pipeline.
+
+### NodaTime (v3.3.2)
+
+`FenBrowser.Js` uses Noda Time's embedded IANA TZDB provider for Temporal time-zone identifier canonicalization, historical transitions, and second-precision UTC offsets. Platform `TimeZoneInfo` data is insufficient on Windows for IANA-only identifiers and historical sub-minute offsets required by test262.
+
+- License: Apache-2.0
+- Runtime scope: Temporal named-zone lookup only
+- Network access: none
+- Trade-off: adds managed TZDB data in exchange for deterministic cross-platform time-zone behavior
 
 ### SkiaSharp (v2.88.9)
 
