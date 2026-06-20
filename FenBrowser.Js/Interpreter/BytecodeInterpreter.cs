@@ -5997,6 +5997,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // already understands; NaN on failure.
     private static double ParseDateValue(string text)
     {
+        // ISO 8601 extended year format: [+-]YYYYYY-MM-DDTHH:mm:ss[.sss]Z
+        // .NET's DateTimeOffset.TryParse doesn't handle negative or >9999 years.
+        // Try manual ISO parse first for extended-year strings.
+        if (text.Length > 0 && (text[0] == '+' || text[0] == '-') && text.Length >= 12)
+        {
+            var result = TryParseExtendedIsoDate(text);
+            if (result.HasValue) return result.Value;
+        }
+
         if (DateTimeOffset.TryParse(text, System.Globalization.CultureInfo.InvariantCulture,
                 System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
                 out var parsed))
@@ -6004,6 +6013,86 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return parsed.ToUnixTimeMilliseconds();
         }
         return double.NaN;
+    }
+
+    // Parse ISO 8601 dates with extended year format: [+-]YYYYYY-MM-DDTHH:mm:ss[.sss]Z
+    // Returns null if the string doesn't match or values are out of range.
+    private static double? TryParseExtendedIsoDate(string text)
+    {
+        // Expected minimum: [+-]YYYYYY-MM-DD -> 13 chars
+        if (text.Length < 13) return null;
+        var sign = text[0] == '-' ? -1 : 1;
+        // Parse year: 6+ digits after sign
+        int pos = 1;
+        long year = 0;
+        while (pos < text.Length && char.IsDigit(text[pos]))
+        {
+            year = year * 10 + (text[pos] - '0');
+            pos++;
+        }
+        var yearDigits = pos - 1;
+        if (yearDigits < 4) return null; // at least 4-digit year
+        if (sign < 0) year = -year;
+        // Expect '-'
+        if (pos >= text.Length || text[pos] != '-') return null;
+        pos++;
+        // Parse month (2 digits)
+        if (pos + 1 >= text.Length) return null;
+        var month = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
+        pos += 2;
+        if (month < 1 || month > 12) return null;
+        // Expect '-'
+        if (pos >= text.Length || text[pos] != '-') return null;
+        pos++;
+        // Parse day (2 digits)
+        if (pos + 1 >= text.Length) return null;
+        var day = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
+        pos += 2;
+        if (day < 1 || day > 31) return null;
+        // Optional time part: 'T' or space
+        long hours = 0, minutes = 0, seconds = 0, ms = 0;
+        if (pos < text.Length && (text[pos] == 'T' || text[pos] == ' '))
+        {
+            pos++;
+            if (pos + 1 >= text.Length) return null;
+            hours = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
+            pos += 2;
+            if (hours > 24) return null;
+            if (pos < text.Length && text[pos] == ':')
+            {
+                pos++;
+                if (pos + 1 >= text.Length) return null;
+                minutes = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
+                pos += 2;
+                if (minutes > 59) return null;
+            }
+            if (pos < text.Length && text[pos] == ':')
+            {
+                pos++;
+                if (pos + 1 >= text.Length) return null;
+                seconds = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
+                pos += 2;
+                if (seconds > 59) return null;
+            }
+            if (pos < text.Length && text[pos] == '.')
+            {
+                pos++;
+                var msDigits = 0;
+                ms = 0;
+                while (pos < text.Length && char.IsDigit(text[pos]) && msDigits < 3)
+                {
+                    ms = ms * 10 + (text[pos] - '0');
+                    pos++;
+                    msDigits++;
+                }
+                while (msDigits < 3) { ms *= 10; msDigits++; }
+            }
+        }
+        // Skip optional timezone suffix (Z, +HH:MM, -HH:MM)
+        // For our purposes (local=UTC), timezone doesn't matter.
+        // Compute using DateMath (handles negative years correctly)
+        var dateMs = DateMath.MakeDate(DateMath.MakeDay(year, month - 1, day), DateMath.MakeTime(hours, minutes, seconds, ms));
+        return DateMath.TimeClip(dateMs);
     }
 
     private JsValue CreateDateObject(double timeValue)
