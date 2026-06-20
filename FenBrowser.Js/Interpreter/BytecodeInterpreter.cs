@@ -4389,6 +4389,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (newTarget.Tag != JsValueTag.Object)
                 throw new JsThrownException(CreateTypeError("Reflect.construct: newTarget must be an object."));
 
+            // ECMA-262 28.1.2 step 1-2: both target and newTarget must be constructors.
+            if (target.Tag == JsValueTag.Object && !IsConstructableTarget(target.AsObjectHandle()))
+                throw new JsThrownException(CreateTypeError("Reflect.construct: target is not a constructor."));
+            if (newTarget.Tag == JsValueTag.Object && newTarget.AsObjectHandle() != target.AsObjectHandle()
+                && !IsConstructableTarget(newTarget.AsObjectHandle()))
+                throw new JsThrownException(CreateTypeError("Reflect.construct: newTarget is not a constructor."));
+
             // Unpack argumentsList (must be array-like) into individual args.
             JsValue[] callArgs;
             if (argumentsList.Tag == JsValueTag.Object)
