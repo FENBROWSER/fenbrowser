@@ -143,12 +143,18 @@ internal static class TemporalTimeZones
             return offsetNs;
         }
 
-        if (canonicalId == "UTC")
+        if (!TryCanonicalize(canonicalId, out var lookupId, out var fixedOffsetNs))
+            return 0;
+
+        if (fixedOffsetNs.HasValue)
+            return fixedOffsetNs.Value;
+
+        if (lookupId == "UTC")
         {
             return 0;
         }
 
-        var zone = DateTimeZoneProviders.Tzdb.GetZoneOrNull(canonicalId);
+        var zone = DateTimeZoneProviders.Tzdb.GetZoneOrNull(lookupId);
         if (zone is not null)
         {
             return zone.GetUtcOffset(Instant.FromUnixTimeTicks(epochNs / 100L)).Seconds * 1_000_000_000L;
@@ -251,13 +257,19 @@ internal static class TemporalTimeZones
         long days = IsoMath.ToEpochDays(date);
         var wallNs = new System.Numerics.BigInteger(days) * NsPerDay + time.ToNanosecondsOfDay();
 
-        if (canonicalId == "UTC" || canonicalId.Length > 0 && canonicalId[0] is '+' or '-')
+        if (!TryCanonicalize(canonicalId, out var lookupId, out var fixedOffsetNs))
+        {
+            epochNs = default;
+            return false;
+        }
+
+        if (lookupId == "UTC" || fixedOffsetNs.HasValue)
         {
             epochNs = EpochNsFromWallBig(canonicalId, date, time);
             return true;
         }
 
-        var zone = DateTimeZoneProviders.Tzdb.GetZoneOrNull(canonicalId);
+        var zone = DateTimeZoneProviders.Tzdb.GetZoneOrNull(lookupId);
         if (zone is null || date.Year is < 1 or > 9999)
         {
             epochNs = EpochNsFromWallBig(canonicalId, date, time);

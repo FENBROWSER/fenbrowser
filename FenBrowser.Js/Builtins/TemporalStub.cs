@@ -751,8 +751,8 @@ public sealed class TemporalStub : IBuiltinModule
 
     private static void RequireMatchingTimeZone(IBuiltinContext ctx, string self, string other)
     {
-        string a = CanonicalizeTimeZoneId(ctx, self);
-        string b = CanonicalizeTimeZoneId(ctx, other);
+        string a = CanonicalTimeZoneKey(ctx, self);
+        string b = CanonicalTimeZoneKey(ctx, other);
         if (!string.Equals(a, b, StringComparison.OrdinalIgnoreCase))
             throw new JsThrownException(ctx.CreateRangeError("cannot use until/since with ZonedDateTimes having different time zones"));
     }
@@ -4357,8 +4357,8 @@ public sealed class TemporalStub : IBuiltinModule
     /// <summary>ToTemporalTimeZoneIdentifier: identifier or ISO string with [tz] → canonical form, or RangeError.</summary>
     private static string CanonicalizeTimeZoneId(IBuiltinContext ctx, string id)
     {
-        if (TemporalTimeZones.TryCanonicalize(id, out var canonical, out _))
-            return canonical;
+        if (TemporalTimeZones.TryCanonicalize(id, out var canonical, out var fixedOffsetNs))
+            return fixedOffsetNs.HasValue ? canonical : id;
 
         // An ISO date-time string also names a zone: its [tz] annotation,
         // or UTC for a 'Z' designator, or its numeric offset.
@@ -4383,6 +4383,13 @@ public sealed class TemporalStub : IBuiltinModule
             }
         }
 
+        throw new JsThrownException(ctx.CreateRangeError($"'{id}' is not a valid time zone."));
+    }
+
+    private static string CanonicalTimeZoneKey(IBuiltinContext ctx, string id)
+    {
+        if (TemporalTimeZones.TryCanonicalize(id, out var canonical, out _))
+            return canonical;
         throw new JsThrownException(ctx.CreateRangeError($"'{id}' is not a valid time zone."));
     }
 
@@ -4771,7 +4778,10 @@ public sealed class TemporalStub : IBuiltinModule
             var (otherNs, otherTz, otherCal) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             var selfCal = GetVStr(h, o, "calendarId");
             bool calsEqual = (string.IsNullOrEmpty(selfCal) ? "iso8601" : selfCal) == (string.IsNullOrEmpty(otherCal) ? "iso8601" : otherCal);
-            bool tzEqual = string.Equals(GetVStr(h, o, "tz"), otherTz, StringComparison.OrdinalIgnoreCase);
+            bool tzEqual = string.Equals(
+                CanonicalTimeZoneKey(ctx, GetVStr(h, o, "tz")),
+                CanonicalTimeZoneKey(ctx, otherTz),
+                StringComparison.OrdinalIgnoreCase);
             return JsValue.FromBoolean(DecodeInstantNanosBig(h, o) == otherNs && tzEqual && calsEqual);
         }, 1);
         AddMethod(ctx, h, pH, p, "startOfDay", (o, _) =>

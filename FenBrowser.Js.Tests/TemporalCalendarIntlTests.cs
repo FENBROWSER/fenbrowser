@@ -233,4 +233,23 @@ public sealed class TemporalCalendarIntlTests
         Assert.True(count.AsNumber() > 100, $"Expected TZDB inventory, got {count.AsNumber()} identifiers.");
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void ZonedDateTimePreservesIanaLinksButComparesCanonicalZones()
+    {
+        var result = Run("""
+            const calcutta = Temporal.ZonedDateTime.from(
+                "2020-01-01T00:00:00+05:30[Asia/Calcutta]");
+            const kolkata = Temporal.ZonedDateTime.from(
+                "2020-01-01T00:00:00+05:30[Asia/Kolkata]");
+            const lowerCase = new Temporal.ZonedDateTime(0n, "america/los_angeles");
+
+            calcutta.timeZoneId === "Asia/Calcutta" &&
+                kolkata.timeZoneId === "Asia/Kolkata" &&
+                lowerCase.timeZoneId === "america/los_angeles" &&
+                calcutta.equals(kolkata);
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }
