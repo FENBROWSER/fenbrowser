@@ -7304,17 +7304,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(parts), AllocationSite.Current()));
         }
 
-        // Fallback: simple split via RegExpExec. Flags must be read for
-        // observable coercion (getter can throw) per spec step 7-8.
-        // Note: the old ES2015 restriction that forbade 'u' and 'y' flags
-        // was removed in ES2022 (tc39/ecma262#2186).
+        // Fallback: species construction per spec steps 4, 7.
+        // Build splitter = Construct(SpeciesConstructor(rx, %RegExp%), « rx, flags »).
         var flags2 = ToStringValue(GetReceiverProperty(thisValue, "flags"));
+        var regExpCtorHandle = EnsureRegExpConstructor();
+        var species = SpeciesConstructor(thisValue, regExpCtorHandle);
+        var splitter = ConstructFunction(species, new[] { thisValue, JsValue.FromString(flags2) });
+        if (splitter.Tag == JsValueTag.Object &&
+            _heap.GetObject(splitter.AsObjectHandle()) is RegExpObject)
+        {
+            // Species produced a real RegExp — delegate to the fast path.
+            var newArgs = new JsValue[args.Count];
+            for (int i = 0; i < args.Count; i++) newArgs[i] = args[i];
+            return RegExpPrototypeSymbolSplit(splitter, newArgs);
+        }
 
+        // Generic fallback: exec loop using the species-constructed splitter.
         var resultParts = new List<JsValue>();
         int start = 0;
         while (start <= input.Length)
         {
-            var execResult = RegExpExec(thisValue, input);
+            var execResult = RegExpExec(splitter, input);
             if (execResult.Tag == JsValueTag.Null) break;
             var erObj = _heap.GetObject(execResult.AsObjectHandle());
             int matchIdx = 0;
