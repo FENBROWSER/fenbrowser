@@ -2064,6 +2064,28 @@ public sealed partial class BytecodeInterpreter
             if (compactDisplay is not null && compactDisplay is not "short" and not "long")
                 throw new JsThrownException(CreateRangeError($"Invalid compactDisplay: {compactDisplay}"));
 
+            // UseGrouping (ECMA-402: read before digit options).
+            var groupingValue = GetString("useGrouping");
+            if (groupingValue is not null)
+            {
+                if (groupingValue is "always" or "auto" or "min2")
+                    useGrouping = groupingValue;
+                else if (groupingValue == "true" || groupingValue == "false")
+                    useGrouping = groupingValue == "true" ? "auto" : "false";
+                else
+                    useGrouping = "auto";
+            }
+            else
+            {
+                var groupingBool = GetBool("useGrouping");
+                useGrouping = groupingBool is true ? "auto" : groupingBool is false ? "false" : "auto";
+            }
+
+            // SignDisplay (ECMA-402: read before digit options).
+            signDisplay = GetString("signDisplay");
+            if (signDisplay is not null && signDisplay is not "auto" and not "never" and not "always" and not "exceptZero" and not "negative")
+                throw new JsThrownException(CreateRangeError($"Invalid signDisplay: {signDisplay}"));
+
             // Digit options.
             minimumIntegerDigits = GetInt("minimumIntegerDigits") ?? 1;
             if (minimumIntegerDigits < 1 || minimumIntegerDigits > 21)
@@ -2106,28 +2128,7 @@ public sealed partial class BytecodeInterpreter
                     throw new JsThrownException(CreateRangeError("roundingIncrement requires equal min/max fraction digits"));
             }
 
-            // UseGrouping — ES2023: can be "always", "auto", "min2", true, false.
-            var groupingValue = GetString("useGrouping");
-            if (groupingValue is not null)
-            {
-                if (groupingValue is "always" or "auto" or "min2")
-                    useGrouping = groupingValue;
-                else if (groupingValue == "true" || groupingValue == "false")
-                    useGrouping = groupingValue == "true" ? "auto" : "false";
-                else
-                    useGrouping = "auto";
             }
-            else
-            {
-                var groupingBool = GetBool("useGrouping");
-                useGrouping = groupingBool is true ? "auto" : groupingBool is false ? "false" : "auto";
-            }
-
-            // SignDisplay.
-            signDisplay = GetString("signDisplay");
-            if (signDisplay is not null && signDisplay is not "auto" and not "never" and not "always" and not "exceptZero" and not "negative")
-                throw new JsThrownException(CreateRangeError($"Invalid signDisplay: {signDisplay}"));
-        }
 
         var localeNumberingSystem = ExtractUnicodeKeyword(locale, "nu");
         var numberingSystem = (optionsNumberingSystem ?? localeNumberingSystem ?? "latn").ToLowerInvariant();
