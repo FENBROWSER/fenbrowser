@@ -5168,41 +5168,64 @@ public sealed class TemporalStub : IBuiltinModule
         if (largest is "nanosecond" or "microsecond" or "millisecond" or "second" or "minute" or "hour")
             return MakeDurationFromNsBalanced(ctx, h, diffNs, largest);
 
-        // Day-or-above: extract wall dates, diff via calendar, then time remainder.
-        const long DayNs = 86_400_000_000_000L;
-        // Compute epoch days using BigInteger for correct results outside long range.
-        long selfDay = (long)System.Numerics.BigInteger.DivRem(selfNsBig, DayNs, out var selfTimeBig);
-        long selfTimeNs = (long)selfTimeBig;
-        if (selfTimeNs < 0) { selfDay -= 1; selfTimeNs += DayNs; }
-        long otherDay = (long)System.Numerics.BigInteger.DivRem(otherNsBig, DayNs, out var otherTimeBig);
-        long otherTimeNs = (long)otherTimeBig;
-        if (otherTimeNs < 0) { otherDay -= 1; otherTimeNs += DayNs; }
+        // Day-or-above: compare wall dates in the instance's zone, anchor the
+        // calendar part at the instance, then compute the exact instant remainder.
         var selfDate = DecodeIsoDateLong(h, self);
-        var otherDate = IsoMath.EpochDaysToCivil(otherDay);
+        long selfTimeNs = ZonedWallTimeNs(h, self);
+        string tz = GetVStr(h, self, "tz");
+        long otherNsForOffset = otherNsBig >= long.MinValue && otherNsBig <= long.MaxValue
+            ? (long)otherNsBig
+            : (otherNsBig < 0 ? long.MinValue : long.MaxValue);
+        long otherOffsetNs = TemporalTimeZones.GetOffsetNs(tz, otherNsForOffset);
+        var (otherDate, otherTime) = TemporalTimeZones.WallFromEpochNsBig(otherNsBig, otherOffsetNs);
+        long otherTimeNs = otherTime.ToNanosecondsOfDay();
+
+        long wallDays = IsoMath.ToEpochDays(otherDate) - IsoMath.ToEpochDays(selfDate);
+        long wallTimeRemainder = otherTimeNs - selfTimeNs;
+        if (wallDays > 0 && wallTimeRemainder < 0) wallDays--;
+        else if (wallDays < 0 && wallTimeRemainder > 0) wallDays++;
+        var adjustedOtherDate = IsoMath.EpochDaysToCivil(IsoMath.ToEpochDays(selfDate) + wallDays);
 
         var sys = CalendarMath.Get(CalId(h, self));
-        IsoDate d1 = sign > 0 ? selfDate : otherDate;
-        IsoDate d2 = sign > 0 ? otherDate : selfDate;
         (int y, int m, int w, long d) datePart;
         if (sys != null && largest is "year" or "month")
-            datePart = sys.Difference(d1, d2, largest);
+            datePart = sys.Difference(selfDate, adjustedOtherDate, largest);
         else
         {
-            long ed1 = IsoMath.ToEpochDays(d1), ed2 = IsoMath.ToEpochDays(d2);
-            long dDiff = ed2 - ed1;
-            datePart = largest == "week" ? (0, 0, (int)(dDiff / 7), dDiff % 7) : (0, 0, 0, dDiff);
+            datePart = largest == "week"
+                ? (0, 0, (int)(wallDays / 7), wallDays % 7)
+                : (0, 0, 0, wallDays);
         }
 
-        // Time-of-day remainder.
-        long timeR = sign > 0 ? otherTimeNs - selfTimeNs : selfTimeNs - otherTimeNs;
-        long tDays = datePart.d + timeR / DayNs;
-        long rem = timeR % DayNs;
-        if (rem < 0) { rem += DayNs; tDays--; }
+        var anchorDate = AddDateInCalendar(
+            CalId(h, self), selfDate, datePart.y, datePart.m, datePart.w, datePart.d,
+            constrain: true, out var invalidAnchor);
+        if (invalidAnchor || !TemporalTimeZones.TryResolveEpochNsFromWallBig(
+                tz, anchorDate, new IsoTime(
+                    (int)(selfTimeNs / 3_600_000_000_000L),
+                    (int)(selfTimeNs / 60_000_000_000L % 60),
+                    (int)(selfTimeNs / 1_000_000_000L % 60),
+                    (int)(selfTimeNs / 1_000_000L % 1000),
+                    (int)(selfTimeNs / 1_000L % 1000),
+                    (int)(selfTimeNs % 1000)),
+                "compatible", out var anchorNs))
+            throw new JsThrownException(ctx.CreateRangeError("Unable to resolve the ZonedDateTime difference anchor."));
 
-        return MakeDuration(ctx, h, datePart.y, datePart.m, datePart.w, (double)tDays,
-            (double)(rem / 3_600_000_000_000L), (double)(rem / 60_000_000_000L % 60),
-            (double)(rem / 1_000_000_000L % 60), (double)(rem / 1_000_000L % 1000),
-            (double)(rem / 1_000L % 1000), (double)(rem % 1000));
+        var remainderBig = otherNsBig - anchorNs;
+        long remainder;
+        try { remainder = (long)remainderBig; }
+        catch (OverflowException) { remainder = remainderBig > 0 ? long.MaxValue : long.MinValue + 1; }
+        int remainderSign = remainder < 0 ? -1 : 1;
+        long rem = Math.Abs(remainder);
+
+        return MakeDuration(ctx, h,
+            sign * datePart.y, sign * datePart.m, sign * datePart.w, sign * datePart.d,
+            sign * remainderSign * (double)(rem / 3_600_000_000_000L),
+            sign * remainderSign * (double)(rem / 60_000_000_000L % 60),
+            sign * remainderSign * (double)(rem / 1_000_000_000L % 60),
+            sign * remainderSign * (double)(rem / 1_000_000L % 1000),
+            sign * remainderSign * (double)(rem / 1_000L % 1000),
+            sign * remainderSign * (double)(rem % 1000));
     }
 
     private static JsValue MakeDurationFromNsBalanced(IBuiltinContext ctx, JsHeap h, long totalNs, string largest)

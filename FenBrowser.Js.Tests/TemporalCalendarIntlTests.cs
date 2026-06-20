@@ -252,4 +252,26 @@ public sealed class TemporalCalendarIntlTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void ZonedDateTimeDifferenceUsesCalendarAnchorsAndZoneWallTime()
+    {
+        var result = Run("""
+            const earlier = Temporal.ZonedDateTime.from({
+                year: 1997, month: 7, day: 16, hour: 12, minute: 34,
+                timeZone: "UTC", calendar: "gregory"
+            });
+            const later = Temporal.ZonedDateTime.from({
+                year: 2021, month: 7, day: 15, hour: 12, minute: 34,
+                timeZone: "UTC", calendar: "gregory"
+            });
+            const backward = earlier.since(later, { largestUnit: "year" });
+            const forward = later.since(earlier, { largestUnit: "year" });
+
+            backward.years === -23 && backward.months === -11 && backward.days === -29 &&
+                forward.years === 23 && forward.months === 11 && forward.days === 30;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }
