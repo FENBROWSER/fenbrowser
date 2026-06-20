@@ -2037,6 +2037,8 @@ public sealed partial class BytecodeInterpreter
 
             // Currency / currencyDisplay / currencySign.
             currency = GetString("currency");
+            // ECMA-402: currency codes are case-insensitive but stored uppercased.
+            if (currency is not null) currency = currency.ToUpperInvariant();
             if (style == "currency" && currency is not null && !IsWellFormedCurrencyCode(currency))
                 throw new JsThrownException(CreateRangeError($"Invalid currency code: {currency}"));
             if (style == "currency" && currency is null)
@@ -2126,6 +2128,21 @@ public sealed partial class BytecodeInterpreter
                     throw new JsThrownException(CreateTypeError("roundingIncrement conflict with significant digits"));
                 if (maximumFractionDigits.HasValue && minimumFractionDigits.HasValue && maximumFractionDigits.Value != minimumFractionDigits.Value)
                     throw new JsThrownException(CreateRangeError("roundingIncrement requires equal min/max fraction digits"));
+            }
+
+            // ECMA-402: currency style defaults fraction digits from ISO 4217.
+            if (style == "currency" && currency is not null)
+            {
+                var defaultDigits = GetCurrencyDefaultFractionDigits(currency);
+                if (!minimumFractionDigits.HasValue) minimumFractionDigits = defaultDigits;
+                if (!maximumFractionDigits.HasValue) maximumFractionDigits = defaultDigits;
+            }
+
+            // ECMA-402: percent style defaults to 0 fraction digits.
+            if (style == "percent")
+            {
+                if (!minimumFractionDigits.HasValue) minimumFractionDigits = 0;
+                if (!maximumFractionDigits.HasValue) maximumFractionDigits = 0;
             }
 
             }
@@ -2810,9 +2827,11 @@ public sealed partial class BytecodeInterpreter
         {
             "never" => false,
             "always" => negative || isNegativeZero,
-            "exceptZero" => negative && absValue != 0,
-            "negative" => negative && !isNegativeZero && absValue != 0,
-            _ => negative && !isNegativeZero && absValue != 0
+            "exceptZero" => negative && !isNegativeZero && absValue != 0,
+            // ECMA-402: "negative" and "auto" show minus for negative values
+            // including negative zero, but NOT for positive zero.
+            "negative" or "auto" => negative && !isNegativeZero,
+            _ => negative && !isNegativeZero
         };
         bool showPlus = signDisplay == "always" && !negative && !isNegativeZero;
         if (showMinus)
@@ -3665,7 +3684,11 @@ public sealed partial class BytecodeInterpreter
             if (!TryGetPropertyValue(localesObject, localesValue, i.ToString(CultureInfo.InvariantCulture), out var element))
                 continue;
 
-            if (element.Tag is JsValueTag.Undefined or JsValueTag.Null or JsValueTag.Boolean or JsValueTag.Number or JsValueTag.Int32 or JsValueTag.Symbol)
+            // ECMA-402 9.2.1 step 10.c: coerce element via ToString, which
+            // handles String, Number, Boolean, and Objects (via ToPrimitive).
+            // Symbols throw TypeError from ToString; null/undefined were already
+            // coerced to string-like values above.
+            if (element.Tag is JsValueTag.Undefined or JsValueTag.Null or JsValueTag.Symbol)
                 throw new JsThrownException(CreateTypeError("Locale list elements must be strings or string-like objects."));
 
             locales.Add(CanonicalizeIntlLocaleTag(ToStringValue(element)));
