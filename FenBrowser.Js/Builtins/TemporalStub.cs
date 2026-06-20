@@ -2465,13 +2465,15 @@ public sealed class TemporalStub : IBuiltinModule
         if (rank <= 3) { se = n / 1_000_000_000L; n %= 1_000_000_000L; }
         if (rank <= 4) { ms = n / 1_000_000L; n %= 1_000_000L; }
         if (rank <= 5) { us = n / 1_000L; n %= 1_000L; }
-        // Validate that balanced values are within the representable range.
-        // Per ECMA-262, Duration fields must be finite doubles. Beyond 2^53,
-        // double cannot represent every integer; the spec throws RangeError
-        // when the balanced duration result exceeds the safe integer range.
+        // ECMA-262 §7.5.28 IsValidDuration: each component must be < 2^53,
+        // and the normalized total in seconds must also be < 2^53.
         var maxVal = new System.Numerics.BigInteger(9_007_199_254_740_991L); // 2^53 - 1
         if (days > maxVal || hr > maxVal || mi > maxVal || se > maxVal ||
             ms > maxVal || us > maxVal || n > maxVal)
+            throw new JsThrownException(ctx.CreateRangeError("Duration value is outside the supported range."));
+        // Normalized total in seconds (days × 86400 + hours × 3600 + ...).
+        var totalSeconds = days * 86400 + hr * 3600 + mi * 60 + se;
+        if (totalSeconds > maxVal)
             throw new JsThrownException(ctx.CreateRangeError("Duration value is outside the supported range."));
 
         return MakeDuration(ctx, h, 0, 0, 0, sign * (double)days, sign * (double)hr, sign * (double)mi, sign * (double)se,
