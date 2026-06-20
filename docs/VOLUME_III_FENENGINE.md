@@ -8551,12 +8551,13 @@ Verification:
   - PlainMonthDay property bags and annotated strings validate calendar fields at the input date, then store the latest matching ISO reference date at or before 1972.
   - PlainYearMonth addition and subtraction honor `overflow: "reject"` for leap months and propagate invalid calendar results as `RangeError`.
   - Historical wall-time conversion uses integer floor division so negative-era nanosecond instants remain on the correct side of midnight and transitions.
+  - Instant creation preserves exact BigInt epoch nanoseconds and enforces the inclusive Temporal range for constructors, epoch factories, arithmetic, and rounding.
 
 Verification:
 
 - `dotnet build FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -c Release --nologo`: pass.
-- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~TemporalCalendarIntlTests"`: pass (`18/18`).
-- `built-ins/Temporal`: category improved from `4004/4604` to `4139/4604`; remaining failures `465`, with zero timeouts.
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~TemporalCalendarIntlTests"`: pass (`19/19`).
+- `built-ins/Temporal`: category improved from `4004/4604` to `4153/4604`; remaining failures `451`, with zero timeouts.
 - `intl402/Temporal/ZonedDateTime/from/zoneddatetime-sub-minute-offset.js`: pass (`1/1`).
 - `intl402/Temporal/ZonedDateTime/prototype/add`: pass (`74/76`).
 - `intl402/Temporal/ZonedDateTime/prototype/subtract`: pass (`75/76`).

@@ -2602,7 +2602,7 @@ public sealed class TemporalStub : IBuiltinModule
         var ns = args[0].AsBigInt();
         if (System.Numerics.BigInteger.Abs(ns) > MaxInstantNs)
             throw new JsThrownException(ctx.CreateRangeError("Instant is outside the supported range."));
-        return MakeInstantFromNanoseconds(h, ToSafeLong(ns));
+        return MakeInstantFromNanoseconds(ctx, h, ns);
     }
 
     /// <summary>CreateTemporalInstant from a parsed ISO string (offset/Z applied), range-checked.</summary>
@@ -2614,7 +2614,7 @@ public sealed class TemporalStub : IBuiltinModule
                  - (p.HasUtcDesignator ? 0L : p.OffsetNanoseconds);
         if (System.Numerics.BigInteger.Abs(ns) > MaxInstantNs)
             throw new JsThrownException(ctx.CreateRangeError("Instant is outside the supported range."));
-        return MakeInstantFromNanoseconds(h, ToSafeLong(ns));
+        return MakeInstantFromNanoseconds(ctx, h, ns);
     }
 
     private static JsValue ConstructPlainTime(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> args)
@@ -3374,14 +3374,14 @@ public sealed class TemporalStub : IBuiltinModule
             if (dur.years != 0 || dur.months != 0 || dur.weeks != 0 || dur.days != 0)
                 throw new JsThrownException(ctx.CreateRangeError("Instant arithmetic does not support calendar units."));
             System.Numerics.BigInteger totalNs = DurationToNanos(0, dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos);
-            return AttachPrototype(h, MakeInstantFromNanoseconds(h, DecodeInstantNanosBig(h, o) + totalNs), pH);
+            return AttachPrototype(h, MakeInstantFromNanoseconds(ctx, h, DecodeInstantNanosBig(h, o) + totalNs), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "subtract", (o, a) => {
             var dur = ToTemporalDurationRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             if (dur.years != 0 || dur.months != 0 || dur.weeks != 0 || dur.days != 0)
                 throw new JsThrownException(ctx.CreateRangeError("Instant arithmetic does not support calendar units."));
             System.Numerics.BigInteger totalNs = DurationToNanos(0, dur.hours, dur.minutes, dur.seconds, dur.millis, dur.micros, dur.nanos);
-            return AttachPrototype(h, MakeInstantFromNanoseconds(h, DecodeInstantNanosBig(h, o) - totalNs), pH);
+            return AttachPrototype(h, MakeInstantFromNanoseconds(ctx, h, DecodeInstantNanosBig(h, o) - totalNs), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
             System.Numerics.BigInteger otherNs = ToInstantNsBig(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
@@ -3394,7 +3394,7 @@ public sealed class TemporalStub : IBuiltinModule
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration", MakeDiffDuration(ctx, h, DecodeInstantNanosBig(h, o) - otherNs, s));
         }, 1);
         AddMethod(ctx, h, pH, p, "round", (o, a) =>
-            AttachPrototype(h, MakeInstantFromNanoseconds(h, RoundInstantNs(ctx, h, DecodeInstantNanosBig(h, o), a)), pH), 1);
+            AttachPrototype(h, MakeInstantFromNanoseconds(ctx, h, RoundInstantNs(ctx, h, DecodeInstantNanosBig(h, o), a)), pH), 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
             System.Numerics.BigInteger otherNs = ToInstantNsBig(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             return JsValue.FromBoolean(DecodeInstantNanosBig(h, o) == otherNs);
@@ -3415,7 +3415,7 @@ public sealed class TemporalStub : IBuiltinModule
             {
                 var obj = h.GetObject(arg.AsObjectHandle());
                 if (IsTemporalInstance(h, arg, pH))
-                    return AttachPrototype(h, MakeInstantFromNanoseconds(h, DecodeInstantNanosBig(h, obj)), pH);
+                    return AttachPrototype(h, MakeInstantFromNanoseconds(ctx, h, DecodeInstantNanosBig(h, obj)), pH);
                 arg = JsValue.FromString(ctx.ToStringValue(arg));
             }
             if (arg.Tag != JsValueTag.String)
@@ -4852,7 +4852,7 @@ public sealed class TemporalStub : IBuiltinModule
                 ctx, h, transitionNs, GetVStr(h, o, "tz"), GetVStr(h, o, "calendarId")), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "toInstant", (o, _) =>
-            AttachTemporalPrototypeByName(ctx, h, t, "Instant", MakeInstantFromNanoseconds(h, DecodeInstantNanosBig(h, o))), 0);
+            AttachTemporalPrototypeByName(ctx, h, t, "Instant", MakeInstantFromNanoseconds(ctx, h, DecodeInstantNanosBig(h, o))), 0);
         AddMethod(ctx, h, pH, p, "toPlainDate", (o, _) => {
             var d = DecodeIsoDateLong(h, o);
             return AttachTemporalPrototypeByName(ctx, h, t, "PlainDate", MakePlainDateYmd(ctx, h, d.Year, d.Month, d.Day, GetVStr(h, o, "calendarId")));
@@ -5130,11 +5130,14 @@ public sealed class TemporalStub : IBuiltinModule
     {
         if (dt.Kind == DateTimeKind.Local) dt = dt.ToUniversalTime();
         var ns = (dt.Ticks - Epoch.Ticks) * 100L;
-        return MakeInstantFromNanoseconds(h, ns);
+        return MakeInstantFromNanoseconds(ctx, h, ns);
     }
 
-    private static JsValue MakeInstantFromNanoseconds(JsHeap h, System.Numerics.BigInteger ns)
+    private static JsValue MakeInstantFromNanoseconds(IBuiltinContext ctx, JsHeap h, System.Numerics.BigInteger ns)
     {
+        if (System.Numerics.BigInteger.Abs(ns) > MaxInstantNs)
+            throw new JsThrownException(ctx.CreateRangeError("Instant is outside the supported range."));
+
         var o = new JsObject();
         var d = new JsObject(); var dH = h.AllocateObject(d, AllocationSite.Current());
         d.SetProperty("es", JsValue.FromNumber((double)ns / 1_000_000_000));
@@ -5148,19 +5151,37 @@ public sealed class TemporalStub : IBuiltinModule
 
     private static JsValue MakeInstantEpoch(IBuiltinContext ctx, JsHeap h, IReadOnlyList<JsValue> a, long mul)
     {
-        if (a.Count == 0)
-            return MakeInstantFromNanoseconds(h, System.Numerics.BigInteger.Zero);
-        var arg = a[0];
-        // fromEpochNanoseconds (mul == 1) accepts BigInt per spec.
-        if (arg.Tag == JsValueTag.BigInt)
+        var arg = a.Count > 0 ? a[0] : JsValue.Undefined;
+        if (mul == 1)
         {
-            var bi = arg.AsBigInt();
-            if (mul != 1) bi *= mul;
-            return MakeInstantFromNanoseconds(h, bi);
+            System.Numerics.BigInteger value;
+            if (arg.Tag == JsValueTag.BigInt)
+            {
+                value = arg.AsBigInt();
+            }
+            else if (arg.Tag == JsValueTag.Boolean)
+            {
+                value = arg.AsBoolean() ? System.Numerics.BigInteger.One : System.Numerics.BigInteger.Zero;
+            }
+            else if (arg.Tag == JsValueTag.String && BigIntBuiltin.TryParseStringToBigInt(arg.AsString(), out var parsed))
+            {
+                value = parsed;
+            }
+            else
+            {
+                throw new JsThrownException(ctx.CreateTypeError("epochNanoseconds must convert to a BigInt."));
+            }
+
+            return MakeInstantFromNanoseconds(ctx, h, value);
         }
+
+        if (arg.Tag is JsValueTag.BigInt or JsValueTag.Symbol)
+            throw new JsThrownException(ctx.CreateTypeError("epochMilliseconds must convert to a Number."));
         var v = ctx.ToNumber(arg);
+        if (!double.IsFinite(v) || Math.Truncate(v) != v)
+            throw new JsThrownException(ctx.CreateRangeError("epochMilliseconds must be an integral finite Number."));
         var ns = new System.Numerics.BigInteger(v) * mul;
-        return MakeInstantFromNanoseconds(h, ns);
+        return MakeInstantFromNanoseconds(ctx, h, ns);
     }
 
     private static JsValue MakePlainDate(IBuiltinContext ctx, JsHeap h, DateTime dt, string calendarId = "iso8601")

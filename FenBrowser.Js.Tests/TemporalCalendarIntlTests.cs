@@ -266,6 +266,22 @@ public sealed class TemporalCalendarIntlTests
     }
 
     [Fact]
+    public void TemporalInstantFactoriesAndArithmeticEnforceTheEpochRange()
+    {
+        var result = Run("""
+            const limit = 8640000000000000000000n;
+            const maximum = Temporal.Instant.fromEpochNanoseconds(limit);
+            let factoryRange = false;
+            let arithmeticRange = false;
+            try { Temporal.Instant.fromEpochNanoseconds(limit + 1n); } catch (error) { factoryRange = error instanceof RangeError; }
+            try { maximum.add({ nanoseconds: 1 }); } catch (error) { arithmeticRange = error instanceof RangeError; }
+            maximum.epochNanoseconds === limit && factoryRange && arithmeticRange;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ZonedDateTimeDifferenceUsesCalendarAnchorsAndZoneWallTime()
     {
         var result = Run("""
