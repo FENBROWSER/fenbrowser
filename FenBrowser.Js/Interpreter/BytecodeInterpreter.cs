@@ -6009,6 +6009,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // already understands; NaN on failure.
     private static double ParseDateValue(string text)
     {
+        // ECMA-262 §21.4.1.15 Date Time String Format: year-only form "YYYY"
+        // (4+ digits, no sign) defaults to January 1, 00:00:00.000 UTC.
+        if (text.Length >= 4 && text.All(char.IsDigit))
+        {
+            long year = long.Parse(text);
+            if (year >= 0 && year <= 9999)
+            {
+                var d = DateMath.MakeDate(DateMath.MakeDay(year, 0, 1), DateMath.MakeTime(0, 0, 0, 0));
+                return DateMath.TimeClip(d);
+            }
+        }
+
         // ISO 8601 extended year format: [+-]YYYYYY-MM-DDTHH:mm:ss[.sss]Z
         // .NET's DateTimeOffset.TryParse doesn't handle negative or >9999 years.
         // Try manual ISO parse first for extended-year strings.
