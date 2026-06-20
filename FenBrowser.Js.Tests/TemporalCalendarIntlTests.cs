@@ -296,6 +296,24 @@ public sealed class TemporalCalendarIntlTests
     }
 
     [Fact]
+    public void ZonedDateTimeTimeDifferencesAllowDifferentZonesWithinWallDateLimits()
+    {
+        var result = Run("""
+            const epoch = new Temporal.ZonedDateTime(0n, "UTC");
+            const difference = epoch.since("1970-01-01T00:00[+01:00]");
+            let boundaryRejected = false;
+            try {
+                epoch.since("-271821-04-19T23:00-01:00[-01:00]");
+            } catch (error) {
+                boundaryRejected = error instanceof RangeError;
+            }
+            difference.hours === 1 && boundaryRejected;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ZonedDateTimeDifferenceUsesCalendarAnchorsAndZoneWallTime()
     {
         var result = Run("""

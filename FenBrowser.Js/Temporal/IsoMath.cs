@@ -94,6 +94,12 @@ internal static class IsoMath
         return days >= MinEpochDay && days <= MaxEpochDay;
     }
 
+    public static bool IsoDateWithinZonedLimits(IsoDate date)
+    {
+        var days = ToEpochDays(date);
+        return days is >= -100_000_000 and <= 100_000_000;
+    }
+
     // ISO 8601 day of week: Monday=1 .. Sunday=7. 1970-01-01 was a Thursday (4).
     public static int DayOfWeek(IsoDate date)
     {

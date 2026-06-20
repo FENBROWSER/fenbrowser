@@ -8548,6 +8548,7 @@ Verification:
   - ZonedDateTime offset text and `epochNanoseconds` preserve their exact second precision and BigInt value.
   - ZonedDateTime `year`, `month`, and `day` getters project the ISO wall date through the attached calendar.
   - ZonedDateTime differences decompose both instants in the instance's time zone, preserve calendar month-end asymmetry, and calculate the time remainder from the exact zoned calendar anchor.
+  - Time-unit ZonedDateTime differences compare absolute instants across different zones; same-zone matching remains required for day and calendar units, and zoned wall dates enforce the `-100,000,000..100,000,000` epoch-day window.
   - PlainMonthDay property bags and annotated strings validate calendar fields at the input date, then store the latest matching ISO reference date at or before 1972.
   - PlainYearMonth addition and subtraction honor `overflow: "reject"` for leap months and propagate invalid calendar results as `RangeError`.
   - Historical wall-time conversion uses integer floor division so negative-era nanosecond instants remain on the correct side of midnight and transitions.
@@ -8559,8 +8560,8 @@ Verification:
 Verification:
 
 - `dotnet build FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -c Release --nologo`: pass.
-- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~TemporalCalendarIntlTests|FullyQualifiedName~BigIntTests"`: pass (`66/66`).
-- `built-ins/Temporal`: category improved from `4004/4604` to `4170/4604`; remaining failures `434`, with zero timeouts.
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~TemporalCalendarIntlTests|FullyQualifiedName~BigIntTests"`: pass (`67/67`).
+- `built-ins/Temporal`: category improved from `4004/4604` to `4178/4604`; remaining failures `426`, with zero timeouts.
 - `intl402/Temporal/ZonedDateTime/from/zoneddatetime-sub-minute-offset.js`: pass (`1/1`).
 - `intl402/Temporal/ZonedDateTime/prototype/add`: pass (`74/76`).
 - `intl402/Temporal/ZonedDateTime/prototype/subtract`: pass (`75/76`).

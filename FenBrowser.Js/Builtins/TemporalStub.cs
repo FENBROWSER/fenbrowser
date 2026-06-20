@@ -4469,6 +4469,8 @@ public sealed class TemporalStub : IBuiltinModule
             string tz = CanonicalizeTimeZoneId(ctx, parsed.TimeZoneAnnotation);
             string cal = CalendarFromAnnotation(ctx, parsed.Calendar);
             var date = new IsoDate(parsed.Year, parsed.Month, parsed.Day);
+            if (!IsoMath.IsoDateWithinZonedLimits(date))
+                throw new JsThrownException(ctx.CreateRangeError("ZonedDateTime wall date is outside the representable range."));
             var time = parsed.HasTime ? parsed.Time : IsoTime.Midnight;
             System.Numerics.BigInteger epochNs;
             if (parsed.HasUtcDesignator)
@@ -4545,6 +4547,8 @@ public sealed class TemporalStub : IBuiltinModule
                 if (!bagSys.TryResolveToIso(cy, cmo, cd, "constrain", out bagDate))
                     throw new JsThrownException(ctx.CreateRangeError("Date is invalid for the calendar or outside the supported range."));
             }
+            if (!IsoMath.IsoDateWithinZonedLimits(bagDate))
+                throw new JsThrownException(ctx.CreateRangeError("ZonedDateTime wall date is outside the representable range."));
             string[] timeFields = { "hour", "minute", "second", "millisecond", "microsecond", "nanosecond" };
             var tv = new double[timeFields.Length];
             for (int fi = 0; fi < timeFields.Length; fi++)
@@ -4806,15 +4810,17 @@ public sealed class TemporalStub : IBuiltinModule
         AddMethod(ctx, h, pH, p, "until", (o, a) => {
             var (otherNs, otherTz, otherCal) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             RequireMatchingCalendar(ctx, CalId(h, o), otherCal);
-            RequireMatchingTimeZone(ctx, GetVStr(h, o, "tz"), otherTz);
             var s = GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "hour");
+            if (s.Largest == "day" || IsCalendarUnit(s.Largest))
+                RequireMatchingTimeZone(ctx, GetVStr(h, o, "tz"), otherTz);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration", ZdtDiff(ctx, h, o, otherNs, s.Largest, 1));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
             var (otherNs, otherTz, otherCal) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             RequireMatchingCalendar(ctx, CalId(h, o), otherCal);
-            RequireMatchingTimeZone(ctx, GetVStr(h, o, "tz"), otherTz);
             var s = GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "hour");
+            if (s.Largest == "day" || IsCalendarUnit(s.Largest))
+                RequireMatchingTimeZone(ctx, GetVStr(h, o, "tz"), otherTz);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration", ZdtDiff(ctx, h, o, otherNs, s.Largest, -1));
         }, 1);
         AddMethod(ctx, h, pH, p, "round", (o, a) => ZonedRound(ctx, h, o, a, pH), 1);
