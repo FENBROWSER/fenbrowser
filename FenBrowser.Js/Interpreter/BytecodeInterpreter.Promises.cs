@@ -148,6 +148,22 @@ public sealed partial class BytecodeInterpreter
             return PromiseRace(thisValue, iterable);
         }, length: 1);
 
+        // Promise.allKeyed(iterable) — ES2025.
+        // Like Promise.all but accepts [key, value] pairs and resolves to an object.
+        DefineIntrinsicFunction(constructorHandle, constructor, "allKeyed", (thisValue, args) =>
+        {
+            var iterable = args.Count > 0 ? args[0] : JsValue.Undefined;
+            return PromiseAllKeyed(thisValue, iterable);
+        }, length: 1);
+
+        // Promise.allSettledKeyed(iterable) — ES2025.
+        // Like Promise.allSettled but accepts [key, value] pairs and resolves to an object.
+        DefineIntrinsicFunction(constructorHandle, constructor, "allSettledKeyed", (thisValue, args) =>
+        {
+            var iterable = args.Count > 0 ? args[0] : JsValue.Undefined;
+            return PromiseAllSettledKeyed(thisValue, iterable);
+        }, length: 1);
+
         // 27.2.4.8 Promise.withResolvers() — ES2024.
         // Returns { promise, resolve, reject } for the receiver constructor C.
         DefineIntrinsicFunction(constructorHandle, constructor, "withResolvers", (thisValue, args) =>
@@ -444,6 +460,123 @@ public sealed partial class BytecodeInterpreter
         }
 
         return capability.Promise;
+    }
+
+    // Promise.allKeyed(iterable): like Promise.all but entries are [key, value] pairs.
+    // Resolves to an object with keys mapped to resolved values.
+    private JsValue PromiseAllKeyed(JsValue thisValue, JsValue iterable)
+    {
+        if (!TryPreparePromiseCombinator(thisValue, out var capability, out var promiseResolve))
+            return capability.Promise;
+
+        try
+        {
+            var sources = DrainIterableToList(iterable, "Promise.allKeyed");
+            if (sources.Count == 0)
+            {
+                var emptyObj = CreateOrdinaryObject();
+                var emptyHandle = _heap.AllocateObject(emptyObj, AllocationSite.Current());
+                _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(emptyHandle) }, JsValue.Undefined);
+                return capability.Promise;
+            }
+
+            var resultObj = CreateOrdinaryObject();
+            var resultHandle = _heap.AllocateObject(resultObj, AllocationSite.Current());
+            var remaining = new[] { sources.Count };
+
+            for (var i = 0; i < sources.Count; i++)
+            {
+                var entry = sources[i];
+                var key = GetKeyFromEntry(entry, i);
+                var child = CallFunction(promiseResolve, new[] { entry }, thisValue);
+                var onFulfilled = AllocateNativeCallback((_, fnArgs) =>
+                {
+                    var value = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
+                    CreateDataProperty(resultHandle, resultObj, key, value);
+                    remaining[0]--;
+                    if (remaining[0] == 0)
+                        _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(resultHandle) }, JsValue.Undefined);
+                    return JsValue.Undefined;
+                });
+                InvokePromiseThen(child, onFulfilled, capability.Reject);
+            }
+        }
+        catch (JsThrownException ex)
+        {
+            _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
+        }
+
+        return capability.Promise;
+    }
+
+    // Promise.allSettledKeyed(iterable): like Promise.allSettled but entries are
+    // [key, value] pairs. Resolves to an object with keys mapped to {status, value|reason}.
+    private JsValue PromiseAllSettledKeyed(JsValue thisValue, JsValue iterable)
+    {
+        if (!TryPreparePromiseCombinator(thisValue, out var capability, out var promiseResolve))
+            return capability.Promise;
+
+        try
+        {
+            var sources = DrainIterableToList(iterable, "Promise.allSettledKeyed");
+            if (sources.Count == 0)
+            {
+                var emptyObj = CreateOrdinaryObject();
+                var emptyHandle = _heap.AllocateObject(emptyObj, AllocationSite.Current());
+                _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(emptyHandle) }, JsValue.Undefined);
+                return capability.Promise;
+            }
+
+            var resultObj = CreateOrdinaryObject();
+            var resultHandle = _heap.AllocateObject(resultObj, AllocationSite.Current());
+            var remaining = new[] { sources.Count };
+
+            for (var i = 0; i < sources.Count; i++)
+            {
+                var entry = sources[i];
+                var key = GetKeyFromEntry(entry, i);
+                var child = CallFunction(promiseResolve, new[] { entry }, thisValue);
+                var onFulfilled = AllocateNativeCallback((_, fnArgs) =>
+                {
+                    var value = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
+                    var record = MakeSettledRecord("fulfilled", "value", value);
+                    CreateDataProperty(resultHandle, resultObj, key, record);
+                    remaining[0]--;
+                    if (remaining[0] == 0)
+                        _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(resultHandle) }, JsValue.Undefined);
+                    return JsValue.Undefined;
+                });
+                var onRejected = AllocateNativeCallback((_, fnArgs) =>
+                {
+                    var reason = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
+                    var record = MakeSettledRecord("rejected", "reason", reason);
+                    CreateDataProperty(resultHandle, resultObj, key, record);
+                    remaining[0]--;
+                    if (remaining[0] == 0)
+                        _ = CallFunction(capability.Resolve, new[] { JsValue.FromObject(resultHandle) }, JsValue.Undefined);
+                    return JsValue.Undefined;
+                });
+                InvokePromiseThen(child, onFulfilled, onRejected);
+            }
+        }
+        catch (JsThrownException ex)
+        {
+            _ = CallFunction(capability.Reject, new[] { ex.Value }, JsValue.Undefined);
+        }
+
+        return capability.Promise;
+    }
+
+    // Extract the key from a [key, value] entry pair.
+    private string GetKeyFromEntry(JsValue entry, int index)
+    {
+        if (entry.Tag == JsValueTag.Object)
+        {
+            var entryObj = _heap.GetObject(entry.AsObjectHandle());
+            if (TryGetPropertyValue(entryObj, entry, "0", out var keyVal) && keyVal.Tag != JsValueTag.Undefined)
+                return ToStringValue(keyVal);
+        }
+        return index.ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private JsValue AllocateNativeCallback(Func<JsValue, IReadOnlyList<JsValue>, JsValue> call)
