@@ -4971,7 +4971,7 @@ public sealed class TemporalStub : IBuiltinModule
             long end = ToSafeLong(TemporalTimeZones.GetStartOfDayEpochNsBig(tz, IsoMath.EpochDaysToCivil(IsoMath.ToEpochDays(date) + 1)));
             System.Numerics.BigInteger self = DecodeInstantNanosBig(h, o);
             System.Numerics.BigInteger rounded = RoundNsToIncrement(ctx, self - start, (System.Numerics.BigInteger)(end - start), mode) + start;
-            return AttachPrototype(h, MakeZonedDateTimeNsBig(ctx, h, rounded == start ? start : end, tz, GetVStr(h, o, "calendarId")), pH);
+            return AttachPrototype(h, MakeZonedDateTimeNsBig(ctx, h, rounded, tz, GetVStr(h, o, "calendarId")), pH);
         }
 
         long roundedTime = (long)RoundNsToIncrement(ctx, timeNs, (long)increment * UnitNs(smallest), mode);
