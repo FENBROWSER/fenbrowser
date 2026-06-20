@@ -8537,6 +8537,7 @@ Verification:
   - Wall-clock gaps and overlaps resolve through TZDB using Temporal's `compatible`, `earlier`, `later`, and `reject` disambiguation modes.
   - `Intl.supportedValuesOf("timeZone")` publishes the sorted canonical TZDB identifiers accepted by Temporal, including `UTC`.
   - ZonedDateTime preserves the caller's IANA identifier or link spelling for `timeZoneId` and serialization, while TZDB canonical keys drive offset lookup and zone equality.
+  - `getTimeZoneTransition` returns strict next/previous UTC-offset transitions, skips rule-only interval changes, and returns `null` for fixed zones or exhausted TZDB ranges.
 - `FenBrowser.Js/Builtins/TemporalStub.cs`
   - Minute-only offsets in ZonedDateTime strings may match named-zone offsets after Temporal half-expand minute rounding.
   - Second-bearing string offsets, fixed-offset zones, and property-bag offsets remain exact.
@@ -8545,11 +8546,12 @@ Verification:
   - ZonedDateTime `year`, `month`, and `day` getters project the ISO wall date through the attached calendar.
   - ZonedDateTime differences decompose both instants in the instance's time zone, preserve calendar month-end asymmetry, and calculate the time remainder from the exact zoned calendar anchor.
   - PlainMonthDay property bags and annotated strings validate calendar fields at the input date, then store the latest matching ISO reference date at or before 1972.
+  - Historical wall-time conversion uses integer floor division so negative-era nanosecond instants remain on the correct side of midnight and transitions.
 
 Verification:
 
 - `dotnet build FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -c Release --nologo`: pass.
-- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --filter "FullyQualifiedName~TemporalCalendarIntlTests" --logger "console;verbosity=minimal"`: pass (`13/13`).
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --filter "FullyQualifiedName~TemporalCalendarIntlTests" --logger "console;verbosity=minimal"`: pass (`15/15`).
 - `intl402/Temporal/ZonedDateTime/from/zoneddatetime-sub-minute-offset.js`: pass (`1/1`).
 - `intl402/Temporal/ZonedDateTime/prototype/add`: pass (`74/76`).
 - `intl402/Temporal/ZonedDateTime/prototype/subtract`: pass (`75/76`).
@@ -8557,4 +8559,5 @@ Verification:
 - `intl402/Temporal/ZonedDateTime/prototype/since`: pass (`64/67`).
 - `intl402/Temporal/ZonedDateTime/prototype/until`: pass (`62/66`).
 - `intl402/Temporal/PlainMonthDay/from`: pass (`45/56`).
-- `intl402/Temporal`: category improved from `1734/2029` to `1860/2029`; remaining failures `169`.
+- `intl402/Temporal/ZonedDateTime/prototype/getTimeZoneTransition`: pass (`9/9`).
+- `intl402/Temporal`: category improved from `1734/2029` to `1870/2029`; remaining failures `159`.

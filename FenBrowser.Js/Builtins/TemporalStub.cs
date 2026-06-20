@@ -192,7 +192,7 @@ public sealed class TemporalStub : IBuiltinModule
             long offNs = TemporalTimeZones.GetOffsetNs(ctz, epochNsLong);
             var (zd, zt) = TemporalTimeZones.WallFromEpochNs(epochNsLong, offNs);
             return JsValue.FromString($"{FormatIsoYear(zd.Year)}-{zd.Month:D2}-{zd.Day:D2}T{zt.Hour:D2}:{zt.Minute:D2}" +
-                $"{FormatSecondsPart(zt.ToNanosecondsOfDay(), opts)}{TemporalTimeZones.FormatOffset(offNs)}");
+                $"{FormatSecondsPart(zt.ToNanosecondsOfDay(), opts)}{TemporalTimeZones.FormatOffsetRoundedToMinute(offNs)}");
         }
 
         var (d, t) = TemporalTimeZones.WallFromEpochNs(epochNsLong, 0);
@@ -490,7 +490,7 @@ public sealed class TemporalStub : IBuiltinModule
         var sb = new System.Text.StringBuilder();
         sb.Append($"{FormatIsoYear(date.Year)}-{date.Month:D2}-{date.Day:D2}T{time.Hour:D2}:{time.Minute:D2}");
         sb.Append(FormatSecondsPart(time.ToNanosecondsOfDay(), opts));
-        if (opts.ShowOffset != "never") sb.Append(TemporalTimeZones.FormatOffset(offsetNs));
+        if (opts.ShowOffset != "never") sb.Append(TemporalTimeZones.FormatOffsetRoundedToMinute(offsetNs));
         if (opts.TimeZoneName != "never") sb.Append(opts.TimeZoneName == "critical" ? $"[!{tz}]" : $"[{tz}]");
         sb.Append(CalendarSuffix(h, o, opts));
         return JsValue.FromString(sb.ToString());
@@ -4825,8 +4825,14 @@ public sealed class TemporalStub : IBuiltinModule
             else throw new JsThrownException(ctx.CreateTypeError("getTimeZoneTransition: invalid argument."));
             if (direction is not ("next" or "previous"))
                 throw new JsThrownException(ctx.CreateRangeError($"'{direction}' is not a valid transition direction."));
-            // No transition table is exposed; correct for UTC and offset zones.
-            return JsValue.Null;
+            if (!TemporalTimeZones.TryGetTransition(
+                    GetVStr(h, o, "tz"),
+                    DecodeInstantNanosBig(h, o),
+                    direction == "next",
+                    out var transitionNs))
+                return JsValue.Null;
+            return AttachPrototype(h, MakeZonedDateTimeNsBig(
+                ctx, h, transitionNs, GetVStr(h, o, "tz"), GetVStr(h, o, "calendarId")), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "toInstant", (o, _) =>
             AttachTemporalPrototypeByName(ctx, h, t, "Instant", MakeInstantFromNanoseconds(h, DecodeInstantNanosBig(h, o))), 0);

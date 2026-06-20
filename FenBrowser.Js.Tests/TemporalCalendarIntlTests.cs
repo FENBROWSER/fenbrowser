@@ -294,4 +294,51 @@ public sealed class TemporalCalendarIntlTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void ZonedDateTimeReturnsStrictTzdbTransitions()
+    {
+        var result = Run("""
+            const before = Temporal.ZonedDateTime.from(
+                "2020-03-08T01:00-08:00[America/Los_Angeles]");
+            const transition = before.getTimeZoneTransition("next");
+            const previous = transition.getTimeZoneTransition("previous");
+            const utc = new Temporal.ZonedDateTime(0n, "UTC");
+
+            transition.epochNanoseconds === 1_583_661_600_000_000_000n &&
+                previous.epochNanoseconds < transition.epochNanoseconds &&
+                utc.getTimeZoneTransition("next") === null;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
+    public void ZonedDateTimeTransitionPreservesNanosecondBoundary()
+    {
+        var result = Run("""
+            const zdt = new Temporal.PlainDateTime(1800, 1, 1)
+                .toZonedDateTime("Europe/Paris");
+            const first = zdt.getTimeZoneTransition("next");
+            const minusSecond = first.add({ seconds: -1 });
+            const minusNanosecond = first.add({ nanoseconds: -1 });
+            let mask = 0;
+            if (zdt.toString() === "1800-01-01T00:00:00+00:09[Europe/Paris]") mask += 1;
+            if (first.toString() === "1911-03-10T23:50:39+00:00[Europe/Paris]") mask += 2;
+            if (minusSecond.toString() === "1911-03-10T23:59:59+00:09[Europe/Paris]") mask += 4;
+            if (minusSecond.getTimeZoneTransition("next").equals(first)) mask += 8;
+            if (minusNanosecond.toString() === "1911-03-10T23:59:59.999999999+00:09[Europe/Paris]") mask += 16;
+            if (minusNanosecond.getTimeZoneTransition("next").equals(first)) mask += 32;
+            mask;
+            """);
+        var nanosecondText = Run("""
+            const first = new Temporal.PlainDateTime(1800, 1, 1)
+                .toZonedDateTime("Europe/Paris")
+                .getTimeZoneTransition("next");
+            first.add({ nanoseconds: -1 }).toString();
+            """);
+
+        Assert.Equal("1911-03-10T23:59:59.999999999+00:09[Europe/Paris]", nanosecondText.AsString());
+        Assert.Equal(63, result.AsNumber());
+    }
 }

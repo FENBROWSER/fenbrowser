@@ -157,7 +157,14 @@ internal static class TemporalTimeZones
         var zone = DateTimeZoneProviders.Tzdb.GetZoneOrNull(lookupId);
         if (zone is not null)
         {
-            return zone.GetUtcOffset(Instant.FromUnixTimeTicks(epochNs / 100L)).Seconds * 1_000_000_000L;
+            long seconds = Math.DivRem(epochNs, 1_000_000_000L, out long nanos);
+            if (nanos < 0)
+            {
+                seconds--;
+                nanos += 1_000_000_000L;
+            }
+            var instant = Instant.FromUnixTimeSeconds(seconds).PlusNanoseconds(nanos);
+            return zone.GetUtcOffset(instant).Seconds * 1_000_000_000L;
         }
 
         return 0;
@@ -191,8 +198,12 @@ internal static class TemporalTimeZones
     public static (IsoDate Date, IsoTime Time) WallFromEpochNs(long epochNs, long offsetNs)
     {
         long local = epochNs + offsetNs;
-        long days = (long)Math.Floor(local / (double)NsPerDay);
-        long timeNs = local - days * NsPerDay;
+        long days = Math.DivRem(local, NsPerDay, out long timeNs);
+        if (timeNs < 0)
+        {
+            days--;
+            timeNs += NsPerDay;
+        }
         var date = IsoMath.EpochDaysToCivil(days);
         var time = new IsoTime(
             (int)(timeNs / 3_600_000_000_000L), (int)(timeNs / 60_000_000_000L % 60), (int)(timeNs / 1_000_000_000L % 60),
@@ -217,6 +228,16 @@ internal static class TemporalTimeZones
         }
 
         return result;
+    }
+
+    public static string FormatOffsetRoundedToMinute(long offsetNs)
+    {
+        const long minuteNs = 60_000_000_000L;
+        long roundedMinutes = offsetNs >= 0
+            ? (offsetNs + minuteNs / 2) / minuteNs
+            : (offsetNs - minuteNs / 2) / minuteNs;
+        long absolute = Math.Abs(roundedMinutes);
+        return $"{(roundedMinutes < 0 ? "-" : "+")}{absolute / 60:D2}:{absolute % 60:D2}";
     }
 
     /// <summary>
@@ -308,6 +329,80 @@ internal static class TemporalTimeZones
             : mapping.EarlyInterval.WallOffset;
         epochNs = wallNs - gapOffset.Seconds * 1_000_000_000L;
         return true;
+    }
+
+    public static bool TryGetTransition(
+        string timeZoneId,
+        System.Numerics.BigInteger epochNs,
+        bool next,
+        out System.Numerics.BigInteger transitionEpochNs)
+    {
+        transitionEpochNs = default;
+        if (!TryCanonicalize(timeZoneId, out var lookupId, out var fixedOffsetNs) ||
+            fixedOffsetNs.HasValue || lookupId == "UTC")
+            return false;
+
+        var zone = DateTimeZoneProviders.Tzdb.GetZoneOrNull(lookupId);
+        if (zone is null)
+            return false;
+
+        const long nsPerSecond = 1_000_000_000L;
+        var secondsBig = System.Numerics.BigInteger.DivRem(epochNs, nsPerSecond, out var nanosBig);
+        if (nanosBig < 0)
+        {
+            secondsBig--;
+            nanosBig += nsPerSecond;
+        }
+        if (secondsBig < long.MinValue || secondsBig > long.MaxValue)
+            return false;
+
+        Instant instant;
+        try
+        {
+            instant = Instant.FromUnixTimeSeconds((long)secondsBig).PlusNanoseconds((long)nanosBig);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+
+        var interval = zone.GetZoneInterval(instant);
+        Instant transition;
+        if (next)
+        {
+            while (true)
+            {
+                if (!interval.HasEnd)
+                    return false;
+                transition = interval.End;
+                var after = zone.GetZoneInterval(transition);
+                if (after.WallOffset != interval.WallOffset)
+                    break;
+                interval = after;
+            }
+        }
+        else
+        {
+            if (interval.HasStart && interval.Start == instant)
+            {
+                if (instant == Instant.MinValue)
+                    return false;
+                interval = zone.GetZoneInterval(instant.PlusNanoseconds(-1));
+            }
+            while (true)
+            {
+                if (!interval.HasStart)
+                    return false;
+                transition = interval.Start;
+                var before = zone.GetZoneInterval(transition.PlusNanoseconds(-1));
+                if (before.WallOffset != interval.WallOffset)
+                    break;
+                interval = before;
+            }
+        }
+
+        transitionEpochNs = new System.Numerics.BigInteger(transition.ToUnixTimeTicks()) * 100;
+        return next ? transitionEpochNs > epochNs : transitionEpochNs < epochNs;
     }
 
     /// <summary>
