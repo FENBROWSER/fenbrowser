@@ -12606,6 +12606,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             constructWithNewTarget: (args, newTarget) =>
                 JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(args, newTarget), AllocationSite.Current())),
             length: 1);
+        constructor.SetPrototype(EnsureFunctionPrototype());
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
@@ -15391,6 +15392,9 @@ fallbackArraySpecies:
             }
             _ = err.DefineOwnProperty("errors",
                 new JsPropertyDescriptor(JsValue.FromObject(errorsArrHandle), Writable: true, Enumerable: false, Configurable: true));
+            // ECMA-262 20.5.8.1: cause is an own data property, defaults to undefined.
+            _ = err.DefineOwnProperty("cause",
+                new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: false, Configurable: true));
             var handle = _heap.AllocateObject(err, AllocationSite.Current());
             _heap.WriteBarrier(handle, errorsArrHandle);
             return JsValue.FromObject(handle);
@@ -15401,9 +15405,13 @@ fallbackArraySpecies:
             (_, args) => Build(args),
             args => Build(args),
             length: 2);
+        // ECMA-262 20.5.7.1: AggregateError [[Prototype]] = %Error%
+        constructor.SetPrototype(GetGlobalConstructorHandle("Error"));
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
+        _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
         _aggregateErrorPrototypeHandle = prototypeHandle;
         _aggregateErrorConstructorHandle = constructorHandle;
@@ -15532,6 +15540,7 @@ fallbackArraySpecies:
                 return JsValue.FromObject(handle);
             },
             length: 1);
+        constructor.SetPrototype(EnsureFunctionPrototype());
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
