@@ -9488,7 +9488,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         var canonicalLocales = args.Count == 0
             ? Array.Empty<JsValue>()
-            : CanonicalizeLocaleListForDuration(args[0]).Select(JsValue.FromString).ToArray();
+            : CanonicalizeIntlLocaleList(args[0]).Select(JsValue.FromString).ToArray();
         var arrObj = CreateArrayFromElements(canonicalLocales);
         var arrHandle = _heap.AllocateObject(arrObj, AllocationSite.Current());
         return JsValue.FromObject(arrHandle);
