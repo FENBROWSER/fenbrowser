@@ -960,6 +960,9 @@ public sealed class TemporalStub : IBuiltinModule
                         }
                     }
 
+                    if (maxPossibleDays == 0)
+                        throw new JsThrownException(ctx.CreateRangeError($"'{mc}' is not a valid monthCode for the {sys.Id} calendar."));
+
                     if (overflow == "constrain")
                     {
                         parsedDay = Math.Clamp(parsedDay, 1, maxPossibleDays);

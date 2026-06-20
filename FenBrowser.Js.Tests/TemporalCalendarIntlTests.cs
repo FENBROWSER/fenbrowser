@@ -54,4 +54,30 @@ public sealed class TemporalCalendarIntlTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void PlainMonthDayRejectsMonthCodesOutsideCalendarRange()
+    {
+        var result = Run("""
+            const cases = [
+                ["gregory", "M13"],
+                ["coptic", "M14"],
+                ["hebrew", "M14"],
+                ["islamic-umalqura", "M13"]
+            ];
+            cases.every(([calendar, monthCode]) => {
+                for (const overflow of [undefined, "constrain", "reject"]) {
+                    try {
+                        Temporal.PlainMonthDay.from({ calendar, monthCode, day: 1 }, { overflow });
+                        return false;
+                    } catch (e) {
+                        if (!(e instanceof RangeError)) return false;
+                    }
+                }
+                return true;
+            });
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }
