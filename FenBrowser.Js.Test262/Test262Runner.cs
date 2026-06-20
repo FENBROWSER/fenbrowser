@@ -777,8 +777,8 @@ public sealed class Test262Runner
             "detachArrayBuffer.js",
             "resizableArrayBufferUtils.js",
             "testAtomics.js",
-            // "atomicsHelper.js",  // requires multi-agent coordination ($262.agent.start/broadcast);
-                                     // FenJS is single-agent so these tests are HarnessUnsupported
+            "atomicsHelper.js",  // loaded for single-agent use; tests needing $262.agent cooperation
+                                 // will fail gracefully with ReferenceError rather than crashing
             "temporalHelpers.js",
             // SpiderMonkey staging harness includes
             "nativeErrors.js",
