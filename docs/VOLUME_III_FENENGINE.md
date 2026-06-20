@@ -8535,6 +8535,7 @@ Verification:
   - Canonical identifiers are case-insensitive at the API boundary and normalized through TZDB aliases.
   - Historical offsets preserve second precision, including pre-standard-time transitions required by Temporal.
   - Wall-clock gaps and overlaps resolve through TZDB using Temporal's `compatible`, `earlier`, `later`, and `reject` disambiguation modes.
+  - `Intl.supportedValuesOf("timeZone")` publishes the sorted canonical TZDB identifiers accepted by Temporal, including `UTC`.
 - `FenBrowser.Js/Builtins/TemporalStub.cs`
   - Minute-only offsets in ZonedDateTime strings may match named-zone offsets after Temporal half-expand minute rounding.
   - Second-bearing string offsets, fixed-offset zones, and property-bag offsets remain exact.
@@ -8549,4 +8550,5 @@ Verification:
 - `intl402/Temporal/ZonedDateTime/from/zoneddatetime-sub-minute-offset.js`: pass (`1/1`).
 - `intl402/Temporal/ZonedDateTime/prototype/add`: pass (`74/76`).
 - `intl402/Temporal/ZonedDateTime/prototype/subtract`: pass (`75/76`).
-- `intl402/Temporal`: category improved from `1734/2029` to `1799/2029`; remaining failures `230`.
+- `intl402/Temporal/ZonedDateTime/supported-values-of.js`: pass (`1/1`).
+- `intl402/Temporal`: category improved from `1734/2029` to `1804/2029`; remaining failures `225`.

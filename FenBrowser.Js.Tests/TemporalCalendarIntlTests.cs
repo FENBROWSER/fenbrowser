@@ -215,4 +215,22 @@ public sealed class TemporalCalendarIntlTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void IntlSupportedTimeZonesAreCanonicalTemporalIdentifiers()
+    {
+        var count = Run("""Intl.supportedValuesOf("timeZone").length;""");
+        var result = Run("""
+            const zones = Intl.supportedValuesOf("timeZone");
+            let valid = zones.length > 100 && !zones.includes("AUS Central Standard Time");
+            for (const id of zones) {
+                const value = new Temporal.ZonedDateTime(0n, id);
+                if (value.timeZoneId !== id) valid = false;
+            }
+            valid;
+            """);
+
+        Assert.True(count.AsNumber() > 100, $"Expected TZDB inventory, got {count.AsNumber()} identifiers.");
+        Assert.True(result.AsBoolean());
+    }
 }

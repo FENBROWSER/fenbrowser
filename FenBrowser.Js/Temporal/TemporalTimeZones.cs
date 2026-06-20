@@ -29,6 +29,20 @@ internal static class TemporalTimeZones
         return result;
     }
 
+    public static IEnumerable<string> GetAvailableCanonicalIds()
+    {
+        var result = new List<string>();
+        foreach (var id in _tzdbIds.Values.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
+        {
+            if (TryCanonicalize(id, out var canonical, out _) && canonical == id)
+                result.Add(id);
+        }
+
+        result.Add("UTC");
+        result.Sort(StringComparer.Ordinal);
+        return result.Distinct(StringComparer.Ordinal);
+    }
+
     /// <summary>
     /// Validate and canonicalize a time zone identifier. Returns false for
     /// unknown identifiers. Offset identifiers normalize to "±HH:MM" and

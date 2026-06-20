@@ -7,6 +7,7 @@ using FenBrowser.Js.Parser;
 using FenBrowser.Js.Promises;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
+using FenBrowser.Js.Temporal;
 using System.Linq;
 using System.Numerics;
 using System.Text.Json;
@@ -9065,11 +9066,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
                     else if (key == "timeZone")
                     {
-                        var tzValues = new List<JsValue>();
-                        foreach (var tz in TimeZoneInfo.GetSystemTimeZones())
-                            tzValues.Add(JsValue.FromString(tz.Id));
-                        tzValues.Sort((a, b) => string.CompareOrdinal(a.AsString(), b.AsString()));
-                        values = tzValues.ToArray();
+                        values = TemporalTimeZones.GetAvailableCanonicalIds()
+                            .Select(JsValue.FromString)
+                            .ToArray();
                     }
                     else if (key == "unit")
                     {
