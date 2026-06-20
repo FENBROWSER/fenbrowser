@@ -2518,10 +2518,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     "Iterator.prototype.next called on incompatible receiver."));
             }
 
+            if (iter.IsExhausted)
+                return BuildIteratorResult(JsValue.Undefined, done: true);
             var sourceObj = _heap.GetObject(iter.SourceHandle);
             var length = GetArrayLength(sourceObj);
             if (iter.Index >= length)
             {
+                iter.IsExhausted = true;
                 return BuildIteratorResult(JsValue.Undefined, done: true);
             }
 
@@ -2737,6 +2740,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         public ObjectHandle SourceHandle { get; }
         public ArrayIteratorKind Kind { get; }
         public int Index { get; set; }
+        public bool IsExhausted { get; set; }
     }
 
     // CreateForOfIterator / DrainIteratorIntoList / CreateForInIterator /
