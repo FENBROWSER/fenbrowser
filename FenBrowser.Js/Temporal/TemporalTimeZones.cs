@@ -405,6 +405,33 @@ internal static class TemporalTimeZones
         return next ? transitionEpochNs > epochNs : transitionEpochNs < epochNs;
     }
 
+    public static System.Numerics.BigInteger GetStartOfDayEpochNsBig(string timeZoneId, IsoDate date)
+    {
+        if (!TryCanonicalize(timeZoneId, out var lookupId, out var fixedOffsetNs) ||
+            fixedOffsetNs.HasValue || lookupId == "UTC" || date.Year is < 1 or > 9999)
+            return EpochNsFromWallBig(timeZoneId, date, IsoTime.Midnight);
+
+        var zone = DateTimeZoneProviders.Tzdb.GetZoneOrNull(lookupId);
+        if (zone is null)
+            return EpochNsFromWallBig(timeZoneId, date, IsoTime.Midnight);
+
+        var localDate = new LocalDate(date.Year, date.Month, date.Day);
+        Instant instant;
+        while (true)
+        {
+            try
+            {
+                instant = localDate.AtStartOfDayInZone(zone).ToInstant();
+                break;
+            }
+            catch (SkippedTimeException)
+            {
+                localDate = localDate.PlusDays(1);
+            }
+        }
+        return new System.Numerics.BigInteger(instant.ToUnixTimeTicks()) * 100;
+    }
+
     /// <summary>
     /// BigInteger version of WallFromEpochNs: split epoch nanos into wall-clock
     /// date/time at the given offset, without clamping to the long range.

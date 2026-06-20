@@ -341,4 +341,20 @@ public sealed class TemporalCalendarIntlTests
         Assert.Equal("1911-03-10T23:59:59.999999999+00:09[Europe/Paris]", nanosecondText.AsString());
         Assert.Equal(63, result.AsNumber());
     }
+
+    [Fact]
+    public void ZonedDateTimeStartOfDayUsesTheFirstValidInstant()
+    {
+        var result = Run("""
+            const start = Temporal.ZonedDateTime.from("1919-03-31[America/Toronto]");
+            const midnight = Temporal.ZonedDateTime.from("1919-03-31T00[America/Toronto]");
+            const delta = start.until(midnight, { largestUnit: "minute" });
+            const samoa = Temporal.ZonedDateTime.from("2011-12-29T12:00-10:00[Pacific/Apia]");
+
+            start.hour === 0 && start.minute === 30 && delta.minutes === 30 &&
+                samoa.hoursInDay === 24;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }

@@ -8538,6 +8538,7 @@ Verification:
   - `Intl.supportedValuesOf("timeZone")` publishes the sorted canonical TZDB identifiers accepted by Temporal, including `UTC`.
   - ZonedDateTime preserves the caller's IANA identifier or link spelling for `timeZoneId` and serialization, while TZDB canonical keys drive offset lookup and zone equality.
   - `getTimeZoneTransition` returns strict next/previous UTC-offset transitions, skips rule-only interval changes, and returns `null` for fixed zones or exhausted TZDB ranges.
+  - Date-only zoned conversions, `startOfDay`, `hoursInDay`, omitted `plainTime`, and day rounding use the first valid instant of the civil date; whole-day skips advance to the next valid date boundary.
 - `FenBrowser.Js/Builtins/TemporalStub.cs`
   - Minute-only offsets in ZonedDateTime strings may match named-zone offsets after Temporal half-expand minute rounding.
   - Second-bearing string offsets, fixed-offset zones, and property-bag offsets remain exact.
@@ -8551,7 +8552,7 @@ Verification:
 Verification:
 
 - `dotnet build FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -c Release --nologo`: pass.
-- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --filter "FullyQualifiedName~TemporalCalendarIntlTests" --logger "console;verbosity=minimal"`: pass (`15/15`).
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --filter "FullyQualifiedName~TemporalCalendarIntlTests" --logger "console;verbosity=minimal"`: pass (`16/16`).
 - `intl402/Temporal/ZonedDateTime/from/zoneddatetime-sub-minute-offset.js`: pass (`1/1`).
 - `intl402/Temporal/ZonedDateTime/prototype/add`: pass (`74/76`).
 - `intl402/Temporal/ZonedDateTime/prototype/subtract`: pass (`75/76`).
@@ -8560,4 +8561,6 @@ Verification:
 - `intl402/Temporal/ZonedDateTime/prototype/until`: pass (`62/66`).
 - `intl402/Temporal/PlainMonthDay/from`: pass (`45/56`).
 - `intl402/Temporal/ZonedDateTime/prototype/getTimeZoneTransition`: pass (`9/9`).
-- `intl402/Temporal`: category improved from `1734/2029` to `1870/2029`; remaining failures `159`.
+- `intl402/Temporal/ZonedDateTime/prototype/hoursInDay`: pass (`5/5`).
+- `intl402/Temporal/ZonedDateTime/prototype/startOfDay`: pass (`4/4`).
+- `intl402/Temporal`: category improved from `1734/2029` to `1880/2029`; remaining failures `149`.
