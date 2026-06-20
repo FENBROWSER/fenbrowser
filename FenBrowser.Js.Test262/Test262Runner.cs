@@ -1517,7 +1517,10 @@ public sealed class Test262Runner
                     'ArrayBuffer','SharedArrayBuffer','DataView','Math','JSON','Date',
                     'parseInt','parseFloat','isNaN','isFinite','encodeURI','decodeURI',
                     'encodeURIComponent','decodeURIComponent',
-                    'Intl','Temporal','Atomics'].forEach(function (n) {
+                    'Intl','Temporal','Atomics',
+                    'AsyncDisposableStack','DisposableStack','AsyncGeneratorFunction',
+                    'GeneratorFunction','FinalizationRegistry','Iterator',
+                    'SuppressedError','ShadowRealm'].forEach(function (n) {
                      if (realmGlobal[n] === undefined && typeof globalThis[n] !== 'undefined') {
                        realmGlobal[n] = globalThis[n];
                      }
