@@ -6208,6 +6208,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             if (result.HasValue) return result.Value;
         }
 
+        // Date.prototype.toString format: Www Mmm DD YYYY HH:MM:SS GMT[+-]HHMM
+        // e.g. "Thu Jan 01 1970 00:00:00 GMT+0000"
+        // ECMA-262 21.4.3.2 requires Date.parse to accept its own toString output.
+        {
+            var dtResult = TryParseDateToStringFormat(text);
+            if (dtResult.HasValue) return dtResult.Value;
+        }
+
         if (DateTimeOffset.TryParse(text, System.Globalization.CultureInfo.InvariantCulture,
                 System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
                 out var parsed))
@@ -6215,6 +6223,51 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return parsed.ToUnixTimeMilliseconds();
         }
         return double.NaN;
+    }
+
+    // Parse the Date.prototype.toString / toUTCString format:
+    // toString:  "Thu Jan 01 1970 00:00:00 GMT+0000"
+    // toUTCString: "Thu, 01 Jan 1970 00:00:00 GMT"
+    private static double? TryParseDateToStringFormat(string text)
+    {
+        // Strip leading day-of-week (with optional comma)
+        var t = text;
+        var commaIdx = t.IndexOf(',');
+        if (commaIdx >= 0 && commaIdx < 5)
+            t = t.Substring(commaIdx + 1).TrimStart();
+        else if (t.Length > 4 && t[3] == ' ')
+            t = t.Substring(4); // strip "Thu "
+
+        // Find "GMT" and extract
+        var gmtIdx = t.LastIndexOf("GMT", StringComparison.Ordinal);
+        if (gmtIdx < 0) return null;
+        var datePart = t.Substring(0, gmtIdx).Trim();
+        var tzStr = t.Substring(gmtIdx + 3);
+
+        // Parse timezone offset: "+0000", "-0500", or empty (GMT = UTC+0)
+        var tzOffset = TimeSpan.Zero;
+        if (tzStr.Length >= 5 && (tzStr[0] == '+' || tzStr[0] == '-'))
+        {
+            var tzHours = int.Parse(tzStr.Substring(0, 3));
+            var tzMins = int.Parse(tzStr.Substring(3, 2));
+            tzOffset = new TimeSpan(tzHours, tzMins, 0);
+        }
+
+        // Try "MMM dd yyyy HH:mm:ss" (toString format)
+        if (DateTimeOffset.TryParseExact(datePart, "MMM dd yyyy HH:mm:ss",
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal, out var dto1))
+        {
+            return DateMath.TimeClip((dto1 - tzOffset).ToUnixTimeMilliseconds());
+        }
+        // Try "dd MMM yyyy HH:mm:ss" (toUTCString format)
+        if (DateTimeOffset.TryParseExact(datePart, "dd MMM yyyy HH:mm:ss",
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal, out var dto2))
+        {
+            return DateMath.TimeClip(dto2.ToUnixTimeMilliseconds());
+        }
+        return null;
     }
 
     // Parse ISO 8601 dates with extended year format: [+-]YYYYYY-MM-DDTHH:mm:ss[.sss]Z
