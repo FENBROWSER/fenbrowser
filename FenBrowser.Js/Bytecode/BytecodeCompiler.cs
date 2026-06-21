@@ -1739,6 +1739,11 @@ public sealed class BytecodeCompiler
         var iteratorReg = AllocateRegister();
         _instructions.Add(new Instruction(OpCode.EnumerateValues, iteratorReg, sourceReg, 0));
 
+        // ECMA-262 14.7.5.13: any abrupt completion after GetIterator (e.g.
+        // during destructuring assignment, member store, or body evaluation)
+        // must close the iterator via IteratorClose before propagating.
+        var pushHandlerIndex = EmitPlaceholder(OpCode.PushHandler);
+
         var loopStart = _instructions.Count;
         var valueReg = AllocateRegister();
         var nextIndex = _instructions.Count;
@@ -1822,6 +1827,19 @@ public sealed class BytecodeCompiler
             {
                 PatchJump(continueJump, loopStart);
             }
+
+            // Pop the for-of handler on normal exit (exhaustion or break).
+            _instructions.Add(new Instruction(OpCode.PopHandler, 0, 0, 0));
+            var jumpPastHandler = EmitPlaceholder(OpCode.Jump);
+
+            // Abrupt completion: the dispatched exception arrives in register 0.
+            // Copy it, close the iterator quietly, then rethrow the original.
+            PatchJump(pushHandlerIndex, _instructions.Count);
+            var exceptionReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.Move, exceptionReg, 0, 0));
+            _instructions.Add(new Instruction(OpCode.IteratorClose, 0, iteratorReg, 1));
+            _instructions.Add(new Instruction(OpCode.Throw, exceptionReg, 0, 0));
+            PatchJump(jumpPastHandler, _instructions.Count);
         }
         finally
         {
@@ -2028,6 +2046,8 @@ public sealed class BytecodeCompiler
         var iteratorReg = AllocateRegister();
         _instructions.Add(new Instruction(OpCode.EnumerateValues, iteratorReg, sourceReg, 0));
 
+        var pushHandlerIndex = EmitPlaceholder(OpCode.PushHandler);
+
         var loopStart = _instructions.Count;
         var valueReg = AllocateRegister();
         var nextIndex = _instructions.Count;
@@ -2051,18 +2071,39 @@ public sealed class BytecodeCompiler
         {
             CompileStatement(forAwaitOfStmt.Body);
             _instructions.Add(new Instruction(OpCode.Jump, loopStart, 0, 0));
-            var loopEnd = _instructions.Count;
-            _instructions[nextIndex] = _instructions[nextIndex] with { C = loopEnd };
 
-            foreach (var breakJump in ctx.BreakJumpIndices)
+            int normalExit;
+            if (ctx.BreakJumpIndices.Count > 0)
             {
-                PatchJump(breakJump, loopEnd);
+                var breakTarget = _instructions.Count;
+                _instructions.Add(new Instruction(OpCode.IteratorClose, 0, iteratorReg, 0));
+                normalExit = _instructions.Count;
+                foreach (var breakJump in ctx.BreakJumpIndices)
+                {
+                    PatchJump(breakJump, breakTarget);
+                }
             }
+            else
+            {
+                normalExit = _instructions.Count;
+            }
+
+            _instructions[nextIndex] = _instructions[nextIndex] with { C = normalExit };
 
             foreach (var continueJump in ctx.ContinueJumpIndices)
             {
                 PatchJump(continueJump, loopStart);
             }
+
+            _instructions.Add(new Instruction(OpCode.PopHandler, 0, 0, 0));
+            var jumpPastHandler = EmitPlaceholder(OpCode.Jump);
+
+            PatchJump(pushHandlerIndex, _instructions.Count);
+            var exceptionReg = AllocateRegister();
+            _instructions.Add(new Instruction(OpCode.Move, exceptionReg, 0, 0));
+            _instructions.Add(new Instruction(OpCode.IteratorClose, 0, iteratorReg, 1));
+            _instructions.Add(new Instruction(OpCode.Throw, exceptionReg, 0, 0));
+            PatchJump(jumpPastHandler, _instructions.Count);
         }
         finally
         {
