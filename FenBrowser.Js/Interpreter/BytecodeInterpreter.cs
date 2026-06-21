@@ -6774,6 +6774,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         if (hasS) options |= RegexOptions.Singleline;
         var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
+        // Rewrite \cX control escapes — .NET doesn't support them.
+        // Replace each \cX with the literal control character \xHH per B.1.4.
+        dotNetPattern = RegExpCompiler.RewriteControlEscapesForDotNet(dotNetPattern);
         var namedGroupMapCreate = new Dictionary<string, string>(StringComparer.Ordinal);
         dotNetPattern = RegExpCompiler.RewriteNamedGroupSyntaxForDotNet(dotNetPattern, namedGroupMapCreate);
         if (hasU || hasV)

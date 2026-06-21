@@ -1244,6 +1244,16 @@ public static class RegExpCompiler
             if (ch == '\\' && i + 1 < pattern.Length)
             {
                 var next = pattern[i + 1];
+                // \cX control escape — .NET doesn't support it. Rewrite to the
+                // literal control character per annex B.1.4 (char % 32).
+                if (next == 'c' && i + 2 < pattern.Length)
+                {
+                    var controlChar = (char)(pattern[i + 2] % 32);
+                    rewritten.Append('\\').Append('x');
+                    rewritten.Append(((int)controlChar).ToString("x2"));
+                    i += 2;
+                    continue;
+                }
                 if (!inCharClass)
                 {
                     switch (next)
@@ -2016,6 +2026,30 @@ public static class RegExpCompiler
     /// the capturing group they reference) to (?:) which always matches empty.
     /// In ECMAScript, a backreference to a group that hasn't been captured yet
     /// matches the empty string. .NET with RegexOptions.ECMAScript may not
+    /// <summary>
+    /// Rewrite \cX control escapes to the literal control character \xHH.
+    /// .NET's regex engine doesn't support \cX syntax, so we replace it
+    /// with the equivalent \xHH escape per annex B.1.4 (char % 32).
+    /// </summary>
+    internal static string RewriteControlEscapesForDotNet(string pattern)
+    {
+        if (string.IsNullOrEmpty(pattern)) return pattern;
+        var sb = new System.Text.StringBuilder(pattern.Length);
+        for (var i = 0; i < pattern.Length; i++)
+        {
+            if (pattern[i] == '\\' && i + 2 < pattern.Length && pattern[i + 1] == 'c')
+            {
+                var ch = (int)pattern[i + 2] % 32;
+                sb.Append("\\x").Append(ch.ToString("x2"));
+                i += 2;
+                continue;
+            }
+            sb.Append(pattern[i]);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
     /// handle this correctly, so we rewrite forward references explicitly.
     /// </summary>
     internal static string RewriteForwardBackreferences(string pattern)
