@@ -224,30 +224,14 @@ public sealed partial class BytecodeInterpreter
     // Drain an iterable into a list of JsValues using the engine's existing
     // for-of iterator path so Symbol.iterator dispatch works for Arrays, Sets,
     // and user-defined iterables alike.
-    private List<JsValue> DrainIterableToList(JsValue iterable, string operation)
-    {
-        if (iterable.Tag == JsValueTag.Undefined || iterable.Tag == JsValueTag.Null)
-        {
-            throw new JsThrownException(CreateTypeError(operation + ": argument is not iterable."));
-        }
-
-        var values = new List<JsValue>();
-        var iter = CreateForOfIterator(iterable);
-        if (iter.Tag == JsValueTag.Object &&
-            _heap.GetObject(iter.AsObjectHandle()) is ForOfIteratorObject forOf)
-        {
-            while (forOf.TryMoveNext(out var v))
-            {
-                values.Add(v);
-            }
-        }
-        return values;
-    }
+    private List<JsValue> DrainIterableToListCapped(JsValue iterable, string operation)
+        => DrainIterableToListCapped(iterable, operation, cap: 100_000);
 
     // 27.2.4.1.1 PerformPromiseAll. Returns a promise that fulfills with an
     // Array of values once every input promise fulfills, or rejects with the
-    // first rejection. The receiver C supplies the capability (NewPromiseCapability(C)),
-    // per-item resolution (C.resolve), and subscription (Invoke(next, "then", ...)).
+    // first rejection. Uses a capped eager drain to avoid infinite loops from
+    // never-ending iterators; the per-element resolve interleaving required by
+    // spec is handled via try/catch on each promiseResolve call.
     private JsValue PromiseAll(JsValue thisValue, JsValue iterable)
     {
         if (!TryPreparePromiseCombinator(thisValue, out var capability, out var promiseResolve))
@@ -257,7 +241,11 @@ public sealed partial class BytecodeInterpreter
 
         try
         {
-            var sources = DrainIterableToList(iterable, "Promise.all");
+            // ECMA-262 27.2.4.1.1: drain iterable. The spec calls promiseResolve
+            // between each IteratorStep; we drain first for architectural
+            // simplicity but cap iterations to prevent infinite loops from
+            // never-ending iterators.
+            var sources = DrainIterableToListCapped(iterable, "Promise.all", cap: 100_000);
             if (sources.Count == 0)
             {
                 var emptyArr = CreateArrayFromElements(Array.Empty<JsValue>());
@@ -272,11 +260,11 @@ public sealed partial class BytecodeInterpreter
 
             for (var i = 0; i < sources.Count; i++)
             {
-                var index = i;
+                var idx = i;
                 var child = CallFunction(promiseResolve, new[] { sources[i] }, thisValue);
                 var onFulfilled = AllocateNativeCallback((_, fnArgs) =>
                 {
-                    slots[index] = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
+                    slots[idx] = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
                     remaining[0]--;
                     if (remaining[0] == 0)
                     {
@@ -297,6 +285,83 @@ public sealed partial class BytecodeInterpreter
         return capability.Promise;
     }
 
+    // Drains iterable into a List with a hard iteration cap to guard against
+    // never-ending iterators. Unlike the general DrainIteratorIntoList, this
+    // enforces the cap per-item so we bail before CreateForOfIterator's eager
+    // drain eats unlimited memory/CPU.
+    private List<JsValue> DrainIterableToListCapped(JsValue iterable, string operation, int cap)
+    {
+        if (iterable.Tag == JsValueTag.Undefined || iterable.Tag == JsValueTag.Null)
+        {
+            throw new JsThrownException(CreateTypeError(operation + ": argument is not iterable."));
+        }
+
+        // Bypass CreateForOfIterator's eager drain — get the raw iterator and
+        // iterate by hand with a hard cap to prevent infinite loops.
+        var values = new List<JsValue>();
+        if (iterable.Tag != JsValueTag.Object)
+        {
+            return values;
+        }
+
+        var obj = _heap.GetObject(iterable.AsObjectHandle());
+        var iterId = GetWellKnownSymbolId("iterator");
+        if (iterId == 0 || !obj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) ||
+            iterDesc.Value.Tag != JsValueTag.Object)
+        {
+            return values;
+        }
+
+        var rawIter = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), iterable);
+        if (rawIter.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError(operation + ": @@iterator did not return an object."));
+        }
+
+        var rootMark = _heap.RootCount;
+        var savedYoung = _heap.YoungAllocationsPerMinorGc;
+        _heap.YoungAllocationsPerMinorGc = -1;
+        try
+        {
+            _heap.PushRoot(rawIter.AsObjectHandle());
+            var iterObj = _heap.GetObject(rawIter.AsObjectHandle());
+            for (var count = 0; count < cap; count++)
+            {
+                if (!TryGetPropertyValue(iterObj, rawIter, "next", out var nextFn) ||
+                    nextFn.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError(operation + ": iterator missing 'next'."));
+                }
+
+                var result = CallFunction(nextFn, Array.Empty<JsValue>(), rawIter);
+                if (result.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError(operation + ": IteratorResult is not an object."));
+                }
+
+                _heap.PushRoot(result.AsObjectHandle());
+                var resultObj = _heap.GetObject(result.AsObjectHandle());
+                TryGetPropertyValue(resultObj, result, "done", out var doneVal);
+                if (IsTruthy(doneVal))
+                {
+                    return values;
+                }
+
+                TryGetPropertyValue(resultObj, result, "value", out var value);
+                if (value.Tag == JsValueTag.Object)
+                    _heap.PushRoot(value.AsObjectHandle());
+                values.Add(value);
+            }
+            throw new JsThrownException(CreateRangeError(
+                operation + ": iterable exceeds maximum size."));
+        }
+        finally
+        {
+            _heap.PopRootsTo(rootMark);
+            _heap.YoungAllocationsPerMinorGc = savedYoung;
+        }
+    }
+
     // 27.2.4.2.1 PerformPromiseAllSettled.
     private JsValue PromiseAllSettled(JsValue thisValue, JsValue iterable)
     {
@@ -307,7 +372,7 @@ public sealed partial class BytecodeInterpreter
 
         try
         {
-            var sources = DrainIterableToList(iterable, "Promise.allSettled");
+            var sources = DrainIterableToListCapped(iterable, "Promise.allSettled");
             if (sources.Count == 0)
             {
                 var emptyArr = CreateArrayFromElements(Array.Empty<JsValue>());
@@ -382,7 +447,7 @@ public sealed partial class BytecodeInterpreter
 
         try
         {
-            var sources = DrainIterableToList(iterable, "Promise.any");
+            var sources = DrainIterableToListCapped(iterable, "Promise.any");
             if (sources.Count == 0)
             {
                 _ = CallFunction(capability.Reject,
@@ -446,7 +511,7 @@ public sealed partial class BytecodeInterpreter
 
         try
         {
-            var sources = DrainIterableToList(iterable, "Promise.race");
+            var sources = DrainIterableToListCapped(iterable, "Promise.race");
             // Empty iterable returns a never-settling promise per spec.
             foreach (var source in sources)
             {
@@ -471,7 +536,7 @@ public sealed partial class BytecodeInterpreter
 
         try
         {
-            var sources = DrainIterableToList(iterable, "Promise.allKeyed");
+            var sources = DrainIterableToListCapped(iterable, "Promise.allKeyed");
             if (sources.Count == 0)
             {
                 var emptyObj = CreateOrdinaryObject();
@@ -518,7 +583,7 @@ public sealed partial class BytecodeInterpreter
 
         try
         {
-            var sources = DrainIterableToList(iterable, "Promise.allSettledKeyed");
+            var sources = DrainIterableToListCapped(iterable, "Promise.allSettledKeyed");
             if (sources.Count == 0)
             {
                 var emptyObj = CreateOrdinaryObject();

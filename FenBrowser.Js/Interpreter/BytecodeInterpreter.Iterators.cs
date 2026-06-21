@@ -193,7 +193,7 @@ public sealed partial class BytecodeInterpreter
     // for-of break. Calls the iterator's "return" method if present and throws a
     // TypeError when its result is not an object. No-op for eager (finite) states
     // and for already-completed lazy iterators.
-    private void CloseForOfIteratorState(ForOfIteratorObject iter)
+    private void CloseForOfIteratorState(ForOfIteratorObject iter, bool suppressErrors = false)
     {
         if (!iter.IsLazy || iter.Done)
         {
@@ -225,14 +225,19 @@ public sealed partial class BytecodeInterpreter
         try
         {
             var result = CallFunction(ret, Array.Empty<JsValue>(), iterator);
-            if (result.Tag != JsValueTag.Object)
+            if (result.Tag != JsValueTag.Object && !suppressErrors)
             {
+                throw new JsThrownException(CreateTypeError("Iterator return result is not an object."));
                 // Non-object return — spec says throw, but during abrupt
                 // completion this would mask the real error. Silently ignore.
             }
         }
         catch (JsThrownException)
         {
+            if (!suppressErrors)
+            {
+                throw;
+            }
             // If the `return()` method itself throws, the original completion
             // takes precedence. Do not replace it with a close failure.
         }
@@ -298,34 +303,44 @@ public sealed partial class BytecodeInterpreter
             "Spread syntax requires an iterable."));
     }
 
+    // Safety cap: prevent infinite loops from never-ending iterators. ECMA-262
+    // array length is bounded at 2^53-1, so 100M is a practical upper bound that
+    // still allows legitimate large-but-finite iterables while preventing runaway
+    // CPU from iterators whose next() never returns {done: true}.
+    private const int MaxSafeDrainIterations = 100_000_000;
+
     private void DrainIteratorIntoList(JsValue iter, List<JsValue> sink)
+    {
+        DrainIteratorIntoList(iter, sink, maxIterations: MaxSafeDrainIterations);
+    }
+
+    // Same as DrainIteratorIntoList but with a safety cap: when maxIterations is
+    // exceeded, throws a RangeError to prevent infinite loops from iterators
+    // whose next() never returns {done: true} (spec: Promise combinators must not
+    // pre-drain such iterators — they iterate lazily interleaving resolve calls).
+    private void DrainIteratorIntoList(JsValue iter, List<JsValue> sink, int maxIterations)
     {
         if (iter.Tag != JsValueTag.Object)
         {
             throw new JsThrownException(CreateTypeError("Iterator @@iterator did not return an object."));
         }
 
-        // Audit gap §1 #1/#2/#5: pin the iterator handle and every object-tag
-        // value that lands in the sink for the duration of the drain. Without
-        // these roots, a GC triggered inside user-code .next()/abrupt
-        // completion reclaims cells we are about to read back, surfacing as
-        // "Stale heap handle." crashes in
-        //   annexB/.../for-of/iterator-close-return-emulates-undefined-throws-when-called.js
-        //   built-ins/AggregateError/errors-iterabletolist-failures.js
-        //   built-ins/Array/from/iter-map-fn-err.js
-        // Plus: suspend auto-MinorCollect for the duration. CallFunction returns
-        // a JsValue that briefly lives only in a C# local while the callee
-        // frame is being popped — between those two beats an auto-trigger
-        // would reclaim an object-tag result whose cell isn't yet rooted.
         var rootMark = _heap.RootCount;
         var savedYoungThreshold = _heap.YoungAllocationsPerMinorGc;
         _heap.YoungAllocationsPerMinorGc = -1;
+        var count = 0;
         try
         {
             _heap.PushRoot(iter.AsObjectHandle());
             var iterObj = _heap.GetObject(iter.AsObjectHandle());
             while (true)
             {
+                if (++count > maxIterations)
+                {
+                    throw new JsThrownException(CreateRangeError(
+                        "Iterator exceeded maximum iteration limit."));
+                }
+
                 if (!TryGetPropertyValue(iterObj, iter, "next", out var nextFn) ||
                     nextFn.Tag != JsValueTag.Object)
                 {
