@@ -154,6 +154,13 @@ internal static class PrivateNameRewriter
                     RewriteExpression(ae.Right, m),
                     ae.Span);
 
+            case LogicalAssignmentExpressionNode lae:
+                return new LogicalAssignmentExpressionNode(
+                    RewriteExpression(lae.Target, m),
+                    lae.Operator,
+                    RewriteExpression(lae.Value, m),
+                    lae.Span);
+
             case BinaryExpressionNode be:
                 return new BinaryExpressionNode(
                     be.Operator,
