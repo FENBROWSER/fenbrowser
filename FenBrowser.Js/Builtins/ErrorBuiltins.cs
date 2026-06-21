@@ -112,22 +112,89 @@ public sealed class ErrorBuiltins : IBuiltinModule
             var capturedCtx = ctx;
             var stackGetter = new NativeFunctionObject("get stack", (thisValue, _) =>
             {
-                // ECMA-262 20.5.5.2: If this value is not an Object, throw TypeError.
+                // ECMA-262 20.5.3.1 step 2: If this value is not an Object, throw TypeError.
                 if (thisValue.Tag != JsValueTag.Object)
                     throw new JsThrownException(ctx.CreateTypeError("Error.prototype.stack getter called on non-object."));
-                var msg = string.Empty;
                 var obj = ctx.Heap.GetObject(thisValue.AsObjectHandle());
+                // Step 3: If E does not have an [[ErrorData]] internal slot, return undefined.
+                // FenJS stores [[ErrorData]] as BuiltinTagSlot.Error (set by BuildErrorCore).
+                if (obj.ToStringTagSlot != BuiltinTagSlot.Error)
+                    return JsValue.Undefined;
+                var msg = string.Empty;
                 if (obj.TryGetOwnProperty("message", out var msgDesc) &&
                     msgDesc.Value.Tag == JsValueTag.String)
                     msg = msgDesc.Value.AsString();
+                // Step 4: Return an implementation-defined stack trace string.
                 return JsValue.FromString(capturedCtx.CaptureCallStack(name, msg));
             }, length: 0);
             var stackSetter = new NativeFunctionObject("set stack", (thisValue, args) =>
             {
-                if (thisValue.Tag != JsValueTag.Object) return JsValue.Undefined;
-                var val = args.Count > 0 ? args[0] : JsValue.Undefined;
-                ctx.Heap.GetObject(thisValue.AsObjectHandle()).DefineOwnProperty("stack",
-                    new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
+                // ECMA-262 20.5.3.1 set Error.prototype.stack
+                // Step 2: If E is not an Object, throw a TypeError exception.
+                if (thisValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(ctx.CreateTypeError("Error.prototype.stack setter called on non-object."));
+                var v = args.Count > 0 ? args[0] : JsValue.Undefined;
+                // Step 3: If v is not a String, throw a TypeError exception.
+                if (v.Tag != JsValueTag.String)
+                    throw new JsThrownException(ctx.CreateTypeError("Error.prototype.stack setter: value is not a string."));
+                // Steps 4: SetterThatIgnoresPrototypeProperties(this, home=%Error.prototype%, "stack", v).
+                //
+                // SetterThatIgnoresPrototypeProperties (this, home, p, v):
+                //   1. If this is not an Object, throw TypeError. (already checked)
+                //   2. If SameValue(this, home) is true, then
+                //      NOTE: emulates assignment to a non-writable data property
+                //      on the home object in strict mode code.
+                //      THROW TypeError.
+                //   3. Let desc be ? this.[[GetOwnProperty]](p).
+                //   4. If desc is undefined → CreateDataPropertyOrThrow(this, p, v).
+                //   5. Else → Set(this, p, v, true).
+                //
+                // Step 2: if the receiver IS %Error.prototype%, throw TypeError to
+                // prevent infinite recursion (calling the setter would find the same
+                // accessor and call us again).
+                var obj = ctx.Heap.GetObject(thisValue.AsObjectHandle());
+                // Step 2: SameValue(this, home) — throw if receiver is the prototype itself.
+                // We detect this by comparing the handle; %Error.prototype% is the
+                // object pointed to by protoHandle.
+                if (thisValue.AsObjectHandle() == handle)
+                {
+                    throw new JsThrownException(ctx.CreateTypeError(
+                        "Cannot assign to 'stack' property of %Error.prototype%."));
+                }
+                // Step 3: Check own property.
+                if (obj.TryGetOwnProperty("stack", out var ownDesc))
+                {
+                    // Step 5: existing own property — [[Set]] semantics.
+                    if (ownDesc.IsAccessor)
+                    {
+                        // Own accessor: invoke the setter. Safe because step 2
+                        // guarantees this is not %Error.prototype% itself, so the
+                        // setter cannot be the same stack-setter (unless the user
+                        // explicitly installed it, which would be perverse).
+                        if (ownDesc.Set.Tag == JsValueTag.Object)
+                            ctx.CallFunction(ownDesc.Set, new[] { v }, thisValue);
+                    }
+                    else if (!ownDesc.Writable)
+                    {
+                        throw new JsThrownException(ctx.CreateTypeError(
+                            "Cannot assign to read only property 'stack' of object."));
+                    }
+                    else
+                    {
+                        obj.DefineOwnProperty("stack", ownDesc with { Value = v });
+                    }
+                }
+                else
+                {
+                    // Step 4: no own property — CreateDataPropertyOrThrow.
+                    var newDesc = new JsPropertyDescriptor(v,
+                        Writable: true, Enumerable: true, Configurable: true);
+                    if (!obj.DefineOwnProperty("stack", newDesc))
+                    {
+                        throw new JsThrownException(ctx.CreateTypeError(
+                            "Cannot create property 'stack' on non-extensible object."));
+                    }
+                }
                 return JsValue.Undefined;
             }, length: 1);
             var getterHandle = ctx.Heap.AllocateObject(stackGetter, AllocationSite.Current());
