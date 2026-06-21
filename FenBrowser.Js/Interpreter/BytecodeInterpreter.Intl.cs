@@ -2320,8 +2320,76 @@ public sealed partial class BytecodeInterpreter
         if (locales.Tag == JsValueTag.String) locale = CanonicalizeIntlLocaleTag(locales.AsString());
         else if (locales.Tag == JsValueTag.Object) locale = GetDurationFormatLocale(locales);
         var state = ParseNumberFormatState(locale, options);
-        var result = string.Concat(FormatNumberToParts(JsValue.FromNumber((double)value), state).Select(static p => p.Value));
-        return JsValue.FromString(result);
+
+        // For BigInts that fit exactly in a double (≤ 2^53), use the standard
+        // NumberFormat pipeline which handles percent, significant digits, etc.
+        var absVal = System.Numerics.BigInteger.Abs(value);
+        if (absVal <= 9007199254740991) // Number.MAX_SAFE_INTEGER
+        {
+            var d = (double)value;
+            return JsValue.FromString(string.Concat(
+                FormatNumberToParts(JsValue.FromNumber(d), state).Select(static p => p.Value)));
+        }
+
+        // For large BigInts, format directly to avoid double precision loss.
+        var absStr = absVal.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        var negative = value.Sign < 0;
+        return JsValue.FromString(FormatDecimalString(absStr, negative, state));
+    }
+
+    // Format a decimal string with Intl number formatting (grouping, fraction
+    // digits, percent, sign display) without going through double.
+    private string FormatDecimalString(string intDigits, bool negative, NumberFormatState state)
+    {
+        var nfi = ResolveNumberCulture(state.Locale).NumberFormat;
+        var parts = new List<IntlPart>();
+
+        var minFrac = state.MinimumFractionDigits ?? 0;
+        var maxFrac = state.MaximumFractionDigits ?? (state.MinimumFractionDigits.HasValue ? Math.Max(minFrac, 3) : 0);
+
+        // Percent: multiply by 100 (append "00" or handle via state).
+        var styledInt = intDigits;
+        var styledFrac = "";
+        if (string.Equals(state.Style, "percent", StringComparison.Ordinal))
+        {
+            // Append "00" for the percent shift (× 100) — simplified; the full
+            // spec would handle rounding for edge cases.
+            styledInt = intDigits + "00";
+        }
+
+        // Fraction digits.
+        if (minFrac > 0)
+            styledFrac = new string('0', minFrac);
+
+        // Apply grouping to integer part.
+        var primarySize = nfi.NumberGroupSizes.Length > 0 ? nfi.NumberGroupSizes[0] : 3;
+        var grouped = new System.Text.StringBuilder();
+        var digitCount = 0;
+        for (var i = styledInt.Length - 1; i >= 0; i--)
+        {
+            if (digitCount > 0 && digitCount % primarySize == 0)
+                grouped.Insert(0, nfi.NumberGroupSeparator);
+            grouped.Insert(0, ApplyNumberingSystem(styledInt[i].ToString(), state.NumberingSystem));
+            digitCount++;
+        }
+
+        var intPart = grouped.ToString();
+
+        // Sign.
+        if (negative && state.SignDisplay != "never")
+            parts.Add(new IntlPart("minusSign", nfi.NegativeSign, state.Unit));
+        parts.Add(new IntlPart("integer", intPart, state.Unit));
+
+        if (styledFrac.Length > 0)
+        {
+            parts.Add(new IntlPart("decimal", nfi.NumberDecimalSeparator, state.Unit));
+            parts.Add(new IntlPart("fraction", ApplyNumberingSystem(styledFrac, state.NumberingSystem), state.Unit));
+        }
+
+        if (string.Equals(state.Style, "percent", StringComparison.Ordinal))
+            parts.Add(new IntlPart("percentSign", nfi.PercentSymbol, state.Unit));
+
+        return string.Concat(parts.Select(static p => p.Value));
     }
 
     private string FormatNumber(JsValue value, NumberFormatState state)
