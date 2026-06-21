@@ -2558,6 +2558,10 @@ public sealed partial class BytecodeInterpreter
         // "min2" means at least 5 integer digits needed for grouping.
         bool groupingMin2 = string.Equals(useGroupingValue, "min2", StringComparison.Ordinal);
 
+        // Zero with no mandatory fraction digits should format as "0", not "0.000".
+        if (absValue == 0 && minFrac == 0 && !hasSigDigits)
+            return new[] { new IntlPart("integer", ApplyNumberingSystem("0", state.NumberingSystem), state.Unit) };
+
         // Format using .NET's ICU-backed NumberFormatInfo with fraction digits.
         var cnf = (NumberFormatInfo)nfi.Clone();
         cnf.NumberDecimalDigits = maxFrac;
