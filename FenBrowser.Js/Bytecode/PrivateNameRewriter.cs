@@ -187,6 +187,20 @@ internal static class PrivateNameRewriter
                 }
                 return new CallExpressionNode(callee, args, call.Span);
 
+            case OptionalCallExpressionNode optCall:
+                var optCallee = RewriteExpression(optCall.Callee, m);
+                var optArgs = new ExpressionNode[optCall.Arguments.Count];
+                for (int i = 0; i < optCall.Arguments.Count; i++)
+                    optArgs[i] = RewriteExpression(optCall.Arguments[i], m);
+                return new OptionalCallExpressionNode(optCallee, optArgs, optCall.Span);
+
+            case OptionalMemberExpressionNode optMember:
+                var optObj = RewriteExpression(optMember.Object, m);
+                if (!optMember.Computed && optMember.Property.StartsWith('#') && m.TryGetValue(optMember.Property, out var optMangled))
+                    return new OptionalMemberExpressionNode(optObj, optMangled, false, null, optMember.Span);
+                var optPropExpr = optMember.PropertyExpression is null ? null : RewriteExpression(optMember.PropertyExpression, m);
+                return new OptionalMemberExpressionNode(optObj, optMember.Property, optMember.Computed, optPropExpr, optMember.Span);
+
             case NewExpressionNode ne:
                 var neCallee = RewriteExpression(ne.Callee, m);
                 var neArgs = new ExpressionNode[ne.Arguments.Count];
