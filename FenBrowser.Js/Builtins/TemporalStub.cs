@@ -5745,7 +5745,6 @@ public sealed class TemporalStub : IBuiltinModule
             System.Numerics.BigInteger roundedNs = RoundNsToIncrement(ctx, totalNs, tUnitNs, mode);
             System.Numerics.BigInteger rd = roundedNs / 86_400_000_000_000L;
             System.Numerics.BigInteger rr = roundedNs % 86_400_000_000_000L;
-            if (rr < 0) { rd--; rr += 86_400_000_000_000L; }
             var newEnd = IsoMath.EpochDaysToCivil(anchorEpoch + (long)rd);
             var diff = sys.Difference(anchor, newEnd, largestEff);
             long r = (long)rr;
@@ -5790,7 +5789,6 @@ public sealed class TemporalStub : IBuiltinModule
         }
 
         // Year / Month / Week rounding: round the target unit then rebalance.
-        remainderNs = 0; // calendar-unit rounding discards sub-unit fractions
         if (unit == "year")
         {
             years = RoundToIncrement((long)years, (long)months, 12, increment, mode, out long ovf, out _);
@@ -5848,8 +5846,11 @@ public sealed class TemporalStub : IBuiltinModule
         }
         else if (unit == "week")
         {
-            weeks = RoundToIncrement((long)weeks, (long)days, 7, increment, mode, out long ovf, out _);
-            if (ovf != 0) weeks += ovf / 7;
+            System.Numerics.BigInteger weekNs = new System.Numerics.BigInteger((long)weeks * 7L + (long)days)
+                * NsPerDay + remainderNs;
+            System.Numerics.BigInteger roundedWeekNs = RoundNsToIncrement(ctx, weekNs,
+                new System.Numerics.BigInteger(increment) * 7L * NsPerDay, mode);
+            weeks = (double)(roundedWeekNs / (7L * NsPerDay));
             days = 0;
         }
 
@@ -5944,7 +5945,7 @@ public sealed class TemporalStub : IBuiltinModule
                 smallest = svStr;
             }
 
-            if (smallest is null && (largest is null || largest == "auto"))
+            if (smallest is null && largest is null)
                 throw new JsThrownException(ctx.CreateRangeError("round requires smallestUnit or largestUnit."));
         }
         else
@@ -5953,25 +5954,27 @@ public sealed class TemporalStub : IBuiltinModule
         }
 
         var dur = DecodeDuration(h, o);
+        smallest ??= "nanosecond";
+        string defaultLargest = DefaultLargestUnit(dur);
+        string largestEff = largest is null or "auto"
+            ? (DiffUnitRank(defaultLargest) <= DiffUnitRank(smallest) ? defaultLargest : smallest)
+            : largest;
+        if (DiffUnitRank(largestEff) > DiffUnitRank(smallest))
+            throw new JsThrownException(ctx.CreateRangeError("smallestUnit is larger than largestUnit."));
+
+        long maximumIncrement = MaxDurationRoundingIncrement(smallest);
+        if (maximumIncrement != 0 && (increment >= maximumIncrement || maximumIncrement % (long)increment != 0))
+            throw new JsThrownException(ctx.CreateRangeError("roundingIncrement does not divide evenly."));
+        if (increment > 1 && (IsCalendarUnit(smallest) || smallest == "day") && largestEff != smallest)
+            throw new JsThrownException(ctx.CreateRangeError("A calendar-unit increment requires matching largestUnit and smallestUnit."));
+
         bool hasCalendarUnits = dur.years != 0 || dur.months != 0 || dur.weeks != 0
-            || IsCalendarUnit(smallest) || (largest is not null && largest != "auto" && IsCalendarUnit(largest));
+            || IsCalendarUnit(smallest) || IsCalendarUnit(largestEff);
         if (hasCalendarUnits && relTo is null)
             throw new JsThrownException(ctx.CreateRangeError("Calendar units require relativeTo."));
         if (hasCalendarUnits)
         {
-            return DurationRoundCalendar(ctx, h, dur, smallest, largest, increment, mode, relTo!.Value);
-        }
-        smallest ??= "nanosecond";
-        string largestEff = largest is null or "auto"
-            ? (UnitRank(DefaultLargestUnit(dur)) <= UnitRank(smallest) ? DefaultLargestUnit(dur) : smallest)
-            : largest;
-        if (UnitRank(smallest) < UnitRank(largestEff))
-            throw new JsThrownException(ctx.CreateRangeError("smallestUnit is larger than largestUnit."));
-        if (smallest != "day")
-        {
-            long maxInc = smallest == "hour" ? 24 : smallest is "minute" or "second" ? 60 : 1000;
-            if (increment >= maxInc || maxInc % (long)increment != 0)
-                throw new JsThrownException(ctx.CreateRangeError("roundingIncrement does not divide evenly."));
+            return DurationRoundCalendar(ctx, h, dur, smallest, largestEff, increment, mode, relTo!.Value);
         }
 
         var rounded = RoundNsToIncrement(ctx, DurationDayTimeNs(dur), (System.Numerics.BigInteger)increment * UnitNs(smallest), mode);

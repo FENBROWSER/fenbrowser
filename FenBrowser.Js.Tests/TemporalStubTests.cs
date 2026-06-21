@@ -99,4 +99,31 @@ public sealed class TemporalStubTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void DurationRoundValidatesEffectiveUnitsBeforeCalendarRounding()
+    {
+        var result = Run("""
+            const relativeTo = Temporal.PlainDate.from("2020-01-01");
+            const duration = new Temporal.Duration(1, 1, 1, 1, 25);
+            const hours = new Temporal.Duration(0, 0, 0, 0, 25);
+            let invalidIncrement = false;
+            let invalidUnitOrder = false;
+            try { duration.round({ relativeTo, smallestUnit: "hour", roundingIncrement: 11 }); }
+            catch (error) { invalidIncrement = error instanceof RangeError; }
+            try { duration.round({ relativeTo, largestUnit: "month", smallestUnit: "year" }); }
+            catch (error) { invalidUnitOrder = error instanceof RangeError; }
+            const unchanged = hours.round({ largestUnit: "auto" });
+            const weeks = new Temporal.Duration(0, 0, 0, 29).round({
+                relativeTo,
+                largestUnit: "week",
+                smallestUnit: "week",
+                roundingIncrement: 5,
+                roundingMode: "ceil"
+            });
+            invalidIncrement && invalidUnitOrder && unchanged.hours === 25 && weeks.weeks === 5;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }
