@@ -112,6 +112,21 @@ public sealed class SymbolBuiltin : IBuiltinModule
             JsValue.FromObject(descriptionGetterHandle), JsValue.Undefined, Enumerable: false, Configurable: true));
         heap.WriteBarrier(prototypeHandle, descriptionGetterHandle);
 
+        // ECMA-262 20.4.3.5 Symbol.prototype [ @@toPrimitive ] ( hint )
+        var toPrimitiveSym = context.CreateWellKnownSymbol("toPrimitive");
+        var toPrimitiveFn = new NativeFunctionObject("[Symbol.toPrimitive]",
+            (thisValue, _) =>
+            {
+                if (thisValue.Tag == JsValueTag.Symbol) return thisValue;
+                if (thisValue.Tag == JsValueTag.Object && heap.GetObject(thisValue.AsObjectHandle()) is SymbolObject so)
+                    return JsValue.SymbolFromId(so.SymbolId);
+                throw new JsThrownException(context.CreateTypeError("Symbol.prototype[@@toPrimitive] called on incompatible receiver."));
+            }, length: 1);
+        var toPrimitiveFnHandle = heap.AllocateObject(toPrimitiveFn, AllocationSite.Current());
+        prototype.DefineOwnSymbolProperty(toPrimitiveSym.AsSymbolId(),
+            new JsPropertyDescriptor(JsValue.FromObject(toPrimitiveFnHandle), Writable: true, Enumerable: false, Configurable: true));
+        heap.WriteBarrier(prototypeHandle, toPrimitiveFnHandle);
+
         return new[] { BuiltinBinding.NonEnumerable("Symbol", JsValue.FromObject(handle)) };
     }
 }
