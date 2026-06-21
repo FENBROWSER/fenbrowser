@@ -112,10 +112,14 @@ public sealed class ErrorBuiltins : IBuiltinModule
             var capturedCtx = ctx;
             var stackGetter = new NativeFunctionObject("get stack", (thisValue, _) =>
             {
+                // ECMA-262 20.5.5.2: If this value is not an Object, throw TypeError.
+                if (thisValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(ctx.CreateTypeError("Error.prototype.stack getter called on non-object."));
                 var msg = string.Empty;
-                if (thisValue.Tag == JsValueTag.Object &&
-                    ctx.Heap.GetObject(thisValue.AsObjectHandle()).TryGetOwnProperty("message", out var msgDesc))
-                    msg = msgDesc.Value.Tag == JsValueTag.String ? msgDesc.Value.AsString() : string.Empty;
+                var obj = ctx.Heap.GetObject(thisValue.AsObjectHandle());
+                if (obj.TryGetOwnProperty("message", out var msgDesc) &&
+                    msgDesc.Value.Tag == JsValueTag.String)
+                    msg = msgDesc.Value.AsString();
                 return JsValue.FromString(capturedCtx.CaptureCallStack(name, msg));
             }, length: 0);
             var stackSetter = new NativeFunctionObject("set stack", (thisValue, args) =>
