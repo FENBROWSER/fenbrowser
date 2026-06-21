@@ -1048,7 +1048,7 @@ public sealed class BytecodeCompiler
         _compilingClassConstructor = privateMangle.Count > 0;
         _isDerivedConstructor = isDerived;
         _isClassConstructor = true;
-        var classReg = CompileFunctionExpressionToRegister(constructorFn);
+        var classReg = CompileFunctionExpressionToRegister(constructorFn, FunctionKind.Constructor);
         _compilingClassConstructor = savedConstructorContext;
         _isDerivedConstructor = savedIsDerived;
         _isClassConstructor = savedIsClassConstructor;
@@ -1215,7 +1215,7 @@ public sealed class BytecodeCompiler
         }
     }
 
-    private int CompileFunctionExpressionToRegister(FunctionExpressionNode fnExpr)
+    private int CompileFunctionExpressionToRegister(FunctionExpressionNode fnExpr, FunctionKind? explicitKind = null)
     {
         var nestedProgram = BuildFunctionProgramWithParameterBindings(
             fnExpr.Body.Statements,
@@ -1224,6 +1224,15 @@ public sealed class BytecodeCompiler
             fnExpr.ParameterBindings,
             out var prologueCount,
             fnExpr.ParameterDefaults);
+        // NOTE: the _isClassConstructor flag is intentionally NOT used for
+        // functionKind selection — it is true during compilation of the entire
+        // class body (constructor + field initializers), and would incorrectly
+        // mark every nested function as FunctionKind.Constructor, causing
+        // "Class constructor cannot be invoked without 'new'" errors when
+        // constructing property-accessed functions (e.g. new c.B() where B is
+        // a class expression or function expression in a field initializer).
+        // Instead, the caller for the direct class constructor passes
+        // FunctionKind.Constructor via explicitKind.
         var childCompiler = new BytecodeCompiler { _compilingClassConstructor = this._compilingClassConstructor, _isDerivedConstructor = this._isDerivedConstructor, _isClassConstructor = this._isClassConstructor, _brandTokens = this._brandTokens, _computedFieldNames = this._computedFieldNames };
         var nestedFunction = childCompiler.CompileProgramCore(
             nestedProgram,
@@ -1232,9 +1241,8 @@ public sealed class BytecodeCompiler
             fnExpr.Name,
             hasOwnArgumentsObject: true,
             hasSimpleParameterList: fnExpr.HasSimpleParameterList,
-            functionKind: _isClassConstructor
-                ? FunctionKind.Constructor
-                : SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false, isMethod: fnExpr.IsMethod),
+            functionKind: explicitKind
+                ?? SelectFunctionKind(fnExpr.IsAsync, fnExpr.IsGenerator, isArrow: false, isMethod: fnExpr.IsMethod),
             inheritedStrictMode: _isStrictMode,
             captureCompletionValue: false,
             prologueStatementCount: prologueCount,
