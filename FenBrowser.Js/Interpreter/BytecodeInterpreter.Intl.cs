@@ -2422,6 +2422,10 @@ public sealed partial class BytecodeInterpreter
     private IReadOnlyList<IntlPart> FormatNumberWithSignificantDigits(double absValue, bool negative,
         int minSig, int maxSig, NumberFormatInfo nfi, NumberFormatState state)
     {
+        // ECMA-402: percent style multiplies the value by 100 before formatting.
+        if (string.Equals(state.Style, "percent", StringComparison.Ordinal))
+            absValue *= 100;
+
         if (absValue == 0)
         {
             // Zero with significant digits: "0" padded to minSig zeros.
@@ -2430,6 +2434,8 @@ public sealed partial class BytecodeInterpreter
                 parts.Add(new IntlPart("minusSign", nfi.NegativeSign, state.Unit));
             var zeros = new string('0', Math.Max(1, minSig));
             parts.Add(new IntlPart("integer", ApplyNumberingSystem(zeros, state.NumberingSystem), state.Unit));
+            if (string.Equals(state.Style, "percent", StringComparison.Ordinal))
+                parts.Add(new IntlPart("percentSign", nfi.PercentSymbol, state.Unit));
             return parts;
         }
 
@@ -2489,6 +2495,9 @@ public sealed partial class BytecodeInterpreter
                 result.Add(new IntlPart("fraction", ApplyNumberingSystem(fracPart, state.NumberingSystem), state.Unit));
             }
         }
+
+        if (string.Equals(state.Style, "percent", StringComparison.Ordinal))
+            result.Add(new IntlPart("percentSign", nfi.PercentSymbol, state.Unit));
 
         return result;
     }
