@@ -10004,6 +10004,36 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateTypeError("JSON.stringify exceeded the maximum serialization depth."));
         }
 
+        // ECMA-262 25.5.2.1 SerializeJSONProperty: object handling.
+        if (value.Tag == JsValueTag.Object)
+        {
+            var obj = _heap.GetObject(value.AsObjectHandle());
+
+            // Step 4.a: skip callables (functions).
+            if (obj is JsFunctionObject or NativeFunctionObject)
+                return inArray ? "null" : null;
+
+            // Step 7: call toJSON if present (before wrapper check because
+            // toJSON may return a non-object value).
+            if (TryGetPropertyValue(obj, value, "toJSON", out var toJson) && IsCallable(toJson))
+            {
+                value = CallFunction(toJson, new[] { JsValue.FromString("") }, value);
+            }
+
+            // Step 8: after toJSON, unwrap wrapper objects.
+            if (value.Tag == JsValueTag.Object)
+            {
+                obj = _heap.GetObject(value.AsObjectHandle());
+                if (obj is StringObject)
+                    return QuoteJsonString(ToStringValue(value));
+                if (obj is NumberObject)
+                    return StringifyJsonNumber(ToNumber(value));
+                if (obj is BooleanObject bo)
+                    return bo.Value ? "true" : "false";
+                return StringifyJsonObject(value, ctx, depth, inArray);
+            }
+        }
+
         return value.Tag switch
         {
             JsValueTag.Undefined => inArray ? "null" : null,
@@ -10012,7 +10042,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             JsValueTag.Int32 => value.AsInt32().ToString(System.Globalization.CultureInfo.InvariantCulture),
             JsValueTag.Number => StringifyJsonNumber(value.AsNumber()),
             JsValueTag.String => QuoteJsonString(value.AsString()),
-            JsValueTag.Object => StringifyJsonObject(value, ctx, depth, inArray),
             _ => inArray ? "null" : null
         };
     }
