@@ -9918,14 +9918,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (args.Count > 2)
         {
             var space = args[2];
-            if (space.Tag == JsValueTag.Number || space.Tag == JsValueTag.Int32)
+            // ECMA-262 25.5.2: space parameter — Number (or NumberObject) →
+            // indent with spaces; String (or StringObject) → indent with chars.
+            // ToNumber/ToString on Objects invoke valueOf/toString, unwrapping
+            // NumberObject/StringObject per spec.
+            if (space.Tag == JsValueTag.Number || space.Tag == JsValueTag.Int32 ||
+                (space.Tag == JsValueTag.Object && _heap.GetObject(space.AsObjectHandle()) is NumberObject))
             {
                 var n = (int)Math.Clamp(Math.Floor(ToNumber(space)), 0, 10);
                 if (n > 0) gap = new string(' ', n);
             }
-            else if (space.Tag == JsValueTag.String)
+            else if (space.Tag == JsValueTag.String ||
+                     (space.Tag == JsValueTag.Object && _heap.GetObject(space.AsObjectHandle()) is StringObject))
             {
-                var s = space.AsString();
+                var s = ToStringValue(space);
                 gap = s.Length > 10 ? s.Substring(0, 10) : s;
             }
         }
