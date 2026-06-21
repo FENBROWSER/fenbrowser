@@ -3296,6 +3296,45 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // ECMA-262 24.1 Map. Same shape as Set with an explicit key + value pair per
     // entry; SameValueZero is the key-identity rule (NaN-key matches NaN, +0/-0
     // collapse).
+    // ECMA-262 24.1.1.1 AddEntriesFromIterable. Drains an iterable of [key,value]
+    // pairs into a Map using its `set` method. If `set` throws, the iterator is
+    // closed via IteratorClose before propagating the error.
+    private void AddEntriesToMap(MapObject map, ObjectHandle mapHandle, JsValue iterable)
+    {
+        if (iterable.Tag == JsValueTag.Undefined || iterable.Tag == JsValueTag.Null)
+            return;
+        var mapValue = JsValue.FromObject(mapHandle);
+        var adder = GetReceiverProperty(mapValue, "set");
+        if (!IsCallable(adder))
+            throw new JsThrownException(CreateTypeError("Map.prototype.set is not callable."));
+        // Use the lazy iterator (CreateForOfIteratorState) so the original
+        // iterator's `return` method is preserved for IteratorClose on abrupt
+        // completion. CreateForOfIterator drains eagerly and loses `return`.
+        var iter = CreateForOfIteratorState(iterable, requireIterable: true);
+        if (iter.Tag != JsValueTag.Object || _heap.GetObject(iter.AsObjectHandle()) is not ForOfIteratorObject forOf)
+            throw new JsThrownException(CreateTypeError("Map constructor requires an iterable."));
+        try
+        {
+            while (!ForOfStepDone(forOf, out var entry))
+            {
+                if (entry.Tag != JsValueTag.Object)
+                {
+                    CloseForOfIteratorState(forOf);
+                    throw new JsThrownException(CreateTypeError("Iterator value is not an entry object."));
+                }
+                var entryObj = _heap.GetObject(entry.AsObjectHandle());
+                TryGetPropertyValue(entryObj, entry, "0", out var k);
+                TryGetPropertyValue(entryObj, entry, "1", out var v);
+                _ = CallFunction(adder, new[] { k, v }, mapValue);
+            }
+        }
+        catch (JsThrownException)
+        {
+            CloseForOfIteratorState(forOf);
+            throw;
+        }
+    }
+
     private ObjectHandle EnsureMapConstructor()
     {
         if (_mapConstructorHandle is { } existing)
@@ -3316,32 +3355,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var map = new MapObject();
                 map.SetPrototype(EnsureMapPrototype());
                 var handle = _heap.AllocateObject(map, AllocationSite.Current());
-                if (args.Count > 0 && args[0].Tag == JsValueTag.Object)
+                _heap.PushRoot(handle);
+                try
                 {
-                    var src = _heap.GetObject(args[0].AsObjectHandle());
-                    if (src is ArrayObject)
+                    if (args.Count > 0)
                     {
-                        var len = GetArrayLength(src);
-                        for (var i = 0; i < len; i++)
-                        {
-                            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                            if (!TryGetPropertyValue(src, args[0], key, out var entry) ||
-                                entry.Tag != JsValueTag.Object)
-                            {
-                                throw new JsThrownException(CreateTypeError(
-                                    "Iterator value " + i + " is not an entry object."));
-                            }
-
-                            var entryObj = _heap.GetObject(entry.AsObjectHandle());
-                            TryGetPropertyValue(entryObj, entry, "0", out var k);
-                            TryGetPropertyValue(entryObj, entry, "1", out var v);
-                            map.Set(k, v);
-                            if (k.Tag == JsValueTag.Object) _heap.WriteBarrier(handle, k.AsObjectHandle());
-                            if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(handle, v.AsObjectHandle());
-                        }
+                        AddEntriesToMap(map, handle, args[0]);
                     }
                 }
-
+                finally
+                {
+                    _heap.PopRootsTo(_heap.RootCount - 1);
+                }
                 return JsValue.FromObject(handle);
             },
             length: 0);
