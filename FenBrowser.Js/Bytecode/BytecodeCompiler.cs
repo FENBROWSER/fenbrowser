@@ -139,6 +139,12 @@ public sealed class BytecodeCompiler
 
     public BytecodeFunction CompileProgram(ProgramNode program, bool inheritedStrictMode)
     {
+        // ECMA-262: modules always evaluate asynchronously; top-level await is
+        // allowed, and even without it the module returns a Promise. Compile
+        // module bodies with FunctionKind.Async so the await opcode is emitted.
+        var kind = program.Kind == ProgramKind.Module
+            ? FunctionKind.Async
+            : FunctionKind.Ordinary;
         return CompileProgramCore(
             program,
             parameters: Array.Empty<string>(),
@@ -146,7 +152,7 @@ public sealed class BytecodeCompiler
             name: null,
             hasOwnArgumentsObject: false,
             hasSimpleParameterList: true,
-            functionKind: FunctionKind.Ordinary,
+            functionKind: kind,
             inheritedStrictMode: inheritedStrictMode,
             captureCompletionValue: true);
     }
