@@ -8701,6 +8701,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
             if (!targetDesc.Configurable)
             {
+                // ECMA-262 9.5.6 step 11.b: targetDesc.[[Configurable]] is false.
+                // If Desc has [[Configurable]] field set to true, throw TypeError.
+                if (hasConfigurable && !setsConfigurableFalse)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Proxy defineProperty trap cannot make a non-configurable property configurable."));
+                }
+
                 if (!targetDesc.IsAccessor)
                 {
                     if (hasGet || hasSet)
