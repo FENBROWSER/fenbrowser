@@ -619,39 +619,41 @@ public sealed class StringBuiltin : IBuiltinModule
     private static JsValue Replace(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var s = RequireString(ctx, thisValue);
-        if (args.Count < 2) return JsValue.FromString(s);
+        var searchValue = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var replaceValue = args.Count > 1 ? args[1] : JsValue.Undefined;
 
-        if (TryDispatchToSymbolMethod(ctx, args[0], "replace", JsValue.FromString(s), args[1], out var dispatched))
+        if (TryDispatchToSymbolMethod(ctx, searchValue, "replace", JsValue.FromString(s), replaceValue, out var dispatched))
             return dispatched;
 
-        var search = ctx.ToStringValue(args[0]);
+        var search = ctx.ToStringValue(searchValue);
         var idx = s.IndexOf(search, StringComparison.Ordinal);
         if (idx < 0) return JsValue.FromString(s);
-        var replacement = ResolveReplacement(ctx, args[1], s, idx, search);
+        var replacement = ResolveReplacement(ctx, replaceValue, s, idx, search);
         return JsValue.FromString(string.Concat(s[..idx], replacement, s[(idx + search.Length)..]));
     }
 
     private static JsValue ReplaceAll(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var s = RequireString(ctx, thisValue);
-        if (args.Count < 2) return JsValue.FromString(s);
+        var searchValue = args.Count > 0 ? args[0] : JsValue.Undefined;
+        var replaceValue = args.Count > 1 ? args[1] : JsValue.Undefined;
 
         // 22.1.3.20 step 2.b: a RegExp searchValue must carry the global flag.
-        if (args[0].Tag == JsValueTag.Object &&
-            ctx.Heap.GetObject(args[0].AsObjectHandle()) is RegExpObject &&
-            ctx.TryGetPropertyValue(ctx.Heap.GetObject(args[0].AsObjectHandle()), args[0], "flags", out var flagsValue) &&
+        if (searchValue.Tag == JsValueTag.Object &&
+            ctx.Heap.GetObject(searchValue.AsObjectHandle()) is RegExpObject &&
+            ctx.TryGetPropertyValue(ctx.Heap.GetObject(searchValue.AsObjectHandle()), searchValue, "flags", out var flagsValue) &&
             ctx.ToStringValue(flagsValue).IndexOf('g') < 0)
         {
             throw new JsThrownException(ctx.CreateTypeError(
                 "String.prototype.replaceAll called with a non-global RegExp argument."));
         }
 
-        if (TryDispatchToSymbolMethod(ctx, args[0], "replace", JsValue.FromString(s), args[1], out var dispatched))
+        if (TryDispatchToSymbolMethod(ctx, searchValue, "replace", JsValue.FromString(s), replaceValue, out var dispatched))
             return dispatched;
 
-        var search = ctx.ToStringValue(args[0]);
+        var search = ctx.ToStringValue(searchValue);
         if (search.Length == 0) return JsValue.FromString(s);
-        var replacement = args[1];
+        var replacement = replaceValue;
         var sb = new System.Text.StringBuilder();
         var start = 0;
         while (start <= s.Length)

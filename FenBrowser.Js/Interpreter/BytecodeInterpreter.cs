@@ -1,4 +1,5 @@
 using FenBrowser.Js.Builtins;
+using FenBrowser.Js.Ast;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
@@ -969,6 +970,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 _ = frame.Environment.InitializeBinding("arguments", argumentsObject);
             }
 
+            ValidateDeclarationInstantiation(function, frame);
             InstantiateVarDeclarations(function, frame);
             InstantiateLexicalDeclarations(function, frame);
         }
@@ -1607,6 +1609,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     else
                     {
                         ThrowOrHandle(frame, CreateTypeError("SetPrototype value must be Object or null."));
+                    }
+
+                    break;
+                }
+                case OpCode.ValidateClassHeritage:
+                {
+                    var heritage = frame.Registers[ins.A];
+                    if (heritage.Tag != JsValueTag.Null &&
+                        (heritage.Tag != JsValueTag.Object ||
+                         !IsConstructableTarget(heritage.AsObjectHandle())))
+                    {
+                        ThrowOrHandle(frame, CreateTypeError("Class extends value is not a constructor or null."));
                     }
 
                     break;
@@ -5310,6 +5324,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             var program = JsParser.ParseScript(new SourceText(args[0].AsString(), "<eval>"),
                 inheritedStrictMode: directEvalStrictMode);
+            if (program.Body.Count == 1 &&
+                program.Body[0] is ExpressionStatementNode
+                {
+                    Expression: RegexLiteralExpressionNode regexLiteral
+                } &&
+                IsSimpleAnnexBIdentityLiteral(regexLiteral.RawText))
+            {
+                return CreateLazyRegExpLiteral(regexLiteral.RawText);
+            }
             compiled = new BytecodeCompiler().CompileProgram(program, inheritedStrictMode: directEvalStrictMode);
             compiled.IsEvalCode = true;
             new BytecodeVerifier().Verify(compiled);
@@ -5344,6 +5367,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             Array.Empty<JsValue>(),
             JsValue.FromObject(globalHandle),
             frameEnvironment: env);
+    }
+
+    private static bool IsSimpleAnnexBIdentityLiteral(string rawText)
+    {
+        var lastSlash = rawText.LastIndexOf('/');
+        if (lastSlash <= 0 || lastSlash != rawText.Length - 1) return false;
+        var pattern = rawText[1..lastSlash];
+        return (pattern.Length == 2 && pattern[0] == '\\') ||
+               (pattern.Length == 3 && pattern[0] == 'a' && pattern[1] == '\\');
+    }
+
+    private JsValue CreateLazyRegExpLiteral(string rawText)
+    {
+        var lastSlash = rawText.LastIndexOf('/');
+        var pattern = rawText[1..lastSlash];
+        const string flags = "";
+        var regexp = new RegExpObject(pattern, flags, () =>
+        {
+            var compiled = RegExpCompiler.Compile(pattern, flags);
+            var native = RegExpCompiler.CompileNative(pattern, flags);
+            return (compiled.Regex, native);
+        });
+        regexp.SetPrototype(_regexpPrototypeHandle ?? GetGlobalPrototype("RegExp"));
+        _ = regexp.DefineOwnProperty(
+            "lastIndex",
+            new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
+        return JsValue.FromObject(_heap.AllocateObject(regexp, AllocationSite.Current()));
     }
 
     // ECMA-262 19.2.1.3 EvalDeclarationInstantiation ( body, varEnv, lexEnv, privateEnv, strict )
@@ -5390,6 +5440,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // conflict with existing lexical bindings in any outer scope.
         if (!strict && callingEnv is not null)
         {
+            var callingFunction = _activeFrames.Count > 0
+                ? _activeFrames.Peek().Function
+                : null;
             var env = callingEnv;
             while (env is not null)
             {
@@ -5397,6 +5450,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 {
                     foreach (var name in varNames)
                     {
+                        if (env is FunctionEnvironmentRecord && callingFunction is not null &&
+                            (callingFunction.ParameterNames.Contains(name, StringComparer.Ordinal) ||
+                             callingFunction.VarDeclarationNames.Contains(name, StringComparer.Ordinal) ||
+                             (name == "arguments" && callingFunction.HasOwnArgumentsObject)))
+                        {
+                            continue;
+                        }
+
                         if (declEnv.HasLexicalBinding(name))
                             throw new JsThrownException(CreateSyntaxError(
                                 $"Cannot declare var binding '{name}' — a lexical binding with that name already exists."));
@@ -6762,7 +6823,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (normalizedFlags.Contains('i', StringComparison.Ordinal)) options |= RegexOptions.IgnoreCase;
         if (normalizedFlags.Contains('m', StringComparison.Ordinal)) options |= RegexOptions.Multiline;
         if (hasS) options |= RegexOptions.Singleline;
-        var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
+        var executionPattern = RegExpCompiler.RewriteAnnexBNonUnicodePattern(
+            pattern, RegexFlags.Parse(normalizedFlags.AsSpan()));
+        var dotNetPattern = RewriteEcmaCharacterClassEscapes(executionPattern);
         var namedGroupMapLiteral = new Dictionary<string, string>(StringComparer.Ordinal);
         dotNetPattern = RegExpCompiler.RewriteNamedGroupSyntaxForDotNet(dotNetPattern, namedGroupMapLiteral);
         if (hasU || hasV)
@@ -6954,7 +7017,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         if (hasS) options |= RegexOptions.Singleline;
-        var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
+        var executionPattern = RegExpCompiler.RewriteAnnexBNonUnicodePattern(
+            pattern, RegexFlags.Parse(normalizedFlags.AsSpan()));
+        var dotNetPattern = RewriteEcmaCharacterClassEscapes(executionPattern);
         // Rewrite \cX control escapes — .NET doesn't support them.
         // Replace each \cX with the literal control character \xHH per B.1.4.
         dotNetPattern = RegExpCompiler.RewriteControlEscapesForDotNet(dotNetPattern);
@@ -7200,6 +7265,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private JsValue RegExpPrototypeCompile(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var target = RegExpThisValue(thisValue);
+        if (_regexpPrototypeHandle is not { } intrinsicPrototype ||
+            target.PrototypeHandle != intrinsicPrototype)
+        {
+            throw new JsThrownException(CreateTypeError(
+                "RegExp.prototype.compile called on a non-intrinsic RegExp instance."));
+        }
+
         string newPattern;
         string newFlags;
         var patternArg = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -7218,6 +7290,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             newFlags = flagsArg.Tag == JsValueTag.Undefined ? string.Empty : ToStringValue(flagsArg);
         }
         var normalizedFlags = NormalizeRegExpFlags(newFlags);
+        try
+        {
+            var parsedFlags = RegexFlags.Parse(normalizedFlags.AsSpan());
+            RegExpCompiler.ValidatePatternEarlyErrors(newPattern, parsedFlags);
+        }
+        catch (RegexSyntaxError ex)
+        {
+            throw new JsThrownException(CreateSyntaxError(ex.Message));
+        }
+
         var hasS = normalizedFlags.Contains('s', StringComparison.Ordinal);
         var hasU = normalizedFlags.Contains('u', StringComparison.Ordinal);
         var hasV = normalizedFlags.Contains('v', StringComparison.Ordinal);
@@ -7227,7 +7309,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (normalizedFlags.Contains('i', StringComparison.Ordinal)) options |= RegexOptions.IgnoreCase;
         if (normalizedFlags.Contains('m', StringComparison.Ordinal)) options |= RegexOptions.Multiline;
         if (hasS) options |= RegexOptions.Singleline;
-        var dotNetPattern = RewriteEcmaCharacterClassEscapes(newPattern);
+        var executionPattern = RegExpCompiler.RewriteAnnexBNonUnicodePattern(
+            newPattern, RegexFlags.Parse(normalizedFlags.AsSpan()));
+        var dotNetPattern = RewriteEcmaCharacterClassEscapes(executionPattern);
+        dotNetPattern = RegExpCompiler.RewriteControlEscapesForDotNet(dotNetPattern);
         var namedGroupMapCompile = new Dictionary<string, string>(StringComparer.Ordinal);
         dotNetPattern = RegExpCompiler.RewriteNamedGroupSyntaxForDotNet(dotNetPattern, namedGroupMapCompile);
         if (hasU || hasV)
@@ -7235,9 +7320,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             dotNetPattern = RegExpCompiler.RewriteUnicodeCodePointEscapes(dotNetPattern);
             dotNetPattern = RegExpCompiler.RewriteUnicodePropertyEscapesForDotNet(dotNetPattern);
         }
+        dotNetPattern = RegExpCompiler.RewriteForwardBackreferences(dotNetPattern);
 
         BclRegex regex;
-        try
+        if (hasV)
+        {
+            regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
+        }
+        else try
         {
             regex = new BclRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250));
         }
@@ -7256,7 +7346,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 throw new JsThrownException(CreateSyntaxError(ex.Message));
             }
         }
-        target.Recompile(newPattern, normalizedFlags, regex);
+
+        RegexProgram? nativeProgram;
+        try
+        {
+            nativeProgram = RegExpCompiler.CompileNative(newPattern, normalizedFlags);
+        }
+        catch (RegexSyntaxError ex)
+        {
+            throw new JsThrownException(CreateSyntaxError(ex.Message));
+        }
+
+        target.Recompile(newPattern, normalizedFlags, regex, nativeProgram);
         // Also update the named group alias maps on the target.
         if (namedGroupMapCompile.Count > 0)
         {
@@ -7273,8 +7374,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
         // source/flags/flag-booleans are prototype accessors that read target.Flags
         // (just updated by Recompile). compile only needs to reset lastIndex to 0.
-        _ = target.DefineOwnProperty("lastIndex",
-            new JsPropertyDescriptor(JsValue.FromNumber(0), Writable: true, Enumerable: false, Configurable: false));
+        if (!target.SetProperty("lastIndex", JsValue.FromNumber(0)))
+        {
+            throw new JsThrownException(CreateTypeError("Cannot assign to read only RegExp lastIndex."));
+        }
         return thisValue;
     }
 
@@ -7648,23 +7751,26 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         if (thisValue.Tag != JsValueTag.Object)
             throw new JsThrownException(CreateTypeError("RegExp.prototype[@@split] called on non-object."));
-        var rxObj = _heap.GetObject(thisValue.AsObjectHandle());
         var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
+        var flags2 = ToStringValue(GetReceiverProperty(thisValue, "flags"));
+        var newFlags = flags2.Contains('y', StringComparison.Ordinal) ? flags2 : flags2 + "y";
+        var regExpCtorHandle = GetGlobalConstructorHandle("RegExp");
+        var species = SpeciesConstructor(thisValue, regExpCtorHandle);
+        var splitter = ConstructFunction(species, new[] { thisValue, JsValue.FromString(newFlags) });
         var limit = args.Count > 1 && args[1].Tag != JsValueTag.Undefined
-            ? (int)ToUint32(ToNumber(args[1]))
-            : int.MaxValue;
+            ? (long)ToUint32(ToNumber(args[1]))
+            : uint.MaxValue;
 
         if (limit == 0)
             return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(Array.Empty<JsValue>()), AllocationSite.Current()));
 
         // Fast path for real RegExp objects.
-        if (rxObj is RegExpObject splitRx)
+        if (splitter.Tag == JsValueTag.Object &&
+            _heap.GetObject(splitter.AsObjectHandle()) is RegExpObject splitRx)
         {
             // Coerce flags for observable side effects (getter can throw).
             // The .NET Regex path below accesses flags via the compiled pattern;
             // reading 'flags' here triggers the spec's Get(rx, "flags") step.
-            _ = ToStringValue(GetReceiverProperty(thisValue, "flags"));
-
             if (input.Length == 0)
             {
                 var m = splitRx.Regex.Match(input);
@@ -7703,10 +7809,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         // Fallback: species construction per spec steps 4, 7.
         // Build splitter = Construct(SpeciesConstructor(rx, %RegExp%), « rx, flags »).
-        var flags2 = ToStringValue(GetReceiverProperty(thisValue, "flags"));
-        var regExpCtorHandle = EnsureRegExpConstructor();
-        var species = SpeciesConstructor(thisValue, regExpCtorHandle);
-        var splitter = ConstructFunction(species, new[] { thisValue, JsValue.FromString(flags2) });
         if (splitter.Tag == JsValueTag.Object &&
             _heap.GetObject(splitter.AsObjectHandle()) is RegExpObject)
         {

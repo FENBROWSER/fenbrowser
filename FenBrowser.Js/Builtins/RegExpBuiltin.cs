@@ -154,8 +154,20 @@ public sealed class RegExpBuiltin : IBuiltinModule
             var idx = LastRegExpInput.IndexOf(LastCaptures[0], StringComparison.Ordinal);
             return idx > 0 ? LastRegExpInput[..idx] : string.Empty;
         });
+        DefineGetter("$`", () => {
+            if (string.IsNullOrEmpty(LastCaptures[0]) || string.IsNullOrEmpty(LastRegExpInput)) return string.Empty;
+            var idx = LastRegExpInput.IndexOf(LastCaptures[0], StringComparison.Ordinal);
+            return idx > 0 ? LastRegExpInput[..idx] : string.Empty;
+        });
         // rightContext
         DefineGetter("rightContext", () => {
+            if (string.IsNullOrEmpty(LastCaptures[0]) || string.IsNullOrEmpty(LastRegExpInput)) return string.Empty;
+            var idx = LastRegExpInput.IndexOf(LastCaptures[0], StringComparison.Ordinal);
+            if (idx < 0) return string.Empty;
+            var end = idx + LastCaptures[0].Length;
+            return end < LastRegExpInput.Length ? LastRegExpInput[end..] : string.Empty;
+        });
+        DefineGetter("$'", () => {
             if (string.IsNullOrEmpty(LastCaptures[0]) || string.IsNullOrEmpty(LastRegExpInput)) return string.Empty;
             var idx = LastRegExpInput.IndexOf(LastCaptures[0], StringComparison.Ordinal);
             if (idx < 0) return string.Empty;
@@ -242,7 +254,9 @@ public sealed class RegExpBuiltin : IBuiltinModule
             throw new JsThrownException(ctx.CreateSyntaxError(ex.Message));
         }
 
-        var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
+        var executionPattern = Regex.RegExpCompiler.RewriteAnnexBNonUnicodePattern(
+            pattern, Regex.RegexFlags.Parse(normalizedFlags.AsSpan()));
+        var dotNetPattern = RewriteEcmaCharacterClassEscapes(executionPattern);
         var namedGroupMap = new Dictionary<string, string>(StringComparer.Ordinal);
         dotNetPattern = Regex.RegExpCompiler.RewriteNamedGroupSyntaxForDotNet(dotNetPattern, namedGroupMap);
         if (hasU || hasV)
@@ -383,7 +397,13 @@ public sealed class RegExpBuiltin : IBuiltinModule
         var matchSymbolId = ctx.CreateWellKnownSymbol("match").AsSymbolId();
         if (objectValue.TryGetSymbolProperty(matchSymbolId, h => ctx.Heap.GetObject(h), out var descriptor))
         {
-            var matcher = descriptor.IsAccessor ? JsValue.Undefined : descriptor.Value;
+            var matcher = descriptor.Value;
+            if (descriptor.IsAccessor)
+            {
+                matcher = descriptor.Get.Tag == JsValueTag.Undefined
+                    ? JsValue.Undefined
+                    : ctx.CallFunction(descriptor.Get, Array.Empty<JsValue>(), value);
+            }
             if (matcher.Tag != JsValueTag.Undefined)
             {
                 return matcher.Tag switch

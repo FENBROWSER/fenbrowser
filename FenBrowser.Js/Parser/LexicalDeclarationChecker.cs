@@ -33,9 +33,9 @@ internal static class LexicalDeclarationChecker
     //
     // `treatFunctionsAsLexical`: a plain Block relaxes the duplicate/var early errors
     // for FunctionDeclarations (Annex B.3.2.4 web-compat: `{ function f(){} function f(){} }`
-    // and `{ function f(){} var f; }` are legal in sloppy code). A switch CaseBlock has no
-    // such Annex B relaxation, so its function names are full LexicallyDeclaredNames and
-    // participate in every early error. Callers pass true for switch CaseBlocks.
+    // and `{ function f(){} var f; }` are legal in sloppy code). A switch CaseBlock
+    // treats functions as lexical for collision checks, while Annex B.3.3.5 still
+    // permits duplicates that are bound only by FunctionDeclarations.
     private static void CheckScope(IReadOnlyList<StatementNode> statements, bool treatFunctionsAsLexical = false)
     {
         var lexNames = new HashSet<string>(System.StringComparer.Ordinal);
@@ -60,8 +60,9 @@ internal static class LexicalDeclarationChecker
                 case FunctionDeclarationNode f when f.Name is { Length: > 0 }:
                     if (treatFunctionsAsLexical)
                     {
-                        if (!lexNames.Add(f.Name))
+                        if (_strictMode && !funcNames.Add(f.Name))
                             throw new JsParserException($"Identifier '{f.Name}' has already been declared.");
+                        funcNames.Add(f.Name);
                     }
                     else
                     {
@@ -71,7 +72,7 @@ internal static class LexicalDeclarationChecker
             }
         }
 
-        if (lexNames.Count > 0)
+        if (lexNames.Count > 0 || (treatFunctionsAsLexical && funcNames.Count > 0))
         {
             // A lexical name may not also be a function declaration in this scope.
             foreach (var fn in funcNames)
@@ -91,6 +92,14 @@ internal static class LexicalDeclarationChecker
             {
                 if (varNames.Contains(lex))
                     throw new JsParserException($"Identifier '{lex}' has already been declared.");
+            }
+            if (treatFunctionsAsLexical)
+            {
+                foreach (var fn in funcNames)
+                {
+                    if (varNames.Contains(fn))
+                        throw new JsParserException($"Identifier '{fn}' has already been declared.");
+                }
             }
         }
 

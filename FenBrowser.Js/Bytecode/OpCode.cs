@@ -108,6 +108,10 @@ public enum OpCode : byte
     // child constructor's parent (so static methods inherit).
     SetPrototype,
 
+    // ClassDefinitionEvaluation heritage validation. A holds the evaluated
+    // superclass. Null is accepted; any other value must be a constructor.
+    ValidateClassHeritage,
+
     // H.4 - DefineGetter/DefineSetter(A=target reg, B=name idx, C=function reg).
     // Installs an accessor descriptor on the target object under the given
     // property name. If the target already has an accessor descriptor for that

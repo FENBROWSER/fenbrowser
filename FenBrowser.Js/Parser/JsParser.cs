@@ -3565,15 +3565,39 @@ public sealed class JsParser
                 case 'f': sb.Append('\f'); break;
                 case 'v': sb.Append('\v'); break;
                 case '0':
-                    // \0 is the null escape only when not followed by a digit.
-                    if (i + 1 >= body.Length || body[i + 1] < '0' || body[i + 1] > '9')
+                    if (i + 1 >= body.Length || body[i + 1] < '0' || body[i + 1] > '7')
                     {
                         sb.Append('\0');
                     }
                     else
                     {
-                        sb.Append('\0');
+                        var octal = 0;
+                        var digits = 1;
+                        while (digits < 3 && i + 1 < body.Length &&
+                               body[i + 1] is >= '0' and <= '7')
+                        {
+                            var candidate = (octal * 8) + (body[i + 1] - '0');
+                            if (candidate > 255) break;
+                            octal = candidate;
+                            i++;
+                            digits++;
+                        }
+                        sb.Append((char)octal);
                     }
+                    break;
+                case >= '1' and <= '7':
+                    var legacyOctal = next - '0';
+                    var legacyDigits = 1;
+                    while (legacyDigits < 3 && i + 1 < body.Length &&
+                           body[i + 1] is >= '0' and <= '7')
+                    {
+                        var candidate = (legacyOctal * 8) + (body[i + 1] - '0');
+                        if (candidate > 255) break;
+                        legacyOctal = candidate;
+                        i++;
+                        legacyDigits++;
+                    }
+                    sb.Append((char)legacyOctal);
                     break;
                 case '\'': sb.Append('\''); break;
                 case '"': sb.Append('"'); break;

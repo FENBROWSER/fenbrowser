@@ -52,6 +52,7 @@ public sealed class BytecodeCompiler
     private bool _compilingClassConstructor;
     private bool _isDerivedConstructor;
     private bool _isClassConstructor;
+    private bool _hasOwnArgumentsObject;
 
     // Per-function brand tokens for private field access validation.
     private List<long> _brandTokens = new();
@@ -213,6 +214,7 @@ public sealed class BytecodeCompiler
         _currentFunctionKind = functionKind;
         _isStrictMode = inheritedStrictMode || program.Kind == ProgramKind.Module || HasUseStrictDirective(program.Body);
         _captureCompletionValue = captureCompletionValue;
+        _hasOwnArgumentsObject = hasOwnArgumentsObject;
         foreach (var p in parameters)
         {
             _parameterNames.Add(p);
@@ -344,11 +346,24 @@ public sealed class BytecodeCompiler
                         _openScopeDepth++;
                     }
                 }
-                foreach (var nestedStatement in block.Statements)
+                for (var statementIndex = 0; statementIndex < block.Statements.Count; statementIndex++)
                 {
-                    if (nestedStatement is FunctionDeclarationNode nestedFunction)
+                    if (block.Statements[statementIndex] is FunctionDeclarationNode nestedFunction)
                     {
-                        CompileBlockFunctionDeclaration(nestedFunction);
+                        var superseded = false;
+                        for (var later = statementIndex + 1; later < block.Statements.Count; later++)
+                        {
+                            if (block.Statements[later] is FunctionDeclarationNode laterFunction &&
+                                laterFunction.Name == nestedFunction.Name)
+                            {
+                                superseded = true;
+                                break;
+                            }
+                        }
+                        if (!superseded)
+                        {
+                            CompileBlockFunctionDeclaration(nestedFunction);
+                        }
                     }
                 }
                 foreach (var nested in block.Statements)
@@ -578,7 +593,10 @@ public sealed class BytecodeCompiler
             _instructions.Add(new Instruction(OpCode.InitVar, dest, slot, 0));
             // Annex B.3.3: also copy the function value into the VariableEnvironment
             // binding of the same name (sloppy mode, no conflicting lexical decl).
-            if (!_isStrictMode && _annexBFunctionNames.Contains(functionDecl.Name))
+            var enclosingBlockBindings = _blockScopedNameStack.Count(
+                names => names.Contains(functionDecl.Name));
+            if (!_isStrictMode && _annexBFunctionNames.Contains(functionDecl.Name) &&
+                enclosingBlockBindings == 1)
             {
                 _instructions.Add(new Instruction(OpCode.StoreVarTop, dest, slot, 0));
             }
@@ -1070,6 +1088,9 @@ public sealed class BytecodeCompiler
         // class itself inherits from base (so static methods inherit).
         if (baseReg != -1)
         {
+            // IsConstructor is checked before reading superclass.prototype;
+            // the ordering is observable through accessors and proxies.
+            _instructions.Add(new Instruction(OpCode.ValidateClassHeritage, baseReg, 0, 0));
             var protoNameIdx_extends = GetOrCreatePropertyName("prototype");
             var basePrototypeReg = AllocateRegister();
             _instructions.Add(new Instruction(OpCode.GetPropByName, basePrototypeReg, baseReg, protoNameIdx_extends));
@@ -2366,13 +2387,17 @@ public sealed class BytecodeCompiler
         // parameter. For destructuring patterns, use EnterScope/LeaveScope to
         // create proper block-scoped bindings (B.3.5). Simple identifiers keep
         // the legacy var-scoped behaviour.
-        bool useBlockScope = tryCatchStmt.CatchPattern is not null;
+        bool useBlockScope = tryCatchStmt.CatchPattern is not null ||
+            tryCatchStmt.CatchIdentifier.Length > 0;
         List<int>? catchScopeSlots = null;
         if (useBlockScope)
         {
             catchScopeSlots = new List<int>();
             var names = new List<string>();
-            CollectBoundNames(tryCatchStmt.CatchPattern!, names);
+            if (tryCatchStmt.CatchPattern is not null)
+                CollectBoundNames(tryCatchStmt.CatchPattern, names);
+            else
+                names.Add(tryCatchStmt.CatchIdentifier);
             foreach (var name in names)
             {
                 var slot = GetOrCreateVariableSlot(name);
@@ -2410,8 +2435,9 @@ public sealed class BytecodeCompiler
         if (catchPattern is null)
         {
             var catchSlot = GetOrCreateVariableSlot(catchIdentifier);
-            _varDeclarationNames.Add(catchIdentifier);
-            _instructions.Add(new Instruction(OpCode.StoreVar, 0, catchSlot, 0));
+            if (!useBlockScope)
+                _varDeclarationNames.Add(catchIdentifier);
+            _instructions.Add(new Instruction(useBlockScope ? OpCode.InitVar : OpCode.StoreVar, 0, catchSlot, 0));
             return;
         }
 
@@ -2495,13 +2521,16 @@ public sealed class BytecodeCompiler
         _instructions.Add(new Instruction(OpCode.PushHandler, -1, 0, 0, D: -1));
 
         // EnterScope/LeaveScope for destructuring catch patterns (B.3.5).
-        bool useBlockScope = stmt.CatchPattern is not null;
+        bool useBlockScope = stmt.CatchPattern is not null || stmt.CatchIdentifier.Length > 0;
         List<int>? catchScopeSlots = null;
         if (useBlockScope)
         {
             catchScopeSlots = new List<int>();
             var names = new List<string>();
-            CollectBoundNames(stmt.CatchPattern!, names);
+            if (stmt.CatchPattern is not null)
+                CollectBoundNames(stmt.CatchPattern, names);
+            else
+                names.Add(stmt.CatchIdentifier);
             foreach (var name in names)
             {
                 var slot = GetOrCreateVariableSlot(name);
@@ -2589,11 +2618,24 @@ public sealed class BytecodeCompiler
                 _openScopeDepth++;
             }
 
-            foreach (var c in switchStmt.Cases)
+            var flattenedCaseStatements = switchStmt.Cases
+                .SelectMany(caseClause => caseClause.Consequent)
+                .ToArray();
+            for (var statementIndex = 0; statementIndex < flattenedCaseStatements.Length; statementIndex++)
             {
-                foreach (var statement in c.Consequent)
+                if (flattenedCaseStatements[statementIndex] is FunctionDeclarationNode functionDeclaration)
                 {
-                    if (statement is FunctionDeclarationNode functionDeclaration)
+                    var superseded = false;
+                    for (var later = statementIndex + 1; later < flattenedCaseStatements.Length; later++)
+                    {
+                        if (flattenedCaseStatements[later] is FunctionDeclarationNode laterFunction &&
+                            laterFunction.Name == functionDeclaration.Name)
+                        {
+                            superseded = true;
+                            break;
+                        }
+                    }
+                    if (!superseded)
                     {
                         CompileBlockFunctionDeclaration(functionDeclaration);
                     }
@@ -3910,6 +3952,10 @@ public sealed class BytecodeCompiler
         {
             topLevelConflicts.Add(p);
         }
+        if (_hasOwnArgumentsObject && !_parameterNames.Contains("arguments"))
+        {
+            topLevelConflicts.Add("arguments");
+        }
 
         foreach (var stmt in body)
         {
@@ -4085,6 +4131,14 @@ public sealed class BytecodeCompiler
     {
         var blockConflicts = new HashSet<string>(conflicts, StringComparer.Ordinal);
         CollectLexicalConflictNames(statements, blockConflicts);
+        var descendantConflicts = new HashSet<string>(blockConflicts, StringComparer.Ordinal);
+        foreach (var statement in statements)
+        {
+            if (statement is FunctionDeclarationNode { Name.Length: > 0 } directFunction)
+            {
+                descendantConflicts.Add(directFunction.Name);
+            }
+        }
 
         foreach (var stmt in statements)
         {
@@ -4098,7 +4152,7 @@ public sealed class BytecodeCompiler
                 continue;
             }
 
-            CollectAnnexBInStatement(stmt, blockConflicts, result);
+            CollectAnnexBInStatement(stmt, descendantConflicts, result);
         }
     }
 

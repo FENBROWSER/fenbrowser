@@ -11,6 +11,32 @@ namespace FenBrowser.Js.Interpreter;
 public sealed partial class BytecodeInterpreter
 {
 
+    private void ValidateDeclarationInstantiation(BytecodeFunction function, InterpreterFrame frame)
+    {
+        if (frame.Environment is not GlobalEnvironmentRecord global)
+        {
+            return;
+        }
+
+        foreach (var name in function.LexicalDeclarationNames.Concat(function.ConstDeclarationNames))
+        {
+            if (global.HasRestrictedGlobalProperty(name))
+            {
+                throw new JsThrownException(CreateSyntaxError(
+                    $"Cannot declare global lexical binding '{name}' over an existing var binding."));
+            }
+        }
+
+        foreach (var name in function.VarDeclarationNames)
+        {
+            if (global.HasLexicalDeclaration(name))
+            {
+                throw new JsThrownException(CreateSyntaxError(
+                    $"Cannot declare global var binding '{name}' over an existing lexical binding."));
+            }
+        }
+    }
+
     private void InstantiateVarDeclarations(BytecodeFunction function, InterpreterFrame frame)
     {
         // For eval code, Annex B B.3.3.3 requires var/function bindings to be
@@ -37,6 +63,7 @@ public sealed partial class BytecodeInterpreter
                 // ECMA-262: for eval code, a var declaration that conflicts
                 // with an existing lexical binding must be a SyntaxError.
                 if (isEval && frame.Environment is DeclarativeEnvironmentRecord declEnv &&
+                    frame.Environment is not FunctionEnvironmentRecord &&
                     declEnv.HasLexicalBinding(name))
                     throw new JsThrownException(CreateSyntaxError(
                         $"Cannot declare var binding '{name}' — a lexical binding with that name already exists."));

@@ -51,7 +51,8 @@ public static class RegExpCompiler
             return new CompiledRegExp(pattern, normalizedFlags, neutralRegex, parsedFlags, namedGroupMap);
         }
 
-        var dotNetPattern = RewriteEcmaCharacterClassEscapes(pattern);
+        var executionPattern = RewriteAnnexBNonUnicodePattern(pattern, parsedFlags);
+        var dotNetPattern = RewriteEcmaCharacterClassEscapes(executionPattern);
         dotNetPattern = RewriteNamedGroupSyntaxForDotNet(dotNetPattern, namedGroupMap);
         if (parsedFlags.Unicode || parsedFlags.UnicodeSets)
         {
@@ -181,11 +182,31 @@ public static class RegExpCompiler
 
     public static RegexProgram? CompileNative(string pattern, string flags)
     {
+        // The native VM does not yet implement lookbehind capture/backtracking
+        // semantics completely. The BCL matcher does, so keep this syntax on
+        // the compatibility path until the native implementation is complete.
+        if (pattern.Contains("(?<=", StringComparison.Ordinal) ||
+            pattern.Contains("(?<!", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var nativeFlags = RegexFlags.Parse(flags.AsSpan());
+        if (!nativeFlags.Unicode && !nativeFlags.UnicodeSets)
+        {
+            for (var index = 0; index + 1 < pattern.Length; index++)
+            {
+                if (pattern[index] == '\\' && pattern[index + 1] is >= '1' and <= '9')
+                {
+                    return null;
+                }
+            }
+        }
+
         RegexPattern ast;
         try
         {
-            var parsedFlags = RegexFlags.Parse(flags.AsSpan());
-            ast = RegexParser.Parse(pattern, parsedFlags);
+            ast = RegexParser.Parse(RewriteAnnexBNonUnicodePattern(pattern, nativeFlags), nativeFlags);
         }
         catch (RegexSyntaxError)
         {
@@ -214,6 +235,139 @@ public static class RegExpCompiler
         {
             return null;
         }
+    }
+
+    internal static string RewriteAnnexBNonUnicodePattern(string pattern, RegexFlags flags)
+    {
+        if (flags.Unicode || flags.UnicodeSets || string.IsNullOrEmpty(pattern))
+        {
+            return pattern;
+        }
+
+        static bool IsAsciiLetter(char value)
+            => value is >= 'A' and <= 'Z' or >= 'a' and <= 'z';
+        static bool IsHex(char value)
+            => value is >= '0' and <= '9' or >= 'A' and <= 'F' or >= 'a' and <= 'f';
+        static bool IsClassEscape(char value)
+            => value is 'd' or 'D' or 's' or 'S' or 'w' or 'W';
+
+        static bool HasNamedCapture(string source)
+        {
+            var inClass = false;
+            for (var index = 0; index + 3 < source.Length; index++)
+            {
+                if (source[index] == '\\')
+                {
+                    index++;
+                    continue;
+                }
+                if (source[index] == '[') { inClass = true; continue; }
+                if (source[index] == ']' && inClass) { inClass = false; continue; }
+                if (!inClass && source[index] == '(' && source[index + 1] == '?' &&
+                    source[index + 2] == '<' && source[index + 3] is not ('=' or '!'))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        var rewritten = new StringBuilder(pattern.Length + 8);
+        var hasNamedCapture = HasNamedCapture(pattern);
+        var inClass = false;
+        for (var i = 0; i < pattern.Length; i++)
+        {
+            var ch = pattern[i];
+            if (ch == '[')
+            {
+                inClass = true;
+                rewritten.Append(ch);
+                continue;
+            }
+            if (ch == ']' && inClass)
+            {
+                inClass = false;
+                rewritten.Append(ch);
+                continue;
+            }
+
+            // B.1.4 CharacterRangeOrUnion: a class escape cannot be a scalar
+            // range endpoint in non-Unicode mode; the hyphen joins the union.
+            if (inClass && ch == '-' && i + 2 < pattern.Length &&
+                pattern[i + 1] == '\\' && IsClassEscape(pattern[i + 2]))
+            {
+                rewritten.Append("\\-");
+                continue;
+            }
+
+            if (ch != '\\' || i + 1 >= pattern.Length)
+            {
+                rewritten.Append(ch);
+                continue;
+            }
+
+            var escape = pattern[i + 1];
+            if (escape == 'c')
+            {
+                var hasOperand = i + 2 < pattern.Length;
+                var operand = hasOperand ? pattern[i + 2] : '\0';
+                var valid = hasOperand && (IsAsciiLetter(operand) ||
+                    (inClass && (char.IsDigit(operand) || operand == '_')));
+                if (valid)
+                {
+                    rewritten.Append("\\x").Append(((int)operand % 32).ToString("x2"));
+                    i += 2;
+                }
+                else
+                {
+                    // Invalid ControlEscape falls through to a literal backslash
+                    // followed by "c"; the following code unit is parsed normally.
+                    rewritten.Append("\\\\c");
+                    i++;
+                }
+                continue;
+            }
+
+            if (escape == 'x' &&
+                (i + 3 >= pattern.Length || !IsHex(pattern[i + 2]) || !IsHex(pattern[i + 3])))
+            {
+                rewritten.Append('x');
+                i++;
+                continue;
+            }
+            if (escape == 'u' &&
+                (i + 5 >= pattern.Length || !IsHex(pattern[i + 2]) || !IsHex(pattern[i + 3]) ||
+                 !IsHex(pattern[i + 4]) || !IsHex(pattern[i + 5])))
+            {
+                rewritten.Append('u');
+                i++;
+                continue;
+            }
+            if (escape is 'p' or 'P')
+            {
+                rewritten.Append(escape);
+                i++;
+                continue;
+            }
+            if (escape == 'k' && !hasNamedCapture)
+            {
+                rewritten.Append('k');
+                i++;
+                continue;
+            }
+            if (char.IsLetter(escape) && escape is not ('d' or 'D' or 's' or 'S' or
+                'w' or 'W' or 'b' or 'B' or 'f' or 'n' or 'r' or 't' or 'v'))
+            {
+                rewritten.Append(escape);
+                i++;
+                continue;
+            }
+
+            rewritten.Append(ch).Append(escape);
+            i++;
+        }
+
+        return rewritten.ToString();
     }
 
     internal static bool ContainsUnicodePropertyEscape(string pattern)
@@ -287,6 +441,7 @@ public static class RegExpCompiler
         var inCharClass = false;
         var classStart = -1;
         var captureCount = 0;
+        var hasNamedCaptureSyntax = ContainsNamedCaptureSyntax(pattern);
 
         if (pattern.Length > 0 && IsQuantifierAtStart(pattern))
         {
@@ -306,6 +461,11 @@ public static class RegExpCompiler
                 var next = pattern[i + 1];
                 if (next == 'k')
                 {
+                    if (!flags.Unicode && !flags.UnicodeSets && !hasNamedCaptureSyntax)
+                    {
+                        i += 1;
+                        continue;
+                    }
                     // Named backreference \k<name>: always parsed as a backreference
                     // in all modes (Unicode and non-Unicode). ECMA-262 22.2.2.1.
                     if (i + 2 >= pattern.Length || pattern[i + 2] != '<')
@@ -649,6 +809,23 @@ public static class RegExpCompiler
                 }
             }
         }
+    }
+
+    private static bool ContainsNamedCaptureSyntax(string pattern)
+    {
+        var inClass = false;
+        for (var index = 0; index + 3 < pattern.Length; index++)
+        {
+            if (pattern[index] == '\\') { index++; continue; }
+            if (pattern[index] == '[') { inClass = true; continue; }
+            if (pattern[index] == ']' && inClass) { inClass = false; continue; }
+            if (!inClass && pattern[index] == '(' && pattern[index + 1] == '?' &&
+                pattern[index + 2] == '<' && pattern[index + 3] is not ('=' or '!'))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static bool TryCanonicalizeGroupNameToken(string rawName, out string canonicalName)

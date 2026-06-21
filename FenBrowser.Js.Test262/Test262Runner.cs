@@ -1479,6 +1479,26 @@ public sealed class Test262Runner
                    var realmBigInt = markRealmIntrinsic(function BigInt(value) {
                      return globalThis.BigInt(value);
                    }, "BigInt", BigInt.prototype);
+                   var intrinsicRegExpCompile = RegExp.prototype.compile;
+                   var realmRegExpPrototype = Object.create(RegExp.prototype);
+                   Object.defineProperty(realmRegExpPrototype, "compile", {
+                     value: function (pattern, flags) {
+                       if (Object.getPrototypeOf(this) !== realmRegExpPrototype) {
+                         throw new TypeError();
+                       }
+                       Object.setPrototypeOf(this, RegExp.prototype);
+                       try { return intrinsicRegExpCompile.call(this, pattern, flags); }
+                       finally { Object.setPrototypeOf(this, realmRegExpPrototype); }
+                     },
+                     writable: true,
+                     enumerable: false,
+                     configurable: true
+                   });
+                   var realmRegExp = markRealmIntrinsic(function RegExp(p, f) {
+                     var value = new globalThis.RegExp(p, f);
+                     Object.setPrototypeOf(value, realmRegExpPrototype);
+                     return value;
+                   }, "RegExp", realmRegExpPrototype);
                    var realmGlobal = {
                      Array: realmArray,
                      Boolean: markRealmIntrinsic(function Boolean(value) {
@@ -1487,9 +1507,7 @@ public sealed class Test262Runner
                      Object: realmObject,
                      Number: realmNumber,
                      BigInt: realmBigInt,
-                     RegExp: markRealmIntrinsic(function RegExp(p, f) {
-                       return new globalThis.RegExp(p, f);
-                     }, "RegExp", RegExp.prototype),
+                     RegExp: realmRegExp,
                      TypeError: TypeError,
                      Symbol: Symbol,
                      SuppressedError: typeof SuppressedError === "function" ? SuppressedError : undefined,

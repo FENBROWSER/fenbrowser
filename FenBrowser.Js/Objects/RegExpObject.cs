@@ -2,6 +2,10 @@ namespace FenBrowser.Js.Objects;
 
 public sealed class RegExpObject : JsObject
 {
+    private System.Text.RegularExpressions.Regex? _regex;
+    private FenBrowser.Js.Regex.RegexProgram? _nativeProgram;
+    private Func<(System.Text.RegularExpressions.Regex Regex, FenBrowser.Js.Regex.RegexProgram? NativeProgram)>? _lazyCompiler;
+
     public RegExpObject(
         string pattern,
         string flags,
@@ -10,14 +14,31 @@ public sealed class RegExpObject : JsObject
     {
         Pattern = pattern;
         Flags = flags;
-        Regex = regex;
-        NativeProgram = nativeProgram;
+        _regex = regex;
+        _nativeProgram = nativeProgram;
+    }
+
+    public RegExpObject(
+        string pattern,
+        string flags,
+        Func<(System.Text.RegularExpressions.Regex Regex, FenBrowser.Js.Regex.RegexProgram? NativeProgram)> lazyCompiler)
+    {
+        Pattern = pattern;
+        Flags = flags;
+        _lazyCompiler = lazyCompiler ?? throw new ArgumentNullException(nameof(lazyCompiler));
     }
 
     public string Pattern { get; private set; }
     public string Flags { get; private set; }
-    public System.Text.RegularExpressions.Regex Regex { get; private set; }
-    public FenBrowser.Js.Regex.RegexProgram? NativeProgram { get; private set; }
+    public System.Text.RegularExpressions.Regex Regex
+    {
+        get { EnsureCompiled(); return _regex!; }
+    }
+
+    public FenBrowser.Js.Regex.RegexProgram? NativeProgram
+    {
+        get { EnsureCompiled(); return _nativeProgram; }
+    }
 
     /// <summary>
     /// Maps original ECMAScript group names to the .NET-safe aliases used
@@ -42,7 +63,21 @@ public sealed class RegExpObject : JsObject
     {
         Pattern = pattern;
         Flags = flags;
-        Regex = regex;
-        NativeProgram = nativeProgram;
+        _regex = regex;
+        _nativeProgram = nativeProgram;
+        _lazyCompiler = null;
+    }
+
+    private void EnsureCompiled()
+    {
+        if (_regex is not null) return;
+        lock (this)
+        {
+            if (_regex is not null) return;
+            var compiled = _lazyCompiler!();
+            _regex = compiled.Regex;
+            _nativeProgram = compiled.NativeProgram;
+            _lazyCompiler = null;
+        }
     }
 }
