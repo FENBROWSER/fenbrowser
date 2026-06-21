@@ -327,11 +327,12 @@ internal static class LexicalDeclarationChecker
                 break;
             case SwitchStatementNode sw:
                 // A switch CaseBlock is a single lexical scope spanning all clauses.
-                // Annex B.3.3.5: in sloppy mode, duplicate FunctionDeclarations in a
-                // switch CaseBlock are allowed. Only treat functions as lexical in strict.
+                // Function declarations in a CaseBlock contribute to its
+                // LexicallyDeclaredNames even in sloppy script code; the Annex B
+                // block-function relaxation does not apply to switch clauses.
                 var caseStatements = new List<StatementNode>();
                 foreach (var c in sw.Cases) caseStatements.AddRange(c.Consequent);
-                CheckScope(caseStatements, treatFunctionsAsLexical: _strictMode);
+                CheckScope(caseStatements, treatFunctionsAsLexical: true);
                 break;
         }
     }

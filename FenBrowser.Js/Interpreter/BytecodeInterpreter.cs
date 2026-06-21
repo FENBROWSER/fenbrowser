@@ -736,7 +736,31 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _callDepth++;
         try
         {
-            return ExecuteInternalCore(function, args, thisValue, outerEnvironment, frameEnvironment, callee, ownerGenerator, asyncContext);
+            while (true)
+            {
+                try
+                {
+                    return ExecuteInternalCore(function, args, thisValue, outerEnvironment, frameEnvironment, callee, ownerGenerator, asyncContext);
+                }
+                catch (TailCallRequest tailCall)
+                {
+                    var target = ResolveObject(tailCall.Callee);
+                    if (target is not JsFunctionObject targetFunction ||
+                        targetFunction.Kind is FunctionKind.Constructor or FunctionKind.Async or FunctionKind.Generator or FunctionKind.AsyncGenerator)
+                    {
+                        return CallFunction(tailCall.Callee, tailCall.Arguments, tailCall.ThisValue);
+                    }
+
+                    function = targetFunction.Function;
+                    args = tailCall.Arguments;
+                    thisValue = tailCall.ThisValue;
+                    outerEnvironment = targetFunction.OuterEnvironment;
+                    frameEnvironment = null;
+                    callee = targetFunction;
+                    ownerGenerator = null;
+                    asyncContext = null;
+                }
+            }
         }
         finally
         {
@@ -2150,6 +2174,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         allowDirectEval: ins.E == DirectEvalCallFlag,
                         icOffset: frame.InstructionPointer - 1);
                     break;
+                }
+                case OpCode.TailCall0:
+                    throw new TailCallRequest(frame.Registers[ins.B], Array.Empty<JsValue>(), JsValue.Undefined);
+                case OpCode.TailCall1:
+                    throw new TailCallRequest(frame.Registers[ins.B], new[] { frame.Registers[ins.C] }, JsValue.Undefined);
+                case OpCode.TailCallN:
+                {
+                    var tailArgs = new JsValue[ins.D];
+                    for (var i = 0; i < ins.D; i++)
+                    {
+                        tailArgs[i] = frame.Registers[ins.C + i];
+                    }
+                    throw new TailCallRequest(frame.Registers[ins.B], tailArgs, JsValue.Undefined);
                 }
                 case OpCode.CallSpread:
                 {

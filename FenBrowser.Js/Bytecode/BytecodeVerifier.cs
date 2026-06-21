@@ -73,6 +73,9 @@ public sealed class BytecodeVerifier
             {
                 case OpCode.Return:
                 case OpCode.Throw:
+                case OpCode.TailCall0:
+                case OpCode.TailCall1:
+                case OpCode.TailCallN:
                     break;
                 case OpCode.Jump:
                     work.Push(ins.A);
@@ -391,6 +394,24 @@ public sealed class BytecodeVerifier
                     throw new InvalidOperationException($"Invalid CallN arg register window start={ins.C} count={ins.D} at ip {ip}.");
                 }
 
+                break;
+            case OpCode.TailCall0:
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                break;
+            case OpCode.TailCall1:
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
+                break;
+            case OpCode.TailCallN:
+                ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                if (ins.D < 0)
+                {
+                    throw new InvalidOperationException($"Invalid TailCallN arg count {ins.D} at ip {ip}.");
+                }
+                if (ins.C < 0 || ins.C + Math.Max(0, ins.D - 1) >= function.RegisterCount)
+                {
+                    throw new InvalidOperationException($"Invalid TailCallN arg register window start={ins.C} count={ins.D} at ip {ip}.");
+                }
                 break;
             case OpCode.CallMethod0:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");

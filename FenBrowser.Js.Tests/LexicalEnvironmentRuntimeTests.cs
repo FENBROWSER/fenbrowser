@@ -91,4 +91,31 @@ public sealed class LexicalEnvironmentRuntimeTests
             2,
             RunNum("let count = 0; for (let outer = 0; outer < 2; outer++) { for (let length = 0; length < 1; length++) { count++; } } count;"));
     }
+
+    [Fact]
+    public void SwitchClassAndFunctionDeclarationsStayInCaseBlockScope()
+    {
+        Assert.True(RunBool(@"
+            var inside = false;
+            var classOutside;
+            var generatorOutside;
+            var asyncOutside;
+            var asyncGeneratorOutside;
+            switch (0) {
+                default:
+                    class C {}
+                    inside = typeof C === 'function' && typeof gf === 'function' &&
+                             typeof af === 'function' && typeof ag === 'function';
+                    function* gf() {}
+                    async function af() {}
+                    async function* ag() {}
+            }
+            try { C; } catch (error) { classOutside = error.name; }
+            try { gf; } catch (error) { generatorOutside = error.name; }
+            try { af; } catch (error) { asyncOutside = error.name; }
+            try { ag; } catch (error) { asyncGeneratorOutside = error.name; }
+            inside && classOutside === 'ReferenceError' && generatorOutside === 'ReferenceError' &&
+            asyncOutside === 'ReferenceError' && asyncGeneratorOutside === 'ReferenceError';
+        "));
+    }
 }

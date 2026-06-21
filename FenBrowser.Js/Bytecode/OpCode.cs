@@ -43,6 +43,11 @@ public enum OpCode : byte
     Call0,
     Call1,
     CallN,
+    // Strict-mode proper tail calls. Operand layout matches Call0/1/N; the
+    // destination is ignored because the current frame is replaced.
+    TailCall0,
+    TailCall1,
+    TailCallN,
     CallMethod0,
     CallMethod1,
     CallMethodN,

@@ -1618,6 +1618,9 @@ public sealed class ParserTests
     [InlineData("class C {} let C;")]
     [InlineData("let [a, b] = []; let a;")]
     [InlineData("switch (0) { case 1: let x; default: let x; }")]
+    [InlineData("switch (0) { case 1: function f() {} default: function f() {} }")]
+    [InlineData("switch (0) { case 1: async function f() {} default: function* f() {} }")]
+    [InlineData("switch (0) { case 1: function* f() {} default: var f; }")]
     public void RejectsLexicalRedeclaration(string source)
     {
         Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText(source)));

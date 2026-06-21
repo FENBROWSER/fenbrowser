@@ -1393,6 +1393,10 @@ public sealed class BytecodeCompiler
         if (returnStmt.Argument is not null)
         {
             var reg = CompileExpression(returnStmt.Argument);
+            if (_isStrictMode && !hasPendingFinally && TryConvertLastCallToTailCall(reg))
+            {
+                return;
+            }
             if (hasPendingFinally)
             {
                 EmitAbruptCompletion(0, -1, leaveTrailingScopes: false);
@@ -1408,6 +1412,36 @@ public sealed class BytecodeCompiler
         }
 
         _instructions.Add(new Instruction(OpCode.Return, 0, 0, 0));
+    }
+
+    private bool TryConvertLastCallToTailCall(int resultRegister)
+    {
+        if (_instructions.Count == 0)
+        {
+            return false;
+        }
+
+        var index = _instructions.Count - 1;
+        var call = _instructions[index];
+        if (call.A != resultRegister || call.E != 0)
+        {
+            return false;
+        }
+
+        var tailOp = call.OpCode switch
+        {
+            OpCode.Call0 => OpCode.TailCall0,
+            OpCode.Call1 => OpCode.TailCall1,
+            OpCode.CallN => OpCode.TailCallN,
+            _ => (OpCode?)null,
+        };
+        if (tailOp is null)
+        {
+            return false;
+        }
+
+        _instructions[index] = call with { OpCode = tailOp.Value };
+        return true;
     }
 
     private void CompileForStatement(ForStatementNode forStmt)
@@ -2489,6 +2523,14 @@ public sealed class BytecodeCompiler
                         foreach (var boundName in GetDeclaratorBoundNames(d))
                             caseDecls[boundName] = isConst;
                 }
+                else if (s is ClassDeclarationNode { Name: { Length: > 0 } className })
+                {
+                    caseDecls[className] = false;
+                }
+                else if (s is FunctionDeclarationNode { Name: { Length: > 0 } functionName })
+                {
+                    caseDecls[functionName] = false;
+                }
             }
         }
 
@@ -2504,6 +2546,17 @@ public sealed class BytecodeCompiler
                 var slot = GetOrCreateVariableSlot(kvp.Key);
                 _instructions.Add(new Instruction(OpCode.EnterScope, slot, kvp.Value ? 1 : 0, 0));
                 _openScopeDepth++;
+            }
+
+            foreach (var c in switchStmt.Cases)
+            {
+                foreach (var statement in c.Consequent)
+                {
+                    if (statement is FunctionDeclarationNode functionDeclaration)
+                    {
+                        CompileBlockFunctionDeclaration(functionDeclaration);
+                    }
+                }
             }
         }
 
@@ -3971,7 +4024,7 @@ public sealed class BytecodeCompiler
     // candidate; otherwise recurse normally.
     private void CollectAnnexBInChild(StatementNode child, HashSet<string> conflicts, HashSet<string> result)
     {
-        if (child is FunctionDeclarationNode fd && fd.Name.Length > 0)
+        if (child is FunctionDeclarationNode { IsAsync: false, IsGenerator: false } fd && fd.Name.Length > 0)
         {
             if (!conflicts.Contains(fd.Name))
             {
@@ -3994,7 +4047,7 @@ public sealed class BytecodeCompiler
 
         foreach (var stmt in statements)
         {
-            if (stmt is FunctionDeclarationNode fd && fd.Name.Length > 0)
+            if (stmt is FunctionDeclarationNode { IsAsync: false, IsGenerator: false } fd && fd.Name.Length > 0)
             {
                 if (!blockConflicts.Contains(fd.Name))
                 {
