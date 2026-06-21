@@ -13020,6 +13020,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     [MayExecuteJs]
     private bool SetPropertyValue(ObjectHandle ownerHandle, JsObject obj, string key, JsValue value, JsValue receiver)
     {
+        // Proxy objects delegate to their [[Set]] internal method which handles
+        // traps and revoked-check (ECMA-262 10.5.9).
+        if (obj is ProxyObject proxySet)
+            return proxySet.SetProperty(key, value);
+
         // ECMA-262 10.4.5.5 Integer-Indexed Exotic Object [[Set]]: canonical integer
         // indices route through IntegerIndexedElementSet rather than the ordinary
         // property path. This is needed for Reflect.set / Proxy set-trap fallthrough
