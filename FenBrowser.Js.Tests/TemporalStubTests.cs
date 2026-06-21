@@ -43,4 +43,19 @@ public sealed class TemporalStubTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void PlainYearMonthDifferencesApplyRoundingSettings()
+    {
+        var result = Run("""
+            const start = Temporal.PlainYearMonth.from("2000-01");
+            const end = Temporal.PlainYearMonth.from("2001-07");
+            const truncated = start.until(end, { smallestUnit: "year", roundingMode: "trunc" });
+            const expanded = start.until(end, { smallestUnit: "year", roundingMode: "expand" });
+            const since = end.since(start, { smallestUnit: "month", roundingIncrement: 5 });
+            truncated.years === 1 && expanded.years === 2 && since.years === 1 && since.months === 3;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }

@@ -4187,17 +4187,15 @@ public sealed class TemporalStub : IBuiltinModule
             var (oy, om, od, otherCal) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             RequireMatchingCalendar(ctx, CalId(h, o), otherCal);
             var s = GetDifferenceSettings(ctx, h, a, 1, YearMonthDiffUnits, "month", "year");
-            var (yy, mm, _, _) = DifferenceDateDuration(CalId(h, o), DecodeYearMonthIso(h, o), new IsoDate(oy, om, od), s.Largest);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
-                MakeDuration(ctx, h, yy, mm, 0, 0, 0, 0, 0, 0, 0, 0));
+                DifferencePlainDatesRounded(ctx, h, DecodeYearMonthIso(h, o), new IsoDate(oy, om, od), CalId(h, o), s));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
             var (oy, om, od, otherCal) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             RequireMatchingCalendar(ctx, CalId(h, o), otherCal);
             var s = GetDifferenceSettings(ctx, h, a, 1, YearMonthDiffUnits, "month", "year");
-            var (yy, mm, _, _) = DifferenceDateDuration(CalId(h, o), DecodeYearMonthIso(h, o), new IsoDate(oy, om, od), s.Largest);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
-                MakeDuration(ctx, h, -yy, -mm, 0, 0, 0, 0, 0, 0, 0, 0));
+                DifferencePlainDatesRounded(ctx, h, DecodeYearMonthIso(h, o), new IsoDate(oy, om, od), CalId(h, o), s, negate: true));
         }, 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
             var (oy, om, od, ocal) = ToTemporalYearMonthRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
@@ -5762,16 +5760,38 @@ public sealed class TemporalStub : IBuiltinModule
         {
             if (largestEff == "year" || largestEff == "years")
             {
-                // Months within the year: round using days as the fractional part.
-                int targetYear = (int)(anchor.Year + years);
-                int dimCur = sys.DaysInMonthOrdinal(targetYear,
-                    Math.Max(1, Math.Min(sys.MonthsInYear(targetYear), (int)(months + 1))));
-                months = RoundToIncrement((long)months, (long)days, dimCur, increment, mode, out long ovf, out _);
-                if (ovf != 0)
+                // Round the total calendar-month quantity, then balance it back
+                // to years. Calendars with leap months do not have a fixed 12:1 ratio.
+                sys.ToNative(anchor, out int anchorYear, out _, out _);
+                long totalMonths = (long)months;
+                int yearCursor = anchorYear;
+                if (years > 0)
                 {
-                    // Rounding crossed a year boundary: carry.
-                    if (ovf < 0) { months = 0; years += 1; }
-                    else if (ovf > 0) { months = (int)ovf; years -= 1; }
+                    for (long i = 0; i < (long)years; i++)
+                        totalMonths += sys.MonthsInYear(yearCursor++);
+                }
+                else
+                {
+                    for (long i = 0; i > (long)years; i--)
+                        totalMonths -= sys.MonthsInYear(--yearCursor);
+                }
+
+                int dimCur = sys.DaysInMonthOrdinal(yearCursor,
+                    Math.Max(1, Math.Min(sys.MonthsInYear(yearCursor), Math.Abs((int)months) + 1)));
+                totalMonths = RoundToIncrement(totalMonths, (long)days, dimCur, increment, mode, out _, out _);
+
+                years = 0;
+                months = totalMonths;
+                yearCursor = anchorYear;
+                while (months >= sys.MonthsInYear(yearCursor))
+                {
+                    months -= sys.MonthsInYear(yearCursor++);
+                    years++;
+                }
+                while (months <= -sys.MonthsInYear(yearCursor - 1))
+                {
+                    months += sys.MonthsInYear(--yearCursor);
+                    years--;
                 }
                 weeks = 0; days = 0;
             }
