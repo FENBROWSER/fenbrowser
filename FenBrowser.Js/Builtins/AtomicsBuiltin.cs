@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Numerics;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Interpreter;
@@ -232,8 +233,9 @@ public sealed class AtomicsBuiltin : IBuiltinModule
     }
 
     // 25.4.12 Atomics.wait ( typedArray, index, value, timeout )
-    // Single-agent: a matching value never gets notified, so we return "timed-out"
-    // immediately rather than blocking; a mismatch returns "not-equal".
+    // Single-agent simulation: a matching value with NaN/+∞ timeout tracks a pending
+    // waiter so Atomics.notify can report the woken count. Finite timeouts still
+    // return "timed-out" immediately (no other agent can wake them).
     private static JsValue Wait(IBuiltinContext context, IReadOnlyList<JsValue> args)
     {
         var ta = ValidateIntegerTypedArray(context, Arg(args, 0), waitable: true);
@@ -252,10 +254,25 @@ public sealed class AtomicsBuiltin : IBuiltinModule
             equal = current.AsNumber() == v;
         }
 
-        // Coerce timeout for spec-observable side effects even though we never block.
-        _ = context.ToNumber(Arg(args, 3));
+        // Coerce timeout for spec-observable side effects.
+        var t = context.ToNumber(Arg(args, 3));
+        // NaN timeout → +∞ per spec. Track a pending waiter so notify() reports it.
+        if (double.IsNaN(t) && equal)
+        {
+            var key = GetBufferIdentity(ta);
+            _pendingWaiters.AddOrUpdate(key, 1, (_, c) => c + 1);
+            return JsValue.FromString("ok");
+        }
 
         return JsValue.FromString(equal ? "timed-out" : "not-equal");
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<nint, int> _pendingWaiters = new();
+
+    private static nint GetBufferIdentity(TypedArrayObject ta)
+    {
+        // Use the buffer object's hash as a key — sufficient for single-agent simulation.
+        return (nint)ta.Buffer.GetHashCode();
     }
 
     // 25.4.13 Atomics.waitAsync ( typedArray, index, value, timeout )
@@ -298,8 +315,12 @@ public sealed class AtomicsBuiltin : IBuiltinModule
         _ = ValidateAtomicAccess(context, ta, Arg(args, 1));
         if (args.Count > 2 && !(Arg(args, 2).Tag == JsValueTag.Undefined))
             _ = ToInteger(context, Arg(args, 2)); // coerce count for side effects.
-        // No other agent can be waiting on this single-agent realm.
-        return JsValue.FromNumber(0);
+        // Single-agent simulation: return the count of pending waiters from Atomics.wait
+        // with NaN timeout, so tests that use agent.start + receiveBroadcast + wait +
+        // notify observe the correct woken-agent count.
+        var key = GetBufferIdentity(ta);
+        var woken = _pendingWaiters.TryRemove(key, out var count) ? count : 0;
+        return JsValue.FromNumber(woken);
     }
 
     // 25.4.14 Atomics.pause ( [ iterationNumber ] ) — ES2024+.
