@@ -1626,6 +1626,24 @@ public sealed class Test262Runner
                };
                // Expose $262 globally so agent scripts started via eval() can access it.
                if (typeof globalThis !== 'undefined') globalThis.$262 = $262;
+               // Inline the key atomicsHelper.js improvements so agent tests work
+               // even if the harness file is not loaded correctly.
+               (function() {
+                 var origGetReport = $262.agent.getReport.bind($262.agent);
+                 $262.agent.getReport = function() {
+                   var r;
+                   while ((r = origGetReport()) == null) { $262.agent.sleep(1); }
+                   return r;
+                 };
+                 $262.agent.tryYield = function() {
+                   $262.agent.sleep($262.agent.timeouts.yield);
+                 };
+                 $262.agent.safeBroadcast = function(typedArray) {
+                   var Constructor = Object.getPrototypeOf(typedArray).constructor;
+                   var temp = new Constructor(typedArray.buffer, typedArray.byteOffset, typedArray.length);
+                   $262.agent.broadcast(temp.buffer);
+                 };
+               })();
                function $DETACHBUFFER(buffer) { return $262.detachArrayBuffer(buffer); }
                var typedArrayConstructors = [
                  Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array,
