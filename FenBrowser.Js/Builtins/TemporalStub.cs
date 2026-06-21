@@ -3426,7 +3426,6 @@ public sealed class TemporalStub : IBuiltinModule
             var s = arg.AsString();
             if (!TemporalIsoParser.TryParseInstant(s, out var parsed, out var parseError))
                 throw new JsThrownException(ctx.CreateRangeError($"'{s}' is not a valid ISO string for Instant: {parseError}"));
-            _ = CalendarFromAnnotation(ctx, parsed.Calendar);
             return AttachPrototype(h, MakeInstantFromParsed(ctx, h, parsed), pH);
         }, 1);
         AddStatic(ctx, h, cH, c, "fromEpochSeconds", a => AttachPrototype(h, MakeInstantEpoch(ctx, h, a, 1_000_000_000L), pH), 1);

@@ -8551,6 +8551,7 @@ Verification:
   - Time-unit ZonedDateTime differences compare absolute instants across different zones; same-zone matching remains required for day and calendar units, and zoned wall dates enforce the `-100,000,000..100,000,000` epoch-day window.
   - PlainMonthDay property bags and annotated strings validate calendar fields at the input date, then store the latest matching ISO reference date at or before 1972.
   - `PlainMonthDay.prototype.equals` propagates invalid argument conversion errors and compares the stored reference ISO year instead of suppressing errors or normalizing explicit constructor years.
+  - `Temporal.Instant.from` ignores calendar annotations after ISO parsing because Instant values have no calendar, including unknown and critical calendar identifiers.
   - PlainYearMonth addition and subtraction honor `overflow: "reject"` for leap months and propagate invalid calendar results as `RangeError`.
   - `PlainYearMonth.prototype.toPlainDate` requires an object argument with a `day` field instead of silently defaulting invalid input to day 1.
   - Historical wall-time conversion uses integer floor division so negative-era nanosecond instants remain on the correct side of midnight and transitions.
@@ -8563,8 +8564,8 @@ Verification:
 
 - `dotnet build FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -c Release --nologo`: pass.
 - `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~TemporalCalendarIntlTests|FullyQualifiedName~BigIntTests"`: pass (`67/67`).
-- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~TemporalCalendarIntlTests"`: pass (`23/23`).
-- `built-ins/Temporal`: category improved from `4004/4604` to `4199/4604`; remaining failures `405`, with zero timeouts.
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~TemporalCalendarIntlTests"`: pass (`24/24`).
+- `built-ins/Temporal`: category improved from `4004/4604` to `4201/4604`; remaining failures `403`, with zero timeouts.
 - `intl402/Temporal/ZonedDateTime/from/zoneddatetime-sub-minute-offset.js`: pass (`1/1`).
 - `intl402/Temporal/ZonedDateTime/prototype/add`: pass (`74/76`).
 - `intl402/Temporal/ZonedDateTime/prototype/subtract`: pass (`75/76`).

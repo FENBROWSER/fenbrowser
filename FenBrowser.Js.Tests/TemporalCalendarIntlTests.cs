@@ -355,6 +355,18 @@ public sealed class TemporalCalendarIntlTests
     }
 
     [Fact]
+    public void InstantFromIgnoresCalendarAnnotations()
+    {
+        var result = Run("""
+            Temporal.Instant.from("1970-01-01T00:00Z[u-ca=discord]").epochNanoseconds === 0n &&
+                Temporal.Instant.from("1970-01-01T00:00Z[!u-ca=discord]").epochNanoseconds === 0n &&
+                Temporal.Instant.from("1970-01-01T00:00Z[u-ca=iso8601][u-ca=discord]").epochNanoseconds === 0n;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ZonedDateTimeDifferenceUsesCalendarAnchorsAndZoneWallTime()
     {
         var result = Run("""
