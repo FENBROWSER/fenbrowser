@@ -2877,6 +2877,53 @@ public sealed class JsParser
         }
     }
 
+    // ECMA-262: Static Semantics: ContainsPrivateName — returns true if the
+    // expression contains a PrivateName reference (MemberExpression . #name
+    // or OptionalMemberExpression . #name).
+    private static bool ContainsPrivateName(ExpressionNode expression)
+    {
+        return expression switch
+        {
+            MemberExpressionNode { Property: { } prop } when prop.StartsWith('#') => true,
+            OptionalMemberExpressionNode { Property: { } prop } when prop.StartsWith('#') => true,
+            CallExpressionNode call => ContainsPrivateName(call.Callee) || call.Arguments.Any(ContainsPrivateName),
+            OptionalCallExpressionNode optCall => ContainsPrivateName(optCall.Callee) || optCall.Arguments.Any(ContainsPrivateName),
+            UnaryExpressionNode unary => ContainsPrivateName(unary.Operand),
+            BinaryExpressionNode binary => ContainsPrivateName(binary.Left) || ContainsPrivateName(binary.Right),
+            ConditionalExpressionNode cond => ContainsPrivateName(cond.Test) || ContainsPrivateName(cond.Consequent) || ContainsPrivateName(cond.Alternate),
+            AssignmentExpressionNode assign => ContainsPrivateName(assign.Left) || ContainsPrivateName(assign.Right),
+            ArrayLiteralExpressionNode arr => arr.Elements.Any(ContainsPrivateName),
+            ObjectLiteralExpressionNode obj => obj.Properties.Any(p =>
+                (p.ComputedKey is not null && ContainsPrivateName(p.ComputedKey)) ||
+                ContainsPrivateName(p.Value)),
+            SpreadElementExpressionNode spread => ContainsPrivateName(spread.Argument),
+            ParenthesizedExpressionNode paren => ContainsPrivateName(paren.Expression),
+            NewExpressionNode @new => ContainsPrivateName(@new.Callee) || @new.Arguments.Any(ContainsPrivateName),
+            TaggedTemplateExpressionNode tagged => ContainsPrivateName(tagged.Tag),
+            TemplateLiteralExpressionNode template => template.Expressions.Any(ContainsPrivateName),
+            // Don't recurse into arrow function bodies — they create their own scope.
+            _ => false
+        };
+    }
+
+    // ECMA-262: It is a Syntax Error if ClassHeritage is not present and
+    // HasDirectSuper of the constructor is true (i.e., constructor contains super()).
+    private static void ValidateNoSuperCallWithoutHeritage(IReadOnlyList<ClassMemberNode> members)
+    {
+        foreach (var member in members)
+        {
+            if (member.Kind != ClassMemberKind.Constructor)
+            {
+                continue;
+            }
+            if (member.Function is FunctionExpressionNode fn &&
+                ContainsSuperCallOnlyInStatements(fn.Body.Statements))
+            {
+                throw new JsParserException("super() is not allowed in a class constructor without heritage.");
+            }
+        }
+    }
+
     private ClassDeclarationNode ParseClassDeclaration()
     {
         var start = Advance(); // class
@@ -2888,9 +2935,27 @@ public sealed class JsParser
         {
             Advance();
             baseClass = ParseExpression(0);
+            // ECMA-262: ClassHeritage must be LeftHandSideExpression, not
+            // AssignmentExpression. Arrow functions (and async arrow functions) are
+            // AssignmentExpression and cannot appear in heritage position.
+            if (baseClass is ArrowFunctionExpressionNode)
+            {
+                throw new JsParserException("Arrow functions are not allowed as class heritage.");
+            }
+            // ECMA-262: It is a Syntax Error if ClassHeritage contains a PrivateName.
+            if (ContainsPrivateName(baseClass))
+            {
+                throw new JsParserException("Private names are not allowed in class heritage.");
+            }
         }
 
         var (members, close) = ParseClassBody();
+        // ECMA-262: It is a Syntax Error if ClassHeritage is not present and
+        // HasDirectSuper of the constructor is true.
+        if (baseClass == null)
+        {
+            ValidateNoSuperCallWithoutHeritage(members);
+        }
         return new ClassDeclarationNode(name.Text, baseClass, members, MergeSpan(start.Span, close.Span));
     }
 
@@ -2910,9 +2975,25 @@ public sealed class JsParser
         {
             Advance();
             baseClass = ParseExpression(0);
+            // ECMA-262: ClassHeritage must be LeftHandSideExpression, not arrow function.
+            if (baseClass is ArrowFunctionExpressionNode)
+            {
+                throw new JsParserException("Arrow functions are not allowed as class heritage.");
+            }
+            // ECMA-262: It is a Syntax Error if ClassHeritage contains a PrivateName.
+            if (ContainsPrivateName(baseClass))
+            {
+                throw new JsParserException("Private names are not allowed in class heritage.");
+            }
         }
 
         var (members, close) = ParseClassBody();
+        // ECMA-262: It is a Syntax Error if ClassHeritage is not present and
+        // HasDirectSuper of the constructor is true.
+        if (baseClass == null)
+        {
+            ValidateNoSuperCallWithoutHeritage(members);
+        }
         return new ClassExpressionNode(name, baseClass, members, MergeSpan(start.Span, close.Span));
     }
 
@@ -3084,6 +3165,13 @@ public sealed class JsParser
             }
 
             string memberName = ConsumeClassMemberName(out var computedName, out var isPrivate);
+            // ECMA-262 ClassElementName:PrivateName early error —
+            // It is a Syntax Error if StringValue of PrivateName is "#constructor".
+            // memberName for private names includes the '#' prefix from the token text.
+            if (isPrivate && string.Equals(memberName, "#constructor", StringComparison.Ordinal))
+            {
+                throw new JsParserException("Private name '#constructor' is not allowed.");
+            }
             if (kind == ClassMemberKind.Method && memberName == "constructor" && !isStatic)
             {
                 kind = ClassMemberKind.Constructor;
@@ -3829,6 +3917,13 @@ public sealed class JsParser
 
                 Advance();
                 var property = ExpectPropertyNameAfterDot();
+                // ECMA-262: It is a Syntax Error if a MemberExpression accesses a
+                // private field via super (super.#field). Private fields on super
+                // are not valid syntax — use this.#field within the class instead.
+                if (left is SuperExpressionNode && property.Text.StartsWith('#'))
+                {
+                    throw new JsParserException("Accessing private field via super is not allowed.");
+                }
                 left = new MemberExpressionNode(left, property.Text, Computed: false, PropertyExpression: null, MergeSpan(left.Span, property.Span));
                 continue;
             }
@@ -5405,6 +5500,11 @@ public sealed class JsParser
             {
                 Advance();
                 var property = ExpectPropertyNameAfterDot();
+                // ECMA-262: super.#privateField is not valid syntax.
+                if (left is SuperExpressionNode && property.Text.StartsWith('#'))
+                {
+                    throw new JsParserException("Accessing private field via super is not allowed.");
+                }
                 left = new MemberExpressionNode(left, property.Text, Computed: false, PropertyExpression: null, MergeSpan(left.Span, property.Span));
                 continue;
             }
