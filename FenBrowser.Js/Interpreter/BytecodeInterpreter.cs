@@ -1297,21 +1297,29 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
                     else
                     {
-                        // GetIterator(operand) — ECMA-262 7.4.1.
-                        var operand = frame.Registers[ins.B];
-                        if (operand.Tag != JsValueTag.Object)
-                            throw new JsThrownException(CreateTypeError("yield* operand is not iterable."));
-                        var operandObj = _heap.GetObject(operand.AsObjectHandle());
-                        var iteratorSymId = GetWellKnownSymbolId("iterator");
-                        if (iteratorSymId == 0 ||
-                            !operandObj.TryGetSymbolProperty(iteratorSymId, h => _heap.GetObject(h), out var iterFnDesc) ||
-                            iterFnDesc.Value.Tag != JsValueTag.Object)
-                            throw new JsThrownException(CreateTypeError("yield* operand is not iterable (missing @@iterator)."));
-                        var iterResult = CallFunction(iterFnDesc.Value, Array.Empty<JsValue>(), operand);
-                        if (iterResult.Tag != JsValueTag.Object)
-                            throw new JsThrownException(CreateTypeError("@@iterator did not return an object."));
-                        iterHandle = iterResult.AsObjectHandle();
-                        gen.YieldStarIterator = iterHandle;
+                        try
+                        {
+                            // GetIterator(operand) — ECMA-262 7.4.1.
+                            var operand = frame.Registers[ins.B];
+                            if (operand.Tag != JsValueTag.Object)
+                                throw new JsThrownException(CreateTypeError("yield* operand is not iterable."));
+                            var operandObj = _heap.GetObject(operand.AsObjectHandle());
+                            var iteratorSymId = GetWellKnownSymbolId("iterator");
+                            if (iteratorSymId == 0 ||
+                                !operandObj.TryGetSymbolProperty(iteratorSymId, h => _heap.GetObject(h), out var iterFnDesc) ||
+                                iterFnDesc.Value.Tag != JsValueTag.Object)
+                                throw new JsThrownException(CreateTypeError("yield* operand is not iterable (missing @@iterator)."));
+                            var iterResult = CallFunction(iterFnDesc.Value, Array.Empty<JsValue>(), operand);
+                            if (iterResult.Tag != JsValueTag.Object)
+                                throw new JsThrownException(CreateTypeError("@@iterator did not return an object."));
+                            iterHandle = iterResult.AsObjectHandle();
+                            gen.YieldStarIterator = iterHandle;
+                        }
+                        catch (JsThrownException ex)
+                        {
+                            ThrowOrHandle(frame, ex.Value);
+                            break;
+                        }
                     }
 
                     var iterObj = _heap.GetObject(iterHandle);
@@ -1390,7 +1398,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
                     // Step 4: parse the result object.
                     if (innerResult.Tag != JsValueTag.Object)
-                        throw new JsThrownException(CreateTypeError("Iterator result is not an object."));
+                    {
+                        ThrowOrHandle(frame, CreateTypeError("Iterator result is not an object."));
+                        break;
+                    }
                     var resultObj = _heap.GetObject(innerResult.AsObjectHandle());
                     var done = resultObj.TryGetOwnProperty("done", out var doneDesc) &&
                                doneDesc.Value.AsBoolean();
