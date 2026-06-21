@@ -4171,27 +4171,37 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var ws = new WeakSetObject();
                 ws.SetPrototype(EnsureWeakSetPrototype());
                 var handle = _heap.AllocateObject(ws, AllocationSite.Current());
-                if (args.Count > 0 && args[0].Tag == JsValueTag.Object)
+                _heap.PushRoot(handle);
+                try
                 {
-                    var src = _heap.GetObject(args[0].AsObjectHandle());
-                    if (src is ArrayObject)
+                    if (args.Count > 0)
                     {
-                        var len = GetArrayLength(src);
-                        for (var i = 0; i < len; i++)
+                        var wsValue = JsValue.FromObject(handle);
+                        var adder = GetReceiverProperty(wsValue, "add");
+                        if (!IsCallable(adder))
+                            throw new JsThrownException(CreateTypeError("WeakSet.prototype.add is not callable."));
+                        var iter = CreateForOfIteratorState(args[0], requireIterable: true);
+                        if (iter.Tag != JsValueTag.Object || _heap.GetObject(iter.AsObjectHandle()) is not ForOfIteratorObject forOf)
+                            throw new JsThrownException(CreateTypeError("WeakSet constructor requires an iterable."));
+                        try
                         {
-                            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                            TryGetPropertyValue(src, args[0], key, out var v);
-                            if (v.Tag != JsValueTag.Object)
+                            while (!ForOfStepDone(forOf, out var v))
                             {
-                                throw new JsThrownException(CreateTypeError("WeakSet entries must be objects."));
+                                if (v.Tag != JsValueTag.Object)
+                                    throw new JsThrownException(CreateTypeError("WeakSet entries must be objects."));
+                                _ = CallFunction(adder, new[] { v }, wsValue);
                             }
-
-                            ws.Add(v.AsObjectHandle());
-                            _heap.WriteBarrier(handle, v.AsObjectHandle());
+                        }
+                        finally
+                        {
+                            try { CloseForOfIteratorState(forOf); } catch (JsThrownException) { }
                         }
                     }
                 }
-
+                finally
+                {
+                    _heap.PopRootsTo(_heap.RootCount - 1);
+                }
                 return JsValue.FromObject(handle);
             },
             length: 0);
