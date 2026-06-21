@@ -551,9 +551,14 @@ public sealed class StringBuiltin : IBuiltinModule
     {
         var s = RequireString(ctx, thisValue);
         var n = args.Count > 0 ? ctx.ToNumber(args[0]) : 0;
-        if (double.IsNaN(n) || n < 0 || double.IsInfinity(n))
+        // ECMA-262 21.1.3.13: ToIntegerOrInfinity(count). NaN → 0, ±∞ → throw.
+        // The check must happen AFTER integer coercion per spec.
+        if (double.IsInfinity(n))
             throw new JsThrownException(ctx.CreateRangeError("Invalid repeat count."));
+        if (double.IsNaN(n)) n = 0;
         var count = (int)n;
+        if (count < 0)
+            throw new JsThrownException(ctx.CreateRangeError("Invalid repeat count."));
         if (count == 0 || s.Length == 0) return JsValue.FromString(string.Empty);
         var sb = new System.Text.StringBuilder(s.Length * count);
         for (var i = 0; i < count; i++) sb.Append(s);
