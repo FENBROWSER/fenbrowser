@@ -8804,16 +8804,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var state = RebuildNumberFormatState(stateObj);
                 return NumberFormatResolvedOptions(state);
             }, length: 0);
-            roStub.SetPrototype(EnsureFunctionPrototype());
-            nfProto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(roStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
-            var fmtStub = new NativeFunctionObject("", (thisValue, fmtArgs) =>
+            DefineIntlPrototypeAccessor(nfProtoHandle, nfProto, "resolvedOptions", (thisValue, _) =>
+            {
+                var stateObj = RequireNumberFormatState(thisValue);
+                var state = RebuildNumberFormatState(stateObj);
+                return NumberFormatResolvedOptions(state);
+            }, length: 0);
+            DefineIntlPrototypeAccessor(nfProtoHandle, nfProto, "format", (thisValue, fmtArgs) =>
             {
                 var stateObj = RequireNumberFormatState(thisValue);
                 var state = RebuildNumberFormatState(stateObj);
                 return JsValue.FromString(FormatNumber(fmtArgs.Count > 0 ? fmtArgs[0] : JsValue.Undefined, state));
             }, length: 1);
-            fmtStub.SetPrototype(EnsureFunctionPrototype());
-            nfProto.DefineOwnProperty("format", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(fmtStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
             var ftpStub = new NativeFunctionObject("", (thisValue, fmtArgs) =>
             {
                 var stateObj = RequireNumberFormatState(thisValue);
@@ -8821,8 +8823,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var parts = FormatNumberToParts(fmtArgs.Count > 0 ? fmtArgs[0] : JsValue.Undefined, state);
                 return CreateIntlPartsArray(parts);
             }, length: 1);
-            ftpStub.SetPrototype(EnsureFunctionPrototype());
-            nfProto.DefineOwnProperty("formatToParts", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(ftpStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+            DefineIntlPrototypeAccessor(nfProtoHandle, nfProto, "formatToParts", (thisValue, fmtArgs) =>
+            {
+                var stateObj = RequireNumberFormatState(thisValue);
+                var state = RebuildNumberFormatState(stateObj);
+                var parts = FormatNumberToParts(fmtArgs.Count > 0 ? fmtArgs[0] : JsValue.Undefined, state);
+                return CreateIntlPartsArray(parts);
+            }, length: 1);
             var frStub = new NativeFunctionObject("formatRange", (thisValue, rangeArgs) =>
             {
                 var stateObj = RequireNumberFormatState(thisValue);
@@ -8844,8 +8851,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     return JsValue.FromString("~" + xFormatted);
                 return JsValue.FromString(xFormatted + "-" + yFormatted);
             }, length: 2);
-            frStub.SetPrototype(EnsureFunctionPrototype());
-            nfProto.DefineOwnProperty("formatRange", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(frStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+            DefineIntlPrototypeAccessor(nfProtoHandle, nfProto, "formatRange", (thisValue, rangeArgs) =>
+            {
+                var stateObj = RequireNumberFormatState(thisValue);
+                var state = RebuildNumberFormatState(stateObj);
+                if (thisValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(CreateTypeError("Intl.NumberFormat.prototype.formatRange called on incompatible receiver."));
+                var xVal = rangeArgs.Count > 0 ? rangeArgs[0] : JsValue.Undefined;
+                var yVal = rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined;
+                if (xVal.Tag == JsValueTag.Undefined || yVal.Tag == JsValueTag.Undefined)
+                    throw new JsThrownException(CreateTypeError("formatRange requires two arguments."));
+                var x = ToNumber(xVal);
+                var y = ToNumber(yVal);
+                if (double.IsNaN(x) || double.IsNaN(y))
+                    throw new JsThrownException(CreateRangeError("formatRange requires finite numbers."));
+                if (x > y) { var tmp = x; x = y; y = tmp; }
+                var xFormatted = FormatNumber(JsValue.FromNumber(x), state);
+                var yFormatted = FormatNumber(JsValue.FromNumber(y), state);
+                if (xFormatted == yFormatted)
+                    return JsValue.FromString("~" + xFormatted);
+                return JsValue.FromString(xFormatted + "-" + yFormatted);
+            }, length: 2);
             var frtpStub = new NativeFunctionObject("formatRangeToParts", (thisValue, rangeArgs) =>
             {
                 var stateObj = RequireNumberFormatState(thisValue);
@@ -9702,6 +9728,45 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 Enumerable: false,
                 Configurable: true));
         _heap.WriteBarrier(ownerHandle, functionHandle);
+    }
+
+    // ECMA-402: Intl prototype methods must be accessor properties (not data
+    // properties). The getter returns the implementation function; the spec
+    // requires a new function each call but for correctness the shared function
+    // works identically. Key difference: Object.getOwnPropertyDescriptor().get
+    // returns a function, not undefined.
+    private void DefineIntlPrototypeAccessor(
+        ObjectHandle protoHandle,
+        JsObject proto,
+        string name,
+        Func<JsValue, IReadOnlyList<JsValue>, JsValue> call,
+        int length)
+    {
+        // The implementation function — same as before.
+        var impl = new NativeFunctionObject(name, call, length: length);
+        if (_functionPrototypeHandle is { } fnProto)
+            impl.SetPrototype(fnProto);
+        var implHandle = _heap.AllocateObject(impl, AllocationSite.Current());
+        if (_functionPrototypeHandle is { } fnProtoHandle)
+            _heap.WriteBarrier(implHandle, fnProtoHandle);
+
+        // The getter — returns implHandle each time the property is accessed.
+        var capturedImpl = implHandle;
+        var getter = new NativeFunctionObject("get " + name, (_, _2) =>
+            JsValue.FromObject(capturedImpl), length: 0);
+        getter.SetPrototype(EnsureFunctionPrototype());
+        var getterHandle = _heap.AllocateObject(getter, AllocationSite.Current());
+        _heap.WriteBarrier(getterHandle, EnsureFunctionPrototype());
+
+        _ = proto.DefineOwnProperty(
+            name,
+            JsPropertyDescriptor.Accessor(
+                JsValue.FromObject(getterHandle),
+                JsValue.Undefined,
+                Enumerable: false,
+                Configurable: true));
+        _heap.WriteBarrier(protoHandle, getterHandle);
+        _heap.WriteBarrier(protoHandle, implHandle);
     }
 
     // ECMA-262 25.5.1 JSON.parse(text[, reviver]). When a reviver function is
