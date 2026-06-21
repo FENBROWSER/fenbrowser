@@ -1963,7 +1963,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var name = function.PropertyNames[ins.B];
                     var value = frame.Registers[ins.C];
                     if (target.Tag != JsValueTag.Object)
-                        throw new JsThrownException(CreateTypeError("Cannot define private field on non-object."));
+                    {
+                        ThrowOrHandle(frame, CreateTypeError("Cannot define private field on non-object."));
+                        break;
+                    }
                     var targetObj = _heap.GetObject(target.AsObjectHandle());
                     var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
                     targetObj.PrivateBrand = targetObj.PrivateBrand != 0 ? targetObj.PrivateBrand : brand;
@@ -1975,16 +1978,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var objVal = frame.Registers[ins.B];
                     var name = function.PropertyNames[ins.C];
                     if (objVal.Tag != JsValueTag.Object)
-                        throw new JsThrownException(CreateTypeError("Cannot read private field from non-object."));
+                    {
+                        ThrowOrHandle(frame, CreateTypeError("Cannot read private field from non-object."));
+                        break;
+                    }
                     var obj = _heap.GetObject(objVal.AsObjectHandle());
                     var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
                     if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand)
-                        throw new JsThrownException(CreateTypeError("Cannot read private field from an object whose class did not declare it."));
-                    // ECMA-262 PrivateGet: a private field is an own data property, but a
-                    // private method/accessor lives on the prototype. Resolve through the
-                    // chain (TryGetPropertyValue invokes a private getter when present).
+                    {
+                        ThrowOrHandle(frame, CreateTypeError("Cannot read private field from an object whose class did not declare it."));
+                        break;
+                    }
                     if (!TryGetPropertyValue(obj, objVal, name, out var privateValue))
-                        throw new JsThrownException(CreateTypeError("Cannot read private field from an object whose class did not declare it."));
+                    {
+                        ThrowOrHandle(frame, CreateTypeError("Cannot read private field from an object whose class did not declare it."));
+                        break;
+                    }
                     frame.Registers[ins.A] = privateValue;
                     break;
                 }
@@ -1994,11 +2003,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     var name = function.PropertyNames[ins.B];
                     var value = frame.Registers[ins.C];
                     if (objVal.Tag != JsValueTag.Object)
-                        throw new JsThrownException(CreateTypeError("Cannot write private field to non-object."));
+                    {
+                        ThrowOrHandle(frame, CreateTypeError("Cannot write private field to non-object."));
+                        break;
+                    }
                     var obj = _heap.GetObject(objVal.AsObjectHandle());
                     var brand = function.BrandTokens.Count > 0 ? function.BrandTokens[0] : 0L;
                     if (obj.PrivateBrand == 0 || obj.PrivateBrand != brand)
-                        throw new JsThrownException(CreateTypeError("Cannot write private field to an object whose class did not declare it."));
+                    {
+                        ThrowOrHandle(frame, CreateTypeError("Cannot write private field to an object whose class did not declare it."));
+                        break;
+                    }
                     WritePrivateField(obj, objVal, name, value);
                     break;
                 }
