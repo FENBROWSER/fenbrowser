@@ -3962,36 +3962,42 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var wm = new WeakMapObject();
                 wm.SetPrototype(EnsureWeakMapPrototype());
                 var handle = _heap.AllocateObject(wm, AllocationSite.Current());
-                if (args.Count > 0 && args[0].Tag == JsValueTag.Object)
+                _heap.PushRoot(handle);
+                try
                 {
-                    var src = _heap.GetObject(args[0].AsObjectHandle());
-                    if (src is ArrayObject)
+                    if (args.Count > 0)
                     {
-                        var len = GetArrayLength(src);
-                        for (var i = 0; i < len; i++)
+                        var wmValue = JsValue.FromObject(handle);
+                        var adder = GetReceiverProperty(wmValue, "set");
+                        if (!IsCallable(adder))
+                            throw new JsThrownException(CreateTypeError("WeakMap.prototype.set is not callable."));
+                        var iter = CreateForOfIteratorState(args[0], requireIterable: true);
+                        if (iter.Tag != JsValueTag.Object || _heap.GetObject(iter.AsObjectHandle()) is not ForOfIteratorObject forOf)
+                            throw new JsThrownException(CreateTypeError("WeakMap constructor requires an iterable."));
+                        try
                         {
-                            var k = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                            if (!TryGetPropertyValue(src, args[0], k, out var entry) ||
-                                entry.Tag != JsValueTag.Object)
+                            while (!ForOfStepDone(forOf, out var entry))
                             {
-                                throw new JsThrownException(CreateTypeError("WeakMap entry is not an object."));
+                                if (entry.Tag != JsValueTag.Object)
+                                    throw new JsThrownException(CreateTypeError("WeakMap entry is not an object."));
+                                var entryObj = _heap.GetObject(entry.AsObjectHandle());
+                                TryGetPropertyValue(entryObj, entry, "0", out var key);
+                                TryGetPropertyValue(entryObj, entry, "1", out var val);
+                                if (key.Tag != JsValueTag.Object)
+                                    throw new JsThrownException(CreateTypeError("WeakMap key must be an object."));
+                                _ = CallFunction(adder, new[] { key, val }, wmValue);
                             }
-
-                            var entryObj = _heap.GetObject(entry.AsObjectHandle());
-                            TryGetPropertyValue(entryObj, entry, "0", out var key);
-                            TryGetPropertyValue(entryObj, entry, "1", out var val);
-                            if (key.Tag != JsValueTag.Object)
-                            {
-                                throw new JsThrownException(CreateTypeError("WeakMap key must be an object."));
-                            }
-
-                            wm.Set(key.AsObjectHandle(), val);
-                            _heap.WriteBarrier(handle, key.AsObjectHandle());
-                            if (val.Tag == JsValueTag.Object) _heap.WriteBarrier(handle, val.AsObjectHandle());
+                        }
+                        finally
+                        {
+                            try { CloseForOfIteratorState(forOf); } catch (JsThrownException) { }
                         }
                     }
                 }
-
+                finally
+                {
+                    _heap.PopRootsTo(_heap.RootCount - 1);
+                }
                 return JsValue.FromObject(handle);
             },
             length: 0);
