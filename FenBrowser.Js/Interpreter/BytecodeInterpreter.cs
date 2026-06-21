@@ -3978,13 +3978,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         {
                             while (!ForOfStepDone(forOf, out var entry))
                             {
-                                if (entry.Tag != JsValueTag.Object)
-                                    throw new JsThrownException(CreateTypeError("WeakMap entry is not an object."));
+                                // Per spec, let the `set` method validate key/value.
+                                // If entry is not an object or key is not an object,
+                                // the native WeakMap.prototype.set throws TypeError.
+                                // Overridden `set` should have its error propagated.
                                 var entryObj = _heap.GetObject(entry.AsObjectHandle());
                                 TryGetPropertyValue(entryObj, entry, "0", out var key);
                                 TryGetPropertyValue(entryObj, entry, "1", out var val);
-                                if (key.Tag != JsValueTag.Object)
-                                    throw new JsThrownException(CreateTypeError("WeakMap key must be an object."));
                                 _ = CallFunction(adder, new[] { key, val }, wmValue);
                             }
                         }
@@ -4187,8 +4187,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         {
                             while (!ForOfStepDone(forOf, out var v))
                             {
-                                if (v.Tag != JsValueTag.Object)
-                                    throw new JsThrownException(CreateTypeError("WeakSet entries must be objects."));
+                                // Call adder first — it validates the value (WeakSet.add
+                                // throws TypeError for non-objects). If adder is overridden,
+                                // the override's error should propagate per spec.
                                 _ = CallFunction(adder, new[] { v }, wsValue);
                             }
                         }
