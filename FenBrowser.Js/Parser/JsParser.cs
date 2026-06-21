@@ -5493,6 +5493,9 @@ public sealed class JsParser
                         if (IsPunctuator(","))
                         {
                             Advance();
+                            // ECMA-262 14.2: trailing comma is allowed (e.g., (a,) => {})
+                            if (IsPunctuator(")"))
+                                break;
                             continue;
                         }
 
@@ -5593,6 +5596,9 @@ public sealed class JsParser
                     if (IsPunctuator(","))
                     {
                         Advance();
+                        // ECMA-262 14.2: trailing comma is allowed (e.g., (a,) => {})
+                        if (IsPunctuator(")"))
+                            break;
                         continue;
                     }
 
