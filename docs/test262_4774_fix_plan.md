@@ -2,10 +2,10 @@
 
 ## Current Status (2026-06-21)
 
-- Pass rate: **48,618/53,280 = 91.25%** → 4,662 remaining
+- Pass rate: **48,630/53,280 = 91.27%** → 4,650 remaining
 - Phases complete: 0 (runner integrity)
-- Phases in progress: 1 (crashes), 2 (parser), 6 (RegExp)
-- Commits this session: 3
+- Phases in progress: 1 (crashes), 2 (parser), 4 (core built-ins), 6 (RegExp)
+- Commits this session: 6
 
 ### Progress This Session
 
@@ -14,8 +14,10 @@
 | `wellKnownIntrinsicObjects.js` harness | 1 | 9 unblocked | ✅ Committed |
 | RegExp Symbol.split crashes (8) | 1 | 8 no longer crash | ✅ Committed |
 | Set/Map ProxyObject casts (7) | 1 | 7 no longer crash | ✅ Committed |
-| Arrow fn trailing commas | 2 | 2 passed, 3 parser→pass | ✅ Committed |
+| Arrow fn trailing commas | 2 | 3 passed | ✅ Committed |
 | Regex literal `\k<name>` validation | 2 | 7 pass (was 0) | ✅ Committed |
+| Object.defineProperties/freeze/seal/preventExtensions TypeError | 4 | 9 passed | ✅ Committed |
+| JsObject.DefineOwnProperty extensibility + SetProperty return | 4 | 3 passed | ✅ Committed |
 
 ### Remaining Crash/Timeout Summary
 
