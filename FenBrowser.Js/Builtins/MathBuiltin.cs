@@ -170,7 +170,9 @@ public sealed class MathBuiltin : IBuiltinModule
             return JsValue.FromNumber(value);
         }
 
-        if (value is > -0.5d and < 0d)
+        // ECMA-262 21.3.2.28: if -0.5 ≤ x < 0, return -0.
+        // (x == -0.5 rounds to -0, not 0, per the spec tie-break)
+        if (value >= -0.5d && value < 0d)
         {
             return JsValue.FromNumber(-0d);
         }
@@ -238,15 +240,21 @@ public sealed class MathBuiltin : IBuiltinModule
 
     private static JsValue MathHypot(IBuiltinContext context, IReadOnlyList<JsValue> args)
     {
+        // ECMA-262 21.3.2.18: coerce ALL arguments to Number first (step 1-2),
+        // THEN inspect them (step 3). This ensures side effects from later
+        // arguments (valueOf/toString) run even if an earlier arg is Infinity/NaN,
+        // and abrupt completions propagate correctly.
+        var coerced = new double[args.Count];
+        for (var i = 0; i < args.Count; i++)
+            coerced[i] = context.ToNumber(args[i]);
+
         var sawNaN = false;
         var sum = 0d;
-        for (var i = 0; i < args.Count; i++)
+        for (var i = 0; i < coerced.Length; i++)
         {
-            var v = context.ToNumber(args[i]);
+            var v = coerced[i];
             if (double.IsInfinity(v))
-            {
                 return JsValue.FromNumber(double.PositiveInfinity);
-            }
 
             if (double.IsNaN(v))
             {
@@ -258,9 +266,7 @@ public sealed class MathBuiltin : IBuiltinModule
         }
 
         if (sawNaN)
-        {
             return JsValue.FromNumber(double.NaN);
-        }
 
         return JsValue.FromNumber(Math.Sqrt(sum));
     }

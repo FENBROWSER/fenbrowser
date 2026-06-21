@@ -16096,6 +16096,9 @@ fallbackArraySpecies:
         _ = prototype.DefineOwnProperty("constructor", new JsPropertyDescriptor(JsValue.FromObject(constructorHandle), Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, constructorHandle);
 
+        // ECMA-262 26.2.3.4 FinalizationRegistry.prototype [ @@toStringTag ] = "FinalizationRegistry"
+        DefineBuiltinToStringTag(prototype, "FinalizationRegistry");
+
         DefineNativePrototypeMethod(prototypeHandle, prototype, "register", (thisValue, args) =>
         {
             var reg = RequireFinalizationRegistry(thisValue);

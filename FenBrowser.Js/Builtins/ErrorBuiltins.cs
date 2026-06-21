@@ -279,8 +279,10 @@ public sealed class ErrorBuiltins : IBuiltinModule
         {
             var errObj = ctx.Heap.GetObject(err.AsObjectHandle());
             var optionsObj = ctx.Heap.GetObject(args[1].AsObjectHandle());
-            if (ctx.TryGetPropertyValue(optionsObj, args[1], "cause", out var causeValue) &&
-                causeValue.Tag != JsValueTag.Undefined)
+            // ECMA-262 20.5.8.1 InstallErrorCause: if HasProperty(options, "cause"),
+            // install cause even if the value is undefined. Use TryGetPropertyValue
+            // for both HasProperty + Get in one call.
+            if (ctx.TryGetPropertyValue(optionsObj, args[1], "cause", out var causeValue))
             {
                 _ = errObj.DefineOwnProperty("cause",
                     new Objects.JsPropertyDescriptor(causeValue, Writable: true, Enumerable: false, Configurable: true));
