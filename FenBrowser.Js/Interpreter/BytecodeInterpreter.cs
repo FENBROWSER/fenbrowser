@@ -1475,10 +1475,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 {
                     // ECMA-262 14.11.2 — ToObject(value), then push a with object
                     // environment record so the body resolves names against it.
-                    var bindingValue = ToObjectValue(frame.Registers[ins.A]);
-                    var bindingHandle = bindingValue.AsObjectHandle();
-                    var adapter = CreateBindingAdapter(bindingHandle);
-                    frame.Environment = new ObjectEnvironmentRecord(adapter, isWithEnvironment: true, frame.Environment);
+                    // Catch the JsThrownException and route it through ThrowOrHandle
+                    // so the JS try/catch mechanism can intercept it.
+                    try
+                    {
+                        var bindingValue = ToObjectValue(frame.Registers[ins.A]);
+                        var bindingHandle = bindingValue.AsObjectHandle();
+                        var adapter = CreateBindingAdapter(bindingHandle);
+                        frame.Environment = new ObjectEnvironmentRecord(adapter, isWithEnvironment: true, frame.Environment);
+                    }
+                    catch (JsThrownException ex)
+                    {
+                        ThrowOrHandle(frame, ex.Value);
+                    }
                     break;
                 }
                 case OpCode.EndFinally:
