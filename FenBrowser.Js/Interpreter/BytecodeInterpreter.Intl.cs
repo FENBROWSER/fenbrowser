@@ -310,8 +310,7 @@ public sealed partial class BytecodeInterpreter
         var prototypeHandle = _heap.AllocateObject(prototype, AllocationSite.Current());
         _heap.PushRoot(prototypeHandle);
 
-        var formatMethod = new NativeFunctionObject(
-            "",
+        DefineIntlPrototypeAccessor(prototypeHandle, prototype, "format",
             (thisValue, fmtArgs) =>
             {
                 var stateObj = RequireDateTimeFormatState(thisValue);
@@ -320,15 +319,8 @@ public sealed partial class BytecodeInterpreter
                 return DateTimeFormatPrototypeFormat(dtCulture, dtOpts, fmtArgs);
             },
             length: 1);
-            formatMethod.SetPrototype(EnsureFunctionPrototype());
-        var formatHandle = _heap.AllocateObject(formatMethod, AllocationSite.Current());
-        _ = prototype.DefineOwnProperty(
-            "format",
-            new JsPropertyDescriptor(JsValue.FromObject(formatHandle), Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(prototypeHandle, formatHandle);
 
-        var formatToPartsMethod = new NativeFunctionObject(
-            "",
+        DefineIntlPrototypeAccessor(prototypeHandle, prototype, "formatToParts",
             (thisValue, fmtArgs) =>
             {
                 var stateObj = RequireDateTimeFormatState(thisValue);
@@ -337,28 +329,17 @@ public sealed partial class BytecodeInterpreter
                 return DateTimeFormatPrototypeFormatToParts(dtCulture, dtOpts, fmtArgs);
             },
             length: 1);
-        formatToPartsMethod.SetPrototype(EnsureFunctionPrototype());
-        var formatToPartsHandle = _heap.AllocateObject(formatToPartsMethod, AllocationSite.Current());
-        _ = prototype.DefineOwnProperty(
-            "formatToParts",
-            new JsPropertyDescriptor(JsValue.FromObject(formatToPartsHandle), Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(prototypeHandle, formatToPartsHandle);
 
-        var resolvedOptsMethod = new NativeFunctionObject("resolvedOptions", (thisValue, _) =>
-        {
-            var stateObj = RequireDateTimeFormatState(thisValue);
-            var (locale, dtOpts) = RebuildDateTimeFormatState(stateObj);
-            return DateTimeFormatResolvedOptions(locale, dtOpts);
-        }, length: 0);
-        resolvedOptsMethod.SetPrototype(EnsureFunctionPrototype());
-        var resolvedOptsHandle = _heap.AllocateObject(resolvedOptsMethod, AllocationSite.Current());
-        _ = prototype.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(resolvedOptsHandle), Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(prototypeHandle, resolvedOptsHandle);
+        DefineIntlPrototypeAccessor(prototypeHandle, prototype, "resolvedOptions",
+            (thisValue, _) =>
+            {
+                var stateObj = RequireDateTimeFormatState(thisValue);
+                var (locale, dtOpts) = RebuildDateTimeFormatState(stateObj);
+                return DateTimeFormatResolvedOptions(locale, dtOpts);
+            },
+            length: 0);
 
-        // ECMA-402 formatRange / formatRangeToParts — read instance state and delegate to
-        // DateTimeFormatFormatRangeCore (which routes each Temporal/Date type correctly).
-        var formatRangeMethod = new NativeFunctionObject(
-            "formatRange",
+        DefineIntlPrototypeAccessor(prototypeHandle, prototype, "formatRange",
             (thisValue, rangeArgs) =>
             {
                 var stateObj = RequireDateTimeFormatState(thisValue);
@@ -370,14 +351,8 @@ public sealed partial class BytecodeInterpreter
                     parts: false);
             },
             length: 2);
-        formatRangeMethod.SetPrototype(EnsureFunctionPrototype());
-        var formatRangeHandle = _heap.AllocateObject(formatRangeMethod, AllocationSite.Current());
-        _ = prototype.DefineOwnProperty("formatRange",
-            new JsPropertyDescriptor(JsValue.FromObject(formatRangeHandle), Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(prototypeHandle, formatRangeHandle);
 
-        var formatRangeToPartsMethod = new NativeFunctionObject(
-            "formatRangeToParts",
+        DefineIntlPrototypeAccessor(prototypeHandle, prototype, "formatRangeToParts",
             (thisValue, rangeArgs) =>
             {
                 var stateObj = RequireDateTimeFormatState(thisValue);
@@ -389,11 +364,6 @@ public sealed partial class BytecodeInterpreter
                     parts: true);
             },
             length: 2);
-        formatRangeToPartsMethod.SetPrototype(EnsureFunctionPrototype());
-        var formatRangeToPartsHandle = _heap.AllocateObject(formatRangeToPartsMethod, AllocationSite.Current());
-        _ = prototype.DefineOwnProperty("formatRangeToParts",
-            new JsPropertyDescriptor(JsValue.FromObject(formatRangeToPartsHandle), Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(prototypeHandle, formatRangeToPartsHandle);
 
         _dateTimeFormatPrototypeHandle = prototypeHandle;
         return prototypeHandle;
@@ -3810,7 +3780,7 @@ public sealed partial class BytecodeInterpreter
         var ph = _heap.AllocateObject(proto, AllocationSite.Current());
         _heap.PushRoot(ph);
 
-        var compareMethod = new NativeFunctionObject("", (thisValue, cmpArgs) =>
+        DefineIntlPrototypeAccessor(ph, proto, "compare", (thisValue, cmpArgs) =>
         {
             string localeStr = "en-US";
             if (thisValue.Tag == JsValueTag.Object)
@@ -3826,12 +3796,8 @@ public sealed partial class BytecodeInterpreter
             var result = cult.CompareInfo.Compare(a, b, System.Globalization.CompareOptions.None);
             return JsValue.FromNumber(result);
         }, length: 2);
-        var compareHandle = _heap.AllocateObject(compareMethod, AllocationSite.Current());
-        _ = proto.DefineOwnProperty("compare",
-            new JsPropertyDescriptor(JsValue.FromObject(compareHandle), Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(ph, compareHandle);
 
-        var resolvedOptsMethod = new NativeFunctionObject("resolvedOptions", (thisValue, _2) =>
+        DefineIntlPrototypeAccessor(ph, proto, "resolvedOptions", (thisValue, _2) =>
         {
             string ReadStr(string prop, string def)
             {
@@ -3863,10 +3829,6 @@ public sealed partial class BytecodeInterpreter
             o.DefineOwnProperty("caseFirst", new JsPropertyDescriptor(JsValue.FromString(ReadStr("__collator_caseFirst", "false")), Writable: true, Enumerable: true, Configurable: true));
             return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
         }, length: 0);
-        var resolvedOptsHandle = _heap.AllocateObject(resolvedOptsMethod, AllocationSite.Current());
-        _ = proto.DefineOwnProperty("resolvedOptions",
-            new JsPropertyDescriptor(JsValue.FromObject(resolvedOptsHandle), Writable: true, Enumerable: false, Configurable: true));
-        _heap.WriteBarrier(ph, resolvedOptsHandle);
 
         _collatorPrototypeHandle = ph;
         return ph;
