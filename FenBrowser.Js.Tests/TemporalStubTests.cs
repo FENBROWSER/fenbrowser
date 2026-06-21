@@ -75,4 +75,28 @@ public sealed class TemporalStubTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void ZonedDateTimeDifferencesRoundSubDayUnits()
+    {
+        var result = Run("""
+            const start = new Temporal.ZonedDateTime(0n, "UTC");
+            const end = new Temporal.ZonedDateTime(12600000000000n, "UTC");
+            const expanded = start.until(end, {
+                largestUnit: "hour",
+                smallestUnit: "hour",
+                roundingIncrement: 2,
+                roundingMode: "expand"
+            });
+            const truncated = end.since(start, {
+                largestUnit: "hour",
+                smallestUnit: "hour",
+                roundingIncrement: 2,
+                roundingMode: "trunc"
+            });
+            expanded.hours === 4 && truncated.hours === 2;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }

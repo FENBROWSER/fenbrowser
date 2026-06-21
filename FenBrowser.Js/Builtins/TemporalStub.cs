@@ -4864,7 +4864,10 @@ public sealed class TemporalStub : IBuiltinModule
             var s = GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "hour");
             if (s.Largest == "day" || IsCalendarUnit(s.Largest))
                 RequireMatchingTimeZone(ctx, GetVStr(h, o, "tz"), otherTz);
-            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", ZdtDiff(ctx, h, o, otherNs, s.Largest, 1));
+            var difference = DiffUnitRank(s.Largest) >= DiffUnitRank("hour")
+                ? MakeDiffDuration(ctx, h, otherNs - DecodeInstantNanosBig(h, o), s)
+                : ZdtDiff(ctx, h, o, otherNs, s.Largest, 1);
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", difference);
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
             var (otherNs, otherTz, otherCal) = ToTemporalZonedRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
@@ -4872,7 +4875,10 @@ public sealed class TemporalStub : IBuiltinModule
             var s = GetDifferenceSettings(ctx, h, a, 1, DateTimeDiffUnits, "nanosecond", "hour");
             if (s.Largest == "day" || IsCalendarUnit(s.Largest))
                 RequireMatchingTimeZone(ctx, GetVStr(h, o, "tz"), otherTz);
-            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", ZdtDiff(ctx, h, o, otherNs, s.Largest, -1));
+            var difference = DiffUnitRank(s.Largest) >= DiffUnitRank("hour")
+                ? MakeDiffDuration(ctx, h, DecodeInstantNanosBig(h, o) - otherNs, s)
+                : ZdtDiff(ctx, h, o, otherNs, s.Largest, -1);
+            return AttachTemporalPrototypeByName(ctx, h, t, "Duration", difference);
         }, 1);
         AddMethod(ctx, h, pH, p, "round", (o, a) => ZonedRound(ctx, h, o, a, pH), 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
