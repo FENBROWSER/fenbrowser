@@ -15457,7 +15457,11 @@ fallbackArraySpecies:
             return existing;
         }
 
-        var prototypeHandle = _heap.AllocateObject(CreateOrdinaryObject(), AllocationSite.Current());
+        // ECMA-262 21.1.3: Number.prototype is a Number object with [[NumberData]] = +0.
+        // This lets Number.prototype.toExponential() etc. work per spec.
+        var numProtoObj = new NumberObject(0d);
+        numProtoObj.SetPrototype(EnsureObjectPrototype());
+        var prototypeHandle = _heap.AllocateObject(numProtoObj, AllocationSite.Current());
         _heap.PushRoot(prototypeHandle);
 
         var constructor = new NativeFunctionObject(
