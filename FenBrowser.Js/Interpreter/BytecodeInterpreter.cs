@@ -4493,15 +4493,54 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 throw new JsThrownException(CreateTypeError("Reflect.defineProperty descriptor must be an object."));
             }
 
-            try
+            // Steps 1-3 of Reflect.defineProperty: validate target, key, descriptor.
+            // These throw TypeError on invalid input (not caught — they propagate).
+            var targetHandle = args[0].AsObjectHandle();
+            var target = _heap.GetObject(targetHandle);
+            var keyArg = args[1];
+            var key = keyArg.Tag == JsValueTag.Symbol ? string.Empty : ToPropertyKey(keyArg);
+            var descriptorObject = _heap.GetObject(args[2].AsObjectHandle());
+            var descriptorReceiver = args[2];
+
+            // Build the descriptor (ToPropertyDescriptor — can throw TypeError).
+            var hasValue = TryGetPropertyValue(descriptorObject, descriptorReceiver, "value", out var val);
+            var hasWritable = TryGetPropertyValue(descriptorObject, descriptorReceiver, "writable", out var writableVal);
+            var hasGetter = TryGetPropertyValue(descriptorObject, descriptorReceiver, "get", out var getVal);
+            var hasSetter = TryGetPropertyValue(descriptorObject, descriptorReceiver, "set", out var setVal);
+            var hasEnumerable = TryGetPropertyValue(descriptorObject, descriptorReceiver, "enumerable", out var enumVal);
+            var hasConfigurable = TryGetPropertyValue(descriptorObject, descriptorReceiver, "configurable", out var configVal);
+
+            if ((hasGetter || hasSetter) && (hasValue || hasWritable))
+                throw new JsThrownException(CreateTypeError("Invalid property descriptor: cannot mix accessor and data fields."));
+
+            if (hasGetter && getVal.Tag != JsValueTag.Undefined && !IsCallable(getVal))
+                throw new JsThrownException(CreateTypeError("Getter must be a function or undefined."));
+            if (hasSetter && setVal.Tag != JsValueTag.Undefined && !IsCallable(setVal))
+                throw new JsThrownException(CreateTypeError("Setter must be a function or undefined."));
+
+            // Step 4: [[DefineOwnProperty]] — returns boolean, never throws.
+            JsPropertyDescriptor desc;
+            if (hasGetter || hasSetter)
             {
-                ObjectDefineProperty(JsValue.Undefined, args);
-                return JsValue.FromBoolean(true);
+                desc = JsPropertyDescriptor.Accessor(
+                    (hasGetter && getVal.Tag != JsValueTag.Undefined) ? getVal : JsValue.Undefined,
+                    (hasSetter && setVal.Tag != JsValueTag.Undefined) ? setVal : JsValue.Undefined,
+                    hasEnumerable ? IsTruthy(enumVal) : false,
+                    hasConfigurable ? IsTruthy(configVal) : false);
             }
-            catch (JsThrownException)
+            else
             {
-                return JsValue.FromBoolean(false);
+                desc = new JsPropertyDescriptor(
+                    hasValue ? val : JsValue.Undefined,
+                    hasWritable ? IsTruthy(writableVal) : false,
+                    hasEnumerable ? IsTruthy(enumVal) : false,
+                    hasConfigurable ? IsTruthy(configVal) : false);
             }
+
+            if (keyArg.Tag == JsValueTag.Symbol)
+                return JsValue.FromBoolean(target.DefineOwnSymbolProperty(keyArg.AsSymbolId(), desc));
+            else
+                return JsValue.FromBoolean(target.DefineOwnProperty(key, desc));
         }, length: 3);
 
         // 28.1.7 getOwnPropertyDescriptor
