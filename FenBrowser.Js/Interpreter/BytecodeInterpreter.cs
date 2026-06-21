@@ -3306,6 +3306,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             while (!ForOfStepDone(forOf, out var value))
             {
+                PinIfObject(value);
                 _ = CallFunction(adder, new[] { value }, setValue);
             }
         }
@@ -3336,10 +3337,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             while (!ForOfStepDone(forOf, out var entry))
             {
-                if (entry.Tag != JsValueTag.Object)
-                {
-                    throw new JsThrownException(CreateTypeError("Iterator value is not an entry object."));
-                }
+                PinIfObject(entry);
                 var entryObj = _heap.GetObject(entry.AsObjectHandle());
                 TryGetPropertyValue(entryObj, entry, "0", out var k);
                 TryGetPropertyValue(entryObj, entry, "1", out var v);
@@ -3965,7 +3963,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 _heap.PushRoot(handle);
                 try
                 {
-                    if (args.Count > 0)
+                    if (args.Count > 0 && args[0].Tag != JsValueTag.Undefined && args[0].Tag != JsValueTag.Null)
                     {
                         var wmValue = JsValue.FromObject(handle);
                         var adder = GetReceiverProperty(wmValue, "set");
@@ -3979,9 +3977,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                             while (!ForOfStepDone(forOf, out var entry))
                             {
                                 // Per spec, let the `set` method validate key/value.
-                                // If entry is not an object or key is not an object,
-                                // the native WeakMap.prototype.set throws TypeError.
-                                // Overridden `set` should have its error propagated.
+                                // Pin entry as a GC root — CallFunction may trigger GC
+                                // which would collect the entry object.
+                                PinIfObject(entry);
                                 var entryObj = _heap.GetObject(entry.AsObjectHandle());
                                 TryGetPropertyValue(entryObj, entry, "0", out var key);
                                 TryGetPropertyValue(entryObj, entry, "1", out var val);
@@ -4174,7 +4172,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 _heap.PushRoot(handle);
                 try
                 {
-                    if (args.Count > 0)
+                    if (args.Count > 0 && args[0].Tag != JsValueTag.Undefined && args[0].Tag != JsValueTag.Null)
                     {
                         var wsValue = JsValue.FromObject(handle);
                         var adder = GetReceiverProperty(wsValue, "add");
