@@ -502,8 +502,10 @@ public static class RegexParser
                 throw new RegexSyntaxError("Invalid control escape in Unicode regular expression", _pos);
 
             Advance();
-            // \cX → control character: toUpper(X) ^ 64
-            var controlChar = (char)(char.ToUpperInvariant(ch) ^ 64);
+            // \cX → control character. Per B.1.4: character value modulo 32.
+            // The old `toUpper ^ 64` only works for ASCII (where 65^64=1).
+            // Non-ASCII letters need `ch % 32` to produce the correct result.
+            var controlChar = (char)(ch % 32);
             return new CharacterEscapeNode(controlChar);
         }
 
@@ -760,7 +762,8 @@ public static class RegexParser
                 throw new RegexSyntaxError("Invalid control escape in class", _pos);
             var ch = Peek;
             Advance();
-            return char.ToUpperInvariant(ch) ^ 64;
+            // Per B.1.4: character value modulo 32, not toUpper ^ 64.
+            return ch % 32;
         }
 
         private int ParseUnicodeInClass()
