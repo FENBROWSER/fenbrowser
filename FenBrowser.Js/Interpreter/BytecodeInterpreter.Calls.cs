@@ -614,12 +614,12 @@ public sealed partial class BytecodeInterpreter
     {
         try
         {
-            // ECMA-262 7.3.15: pass frame.NewTarget so subclass constructors
-            // receive the original new.target (e.g. Sub, not Array) when
-            // super(...args) is called inside a derived constructor.
-            var newTarget = frame.NewTarget.Tag != JsValueTag.Undefined
-                ? frame.NewTarget
-                : constructor;
+            // ECMA-262 13.3.7.1 EvaluateNew: for a regular `new X()` expression,
+            // newTarget is the constructor itself (not frame.NewTarget, which is
+            // the enclosing new.target for derived-class super() calls).
+            // SuperCall opcodes handle derived-class newTarget propagation
+            // separately via SuperCallStoreConstructResult.
+            var newTarget = constructor;
             var constructed = ConstructFunction(constructor, args, newTarget);
             frame.Registers[destinationRegister] = constructed;
         }
