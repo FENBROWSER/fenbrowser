@@ -300,6 +300,15 @@ public sealed partial class BytecodeInterpreter
                 for (var i = 0; i < args.Count; i++) PinIfObject(args[i]);
                 return native.Call(thisValue, args);
             }
+            catch (JsThrownException ex)
+            {
+                // Pin the thrown value and adjust rootMark so the finally
+                // block does not pop this pin — the value must survive GC
+                // until the catch block processes it.
+                PinIfObject(ex.Value);
+                rootMark = _heap.RootCount;
+                throw;
+            }
             finally
             {
                 _heap.PopRootsTo(rootMark);
@@ -510,6 +519,15 @@ public sealed partial class BytecodeInterpreter
                 PinIfObject(newTarget);
                 for (var i = 0; i < args.Count; i++) PinIfObject(args[i]);
                 constructed = native.ConstructWithNewTarget(args, newTarget);
+            }
+            catch (JsThrownException ex)
+            {
+                // Pin the thrown value and update rootMark so the finally
+                // block preserves this pin — the value must survive GC until
+                // the catch block processes it.
+                PinIfObject(ex.Value);
+                rootMark = _heap.RootCount;
+                throw;
             }
             finally
             {
