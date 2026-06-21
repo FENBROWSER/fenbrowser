@@ -83,9 +83,15 @@ public sealed partial class BytecodeInterpreter
 
     private void ThrowOrHandle(InterpreterFrame frame, JsValue value)
     {
+        // Pin the thrown value as a GC root so it survives until the catch
+        // block executes. Without this, user-created error objects (e.g.
+        // `throw new Test262Error()`) could be collected while the exception
+        // unwinds, surfacing as "thrown=undefined" or TypeError on instanceof.
+        PinIfObject(value);
+
         if (frame.CatchHandlers.Count > 0)
         {
-            
+
     var catchIp = frame.CatchHandlers.Pop();
             var finallyIp = frame.FinallyHandlers.Pop();
             // Restore the lexical environment to the try's level, discarding any

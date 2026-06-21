@@ -3309,10 +3309,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 _ = CallFunction(adder, new[] { value }, setValue);
             }
         }
-        catch (JsThrownException)
+        finally
         {
             CloseForOfIteratorState(forOf);
-            throw;
         }
     }
 
@@ -3339,7 +3338,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 if (entry.Tag != JsValueTag.Object)
                 {
-                    CloseForOfIteratorState(forOf);
                     throw new JsThrownException(CreateTypeError("Iterator value is not an entry object."));
                 }
                 var entryObj = _heap.GetObject(entry.AsObjectHandle());
@@ -3348,10 +3346,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 _ = CallFunction(adder, new[] { k, v }, mapValue);
             }
         }
-        catch (JsThrownException)
+        finally
         {
-            CloseForOfIteratorState(forOf);
-            throw;
+            // IteratorClose must run even when the exception propagates
+            // directly to a JS catch block (bypassing our CLR catch).
+            // Suppress any TypeError from CloseForOfIteratorState (e.g.
+            // when the iterator's return() returns a non-object) so the
+            // original error propagates correctly per 7.4.11.
+            try { CloseForOfIteratorState(forOf); }
+            catch (JsThrownException) { /* original error propagates */ }
         }
     }
 
