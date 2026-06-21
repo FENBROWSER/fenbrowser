@@ -2986,25 +2986,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var set = new SetObject();
                 set.SetPrototype(EnsureSetPrototype());
                 var handle = _heap.AllocateObject(set, AllocationSite.Current());
-                if (args.Count > 0 && args[0].Tag == JsValueTag.Object)
+                _heap.PushRoot(handle);
+                try
                 {
-                    var src = _heap.GetObject(args[0].AsObjectHandle());
-                    if (src is ArrayObject)
+                    if (args.Count > 0)
                     {
-                        var len = GetArrayLength(src);
-                        for (var i = 0; i < len; i++)
-                        {
-                            var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                            TryGetPropertyValue(src, args[0], key, out var v);
-                            set.Add(v);
-                            if (v.Tag == JsValueTag.Object)
-                            {
-                                _heap.WriteBarrier(handle, v.AsObjectHandle());
-                            }
-                        }
+                        AddEntriesToSet(set, handle, args[0]);
                     }
                 }
-
+                finally
+                {
+                    _heap.PopRootsTo(_heap.RootCount - 1);
+                }
                 return JsValue.FromObject(handle);
             },
             length: 0);
@@ -3296,6 +3289,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // ECMA-262 24.1 Map. Same shape as Set with an explicit key + value pair per
     // entry; SameValueZero is the key-identity rule (NaN-key matches NaN, +0/-0
     // collapse).
+    // ECMA-262 24.2.1.1 AddEntriesFromIterable for Set. Same iterator-close
+    // semantics as Map but uses `add` instead of `set` for single values.
+    private void AddEntriesToSet(SetObject set, ObjectHandle setHandle, JsValue iterable)
+    {
+        if (iterable.Tag == JsValueTag.Undefined || iterable.Tag == JsValueTag.Null)
+            return;
+        var setValue = JsValue.FromObject(setHandle);
+        var adder = GetReceiverProperty(setValue, "add");
+        if (!IsCallable(adder))
+            throw new JsThrownException(CreateTypeError("Set.prototype.add is not callable."));
+        var iter = CreateForOfIteratorState(iterable, requireIterable: true);
+        if (iter.Tag != JsValueTag.Object || _heap.GetObject(iter.AsObjectHandle()) is not ForOfIteratorObject forOf)
+            throw new JsThrownException(CreateTypeError("Set constructor requires an iterable."));
+        try
+        {
+            while (!ForOfStepDone(forOf, out var value))
+            {
+                _ = CallFunction(adder, new[] { value }, setValue);
+            }
+        }
+        catch (JsThrownException)
+        {
+            CloseForOfIteratorState(forOf);
+            throw;
+        }
+    }
+
     // ECMA-262 24.1.1.1 AddEntriesFromIterable. Drains an iterable of [key,value]
     // pairs into a Map using its `set` method. If `set` throws, the iterator is
     // closed via IteratorClose before propagating the error.
