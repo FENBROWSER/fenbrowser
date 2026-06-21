@@ -1604,7 +1604,11 @@ public sealed class Test262Runner
                      timeouts: {
                        long: 60000,
                        short: 1000,
-                       tiny: 100
+                       tiny: 100,
+                       yield: 100
+                     },
+                     safeBroadcast: function(sab) {
+                       _agent.broadcast(sab);
                      },
                      setTimeout: function(callback, delay) {
                        var p = Promise.resolve();
