@@ -3360,7 +3360,12 @@ public sealed class JsParser
             }
 
             ParseDecoratorList();
-            var memberStart = Current().Span;
+            // Capture span AFTER 'static' so Function.prototype.toString on class
+            // methods, getters, setters, and constructors does not include the
+            // 'static' keyword or comments/whitespace before the method name.
+            // The span is set on FunctionExpressionNode below and flows into
+            // BytecodeFunction.SourceText.
+            var savedStaticStart = Current().Span;
             bool isStatic = false;
             // The 'static' modifier is a contextual keyword (lexed as Identifier).
             // Disambiguate against a method literally named "static" by peeking the
@@ -3370,6 +3375,7 @@ public sealed class JsParser
                 Advance();
                 isStatic = true;
             }
+            var memberStart = isStatic ? Current().Span : savedStaticStart;
 
             // H.5 - static initialization block: `static { ... }`. ECMA-262 15.7
             // ClassStaticBlock. The block body runs once at class-definition time
