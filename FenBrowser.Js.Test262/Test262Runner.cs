@@ -846,6 +846,10 @@ public sealed class Test262Runner
                         perTestInterpreter.WallClockTimeoutMs = Math.Max(1, timeoutMs);
                         perTestInterpreter.InterruptCallback = () =>
                             Volatile.Read(ref interruptRequested) == 0 && !token.IsCancellationRequested;
+                        var htmlDda = perTestInterpreter.AllocateNativeFunction(
+                            "IsHTMLDDA", (_, _) => JsValue.Null);
+                        perTestInterpreter.MarkAsHtmlDda(htmlDda);
+                        perTestInterpreter.RegisterGlobalValue("__fenHtmlDda", htmlDda);
                         try
                         {
                             _ = perTestInterpreter.Execute(function);
@@ -1542,7 +1546,7 @@ public sealed class Test262Runner
                  // a stand-in for document.all: Object.defineProperty works on it, it is
                  // callable (returning null), and get-method accessor tests that dispatch
                  // @@match etc. observe null instead of undefined.
-                 IsHTMLDDA: function() { return null; },
+                 IsHTMLDDA: __fenHtmlDda,
                  // Single-agent $262.agent mock for Atomics wait/notify tests.
                  // In a single-agent engine, no other agent can wake a waiting
                  // thread, so wait always reports "timed-out" and notify always

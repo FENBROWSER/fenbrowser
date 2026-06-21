@@ -166,4 +166,19 @@ public sealed class ForOfTests
             0;
         "));
     }
+
+    [Fact]
+    public void DestructuringNormalClosePropagatesIteratorReturnError()
+    {
+        Assert.Throws<JsThrownException>(() => RunNum(@"
+            var inner = {
+                [Symbol.iterator]() { return this; },
+                next() { return { value: 1, done: false }; },
+                return() { throw new Error('close'); }
+            };
+            var value;
+            for ([value] of [inner]) {}
+            0;
+        "));
+    }
 }

@@ -147,6 +147,17 @@ public sealed partial class BytecodeInterpreter
         return JsValue.FromObject(handle);
     }
 
+    // Host seam for the Annex B document.all-compatible [[IsHTMLDDA]] exotic.
+    public void MarkAsHtmlDda(JsValue value)
+    {
+        if (value.Tag != JsValueTag.Object)
+        {
+            throw new ArgumentException("[[IsHTMLDDA]] can only mark an object.", nameof(value));
+        }
+
+        _heap.GetObject(value.AsObjectHandle()).IsHtmlDda = true;
+    }
+
     public JsValue AllocateNativeConstructor(
         string name,
         Func<JsValue, IReadOnlyList<JsValue>, JsValue> call,

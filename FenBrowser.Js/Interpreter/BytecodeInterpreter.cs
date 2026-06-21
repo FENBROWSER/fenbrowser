@@ -8200,22 +8200,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return "undefined";
     }
 
-    private static bool ValueToBooleanProxy(JsValue value)
-    {
-        return value.Tag switch
-        {
-            JsValueTag.Undefined => false,
-            JsValueTag.Null => false,
-            JsValueTag.Boolean => value.AsBoolean(),
-            JsValueTag.Int32 => value.AsInt32() != 0,
-            JsValueTag.Number => value.AsNumber() != 0.0 && !double.IsNaN(value.AsNumber()),
-            JsValueTag.String => value.AsString().Length > 0,
-            JsValueTag.Symbol => true,
-            JsValueTag.Object => true,
-            JsValueTag.HostObject => true,
-            _ => false
-        };
-    }
+    private bool ValueToBooleanProxy(JsValue value) => IsTruthy(value);
 
     [MayExecuteJs]
     private JsValue ProxyGet(ProxyObject proxy, JsValue receiver, string prop)
@@ -20583,8 +20568,13 @@ fallbackArraySpecies:
         }
     }
 
-    internal static bool IsTruthy(JsValue value)
+    internal bool IsTruthy(JsValue value)
     {
+        if (IsHtmlDda(value))
+        {
+            return false;
+        }
+
         return value.Tag switch
         {
             JsValueTag.Undefined => false,
@@ -20600,6 +20590,12 @@ fallbackArraySpecies:
 
     private bool AreEqual(JsValue left, JsValue right)
     {
+        if ((IsHtmlDda(left) && right.Tag is JsValueTag.Null or JsValueTag.Undefined) ||
+            (IsHtmlDda(right) && left.Tag is JsValueTag.Null or JsValueTag.Undefined))
+        {
+            return true;
+        }
+
         if (left.Tag == right.Tag)
         {
             return left.Tag switch
@@ -21438,6 +21434,11 @@ fallbackArraySpecies:
 
     private string TypeOfValue(JsValue value)
     {
+        if (IsHtmlDda(value))
+        {
+            return "undefined";
+        }
+
         if (value.Tag == JsValueTag.Object)
         {
             if (IsCallable(value))
@@ -21462,6 +21463,10 @@ fallbackArraySpecies:
             _ => "undefined"
         };
     }
+
+    private bool IsHtmlDda(JsValue value)
+        => value.Tag == JsValueTag.Object &&
+           _heap.GetObject(value.AsObjectHandle()).IsHtmlDda;
 
     private enum PrimitiveHint
     {

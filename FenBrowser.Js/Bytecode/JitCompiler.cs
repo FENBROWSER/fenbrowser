@@ -164,7 +164,7 @@ public static class JitCompiler
     private static readonly MethodInfo MiInitializeName = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.InitializeName), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiIsTruthy = typeof(BytecodeInterpreter)
-        .GetMethod(nameof(BytecodeInterpreter.IsTruthy), BindingFlags.Static | BindingFlags.NonPublic)!;
+        .GetMethod(nameof(BytecodeInterpreter.IsTruthy), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiLoadThis = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.LoadThisForJit), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiNewObject = typeof(BytecodeInterpreter)
@@ -371,7 +371,7 @@ public static class JitCompiler
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
                 if (ins.B < 0 || ins.B >= function.Instructions.Count) return false;
                 body.Add(Expression.IfThen(
-                    Expression.Not(Expression.Call(MiIsTruthy,
+                    Expression.Not(Expression.Call(interp, MiIsTruthy,
                         Expression.ArrayAccess(registers, Expression.Constant(ins.A)))),
                     Expression.Goto(labels[ins.B])));
                 return true;

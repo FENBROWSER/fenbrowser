@@ -57,6 +57,10 @@ public class JsObject : ITraceable
     // slots as a marker here; ordinary objects leave it None.
     internal BuiltinTagSlot ToStringTagSlot { get; set; } = BuiltinTagSlot.None;
 
+    // Annex B [[IsHTMLDDA]] host-exotic marker. Ordinary objects leave this
+    // false; browser hosts may mark their document.all-compatible object.
+    internal bool IsHtmlDda { get; set; }
+
     // ECMA-262 immutable prototype exotic object (e.g. %Object.prototype%): its
     // [[SetPrototypeOf]] succeeds only when the new value equals the current one.
     internal bool ImmutablePrototype { get; set; }
