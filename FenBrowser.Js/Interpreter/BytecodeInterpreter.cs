@@ -3976,9 +3976,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         {
                             while (!ForOfStepDone(forOf, out var entry))
                             {
-                                // Per spec, let the `set` method validate key/value.
-                                // Pin entry as a GC root — CallFunction may trigger GC
-                                // which would collect the entry object.
+                                // Entry must be an Object per spec — non-object
+                                // (Symbol, null, undefined, string) → TypeError + close.
+                                if (entry.Tag != JsValueTag.Object)
+                                    throw new JsThrownException(CreateTypeError("WeakMap iterator value is not an object."));
                                 PinIfObject(entry);
                                 var entryObj = _heap.GetObject(entry.AsObjectHandle());
                                 TryGetPropertyValue(entryObj, entry, "0", out var key);
