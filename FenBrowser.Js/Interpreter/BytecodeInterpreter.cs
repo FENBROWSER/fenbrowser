@@ -1041,7 +1041,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         var currentIp = frame.InstructionPointer - 1;
                         var isSuperReceiverLoad = currentIp > 0 &&
                                                   function.Instructions[currentIp - 1].OpCode == OpCode.LoadSuperConstructor;
-                        if (!isSuperReceiverLoad)
+                        if (isSuperReceiverLoad)
+                        {
+                            frame.Registers[ins.A] = frame.ThisValue;
+                            break;
+                        }
+                        else
                         {
                             ThrowReferenceError(frame, "Must call super constructor in derived class before accessing 'this'.");
                             break;
@@ -1055,7 +1060,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     // so resolution must climb to the enclosing function's
                     // FunctionEnvironmentRecord (or globalThis) rather than read
                     // the call-site receiver, which is undefined for `arrow()`.
-                    if (TryResolveThisBinding(frame.Environment, out var boundThis))
+                    var resolvedThisResult = ResolveThisBinding(frame.Environment, out var boundThis);
+                    if (resolvedThisResult == BindingOpResult.TdzAccess)
+                    {
+                        ThrowReferenceError(frame, "Must call super constructor in derived class before accessing 'this'.");
+                        break;
+                    }
+                    if (resolvedThisResult == BindingOpResult.Ok)
                     {
                         frame.Registers[ins.A] = boundThis;
                     }
@@ -15369,20 +15380,21 @@ fallbackArraySpecies:
 
     // ECMA-262 9.1.2.5 GetThisEnvironment: return the value of the nearest
     // lexical environment record (this frame's environment or an outer one)
-    // that has a `this` binding. Returns false only if no record in the chain
-    // provides one (so the caller can fall back to the frame receiver).
-    private static bool TryResolveThisBinding(Environments.EnvironmentRecord? environment, out JsValue value)
+    // that has a `this` binding. Preserve TDZ access so arrows enclosed by a
+    // derived constructor cannot fall back to their call-site receiver before
+    // super() initializes the constructor's binding.
+    private static BindingOpResult ResolveThisBinding(EnvironmentRecord? environment, out JsValue value)
     {
         for (var env = environment; env is not null; env = env.OuterEnv)
         {
             if (env.HasThisBinding)
             {
-                return env.GetThisBinding(out value) == Environments.BindingOpResult.Ok;
+                return env.GetThisBinding(out value);
             }
         }
 
         value = JsValue.Undefined;
-        return false;
+        return BindingOpResult.NotFound;
     }
 
     private int GetArrayLength(JsObject obj)
@@ -20114,7 +20126,11 @@ fallbackArraySpecies:
         {
             var isSuperReceiverLoad = currentIp > 0 &&
                                       function.Instructions[currentIp - 1].OpCode == OpCode.LoadSuperConstructor;
-            if (!isSuperReceiverLoad)
+            if (isSuperReceiverLoad)
+            {
+                return frame.ThisValue;
+            }
+            else
             {
                 ThrowReferenceError(frame, "Must call super constructor in derived class before accessing 'this'.");
                 return JsValue.Undefined;
@@ -20123,7 +20139,13 @@ fallbackArraySpecies:
 
         // 9.1.2.5 GetThisEnvironment — walk to the nearest this-providing record
         // so arrow functions resolve the enclosing function/global `this`.
-        if (TryResolveThisBinding(frame.Environment, out var boundThis))
+        var thisBindingResult = ResolveThisBinding(frame.Environment, out var boundThis);
+        if (thisBindingResult == BindingOpResult.TdzAccess)
+        {
+            ThrowReferenceError(frame, "Must call super constructor in derived class before accessing 'this'.");
+            return JsValue.Undefined;
+        }
+        if (thisBindingResult == BindingOpResult.Ok)
         {
             return boundThis;
         }

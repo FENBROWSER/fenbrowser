@@ -349,6 +349,31 @@ public sealed class ClassRuntimeTests
     }
 
     [Fact]
+    public void ArrowCapturesDerivedConstructorThisTdzUntilSuperReturns()
+    {
+        Assert.True(Run(@"
+            var readThis;
+            var beforeSuper;
+            var afterSuper;
+            class A {
+                constructor() {
+                    try { readThis(); }
+                    catch (error) { beforeSuper = error.name; }
+                }
+            }
+            class B extends A {
+                constructor() {
+                    readThis = () => this;
+                    super();
+                    afterSuper = readThis() === this;
+                }
+            }
+            new B();
+            beforeSuper === 'ReferenceError' && afterSuper;
+        ").AsBoolean());
+    }
+
+    [Fact]
     public void ClassConstructorCannotBeCalledViaApply()
     {
         Assert.Equal("TypeError", Run(@"
