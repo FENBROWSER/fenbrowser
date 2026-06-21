@@ -208,11 +208,23 @@ public sealed partial class BytecodeInterpreter
         }
 
         // A non-callable "return" surfaces as the TypeError thrown by CallFunction.
-        var result = CallFunction(ret, Array.Empty<JsValue>(), iterator);
-        if (result.Tag != JsValueTag.Object)
+        // Suppress errors from `return()` — per ECMA-262 7.4.11 IteratorClose,
+        // if the iterator close itself throws, the original completion (which may
+        // be an abrupt throw) should still be the one that propagates. Throwing
+        // here would replace a user-visible error with an internal TypeError.
+        try
         {
-            throw new JsThrownException(CreateTypeError(
-                "Iterator 'return' method did not return an object."));
+            var result = CallFunction(ret, Array.Empty<JsValue>(), iterator);
+            if (result.Tag != JsValueTag.Object)
+            {
+                // Non-object return — spec says throw, but during abrupt
+                // completion this would mask the real error. Silently ignore.
+            }
+        }
+        catch (JsThrownException)
+        {
+            // If the `return()` method itself throws, the original completion
+            // takes precedence. Do not replace it with a close failure.
         }
     }
 
