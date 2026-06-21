@@ -161,6 +161,10 @@ public sealed class JsParser
         }
 
         ValidateDirectivePrologueStrictStringEscapes(statements);
+        // ECMA-262: It is a Syntax Error if AllPrivateNamesValid of StatementList
+        // with an empty List is false. Private names must be declared in the class
+        // body where they are referenced.
+        ValidateAllPrivateNamesValid(statements);
         var program = new ProgramNode(kind, statements, span);
         // ECMA-262 lexical-declaration early errors (duplicate let/const/class, or a
         // lexical name clashing with a var/function in the same scope). Run at parse
@@ -2921,6 +2925,267 @@ public sealed class JsParser
             {
                 throw new JsParserException("super() is not allowed in a class constructor without heritage.");
             }
+        }
+    }
+
+    // ECMA-262: AllPrivateNamesValid — validates that all private name references
+    // in a script are declared in the class body where they appear.
+    private static void ValidateAllPrivateNamesValid(IReadOnlyList<StatementNode> statements)
+    {
+        var declaredNames = new HashSet<string>();
+        ValidateAllPrivateNamesValidInStatements(statements, declaredNames);
+    }
+
+    private static void ValidateAllPrivateNamesValidInStatements(
+        IReadOnlyList<StatementNode> statements, HashSet<string> outerDeclared)
+    {
+        foreach (var stmt in statements)
+        {
+            ValidateAllPrivateNamesValidInStatement(stmt, outerDeclared);
+        }
+    }
+
+    private static void ValidateAllPrivateNamesValidInStatement(
+        StatementNode stmt, HashSet<string> outerDeclared)
+    {
+        switch (stmt)
+        {
+            case ClassDeclarationNode classDecl:
+                ValidateClassPrivateNames(classDecl.Members, classDecl.BaseClass, outerDeclared);
+                break;
+            case ExpressionStatementNode exprStmt:
+                ValidateNoUndeclaredPrivateNames(exprStmt.Expression, outerDeclared);
+                break;
+            case VariableDeclarationStatementNode varDecl:
+                foreach (var d in varDecl.Declarators)
+                {
+                    if (d.Initializer is not null)
+                        ValidateNoUndeclaredPrivateNames(d.Initializer, outerDeclared);
+                }
+                break;
+            case IfStatementNode ifStmt:
+                ValidateNoUndeclaredPrivateNames(ifStmt.Test, outerDeclared);
+                ValidateAllPrivateNamesValidInStatement(ifStmt.Consequent, outerDeclared);
+                if (ifStmt.Alternate is not null)
+                    ValidateAllPrivateNamesValidInStatement(ifStmt.Alternate, outerDeclared);
+                break;
+            case WhileStatementNode whileStmt:
+                ValidateNoUndeclaredPrivateNames(whileStmt.Test, outerDeclared);
+                ValidateAllPrivateNamesValidInStatement(whileStmt.Body, outerDeclared);
+                break;
+            case ForStatementNode forStmt:
+                if (forStmt.Initializer is not null)
+                    ValidateAllPrivateNamesValidInStatement(forStmt.Initializer, outerDeclared);
+                if (forStmt.Test is not null)
+                    ValidateNoUndeclaredPrivateNames(forStmt.Test, outerDeclared);
+                if (forStmt.Update is not null)
+                    ValidateNoUndeclaredPrivateNames(forStmt.Update, outerDeclared);
+                ValidateAllPrivateNamesValidInStatement(forStmt.Body, outerDeclared);
+                break;
+            case ForInStatementNode forInStmt:
+                ValidateAllPrivateNamesValidInStatement(forInStmt.Initializer, outerDeclared);
+                ValidateNoUndeclaredPrivateNames(forInStmt.Iterable, outerDeclared);
+                ValidateAllPrivateNamesValidInStatement(forInStmt.Body, outerDeclared);
+                break;
+            case ForOfStatementNode forOfStmt:
+                ValidateAllPrivateNamesValidInStatement(forOfStmt.Initializer, outerDeclared);
+                ValidateNoUndeclaredPrivateNames(forOfStmt.Iterable, outerDeclared);
+                ValidateAllPrivateNamesValidInStatement(forOfStmt.Body, outerDeclared);
+                break;
+            case ForAwaitOfStatementNode forAwaitStmt:
+                ValidateAllPrivateNamesValidInStatement(forAwaitStmt.Initializer, outerDeclared);
+                ValidateNoUndeclaredPrivateNames(forAwaitStmt.Iterable, outerDeclared);
+                ValidateAllPrivateNamesValidInStatement(forAwaitStmt.Body, outerDeclared);
+                break;
+            case ReturnStatementNode retStmt:
+                if (retStmt.Argument is not null)
+                    ValidateNoUndeclaredPrivateNames(retStmt.Argument, outerDeclared);
+                break;
+            case ThrowStatementNode throwStmt:
+                ValidateNoUndeclaredPrivateNames(throwStmt.Argument, outerDeclared);
+                break;
+            case SwitchStatementNode switchStmt:
+                ValidateNoUndeclaredPrivateNames(switchStmt.Discriminant, outerDeclared);
+                foreach (var c in switchStmt.Cases)
+                {
+                    if (c.Test is not null)
+                        ValidateNoUndeclaredPrivateNames(c.Test, outerDeclared);
+                    ValidateAllPrivateNamesValidInStatements(c.Consequent, outerDeclared);
+                }
+                break;
+            case TryCatchStatementNode tryCatch:
+                ValidateAllPrivateNamesValidInStatement(tryCatch.TryBlock, outerDeclared);
+                ValidateAllPrivateNamesValidInStatement(tryCatch.CatchBlock, outerDeclared);
+                break;
+            case TryFinallyStatementNode tryFinally:
+                ValidateAllPrivateNamesValidInStatement(tryFinally.TryBlock, outerDeclared);
+                ValidateAllPrivateNamesValidInStatement(tryFinally.FinallyBlock, outerDeclared);
+                break;
+            case TryCatchFinallyStatementNode tryCatchFinally:
+                ValidateAllPrivateNamesValidInStatement(tryCatchFinally.TryBlock, outerDeclared);
+                ValidateAllPrivateNamesValidInStatement(tryCatchFinally.CatchBlock, outerDeclared);
+                ValidateAllPrivateNamesValidInStatement(tryCatchFinally.FinallyBlock, outerDeclared);
+                break;
+            case BlockStatementNode block:
+                ValidateAllPrivateNamesValidInStatements(block.Statements, outerDeclared);
+                break;
+            case LabeledStatementNode labeled:
+                ValidateAllPrivateNamesValidInStatement(labeled.Body, outerDeclared);
+                break;
+            case DoWhileStatementNode doWhile:
+                ValidateAllPrivateNamesValidInStatement(doWhile.Body, outerDeclared);
+                ValidateNoUndeclaredPrivateNames(doWhile.Test, outerDeclared);
+                break;
+            case WithStatementNode withStmt:
+                ValidateNoUndeclaredPrivateNames(withStmt.Object, outerDeclared);
+                ValidateAllPrivateNamesValidInStatement(withStmt.Body, outerDeclared);
+                break;
+            // Function declarations, empty statements, debugger, import/export
+            // don't contain expressions with potential private names.
+            default:
+                break;
+        }
+    }
+
+    // Validate private names in a class: collect declared names from the body,
+    // then check that all references in the body (and heritage) are valid.
+    private static void ValidateClassPrivateNames(
+        IReadOnlyList<ClassMemberNode> members, ExpressionNode? baseClass, HashSet<string> outerDeclared)
+    {
+        // Collect private names declared in this class body.
+        var classDeclared = new HashSet<string>(outerDeclared);
+        foreach (var member in members)
+        {
+            if (member.IsPrivate)
+            {
+                classDeclared.Add(member.Name);
+            }
+        }
+
+        // Check heritage for private name references (evaluated in outer
+        // private environment, so only outer names are valid).
+        if (baseClass is not null)
+        {
+            ValidateNoUndeclaredPrivateNames(baseClass, outerDeclared);
+        }
+
+        // Check all class members for undeclared private name references.
+        foreach (var member in members)
+        {
+            ValidateNoUndeclaredPrivateNames(member.Function, classDeclared);
+            if (member.ComputedName is not null)
+            {
+                ValidateNoUndeclaredPrivateNames(member.ComputedName, classDeclared);
+            }
+        }
+    }
+
+    // Recursively walk an expression and throw if it contains a private name
+    // reference that is not in the declared set.
+    private static void ValidateNoUndeclaredPrivateNames(ExpressionNode expr, HashSet<string> declared)
+    {
+        switch (expr)
+        {
+            case MemberExpressionNode { Property: { } prop } when prop.StartsWith('#'):
+                if (!declared.Contains(prop))
+                    throw new JsParserException($"Undeclared private name '{prop}'.");
+                break;
+            case OptionalMemberExpressionNode { Property: { } prop } when prop.StartsWith('#'):
+                if (!declared.Contains(prop))
+                    throw new JsParserException($"Undeclared private name '{prop}'.");
+                break;
+            case MemberExpressionNode member:
+                ValidateNoUndeclaredPrivateNames(member.Object, declared);
+                if (member.PropertyExpression is not null)
+                    ValidateNoUndeclaredPrivateNames(member.PropertyExpression, declared);
+                break;
+            case OptionalMemberExpressionNode optMember:
+                ValidateNoUndeclaredPrivateNames(optMember.Object, declared);
+                if (optMember.PropertyExpression is not null)
+                    ValidateNoUndeclaredPrivateNames(optMember.PropertyExpression, declared);
+                break;
+            case CallExpressionNode call:
+                ValidateNoUndeclaredPrivateNames(call.Callee, declared);
+                foreach (var arg in call.Arguments)
+                    ValidateNoUndeclaredPrivateNames(arg, declared);
+                break;
+            case OptionalCallExpressionNode optCall:
+                ValidateNoUndeclaredPrivateNames(optCall.Callee, declared);
+                foreach (var arg in optCall.Arguments)
+                    ValidateNoUndeclaredPrivateNames(arg, declared);
+                break;
+            case NewExpressionNode @new:
+                ValidateNoUndeclaredPrivateNames(@new.Callee, declared);
+                foreach (var arg in @new.Arguments)
+                    ValidateNoUndeclaredPrivateNames(arg, declared);
+                break;
+            case BinaryExpressionNode binary:
+                ValidateNoUndeclaredPrivateNames(binary.Left, declared);
+                ValidateNoUndeclaredPrivateNames(binary.Right, declared);
+                break;
+            case UnaryExpressionNode unary:
+                ValidateNoUndeclaredPrivateNames(unary.Operand, declared);
+                break;
+            case ConditionalExpressionNode cond:
+                ValidateNoUndeclaredPrivateNames(cond.Test, declared);
+                ValidateNoUndeclaredPrivateNames(cond.Consequent, declared);
+                ValidateNoUndeclaredPrivateNames(cond.Alternate, declared);
+                break;
+            case AssignmentExpressionNode assign:
+                ValidateNoUndeclaredPrivateNames(assign.Left, declared);
+                ValidateNoUndeclaredPrivateNames(assign.Right, declared);
+                break;
+            case ArrayLiteralExpressionNode arr:
+                foreach (var el in arr.Elements)
+                    ValidateNoUndeclaredPrivateNames(el, declared);
+                break;
+            case ObjectLiteralExpressionNode obj:
+                foreach (var p in obj.Properties)
+                {
+                    if (p.ComputedKey is not null)
+                        ValidateNoUndeclaredPrivateNames(p.ComputedKey, declared);
+                    ValidateNoUndeclaredPrivateNames(p.Value, declared);
+                }
+                break;
+            case SpreadElementExpressionNode spread:
+                ValidateNoUndeclaredPrivateNames(spread.Argument, declared);
+                break;
+            case ParenthesizedExpressionNode paren:
+                ValidateNoUndeclaredPrivateNames(paren.Expression, declared);
+                break;
+            case TaggedTemplateExpressionNode tagged:
+                ValidateNoUndeclaredPrivateNames(tagged.Tag, declared);
+                break;
+            case TemplateLiteralExpressionNode template:
+                foreach (var e in template.Expressions)
+                    ValidateNoUndeclaredPrivateNames(e, declared);
+                break;
+            case ClassExpressionNode classExpr:
+                ValidateClassPrivateNames(classExpr.Members, classExpr.BaseClass, declared);
+                break;
+            case FunctionExpressionNode fn:
+                // Walk default parameter values (evaluated in the enclosing scope).
+                if (fn.ParameterDefaults is not null)
+                {
+                    foreach (var def in fn.ParameterDefaults)
+                    {
+                        if (def is not null) ValidateNoUndeclaredPrivateNames(def, declared);
+                    }
+                }
+                // Walk the function body (a new private scope starts only if the
+                // function body itself contains a class declaration — the function
+                // body itself shares the enclosing private environment).
+                ValidateAllPrivateNamesValidInStatements(fn.Body.Statements, declared);
+                break;
+            case ArrowFunctionExpressionNode arrow:
+                if (arrow.ExpressionBody is not null)
+                    ValidateNoUndeclaredPrivateNames(arrow.ExpressionBody, declared);
+                if (arrow.BlockBody is not null)
+                    ValidateAllPrivateNamesValidInStatements(arrow.BlockBody.Statements, declared);
+                break;
+            // Identifiers, literals, super expressions, etc. don't contain private names.
+            default:
+                break;
         }
     }
 
