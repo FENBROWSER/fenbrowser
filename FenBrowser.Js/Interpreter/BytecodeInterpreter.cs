@@ -5132,6 +5132,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         return args.Count > 0 ? FormatPrimitiveForString(args[0]) : string.Empty;
     }
 
+    // ECMA-262 20.5.8.1 InstallErrorCause. Implements the full spec:
+    // HasProperty (observes Proxy `has` trap) followed by Get (observes
+    // Proxy `get` trap and accessor getters).
+    private void InstallErrorCause(JsObject error, IReadOnlyList<JsValue> args)
+    {
+        if (args.Count < 2) return;
+        var options = args[1];
+        if (options.Tag != JsValueTag.Object) return;
+        var optObj = _heap.GetObject(options.AsObjectHandle());
+        // Step 1: ? HasProperty(options, "cause") — must invoke Proxy `has` trap.
+        if (!HasPropertyIncludingProxy(optObj, "cause"))
+            return;
+        // Step 2: ? Get(options, "cause") — must invoke Proxy `get` trap + getters.
+        var cause = GetReceiverProperty(options, "cause");
+        // Step 3: CreateNonEnumerableDataPropertyOrThrow(O, "cause", cause)
+        _ = error.DefineOwnProperty("cause",
+            new JsPropertyDescriptor(cause, Writable: true, Enumerable: false, Configurable: true));
+    }
+
     private ObjectHandle EnsureEvalFunction()
     {
         if (_evalFunctionHandle is { } existing)
@@ -5420,8 +5439,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         var constructor = new NativeFunctionObject(
             "Error",
-            (_, args) => CreateErrorObject("Error", EnsureErrorPrototype(), GetOptionalMessage(args)),
-            args => CreateErrorObject("Error", EnsureErrorPrototype(), GetOptionalMessage(args)),
+            (_, args) =>
+            {
+                var err = CreateErrorObject("Error", EnsureErrorPrototype(), GetOptionalMessage(args));
+                var obj = _heap.GetObject(err.AsObjectHandle());
+                InstallErrorCause(obj, args);
+                return err;
+            },
+            args =>
+            {
+                var err = CreateErrorObject("Error", EnsureErrorPrototype(), GetOptionalMessage(args));
+                var obj = _heap.GetObject(err.AsObjectHandle());
+                InstallErrorCause(obj, args);
+                return err;
+            },
             length: 1);
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
