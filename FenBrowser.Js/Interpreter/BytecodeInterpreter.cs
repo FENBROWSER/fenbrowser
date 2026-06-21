@@ -1964,7 +1964,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     {
                         if (ResolveObject(frame.Registers[ins.B]) is ForOfIteratorObject closing)
                         {
-                            CloseForOfIteratorState(closing);
+                            CloseForOfIteratorState(closing, suppressErrors: ins.C == 1);
                         }
                     }
                     catch (JsThrownException ex)
@@ -3663,7 +3663,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (obj is MapObject map)
             return map;
         if (IsPrototypeOf(EnsureMapPrototype(), obj))
-            return (MapObject)obj; // subclass instance, cast works for internal slot access
+        {
+            if (obj is ProxyObject proxy)
+            {
+                var target = _heap.GetObject(proxy.TargetHandle);
+                if (target is MapObject targetMap)
+                    return targetMap;
+            }
+            // Non-Proxy subclass instance — safe to cast.
+            if (obj is MapObject subMap)
+                return subMap;
+        }
         throw new JsThrownException(CreateTypeError("Map method called on incompatible receiver."));
     }
 
@@ -3780,8 +3790,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (obj is SetObject set)
             return set;
         // Accept subclass instances whose prototype chain includes %Set.prototype%.
+        // Proxy objects wrapping Sets pass the prototype check but are not SetObject
+        // — unwrap them and use the target's internal slots.
         if (IsPrototypeOf(EnsureSetPrototype(), obj))
-            return (SetObject)obj;
+        {
+            if (obj is ProxyObject proxy)
+            {
+                var target = _heap.GetObject(proxy.TargetHandle);
+                if (target is SetObject targetSet)
+                    return targetSet;
+            }
+            // Non-Proxy subclass instance — safe to cast.
+            if (obj is SetObject subSet)
+                return subSet;
+        }
         throw new JsThrownException(CreateTypeError("Set method called on incompatible receiver."));
     }
 
@@ -7601,7 +7623,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 if (!m.Success || m.Index != q) { q++; continue; }
                 var e = Math.Min(m.Index + m.Length, size);
                 if (e == p) { q++; continue; }
-                parts.Add(JsValue.FromString(input.Substring(p, q - p)));
+                if (q >= p)
+                    parts.Add(JsValue.FromString(input.Substring(p, q - p)));
                 if (parts.Count >= limit)
                     return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(parts), AllocationSite.Current()));
                 for (var i = 1; i < m.Groups.Count; i++)
@@ -7634,26 +7657,53 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         // Generic fallback: exec loop using the species-constructed splitter.
+        // Implements ECMA-262 21.2.5.11 steps 17–28.
         var resultParts = new List<JsValue>();
-        int start = 0;
-        while (start <= input.Length)
+        int pGen = 0;
+        int qGen = 0;
+        while (qGen < input.Length)
         {
+            // 24.a: Set(splitter, "lastIndex", q, true)
+            SetPropertyValue(splitter.AsObjectHandle(), _heap.GetObject(splitter.AsObjectHandle()), "lastIndex", JsValue.FromNumber(qGen), splitter);
+            // 24.c: Let z be ? RegExpExec(splitter, S)
             var execResult = RegExpExec(splitter, input);
-            if (execResult.Tag == JsValueTag.Null) break;
+            if (execResult.Tag == JsValueTag.Null) { qGen++; continue; }
+            // 24.f: z is not null
+            // 24.f.i: Let e be ? ToLength(? Get(splitter, "lastIndex"))
+            var lastIndexVal = GetReceiverProperty(splitter, "lastIndex");
+            var eDouble = ToIntegerOrInfinity(lastIndexVal);
+            int eGen = eDouble <= 0 ? 0 : eDouble >= 9007199254740991.0 ? input.Length : (int)eDouble;
+            // 24.f.ii was already checked (exception would propagate)
+            // 24.f.iii: If e = p, set q = q + 1 (advance past empty match)
+            if (eGen == pGen) { qGen++; continue; }
+            // 24.f.iv: Else e != p
+            // Clamp e to [p, size] range for safety
+            if (eGen < pGen) eGen = pGen;
+            if (eGen > input.Length) eGen = input.Length;
+            // Add substring from p to q
+            if (qGen > pGen)
+            {
+                resultParts.Add(JsValue.FromString(input.Substring(pGen, qGen - pGen)));
+                if (resultParts.Count >= limit) break;
+            }
+            // Add capture groups from exec result
             var erObj = _heap.GetObject(execResult.AsObjectHandle());
-            int matchIdx = 0;
-            if (TryGetPropertyValue(erObj, execResult, "index", out var idxVal))
-                matchIdx = (int)ToNumber(idxVal);
-            string matched = "";
-            if (TryGetPropertyValue(erObj, execResult, "0", out var m0))
-                matched = ToStringValue(m0);
-            resultParts.Add(JsValue.FromString(input.Substring(start, matchIdx - start)));
+            if (TryGetPropertyValue(erObj, execResult, "length", out var lenVal))
+            {
+                int capLen = (int)ToUint32(ToNumber(lenVal));
+                for (int i = 1; i < capLen; i++)
+                {
+                    var capVal = GetReceiverProperty(execResult, i.ToString());
+                    resultParts.Add(capVal.Tag != JsValueTag.Undefined ? JsValue.FromString(ToStringValue(capVal)) : JsValue.Undefined);
+                    if (resultParts.Count >= limit) break;
+                }
+            }
             if (resultParts.Count >= limit) break;
-            start = matchIdx + matched.Length;
-            if (matched.Length == 0) start++;
+            // 24.f.iv.6: Let p be e and q be p
+            pGen = eGen; qGen = pGen;
         }
-        if (start <= input.Length && resultParts.Count < limit)
-            resultParts.Add(JsValue.FromString(input.Substring(start)));
+        if (qGen <= input.Length && resultParts.Count < limit)
+            resultParts.Add(JsValue.FromString(input.Substring(pGen)));
         return JsValue.FromObject(_heap.AllocateObject(CreateArrayObject(resultParts), AllocationSite.Current()));
     }
 

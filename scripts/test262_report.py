@@ -30,6 +30,8 @@ def keyfor(path):
 
 def main():
     cat = collections.defaultdict(collections.Counter)
+    seen = collections.Counter()
+    dupes = []
     for f in glob.glob(BATCHED + "/b_*.json"):
         try:
             d = json.load(open(f, encoding="utf-8-sig"))
@@ -48,6 +50,15 @@ def main():
             cat[k]["total"] += 1
             if st in ("pass", "passed", "ok"):
                 cat[k]["pass"] += 1
+            # Duplicate detection
+            tag = f"{f}:{p}"
+            seen[tag] += 1
+            if seen[tag] == 2:
+                dupes.append(tag)
+    if dupes:
+        print(f"WARNING: {len(dupes)} duplicate test path(s) found across batches:")
+        for d in dupes[:10]:
+            print(f"  {d}")
 
     rows = []
     for k, c in cat.items():

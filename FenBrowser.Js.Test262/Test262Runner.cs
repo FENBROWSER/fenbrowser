@@ -686,6 +686,7 @@ public sealed class Test262Runner
             "detachArrayBuffer.js",
             "resizableArrayBufferUtils.js",
             "testAtomics.js",
+            "wellKnownIntrinsicObjects.js",
             "atomicsHelper.js",  // loaded for single-agent use; tests needing $262.agent cooperation
                                  // will fail gracefully with ReferenceError rather than crashing
             "temporalHelpers.js",
@@ -1791,6 +1792,7 @@ public sealed class Test262Runner
         "testAtomics.js",
         "testIntl.js",
         "testTypedArray.js",
+        "wellKnownIntrinsicObjects.js",
         // Standard harnesses not in prelude
         "deepEqual.js",
         "nativeErrors.js",
