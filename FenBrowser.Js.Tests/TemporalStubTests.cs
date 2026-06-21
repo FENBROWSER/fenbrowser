@@ -28,4 +28,19 @@ public sealed class TemporalStubTests
         var result = Run("typeof Temporal.Now === 'object' && typeof Temporal.Now.instant === 'function' && typeof Temporal.Now.plainDateISO === 'function';");
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void PlainDateDifferencesApplyRoundingSettings()
+    {
+        var result = Run("""
+            const start = Temporal.PlainDate.from("2000-01-01");
+            const end = Temporal.PlainDate.from("2000-01-04");
+            const truncated = start.until(end, { smallestUnit: "day", roundingIncrement: 2.5 });
+            const expanded = start.until(end, { smallestUnit: "day", roundingIncrement: 2, roundingMode: "expand" });
+            const since = end.since(start, { smallestUnit: "day", roundingIncrement: 2, roundingMode: "floor" });
+            truncated.days === 2 && expanded.days === 4 && since.days === 2;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }

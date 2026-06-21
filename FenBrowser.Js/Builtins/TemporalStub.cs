@@ -1482,6 +1482,32 @@ public sealed class TemporalStub : IBuiltinModule
             outSign * sX * (int)(aX / 1_000L % 1000), outSign * sX * (int)(aX % 1000));
     }
 
+    /// <summary>Round and balance a PlainDate difference relative to its calendar anchor.</summary>
+    private static JsValue DifferencePlainDatesRounded(IBuiltinContext ctx, JsHeap h, IsoDate from, IsoDate to, string cal, DiffSettings settings, bool negate = false)
+    {
+        var calendar = CalendarMath.Get(cal) ?? CalendarMath.Get("iso8601")!;
+        System.Numerics.BigInteger totalDays = IsoMath.ToEpochDays(to) - IsoMath.ToEpochDays(from);
+        System.Numerics.BigInteger totalNs = totalDays * NsPerDay;
+        var empty = (years: 0d, months: 0d, weeks: 0d, days: 0d, hours: 0d,
+            minutes: 0d, seconds: 0d, millis: 0d, micros: 0d, nanos: 0d);
+        string mode = negate ? settings.Mode switch
+        {
+            "ceil" => "floor",
+            "floor" => "ceil",
+            "halfCeil" => "halfFloor",
+            "halfFloor" => "halfCeil",
+            _ => settings.Mode,
+        } : settings.Mode;
+        var rounded = DurationRoundToCalendarUnit(ctx, h, empty, totalNs, settings.Smallest,
+            settings.Largest, settings.Increment, mode, calendar, (from, cal));
+        if (!negate)
+            return rounded;
+
+        var duration = DecodeDuration(h, h.GetObject(rounded.AsObjectHandle()));
+        return MakeDuration(ctx, h, -duration.years, -duration.months, -duration.weeks, -duration.days,
+            -duration.hours, -duration.minutes, -duration.seconds, -duration.millis, -duration.micros, -duration.nanos);
+    }
+
     /// <summary>ToTemporalInstant for method arguments: Instant/ZonedDateTime instance or ISO string → epoch ns.</summary>
     private static long ToInstantNs(IBuiltinContext ctx, JsHeap h, JsValue arg)
     {
@@ -3510,17 +3536,15 @@ public sealed class TemporalStub : IBuiltinModule
             var (other, otherCal) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             RequireMatchingCalendar(ctx, CalId(h, o), otherCal);
             var s = GetDifferenceSettings(ctx, h, a, 1, DateDiffUnits, "day", "day");
-            var (yy, mm, ww, dd) = DifferenceDateDuration(CalId(h, o), DecodeIsoDate(h, o), other, s.Largest);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
-                MakeDuration(ctx, h, yy, mm, ww, ToSafeInt(dd), 0, 0, 0, 0, 0, 0));
+                DifferencePlainDatesRounded(ctx, h, DecodeIsoDate(h, o), other, CalId(h, o), s));
         }, 1);
         AddMethod(ctx, h, pH, p, "since", (o, a) => {
             var (other, otherCal) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
             RequireMatchingCalendar(ctx, CalId(h, o), otherCal);
             var s = GetDifferenceSettings(ctx, h, a, 1, DateDiffUnits, "day", "day");
-            var (yy, mm, ww, dd) = DifferenceDateDuration(CalId(h, o), DecodeIsoDate(h, o), other, s.Largest);
             return AttachTemporalPrototypeByName(ctx, h, t, "Duration",
-                MakeDuration(ctx, h, -yy, -mm, -ww, -ToSafeInt(dd), 0, 0, 0, 0, 0, 0));
+                DifferencePlainDatesRounded(ctx, h, DecodeIsoDate(h, o), other, CalId(h, o), s, negate: true));
         }, 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
             var (other, otherCal) = ToTemporalDateRecord(ctx, h, a.Count > 0 ? a[0] : JsValue.Undefined);
@@ -5705,7 +5729,8 @@ public sealed class TemporalStub : IBuiltinModule
         {
             // Round days using the time-of-day remainder as the fractional part.
             System.Numerics.BigInteger dayNs = new System.Numerics.BigInteger(days) * 86_400_000_000_000L + remainderNs;
-            System.Numerics.BigInteger roundedDayNs = RoundNsToIncrement(ctx, dayNs, increment * 86_400_000_000_000L, mode);
+            System.Numerics.BigInteger roundedDayNs = RoundNsToIncrement(ctx, dayNs,
+                new System.Numerics.BigInteger(increment) * 86_400_000_000_000L, mode);
             System.Numerics.BigInteger rd = roundedDayNs / 86_400_000_000_000L;
             System.Numerics.BigInteger rr = roundedDayNs % 86_400_000_000_000L;
             if (rr < 0) { rd--; rr += 86_400_000_000_000L; }
