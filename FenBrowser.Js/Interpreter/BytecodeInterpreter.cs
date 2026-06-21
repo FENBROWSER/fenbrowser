@@ -3337,6 +3337,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             while (!ForOfStepDone(forOf, out var entry))
             {
+                if (entry.Tag != JsValueTag.Object)
+                    throw new JsThrownException(CreateTypeError("Map iterator value is not an object."));
                 PinIfObject(entry);
                 var entryObj = _heap.GetObject(entry.AsObjectHandle());
                 TryGetPropertyValue(entryObj, entry, "0", out var k);
