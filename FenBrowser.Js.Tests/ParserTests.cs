@@ -1635,4 +1635,19 @@ public sealed class ParserTests
         // Must not throw — parses successfully.
         _ = JsParser.ParseScript(new SourceText(source));
     }
+
+    [Theory]
+    [InlineData("new import('').prop;")]
+    [InlineData("new import.source('').prop;")]
+    [InlineData("new import.defer('').prop;")]
+    public void RejectsNewAppliedToImportCallMemberChain(string source)
+    {
+        Assert.Throws<JsParserException>(() => JsParser.ParseScript(new SourceText(source)));
+    }
+
+    [Fact]
+    public void AllowsNewAppliedToParenthesizedImportCallProperty()
+    {
+        _ = JsParser.ParseScript(new SourceText("new (import('').prop);"));
+    }
 }

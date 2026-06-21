@@ -130,7 +130,8 @@ public enum OpCode : byte
     // MakeSuperPropertyReference + 9.1.2 GetSuperBase.
     LoadSuperElement,
 
-    // ECMA-262 13.3.10 ImportCall — `import(specifier)`. A=dest, B=spec reg.
+    // ECMA-262 13.3.10 ImportCall — `import(specifier)`. A=dest, B=spec reg,
+    // C=options reg (register 0/undefined when absent).
     // FenJS has no host module resolver yet, so the runtime returns a rejected
     // Promise carrying a TypeError. Replaces the prior parser-level rejection
     // so the test262 syntax cohort parses and the async-test path observes a
@@ -142,12 +143,14 @@ public enum OpCode : byte
     // the syntax tests that parse `import.meta` references.
     ImportMeta,
 
-    // ES2025 Import Source — `import.source(specifier)`. A=dest, B=spec reg.
+    // ES2025 Import Source — `import.source(specifier)`. A=dest, B=spec reg,
+    // C=options reg (register 0/undefined when absent).
     // Returns a rejected Promise (mirrors DynamicImport — no host module
     // resolver wired yet).
     ImportSource,
 
-    // ES2025 Import Defer — `import.defer(specifier)`. A=dest, B=spec reg.
+    // ES2025 Import Defer — `import.defer(specifier)`. A=dest, B=spec reg,
+    // C=options reg (register 0/undefined when absent).
     // Returns a rejected Promise (mirrors DynamicImport — no host module
     // resolver wired yet).
     ImportDefer,

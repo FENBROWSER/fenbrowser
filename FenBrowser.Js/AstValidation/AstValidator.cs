@@ -382,7 +382,8 @@ public sealed class AstValidator
                        WalkExpression(tagged.Template, inFieldInit);
 
             case ImportCallExpressionNode import:
-                return WalkExpression(import.Specifier, inFieldInit);
+                return WalkExpression(import.Specifier, inFieldInit) ||
+                       (import.Options is not null && WalkExpression(import.Options, inFieldInit));
         }
         return false;
     }

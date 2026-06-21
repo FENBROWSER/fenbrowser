@@ -15,7 +15,7 @@ namespace FenBrowser.Js.Interpreter;
 // a host-loaded module namespace still fail at the assertion phase.
 public sealed partial class BytecodeInterpreter
 {
-    internal JsValue HandleDynamicImport(JsValue specifier)
+    internal JsValue HandleDynamicImport(JsValue specifier, JsValue options)
     {
         // Touch the specifier through ToString to surface user-defined toString
         // side effects, per ECMA-262 13.3.10.1 step 5. We catch the throw and
@@ -24,6 +24,7 @@ public sealed partial class BytecodeInterpreter
         try
         {
             _ = ToStringValue(specifier);
+            ProcessDynamicImportOptions(options);
             reason = CreateTypeError("Dynamic import is not supported in this host.");
         }
         catch (JsThrownException ex)
@@ -43,7 +44,7 @@ public sealed partial class BytecodeInterpreter
         return JsValue.FromObject(handle);
     }
 
-    internal JsValue HandleImportSource(JsValue specifier)
+    internal JsValue HandleImportSource(JsValue specifier, JsValue options)
     {
         // ES2025 Import Source proposal — `import.source(specifier)` syntactic form.
         // Returns a rejected Promise per DynamicImport pattern (no host module
@@ -54,6 +55,7 @@ public sealed partial class BytecodeInterpreter
         try
         {
             _ = ToStringValue(specifier);
+            ProcessDynamicImportOptions(options);
             reason = CreateTypeError("Dynamic import (source phase) is not supported in this host.");
         }
         catch (JsThrownException ex)
@@ -63,7 +65,7 @@ public sealed partial class BytecodeInterpreter
         return BuildRejectedPromise(reason);
     }
 
-    internal JsValue HandleImportDefer(JsValue specifier)
+    internal JsValue HandleImportDefer(JsValue specifier, JsValue options)
     {
         // ES2025 Import Defer proposal — `import.defer(specifier)` syntactic form.
         // Returns a rejected Promise per DynamicImport pattern (no host module
@@ -74,6 +76,7 @@ public sealed partial class BytecodeInterpreter
         try
         {
             _ = ToStringValue(specifier);
+            ProcessDynamicImportOptions(options);
             reason = CreateTypeError("Dynamic import (defer phase) is not supported in this host.");
         }
         catch (JsThrownException ex)
@@ -81,6 +84,30 @@ public sealed partial class BytecodeInterpreter
             reason = ex.Value;
         }
         return BuildRejectedPromise(reason);
+    }
+
+    private void ProcessDynamicImportOptions(JsValue options)
+    {
+        if (options.Tag == JsValueTag.Undefined)
+        {
+            return;
+        }
+        if (options.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Dynamic import options must be an object."));
+        }
+
+        var attributes = GetReceiverProperty(options, "with");
+        if (attributes.Tag == JsValueTag.Undefined)
+        {
+            return;
+        }
+        if (attributes.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Dynamic import attributes must be an object."));
+        }
+
+        _ = CollectOwnEnumerable(new[] { attributes }, OwnEnumerableKind.Values);
     }
 
     internal void PinIfObject(JsValue value)

@@ -2774,8 +2774,13 @@ public sealed class BytecodeCompiler
             case ImportCallExpressionNode importCall:
             {
                 var specReg = CompileExpression(importCall.Specifier);
+                var optionsReg = 0;
+                if (importCall.Options is not null)
+                {
+                    optionsReg = CompileExpression(importCall.Options);
+                }
                 var dest = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.DynamicImport, dest, specReg, 0));
+                _instructions.Add(new Instruction(OpCode.DynamicImport, dest, specReg, optionsReg));
                 return dest;
             }
             case ImportMetaExpressionNode:
@@ -2787,15 +2792,25 @@ public sealed class BytecodeCompiler
             case ImportSourceExpressionNode importSource:
             {
                 var specReg = CompileExpression(importSource.Specifier);
+                var optionsReg = 0;
+                if (importSource.Options is not null)
+                {
+                    optionsReg = CompileExpression(importSource.Options);
+                }
                 var dest = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.ImportSource, dest, specReg, 0));
+                _instructions.Add(new Instruction(OpCode.ImportSource, dest, specReg, optionsReg));
                 return dest;
             }
             case ImportDeferExpressionNode importDefer:
             {
                 var specReg = CompileExpression(importDefer.Specifier);
+                var optionsReg = 0;
+                if (importDefer.Options is not null)
+                {
+                    optionsReg = CompileExpression(importDefer.Options);
+                }
                 var dest = AllocateRegister();
-                _instructions.Add(new Instruction(OpCode.ImportDefer, dest, specReg, 0));
+                _instructions.Add(new Instruction(OpCode.ImportDefer, dest, specReg, optionsReg));
                 return dest;
             }
             case LogicalAssignmentExpressionNode logical:

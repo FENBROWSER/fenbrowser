@@ -263,6 +263,7 @@ public sealed class BytecodeVerifier
             case OpCode.DynamicImport:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
                 break;
             case OpCode.ImportMeta:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
@@ -271,6 +272,7 @@ public sealed class BytecodeVerifier
             case OpCode.ImportDefer:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateRegister(ins.B, function.RegisterCount, ip, "B");
+                ValidateRegister(ins.C, function.RegisterCount, ip, "C");
                 break;
             case OpCode.LoadSuperConstructor:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");

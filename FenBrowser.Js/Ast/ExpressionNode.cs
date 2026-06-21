@@ -22,7 +22,7 @@ public sealed record SuperExpressionNode(SourceSpan Span) : ExpressionNode(Span)
 // settles when the host's module resolver finishes loading the requested
 // module. FenJS lowers this to a Promise.reject(TypeError) until a host
 // module resolver is wired (Step E.6.next).
-public sealed record ImportCallExpressionNode(ExpressionNode Specifier, SourceSpan Span) : ExpressionNode(Span);
+public sealed record ImportCallExpressionNode(ExpressionNode Specifier, ExpressionNode? Options, SourceSpan Span) : ExpressionNode(Span);
 
 // ECMA-262 13.3.12 — `import.meta`. Lowers to an empty object (the host
 // metadata hook is not yet wired). Returning an object lets test262 syntax
@@ -32,12 +32,12 @@ public sealed record ImportMetaExpressionNode(SourceSpan Span) : ExpressionNode(
 // ES2025 Import Source proposal — `import.source(specifier)`. Syntactic form
 // `import.source(AssignmentExpression)` that returns a rejected Promise (no
 // host module resolver wired yet). `import.source` without parens is a SyntaxError.
-public sealed record ImportSourceExpressionNode(ExpressionNode Specifier, SourceSpan Span) : ExpressionNode(Span);
+public sealed record ImportSourceExpressionNode(ExpressionNode Specifier, ExpressionNode? Options, SourceSpan Span) : ExpressionNode(Span);
 
 // ES2025 Import Defer proposal — `import.defer(specifier)`. Syntactic form
 // `import.defer(AssignmentExpression)` that returns a rejected Promise (no
 // host module resolver wired yet). `import.defer` without parens is a SyntaxError.
-public sealed record ImportDeferExpressionNode(ExpressionNode Specifier, SourceSpan Span) : ExpressionNode(Span);
+public sealed record ImportDeferExpressionNode(ExpressionNode Specifier, ExpressionNode? Options, SourceSpan Span) : ExpressionNode(Span);
 
 public sealed record ClassExpressionNode(string? Name, ExpressionNode? BaseClass, IReadOnlyList<ClassMemberNode> Members, SourceSpan Span) : ExpressionNode(Span);
 

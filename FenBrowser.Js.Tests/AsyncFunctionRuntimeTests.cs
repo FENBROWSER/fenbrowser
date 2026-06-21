@@ -92,17 +92,10 @@ public sealed class AsyncFunctionRuntimeTests
             "observed;").AsNumber());
     }
 
-    // === compile-time error ===
-
     [Fact]
-    public void AwaitOutsideAsyncIsRejectedAtCompileTime()
+    public void AwaitIsAnIdentifierInScriptCode()
     {
-        var compiler = new BytecodeCompiler();
-        var ex = Assert.Throws<UnsupportedFeatureException>(() =>
-            compiler.CompileScript(new SourceText("await 1;")));
-
-        Assert.Equal("await-outside-async", ex.FeatureName);
-        Assert.Equal(FeatureSupportLevel.ParserOnly, ex.Level);
+        Assert.Equal(5d, Run("function await(value) { return value + 1; } await(4);").AsNumber());
     }
 
     // === async method tests (class + object literal) ===

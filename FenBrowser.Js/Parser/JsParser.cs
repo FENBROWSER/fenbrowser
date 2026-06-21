@@ -129,7 +129,7 @@ public sealed class JsParser
         _moduleMode = kind == ProgramKind.Module;
         _strictMode = kind == ProgramKind.Module || inheritedStrictMode;
         _allowYieldExpression = false;
-        _allowAwaitExpression = true;
+        _allowAwaitExpression = kind == ProgramKind.Module;
         var statements = new List<StatementNode>();
         var start = Current().Span;
 
@@ -457,9 +457,12 @@ public sealed class JsParser
                 NewExpressionNode n => ContainsSuperCallOnlyInExpression(n.Callee) || n.Arguments.Any(ContainsSuperCallOnlyInExpression),
                 TemplateLiteralExpressionNode tl => tl.Expressions.Any(ContainsSuperCallOnlyInExpression),
                 TaggedTemplateExpressionNode tt => ContainsSuperCallOnlyInExpression(tt.Tag) || ContainsSuperCallOnlyInExpression(tt.Template),
-                ImportCallExpressionNode ic => ContainsSuperCallOnlyInExpression(ic.Specifier),
-                ImportSourceExpressionNode iSrc => ContainsSuperCallOnlyInExpression(iSrc.Specifier),
-                ImportDeferExpressionNode iDef => ContainsSuperCallOnlyInExpression(iDef.Specifier),
+                ImportCallExpressionNode ic => ContainsSuperCallOnlyInExpression(ic.Specifier) ||
+                                               (ic.Options is not null && ContainsSuperCallOnlyInExpression(ic.Options)),
+                ImportSourceExpressionNode iSrc => ContainsSuperCallOnlyInExpression(iSrc.Specifier) ||
+                                                   (iSrc.Options is not null && ContainsSuperCallOnlyInExpression(iSrc.Options)),
+                ImportDeferExpressionNode iDef => ContainsSuperCallOnlyInExpression(iDef.Specifier) ||
+                                                  (iDef.Options is not null && ContainsSuperCallOnlyInExpression(iDef.Options)),
                 _ => false
             };
         }
@@ -4464,6 +4467,7 @@ public sealed class JsParser
                 var savedNoIn = _noIn;
                 _noIn = false;
                 var specifier = ParseExpression(2);
+                ExpressionNode? options = null;
                 // ECMA-262 13.3.10.1: optional trailing comma + assertion arg.
                 // We parse and discard a second argument so import(spec, {}) still
                 // parses; the host loader currently ignores it.
@@ -4472,7 +4476,7 @@ public sealed class JsParser
                     Advance();
                     if (!IsPunctuator(")"))
                     {
-                        _ = ParseExpression(2);
+                        options = ParseExpression(2);
                         // ECMA-262 13.3.10.1: trailing comma after second arg is valid.
                         if (IsPunctuator(","))
                             Advance();
@@ -4480,7 +4484,7 @@ public sealed class JsParser
                 }
                 _noIn = savedNoIn;
                 ExpectPunctuator(")");
-                return new ImportCallExpressionNode(specifier, MergeSpan(importToken.Span, Previous().Span));
+                return new ImportCallExpressionNode(specifier, options, MergeSpan(importToken.Span, Previous().Span));
             }
             if (IsPunctuator("."))
             {
@@ -4500,13 +4504,14 @@ public sealed class JsParser
                     var savedNoIn = _noIn;
                     _noIn = false;
                     var specifier = ParseExpression(2);
+                    ExpressionNode? options = null;
                     // Optional trailing comma + import attributes (parse and discard).
                     if (IsPunctuator(","))
                     {
                         Advance();
                         if (!IsPunctuator(")"))
                         {
-                            _ = ParseExpression(2);
+                            options = ParseExpression(2);
                             // ECMA-262: trailing comma after second arg is valid.
                             if (IsPunctuator(","))
                                 Advance();
@@ -4514,7 +4519,7 @@ public sealed class JsParser
                     }
                     _noIn = savedNoIn;
                     ExpectPunctuator(")");
-                    return new ImportSourceExpressionNode(specifier, MergeSpan(importToken.Span, Previous().Span));
+                    return new ImportSourceExpressionNode(specifier, options, MergeSpan(importToken.Span, Previous().Span));
                 }
                 if (string.Equals(prop.Text, "defer", StringComparison.Ordinal))
                 {
@@ -4524,13 +4529,14 @@ public sealed class JsParser
                     var savedNoIn = _noIn;
                     _noIn = false;
                     var specifier = ParseExpression(2);
+                    ExpressionNode? options = null;
                     // Optional trailing comma + import attributes (parse and discard).
                     if (IsPunctuator(","))
                     {
                         Advance();
                         if (!IsPunctuator(")"))
                         {
-                            _ = ParseExpression(2);
+                            options = ParseExpression(2);
                             // ECMA-262: trailing comma after second arg is valid.
                             if (IsPunctuator(","))
                                 Advance();
@@ -4538,7 +4544,7 @@ public sealed class JsParser
                     }
                     _noIn = savedNoIn;
                     ExpectPunctuator(")");
-                    return new ImportDeferExpressionNode(specifier, MergeSpan(importToken.Span, Previous().Span));
+                    return new ImportDeferExpressionNode(specifier, options, MergeSpan(importToken.Span, Previous().Span));
                 }
                 throw new JsParserException($"Expected 'meta', 'source', or 'defer' after 'import.', found '{prop.Text}'.");
             }
@@ -4905,7 +4911,7 @@ public sealed class JsParser
         // ECMA-262: ImportCall is a CallExpression, not a MemberExpression.
         // `new import(x)`, `new import.source(x)`, `new import.defer(x)` are
         // all SyntaxErrors — ImportCall cannot be preceded by `new`.
-        if (callee is ImportCallExpressionNode or ImportSourceExpressionNode or ImportDeferExpressionNode)
+        if (IsUnparenthesizedImportCallChain(callee))
         {
             throw new JsParserException("ImportCall cannot be preceded by 'new'.");
         }
@@ -4918,6 +4924,16 @@ public sealed class JsParser
 
         var end = args.Count > 0 ? Previous().Span : callee.Span;
         return new NewExpressionNode(callee, args, MergeSpan(start.Span, end));
+    }
+
+    private static bool IsUnparenthesizedImportCallChain(ExpressionNode expression)
+    {
+        return expression switch
+        {
+            ImportCallExpressionNode or ImportSourceExpressionNode or ImportDeferExpressionNode => true,
+            MemberExpressionNode member => IsUnparenthesizedImportCallChain(member.Object),
+            _ => false,
+        };
     }
 
     private ObjectLiteralExpressionNode ParseObjectLiteral()
