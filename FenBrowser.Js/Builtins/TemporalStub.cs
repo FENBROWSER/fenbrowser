@@ -4344,19 +4344,12 @@ public sealed class TemporalStub : IBuiltinModule
             return AttachPrototype(h, MakePlainMonthDay(ctx, h, iso.Year, iso.Month, iso.Day, cal), pH);
         }, 1);
         AddMethod(ctx, h, pH, p, "equals", (o, a) => {
-            if (a.Count < 1) return JsValue.FromBoolean(false);
-            try
-            {
-                var (other, otherCal) = ToTemporalMonthDayRecord(ctx, h, a[0], a, 1);
-                var self = DecodeIsoDate(h, o);
-                var selfCal = CalId(h, o);
-                bool calsEqual = selfCal == otherCal;
-                return JsValue.FromBoolean(IsoMath.Compare(self, other) == 0 && calsEqual);
-            }
-            catch
-            {
-                return JsValue.FromBoolean(false);
-            }
+            var argument = a.Count > 0 ? a[0] : JsValue.Undefined;
+            var (other, otherCal) = ToTemporalMonthDayRecord(ctx, h, argument, a, 1);
+            var self = DecodeIsoDate(h, o);
+            var selfCal = CalId(h, o);
+            bool calsEqual = selfCal == otherCal;
+            return JsValue.FromBoolean(IsoMath.Compare(self, other) == 0 && calsEqual);
         }, 1);
         AddMethod(ctx, h, pH, p, "toString", (o, a) => {
             var opts = GetToStringOptions(ctx, h, a, 0, new[] { "calendarName" });
@@ -5436,7 +5429,6 @@ public sealed class TemporalStub : IBuiltinModule
     private static JsValue MakePlainMonthDay(IBuiltinContext ctx, JsHeap h, int y, int m, int d, string calendarId = "iso8601")
     {
         string cal = string.IsNullOrEmpty(calendarId) ? "iso8601" : calendarId;
-        if (cal == "iso8601") y = 1972;
         var o = new JsObject();
         var dd = new JsObject(); var ddH = h.AllocateObject(dd, AllocationSite.Current());
         dd.SetProperty("d", JsValue.FromNumber(d));

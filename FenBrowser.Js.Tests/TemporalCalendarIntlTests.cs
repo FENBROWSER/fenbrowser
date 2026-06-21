@@ -331,6 +331,30 @@ public sealed class TemporalCalendarIntlTests
     }
 
     [Fact]
+    public void PlainMonthDayEqualsPropagatesInvalidArgumentErrors()
+    {
+        var result = Run("""
+            const monthDay = Temporal.PlainMonthDay.from("01-22");
+            let missingDayRejected = false;
+            let primitiveRejected = false;
+            let invalidStringRejected = false;
+            try { monthDay.equals({ month: 1 }); } catch (error) { missingDayRejected = error instanceof TypeError; }
+            try { monthDay.equals(1); } catch (error) { primitiveRejected = error instanceof TypeError; }
+            try { monthDay.equals("11-18junk"); } catch (error) { invalidStringRejected = error instanceof RangeError; }
+            const reference1972 = new Temporal.PlainMonthDay(1, 1, undefined, 1972);
+            const reference2000 = new Temporal.PlainMonthDay(1, 1, undefined, 2000);
+            monthDay.equals("01-22") &&
+                !monthDay.equals("12-15") &&
+                !reference1972.equals(reference2000) &&
+                missingDayRejected &&
+                primitiveRejected &&
+                invalidStringRejected;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
+
+    [Fact]
     public void ZonedDateTimeDifferenceUsesCalendarAnchorsAndZoneWallTime()
     {
         var result = Run("""
