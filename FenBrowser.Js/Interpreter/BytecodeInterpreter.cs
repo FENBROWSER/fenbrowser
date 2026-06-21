@@ -8757,6 +8757,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 "supportedLocalesOf",
                 (_, args) => SupportedLocalesOf(args),
                 length: 1);
+            supportedLocalesOf.SetPrototype(EnsureFunctionPrototype());
             var supportedLocalesOfHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());
             _ = ctor.DefineOwnProperty(
                 "supportedLocalesOf",
@@ -8965,6 +8966,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 "supportedLocalesOf",
                 (_, args) => SupportedLocalesOf(args),
                 length: 1);
+            supportedLocalesOf.SetPrototype(EnsureFunctionPrototype());
             var supportedLocalesOfHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());
             _ = ctor.DefineOwnProperty(
                 "supportedLocalesOf",
@@ -9006,6 +9008,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 "supportedLocalesOf",
                 (_, supportedArgs) => SupportedLocalesOf(supportedArgs),
                 length: 1);
+            supportedLocalesOf.SetPrototype(EnsureFunctionPrototype());
             var supportedLocalesOfHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());
             _ = ctor.DefineOwnProperty("supportedLocalesOf",
                 new JsPropertyDescriptor(JsValue.FromObject(supportedLocalesOfHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -9049,6 +9052,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 "supportedLocalesOf",
                 (_, supportedArgs) => SupportedLocalesOf(supportedArgs),
                 length: 1);
+            supportedLocalesOf.SetPrototype(EnsureFunctionPrototype());
             var supportedLocalesOfHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());
             _ = ctor.DefineOwnProperty("supportedLocalesOf",
                 new JsPropertyDescriptor(JsValue.FromObject(supportedLocalesOfHandle), Writable: true, Enumerable: false, Configurable: true));
@@ -9346,6 +9350,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
                 },
                 length: 1);
+            fn.SetPrototype(EnsureFunctionPrototype());
             var fnHandle = _heap.AllocateObject(fn, AllocationSite.Current());
             _ = intl.DefineOwnProperty(
                 "supportedValuesOf",
@@ -9378,6 +9383,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 new JsPropertyDescriptor(JsValue.FromString("Intl.PluralRules"), Writable: false, Enumerable: false, Configurable: true));
             var supportedLocalesOf = new NativeFunctionObject("supportedLocalesOf",
                 (_, a) => SupportedLocalesOf(a), length: 1);
+            supportedLocalesOf.SetPrototype(EnsureFunctionPrototype());
             var supportedHandle = _heap.AllocateObject(supportedLocalesOf, AllocationSite.Current());
             _ = prCtor.DefineOwnProperty("supportedLocalesOf",
                 new JsPropertyDescriptor(JsValue.FromObject(supportedHandle), Writable: true, Enumerable: false, Configurable: true));
