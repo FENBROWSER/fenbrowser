@@ -11128,13 +11128,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             => CollectOwnEnumerable(args, OwnEnumerableKind.Entries), length: 1);
         DefineIntrinsicFunction(constructorHandle, constructor, "getOwnPropertySymbols", (_, args) =>
         {
-            if (args.Count == 0 || args[0].Tag != JsValueTag.Object)
-            {
-                throw new JsThrownException(CreateTypeError(
-                    "Object.getOwnPropertySymbols called on non-object."));
-            }
-
-            var obj = _heap.GetObject(args[0].AsObjectHandle());
+            // ECMA-262 20.1.2.10: Let obj be ? ToObject(O).
+            var target = args.Count > 0 ? args[0] : JsValue.Undefined;
+            var obj = ToObject(target);
             var symbols = new List<JsValue>();
             if (obj is ProxyObject proxyOwnSymbols)
             {
