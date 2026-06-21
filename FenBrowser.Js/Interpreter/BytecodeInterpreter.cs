@@ -418,6 +418,46 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         JsValue result;
         try
         {
+            // ECMA-262: modules always evaluate asynchronously; when compiled as
+            // async (FunctionKind.Async), wrap the body in an AsyncContext so
+            // top-level await can suspend/resume. Synchronous programs that never
+            // await take the existing fast path.
+            if (function.Kind == FunctionKind.Async)
+            {
+                var capability = NewPromiseCapability();
+                var registers = new JsValue[function.RegisterCount];
+                for (var i = 0; i < registers.Length; i++)
+                    registers[i] = JsValue.Undefined;
+                var asyncCtx = new AsyncContext(function, registers, EnsureGlobalEnvironment())
+                {
+                    ThisValue = JsValue.FromObject(globalHandle)
+                };
+                var ctxHandle = _heap.AllocateObject(asyncCtx, AllocationSite.Current());
+                asyncCtx.CapabilityPromise = capability.Promise.Tag == JsValueTag.Object
+                    ? capability.Promise.AsObjectHandle() : null;
+                asyncCtx.CapabilityResolve = capability.Resolve.Tag == JsValueTag.Object
+                    ? capability.Resolve.AsObjectHandle() : null;
+                asyncCtx.CapabilityReject = capability.Reject.Tag == JsValueTag.Object
+                    ? capability.Reject.AsObjectHandle() : null;
+
+                result = ExecuteInternal(
+                    function,
+                    Array.Empty<JsValue>(),
+                    JsValue.FromObject(globalHandle),
+                    frameEnvironment: EnsureGlobalEnvironment(),
+                    asyncContext: asyncCtx);
+
+                // If the body never suspended (no await encountered), settle the
+                // capability synchronously.
+                if (!asyncCtx.IsSuspended)
+                {
+                    _ = CallFunction(capability.Resolve, new[] { result }, JsValue.Undefined);
+                }
+
+                DrainPendingMicrotasks();
+                return capability.Promise;
+            }
+
             result = ExecuteInternal(
                 function,
                 Array.Empty<JsValue>(),
