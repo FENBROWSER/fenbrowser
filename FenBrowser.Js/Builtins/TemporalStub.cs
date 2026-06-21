@@ -2019,7 +2019,16 @@ public sealed class TemporalStub : IBuiltinModule
 
                 string? offset = null;
                 if (TryGetField(ctx, h, relVal, "offset", out var offsetVal) && offsetVal.Tag != JsValueTag.Undefined)
-                    offset = ctx.ToStringValue(offsetVal);
+                {
+                    if (offsetVal.Tag is not (JsValueTag.String or JsValueTag.Object))
+                        throw new JsThrownException(ctx.CreateTypeError("offset must be a string."));
+                    offset = offsetVal.Tag == JsValueTag.String ? offsetVal.AsString() : ctx.ToStringValue(offsetVal);
+                    int offsetIndex = 0;
+                    string offsetError = string.Empty;
+                    if (!TemporalIsoParser.TryParseUtcOffset(offset, ref offsetIndex, subMinutePrecision: true,
+                            out _, ref offsetError) || offsetIndex != offset.Length)
+                        throw new JsThrownException(ctx.CreateRangeError("Invalid offset string."));
+                }
 
                 double? second = null;
                 if (TryGetField(ctx, h, relVal, "second", out var secondVal) && secondVal.Tag != JsValueTag.Undefined)
@@ -2028,9 +2037,9 @@ public sealed class TemporalStub : IBuiltinModule
                 string? timeZone = null;
                 if (TryGetField(ctx, h, relVal, "timeZone", out var timeZoneVal) && timeZoneVal.Tag != JsValueTag.Undefined)
                 {
-                    if (timeZoneVal.Tag != JsValueTag.String && timeZoneVal.Tag != JsValueTag.Object)
-                        throw new JsThrownException(ctx.CreateTypeError("timeZone must be a string or object."));
-                    timeZone = CanonicalizeTimeZoneId(ctx, ctx.ToStringValue(timeZoneVal));
+                    if (timeZoneVal.Tag != JsValueTag.String)
+                        throw new JsThrownException(ctx.CreateTypeError("timeZone must be a string."));
+                    timeZone = CanonicalizeTimeZoneId(ctx, timeZoneVal.AsString());
                 }
 
                 double? year = null;
@@ -6018,13 +6027,13 @@ public sealed class TemporalStub : IBuiltinModule
             JsValue rtv = JsValue.Undefined;
             JsValue uv = JsValue.Undefined;
             TryGetField(ctx, h, a[0], "relativeTo", out rtv);
-            TryGetField(ctx, h, a[0], "unit", out uv);
 
             var decoded = DecodeRelativeToValue(ctx, h, rtv);
             if (decoded is not null)
             {
                 relTo = (decoded.Value.date, decoded.Value.calId);
             }
+            TryGetField(ctx, h, a[0], "unit", out uv);
             if (uv.Tag == JsValueTag.Undefined)
                 throw new JsThrownException(ctx.CreateRangeError("total requires a unit."));
             unit = NormalizeUnitName(ctx, uv.Tag == JsValueTag.String ? uv.AsString() : ctx.ToStringValue(uv));

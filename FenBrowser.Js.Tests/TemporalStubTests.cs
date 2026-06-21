@@ -144,4 +144,24 @@ public sealed class TemporalStubTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void DurationRelativeToRejectsInvalidOffsetAndTimeZoneTypes()
+    {
+        var result = Run("""
+            const duration = new Temporal.Duration(1);
+            let offsetType = false;
+            let offsetSyntax = false;
+            let timeZoneType = false;
+            try { duration.total({ unit: "days", relativeTo: { year: 2021, month: 10, day: 28, offset: 0, timeZone: "UTC" } }); }
+            catch (error) { offsetType = error instanceof TypeError; }
+            try { duration.total({ unit: "days", relativeTo: { year: 2021, month: 10, day: 28, offset: "00:00", timeZone: "UTC" } }); }
+            catch (error) { offsetSyntax = error instanceof RangeError; }
+            try { duration.total({ unit: "days", relativeTo: { year: 2021, month: 10, day: 28, timeZone: {} } }); }
+            catch (error) { timeZoneType = error instanceof TypeError; }
+            offsetType && offsetSyntax && timeZoneType;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }
