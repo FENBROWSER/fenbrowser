@@ -82,4 +82,25 @@ public class ObjectLiteralAccessorTests
         ");
         Assert.Equal(7d, v.AsNumber());
     }
+
+    [Fact]
+    public void ComputedMethodsAndAccessorsCaptureObjectAsHomeObject()
+    {
+        var v = Run(@"
+            var stored = 0;
+            var proto = {
+                value() { return 40; },
+                setValue(v) { stored = v; }
+            };
+            var o = {
+                ['method']() { return super.value() + 2; },
+                get ['accessor']() { return super.value() + 3; },
+                set ['accessor'](v) { super.setValue(v + 4); }
+            };
+            Object.setPrototypeOf(o, proto);
+            o.accessor = 5;
+            o.method() + o.accessor + stored;
+        ");
+        Assert.Equal(94d, v.AsNumber());
+    }
 }

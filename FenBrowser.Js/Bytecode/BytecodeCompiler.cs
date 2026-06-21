@@ -3549,6 +3549,14 @@ public sealed class BytecodeCompiler
                     var valueReg = (!prop.IsComputed && prop.Kind == ObjectPropertyKind.Data && prop.Key is not null)
                         ? CompileNamedInitializer(prop.Value, prop.Key)
                         : CompileExpression(prop.Value);
+                    if (prop.Value is FunctionExpressionNode { IsMethod: true })
+                    {
+                        // ECMA-262 13.2.5.5 MethodDefinitionEvaluation: concise
+                        // methods and accessors capture the object literal as
+                        // [[HomeObject]] so super property references resolve
+                        // through that object's prototype.
+                        _instructions.Add(new Instruction(OpCode.SetHomeObject, valueReg, dest, 0));
+                    }
                     if (prop.IsComputed)
                     {
                         if (prop.ComputedKey is null)
