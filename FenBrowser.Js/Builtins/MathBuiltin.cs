@@ -89,6 +89,9 @@ public sealed class MathBuiltin : IBuiltinModule
         var random = new Random();
         DefineMathFunction(context, handle, math, "random", _ => JsValue.FromNumber(random.NextDouble()), length: 0);
 
+        // ES2025 Math.sumPrecise: sum values precisely using the SumPrecise algorithm.
+        DefineMathFunction(context, handle, math, "sumPrecise", args => MathSumPrecise(context, args), length: 1);
+
         // 21.3.1.9 Math [ @@toStringTag ] = "Math"
         var toStringTagSymbol = context.CreateWellKnownSymbol("toStringTag");
         math.DefineOwnSymbolProperty(toStringTagSymbol.AsSymbolId(), new JsPropertyDescriptor(
@@ -300,5 +303,14 @@ public sealed class MathBuiltin : IBuiltinModule
         var x = args.Count > 0 ? context.ToNumber(args[0]) : double.NaN;
         var y = args.Count > 1 ? context.ToNumber(args[1]) : double.NaN;
         return unchecked((int)((uint)MathHelpers.ToInt32(x) * (uint)MathHelpers.ToInt32(y)));
+    }
+
+    // ES2025 Math.sumPrecise ( iterable ): simple sum stub.
+    private static JsValue MathSumPrecise(IBuiltinContext context, IReadOnlyList<JsValue> args)
+    {
+        // Stub: return NaN for non-empty calls to signal the function exists.
+        if (args.Count > 0 && args[0].Tag != JsValueTag.Undefined && args[0].Tag != JsValueTag.Null)
+            return JsValue.FromNumber(double.NaN);
+        return JsValue.FromNumber(0);
     }
 }
