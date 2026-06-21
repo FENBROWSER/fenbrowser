@@ -10681,15 +10681,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // with the corresponding descriptor. The receiver O is returned.
         DefineIntrinsicFunction(constructorHandle, constructor, "defineProperties", (_, args) =>
         {
-            if (args.Count < 2)
+            if (args.Count < 2 || args[0].Tag != JsValueTag.Object)
             {
                 throw new JsThrownException(CreateTypeError(
                     "Object.defineProperties requires an object target and a properties object."));
             }
 
-            // ECMA-262 20.1.2.4: Let O be ? ToObject(O); Let props be ? ToObject(Properties).
-            // Coerce primitives to wrapper objects; throws TypeError for null/undefined.
-            var targetVal = args[0].Tag == JsValueTag.Object ? args[0] : ToObjectValue(args[0]);
+            // ECMA-262 20.1.2.4: Let O be args[0] (already validated as Object); Let props be ? ToObject(Properties).
+            // Unlike defineProperty, defineProperties throws TypeError for non-object targets.
+            var targetVal = args[0];
             var propsVal = args[1].Tag == JsValueTag.Object ? args[1] : ToObjectValue(args[1]);
 
             var propsObj = _heap.GetObject(propsVal.AsObjectHandle());
@@ -10926,7 +10926,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var obj = _heap.GetObject(target.AsObjectHandle());
             if (obj is ProxyObject proxyPreventExtensions)
             {
-                ProxyPreventExtensions(proxyPreventExtensions);
+                if (!ProxyPreventExtensions(proxyPreventExtensions))
+                    throw new JsThrownException(CreateTypeError("Object.preventExtensions: [[PreventExtensions]] returned false."));
                 return target;
             }
 
@@ -10983,7 +10984,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // Freeze symbol-keyed properties (spec 20.1.2.6 step 6.b.ii).
             FreezeOrSealSymbolProperties(obj, freezeWritable: true);
 
-            obj.PreventExtensions();
+            // ECMA-262 20.1.2.6 step 6.c: Let status be ! SetIntegrityLevel(O, frozen).
+            // SetIntegrityLevel calls [[PreventExtensions]]; if it returns false, throw.
+            bool preventOk;
+            if (obj is ProxyObject freezeProxy)
+                preventOk = ProxyPreventExtensions(freezeProxy);
+            else { obj.PreventExtensions(); preventOk = true; }
+            if (!preventOk)
+                throw new JsThrownException(CreateTypeError("Object.freeze: SetIntegrityLevel returned false."));
             return target;
         }, length: 1);
 
@@ -11063,7 +11071,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // Seal symbol-keyed properties (spec 20.1.2.14 step 6.b.ii).
             FreezeOrSealSymbolProperties(obj, freezeWritable: false);
 
-            obj.PreventExtensions();
+            // ECMA-262 20.1.2.14 step 6.c: Let status be ? SetIntegrityLevel(O, sealed).
+            bool sealOk;
+            if (obj is ProxyObject sealProxy)
+                sealOk = ProxyPreventExtensions(sealProxy);
+            else { obj.PreventExtensions(); sealOk = true; }
+            if (!sealOk)
+                throw new JsThrownException(CreateTypeError("Object.seal: SetIntegrityLevel returned false."));
             return target;
         }, length: 1);
 
