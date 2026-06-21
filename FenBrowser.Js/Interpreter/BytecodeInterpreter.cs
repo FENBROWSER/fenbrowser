@@ -6254,11 +6254,29 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         // Try "MMM dd yyyy HH:mm:ss" (toString format)
-        if (DateTimeOffset.TryParseExact(datePart, "MMM dd yyyy HH:mm:ss",
-                System.Globalization.CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.AssumeUniversal, out var dto1))
+        // NOTE: TryParseExact with "MMM dd yyyy HH:mm:ss" is unreliable on some
+        // .NET versions for InvariantCulture. Fall back to manual parse.
+        var monthNames = new[] { "Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec" };
+        var parts = datePart.Split(' ');
+        if (parts.Length >= 4)
         {
-            return DateMath.TimeClip((dto1 - tzOffset).ToUnixTimeMilliseconds());
+            var mIdx = Array.IndexOf(monthNames, parts[0]);
+            if (mIdx >= 0 && int.TryParse(parts[1], out var dd) && int.TryParse(parts[2], out var yyyy))
+            {
+                var timeParts = parts[3].Split(':');
+                if (timeParts.Length == 3 &&
+                    int.TryParse(timeParts[0], out var hh) &&
+                    int.TryParse(timeParts[1], out var mm) &&
+                    int.TryParse(timeParts[2], out var ss))
+                {
+                    try
+                    {
+                        var dto1 = new DateTimeOffset(yyyy, mIdx + 1, dd, hh, mm, ss, TimeSpan.Zero);
+                        return DateMath.TimeClip((dto1 - tzOffset).ToUnixTimeMilliseconds());
+                    }
+                    catch { }
+                }
+            }
         }
         // Try "dd MMM yyyy HH:mm:ss" (toUTCString format)
         if (DateTimeOffset.TryParseExact(datePart, "dd MMM yyyy HH:mm:ss",
