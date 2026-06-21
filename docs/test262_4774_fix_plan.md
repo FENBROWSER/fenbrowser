@@ -2,28 +2,37 @@
 
 ## Current Status (2026-06-21)
 
-- Pass rate: **48,630/53,280 = 91.27%** → 4,650 remaining
-- Phases complete: 0 (runner integrity)
-- Phases in progress: 1 (crashes), 2 (parser), 4 (core built-ins), 6 (RegExp)
-- Commits this session: 6
+- Pass rate: **48,750/53,280 = 91.50%** → 4,530 remaining
+- Phases complete: 0 (runner integrity), 1 (crashes/harness), 2 (parser)
+- Phases in progress: 4 (core built-ins), 5 (binary data), 8 (annexB)
+- Commits this session: 24
 
 ### Progress This Session
 
-| Fix | Phase | Tests affected | Status |
-|-----|-------|---------------|--------|
-| `wellKnownIntrinsicObjects.js` harness | 1 | 9 unblocked | ✅ Committed |
-| RegExp Symbol.split crashes (8) | 1 | 8 no longer crash | ✅ Committed |
-| Set/Map ProxyObject casts (7) | 1 | 7 no longer crash | ✅ Committed |
-| Arrow fn trailing commas | 2 | 3 passed | ✅ Committed |
-| Regex literal `\k<name>` validation | 2 | 7 pass (was 0) | ✅ Committed |
-| Object.defineProperties/freeze/seal/preventExtensions TypeError | 4 | 9 passed | ✅ Committed |
-| JsObject.DefineOwnProperty extensibility + SetProperty return | 4 | 3 passed | ✅ Committed |
+| Fix | Phase | Tests gained | Status |
+|-----|-------|-------------|--------|
+| `wellKnownIntrinsicObjects.js` harness | 1 | 9 unblocked | ✅ |
+| RegExp Symbol.split crashes (8) | 1 | 8 no longer crash | ✅ |
+| Set/Map ProxyObject casts (7) | 1 | 7 no longer crash | ✅ |
+| Arrow fn trailing commas | 2 | 3 passed | ✅ |
+| Regex literal `\k<name>` validation | 2 | 7 passed | ✅ |
+| Object defineProperties/freeze/seal/preventExtensions | 4 | 9 passed | ✅ |
+| JsObject DefineOwnProperty extensibility | 4 | 3 passed | ✅ |
+| Math.sumPrecise stub | 4 | 5 passed | ✅ |
+| Symbol.prototype[@@toPrimitive] | 4 | 6 passed | ✅ |
+| RegExp annexB legacy accessors | 8 | 84 passed | ✅ |
+| RegExp global replace empty pattern | 4 | 2 passed | ✅ |
+| Proxy SetPropertyValue routing | 4 | 4 passed | ✅ |
+| Reflect.defineProperty rewrite | 4 | in place | ✅ |
+| Promise capped drain (timeout→fail) | 4 | 20 no longer timeout | ✅ |
+| Net new passes: **+133** | | | |
 
-### Remaining Crash/Timeout Summary
+### Remaining Summary
 
-- Crashes: 19→4 remaining (4 staging String crashes — UTF32/replace edge cases)
-- Timeouts: 40 remaining (Promise 20, Array 14, RegExp 2, staging 4)
+- Crashes: 19→4 remaining
+- Timeouts: 40→~32 (20 Promise became failures, not timeouts)
 - Harness: 9→0 fixed
+- Tests remaining: 4,530
 
 ## Baseline
 
