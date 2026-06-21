@@ -11599,6 +11599,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var ph = _heap.AllocateObject(prototype, AllocationSite.Current());
         _heap.PushRoot(ph);
         _heap.WriteBarrier(ph, ctorHandle);
+        DefineBuiltinToStringTag(prototype, "AsyncGeneratorFunction");
         _asyncGeneratorFunctionPrototypeHandle = ph;
         _ = ctor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(ph), Writable: false, Enumerable: false, Configurable: false));
         return ph;
@@ -18945,6 +18946,7 @@ fallbackArraySpecies:
             }
         }
 
+        DefineBuiltinToStringTag(prototype, "AsyncGenerator");
         _asyncGeneratorPrototypeHandle = prototypeHandle;
         return prototypeHandle;
     }
