@@ -11961,10 +11961,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         var obj = _heap.GetObject(thisValue.AsObjectHandle());
 
-        // ECMA-262 20.2.3.5 step 3.d: for Proxy-wrapped functions, resolve the target.
-        if (obj is ProxyObject proxy)
-            return FunctionPrototypeToString(JsValue.FromObject(proxy.TargetHandle), args);
-
         return obj switch
         {
             NativeFunctionObject nfo => JsValue.FromString($"function {nfo.Name}() {{ [native code] }}"),
@@ -11972,6 +11968,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 jfo.Function.SourceText
                 ?? $"function {(jfo.Function.Name ?? string.Empty)}() {{ [native code] }}"),
             BoundFunctionObject => JsValue.FromString("function bound() { [native code] }"),
+            // ECMA-262 20.2.3.5 step 3: Proxy-wrapped callables don't have
+            // [[SourceText]]; return an implementation-dependent NativeFunction
+            // representation. Non-callable Proxy targets throw TypeError.
+            ProxyObject proxy => IsCallableTarget(proxy.TargetHandle)
+                ? JsValue.FromString("function () { [native code] }")
+                : throw new JsThrownException(CreateTypeError("Function.prototype.toString called on non-function.")),
             _ => throw new JsThrownException(CreateTypeError("Function.prototype.toString called on non-function."))
         };
     }
