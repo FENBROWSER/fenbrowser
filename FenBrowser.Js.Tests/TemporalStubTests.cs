@@ -58,4 +58,21 @@ public sealed class TemporalStubTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void PlainMonthDayToPlainDateUsesYearAndConstrainsByDefault()
+    {
+        var result = Run("""
+            const leapDay = Temporal.PlainMonthDay.from("02-29");
+            let optionsRead = false;
+            const options = { get overflow() { optionsRead = true; return "reject"; } };
+            const leap = leapDay.toPlainDate({ year: 2020 }, options);
+            const constrained = leapDay.toPlainDate({ year: 2023 });
+            leap.year === 2020 && leap.month === 2 && leap.day === 29 &&
+                constrained.year === 2023 && constrained.month === 2 && constrained.day === 28 &&
+                !optionsRead;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }

@@ -91,7 +91,7 @@ internal static class IsoMath
     public static bool IsoDateWithinLimits(IsoDate date)
     {
         var days = ToEpochDays(date);
-        return days >= MinEpochDay && days <= MaxEpochDay;
+        return days >= MinEpochDay && days <= 100_000_000;
     }
 
     public static bool IsoDateWithinZonedLimits(IsoDate date)

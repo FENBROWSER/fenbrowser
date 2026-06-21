@@ -4372,6 +4372,41 @@ public sealed class TemporalStub : IBuiltinModule
             bool calsEqual = selfCal == otherCal;
             return JsValue.FromBoolean(IsoMath.Compare(self, other) == 0 && calsEqual);
         }, 1);
+        AddMethod(ctx, h, pH, p, "toPlainDate", (o, a) => {
+            if (a.Count == 0 || a[0].Tag != JsValueTag.Object)
+                throw new JsThrownException(ctx.CreateTypeError("toPlainDate requires an object argument."));
+
+            string cal = CalId(h, o);
+            var monthDay = DecodeIsoDate(h, o);
+            IsoDate result;
+            if (cal == "iso8601")
+            {
+                if (!TryGetField(ctx, h, a[0], "year", out var yearValue))
+                    throw new JsThrownException(ctx.CreateTypeError("toPlainDate requires a year field."));
+                double year = ToIntegerWithTruncation(ctx, yearValue);
+                result = RegulateIsoDate(ctx, year, monthDay.Month, monthDay.Day, "constrain");
+            }
+            else
+            {
+                var baseFields = CalFields(cal, monthDay)
+                    ?? throw new JsThrownException(ctx.CreateRangeError("Unsupported calendar."));
+                var merged = new JsObject();
+                if (TryGetField(ctx, h, a[0], "era", out var era)) merged.SetProperty("era", era);
+                if (TryGetField(ctx, h, a[0], "eraYear", out var eraYear)) merged.SetProperty("eraYear", eraYear);
+                if (TryGetField(ctx, h, a[0], "year", out var year)) merged.SetProperty("year", year);
+                merged.SetProperty("month", JsValue.FromNumber(baseFields.Month));
+                merged.SetProperty("monthCode", JsValue.FromString(baseFields.MonthCode));
+                merged.SetProperty("day", JsValue.FromNumber(baseFields.Day));
+                var mergedValue = JsValue.FromObject(h.AllocateObject(merged, AllocationSite.Current()));
+                result = ResolveDateBagToIso(ctx, h, mergedValue, cal, new[] { mergedValue }, 1,
+                    requireDay: true, requireYear: true);
+            }
+
+            if (!IsoMath.IsoDateWithinLimits(result))
+                throw new JsThrownException(ctx.CreateRangeError("Resulting date is outside the supported range."));
+            return AttachTemporalPrototypeByName(ctx, h, t, "PlainDate",
+                MakePlainDateYmd(ctx, h, result.Year, result.Month, result.Day, cal));
+        }, 1);
         AddMethod(ctx, h, pH, p, "toString", (o, a) => {
             var opts = GetToStringOptions(ctx, h, a, 0, new[] { "calendarName" });
             var iso = DecodeIsoDate(h, o);
