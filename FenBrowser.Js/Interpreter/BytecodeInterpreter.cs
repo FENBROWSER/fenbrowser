@@ -7340,13 +7340,34 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 if (!match.Success) return JsValue.FromString(input);
                 return JsValue.FromString(input.Substring(0, match.Index) + GetSubstitution(input, match, replStr, fastRx) + input.Substring(match.Index + match.Length));
             }
-            // Global regex with string replacement: use the spec path so that
-            // lastIndex ToLength coercion and empty-match advance happen per spec.
+            // Global regex with string replacement. Use .NET's Replace for efficiency
+            // but guard against empty-match infinite loops.
             else
             {
-                var match = fastRx.Regex.Match(input);
-                if (!match.Success) return JsValue.FromString(input);
-                return JsValue.FromString(input.Substring(0, match.Index) + GetSubstitution(input, match, replStr, fastRx) + input.Substring(match.Index + match.Length));
+                // .NET Regex.Replace with empty pattern hangs — use manual iteration.
+                var result = new System.Text.StringBuilder();
+                int cursor = 0;
+                while (cursor <= input.Length)
+                {
+                    var m = fastRx.Regex.Match(input, cursor);
+                    if (!m.Success || m.Index != cursor) break;
+                    if (m.Length == 0)
+                    {
+                        // Empty match: insert replacement, then the character at cursor.
+                        result.Append(GetSubstitution(input, m, replStr, fastRx));
+                        if (cursor < input.Length)
+                            result.Append(input[cursor]);
+                        cursor++;
+                    }
+                    else
+                    {
+                        result.Append(input.AsSpan(cursor, m.Index - cursor));
+                        result.Append(GetSubstitution(input, m, replStr, fastRx));
+                        cursor = m.Index + m.Length;
+                    }
+                }
+                if (cursor <= input.Length) result.Append(input.AsSpan(cursor));
+                return JsValue.FromString(result.ToString());
             }
         }
 
