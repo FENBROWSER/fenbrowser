@@ -11940,11 +11940,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             boundArgs[i - 1] = args[i];
         }
 
+        // ECMA-262 20.2.3.2 step 12: Get(Target, "name"). If not a string, use empty.
+        string? targetName = null;
+        if (TryGetPropertyValue(targetObj, thisValue, "name", out var nameValue) &&
+            nameValue.Tag == JsValueTag.String)
+            targetName = nameValue.AsString();
+
         var bound = new BoundFunctionObject(
             thisValue,
             boundThis,
             boundArgs,
-            Math.Max(0, GetCallableLength(targetObj) - boundArgs.Length));
+            Math.Max(0, GetCallableLength(targetObj) - boundArgs.Length),
+            targetName);
         bound.SetPrototype(EnsureFunctionPrototype());
 
         var boundHandle = _heap.AllocateObject(bound, AllocationSite.Current());

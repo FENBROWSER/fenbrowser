@@ -26,7 +26,7 @@ public sealed class BoundFunctionObject : JsObject
     // then constructs [[BoundTargetFunction]] with newTarget set to target
     // (when newTarget === bound function) per step 5.
 
-    public BoundFunctionObject(JsValue targetFunction, JsValue boundThis, JsValue[] boundArgs, int length)
+    public BoundFunctionObject(JsValue targetFunction, JsValue boundThis, JsValue[] boundArgs, int length, string? targetName = null)
     {
         TargetFunction = targetFunction;
         BoundThis = boundThis;
@@ -38,21 +38,16 @@ public sealed class BoundFunctionObject : JsObject
                 Writable: false,
                 Enumerable: false,
                 Configurable: true));
+        // ECMA-262 20.2.3.2 step 12-15: "bound " + Get(Target, "name").
+        // If targetName is not a string, use empty string.
+        var name = targetName is { Length: > 0 } s ? s : string.Empty;
         _ = DefineOwnProperty(
             "name",
             new JsPropertyDescriptor(
-                JsValue.FromString("bound " + GetTargetName(targetFunction)),
+                JsValue.FromString("bound " + name),
                 Writable: false,
                 Enumerable: false,
                 Configurable: true));
-    }
-
-    private static string GetTargetName(JsValue target)
-    {
-        // Try to get the target function's "name" property.
-        // This is a best-effort string for the "name" property; spec says
-        // "bound " + target.[[Get]]("name", receiver) in 20.2.3.2 step 5.
-        return "function";
     }
 
     public override void Trace(IHeapTracer tracer)
