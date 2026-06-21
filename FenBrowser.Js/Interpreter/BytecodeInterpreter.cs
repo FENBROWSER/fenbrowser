@@ -11705,7 +11705,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var stripped = StripAnnexBHtmlComments(parameterText);
         foreach (var rawPart in stripped.Split(','))
         {
-            var parameter = rawPart.Trim();
+            // Strip comments (both block /* */ and line //) from the parameter
+            // text before validation, then trim. Comments are valid in
+            // Function constructor parameters per Annex B.
+            var cleaned = StripCommentsFromParameter(rawPart);
+            var parameter = cleaned.Trim();
             if (parameter.Length == 0)
             {
                 continue;
@@ -11718,6 +11722,35 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
             parameters.Add(parameter);
         }
+    }
+
+    // Strip block (/* */) and line (//) comments from a Function constructor
+    // parameter string. Per Annex B, comments are valid in parameter lists.
+    private static string StripCommentsFromParameter(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        var sb = new System.Text.StringBuilder(text.Length);
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (i + 1 < text.Length && text[i] == '/' && text[i + 1] == '*')
+            {
+                i += 2;
+                while (i + 1 < text.Length && !(text[i] == '*' && text[i + 1] == '/'))
+                    i++;
+                i++;
+                continue;
+            }
+            if (i + 1 < text.Length && text[i] == '/' && text[i + 1] == '/')
+            {
+                i += 2;
+                while (i < text.Length && text[i] != '\n' && text[i] != '\r')
+                    i++;
+                if (i < text.Length - 1 && text[i] == '\r' && text[i + 1] == '\n') i++;
+                continue;
+            }
+            sb.Append(text[i]);
+        }
+        return sb.ToString();
     }
 
     private static string StripAnnexBHtmlComments(string text)
