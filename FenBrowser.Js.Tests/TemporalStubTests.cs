@@ -164,4 +164,19 @@ public sealed class TemporalStubTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void PlainDateTimeDifferencesBalanceIntoRequestedTimeUnit()
+    {
+        var result = Run("""
+            const start = new Temporal.PlainDateTime(2020, 2, 1);
+            const end = new Temporal.PlainDateTime(2020, 2, 2, 0, 0, 0, 250, 250, 250);
+            const millis = start.until(end, { largestUnit: "millisecond" });
+            const nanos = start.until(end, { largestUnit: "nanosecond" });
+            millis.milliseconds === 86400250 && millis.microseconds === 250 && millis.nanoseconds === 250 &&
+                nanos.nanoseconds === 86400250250250;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }

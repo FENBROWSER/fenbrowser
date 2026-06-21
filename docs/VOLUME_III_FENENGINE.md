@@ -8555,6 +8555,7 @@ Verification:
   - `PlainMonthDay.prototype.toPlainDate` merges the supplied year with the stored calendar month/day, constrains nonexistent dates by default, ignores a second options argument, and enforces the asymmetric Temporal ISO date limits.
   - `Temporal.Instant.from` ignores calendar annotations after ISO parsing because Instant values have no calendar, including unknown and critical calendar identifiers.
   - PlainDate `until` and `since` apply `smallestUnit`, `roundingIncrement`, and `roundingMode` through the shared calendar round-then-rebalance path; `since` complements directional rounding before negating the result.
+  - Hour-and-smaller PlainDateTime differences use exact BigInteger nanosecond totals and balance directly into the requested largest unit, including Float64-sized microsecond and nanosecond fields.
   - PlainYearMonth differences use that same rounding path, quantizing total calendar months before balancing back into years, including calendars with variable months per year.
   - Duration rounding resolves effective largest/smallest units before dispatch, validates increments for calendar-bearing durations, rounds week residuals with exact sub-day precision, and preserves uniform signs for negative calendar/time results.
   - Duration totals convert exact BigInteger ratios to binary64 once, avoiding numerator double-rounding, and derive month/year fractions from adjacent calendar anchors rather than approximate month lengths.
@@ -8572,8 +8573,8 @@ Verification:
 - `dotnet build FenBrowser.Js.Test262/FenBrowser.Js.Test262.csproj -c Release --nologo`: pass.
 - `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~TemporalCalendarIntlTests|FullyQualifiedName~BigIntTests"`: pass (`67/67`).
 - `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~TemporalCalendarIntlTests"`: pass (`24/24`).
-- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~TemporalStubTests|FullyQualifiedName~TemporalCalendarIntlTests"`: pass (`33/33`).
-- `built-ins/Temporal`: category improved from `4004/4604` to `4331/4604`; remaining failures `273`, with zero timeouts.
+- `dotnet test FenBrowser.Js.Tests/FenBrowser.Js.Tests.csproj -c Release --no-restore --filter "FullyQualifiedName~TemporalStubTests|FullyQualifiedName~TemporalCalendarIntlTests"`: pass (`34/34`).
+- `built-ins/Temporal`: category improved from `4004/4604` to `4336/4604`; remaining failures `268`, with zero timeouts and zero crashes.
 - `intl402/Temporal/ZonedDateTime/from/zoneddatetime-sub-minute-offset.js`: pass (`1/1`).
 - `intl402/Temporal/ZonedDateTime/prototype/add`: pass (`74/76`).
 - `intl402/Temporal/ZonedDateTime/prototype/subtract`: pass (`75/76`).

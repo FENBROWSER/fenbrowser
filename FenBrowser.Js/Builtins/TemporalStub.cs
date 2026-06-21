@@ -1388,25 +1388,29 @@ public sealed class TemporalStub : IBuiltinModule
     private static JsValue DifferencePlainDateTimesRounded(IBuiltinContext ctx, JsHeap h, IsoDate d1, long t1Ns, IsoDate d2, long t2Ns, string cal, DiffSettings s, bool negate = false)
     {
         long epoch1 = IsoMath.ToEpochDays(d1), epoch2 = IsoMath.ToEpochDays(d2);
-        long diffNs = (epoch2 - epoch1) * NsPerDay + t2Ns - t1Ns;
         int neg = negate ? -1 : 1;
-        int outSign = diffNs == 0 ? 0 : (neg * diffNs > 0 ? 1 : -1);
+        System.Numerics.BigInteger diffNsBig = new System.Numerics.BigInteger(epoch2 - epoch1) * NsPerDay + t2Ns - t1Ns;
+        if (DiffUnitRank(s.Largest) >= DiffUnitRank("hour"))
+            return MakeDiffDuration(ctx, h, neg * diffNsBig, s);
+
+        int diffSign = diffNsBig.Sign;
+        int outSign = diffSign == 0 ? 0 : neg * diffSign;
 
         string smallest = s.Smallest;
         if (smallest != "nanosecond" || s.Increment > 1)
         {
             int srank = DiffUnitRank(smallest);
-            if (srank <= 2) // calendar unit (year, month, week, day)
+            if (srank <= 2) // calendar unit (year, month, week)
             {
                 // Decompose from earlier to later (positive direction), then apply
                 // rounding mode (adjusted for output sign) before applying outSign.
-                long absNs = Math.Abs(diffNs);
-                long absDays = absNs / NsPerDay;
-                long absRem = absNs % NsPerDay;
-                var endDate = IsoMath.EpochDaysToCivil(epoch1 + (diffNs >= 0 ? absDays : -absDays));
+                var absNs = System.Numerics.BigInteger.Abs(diffNsBig);
+                long absDays = (long)(absNs / NsPerDay);
+                long absRem = (long)(absNs % NsPerDay);
+                var endDate = IsoMath.EpochDaysToCivil(epoch1 + (diffSign >= 0 ? absDays : -absDays));
                 // Always decompose from earlier to later
-                var from = diffNs >= 0 ? d1 : endDate;
-                var to = diffNs >= 0 ? endDate : d1;
+                var from = diffSign >= 0 ? d1 : endDate;
+                var to = diffSign >= 0 ? endDate : d1;
                 var diff = DifferenceDateDuration(cal, from, to, smallest);
                 long yR = Math.Abs(diff.Years), moR = Math.Abs(diff.Months), wR = Math.Abs(diff.Weeks), dR = Math.Abs(diff.Days);
                 double inc = s.Increment;
@@ -1435,25 +1439,28 @@ public sealed class TemporalStub : IBuiltinModule
                 else if (smallest == "week")
                 {
                     // Round (weeks*7 + days) + time fraction to the week increment
-                    long totalDayNs = (wR * 7 + dR) * NsPerDay + absRem;
-                    long roundedNs = (long)RoundNsToIncrement(ctx, totalDayNs, (long)inc * 7 * NsPerDay, rMode);
-                    wR = roundedNs / (7 * NsPerDay);
-                    long remainNs = roundedNs % (7 * NsPerDay);
+                    System.Numerics.BigInteger totalDayNs =
+                        new System.Numerics.BigInteger(wR * 7 + dR) * NsPerDay + absRem;
+                    var roundedNs = RoundNsToIncrement(ctx, totalDayNs,
+                        new System.Numerics.BigInteger((long)inc) * 7 * NsPerDay, rMode);
+                    wR = (long)(roundedNs / (7 * NsPerDay));
+                    long remainNs = (long)(roundedNs % (7 * NsPerDay));
                     if (remainNs < 0) { wR--; remainNs += 7 * NsPerDay; }
                     dR = remainNs / NsPerDay;
                     absRem = remainNs % NsPerDay;
                 }
                 else // day
                 {
-                    long dayNs = dR * NsPerDay + absRem;
+                    System.Numerics.BigInteger dayNs = new System.Numerics.BigInteger(dR) * NsPerDay + absRem;
                     // For time units, RoundNsToIncrement handles sign correctly
-                    dayNs = (long)RoundNsToIncrement(ctx, outSign >= 0 ? dayNs : -dayNs, (long)inc * NsPerDay, outSign >= 0 ? s.Mode : (s.Mode switch {
+                    dayNs = RoundNsToIncrement(ctx, outSign >= 0 ? dayNs : -dayNs,
+                        new System.Numerics.BigInteger((long)inc) * NsPerDay, outSign >= 0 ? s.Mode : (s.Mode switch {
                         "ceil" => "floor", "floor" => "ceil",
                         "halfCeil" => "halfFloor", "halfFloor" => "halfCeil",
                         _ => s.Mode
                     }));
-                    dR = dayNs / NsPerDay;
-                    absRem = dayNs % NsPerDay;
+                    dR = (long)(dayNs / NsPerDay);
+                    absRem = (long)(dayNs % NsPerDay);
                     if (absRem < 0) { dR--; absRem += NsPerDay; }
                 }
 
@@ -1465,15 +1472,15 @@ public sealed class TemporalStub : IBuiltinModule
                     outSign * remSign * (int)(a / 1_000L % 1000), outSign * remSign * (int)(a % 1000));
             }
             // time unit → round total ns directly
-            return MakeDiffDuration(ctx, h, neg * diffNs, s);
+            return MakeDiffDuration(ctx, h, neg * diffNsBig, s);
         }
 
         // No rounding → decompose using largestUnit
-        long absDiff = Math.Abs(diffNs);
-        long dX = absDiff / NsPerDay, nsX = absDiff % NsPerDay;
+        var absDiff = System.Numerics.BigInteger.Abs(diffNsBig);
+        long dX = (long)(absDiff / NsPerDay), nsX = (long)(absDiff % NsPerDay);
         int yyX = 0, mmX = 0, wwX = 0; long ddX = dX;
         int rX = DiffUnitRank(s.Largest);
-        if (rX <= 2) { var a2 = IsoMath.EpochDaysToCivil(epoch1 + (diffNs >= 0 ? dX : -dX)); (yyX, mmX, wwX, ddX) = DifferenceDateDuration(cal, d1, a2, s.Largest); yyX = Math.Abs(yyX); mmX = Math.Abs(mmX); wwX = Math.Abs(wwX); ddX = Math.Abs(ddX); }
+        if (rX <= 2) { var a2 = IsoMath.EpochDaysToCivil(epoch1 + (diffSign >= 0 ? dX : -dX)); (yyX, mmX, wwX, ddX) = DifferenceDateDuration(cal, d1, a2, s.Largest); yyX = Math.Abs(yyX); mmX = Math.Abs(mmX); wwX = Math.Abs(wwX); ddX = Math.Abs(ddX); }
         else if (rX >= 4) { nsX += ddX * NsPerDay; ddX = 0; }
         int sX = nsX < 0 ? -1 : 1; long aX = Math.Abs(nsX);
         return MakeDuration(ctx, h, outSign * yyX, outSign * mmX, outSign * wwX, outSign * ToSafeInt(ddX),
