@@ -282,6 +282,12 @@ public sealed class NumberBuiltin : IBuiltinModule
     // `digits` fraction digits (e.g. digits=2 → "1.23e+4", digits=0 → "1e+4").
     private static string FormatExponentialFixed(double value, int digits)
     {
+        // ECMA-262: the sign for zero values is determined by step 8 (x < 0).
+        // -0 < 0 is false in IEEE 754, so both +0 and -0 produce unsigned output.
+        // .NET formats -0 as "-0e+0"; override by detecting zero (matches both ±0).
+        // f = 0 means no fraction digits and no decimal point.
+        if (value == 0d)
+            return "0" + (digits > 0 ? "." + new string('0', digits) : "") + "e+0";
         var format = "0." + new string('0', digits) + "e+0";
         var raw = value.ToString(format, System.Globalization.CultureInfo.InvariantCulture);
         if (digits == 0) raw = raw.Replace(".e", "e", StringComparison.Ordinal);

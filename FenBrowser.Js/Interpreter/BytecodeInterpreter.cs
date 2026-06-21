@@ -18363,13 +18363,16 @@ fallbackArraySpecies:
                 "toExponential() digits argument must be between 0 and 100."));
         }
 
+        // ECMA-262 step 9: if x = 0, mantissa is f+1 unsigned zeros.
+        // -0 == 0 is true in IEEE 754, so this matches both +0 and -0.
+        // .NET formats -0 as "-0e+0" which is wrong per spec.
+        if (value == 0d)
+            return JsValue.FromString("0" + (digits > 0 ? "." + new string('0', digits) : "") + "e+0");
+
         var format = "0." + new string('0', digits) + "e+0";
         var raw = value.ToString(format, System.Globalization.CultureInfo.InvariantCulture);
         if (digits == 0)
-        {
-            // Trim trailing "." that the format string can leave behind on whole values.
             raw = raw.Replace(".e", "e", StringComparison.Ordinal);
-        }
 
         return JsValue.FromString(NormaliseExponential(raw));
     }
