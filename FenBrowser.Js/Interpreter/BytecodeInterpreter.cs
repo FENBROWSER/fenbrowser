@@ -10512,14 +10512,19 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // with the corresponding descriptor. The receiver O is returned.
         DefineIntrinsicFunction(constructorHandle, constructor, "defineProperties", (_, args) =>
         {
-            if (args.Count < 2 || args[0].Tag != JsValueTag.Object || args[1].Tag != JsValueTag.Object)
+            if (args.Count < 2)
             {
                 throw new JsThrownException(CreateTypeError(
                     "Object.defineProperties requires an object target and a properties object."));
             }
 
-            var propsObj = _heap.GetObject(args[1].AsObjectHandle());
-            var propsReceiver = args[1];
+            // ECMA-262 20.1.2.4: Let O be ? ToObject(O); Let props be ? ToObject(Properties).
+            // Coerce primitives to wrapper objects; throws TypeError for null/undefined.
+            var targetVal = args[0].Tag == JsValueTag.Object ? args[0] : ToObjectValue(args[0]);
+            var propsVal = args[1].Tag == JsValueTag.Object ? args[1] : ToObjectValue(args[1]);
+
+            var propsObj = _heap.GetObject(propsVal.AsObjectHandle());
+            var propsReceiver = propsVal;
             var keys = new List<string>();
             foreach (var pair in propsObj.EnumerateOwnProperties())
             {
@@ -10531,20 +10536,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
             foreach (var key in keys)
             {
-                // ECMA-262 20.1.2.4 step 4: descObj = ? Get(props, key); desc = ?
-                // ToPropertyDescriptor(descObj). A non-object descriptor (e.g.
-                // undefined) must throw a TypeError, not be silently skipped — so
-                // pass it through to ObjectDefineProperty, which calls
-                // ToPropertyDescriptor and throws.
                 TryGetPropertyValue(propsObj, propsReceiver, key, out var descValue);
                 ObjectDefineProperty(JsValue.Undefined, new[]
                 {
-                    args[0],
+                    targetVal,
                     JsValue.FromString(key),
                     descValue,
                 });
             }
 
+            // Return the original O value (spec 20.1.2.4 step 6)
             return args[0];
         }, length: 2);
 
@@ -11084,13 +11085,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // through one validator.
             if (args.Count > 1 && args[1].Tag != JsValueTag.Undefined)
             {
-                if (args[1].Tag != JsValueTag.Object)
-                {
-                    throw new JsThrownException(CreateTypeError(
-                        "Object.create: properties argument must be an object."));
-                }
-                var propsObj = _heap.GetObject(args[1].AsObjectHandle());
-                var propsReceiver = args[1];
+                // ECMA-262 20.1.2.2 step 3: Let props be ? ToObject(Properties).
+                var propsVal = args[1];
+                if (propsVal.Tag != JsValueTag.Object)
+                    propsVal = ToObjectValue(propsVal);
+                var propsObj = _heap.GetObject(propsVal.AsObjectHandle());
+                var propsReceiver = propsVal;
                 var keys = new List<string>();
                 foreach (var pair in propsObj.EnumerateOwnProperties())
                 {
