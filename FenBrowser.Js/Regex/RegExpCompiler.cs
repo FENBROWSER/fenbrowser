@@ -306,16 +306,15 @@ public static class RegExpCompiler
                 var next = pattern[i + 1];
                 if (next == 'k')
                 {
-                    // Named backreference \k<name> is only valid in Unicode mode (u/v flag).
-                    // In non-Unicode mode, \k is IdentityEscape (literal 'k') followed by '<'.
+                    // Named backreference \k<name>: always parsed as a backreference
+                    // in all modes (Unicode and non-Unicode). ECMA-262 22.2.2.1.
                     if (i + 2 >= pattern.Length || pattern[i + 2] != '<')
                     {
-                        throw new RegexSyntaxError("Invalid named backreference.");
-                    }
-
-                    if (!flags.Unicode && !flags.UnicodeSets)
-                    {
-                        i += 1; // skip past 'k' (the '<' is handled as literal by the parser)
+                        // \k not followed by '<'
+                        if (flags.Unicode || flags.UnicodeSets)
+                            throw new RegexSyntaxError("Invalid named backreference.");
+                        // Non-Unicode: \k is IdentityEscape, consume 'k' only
+                        i += 1;
                         continue;
                     }
 
