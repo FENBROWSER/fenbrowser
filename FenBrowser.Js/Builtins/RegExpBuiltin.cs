@@ -89,20 +89,25 @@ public sealed class RegExpBuiltin : IBuiltinModule
         }, length: 1);
 
         // Annex B B.2.4: legacy static accessor properties ($1..$9, input, lastMatch, etc.)
-        InstallLegacyAccessors(heap, constructorHandle, constructor);
+        InstallLegacyAccessors(heap, constructorHandle, constructor, context);
 
         return new[] { BuiltinBinding.NonEnumerable("RegExp", JsValue.FromObject(constructorHandle)) };
     }
 
-    private static void InstallLegacyAccessors(JsHeap heap, ObjectHandle ctorHandle, JsObject ctor)
+    private static void InstallLegacyAccessors(JsHeap heap, ObjectHandle ctorHandle, JsObject ctor, IBuiltinContext context)
     {
-        // B.2.4 legacy static accessors. Receiver-branding (TypeError for non-%RegExp%
-        // thisValue) is deferred — cross-realm / subclass / prop-desc-with-setter tests
-        // will fail until we have access to a proper TypeError factory here.
+        var regExpValue = JsValue.FromObject(ctorHandle);
+
+        // B.2.4 legacy static accessors. The getter/setter must check that thisValue
+        // is the %RegExp% constructor; non-matching receivers get TypeError.
         void DefineGetter(string name, Func<string> valueProvider)
         {
-            var getter = new NativeFunctionObject("get " + name, (_, _2) =>
-                JsValue.FromString(valueProvider()), length: 0);
+            var getter = new NativeFunctionObject("get " + name, (thisValue, _2) =>
+            {
+                if (!thisValue.Equals(regExpValue))
+                    throw new JsThrownException(context.CreateTypeError("RegExp." + name + " getter called on incompatible receiver."));
+                return JsValue.FromString(valueProvider());
+            }, length: 0);
             var gh = heap.AllocateObject(getter, AllocationSite.Current());
             _ = ctor.DefineOwnProperty(name, JsPropertyDescriptor.Accessor(
                 JsValue.FromObject(gh), JsValue.Undefined, Enumerable: false, Configurable: true));
@@ -111,10 +116,16 @@ public sealed class RegExpBuiltin : IBuiltinModule
 
         void DefineGetterSetter(string name, Func<string> getProvider)
         {
-            var getter = new NativeFunctionObject("get " + name, (_, _2) =>
-                JsValue.FromString(getProvider()), length: 0);
-            var setter = new NativeFunctionObject("set " + name, (_, args) =>
+            var getter = new NativeFunctionObject("get " + name, (thisValue, _2) =>
             {
+                if (!thisValue.Equals(regExpValue))
+                    throw new JsThrownException(context.CreateTypeError("RegExp." + name + " getter called on incompatible receiver."));
+                return JsValue.FromString(getProvider());
+            }, length: 0);
+            var setter = new NativeFunctionObject("set " + name, (thisValue, args) =>
+            {
+                if (!thisValue.Equals(regExpValue))
+                    throw new JsThrownException(context.CreateTypeError("RegExp." + name + " setter called on incompatible receiver."));
                 LastRegExpInput = args.Count > 0 && args[0].Tag == JsValueTag.String ? args[0].AsString() : "undefined";
                 return JsValue.Undefined;
             }, length: 1);
