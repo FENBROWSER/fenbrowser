@@ -2311,6 +2311,12 @@ public sealed partial class BytecodeInterpreter
         else if (locales.Tag == JsValueTag.Object) locale = GetDurationFormatLocale(locales);
         var state = ParseNumberFormatState(locale, options);
         var result = string.Concat(FormatNumberToParts(JsValue.FromNumber(value), state).Select(static p => p.Value));
+        // CLDR: German and some other locales use non-breaking space before %.
+        // .NET uses regular space — normalize to match ICU/CLDR output.
+        if (string.Equals(state.Style, "percent", StringComparison.Ordinal) &&
+            (state.Locale.StartsWith("de", StringComparison.OrdinalIgnoreCase) ||
+             state.Locale.StartsWith("fr", StringComparison.OrdinalIgnoreCase)))
+            result = result.Replace("%", " %");
         return JsValue.FromString(result);
     }
 
@@ -2327,8 +2333,13 @@ public sealed partial class BytecodeInterpreter
         if (absVal <= 9007199254740991) // Number.MAX_SAFE_INTEGER
         {
             var d = (double)value;
-            return JsValue.FromString(string.Concat(
-                FormatNumberToParts(JsValue.FromNumber(d), state).Select(static p => p.Value)));
+            var fr = string.Concat(
+                FormatNumberToParts(JsValue.FromNumber(d), state).Select(static p => p.Value));
+            if (string.Equals(state.Style, "percent", StringComparison.Ordinal) &&
+                (state.Locale.StartsWith("de", StringComparison.OrdinalIgnoreCase) ||
+                 state.Locale.StartsWith("fr", StringComparison.OrdinalIgnoreCase)))
+                fr = fr.Replace(" %", " %").Replace("%", " %");
+            return JsValue.FromString(fr);
         }
 
         // For large BigInts, format directly to avoid double precision loss.
@@ -2389,7 +2400,13 @@ public sealed partial class BytecodeInterpreter
         if (string.Equals(state.Style, "percent", StringComparison.Ordinal))
             parts.Add(new IntlPart("percentSign", nfi.PercentSymbol, state.Unit));
 
-        return string.Concat(parts.Select(static p => p.Value));
+        var result = string.Concat(parts.Select(static p => p.Value));
+        // CLDR: German and others use nbsp before % — .NET uses regular space.
+        if (string.Equals(state.Style, "percent", StringComparison.Ordinal) &&
+            (state.Locale.StartsWith("de", StringComparison.OrdinalIgnoreCase) ||
+             state.Locale.StartsWith("fr", StringComparison.OrdinalIgnoreCase)))
+            result = result.Replace("%", " %");
+        return result;
     }
 
     private string FormatNumber(JsValue value, NumberFormatState state)
@@ -2497,7 +2514,13 @@ public sealed partial class BytecodeInterpreter
         }
 
         if (string.Equals(state.Style, "percent", StringComparison.Ordinal))
-            result.Add(new IntlPart("percentSign", nfi.PercentSymbol, state.Unit));
+        {
+            // Replace the last part if it's a regular percent sign with nbsp variant.
+            // German and some other CLDR locales use non-breaking space before %.
+            var ps = new IntlPart("percentSign", System.Text.RegularExpressions.Regex.Replace(
+                nfi.PercentSymbol, @"^(\s*)(%)\s*$", " $2"), state.Unit);
+            result.Add(ps);
+        }
 
         return result;
     }
@@ -2684,6 +2707,14 @@ public sealed partial class BytecodeInterpreter
                 formatted = formatted[..decIdx] + afterFraction;
             else
                 formatted = formatted[..decIdx] + decSep + formatted[fracStart..fracEnd] + afterFraction;
+        }
+
+        // CLDR: German/French use nbsp before %. Only for those locales.
+        if (string.Equals(state.Style, "percent", StringComparison.Ordinal) &&
+            (state.Locale.StartsWith("de", StringComparison.OrdinalIgnoreCase) ||
+             state.Locale.StartsWith("fr", StringComparison.OrdinalIgnoreCase)))
+        {
+            formatted = formatted.Replace(" %", " %");
         }
 
         // Parse formatted output into IntlParts.
