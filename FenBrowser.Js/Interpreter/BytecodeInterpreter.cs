@@ -7874,13 +7874,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         if (thisValue.Tag != JsValueTag.Object)
             throw new JsThrownException(CreateTypeError("RegExp.prototype[@@matchAll] called on non-object."));
-        var rxObj = _heap.GetObject(thisValue.AsObjectHandle());
         var input = args.Count > 0 ? ToStringValue(args[0]) : "undefined";
-        var results = new List<JsValue>();
 
-        // Fast path for real RegExp objects.
-        if (rxObj is RegExpObject matchAllRx)
+        // ECMA-262 22.2.5.10 steps 4-6: SpeciesConstructor → flags → Construct.
+        var regExpCtorHandle = EnsureRegExpConstructor();
+        var species = SpeciesConstructor(thisValue, regExpCtorHandle);
+        var flagsValue = GetReceiverProperty(thisValue, "flags");
+        var flagsStr = flagsValue.Tag == JsValueTag.Undefined ? "" : ToStringValue(flagsValue);
+        var matcher = ConstructFunction(species, new[] { thisValue, JsValue.FromString(flagsStr) });
+
+        // If the constructed matcher is our own RegExp, use the fast .NET Regex path.
+        if (matcher.Tag == JsValueTag.Object &&
+            _heap.GetObject(matcher.AsObjectHandle()) is RegExpObject matchAllRx)
         {
+            var results = new List<JsValue>();
             foreach (Match match in matchAllRx.Regex.Matches(input))
             {
                 var record = CreateArrayObject(Array.Empty<JsValue>());
@@ -7898,23 +7905,24 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 _ = record.DefineOwnProperty("length", new JsPropertyDescriptor(JsValue.FromNumber(match.Groups.Count), Writable: true, Enumerable: false, Configurable: false));
                 results.Add(JsValue.FromObject(_heap.AllocateObject(record, AllocationSite.Current())));
             }
+            var iter = new RegExpStringIteratorObject(results);
+            iter.SetPrototype(EnsureRegExpStringIteratorPrototype());
+            return JsValue.FromObject(_heap.AllocateObject(iter, AllocationSite.Current()));
         }
-        else
+
+        // Non-RegExp matcher: iterate via RegExpExec.
         {
-            // Non-RegExp path via RegExpExec.
+            var results = new List<JsValue>();
             while (true)
             {
-                var execResult = RegExpExec(thisValue, input);
+                var execResult = RegExpExec(matcher, input);
                 if (execResult.Tag == JsValueTag.Null) break;
                 results.Add(execResult);
             }
+            var iter = new RegExpStringIteratorObject(results);
+            iter.SetPrototype(EnsureRegExpStringIteratorPrototype());
+            return JsValue.FromObject(_heap.AllocateObject(iter, AllocationSite.Current()));
         }
-
-        // ECMA-262 §22.2.5.10 — return a RegExpStringIterator, not a plain array.
-        var capturedResults = results;
-        var iter = new RegExpStringIteratorObject(capturedResults);
-        iter.SetPrototype(EnsureRegExpStringIteratorPrototype());
-        return JsValue.FromObject(_heap.AllocateObject(iter, AllocationSite.Current()));
     }
 
     private ObjectHandle? _regExpStringIteratorProtoHandle;
