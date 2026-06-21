@@ -2239,6 +2239,28 @@ public sealed class TemporalStub : IBuiltinModule
     private static System.Numerics.BigInteger DurationDayTimeNs((double years, double months, double weeks, double days, double hours, double minutes, double seconds, double millis, double micros, double nanos) d)
         => DurationToNanos(d.days, d.hours, d.minutes, d.seconds, d.millis, d.micros, d.nanos);
 
+    private static double DivideBigIntegerToDouble(System.Numerics.BigInteger value, long divisor)
+    {
+        bool negative = value.Sign < 0;
+        value = System.Numerics.BigInteger.Abs(value);
+        var quotient = System.Numerics.BigInteger.DivRem(value, divisor, out var remainder);
+        var text = new System.Text.StringBuilder();
+        if (negative) text.Append('-');
+        text.Append(quotient.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (!remainder.IsZero)
+        {
+            text.Append('.');
+            for (int i = 0; i < 128 && !remainder.IsZero; i++)
+            {
+                remainder *= 10;
+                var digit = System.Numerics.BigInteger.DivRem(remainder, divisor, out remainder);
+                text.Append((char)('0' + (int)digit));
+            }
+        }
+        return double.Parse(text.ToString(), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture);
+    }
+
     /// <summary>DefaultTemporalLargestUnit for day/time durations.</summary>
     private static string DefaultLargestUnit((double years, double months, double weeks, double days, double hours, double minutes, double seconds, double millis, double micros, double nanos) d)
         => d.years != 0 ? "year" : d.months != 0 ? "month" : d.weeks != 0 ? "week"
@@ -6020,7 +6042,7 @@ public sealed class TemporalStub : IBuiltinModule
         {
             return DurationTotalCalendar(ctx, h, dur, unit, relTo!.Value);
         }
-        return JsValue.FromNumber((double)DurationDayTimeNs(dur) / UnitNs(unit));
+        return JsValue.FromNumber(DivideBigIntegerToDouble(DurationDayTimeNs(dur), UnitNs(unit)));
     }
 
     /// <summary>Calendar-aware Duration.prototype.total: add years/months/weeks
@@ -6046,7 +6068,7 @@ public sealed class TemporalStub : IBuiltinModule
         double timeFraction = (double)timeNs / 86_400_000_000_000.0;
         double totalDaysDouble = (double)totalDays + timeFraction;
         if (unit == "day") return JsValue.FromNumber(totalDaysDouble);
-        if (!IsCalendarUnit(unit)) return JsValue.FromNumber((double)totalNs / UnitNs(unit));
+        if (!IsCalendarUnit(unit)) return JsValue.FromNumber(DivideBigIntegerToDouble(totalNs, UnitNs(unit)));
 
         // Calendar unit: decompose the date span with the largest calendar unit
         // that preserves the required output unit, then compute the fraction.
@@ -6069,26 +6091,33 @@ public sealed class TemporalStub : IBuiltinModule
             long epochAnchor = IsoMath.CivilToEpochDays(relTo.date.Year, relTo.date.Month, relTo.date.Day);
             var afterWholeYears = sys.Add(relTo.date, diff.Years, 0, 0, 0, constrain: true, out _);
             long epochAfterYears = IsoMath.CivilToEpochDays(afterWholeYears.Year, afterWholeYears.Month, afterWholeYears.Day);
-            remainingDays = epochAnchor + (double)totalDays - epochAfterYears + timeFraction;
             int baseYearForFrac = diff.Years != 0 ? afterWholeYears.Year : relTo.date.Year;
             daySpan = sys.DaysInYear(baseYearForFrac);
-            return JsValue.FromNumber(diff.Years + remainingDays / daySpan);
+            long divisorNs = (long)daySpan * NsPerDay;
+            System.Numerics.BigInteger remainingNs =
+                (new System.Numerics.BigInteger(epochAnchor) + totalDays - epochAfterYears) * NsPerDay + timeNs;
+            System.Numerics.BigInteger numerator = new System.Numerics.BigInteger(diff.Years) * divisorNs + remainingNs;
+            return JsValue.FromNumber(DivideBigIntegerToDouble(numerator, divisorNs));
         }
         else if (unit == "month")
         {
             long epochAnchor = IsoMath.CivilToEpochDays(relTo.date.Year, relTo.date.Month, relTo.date.Day);
-            var afterWholeMonths = sys.Add(relTo.date, 0, diff.Years * 12 + diff.Months, 0, 0, constrain: true, out _);
+            long wholeMonths = diff.Months;
+            var afterWholeMonths = sys.Add(relTo.date, 0, wholeMonths, 0, 0, constrain: true, out _);
             long epochAfterMonths = IsoMath.CivilToEpochDays(afterWholeMonths.Year, afterWholeMonths.Month, afterWholeMonths.Day);
-            remainingDays = (double)(epochAnchor + totalDays - epochAfterMonths) + timeFraction;
-            // Approximate month length from the month we're in
-            int mStart = afterWholeMonths.Month;
-            int mStartYear = afterWholeMonths.Year;
-            daySpan = sys.DaysInMonthOrdinal(mStartYear, mStart);
-            return JsValue.FromNumber(diff.Years * 12.0 + diff.Months + remainingDays / daySpan);
+            System.Numerics.BigInteger remainingNs =
+                (new System.Numerics.BigInteger(epochAnchor) + totalDays - epochAfterMonths) * NsPerDay + timeNs;
+            int direction = remainingNs.Sign < 0 ? -1 : 1;
+            var nextMonthBoundary = sys.Add(relTo.date, 0, wholeMonths + direction, 0, 0, constrain: true, out _);
+            long epochNextMonth = IsoMath.CivilToEpochDays(
+                nextMonthBoundary.Year, nextMonthBoundary.Month, nextMonthBoundary.Day);
+            long divisorNs = Math.Abs(epochNextMonth - epochAfterMonths) * NsPerDay;
+            System.Numerics.BigInteger numerator = new System.Numerics.BigInteger(wholeMonths) * divisorNs + remainingNs;
+            return JsValue.FromNumber(DivideBigIntegerToDouble(numerator, divisorNs));
         }
         else if (unit == "week")
         {
-            return JsValue.FromNumber(diff.Years * 52.1775 + diff.Months * 4.34524 + diff.Weeks + (remainingDays + timeFraction) / 7.0);
+            return JsValue.FromNumber(DivideBigIntegerToDouble(totalNs, 7L * NsPerDay));
         }
         return JsValue.FromNumber(totalDaysDouble);
     }

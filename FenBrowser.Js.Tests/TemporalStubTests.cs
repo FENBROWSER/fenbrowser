@@ -126,4 +126,22 @@ public sealed class TemporalStubTests
 
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void DurationTotalDividesExactNanosecondsBeforeNumberConversion()
+    {
+        var result = Run("""
+            const preciseHours = Temporal.Duration.from({ hours: 4000, nanoseconds: 1 }).total("hours");
+            const seconds = 8692288669465520;
+            const preciseMicros = new Temporal.Duration(0, 0, 0, 0, 0, 0, seconds, 0, 373761)
+                .total("microseconds");
+            const preciseMonths = new Temporal.Duration(0, 0, 5, 5)
+                .total({ unit: "months", relativeTo: "1972-01-31" });
+            preciseHours === 4000.0000000000005 &&
+                preciseMicros === Number(BigInt(seconds) * 1000000n + 373761n) &&
+                preciseMonths === 1.3548387096774193;
+            """);
+
+        Assert.True(result.AsBoolean());
+    }
 }
