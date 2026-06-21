@@ -1440,7 +1440,7 @@ public sealed class Test262Runner
                }
                function $DONE(error) { if (error !== undefined) { throw error; } }
                var $262 = {
-                 evalScript: function (sourceText) { return eval(sourceText); },
+                 evalScript: function (sourceText) { return (0, eval)(sourceText); },
                  global: globalThis,
                  AbstractModuleSource: createAbstractModuleSourceIntrinsic(),
                  createRealm: function () {
@@ -1788,6 +1788,7 @@ public sealed class Test262Runner
         "iteratorZipUtils.js",
         "nans.js",
         "nativeFunctionMatcher.js",
+        "promiseHelper.js",
         "propertyHelper.js",
         "proxyTrapsHelper.js",
         "regExpUtils.js",

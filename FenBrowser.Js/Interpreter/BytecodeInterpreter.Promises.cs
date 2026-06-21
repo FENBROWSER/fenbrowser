@@ -759,17 +759,22 @@ public sealed partial class BytecodeInterpreter
         }
 
         var captured = new JsValue[] { JsValue.Undefined, JsValue.Undefined };
-        var calledOnce = new bool[1];
         var executor = new NativeFunctionObject("", (_, exArgs) =>
         {
-            // 27.2.1.5.1 GetCapabilitiesExecutor: a second call (or pre-set
-            // slots) is a TypeError.
-            if (calledOnce[0])
+            // 27.2.1.5.1 GetCapabilitiesExecutor steps 3-4: throw if [[Resolve]]
+            // or [[Reject]] is already set to a non-undefined value. A prior call
+            // with no arguments (or with undefined args) leaves the slots
+            // undefined and is therefore not considered "already invoked".
+            if (captured[0].Tag != JsValueTag.Undefined)
             {
                 throw new JsThrownException(CreateTypeError("Promise executor has already been invoked."));
             }
 
-            calledOnce[0] = true;
+            if (captured[1].Tag != JsValueTag.Undefined)
+            {
+                throw new JsThrownException(CreateTypeError("Promise executor has already been invoked."));
+            }
+
             captured[0] = exArgs.Count > 0 ? exArgs[0] : JsValue.Undefined;
             captured[1] = exArgs.Count > 1 ? exArgs[1] : JsValue.Undefined;
             return JsValue.Undefined;
