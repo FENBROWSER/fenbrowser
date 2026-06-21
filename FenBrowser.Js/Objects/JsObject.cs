@@ -111,6 +111,10 @@ public class JsObject : ITraceable
             return true;
         }
 
+        // New property: object must be extensible (ECMA-262 9.1.6.3 step 3.b).
+        if (!Extensible)
+            return false;
+
         // New property: transition shape and grow array.
         _shape = _shape.TransitionTo(key);
         var slot = _shape.PropertyCount - 1;
@@ -308,8 +312,7 @@ public class JsObject : ITraceable
             BarrierIfObject(value);
             return true;
         }
-        DefineOwnProperty(key, new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
-        return true;
+        return DefineOwnProperty(key, new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true));
     }
 
     public virtual bool DeleteProperty(string key)
