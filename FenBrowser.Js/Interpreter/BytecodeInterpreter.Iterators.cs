@@ -70,9 +70,19 @@ public sealed partial class BytecodeInterpreter
         else if (source.Tag == JsValueTag.String)
         {
             var s = source.AsString();
+            // Iterate over code points, not UTF-16 code units. Surrogate pairs
+            // (emoji, supplementary chars) must stay as single characters.
             for (var i = 0; i < s.Length; i++)
             {
-                values.Add(JsValue.FromString(s[i].ToString()));
+                if (char.IsHighSurrogate(s[i]) && i + 1 < s.Length && char.IsLowSurrogate(s[i + 1]))
+                {
+                    values.Add(JsValue.FromString(s.Substring(i, 2)));
+                    i++; // skip low surrogate
+                }
+                else
+                {
+                    values.Add(JsValue.FromString(s[i].ToString()));
+                }
             }
         }
         else if (source.Tag == JsValueTag.Undefined || source.Tag == JsValueTag.Null)
