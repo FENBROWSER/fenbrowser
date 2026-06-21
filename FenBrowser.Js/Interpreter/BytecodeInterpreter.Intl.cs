@@ -13,6 +13,29 @@ namespace FenBrowser.Js.Interpreter;
 // Also carries EnsureProxyConstructor() placeholder until full Proxy lands.
 public sealed partial class BytecodeInterpreter
 {
+    // Helper: wrap an Intl prototype method as an accessor property per ECMA-402.
+    // Creates a getter that returns the implementation function on each access.
+    private void DefineIntlAccessor(ObjectHandle protoHandle, JsObject proto, string name, NativeFunctionObject impl)
+    {
+        impl.SetPrototype(EnsureFunctionPrototype());
+        var implHandle = _heap.AllocateObject(impl, AllocationSite.Current());
+        _heap.WriteBarrier(implHandle, EnsureFunctionPrototype());
+        var capturedImpl = implHandle;
+        var getter = new NativeFunctionObject("get " + name, (_, _2) =>
+            JsValue.FromObject(capturedImpl), length: 0);
+        getter.SetPrototype(EnsureFunctionPrototype());
+        var getterHandle = _heap.AllocateObject(getter, AllocationSite.Current());
+        _heap.WriteBarrier(getterHandle, EnsureFunctionPrototype());
+        _ = proto.DefineOwnProperty(
+            name,
+            JsPropertyDescriptor.Accessor(
+                JsValue.FromObject(getterHandle),
+                JsValue.Undefined,
+                Enumerable: false,
+                Configurable: true));
+        _heap.WriteBarrier(protoHandle, getterHandle);
+        _heap.WriteBarrier(protoHandle, implHandle);
+    }
     private ObjectHandle? _dateTimeFormatPrototypeHandle;
     private ObjectHandle? _durationFormatConstructorHandle;
     private ObjectHandle? _durationFormatPrototypeHandle;
@@ -3994,7 +4017,7 @@ public sealed partial class BytecodeInterpreter
             iterObj.DefineOwnSymbolProperty(symId, new JsPropertyDescriptor(JsValue.FromObject(symHandle), Writable: true, Enumerable: false, Configurable: true));
             return JsValue.FromObject(iterObjHandle);
         }, length: 1);
-        proto.DefineOwnProperty("segment", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(segmentFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+        DefineIntlAccessor(ph, proto, "segment", segmentFn);
 
         var segResFn = new NativeFunctionObject("resolvedOptions", (thisValue, _2) =>
         {
@@ -4007,7 +4030,7 @@ public sealed partial class BytecodeInterpreter
             o.DefineOwnProperty("granularity", new JsPropertyDescriptor(JsValue.FromString(granularity), Writable: true, Enumerable: true, Configurable: true));
             return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
         }, length: 0);
-        proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(segResFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+        DefineIntlAccessor(ph, proto, "resolvedOptions", segResFn);
 
         DefineBuiltinToStringTag(proto, "Intl.Segmenter");
 
@@ -4066,7 +4089,7 @@ public sealed partial class BytecodeInterpreter
             o.DefineOwnProperty("roundingMode", new JsPropertyDescriptor(JsValue.FromString("halfExpand"), Writable: true, Enumerable: true, Configurable: true));
             return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
         }, length: 0);
-        proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(resOptsFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+        DefineIntlAccessor(ph, proto, "resolvedOptions", resOptsFn);
 
         // ECMA-402 PluralRules.prototype.selectRange (data property for now)
         var selectRangeFn = new NativeFunctionObject("selectRange", (thisValue, a) =>
@@ -4146,7 +4169,7 @@ public sealed partial class BytecodeInterpreter
             o.DefineOwnProperty("fallback", new JsPropertyDescriptor(JsValue.FromString("code"), Writable: true, Enumerable: true, Configurable: true));
             return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
         }, length: 0);
-        proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(dnResFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+        DefineIntlAccessor(ph, proto, "resolvedOptions", dnResFn);
 
         _displayNamesPrototypeHandle = ph;
         return ph;
@@ -4186,7 +4209,7 @@ public sealed partial class BytecodeInterpreter
             var parts = FormatListToParts(list, state);
             return JsValue.FromString(string.Concat(parts.Select(static p => p.Value)));
         }, length: 1);
-        proto.DefineOwnProperty("format", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(formatFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+        DefineIntlAccessor(ph, proto, "format", formatFn);
 
         var formatToPartsFn = new NativeFunctionObject("", (tv, a) =>
         {
@@ -4194,7 +4217,7 @@ public sealed partial class BytecodeInterpreter
             var list = GetListFormatItems(a.Count > 0 ? a[0] : JsValue.Undefined);
             return CreateIntlPartsArray(FormatListToParts(list, state));
         }, length: 1);
-        proto.DefineOwnProperty("formatToParts", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(formatToPartsFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+        DefineIntlAccessor(ph, proto, "formatToParts", formatToPartsFn);
 
         var resOptsFn = new NativeFunctionObject("resolvedOptions", (tv, _2) =>
         {
@@ -4205,7 +4228,7 @@ public sealed partial class BytecodeInterpreter
             o.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString(state.Style), Writable: true, Enumerable: true, Configurable: true));
             return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
         }, length: 0);
-        proto.DefineOwnProperty("resolvedOptions", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(resOptsFn, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+        DefineIntlAccessor(ph, proto, "resolvedOptions", resOptsFn);
 
         _listFormatPrototypeHandle = ph;
         return ph;

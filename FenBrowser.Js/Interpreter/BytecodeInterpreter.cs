@@ -8905,8 +8905,39 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     rangeParts.Add(new IntlPart("rangeEnd", p.Value, p.Unit));
                 return CreateIntlPartsArray(rangeParts);
             }, length: 2);
-            frtpStub.SetPrototype(EnsureFunctionPrototype());
-            nfProto.DefineOwnProperty("formatRangeToParts", new JsPropertyDescriptor(JsValue.FromObject(_heap.AllocateObject(frtpStub, AllocationSite.Current())), Writable: true, Enumerable: false, Configurable: true));
+            DefineIntlPrototypeAccessor(nfProtoHandle, nfProto, "formatRangeToParts", (thisValue, rangeArgs) =>
+            {
+                var stateObj = RequireNumberFormatState(thisValue);
+                var state = RebuildNumberFormatState(stateObj);
+                if (thisValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(CreateTypeError("Intl.NumberFormat.prototype.formatRangeToParts called on incompatible receiver."));
+                var xVal = rangeArgs.Count > 0 ? rangeArgs[0] : JsValue.Undefined;
+                var yVal = rangeArgs.Count > 1 ? rangeArgs[1] : JsValue.Undefined;
+                if (xVal.Tag == JsValueTag.Undefined || yVal.Tag == JsValueTag.Undefined)
+                    throw new JsThrownException(CreateTypeError("formatRangeToParts requires two arguments."));
+                var x = ToNumber(xVal);
+                var y = ToNumber(yVal);
+                if (double.IsNaN(x) || double.IsNaN(y))
+                    throw new JsThrownException(CreateRangeError("formatRangeToParts requires finite numbers."));
+                if (x > y) { var tmp = x; x = y; y = tmp; }
+                var xParts = FormatNumberToParts(JsValue.FromNumber(x), state);
+                var yParts = FormatNumberToParts(JsValue.FromNumber(y), state);
+                var xFormatted = string.Concat(xParts.Select(static p => p.Value));
+                var yFormatted = string.Concat(yParts.Select(static p => p.Value));
+                if (xFormatted == yFormatted)
+                {
+                    var approxParts = new List<IntlPart> { new IntlPart("literal", "~") };
+                    approxParts.AddRange(xParts);
+                    return CreateIntlPartsArray(approxParts);
+                }
+                var rangeParts = new List<IntlPart>();
+                foreach (var p in xParts)
+                    rangeParts.Add(new IntlPart("rangeStart", p.Value, p.Unit));
+                rangeParts.Add(new IntlPart("literal", "-"));
+                foreach (var p in yParts)
+                    rangeParts.Add(new IntlPart("rangeEnd", p.Value, p.Unit));
+                return CreateIntlPartsArray(rangeParts);
+            }, length: 2);
 
             var ctor = new NativeFunctionObject(
                 "NumberFormat",
