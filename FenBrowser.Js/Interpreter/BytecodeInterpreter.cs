@@ -3082,7 +3082,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var set = RequireSet(thisValue);
             var cb = args.Count > 0 ? args[0] : JsValue.Undefined;
             var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
-            if (cb.Tag != JsValueTag.Object)
+            if (!IsCallable(cb))
             {
                 throw new JsThrownException(CreateTypeError("Set.prototype.forEach callback is not a function."));
             }
@@ -3519,7 +3519,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var map = RequireMap(thisValue);
             var cb = args.Count > 0 ? args[0] : JsValue.Undefined;
             var thisArg = args.Count > 1 ? args[1] : JsValue.Undefined;
-            if (cb.Tag != JsValueTag.Object)
+            if (!IsCallable(cb))
             {
                 throw new JsThrownException(CreateTypeError("Map.prototype.forEach callback is not a function."));
             }
