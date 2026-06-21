@@ -107,10 +107,11 @@ public sealed partial class BytecodeInterpreter
         }, length: 2);
 
         // 27.2.5.1 Promise.prototype.catch(onRejected) === this.then(undefined, onRejected).
+        // Invoke the receiver's own "then" property so thenables work correctly.
         DefineNativePrototypeMethod(prototypeHandle, prototype, "catch", (thisValue, args) =>
         {
             var onRejected = args.Count > 0 ? args[0] : JsValue.Undefined;
-            return PromisePrototypeThen(thisValue, JsValue.Undefined, onRejected);
+            return InvokeMethod(thisValue, "then", new[] { JsValue.Undefined, onRejected });
         }, length: 1);
 
         // 27.2.5.3 Promise.prototype.finally(onFinally).
@@ -823,6 +824,18 @@ public sealed partial class BytecodeInterpreter
         return true;
     }
 
+    // Invoke receiver.methodName(args) — calls the receiver's own property,
+    // throwing TypeError if the property is not callable.
+    private JsValue InvokeMethod(JsValue receiver, string methodName, JsValue[] args)
+    {
+        var method = GetReceiverProperty(receiver, methodName);
+        if (!IsCallable(method))
+        {
+            throw new JsThrownException(CreateTypeError($"'{methodName}' is not callable."));
+        }
+        return CallFunction(method, args, receiver);
+    }
+
     // Invoke(nextPromise, "then", handlers) — the spec goes through the value's
     // own (possibly overridden) then, not %Promise.prototype.then% directly.
     private void InvokePromiseThen(JsValue nextPromise, JsValue onFulfilled, JsValue onRejected)
@@ -1000,15 +1013,19 @@ public sealed partial class BytecodeInterpreter
             fulfillHandler, rejectHandler, resultCapability);
     }
 
-    // 27.2.5.3 Promise.prototype.finally(onFinally). Spec: chain a then with
-    // through-handlers that invoke onFinally with no args and propagate (or
-    // re-throw) the underlying settlement.
+    // 27.2.5.3 Promise.prototype.finally(onFinally). Invokes the receiver's
+    // own "then" property so thenables work correctly.
     private JsValue PromisePrototypeFinally(JsValue thisValue, JsValue onFinally)
     {
+        if (thisValue.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError("Promise.prototype.finally called on non-object."));
+        }
+
         if (!IsCallable(onFinally))
         {
-            // 27.2.5.3 step 5 - non-callable onFinally degenerates to then(undef, undef).
-            return PromisePrototypeThen(thisValue, JsValue.Undefined, JsValue.Undefined);
+            // 27.2.5.3 step 5 - non-callable onFinally degenerates to this.then(undefined, undefined).
+            return InvokeMethod(thisValue, "then", new[] { JsValue.Undefined, JsValue.Undefined });
         }
 
         var thenFinally = new NativeFunctionObject("", (_, args) =>
@@ -1025,7 +1042,7 @@ public sealed partial class BytecodeInterpreter
 
         var thenHandle = _heap.AllocateObject(thenFinally, AllocationSite.Current());
         var catchHandle = _heap.AllocateObject(catchFinally, AllocationSite.Current());
-        return PromisePrototypeThen(thisValue, JsValue.FromObject(thenHandle), JsValue.FromObject(catchHandle));
+        return InvokeMethod(thisValue, "then", new[] { JsValue.FromObject(thenHandle), JsValue.FromObject(catchHandle) });
     }
 
     // 27.2.6.1 PerformPromiseThen.
