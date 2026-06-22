@@ -299,6 +299,40 @@ public class JsObject : ITraceable
     // Symbol-keyed property access.
     public bool DefineOwnSymbolProperty(long symbolId, JsPropertyDescriptor descriptor)
     {
+        if (_symbolProperties is not null && _symbolProperties.TryGetValue(symbolId, out var existing))
+        {
+            if (!existing.Configurable)
+            {
+                if (descriptor.Configurable) return false;
+                if (descriptor.Enumerable != existing.Enumerable) return false;
+            }
+            if (!existing.Configurable && existing.IsAccessor != descriptor.IsAccessor) return false;
+            if (!existing.IsAccessor && !descriptor.IsAccessor)
+            {
+                if (!existing.Configurable && !existing.Writable)
+                {
+                    if (descriptor.Writable) return false;
+                    if (!JsValueSameValue(descriptor.Value, existing.Value)) return false;
+                }
+            }
+            else if (!existing.Configurable && existing.IsAccessor && descriptor.IsAccessor)
+            {
+                if (!JsValueSameValue(descriptor.Get, existing.Get) ||
+                    !JsValueSameValue(descriptor.Set, existing.Set))
+                    return false;
+            }
+            _symbolProperties[symbolId] = descriptor;
+            BarrierIfObject(descriptor.Value);
+            if (descriptor.IsAccessor)
+            {
+                BarrierIfObject(descriptor.Get);
+                BarrierIfObject(descriptor.Set);
+            }
+            return true;
+        }
+
+        if (!Extensible) return false;
+
         _symbolProperties ??= new Dictionary<long, JsPropertyDescriptor>();
         _symbolProperties[symbolId] = descriptor;
         BarrierIfObject(descriptor.Value);

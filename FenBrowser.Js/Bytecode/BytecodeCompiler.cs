@@ -1121,16 +1121,30 @@ public sealed class BytecodeCompiler
         // H.2 - wire the extends prototype chain. The new class's prototype
         // inherits from base.prototype (so instances see inherited methods); the
         // class itself inherits from base (so static methods inherit).
+        // ECMA-262 15.7.14: extends null sets protoParent = null (both the
+        // prototype object's [[Prototype]] and the class's [[Prototype]] are null).
         if (baseReg != -1)
         {
-            // IsConstructor is checked before reading superclass.prototype;
-            // the ordering is observable through accessors and proxies.
-            _instructions.Add(new Instruction(OpCode.ValidateClassHeritage, baseReg, 0, 0));
-            var protoNameIdx_extends = GetOrCreatePropertyName("prototype");
-            var basePrototypeReg = AllocateRegister();
-            _instructions.Add(new Instruction(OpCode.GetPropByName, basePrototypeReg, baseReg, protoNameIdx_extends));
-            _instructions.Add(new Instruction(OpCode.SetPrototype, protoReg, basePrototypeReg, 0));
-            _instructions.Add(new Instruction(OpCode.SetPrototype, classReg, baseReg, 0));
+            if (baseClass is NullLiteralExpressionNode)
+            {
+                _instructions.Add(new Instruction(OpCode.ValidateClassHeritage, baseReg, 0, 0));
+                var nullConstIdx = AddConstant(JsValue.Null);
+                var nullConstReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.LoadConst, nullConstReg, nullConstIdx, 0));
+                _instructions.Add(new Instruction(OpCode.SetPrototype, protoReg, nullConstReg, 0));
+                _instructions.Add(new Instruction(OpCode.SetPrototype, classReg, nullConstReg, 0));
+            }
+            else
+            {
+                // IsConstructor is checked before reading superclass.prototype;
+                // the ordering is observable through accessors and proxies.
+                _instructions.Add(new Instruction(OpCode.ValidateClassHeritage, baseReg, 0, 0));
+                var protoNameIdx_extends = GetOrCreatePropertyName("prototype");
+                var basePrototypeReg = AllocateRegister();
+                _instructions.Add(new Instruction(OpCode.GetPropByName, basePrototypeReg, baseReg, protoNameIdx_extends));
+                _instructions.Add(new Instruction(OpCode.SetPrototype, protoReg, basePrototypeReg, 0));
+                _instructions.Add(new Instruction(OpCode.SetPrototype, classReg, baseReg, 0));
+            }
         }
 
         // H.3.2 - record the class itself as the constructor's HomeObject so

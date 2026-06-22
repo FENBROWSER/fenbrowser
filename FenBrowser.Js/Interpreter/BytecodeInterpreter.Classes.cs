@@ -1,4 +1,5 @@
 ﻿using FenBrowser.Js.Bytecode;
+using FenBrowser.Js.Environments;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
@@ -355,20 +356,25 @@ public sealed partial class BytecodeInterpreter
     {
         // ECMA-262 13.3.7.3 MakeSuperPropertyReference + 9.1.2 GetSuperBase.
         var name = function.PropertyNames[ins.B];
-        if (frame.CalleeFunctionObject is not { } calleeFn || calleeFn.HomeObject is not { } home)
+        if (!TryGetSuperHome(frame, out var home))
         {
             ThrowOrHandle(frame, CreateReferenceError("super reference requires a class method context."));
             return;
         }
 
+        // ECMA-262: GetThisBinding() throws ReferenceError when [[ThisBindingStatus]]
+        // is "uninitialized" (derived constructor before super()).
+        ValidateThisInitialized(frame);
+
         if (!TryGetSuperPropertyBase(function, home, out var baseProtoHandle))
         {
-            frame.Registers[ins.A] = JsValue.Undefined;
+            ThrowOrHandle(frame, CreateTypeError("Cannot read properties of null."));
             return;
         }
 
         var baseProto = _heap.GetObject(baseProtoHandle);
-        frame.Registers[ins.A] = TryGetPropertyValue(baseProto, JsValue.FromObject(baseProtoHandle), name, out var v)
+        var receiver = frame.ThisValue;
+        frame.Registers[ins.A] = TryGetPropertyValue(baseProto, receiver, name, out var v)
             ? v
             : JsValue.Undefined;
     }
@@ -379,28 +385,35 @@ public sealed partial class BytecodeInterpreter
         // Computed super[key]. ECMA-262 13.3.7.3 MakeSuperPropertyReference +
         // 9.1.2 GetSuperBase. Same as LoadSuperProperty but the key comes from
         // a register and may be a Symbol or coercible to a string property key.
-        if (frame.CalleeFunctionObject is not { } calleeFn || calleeFn.HomeObject is not { } home)
+        if (!TryGetSuperHome(frame, out var home))
         {
             ThrowOrHandle(frame, CreateReferenceError("super reference requires a class method context."));
             return;
         }
 
+        // ECMA-262: GetThisBinding() throws ReferenceError when [[ThisBindingStatus]]
+        // is "uninitialized" (derived constructor before super()).
+        ValidateThisInitialized(frame);
+
         if (!TryGetSuperPropertyBase(frame.Function, home, out var baseProtoHandle))
         {
-            frame.Registers[ins.A] = JsValue.Undefined;
+            ThrowOrHandle(frame, CreateTypeError("Cannot read properties of null."));
             return;
         }
 
+        var receiver = frame.ThisValue;
         var baseProto = _heap.GetObject(baseProtoHandle);
         var keyValue = frame.Registers[ins.B];
         if (keyValue.Tag == JsValueTag.Symbol)
         {
-            frame.Registers[ins.A] = GetReceiverSymbolProperty(JsValue.FromObject(baseProtoHandle), keyValue.AsSymbolId());
+            frame.Registers[ins.A] = baseProto.TryGetSymbolProperty(keyValue.AsSymbolId(), h => _heap.GetObject(h), out var desc)
+                ? GetDescriptorValue(desc, receiver)
+                : JsValue.Undefined;
             return;
         }
 
         var name = ToPropertyKey(keyValue);
-        frame.Registers[ins.A] = TryGetPropertyValue(baseProto, JsValue.FromObject(baseProtoHandle), name, out var v)
+        frame.Registers[ins.A] = TryGetPropertyValue(baseProto, receiver, name, out var v)
             ? v
             : JsValue.Undefined;
     }
@@ -411,7 +424,8 @@ public sealed partial class BytecodeInterpreter
         // ECMA-262 13.3.7.4 GetSuperConstructor: read the active function's
         // HomeObject (which the class compiler sets to the class itself for the
         // constructor), then return HomeObject.[[Prototype]] - the base class.
-        if (frame.CalleeFunctionObject is not { } callee || callee.HomeObject is not { } home)
+        // Arrow functions and eval inherit the enclosing method's binding.
+        if (!TryGetSuperHome(frame, out var home))
         {
             ThrowOrHandle(frame, CreateReferenceError("super constructor call requires a class constructor context."));
             return;
@@ -430,35 +444,84 @@ public sealed partial class BytecodeInterpreter
 
     private bool TryGetSuperPropertyBase(BytecodeFunction function, ObjectHandle home, out ObjectHandle baseProtoHandle)
     {
+        // ECMA-262 9.1.2 GetSuperBase: return env.[[HomeObject]].[[GetPrototypeOf]]().
+        // The HomeObject is set differently for constructors (the class itself) vs
+        // methods (the class prototype), so home.[[Prototype]] produces the correct
+        // result for both: Base (constructor) or Base.prototype (method).
         var homeObj = _heap.GetObject(home);
-        if (function.IsClassConstructor)
-        {
-            if (!TryGetPropertyValue(homeObj, JsValue.FromObject(home), "prototype", out var prototypeValue) ||
-                prototypeValue.Tag != JsValueTag.Object)
-            {
-                baseProtoHandle = default;
-                return false;
-            }
-
-            var prototypeObject = _heap.GetObject(prototypeValue.AsObjectHandle());
-            if (prototypeObject.PrototypeHandle is not { } constructorBaseProtoHandle)
-            {
-                baseProtoHandle = default;
-                return false;
-            }
-
-            baseProtoHandle = constructorBaseProtoHandle;
-            return true;
-        }
-
-        if (homeObj.PrototypeHandle is not { } ordinaryBaseProtoHandle)
+        if (homeObj.PrototypeHandle is not { } homeProto)
         {
             baseProtoHandle = default;
             return false;
         }
 
-        baseProtoHandle = ordinaryBaseProtoHandle;
+        baseProtoHandle = homeProto;
         return true;
+    }
+
+    // Walks the environment chain to find a FunctionEnvironmentRecord with a
+    // HomeObject. Arrow functions and eval inherit the enclosing method's super
+    // binding per ECMA-262 9.1.2 GetSuperBase (GetThisEnvironment walks outer envs).
+    // Falls back to the frame's CalleeFunctionObject.HomeObject and the frame stack.
+    private bool TryGetSuperHome(InterpreterFrame currentFrame, out ObjectHandle home)
+    {
+        // First try the current frame's callee directly (for direct method calls).
+        if (currentFrame.CalleeFunctionObject is { } callee && callee.HomeObject is { } calleeHome)
+        {
+            home = calleeHome;
+            return true;
+        }
+
+        // Walk the environment chain (for arrow functions, eval, etc.).
+        var env = currentFrame.Environment;
+        while (env is not null)
+        {
+            if (env is FunctionEnvironmentRecord fen && fen.HomeObject is { } fenHome)
+            {
+                home = fenHome;
+                return true;
+            }
+            env = env.OuterEnv;
+        }
+
+        // Fallback: walk the parent frame's CalleeFunctionObject.
+        var foundCurrent = false;
+        foreach (var f in _activeFrames)
+        {
+            if (!foundCurrent)
+            {
+                if (ReferenceEquals(f, currentFrame)) foundCurrent = true;
+                continue;
+            }
+            if (f.CalleeFunctionObject is { } parentCallee && parentCallee.HomeObject is { } parentHome)
+            {
+                home = parentHome;
+                return true;
+            }
+        }
+
+        home = default;
+        return false;
+    }
+
+    // ECMA-262 9.1.1.3.4 GetThisBinding: throws ReferenceError when
+    // [[ThisBindingStatus]] is "uninitialized" (derived constructor before
+    // super()). Walk up the environment chain to find the nearest
+    // FunctionEnvironmentRecord (arrow functions/eval skip their own env).
+    private void ValidateThisInitialized(InterpreterFrame frame)
+    {
+        var env = frame.Environment;
+        while (env is not null)
+        {
+            if (env is FunctionEnvironmentRecord fen)
+            {
+                if (fen.ThisBindingStatus == ThisBindingStatus.Uninitialized)
+                    throw new JsThrownException(CreateReferenceError(
+                        "Must call super constructor before accessing 'this' or 'super'."));
+                return;
+            }
+            env = env.OuterEnv;
+        }
     }
 
 }

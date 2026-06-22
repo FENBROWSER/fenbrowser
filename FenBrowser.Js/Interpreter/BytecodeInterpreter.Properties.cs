@@ -214,7 +214,7 @@ public sealed partial class BytecodeInterpreter
             return false;
         }
 
-        var result = 0;
+        long result = 0;
         foreach (var c in key)
         {
             if (c < '0' || c > '9')
@@ -222,8 +222,9 @@ public sealed partial class BytecodeInterpreter
                 return false;
             }
 
-            // Guard against overflow on absurdly long keys.
-            if (result > (int.MaxValue - (c - '0')) / 10)
+            // Guard against overflow: max array index is 2^32-2 (4294967294).
+            // Length can be set up to 2^32-1 (4294967295).
+            if ((uint)result > (uint.MaxValue - (uint)(c - '0')) / 10u)
             {
                 return false;
             }
@@ -231,7 +232,7 @@ public sealed partial class BytecodeInterpreter
             result = result * 10 + (c - '0');
         }
 
-        index = result;
+        index = unchecked((int)result);
         return true;
     }
 

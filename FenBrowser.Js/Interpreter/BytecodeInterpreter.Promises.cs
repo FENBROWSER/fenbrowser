@@ -228,6 +228,102 @@ public sealed partial class BytecodeInterpreter
     private List<JsValue> DrainIterableToListCapped(JsValue iterable, string operation)
         => DrainIterableToListCapped(iterable, operation, cap: 100_000);
 
+    // Same as above but also returns the raw iterator handle for IteratorClose
+    // when an error occurs during processing (ECMA-262 7.4.6).
+    private (List<JsValue> values, ObjectHandle? iterator) DrainIterableToListCappedWithIterator(JsValue iterable, string operation, int cap)
+    {
+        if (iterable.Tag == JsValueTag.Undefined || iterable.Tag == JsValueTag.Null)
+        {
+            throw new JsThrownException(CreateTypeError(operation + ": argument is not iterable."));
+        }
+
+        var values = new List<JsValue>();
+        if (iterable.Tag != JsValueTag.Object)
+        {
+            return (values, null);
+        }
+
+        var obj = _heap.GetObject(iterable.AsObjectHandle());
+        var iterId = GetWellKnownSymbolId("iterator");
+        if (iterId == 0 || !obj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) ||
+            iterDesc.Value.Tag != JsValueTag.Object)
+        {
+            return (values, null);
+        }
+
+        var rawIter = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), iterable);
+        if (rawIter.Tag != JsValueTag.Object)
+        {
+            throw new JsThrownException(CreateTypeError(operation + ": @@iterator did not return an object."));
+        }
+
+        var iteratorHandle = rawIter.AsObjectHandle();
+        var rootMark = _heap.RootCount;
+        var savedYoung = _heap.YoungAllocationsPerMinorGc;
+        _heap.YoungAllocationsPerMinorGc = -1;
+        try
+        {
+            _heap.PushRoot(iteratorHandle);
+            var iterObj = _heap.GetObject(iteratorHandle);
+            for (var count = 0; count < cap; count++)
+            {
+                if (!TryGetPropertyValue(iterObj, rawIter, "next", out var nextFn) ||
+                    nextFn.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError(operation + ": iterator missing 'next'."));
+                }
+
+                var result = CallFunction(nextFn, Array.Empty<JsValue>(), rawIter);
+                if (result.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError(operation + ": IteratorResult is not an object."));
+                }
+
+                _heap.PushRoot(result.AsObjectHandle());
+                var resultObj = _heap.GetObject(result.AsObjectHandle());
+                TryGetPropertyValue(resultObj, result, "done", out var doneVal);
+                if (IsTruthy(doneVal))
+                {
+                    return (values, iteratorHandle);
+                }
+
+                TryGetPropertyValue(resultObj, result, "value", out var value);
+                if (value.Tag == JsValueTag.Object)
+                    _heap.PushRoot(value.AsObjectHandle());
+                values.Add(value);
+            }
+            throw new JsThrownException(CreateRangeError(
+                operation + ": iterable exceeds maximum size."));
+        }
+        finally
+        {
+            _heap.PopRootsTo(rootMark);
+            _heap.YoungAllocationsPerMinorGc = savedYoung;
+        }
+    }
+
+    // ECMA-262 7.4.6 IteratorClose: call iterator.return() if present and
+    // callable. If return is null/undefined, do nothing. If return throws,
+    // the caller's catch block handles the error (per spec, if the original
+    // completion was a throw, the return error replaces it).
+    private void IteratorClose(ObjectHandle iteratorHandle)
+    {
+        var iterObj = _heap.GetObject(iteratorHandle);
+        var iterValue = JsValue.FromObject(iteratorHandle);
+        if (!TryGetPropertyValue(iterObj, iterValue, "return", out var returnFn) ||
+            returnFn.Tag == JsValueTag.Undefined || returnFn.Tag == JsValueTag.Null)
+        {
+            return;
+        }
+
+        if (!IsCallable(returnFn))
+        {
+            throw new JsThrownException(CreateTypeError("Iterator 'return' is not callable."));
+        }
+
+        _ = CallFunction(returnFn, Array.Empty<JsValue>(), iterValue);
+    }
+
     // 27.2.4.1.1 PerformPromiseAll. Returns a promise that fulfills with an
     // Array of values once every input promise fulfills, or rejects with the
     // first rejection. Uses a capped eager drain to avoid infinite loops from
@@ -258,6 +354,7 @@ public sealed partial class BytecodeInterpreter
             var slots = new JsValue[sources.Count];
             for (var i = 0; i < slots.Length; i++) slots[i] = JsValue.Undefined;
             var remaining = new[] { sources.Count };
+            var alreadyCalled = new bool[sources.Count];
 
             for (var i = 0; i < sources.Count; i++)
             {
@@ -265,6 +362,8 @@ public sealed partial class BytecodeInterpreter
                 var child = CallFunction(promiseResolve, new[] { sources[i] }, thisValue);
                 var onFulfilled = AllocateNativeCallback((_, fnArgs) =>
                 {
+                    if (alreadyCalled[idx]) return JsValue.Undefined;
+                    alreadyCalled[idx] = true;
                     slots[idx] = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
                     remaining[0]--;
                     if (remaining[0] == 0)
@@ -385,6 +484,8 @@ public sealed partial class BytecodeInterpreter
             var slots = new JsValue[sources.Count];
             for (var i = 0; i < slots.Length; i++) slots[i] = JsValue.Undefined;
             var remaining = new[] { sources.Count };
+            var alreadyFulfilled = new bool[sources.Count];
+            var alreadyRejected = new bool[sources.Count];
 
             void TrySettleAggregate()
             {
@@ -403,6 +504,8 @@ public sealed partial class BytecodeInterpreter
                 var child = CallFunction(promiseResolve, new[] { sources[i] }, thisValue);
                 var onFulfilled = AllocateNativeCallback((_, fnArgs) =>
                 {
+                    if (alreadyFulfilled[index]) return JsValue.Undefined;
+                    alreadyFulfilled[index] = true;
                     var v = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
                     slots[index] = MakeSettledRecord("fulfilled", "value", v);
                     TrySettleAggregate();
@@ -410,6 +513,8 @@ public sealed partial class BytecodeInterpreter
                 });
                 var onRejected = AllocateNativeCallback((_, fnArgs) =>
                 {
+                    if (alreadyRejected[index]) return JsValue.Undefined;
+                    alreadyRejected[index] = true;
                     var r = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
                     slots[index] = MakeSettledRecord("rejected", "reason", r);
                     TrySettleAggregate();
@@ -460,6 +565,7 @@ public sealed partial class BytecodeInterpreter
             var errors = new JsValue[sources.Count];
             for (var i = 0; i < errors.Length; i++) errors[i] = JsValue.Undefined;
             var remaining = new[] { sources.Count };
+            var alreadyCalled = new bool[sources.Count];
 
             for (var i = 0; i < sources.Count; i++)
             {
@@ -467,6 +573,8 @@ public sealed partial class BytecodeInterpreter
                 var child = CallFunction(promiseResolve, new[] { sources[i] }, thisValue);
                 var onRejected = AllocateNativeCallback((_, fnArgs) =>
                 {
+                    if (alreadyCalled[index]) return JsValue.Undefined;
+                    alreadyCalled[index] = true;
                     errors[index] = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
                     remaining[0]--;
                     if (remaining[0] == 0)
@@ -549,14 +657,18 @@ public sealed partial class BytecodeInterpreter
             var resultObj = CreateOrdinaryObject();
             var resultHandle = _heap.AllocateObject(resultObj, AllocationSite.Current());
             var remaining = new[] { sources.Count };
+            var alreadyCalled = new bool[sources.Count];
 
             for (var i = 0; i < sources.Count; i++)
             {
+                var idx = i;
                 var entry = sources[i];
                 var key = GetKeyFromEntry(entry, i);
                 var child = CallFunction(promiseResolve, new[] { entry }, thisValue);
                 var onFulfilled = AllocateNativeCallback((_, fnArgs) =>
                 {
+                    if (alreadyCalled[idx]) return JsValue.Undefined;
+                    alreadyCalled[idx] = true;
                     var value = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
                     CreateDataProperty(resultHandle, resultObj, key, value);
                     remaining[0]--;
@@ -596,6 +708,8 @@ public sealed partial class BytecodeInterpreter
             var resultObj = CreateOrdinaryObject();
             var resultHandle = _heap.AllocateObject(resultObj, AllocationSite.Current());
             var remaining = new[] { sources.Count };
+            var alreadyFulfilled = new bool[sources.Count];
+            var alreadyRejected = new bool[sources.Count];
 
             for (var i = 0; i < sources.Count; i++)
             {
@@ -604,6 +718,8 @@ public sealed partial class BytecodeInterpreter
                 var child = CallFunction(promiseResolve, new[] { entry }, thisValue);
                 var onFulfilled = AllocateNativeCallback((_, fnArgs) =>
                 {
+                    if (alreadyFulfilled[i]) return JsValue.Undefined;
+                    alreadyFulfilled[i] = true;
                     var value = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
                     var record = MakeSettledRecord("fulfilled", "value", value);
                     CreateDataProperty(resultHandle, resultObj, key, record);
@@ -614,6 +730,8 @@ public sealed partial class BytecodeInterpreter
                 });
                 var onRejected = AllocateNativeCallback((_, fnArgs) =>
                 {
+                    if (alreadyRejected[i]) return JsValue.Undefined;
+                    alreadyRejected[i] = true;
                     var reason = fnArgs.Count > 0 ? fnArgs[0] : JsValue.Undefined;
                     var record = MakeSettledRecord("rejected", "reason", reason);
                     CreateDataProperty(resultHandle, resultObj, key, record);
@@ -648,6 +766,7 @@ public sealed partial class BytecodeInterpreter
     private JsValue AllocateNativeCallback(Func<JsValue, IReadOnlyList<JsValue>, JsValue> call)
     {
         var fn = new NativeFunctionObject("", call, length: 1);
+        fn.SetPrototype(EnsureFunctionPrototype());
         var handle = _heap.AllocateObject(fn, AllocationSite.Current());
         return JsValue.FromObject(handle);
     }

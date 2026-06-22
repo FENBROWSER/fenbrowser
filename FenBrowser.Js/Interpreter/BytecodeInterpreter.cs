@@ -1952,7 +1952,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     // length mutated by an indexed assignment.
                     if (obj is ArrayObject && IsCanonicalIntegerIndex(key, out var arrayIndex))
                     {
-                        var nextLength = (double)arrayIndex + 1;
+                        var nextLength = (double)(uint)arrayIndex + 1;
                         if (!obj.TryGetOwnProperty("length", out var lenDesc) || lenDesc.Value.AsNumber() < nextLength)
                         {
                             _ = obj.SetProperty("length", JsValue.FromNumber(nextLength));
@@ -2490,7 +2490,6 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     break;
                 case OpCode.In:
                 {
-                    var key = ToPropertyKey(frame.Registers[ins.B]);
                     var rhs = frame.Registers[ins.C];
                     if (rhs.Tag != JsValueTag.Object)
                     {
@@ -2499,7 +2498,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     }
 
                     var obj = ResolveObject(rhs);
-                    var has = HasPropertyIncludingProxy(obj, key);
+                    var keyValue = frame.Registers[ins.B];
+                    bool has;
+                    if (keyValue.Tag == JsValueTag.Symbol)
+                    {
+                        has = HasSymbolProperty(obj, keyValue.AsSymbolId());
+                    }
+                    else
+                    {
+                        var key = ToPropertyKey(keyValue);
+                        has = HasPropertyIncludingProxy(obj, key);
+                    }
                     frame.Registers[ins.A] = JsValue.FromBoolean(has);
                     break;
                 }
@@ -5662,13 +5671,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private void ValidateEvalDeclarations(BytecodeFunction compiled, EnvironmentRecord? callingEnv, bool strict)
     {
-        // Check for super references in the eval body. super() / super.x are only
-        // valid inside a class method/constructor body; in eval they must be a
-        // SyntaxError, not a runtime ReferenceError.
+        // ECMA-262 19.2.1.3: super references in eval are allowed when the
+        // calling context has a super binding (direct eval inside a class
+        // method/constructor). Otherwise they are a SyntaxError.
         foreach (var ins in compiled.Instructions)
         {
-            if (ins.OpCode == OpCode.LoadSuperProperty || ins.OpCode == OpCode.LoadSuperConstructor)
-                throw new JsThrownException(CreateSyntaxError("'super' cannot be used in eval."));
+            if (ins.OpCode == OpCode.LoadSuperProperty || ins.OpCode == OpCode.LoadSuperConstructor || ins.OpCode == OpCode.LoadSuperElement)
+            {
+                if (callingEnv is not FunctionEnvironmentRecord fenv || !fenv.HasSuperBinding)
+                    throw new JsThrownException(CreateSyntaxError("'super' cannot be used in eval."));
+            }
         }
 
         // ECMA-262: Additional Early Error Rules for Eval Inside Initializer.
@@ -11031,37 +11043,113 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
             var result = CreateOrdinaryObject();
             var resultHandle = _heap.AllocateObject(result, AllocationSite.Current());
-            var iter = CreateForOfIterator(iterable);
-            if (iter.Tag != JsValueTag.Object || _heap.GetObject(iter.AsObjectHandle()) is not ForOfIteratorObject forOf)
+            var iterableObj = _heap.GetObject(iterable.AsObjectHandle());
+            var iterId = GetWellKnownSymbolId("iterator");
+
+            if (iterId != 0 &&
+                iterableObj.TryGetSymbolProperty(iterId, h => _heap.GetObject(h), out var iterDesc) &&
+                iterDesc.Value.Tag == JsValueTag.Object)
             {
-                // Non-iterable or non-ForOf path: try array-like fallback.
-                var src = _heap.GetObject(iterable.AsObjectHandle());
-                var length = GetArrayLength(src);
-                for (var i = 0; i < length; i++)
+                // @@iterator path — use lazy iteration so IteratorClose is called on errors.
+                var iterator = CallFunction(iterDesc.Value, Array.Empty<JsValue>(), iterable);
+                if (iterator.Tag != JsValueTag.Object)
                 {
-                    var idxKey = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                    if (!TryGetPropertyValue(src, iterable, idxKey, out var entryValue) ||
-                        entryValue.Tag != JsValueTag.Object)
-                        throw new JsThrownException(CreateTypeError($"Object.fromEntries: entry at index {i} is not an object."));
-                    var entry = _heap.GetObject(entryValue.AsObjectHandle());
-                    if (!TryGetPropertyValue(entry, entryValue, "0", out var k) ||
-                        !TryGetPropertyValue(entry, entryValue, "1", out var v))
-                        throw new JsThrownException(CreateTypeError($"Object.fromEntries: entry at index {i} must have '0' and '1' properties."));
-                    var propKey = ToPropertyKey(k);
-                    result.SetProperty(propKey, v);
-                    if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
+                    throw new JsThrownException(CreateTypeError(
+                        "Object.fromEntries: @@iterator did not return an object."));
                 }
+
+                var iterObj = _heap.GetObject(iterator.AsObjectHandle());
+                if (!TryGetPropertyValue(iterObj, iterator, "next", out var nextFn) ||
+                    nextFn.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Object.fromEntries: iterator has no callable 'next' method."));
+                }
+
+                var rootMark = _heap.RootCount;
+                var savedYoungThreshold = _heap.YoungAllocationsPerMinorGc;
+                _heap.YoungAllocationsPerMinorGc = -1;
+                try
+                {
+                    _heap.PushRoot(iterator.AsObjectHandle());
+                    while (true)
+                    {
+                        var stepResult = CallFunction(nextFn, Array.Empty<JsValue>(), iterator);
+                        if (stepResult.Tag != JsValueTag.Object)
+                        {
+                            throw new JsThrownException(CreateTypeError(
+                                "Object.fromEntries: iterator result is not an object."));
+                        }
+
+                        _heap.PushRoot(stepResult.AsObjectHandle());
+                        var stepObj = _heap.GetObject(stepResult.AsObjectHandle());
+                        TryGetPropertyValue(stepObj, stepResult, "done", out var doneVal);
+                        if (IsTruthy(doneVal))
+                            break;
+
+                        TryGetPropertyValue(stepObj, stepResult, "value", out var entryValue);
+
+                        // Entry must be an object with numeric properties "0" (key) and "1" (value).
+                        if (entryValue.Tag != JsValueTag.Object)
+                        {
+                            IteratorCloseOnAbrupt(iterator);
+                            throw new JsThrownException(CreateTypeError(
+                                "Object.fromEntries: each entry must be an object."));
+                        }
+
+                        var entry = _heap.GetObject(entryValue.AsObjectHandle());
+                        try
+                        {
+                            if (!TryGetPropertyValue(entry, entryValue, "0", out var k) ||
+                                !TryGetPropertyValue(entry, entryValue, "1", out var v))
+                            {
+                                IteratorCloseOnAbrupt(iterator);
+                                throw new JsThrownException(CreateTypeError(
+                                    "Object.fromEntries: each entry must have '0' and '1' properties."));
+                            }
+
+                            if (k.Tag == JsValueTag.Symbol)
+                            {
+                                result.DefineOwnSymbolProperty(k.AsSymbolId(),
+                                    new JsPropertyDescriptor(v, Writable: true, Enumerable: true, Configurable: true));
+                            }
+                            else
+                            {
+                                var propKey = ToPropertyKey(k);
+                                result.SetProperty(propKey, v);
+                            }
+                            if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
+                        }
+                        catch
+                        {
+                            // An abrupt completion during property processing must also close the iterator.
+                            IteratorCloseOnAbrupt(iterator);
+                            throw;
+                        }
+                    }
+                }
+                finally
+                {
+                    _heap.PopRootsTo(rootMark);
+                    _heap.YoungAllocationsPerMinorGc = savedYoungThreshold;
+                }
+
                 return JsValue.FromObject(resultHandle);
             }
 
-            while (forOf.TryMoveNext(out var entryValue))
+            // No @@iterator — array-like fallback.
+            var src = _heap.GetObject(iterable.AsObjectHandle());
+            var length = GetArrayLength(src);
+            for (var i = 0; i < length; i++)
             {
-                if (entryValue.Tag != JsValueTag.Object)
-                    throw new JsThrownException(CreateTypeError("Object.fromEntries: each entry must be an object."));
+                var idxKey = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if (!TryGetPropertyValue(src, iterable, idxKey, out var entryValue) ||
+                    entryValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(CreateTypeError($"Object.fromEntries: entry at index {i} is not an object."));
                 var entry = _heap.GetObject(entryValue.AsObjectHandle());
                 if (!TryGetPropertyValue(entry, entryValue, "0", out var k) ||
                     !TryGetPropertyValue(entry, entryValue, "1", out var v))
-                    throw new JsThrownException(CreateTypeError("Object.fromEntries: each entry must have '0' and '1' properties."));
+                    throw new JsThrownException(CreateTypeError($"Object.fromEntries: entry at index {i} must have '0' and '1' properties."));
                 var propKey = ToPropertyKey(k);
                 result.SetProperty(propKey, v);
                 if (v.Tag == JsValueTag.Object) _heap.WriteBarrier(resultHandle, v.AsObjectHandle());
@@ -11205,6 +11293,39 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
 
             var obj = _heap.GetObject(target.AsObjectHandle());
+
+            if (obj is ProxyObject freezeProxy)
+            {
+                // For Proxy, use Proxy ownKeys/getOwnPropertyDescriptor/defineProperty traps.
+                // Per spec 7.3.15 SetIntegrityLevel, the descriptor passed to defineProperty
+                // only carries the attributes being changed (configurable + writable for data).
+                var allKeys = ProxyOwnKeys(freezeProxy);
+                foreach (var k in allKeys)
+                {
+                    if (k.Tag == JsValueTag.Symbol)
+                    {
+                        continue;
+                    }
+                    var key = ToPropertyKey(k);
+                    if (!ProxyGetOwnProperty(freezeProxy, key, out var currentDesc))
+                        continue;
+                    // spec: IsAccessorDescriptor ? { [[Configurable]]: false }
+                    //                   : { [[Configurable]]: false, [[Writable]]: false }
+                    var freezeDescObj = CreateOrdinaryObject();
+                    freezeDescObj.SetProperty("configurable", JsValue.FromBoolean(false));
+                    if (!currentDesc.IsAccessor)
+                        freezeDescObj.SetProperty("writable", JsValue.FromBoolean(false));
+                    var freezeDescHandle = _heap.AllocateObject(freezeDescObj, AllocationSite.Current());
+                    var ok = ProxyDefineProperty(freezeProxy, key, JsValue.FromObject(freezeDescHandle));
+                    if (!ok)
+                        throw new JsThrownException(CreateTypeError("Object.freeze: defineProperty trap returned false."));
+                }
+                var preventOk = ProxyPreventExtensions(freezeProxy);
+                if (!preventOk)
+                    throw new JsThrownException(CreateTypeError("Object.freeze: SetIntegrityLevel returned false."));
+                return target;
+            }
+
             var keys = new List<string>();
             foreach (var pair in obj.EnumerateOwnProperties())
             {
@@ -11229,12 +11350,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
             // ECMA-262 20.1.2.6 step 6.c: Let status be ! SetIntegrityLevel(O, frozen).
             // SetIntegrityLevel calls [[PreventExtensions]]; if it returns false, throw.
-            bool preventOk;
-            if (obj is ProxyObject freezeProxy)
-                preventOk = ProxyPreventExtensions(freezeProxy);
-            else { obj.PreventExtensions(); preventOk = true; }
-            if (!preventOk)
-                throw new JsThrownException(CreateTypeError("Object.freeze: SetIntegrityLevel returned false."));
+            obj.PreventExtensions();
             return target;
         }, length: 1);
 
@@ -11292,6 +11408,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
 
             var obj = _heap.GetObject(target.AsObjectHandle());
+
+            if (obj is ProxyObject sealProxy)
+            {
+                // For Proxy, use Proxy ownKeys/getOwnPropertyDescriptor/defineProperty traps.
+                var allKeys = ProxyOwnKeys(sealProxy);
+                foreach (var k in allKeys)
+                {
+                    if (k.Tag == JsValueTag.Symbol)
+                    {
+                        continue;
+                    }
+                    var key = ToPropertyKey(k);
+                    if (!ProxyGetOwnProperty(sealProxy, key, out var currentDesc))
+                        continue;
+                    var sealDescObj = CreateOrdinaryObject();
+                    sealDescObj.SetProperty("configurable", JsValue.FromBoolean(false));
+                    var sealDescHandle = _heap.AllocateObject(sealDescObj, AllocationSite.Current());
+                    var ok = ProxyDefineProperty(sealProxy, key, JsValue.FromObject(sealDescHandle));
+                    if (!ok)
+                        throw new JsThrownException(CreateTypeError("Object.seal: defineProperty trap returned false."));
+                }
+                var preventOk = ProxyPreventExtensions(sealProxy);
+                if (!preventOk)
+                    throw new JsThrownException(CreateTypeError("Object.seal: SetIntegrityLevel returned false."));
+                return target;
+            }
+
             var keys = new List<string>();
             foreach (var pair in obj.EnumerateOwnProperties())
             {
@@ -11315,12 +11458,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             FreezeOrSealSymbolProperties(obj, freezeWritable: false);
 
             // ECMA-262 20.1.2.14 step 6.c: Let status be ? SetIntegrityLevel(O, sealed).
-            bool sealOk;
-            if (obj is ProxyObject sealProxy)
-                sealOk = ProxyPreventExtensions(sealProxy);
-            else { obj.PreventExtensions(); sealOk = true; }
-            if (!sealOk)
-                throw new JsThrownException(CreateTypeError("Object.seal: SetIntegrityLevel returned false."));
+            obj.PreventExtensions();
             return target;
         }, length: 1);
 
@@ -12865,6 +13003,23 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return args[0];
         }
 
+        // ECMA-262 10.4.2.1 step 4.e: defining an array-index element at or past the
+        // current length fails when length is not writable (the element would extend
+        // length, which a non-writable length forbids).
+        if (!isSymbolKey && !hasExisting && target is ArrayObject && target is not ProxyObject
+            && IsCanonicalIntegerIndex(key, out var arrayIdxPreCheck))
+        {
+            if (target.TryGetOwnProperty("length", out var lenCheckDesc) && !lenCheckDesc.Writable)
+            {
+                var oldLen = ToUint32(lenCheckDesc.Value.AsNumber());
+                if ((uint)arrayIdxPreCheck >= oldLen)
+                {
+                    throw new JsThrownException(CreateTypeError(
+                        "Cannot define property '" + key + "': Array length is non-writable."));
+                }
+            }
+        }
+
         if (target is ProxyObject proxyDefineProperty)
         {
             if (isSymbolKey)
@@ -13176,6 +13331,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         if (obj.PrototypeHandle is { } prototypeHandle)
         {
             return HasPropertyIncludingProxy(_heap.GetObject(prototypeHandle), key);
+        }
+
+        return false;
+    }
+
+    [MayExecuteJs]
+    private bool HasSymbolProperty(JsObject obj, long symbolId)
+    {
+        if (obj.TryGetOwnSymbolProperty(symbolId, out _))
+        {
+            return true;
+        }
+
+        if (obj.PrototypeHandle is { } prototypeHandle)
+        {
+            return HasSymbolProperty(_heap.GetObject(prototypeHandle), symbolId);
         }
 
         return false;
@@ -13797,8 +13968,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             // Step 4: if thisValue is a constructor, use Construct(C, «len»).
             // ConstructFunction throws TypeError for non-constructable values,
             // matching the spec's IsConstructor/Construct semantics.
-            if (thisValue.Tag == JsValueTag.Object &&
-                _heap.GetObject(thisValue.AsObjectHandle()) is JsFunctionObject or NativeFunctionObject)
+            if (thisValue.Tag == JsValueTag.Object && IsConstructableTarget(thisValue.AsObjectHandle()))
             {
                 result = ConstructFunction(
                     thisValue,
@@ -13810,8 +13980,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
             else
             {
-                // Step 5: ArrayCreate(len) — ordinary array with Array.prototype.
-                a = new JsObject();
+                // Step 5: ArrayCreate(len) — exotic Array with Array.prototype.
+                a = new ArrayObject();
                 a.SetPrototype(EnsureArrayPrototype());
                 a.DefineOwnProperty("length", new JsPropertyDescriptor(
                     JsValue.FromNumber(len), Writable: true, Enumerable: false, Configurable: false));
@@ -13835,7 +14005,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // funnel through the iterator path so surrogate pairs surface as single
         // code-point entries. The map function (when present) is called with
         // (element, index) per spec step 5.g.
-        DefineIntrinsicFunction(constructorHandle, constructor, "from", (_, args) =>
+        DefineIntrinsicFunction(constructorHandle, constructor, "from", (thisValue, args) =>
         {
             if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined || args[0].Tag == JsValueTag.Null)
             {
@@ -13847,10 +14017,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var mapFn = args.Count > 1 && args[1].Tag != JsValueTag.Undefined ? args[1] : (JsValue?)null;
             var thisArg = args.Count > 2 ? args[2] : JsValue.Undefined;
 
-            if (mapFn.HasValue && mapFn.Value.Tag != JsValueTag.Object)
+            if (mapFn.HasValue && !IsCallable(mapFn.Value))
             {
                 throw new JsThrownException(CreateTypeError(
-                    "Array.from: map function must be a function."));
+                    "Array.from: map function must be callable."));
             }
 
             var items = new List<JsValue>();
@@ -13992,8 +14162,28 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
             }
 
-            var arr = CreateArrayFromElements(items);
-            return JsValue.FromObject(_heap.AllocateObject(arr, AllocationSite.Current()));
+            // ECMA-262 23.1.2.1 step 6: If IsConstructor(C) is true, let A = ? Construct(C).
+            // Otherwise let A = ? ArrayCreate(0). Then step 7: create data properties and set length.
+            JsValue resultValue;
+            JsObject a;
+            if (thisValue.Tag == JsValueTag.Object && IsConstructableTarget(thisValue.AsObjectHandle()))
+            {
+                resultValue = ConstructFunction(thisValue, Array.Empty<JsValue>(), thisValue);
+                if (resultValue.Tag != JsValueTag.Object)
+                    throw new JsThrownException(CreateTypeError("Array.from: constructor did not return an object."));
+                a = _heap.GetObject(resultValue.AsObjectHandle());
+                for (var k = 0; k < items.Count; k++)
+                {
+                    CreateDataPropertyOrThrow(a, k.ToString(System.Globalization.CultureInfo.InvariantCulture), items[k]);
+                }
+                _ = a.SetProperty("length", JsValue.FromNumber(items.Count));
+            }
+            else
+            {
+                a = CreateArrayFromElements(items);
+                resultValue = JsValue.FromObject(_heap.AllocateObject(a, AllocationSite.Current()));
+            }
+            return resultValue;
         }, length: 1);
 
         // ECMA-262 2024 Array.fromAsync(items[, mapFn[, thisArg]]). Returns a Promise
@@ -14120,7 +14310,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         for (var i = 0; i < elements.Count; i++)
         {
-            _ = obj.SetProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture), elements[i]);
+            // ECMA-262 7.3.17 CreateDataProperty: [[DefineOwnProperty]] with
+            // { Writable, Enumerable, Configurable } = true so setters on
+            // Array.prototype are never invoked (CreateArrayFromList spec).
+            _ = obj.DefineOwnProperty(i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                new JsPropertyDescriptor(elements[i], Writable: true, Enumerable: true, Configurable: true));
         }
 
         _ = obj.SetProperty("length", JsValue.FromNumber(elements.Count));

@@ -5859,9 +5859,10 @@ public sealed class JsParser
                 if (!IsSyntheticPatternBinding(p) && bodyLexicalNames.Contains(p))
                     throw new JsParserException($"Parameter '{p}' conflicts with a lexical declaration in the arrow body.");
             }
-            // ECMA-262: SuperCall and SuperProperty are not allowed in arrow functions.
-            if (ContainsSuperCallInStatements(block.Statements))
-                throw new JsParserException("super() calls and super.property access are not allowed in this context.");
+            // ES2016 removed the early-error restriction on super references in
+            // arrow functions. Arrow functions inherit the enclosing scope's
+            // super binding, so super.x / super() inside an arrow function
+            // inside a method/constructor is valid.
             return new ArrowFunctionExpressionNode(parameters, block, null, MergeSpan(start, block.Span), IsAsync: isAsync, HasSimpleParameterList: hasSimpleParameterList, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings, ParameterDefaults: parameterDefaults);
         }
 
@@ -5869,9 +5870,6 @@ public sealed class JsParser
             allowYieldExpression: false,
             allowAwaitExpression: isAsync,
             () => ParseExpression(2));
-        // ECMA-262: SuperCall and SuperProperty are not allowed in arrow functions.
-        if (ContainsSuperCallInExpression(bodyExpression))
-            throw new JsParserException("super() calls and super.property access are not allowed in this context.");
         return new ArrowFunctionExpressionNode(parameters, null, bodyExpression, MergeSpan(start, bodyExpression.Span), IsAsync: isAsync, HasSimpleParameterList: hasSimpleParameterList, RestParameterIndex: restParameterIndex, ParameterBindings: parameterBindings, ParameterDefaults: parameterDefaults);
         }
         finally
