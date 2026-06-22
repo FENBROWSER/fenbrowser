@@ -28,6 +28,22 @@ public interface IBuiltinContext
     // Property access via [[Get]].
     bool TryGetPropertyValue(JsObject obj, JsValue receiver, string name, out JsValue value);
 
+    // ECMA-262 7.3.12 HasProperty(O, P): returns true if O has a property P (own or
+    // inherited). Proxy `has` trap is invoked when O is a Proxy.
+    bool HasProperty(JsObject obj, string name);
+
+    // ECMA-262 7.4.1 GetIterator ( obj ): returns an iterator for the given iterable.
+    // Throws TypeError if obj is not iterable.
+    JsValue GetIterator(JsValue iterable);
+
+    // ECMA-262 7.4.5 IteratorStepValue ( iteratorRecord ): advances the iterator
+    // and returns the next value. Returns false in `done` when exhausted.
+    bool IteratorStepValue(JsValue iterator, out JsValue value);
+
+    // ECMA-262 7.4.11 IteratorClose ( iteratorRecord, completion ): calls the
+    // iterator's "return" method (if present). Used for early termination.
+    void IteratorClose(JsValue iterator);
+
     // ECMA-262 10.4.2.2 length of an Array exotic object.
     int GetArrayLength(JsObject obj);
 

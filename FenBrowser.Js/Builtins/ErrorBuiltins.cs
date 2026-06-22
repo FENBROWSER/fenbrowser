@@ -167,12 +167,11 @@ public sealed class ErrorBuiltins : IBuiltinModule
                     // Step 5: existing own property — [[Set]] semantics.
                     if (ownDesc.IsAccessor)
                     {
-                        // Own accessor: invoke the setter. Safe because step 2
-                        // guarantees this is not %Error.prototype% itself, so the
-                        // setter cannot be the same stack-setter (unless the user
-                        // explicitly installed it, which would be perverse).
                         if (ownDesc.Set.Tag == JsValueTag.Object)
                             ctx.CallFunction(ownDesc.Set, new[] { v }, thisValue);
+                        else
+                            throw new JsThrownException(ctx.CreateTypeError(
+                                "Cannot assign to 'stack' property of object which has only a getter."));
                     }
                     else if (!ownDesc.Writable)
                     {
@@ -279,11 +278,13 @@ public sealed class ErrorBuiltins : IBuiltinModule
         {
             var errObj = ctx.Heap.GetObject(err.AsObjectHandle());
             var optionsObj = ctx.Heap.GetObject(args[1].AsObjectHandle());
-            // ECMA-262 20.5.8.1 InstallErrorCause: if HasProperty(options, "cause"),
-            // install cause even if the value is undefined. Use TryGetPropertyValue
-            // for both HasProperty + Get in one call.
-            if (ctx.TryGetPropertyValue(optionsObj, args[1], "cause", out var causeValue))
+            // ECMA-262 20.5.8.1 InstallErrorCause:
+            // Step 1: ? HasProperty(options, "cause") — must invoke Proxy `has` trap.
+            if (ctx.HasProperty(optionsObj, "cause"))
             {
+                // Step 2: ? Get(options, "cause") — must invoke Proxy `get` trap.
+                ctx.TryGetPropertyValue(optionsObj, args[1], "cause", out var causeValue);
+                // Step 3: CreateNonEnumerableDataPropertyOrThrow(O, "cause", cause)
                 _ = errObj.DefineOwnProperty("cause",
                     new Objects.JsPropertyDescriptor(causeValue, Writable: true, Enumerable: false, Configurable: true));
             }

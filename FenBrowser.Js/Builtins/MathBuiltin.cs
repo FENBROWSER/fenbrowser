@@ -1,4 +1,5 @@
 using FenBrowser.Js.Heap;
+using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
 
@@ -155,6 +156,9 @@ public sealed class MathBuiltin : IBuiltinModule
     {
         var x = args.Count > 0 ? context.ToNumber(args[0]) : double.NaN;
         var y = args.Count > 1 ? context.ToNumber(args[1]) : double.NaN;
+        // ECMA-262 Number::exponentiate: if exponent is NaN, result is NaN.
+        if (double.IsNaN(y))
+            return JsValue.FromNumber(double.NaN);
         // ECMA-262 Number::exponentiate: a base of magnitude exactly 1 with an
         // infinite exponent is NaN (C's pow, which .NET follows, returns 1).
         if (double.IsInfinity(y) && Math.Abs(x) == 1d)
@@ -174,13 +178,17 @@ public sealed class MathBuiltin : IBuiltinModule
         }
 
         // ECMA-262 21.3.2.28: if -0.5 ≤ x < 0, return -0.
-        // (x == -0.5 rounds to -0, not 0, per the spec tie-break)
         if (value >= -0.5d && value < 0d)
         {
             return JsValue.FromNumber(-0d);
         }
 
-        return JsValue.FromNumber(Math.Floor(value + 0.5d));
+        // For values where |x| < 2^52, Math.Floor(x + 0.5) is exact and matches
+        // the spec. For larger values, Math.Round with ToPositiveInfinity avoids
+        // the precision loss of adding 0.5 to a large integer.
+        if (Math.Abs(value) < 4503599627370496d) // 2^52
+            return JsValue.FromNumber(Math.Floor(value + 0.5d));
+        return JsValue.FromNumber(Math.Round(value, MidpointRounding.ToPositiveInfinity));
     }
 
     private static JsValue MathMax(IBuiltinContext context, IReadOnlyList<JsValue> args)
@@ -305,12 +313,87 @@ public sealed class MathBuiltin : IBuiltinModule
         return unchecked((int)((uint)MathHelpers.ToInt32(x) * (uint)MathHelpers.ToInt32(y)));
     }
 
-    // ES2025 Math.sumPrecise ( iterable ): simple sum stub.
+    // ES2025 Math.sumPrecise ( iterable ): maximal-precision summation.
     private static JsValue MathSumPrecise(IBuiltinContext context, IReadOnlyList<JsValue> args)
     {
-        // Stub: return NaN for non-empty calls to signal the function exists.
-        if (args.Count > 0 && args[0].Tag != JsValueTag.Undefined && args[0].Tag != JsValueTag.Null)
-            return JsValue.FromNumber(double.NaN);
-        return JsValue.FromNumber(0);
+        if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined || args[0].Tag == JsValueTag.Null)
+            throw new JsThrownException(context.CreateTypeError("Math.sumPrecise: argument is not iterable"));
+
+        var iterable = args[0];
+        if (iterable.Tag != JsValueTag.Object)
+            throw new JsThrownException(context.CreateTypeError("Math.sumPrecise: argument is not iterable"));
+
+        // GetIterator flattenable
+        var iterator = context.GetIterator(iterable);
+
+        try
+        {
+            // State machine: minus-zero(0), finite(1), nan(2), plus-infinity(3), minus-infinity(4)
+            const int StMinusZero = 0;
+            const int StFinite = 1;
+            const int StNaN = 2;
+            const int StPlusInf = 3;
+            const int StMinusInf = 4;
+
+            int state = StMinusZero;
+            int count = 0;
+            var finiteValues = new List<double>();
+
+            while (context.IteratorStepValue(iterator, out var next))
+            {
+                // Must be a Number (not Boolean, String, BigInt, Object, etc.)
+                if (next.Tag != JsValueTag.Number && next.Tag != JsValueTag.Int32)
+                    throw new JsThrownException(context.CreateTypeError("Math.sumPrecise: value is not a Number"));
+
+                var n = next.Tag == JsValueTag.Int32 ? (double)next.AsInt32() : next.AsNumber();
+                if (double.IsNaN(n))
+                {
+                    state = StNaN;
+                    continue;
+                }
+                if (double.IsPositiveInfinity(n))
+                {
+                    if (state == StMinusInf) state = StNaN;
+                    else state = StPlusInf;
+                    continue;
+                }
+                if (double.IsNegativeInfinity(n))
+                {
+                    if (state == StPlusInf) state = StNaN;
+                    else state = StMinusInf;
+                    continue;
+                }
+                // Finite value
+                if (state != StFinite) state = StFinite;
+                count++;
+                finiteValues.Add(n);
+            }
+
+            if (state == StMinusZero) return JsValue.FromNumber(-0d);
+            if (state == StNaN) return JsValue.FromNumber(double.NaN);
+            if (state == StPlusInf) return JsValue.FromNumber(double.PositiveInfinity);
+            if (state == StMinusInf) return JsValue.FromNumber(double.NegativeInfinity);
+
+            // Sum finite values using Neumaier compensated summation
+            // Sort ascending to reduce cancellation errors
+            finiteValues.Sort();
+            double sum = 0;
+            double c = 0;
+            foreach (var x in finiteValues)
+            {
+                double t = sum + x;
+                if (Math.Abs(sum) >= Math.Abs(x))
+                    c += (sum - t) + x;
+                else
+                    c += (x - t) + sum;
+                sum = t;
+            }
+            return JsValue.FromNumber(sum + c);
+        }
+        catch
+        {
+            context.IteratorClose(iterator);
+            throw;
+        }
     }
 }
