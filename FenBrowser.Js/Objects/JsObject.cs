@@ -98,14 +98,62 @@ public class JsObject : ITraceable
     // ECMA-262 9.1.6 [[DefineOwnProperty]].
     public virtual bool DefineOwnProperty(string key, JsPropertyDescriptor descriptor)
     {
-        if (_shape.TryGetSlot(key, out var existingSlot))
+        if (_shape.TryGetSlot(key, out var existingSlot) && _properties[existingSlot] is { } current)
         {
-            // Re-adding a previously deleted property is a new creation: give it a
-            // fresh sequence so it enumerates last (10.1.11.1). Redefining a live
-            // property preserves its existing creation order.
-            if (_properties[existingSlot] is null)
-                _insertionSeq[existingSlot] = _nextSeq++;
+            // ECMA-262 10.1.11.2 ValidateAndApplyPropertyDescriptor
+            // Step 4: current.[[Configurable]] is false
+            if (!current.Configurable)
+            {
+                // 4.a: Desc.[[Configurable]] is true → return false
+                if (descriptor.Configurable)
+                    return false;
+                // 4.b: Desc.[[Enumerable]] differs → return false
+                if (descriptor.Enumerable != current.Enumerable)
+                    return false;
+            }
+
+            // Step 6: data ↔ accessor type change when non-configurable
+            if (!current.Configurable && current.IsAccessor != descriptor.IsAccessor)
+                return false;
+
+            // Step 7: both data descriptors
+            if (!current.IsAccessor && !descriptor.IsAccessor)
+            {
+                // 7.a: current non-configurable and non-writable
+                if (!current.Configurable && !current.Writable)
+                {
+                    // 7.a.i: Desc.[[Writable]] is true → return false
+                    if (descriptor.Writable)
+                        return false;
+                    // 7.a.ii: Desc.[[Value]] differs → return false
+                    if (!JsValueSameValue(descriptor.Value, current.Value))
+                        return false;
+                }
+            }
+            // Step 8: both accessor descriptors, non-configurable
+            else if (!current.Configurable && current.IsAccessor && descriptor.IsAccessor)
+            {
+                if (!JsValueSameValue(descriptor.Get, current.Get) ||
+                    !JsValueSameValue(descriptor.Set, current.Set))
+                    return false;
+            }
+
+            // Step 9: apply the descriptor
             _properties[existingSlot] = descriptor;
+            BarrierIfObject(descriptor.Value);
+            if (descriptor.IsAccessor)
+            {
+                BarrierIfObject(descriptor.Get);
+                BarrierIfObject(descriptor.Set);
+            }
+            return true;
+        }
+
+        // Re-adding a previously deleted property (slot exists but value is null)
+        if (_shape.TryGetSlot(key, out var deletedSlot))
+        {
+            _insertionSeq[deletedSlot] = _nextSeq++;
+            _properties[deletedSlot] = descriptor;
             BarrierIfObject(descriptor.Value);
             if (descriptor.IsAccessor)
             {
@@ -359,6 +407,35 @@ public class JsObject : ITraceable
             foreach (var pair in _symbolProperties)
                 TraceDescriptor(tracer, pair.Value);
         }
+    }
+
+    private static bool JsValueSameValue(JsValue left, JsValue right)
+    {
+        if ((left.Tag == JsValueTag.Int32 || left.Tag == JsValueTag.Number) &&
+            (right.Tag == JsValueTag.Int32 || right.Tag == JsValueTag.Number))
+        {
+            var a = left.AsNumber();
+            var b = right.AsNumber();
+            if (double.IsNaN(a) && double.IsNaN(b))
+                return true;
+            if (a == 0d && b == 0d)
+                return BitConverter.DoubleToInt64Bits(a) == BitConverter.DoubleToInt64Bits(b);
+            return a == b;
+        }
+        if (left.Tag != right.Tag)
+            return false;
+        return left.Tag switch
+        {
+            JsValueTag.Undefined => true,
+            JsValueTag.Null => true,
+            JsValueTag.Boolean => left.AsBoolean() == right.AsBoolean(),
+            JsValueTag.Int32 => left.AsInt32() == right.AsInt32(),
+            JsValueTag.BigInt => left.AsBigInt() == right.AsBigInt(),
+            JsValueTag.String => string.Equals(left.AsString(), right.AsString(), System.StringComparison.Ordinal),
+            JsValueTag.Symbol => left.AsSymbolId() == right.AsSymbolId(),
+            JsValueTag.Object => left.AsObjectHandle().Equals(right.AsObjectHandle()),
+            _ => false
+        };
     }
 
     private static void TraceDescriptor(IHeapTracer tracer, JsPropertyDescriptor d)

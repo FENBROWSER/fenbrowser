@@ -1104,6 +1104,13 @@ public sealed class BytecodeCompiler
         // an intentional self-reference.
         _instructions.Add(new Instruction(OpCode.SetHomeObject, classReg, classReg, 0));
 
+        // ECMA-262 15.7.14 step 16: proto.constructor uses CreateMethodProperty
+        // -> { writable: true, enumerable: false, configurable: true }.
+        // Installed BEFORE the non-constructor methods so that a computed
+        // `['constructor']()` method in the class body will overwrite it.
+        var ctorNameIdx = GetOrCreatePropertyName("constructor");
+        _instructions.Add(new Instruction(OpCode.DefineMethod, protoReg, ctorNameIdx, classReg));
+
         // For each non-constructor member, compile its function and install it
         // on either the prototype (instance methods) or the constructor (static).
         // Getter/setter members get accessor descriptors; method members get
@@ -1164,12 +1171,6 @@ public sealed class BytecodeCompiler
             }
         }
 
-        // ECMA-262 15.7.14 step 16: proto.constructor uses CreateMethodProperty
-        // -> { writable: true, enumerable: false, configurable: true }. classCtor.prototype
-        // is set non-enumerably here too (MakeConstructor will already have created
-        // the slot during function creation; this overwrites with the class's proto).
-        var ctorNameIdx = GetOrCreatePropertyName("constructor");
-        _instructions.Add(new Instruction(OpCode.DefineMethod, protoReg, ctorNameIdx, classReg));
         // `prototype` is already the constructor's own (non-writable) slot — no
         // reassignment needed; methods above mutated the prototype object in place.
 
@@ -3716,13 +3717,6 @@ public sealed class BytecodeCompiler
                         }
 
                         var keyReg = CompileExpression(prop.ComputedKey);
-                        // ECMA-262 10.2.9 SetFunctionName: for anonymous function
-                        // definitions with computed keys (e.g. `{ [sym]: function(){} }`),
-                        // stamp the `name` property from the computed key value.
-                        if (prop.Kind == ObjectPropertyKind.Data && IsAnonymousFunctionDefinition(prop.Value))
-                        {
-                            _instructions.Add(new Instruction(OpCode.SetFunctionName, valueReg, keyReg, 0));
-                        }
                         // Audit §1: object-literal accessors with computed keys
                         // emit DefineGetter/SetterByReg so the result installs
                         // as a real accessor descriptor, not a data property.
@@ -3732,9 +3726,18 @@ public sealed class BytecodeCompiler
                             ObjectPropertyKind.Setter => OpCode.DefineSetterByReg,
                             _ => OpCode.SetElemDefine,
                         };
-                        // D=1 marks an object-literal accessor as enumerable (class
-                        // accessors leave D=0 and stay non-enumerable).
+                        // D=1 for accessors signals enumerable. D=1 for
+                        // SetElemDefine signals SetFunctionName (anonymous
+                        // computed methods get `name` stamped from the key,
+                        // without a separate instruction that would double-call
+                        // ToPropertyKey).
                         var computedEnum = prop.Kind is ObjectPropertyKind.Getter or ObjectPropertyKind.Setter ? 1 : 0;
+                        if (computedOp == OpCode.SetElemDefine
+                            && prop.Kind == ObjectPropertyKind.Data
+                            && IsAnonymousFunctionDefinition(prop.Value))
+                        {
+                            computedEnum = 1;
+                        }
                         _instructions.Add(new Instruction(computedOp, dest, keyReg, valueReg, computedEnum));
                     }
                     else

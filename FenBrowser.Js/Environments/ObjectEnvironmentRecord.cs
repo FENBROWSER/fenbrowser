@@ -32,13 +32,21 @@ public sealed class ObjectEnvironmentRecord : EnvironmentRecord
     {
         ArgumentNullException.ThrowIfNull(name);
 
-        // 9.1.1.2.1 step 2-3: if the binding object lacks the property the result is
-        // false regardless of the with-flag. The @@unscopables filter applies only when
-        // the property *is* present on a with-environment - it is not yet wired here
-        // (Symbol/well-known symbols not implemented). When @@unscopables support
-        // lands, hook it in around this branch.
-        return _bindingObject.HasProperty(name);
+        if (!_bindingObject.HasProperty(name))
+            return false;
+
+        // 9.1.1.2.1 step 4-6: when this is a with-environment and the binding object
+        // carries @@unscopables that lists the property name with a truthy value,
+        // the binding is considered absent for identifier resolution.
+        if (_isWithEnvironment && IsUnscopable is { } check && check(name))
+            return false;
+
+        return true;
     }
+
+    // Set by the interpreter when creating a with-environment so HasBinding can
+    // consult the binding object's @@unscopables property.
+    internal Func<string, bool>? IsUnscopable { get; set; }
 
     public override BindingOpResult CreateMutableBinding(string name, bool deletable)
     {

@@ -244,12 +244,12 @@ public sealed class JsParser
                 return true;
             }
 
-            if (escaped == '0' &&
-                escapeIndex + 1 < rawText.Length - 1 &&
-                rawText[escapeIndex + 1] is >= '0' and <= '9')
-            {
-                return true;
-            }
+        if (escaped == '0' &&
+            escapeIndex + 1 < rawText.Length - 1 &&
+            rawText[escapeIndex + 1] is >= '0' and <= '9')
+        {
+            return true;
+        }
 
             i = escapeIndex;
         }
@@ -1334,7 +1334,7 @@ public sealed class JsParser
                 case "switch":
                     return ParseSwitchStatement();
                 case "async":
-                    if (PeekKeyword(1, "function"))
+                    if (PeekKeyword(1, "function") && !HasLineTerminatorBetweenCurrentAnd(1))
                     {
                         if (ctx != StatementBodyContext.StatementListItem)
                         {
@@ -1947,6 +1947,7 @@ public sealed class JsParser
     {
         var start = Advance(); // do
         var bodyStmt = ParseStatement(StatementBodyContext.IterationOrWith);
+        ValidateIterationBodyNotLabelledFunction(bodyStmt);
         var body = bodyStmt is BlockStatementNode block ? block
             : new BlockStatementNode(new[] { bodyStmt }, bodyStmt.Span);
         if (!(Current().Kind == TokenKind.Keyword && Current().Text == "while"))
@@ -1970,6 +1971,7 @@ public sealed class JsParser
         var test = ParseExpression(0);
         ExpectPunctuator(")");
         var body = ParseStatement(StatementBodyContext.IterationOrWith);
+        ValidateIterationBodyNotLabelledFunction(body);
         return new WhileStatementNode(test, body, MergeSpan(start.Span, body.Span));
     }
 
@@ -2079,8 +2081,11 @@ public sealed class JsParser
 
             ValidateForOfDeclarationNoInitializer(initializer);
             ValidateForHeadDestructuringTarget(initializer);
-            // ECMA-262 14.7.5.1: LHS cannot be 'async' when followed by 'of'.
-            if (initializer is ExpressionStatementNode { Expression: IdentifierExpressionNode { Name: "async" } })
+            // ECMA-262 14.7.5.1: LHS cannot be 'async' when followed by 'of'
+            // in a plain for-of. In for-await-of, `async` is unambiguous
+            // because the `await` keyword already precedes `of`.
+            if (!isForAwait &&
+                initializer is ExpressionStatementNode { Expression: IdentifierExpressionNode { Name: "async" } })
                 throw new JsParserException("'async' is not a valid left-hand side for for-of.");
             // ECMA-262 13.15.1: expression LHS of for-of must be a valid target.
             if (initializer is ExpressionStatementNode exprStmt &&
@@ -2253,6 +2258,14 @@ public sealed class JsParser
     {
         if (initializer is VariableDeclarationStatementNode declaration)
         {
+            // ECMA-262 14.7.5: ForDeclaration = LetOrConst ForBinding.
+            // ForBinding is a single BindingIdentifier or BindingPattern —
+            // multiple declarators (comma-separated) are not allowed.
+            if (declaration.Kind is "let" or "const" && declaration.Declarators.Count > 1)
+            {
+                throw new JsParserException("Multiple lexical bindings are not allowed in for-in/of.");
+            }
+
             var allowAnnexBVarInitializer =
                 !_strictMode &&
                 string.Equals(declaration.Kind, "var", StringComparison.Ordinal);
@@ -3446,7 +3459,7 @@ public sealed class JsParser
             {
                 throw new JsParserException("Private name '#constructor' is not allowed.");
             }
-            if (kind == ClassMemberKind.Method && memberName == "constructor" && !isStatic)
+            if (kind == ClassMemberKind.Method && memberName == "constructor" && !isStatic && computedName == null)
             {
                 kind = ClassMemberKind.Constructor;
             }
@@ -3465,7 +3478,7 @@ public sealed class JsParser
                 // Static field name cannot be "prototype".
                 if (string.Equals(memberName, "constructor", StringComparison.Ordinal))
                     throw new JsParserException("Class field name 'constructor' is not allowed.");
-                if (isStatic && string.Equals(memberName, "prototype", StringComparison.Ordinal))
+                if (isStatic && string.Equals(memberName, "prototype", StringComparison.Ordinal) && computedName == null)
                     throw new JsParserException("Static class field name 'prototype' is not allowed.");
 
                 if (IsPunctuator(";"))
@@ -3605,6 +3618,8 @@ public sealed class JsParser
                 case '`': sb.Append('`'); break;
                 case '\n':
                 case '\r':
+                case '\u2028':
+                case '\u2029':
                     // Line continuation: skip the line terminator. If \r\n, eat both.
                     if (next == '\r' && i + 1 < body.Length && body[i + 1] == '\n') i++;
                     break;
@@ -4172,7 +4187,10 @@ public sealed class JsParser
             if (IsPunctuator("?") && minBindingPower <= 4)
             {
                 Advance();
-                var consequent = ParseExpression(0);
+                // ECMA-262 13.14: the first AssignmentExpression in a
+                // ConditionalExpression uses [+In] — `in` is always an
+                // operator in the consequent, never a for-in marker.
+                var consequent = ParseExpressionAllowIn(0);
                 ExpectPunctuator(":");
                 var alternate = ParseExpression(2);
                 left = new ConditionalExpressionNode(left, consequent, alternate, MergeSpan(left.Span, alternate.Span));
@@ -4469,7 +4487,7 @@ public sealed class JsParser
             return ParseFunctionExpression();
         }
 
-        if (token.Kind == TokenKind.Keyword && token.Text == "async" && PeekKeyword(1, "function"))
+        if (token.Kind == TokenKind.Keyword && token.Text == "async" && PeekKeyword(1, "function") && !HasLineTerminatorBetweenCurrentAnd(1))
         {
             return ParseFunctionExpression();
         }
@@ -4778,6 +4796,15 @@ public sealed class JsParser
             return false;
         }
 
+        if (text.Length > 1 && text[0] == '0' && IsLegacyOctalDigits(text.Substring(1)))
+        {
+            if (TryParseRadix(text.Substring(1), 8, out var legacyOct))
+            {
+                value = legacyOct;
+                return true;
+            }
+        }
+
         if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
         {
             return true;
@@ -4815,6 +4842,18 @@ public sealed class JsParser
         }
 
         return normalized[1] is >= '0' and <= '9';
+    }
+
+    private static bool IsLegacyOctalDigits(string digits)
+    {
+        foreach (var ch in digits)
+        {
+            if (ch == '_')
+                continue;
+            if (ch < '0' || ch > '7')
+                return false;
+        }
+        return true;
     }
 
     private static bool TryParseRadix(string text, int radix, out double value)
@@ -4925,6 +4964,12 @@ public sealed class JsParser
             if (property.Text != "target")
             {
                 throw new JsParserException("Only 'new.target' is a valid meta property.");
+            }
+            // ECMA-262: terminal symbols must appear as written — no Unicode
+            // escape sequences. `new.t\\u0061rget` is a SyntaxError.
+            if (property.ContainsEscape)
+            {
+                throw new JsParserException("The 'target' keyword in 'new.target' must not contain Unicode escape sequences.");
             }
             return new NewTargetExpressionNode(MergeSpan(start.Span, property.Span));
         }

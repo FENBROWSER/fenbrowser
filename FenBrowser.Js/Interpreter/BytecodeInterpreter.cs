@@ -1124,6 +1124,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     if (keyValue.Tag == JsValueTag.Symbol)
                     {
                         obj.DefineOwnSymbolProperty(keyValue.AsSymbolId(), new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
+                        if (ins.D != 0)
+                        {
+                            ApplyFunctionName(val, keyValue, prefix: null);
+                        }
                     }
                     else
                     {
@@ -1138,6 +1142,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         else
                         {
                             obj.DefineOwnProperty(key, new JsPropertyDescriptor(val, Writable: true, Enumerable: true, Configurable: true));
+                        }
+                        // D=1 signals SetFunctionName for anonymous computed methods.
+                        // The key string is pre-computed above to avoid double ToPropertyKey.
+                        if (ins.D != 0)
+                        {
+                            ApplyFunctionName(val, JsValue.FromString(key), prefix: null);
                         }
                     }
                     break;
@@ -1530,7 +1540,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         var bindingValue = ToObjectValue(frame.Registers[ins.A]);
                         var bindingHandle = bindingValue.AsObjectHandle();
                         var adapter = CreateBindingAdapter(bindingHandle);
-                        frame.Environment = new ObjectEnvironmentRecord(adapter, isWithEnvironment: true, frame.Environment);
+                        var withEnv = new ObjectEnvironmentRecord(adapter, isWithEnvironment: true, frame.Environment);
+                        var unscopablesSymId = GetWellKnownSymbolId("unscopables");
+                        if (unscopablesSymId != 0)
+                            withEnv.IsUnscopable = name => IsBlockedByUnscopables(bindingHandle, unscopablesSymId, name);
+                        frame.Environment = withEnv;
                     }
                     catch (JsThrownException ex)
                     {
@@ -11913,13 +11927,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _ => EnsureFunctionPrototype()
         };
         fnObj.SetPrototype(functionPrototype);
-        _ = fnObj.DefineOwnProperty(
-            "name",
-            new JsPropertyDescriptor(
-                JsValue.FromString(function.Name ?? string.Empty),
-                Writable: false,
-                Enumerable: false,
-                Configurable: true));
+        // ECMA-262 10.2.1 FunctionCreate step 28: "length" is set inside
+        // FunctionCreate. SetFunctionName (which sets "name") happens after
+        // FunctionCreate returns, and MakeConstructor (which sets "prototype")
+        // happens after that. Install them in chronological spec order so that
+        // OrdinaryOwnPropertyKeys enumerates string keys correctly.
         var functionLength = function.ExpectedArgumentCount >= 0
             ? function.ExpectedArgumentCount
             : function.ParameterNames.Count;
@@ -11927,6 +11939,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             "length",
             new JsPropertyDescriptor(
                 JsValue.FromNumber(functionLength),
+                Writable: false,
+                Enumerable: false,
+                Configurable: true));
+        _ = fnObj.DefineOwnProperty(
+            "name",
+            new JsPropertyDescriptor(
+                JsValue.FromString(function.Name ?? string.Empty),
                 Writable: false,
                 Enumerable: false,
                 Configurable: true));
@@ -21078,11 +21097,6 @@ fallbackArraySpecies:
         }
 
         if (TryOrdinaryToPrimitive(value, hint, out var primitive))
-        {
-            return primitive;
-        }
-
-        if (TryGetObjectPrimitiveValue(value, out primitive))
         {
             return primitive;
         }

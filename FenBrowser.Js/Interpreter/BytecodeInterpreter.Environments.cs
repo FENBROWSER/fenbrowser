@@ -152,6 +152,24 @@ public sealed partial class BytecodeInterpreter
         frame.Environment = frame.Environment.OuterEnv ?? frame.Environment;
     }
 
+    // ECMA-262 8.1.1.2.1 HasBinding step 5-6: when the binding object carries
+    // @@unscopables and the requested name maps to a truthy value, the binding is
+    // blocked for identifier resolution inside `with` statements.
+    private bool IsBlockedByUnscopables(ObjectHandle handle, long unscopablesSymId, string name)
+    {
+        var obj = _heap.GetObject(handle);
+        if (!obj.TryGetSymbolProperty(unscopablesSymId, h => _heap.GetObject(h), out var desc))
+            return false;
+
+        var unscopables = GetDescriptorValue(desc, JsValue.FromObject(handle));
+        if (unscopables.Tag != JsValueTag.Object)
+            return false;
+
+        var unscopablesObj = _heap.GetObject(unscopables.AsObjectHandle());
+        return TryGetPropertyValue(unscopablesObj, unscopables, name, out var blocked)
+            && IsTruthy(blocked);
+    }
+
 }
 
 

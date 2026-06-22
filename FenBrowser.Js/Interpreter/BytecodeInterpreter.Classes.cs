@@ -160,8 +160,13 @@ public sealed partial class BytecodeInterpreter
 
         // D=1 (set by the object-literal compiler path) => enumerable accessor;
         // class accessors leave D=0 and stay non-enumerable.
-        _ = targetObj.DefineOwnProperty(accessorName,
+        var ok = targetObj.DefineOwnProperty(accessorName,
             Objects.JsPropertyDescriptor.Accessor(getValue, setValue, Enumerable: ins.D != 0, Configurable: true));
+        if (!ok)
+        {
+            ThrowOrHandle(frame, CreateTypeError("Cannot define accessor property '" + accessorName + "' on target object."));
+            return;
+        }
         if (accessorFnValue.Tag == JsValueTag.Object)
         {
             _heap.WriteBarrier(targetHandle, accessorFnValue.AsObjectHandle());
@@ -208,8 +213,13 @@ public sealed partial class BytecodeInterpreter
                 ApplyFunctionName(accessorFnValue, keyValue, "set");
             }
 
-            _ = targetObj.DefineOwnSymbolProperty(symbolId,
+            var symOk = targetObj.DefineOwnSymbolProperty(symbolId,
                 Objects.JsPropertyDescriptor.Accessor(getValue, setValue, Enumerable: ins.D != 0, Configurable: true));
+            if (!symOk)
+            {
+                ThrowOrHandle(frame, CreateTypeError("Cannot define symbol-keyed accessor property on target object."));
+                return;
+            }
             if (accessorFnValue.Tag == JsValueTag.Object)
             {
                 _heap.WriteBarrier(targetHandle, accessorFnValue.AsObjectHandle());
@@ -218,7 +228,11 @@ public sealed partial class BytecodeInterpreter
             return;
         }
 
+        // Compute the property key ONCE to avoid double side effects.
+        // ApplyFunctionName would call ToPropertyKey internally; pass the
+        // already-computed string so it doesn't re-evaluate toString/valueOf.
         var accessorName = ToPropertyKey(keyValue);
+        var nameString = JsValue.FromString(accessorName);
         if (targetObj.TryGetOwnProperty(accessorName, out var existing) && existing.IsAccessor)
         {
             getValue = existing.Get;
@@ -228,16 +242,21 @@ public sealed partial class BytecodeInterpreter
         if (ins.OpCode == OpCode.DefineGetterByReg)
         {
             getValue = accessorFnValue;
-            ApplyFunctionName(accessorFnValue, keyValue, "get");
+            ApplyFunctionName(accessorFnValue, nameString, "get");
         }
         else
         {
             setValue = accessorFnValue;
-            ApplyFunctionName(accessorFnValue, keyValue, "set");
+            ApplyFunctionName(accessorFnValue, nameString, "set");
         }
 
-        _ = targetObj.DefineOwnProperty(accessorName,
+        var ok = targetObj.DefineOwnProperty(accessorName,
             Objects.JsPropertyDescriptor.Accessor(getValue, setValue, Enumerable: ins.D != 0, Configurable: true));
+        if (!ok)
+        {
+            ThrowOrHandle(frame, CreateTypeError("Cannot define accessor property '" + accessorName + "' on target object."));
+            return;
+        }
         if (accessorFnValue.Tag == JsValueTag.Object)
         {
             _heap.WriteBarrier(targetHandle, accessorFnValue.AsObjectHandle());
@@ -261,8 +280,13 @@ public sealed partial class BytecodeInterpreter
         var name = function.PropertyNames[ins.B];
         var fnValue = frame.Registers[ins.C];
 
-        _ = targetObj.DefineOwnProperty(name,
+        var ok = targetObj.DefineOwnProperty(name,
             new Objects.JsPropertyDescriptor(fnValue, Writable: true, Enumerable: false, Configurable: true));
+        if (!ok)
+        {
+            ThrowOrHandle(frame, CreateTypeError("Cannot define property '" + name + "' on target object."));
+            return;
+        }
         if (fnValue.Tag == JsValueTag.Object)
         {
             _heap.WriteBarrier(targetHandle, fnValue.AsObjectHandle());
@@ -283,20 +307,29 @@ public sealed partial class BytecodeInterpreter
         var keyValue = frame.Registers[ins.B];
         var fnValue = frame.Registers[ins.C];
 
-        // ECMA-262 SetFunctionName for a computed concise method (always anonymous):
-        // the name is the property key (Symbol keys render as "[description]").
-        ApplyFunctionName(fnValue, keyValue, prefix: null);
-
+        bool ok;
         if (keyValue.Tag == JsValueTag.Symbol)
         {
-            _ = targetObj.DefineOwnSymbolProperty(keyValue.AsSymbolId(),
+            // ECMA-262 SetFunctionName: Symbol keys render as "[description]".
+            ApplyFunctionName(fnValue, keyValue, prefix: null);
+            ok = targetObj.DefineOwnSymbolProperty(keyValue.AsSymbolId(),
                 new Objects.JsPropertyDescriptor(fnValue, Writable: true, Enumerable: false, Configurable: true));
         }
         else
         {
+            // Compute the property key ONCE to avoid double side effects.
+            // ApplyFunctionName would call ToPropertyKey internally; pass the
+            // already-computed string so it doesn't re-evaluate toString/valueOf.
             var name = ToPropertyKey(keyValue);
-            _ = targetObj.DefineOwnProperty(name,
+            ApplyFunctionName(fnValue, JsValue.FromString(name), prefix: null);
+            ok = targetObj.DefineOwnProperty(name,
                 new Objects.JsPropertyDescriptor(fnValue, Writable: true, Enumerable: false, Configurable: true));
+        }
+        if (!ok)
+        {
+            var errorName = keyValue.Tag == JsValueTag.Symbol ? "symbol" : ToPropertyKey(keyValue);
+            ThrowOrHandle(frame, CreateTypeError("Cannot define property '" + errorName + "' on target object."));
+            return;
         }
         if (fnValue.Tag == JsValueTag.Object)
         {

@@ -166,7 +166,8 @@ public sealed class AstValidator
             }
 
             // Constructor cannot be async, generator, getter, or setter.
-            if (name == "constructor" && !isStatic)
+            // These restrictions apply only to literal 'constructor', not computed ['constructor'].
+            if (name == "constructor" && !isStatic && member.ComputedName == null)
             {
                 if (hasConstructor && member.Kind == ClassMemberKind.Constructor)
                 {
@@ -190,8 +191,8 @@ public sealed class AstValidator
                 }
             }
 
-            // Static method named "prototype" is an early error.
-            if (isStatic && name == "prototype" &&
+            // Static method named "prototype" is an early error (literal only).
+            if (isStatic && name == "prototype" && member.ComputedName == null &&
                 member.Kind is ClassMemberKind.Method or ClassMemberKind.Getter or
                 ClassMemberKind.Setter)
             {
