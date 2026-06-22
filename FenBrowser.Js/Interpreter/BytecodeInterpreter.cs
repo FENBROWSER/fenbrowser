@@ -99,6 +99,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     JsValue IBuiltinContext.CallFunction(JsValue fn, IReadOnlyList<JsValue> args, JsValue thisValue) => CallFunction(fn, args, thisValue);
     JsValue IBuiltinContext.ConstructFunction(JsValue ctor, IReadOnlyList<JsValue> args) => ConstructFunction(ctor, args);
     bool IBuiltinContext.TryGetPropertyValue(JsObject obj, JsValue receiver, string name, out JsValue value) => TryGetPropertyValue(obj, receiver, name, out value);
+    bool IBuiltinContext.HasProperty(JsObject obj, string name) => HasPropertyIncludingProxy(obj, name);
+    JsValue IBuiltinContext.GetIterator(JsValue iterable) => GetIteratorBuiltin(iterable);
+    bool IBuiltinContext.IteratorStepValue(JsValue iterator, out JsValue value) => IteratorStepValueBuiltin(iterator, out value);
+    void IBuiltinContext.IteratorClose(JsValue iterator) => IteratorRecordCloseNormal(iterator);
     int IBuiltinContext.GetArrayLength(JsObject obj) => GetArrayLength(obj);
     JsValue IBuiltinContext.CreateTypeError(string message) => CreateTypeError(message);
     JsValue IBuiltinContext.CreateRangeError(string message) => CreateRangeError(message);
@@ -269,12 +273,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // well-known symbol guarantees that.
     private readonly Dictionary<string, long> _wellKnownSymbols = new(StringComparer.Ordinal);
 
-    // ECMA-262 20.4.2.2 the GlobalSymbolRegistry: a Realm-wide String-keyed map of
-    // shared Symbol values. Symbol.for(k) returns the existing one if k is keyed,
+    // ECMA-262 20.4.2.2 the GlobalSymbolRegistry: a globally-shared String-keyed map
+    // of Symbol values. Symbol.for(k) returns the existing one if k is registered,
     // otherwise mints a fresh symbol with description=k and registers it. Symbol.
     // keyFor(s) returns the key under which s was registered, or undefined.
-    private readonly Dictionary<string, long> _symbolRegistryByKey = new(StringComparer.Ordinal);
-    private readonly Dictionary<long, string> _symbolRegistryById = new();
+    // GlobalSymbolRegistry is shared by ALL realms per spec (cross-realm).
+    private static readonly Dictionary<string, long> _symbolRegistryByKey = new(StringComparer.Ordinal);
+    private static readonly Dictionary<long, string> _symbolRegistryById = new();
 
     // Plan §14.2: instruction budget. Zero = no limit.
     public int InstructionBudget { get; set; }
@@ -4463,7 +4468,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             RequireObjectTarget(args, "Reflect.has");
             var obj = _heap.GetObject(args[0].AsObjectHandle());
-            var key = ToPropertyKey(args.Count > 1 ? args[1] : JsValue.Undefined);
+            var keyArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            if (keyArg.Tag == JsValueTag.Symbol)
+            {
+                return JsValue.FromBoolean(obj.TryGetSymbolProperty(keyArg.AsSymbolId(), h => _heap.GetObject(h), out JsPropertyDescriptor _));
+            }
+            var key = ToPropertyKey(keyArg);
             // ECMA-262 28.1.9 Reflect.has → target.[[HasProperty]]: a Proxy must run
             // its "has" trap rather than a plain ordinary lookup.
             if (obj is ProxyObject hasProxy)
@@ -4484,7 +4494,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             RequireObjectTarget(args, "Reflect.get");
             var target = args[0];
             var receiver = args.Count > 2 ? args[2] : target;
-            var key = ToPropertyKey(args.Count > 1 ? args[1] : JsValue.Undefined);
+            var keyArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            if (keyArg.Tag == JsValueTag.Symbol)
+                return GetReceiverSymbolProperty(receiver, keyArg.AsSymbolId());
+            var key = ToPropertyKey(keyArg);
             return GetReceiverPropertyWithReceiver(target, receiver, key);
         }, length: 2);
 
@@ -4494,12 +4507,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             RequireObjectTarget(args, "Reflect.set");
             var targetHandle = args[0].AsObjectHandle();
             var obj = _heap.GetObject(targetHandle);
-            var key = ToPropertyKey(args.Count > 1 ? args[1] : JsValue.Undefined);
+            var keyArg = args.Count > 1 ? args[1] : JsValue.Undefined;
             var value = args.Count > 2 ? args[2] : JsValue.Undefined;
             // ECMA-262 28.1.13 Reflect.set(target, key, V, receiver): receiver
             // defaults to target. A Proxy target routes through its "set" trap so
             // the boolean trap result (and its invariants) are observed.
             var receiver = args.Count > 3 ? args[3] : args[0];
+            if (keyArg.Tag == JsValueTag.Symbol)
+            {
+                return JsValue.FromBoolean(SetSymbolPropertyValue(targetHandle, obj, keyArg.AsSymbolId(), value, receiver));
+            }
+            var key = ToPropertyKey(keyArg);
             if (obj is ProxyObject reflectProxy)
             {
                 return JsValue.FromBoolean(ProxySet(reflectProxy, receiver, key, value));
@@ -4512,7 +4530,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             RequireObjectTarget(args, "Reflect.deleteProperty");
             var obj = _heap.GetObject(args[0].AsObjectHandle());
-            var key = ToPropertyKey(args.Count > 1 ? args[1] : JsValue.Undefined);
+            var keyArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            if (keyArg.Tag == JsValueTag.Symbol)
+            {
+                return JsValue.FromBoolean(obj.DeleteSymbolProperty(keyArg.AsSymbolId()));
+            }
+            var key = ToPropertyKey(keyArg);
             // ECMA-262 28.1.4 Reflect.deleteProperty → target.[[Delete]]: a Proxy must
             // run its "deleteProperty" trap rather than deleting on the target directly.
             if (obj is ProxyObject deleteProxy)
@@ -4554,17 +4577,32 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         DefineIntrinsicFunction(handle, reflect, "defineProperty", (_, args) =>
         {
             RequireObjectTarget(args, "Reflect.defineProperty");
+
+            // Step 2: Let key be ? ToPropertyKey(propertyKey). Must run before
+            // the descriptor validation; a throwing key coercion propagates.
+            var keyArg = args.Count > 1 ? args[1] : JsValue.Undefined;
+            if (keyArg.Tag != JsValueTag.Symbol)
+            {
+                // Force ToPropertyKey coercion to run (may throw); result discarded.
+                var _key = ToPropertyKey(keyArg);
+            }
+
+            // Step 3: Let desc be ? ToPropertyDescriptor(attributes).
             if (args.Count < 3 || args[2].Tag != JsValueTag.Object)
             {
                 throw new JsThrownException(CreateTypeError("Reflect.defineProperty descriptor must be an object."));
             }
 
-            // Steps 1-3 of Reflect.defineProperty: validate target, key, descriptor.
-            // These throw TypeError on invalid input (not caught — they propagate).
             var targetHandle = args[0].AsObjectHandle();
             var target = _heap.GetObject(targetHandle);
-            var keyArg = args[1];
             var key = keyArg.Tag == JsValueTag.Symbol ? string.Empty : ToPropertyKey(keyArg);
+
+            // Proxy objects: delegate to the "defineProperty" trap.
+            if (target is ProxyObject proxyDefProp && keyArg.Tag != JsValueTag.Symbol)
+            {
+                return JsValue.FromBoolean(ProxyDefineProperty(proxyDefProp, key, args[2]));
+            }
+
             var descriptorObject = _heap.GetObject(args[2].AsObjectHandle());
             var descriptorReceiver = args[2];
 
@@ -4701,11 +4739,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
             else if (argsList.Tag == JsValueTag.Undefined || argsList.Tag == JsValueTag.Null)
             {
-                callArgs = Array.Empty<JsValue>();
+                // ECMA-262 CreateListFromArrayLike Step 1: If Type(obj) is not Object, throw TypeError.
+                // Even undefined/null must throw, not default to empty.
+                throw new JsThrownException(CreateTypeError("Reflect.apply argumentsList must be an Object."));
             }
             else
             {
-                throw new JsThrownException(CreateTypeError("Reflect.apply args must be an Array-like."));
+                throw new JsThrownException(CreateTypeError("Reflect.apply argumentsList must be an Array-like."));
             }
 
             return CallFunction(args[0], callArgs, thisArg);
@@ -5325,6 +5365,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // Step 3: CreateNonEnumerableDataPropertyOrThrow(O, "cause", cause)
         _ = error.DefineOwnProperty("cause",
             new JsPropertyDescriptor(cause, Writable: true, Enumerable: false, Configurable: true));
+    }
+
+    // ---- IBuiltinContext iterator helpers ----
+
+    // ECMA-262 7.4.1 GetIterator ( obj ). Wraps GetIteratorFlattenable for
+    // builtin consumers that need to iterate an iterable.
+    internal JsValue GetIteratorBuiltin(JsValue iterable)
+    {
+        if (iterable.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("Math.sumPrecise: argument is not an object"));
+        var (iterator, _) = GetIteratorFlattenable(iterable, rejectPrimitives: true);
+        return iterator;
+    }
+
+    // ECMA-262 7.4.5 IteratorStepValue. Wraps IteratorRecordStepValue for
+    // builtin consumers that need to advance an iterator.
+    internal bool IteratorStepValueBuiltin(JsValue iterator, out JsValue value)
+    {
+        if (iterator.Tag != JsValueTag.Object)
+        {
+            value = JsValue.Undefined;
+            return false;
+        }
+        var obj = _heap.GetObject(iterator.AsObjectHandle());
+        if (!TryGetPropertyValue(obj, iterator, "next", out var next) || next.Tag != JsValueTag.Object)
+            throw new JsThrownException(CreateTypeError("Iterator next method is not callable."));
+        return IteratorRecordStepValue(iterator, next, out value);
     }
 
     private ObjectHandle EnsureEvalFunction()
@@ -11222,12 +11289,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     "Object.getPrototypeOf called on null or undefined."));
             }
 
-            if (args[0].Tag != JsValueTag.Object)
-            {
-                return JsValue.Null;
-            }
-
-            var target = _heap.GetObject(args[0].AsObjectHandle());
+            // ECMA-262 20.1.2.8 Object.getPrototypeOf Step 1: ToObject(O).
+            // Primitives (including Symbol) are auto-boxed to their wrapper objects.
+            var target = _heap.GetObject(ToObjectValue(args[0]).AsObjectHandle());
             if (target is ProxyObject proxyGetPrototypeOf)
             {
                 return ProxyGetPrototypeOf(proxyGetPrototypeOf);
@@ -11751,6 +11815,14 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _heap.WriteBarrier(ph, ctorHandle);
         DefineBuiltinToStringTag(prototype, "AsyncGeneratorFunction");
         _asyncGeneratorFunctionPrototypeHandle = ph;
+        // ECMA-262: AsyncGenerator.prototype.constructor = %AsyncGeneratorFunction.prototype%
+        if (_asyncGeneratorPrototypeHandle is { } asyncGenProtoHandle)
+        {
+            var asyncGenProto = _heap.GetObject(asyncGenProtoHandle);
+            _ = asyncGenProto.DefineOwnProperty("constructor", new JsPropertyDescriptor(
+                JsValue.FromObject(ph), Writable: false, Enumerable: false, Configurable: true));
+            _heap.WriteBarrier(asyncGenProtoHandle, ph);
+        }
         _ = ctor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(ph), Writable: false, Enumerable: false, Configurable: false));
         return ph;
     }
@@ -13038,18 +13110,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
         }
 
-        // ECMA-262 10.1.9.2 OrdinarySetWithOwnDescriptor → CreateDataProperty:
-        // creating a brand-new own property on a non-extensible object fails
-        // ([[Set]] returns false; strict callers turn that into a TypeError).
-        if (!obj.Extensible)
-        {
-            return false;
-        }
-
-        var descriptor = new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true);
-        _ = obj.DefineOwnProperty(key, descriptor);
-        WriteDescriptorBarrier(ownerHandle, descriptor);
-        return true;
+        // ECMA-262 9.1.9 [[Set]]: no own property on target, and either no inherited
+        // property or inherited is a writable data descriptor. The effective ownDesc
+        // is a default data descriptor; the actual create-on-receiver logic is in
+        // SetPropertyFromDescriptor.
+        var defaultDesc = new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true);
+        return SetPropertyFromDescriptor(ownerHandle, obj, key, defaultDesc, value, receiver);
     }
 
     // ECMA-262 10.4.2.4 ArraySetLength — assign an Array's "length", deleting own
@@ -13247,15 +13313,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
         }
 
-        if (!obj.Extensible)
-        {
-            return false;
-        }
-
-        var descriptor = new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true);
-        _ = obj.DefineOwnSymbolProperty(symbolId, descriptor);
-        WriteDescriptorBarrier(ownerHandle, descriptor);
-        return true;
+        // ECMA-262 9.1.9 [[Set]]: no own symbol property on target. Use the
+        // receiver-aware SetSymbolPropertyFromDescriptor with a default descriptor.
+        var defaultDesc = new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true);
+        return SetSymbolPropertyFromDescriptor(ownerHandle, obj, symbolId, defaultDesc, value, receiver);
     }
 
     [MayExecuteJs]
@@ -13277,10 +13338,28 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return false;
         }
 
-        var updated = descriptor with { Value = value };
-        _ = obj.DefineOwnSymbolProperty(symbolId, updated);
-        WriteDescriptorBarrier(ownerHandle, updated);
-        return true;
+        // ECMA-262 9.1.9 [[Set]] step 5.b: if receiver is not an Object, return false.
+        if (receiver.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var receiverObj = _heap.GetObject(receiver.AsObjectHandle());
+
+        // Steps 5.c-d: check receiver for an existing own symbol property.
+        if (receiverObj.TryGetOwnSymbolProperty(symbolId, out var existing))
+        {
+            if (existing.IsAccessor)
+                return false;
+            if (!existing.Writable)
+                return false;
+            var valueDesc = new JsPropertyDescriptor(value, existing.Writable, existing.Enumerable, existing.Configurable);
+            return receiverObj.DefineOwnSymbolProperty(symbolId, valueDesc);
+        }
+
+        // Step 5.f: CreateDataProperty on receiver.
+        var newDesc = new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true);
+        return receiverObj.DefineOwnSymbolProperty(symbolId, newDesc);
     }
 
     [MayExecuteJs]
@@ -13302,10 +13381,28 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return false;
         }
 
-        var updated = descriptor with { Value = value };
-        _ = obj.DefineOwnProperty(key, updated);
-        WriteDescriptorBarrier(ownerHandle, updated);
-        return true;
+        // ECMA-262 9.1.9 [[Set]] step 5.b: if receiver is not an Object, return false.
+        if (receiver.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var receiverObj = _heap.GetObject(receiver.AsObjectHandle());
+
+        // Step 5.c-d: check receiver for an existing own property.
+        if (receiverObj.TryGetOwnProperty(key, out var existing))
+        {
+            if (existing.IsAccessor)
+                return false;
+            if (!existing.Writable)
+                return false;
+            var valueDesc = new JsPropertyDescriptor(value, existing.Writable, existing.Enumerable, existing.Configurable);
+            return receiverObj.DefineOwnProperty(key, valueDesc);
+        }
+
+        // Step 5.f: CreateDataProperty on receiver.
+        var newDesc = new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true);
+        return receiverObj.DefineOwnProperty(key, newDesc);
     }
 
     private bool TryGetPrototypeSymbolPropertyDescriptor(JsObject obj, long symbolId, out JsPropertyDescriptor descriptor)
@@ -18916,7 +19013,7 @@ fallbackArraySpecies:
                     _heap.GetObject(thisValue.AsObjectHandle()) is not GeneratorObject generator ||
                     !generator.IsAsyncGenerator)
                 {
-                    throw new JsThrownException(CreateTypeError("AsyncGenerator.prototype.next: receiver is not an async generator"));
+                    return CreateRejectedPromise(CreateTypeError("AsyncGenerator.prototype.next: receiver is not an async generator"));
                 }
 
                 if (generator.State == GeneratorState.Completed)
@@ -18959,7 +19056,7 @@ fallbackArraySpecies:
                     _heap.GetObject(thisValue.AsObjectHandle()) is not GeneratorObject generator ||
                     !generator.IsAsyncGenerator)
                 {
-                    throw new JsThrownException(CreateTypeError("AsyncGenerator.prototype.return: receiver is not an async generator"));
+                    return CreateRejectedPromise(CreateTypeError("AsyncGenerator.prototype.return: receiver is not an async generator"));
                 }
 
                 var returnValue = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -19017,7 +19114,7 @@ fallbackArraySpecies:
                     _heap.GetObject(thisValue.AsObjectHandle()) is not GeneratorObject generator ||
                     !generator.IsAsyncGenerator)
                 {
-                    throw new JsThrownException(CreateTypeError("AsyncGenerator.prototype.throw: receiver is not an async generator"));
+                    return CreateRejectedPromise(CreateTypeError("AsyncGenerator.prototype.throw: receiver is not an async generator"));
                 }
 
                 var throwValue = args.Count > 0 ? args[0] : JsValue.Undefined;
@@ -20598,13 +20695,19 @@ fallbackArraySpecies:
             return AreEqual(left, JsValue.FromNumber(right.AsBoolean() ? 1 : 0));
         }
 
-        if (left.Tag == JsValueTag.Object && TryGetObjectPrimitiveValue(left, out var leftPrimitive))
+        // ECMA-262 7.2.15 Abstract Equality Comparison step 9-10: if one side is
+        // Object, convert it via ToPrimitive(default) (observing @@toPrimitive and
+        // OrdinaryToPrimitive). This is important for wrappers whose @@toPrimitive
+        // can be deleted (e.g. Symbol.prototype[@@toPrimitive]).
+        if (left.Tag == JsValueTag.Object)
         {
+            var leftPrimitive = ToPrimitive(left, PrimitiveHint.Default);
             return AreEqual(leftPrimitive, right);
         }
 
-        if (right.Tag == JsValueTag.Object && TryGetObjectPrimitiveValue(right, out var rightPrimitive))
+        if (right.Tag == JsValueTag.Object)
         {
+            var rightPrimitive = ToPrimitive(right, PrimitiveHint.Default);
             return AreEqual(left, rightPrimitive);
         }
 

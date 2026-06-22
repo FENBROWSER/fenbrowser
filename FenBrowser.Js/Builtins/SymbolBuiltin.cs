@@ -124,7 +124,7 @@ public sealed class SymbolBuiltin : IBuiltinModule
             }, length: 1);
         var toPrimitiveFnHandle = heap.AllocateObject(toPrimitiveFn, AllocationSite.Current());
         prototype.DefineOwnSymbolProperty(toPrimitiveSym.AsSymbolId(),
-            new JsPropertyDescriptor(JsValue.FromObject(toPrimitiveFnHandle), Writable: true, Enumerable: false, Configurable: true));
+            new JsPropertyDescriptor(JsValue.FromObject(toPrimitiveFnHandle), Writable: false, Enumerable: false, Configurable: true));
         heap.WriteBarrier(prototypeHandle, toPrimitiveFnHandle);
 
         return new[] { BuiltinBinding.NonEnumerable("Symbol", JsValue.FromObject(handle)) };
