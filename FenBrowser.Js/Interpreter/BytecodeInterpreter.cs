@@ -3152,7 +3152,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 Writable: true, Enumerable: false, Configurable: true));
         _heap.WriteBarrier(prototypeHandle, setValuesHandle);
 
-        // 24.2.3.6 forEach(callback[, thisArg]).
+        // 24.2.3.6 forEach(callback[, thisArg]). Live iteration per spec:
+        // added values are visited; deleted-then-re-added values are re-visited;
+        // values deleted before visitation are skipped. We iterate index-based
+        // over the live entry list and re-check the current position after every
+        // callback so shifts caused by deletions before the cursor are not
+        // skipped.
         DefineNativePrototypeMethod(prototypeHandle, prototype, "forEach", (thisValue, args) =>
         {
             var set = RequireSet(thisValue);
@@ -3163,9 +3168,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 throw new JsThrownException(CreateTypeError("Set.prototype.forEach callback is not a function."));
             }
 
-            foreach (var entry in set.Snapshot())
+            int i = 0;
+            while (i < set._entries.Count)
             {
-                CallFunction(cb, new[] { entry, entry, thisValue }, thisArg);
+                var val = set._entries[i];
+                CallFunction(cb, new[] { val, val, thisValue }, thisArg);
+                if (i < set._entries.Count && SameValueZero(set._entries[i], val))
+                    i++;
             }
 
             return JsValue.Undefined;
@@ -3299,15 +3308,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
         // ECMA-262 24.2.3 (Set Methods, ES2025) isSubsetOf - every entry of this
         // must be in other. Short-circuits on size (a set can never be a subset
-        // of something smaller).
+        // of something smaller). Live iteration: the set-like's has() may mutate
+        // this, so deletions before the cursor must skip the deleted entry.
         DefineNativePrototypeMethod(prototypeHandle, prototype, "isSubsetOf", (thisValue, args) =>
         {
             var self = RequireSet(thisValue);
             var rec = GetSetRecord(args);
             if (self.Count > rec.Size) return JsValue.FromBoolean(false);
-            foreach (var v in self.Snapshot())
+            int i = 0;
+            while (i < self._entries.Count)
             {
+                var v = self._entries[i];
                 if (!CallSetHas(rec, v)) return JsValue.FromBoolean(false);
+                if (i < self._entries.Count && SameValueZero(self._entries[i], v))
+                    i++;
             }
             return JsValue.FromBoolean(true);
         }, length: 1);
@@ -3326,16 +3340,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }, length: 1);
 
         // ECMA-262 24.2.4.7 isDisjointFrom - no entry shared with other. Probe via
-        // other.has or other.keys() depending on relative size.
+        // other.has or other.keys() depending on relative size. Live iteration
+        // on |this| so set-like has() mutations are visible.
         DefineNativePrototypeMethod(prototypeHandle, prototype, "isDisjointFrom", (thisValue, args) =>
         {
             var self = RequireSet(thisValue);
             var rec = GetSetRecord(args);
             if (self.Count <= rec.Size)
             {
-                foreach (var v in self.Snapshot())
+                int i = 0;
+                while (i < self._entries.Count)
                 {
+                    var v = self._entries[i];
                     if (CallSetHas(rec, v)) return JsValue.FromBoolean(false);
+                    if (i < self._entries.Count && SameValueZero(self._entries[i], v))
+                        i++;
                 }
             }
             else
@@ -3590,6 +3609,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         _heap.WriteBarrier(prototypeHandle, mapEntriesHandle);
 
         // 24.1.3.5 forEach(callback, thisArg) - callback(value, key, map).
+        // Live iteration per spec (same rules as Set.forEach).
         DefineNativePrototypeMethod(prototypeHandle, prototype, "forEach", (thisValue, args) =>
         {
             var map = RequireMap(thisValue);
@@ -3600,9 +3620,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 throw new JsThrownException(CreateTypeError("Map.prototype.forEach callback is not a function."));
             }
 
-            foreach (var (k, v) in map.Snapshot())
+            int i = 0;
+            while (i < map._entries.Count)
             {
+                var (k, v) = map._entries[i];
                 CallFunction(cb, new[] { v, k, thisValue }, thisArg);
+                if (i < map._entries.Count && SameValueZero(map._entries[i].Key, k))
+                    i++;
             }
 
             return JsValue.Undefined;
@@ -3718,7 +3742,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private sealed class MapObject : JsObject
     {
-        private readonly List<(JsValue Key, JsValue Value)> _entries = new();
+        internal readonly List<(JsValue Key, JsValue Value)> _entries = new();
 
         public int Count => _entries.Count;
 
@@ -3879,6 +3903,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     // Drain a Set Record's keys() iterator (24.2.1.2 step 12 callers): call keys()
     // with the Set-like as receiver, then iterate via next()/done/value.
+    // The try/finally ensures the iterator's return() is called when the
+    // caller exits the enumeration early (break/return/throw before done).
     private IEnumerable<JsValue> IterateSetRecordKeys(SetRecord rec)
     {
         var iter = CallFunction(rec.Keys, Array.Empty<JsValue>(), rec.Obj);
@@ -3893,24 +3919,36 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             throw new JsThrownException(CreateTypeError("Set method: keys() iterator has no callable 'next'."));
         }
 
-        while (true)
+        bool done = false;
+        try
         {
-            var res = CallFunction(next, Array.Empty<JsValue>(), iter);
-            if (res.Tag != JsValueTag.Object)
+            while (true)
             {
-                throw new JsThrownException(CreateTypeError("Set method: iterator result is not an object."));
-            }
+                var res = CallFunction(next, Array.Empty<JsValue>(), iter);
+                if (res.Tag != JsValueTag.Object)
+                {
+                    throw new JsThrownException(CreateTypeError("Set method: iterator result is not an object."));
+                }
 
-            var resObj = _heap.GetObject(res.AsObjectHandle());
-            TryGetPropertyValue(resObj, res, "done", out var doneVal);
-            if (IsTruthy(doneVal))
+                var resObj = _heap.GetObject(res.AsObjectHandle());
+                TryGetPropertyValue(resObj, res, "done", out var doneVal);
+                if (IsTruthy(doneVal))
+                {
+                    done = true;
+                    yield break;
+                }
+
+                TryGetPropertyValue(resObj, res, "value", out var val);
+                // 24.2.1.2: -0𝔽 keys are normalized to +0𝔽 before use.
+                yield return NormalizeSetValue(val);
+            }
+        }
+        finally
+        {
+            if (!done)
             {
-                yield break;
+                IteratorCloseOnAbrupt(iter);
             }
-
-            TryGetPropertyValue(resObj, res, "value", out var val);
-            // 24.2.1.2: -0𝔽 keys are normalized to +0𝔽 before use.
-            yield return NormalizeSetValue(val);
         }
     }
 
@@ -3992,7 +4030,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // Spec uses SameValueZero for entry identity. A List with a manual
         // SameValueZero comparison keeps both spec correctness and trivial GC
         // traceability (entries are reachable via the list).
-        private readonly List<JsValue> _entries = new();
+        internal readonly List<JsValue> _entries = new();
 
         public int Count => _entries.Count;
 
@@ -5469,6 +5507,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                              callingFunction.VarDeclarationNames.Contains(name, StringComparer.Ordinal) ||
                              (name == "arguments" && callingFunction.HasOwnArgumentsObject)))
                         {
+                            // ECMA-262 10.2.1.2 step 25.c.i: if a direct eval in
+                            // parameter scope introduces a var binding that conflicts
+                            // with a parameter, throw SyntaxError.
+                            if (callingFunction.ParameterNames.Contains(name, StringComparer.Ordinal) &&
+                                callingFunction.PrologueEndIp > 0 &&
+                                _activeFrames.Count > 0)
+                            {
+                                var callingFrame = _activeFrames.Peek();
+                                if (callingFrame.InstructionPointer <= callingFunction.PrologueEndIp)
+                                {
+                                    throw new JsThrownException(CreateSyntaxError(
+                                        $"Cannot declare var binding '{name}' — a parameter binding with that name already exists and the var was introduced by a direct eval call in the parameter scope."));
+                                }
+                            }
                             continue;
                         }
 
