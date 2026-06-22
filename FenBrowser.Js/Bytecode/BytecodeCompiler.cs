@@ -2014,20 +2014,25 @@ public sealed class BytecodeCompiler
         var isPrefix = unary.Operator is "preIncrement" or "preDecrement";
         var stepOp = isIncrement ? OpCode.Increment : OpCode.Decrement;
 
-        if (unary.Operand is IdentifierExpressionNode id)
+        var operand = unary.Operand;
+        while (operand is ParenthesizedExpressionNode pe)
+            operand = pe.Expression;
+
+        if (operand is IdentifierExpressionNode id)
         {
             var slot = GetOrCreateVariableSlot(id.Name);
+            _instructions.Add(new Instruction(OpCode.PreResolveVar, 0, slot, 0));
             var curReg = AllocateRegister();
             _instructions.Add(new Instruction(OpCode.LoadVar, curReg, slot, 0));
             var oldReg = AllocateRegister();
             _instructions.Add(new Instruction(OpCode.ToNumeric, oldReg, curReg, 0));
             var newReg = AllocateRegister();
             _instructions.Add(new Instruction(stepOp, newReg, oldReg, 0));
-            _instructions.Add(new Instruction(OpCode.StoreVar, newReg, slot, 0));
+            _instructions.Add(new Instruction(OpCode.StoreResolvedVar, newReg, slot, 0));
             return isPrefix ? newReg : oldReg;
         }
 
-        var member = (MemberExpressionNode)unary.Operand;
+        var member = (MemberExpressionNode)operand;
         ThrowIfPrivateMemberAccess(member);
         var objReg = CompileExpression(member.Object);
 
@@ -3366,7 +3371,6 @@ public sealed class BytecodeCompiler
             }
             case OptionalCallExpressionNode optionalCall:
             {
-                var calleeReg = CompileExpression(optionalCall.Callee);
                 var dest = AllocateRegister();
                 var undefinedConst = AddConstant(JsValue.Undefined);
                 _instructions.Add(new Instruction(OpCode.LoadConst, dest, undefinedConst, 0));
@@ -3375,6 +3379,136 @@ public sealed class BytecodeCompiler
                 _instructions.Add(new Instruction(OpCode.LoadConst, nullConstReg, AddConstant(JsValue.Null), 0));
                 var undefConstReg = AllocateRegister();
                 _instructions.Add(new Instruction(OpCode.LoadConst, undefConstReg, AddConstant(JsValue.Undefined), 0));
+
+                int calleeReg;
+                int thisReg;
+                bool isMethodCall = false;
+
+                if (optionalCall.Callee is MemberExpressionNode memberCallee)
+                {
+                    if (memberCallee.Object is SuperExpressionNode && !memberCallee.Computed)
+                    {
+                        thisReg = AllocateRegister();
+                        _instructions.Add(new Instruction(OpCode.LoadThis, thisReg, 0, 0));
+                        calleeReg = AllocateRegister();
+                        var superName = GetOrCreatePropertyName(memberCallee.Property);
+                        _instructions.Add(new Instruction(OpCode.LoadSuperProperty, calleeReg, superName, 0));
+                    }
+                    else
+                    {
+                        thisReg = CompileExpression(memberCallee.Object);
+                        calleeReg = AllocateRegister();
+                        if (memberCallee.Computed)
+                        {
+                            var keyReg = CompileExpression(memberCallee.PropertyExpression!);
+                            _instructions.Add(new Instruction(OpCode.GetElem, calleeReg, thisReg, keyReg));
+                        }
+                        else
+                        {
+                            var nameIndex = GetOrCreatePropertyName(memberCallee.Property);
+                            _instructions.Add(new Instruction(OpCode.GetPropByName, calleeReg, thisReg, nameIndex));
+                        }
+                    }
+                    isMethodCall = true;
+                }
+                else if (optionalCall.Callee is OptionalMemberExpressionNode optMember)
+                {
+                    thisReg = CompileExpression(optMember.Object);
+
+                    var innerNullEqReg = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.StrictEq, innerNullEqReg, thisReg, nullConstReg));
+                    var innerJumpIfNotNull = EmitPlaceholder(OpCode.JumpIfFalse, innerNullEqReg);
+                    var innerJumpEndFromNull = EmitPlaceholder(OpCode.Jump);
+
+                    var innerCheckUndefLabel = _instructions.Count;
+                    PatchJump(innerJumpIfNotNull, innerCheckUndefLabel);
+                    var innerUndefEqReg = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.StrictEq, innerUndefEqReg, thisReg, undefConstReg));
+                    var innerJumpIfNotUndef = EmitPlaceholder(OpCode.JumpIfFalse, innerUndefEqReg);
+                    var innerJumpEndFromUndef = EmitPlaceholder(OpCode.Jump);
+
+                    var innerLoadLabel = _instructions.Count;
+                    PatchJump(innerJumpIfNotUndef, innerLoadLabel);
+                    calleeReg = AllocateRegister();
+                    if (optMember.Computed)
+                    {
+                        var keyReg = CompileExpression(optMember.PropertyExpression!);
+                        _instructions.Add(new Instruction(OpCode.GetElem, calleeReg, thisReg, keyReg));
+                    }
+                    else
+                    {
+                        var nameIndex = GetOrCreatePropertyName(optMember.Property);
+                        _instructions.Add(new Instruction(OpCode.GetPropByName, calleeReg, thisReg, nameIndex));
+                    }
+
+                    var calleeNullEqReg = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.StrictEq, calleeNullEqReg, calleeReg, nullConstReg));
+                    var calleeJumpIfNotNull = EmitPlaceholder(OpCode.JumpIfFalse, calleeNullEqReg);
+                    var calleeJumpEndFromNull = EmitPlaceholder(OpCode.Jump);
+
+                    var calleeCheckUndefLabel = _instructions.Count;
+                    PatchJump(calleeJumpIfNotNull, calleeCheckUndefLabel);
+                    var calleeUndefEqReg = AllocateRegister();
+                    _instructions.Add(new Instruction(OpCode.StrictEq, calleeUndefEqReg, calleeReg, undefConstReg));
+                    var calleeJumpIfNotUndef = EmitPlaceholder(OpCode.JumpIfFalse, calleeUndefEqReg);
+                    var calleeJumpEndFromUndef = EmitPlaceholder(OpCode.Jump);
+
+                    var callLabel = _instructions.Count;
+                    PatchJump(calleeJumpIfNotUndef, callLabel);
+                    isMethodCall = true;
+
+                    var hasSpreadInner = false;
+                    for (var i = 0; i < optionalCall.Arguments.Count; i++)
+                    {
+                        if (optionalCall.Arguments[i] is SpreadElementExpressionNode) { hasSpreadInner = true; break; }
+                    }
+
+                    if (hasSpreadInner)
+                    {
+                        var spreadArgReg = BuildSpreadArray(optionalCall.Arguments);
+                        _instructions.Add(new Instruction(OpCode.CallSpread, dest, calleeReg, spreadArgReg, thisReg));
+                    }
+                    else
+                    {
+                        switch (optionalCall.Arguments.Count)
+                        {
+                            case 0:
+                                _instructions.Add(new Instruction(OpCode.CallMethod0, dest, calleeReg, thisReg));
+                                break;
+                            case 1:
+                            {
+                                var arg0 = CompileExpression(optionalCall.Arguments[0]);
+                                _instructions.Add(new Instruction(OpCode.CallMethod1, dest, calleeReg, thisReg, arg0));
+                                break;
+                            }
+                            default:
+                            {
+                                var argStart = AllocateRegister();
+                                for (var i = 0; i < optionalCall.Arguments.Count; i++)
+                                {
+                                    var argReg = CompileExpression(optionalCall.Arguments[i]);
+                                    _instructions.Add(new Instruction(OpCode.Move, argStart + i, argReg, 0));
+                                    if (i + 1 < optionalCall.Arguments.Count)
+                                        _ = AllocateRegister();
+                                }
+                                _instructions.Add(new Instruction(OpCode.CallMethodN, dest, calleeReg, thisReg, argStart, optionalCall.Arguments.Count));
+                                break;
+                            }
+                        }
+                    }
+
+                    var endLabel = _instructions.Count;
+                    PatchJump(innerJumpEndFromNull, endLabel);
+                    PatchJump(innerJumpEndFromUndef, endLabel);
+                    PatchJump(calleeJumpEndFromNull, endLabel);
+                    PatchJump(calleeJumpEndFromUndef, endLabel);
+                    return dest;
+                }
+                else
+                {
+                    calleeReg = CompileExpression(optionalCall.Callee);
+                    thisReg = 0;
+                }
 
                 var nullEqReg = AllocateRegister();
                 _instructions.Add(new Instruction(OpCode.StrictEq, nullEqReg, calleeReg, nullConstReg));
@@ -3388,8 +3522,8 @@ public sealed class BytecodeCompiler
                 var jumpIfNotUndefined = EmitPlaceholder(OpCode.JumpIfFalse, undefEqReg);
                 var jumpEndFromUndefined = EmitPlaceholder(OpCode.Jump);
 
-                var callLabel = _instructions.Count;
-                PatchJump(jumpIfNotUndefined, callLabel);
+                var callLabelNonMethod = _instructions.Count;
+                PatchJump(jumpIfNotUndefined, callLabelNonMethod);
                 var hasSpread = false;
                 for (var i = 0; i < optionalCall.Arguments.Count; i++)
                 {
@@ -3399,19 +3533,25 @@ public sealed class BytecodeCompiler
                 if (hasSpread)
                 {
                     var spreadArgReg = BuildSpreadArray(optionalCall.Arguments);
-                    _instructions.Add(new Instruction(OpCode.CallSpread, dest, calleeReg, spreadArgReg, 0));
+                    _instructions.Add(new Instruction(OpCode.CallSpread, dest, calleeReg, spreadArgReg, isMethodCall ? thisReg : 0));
                 }
                 else
                 {
                     switch (optionalCall.Arguments.Count)
                     {
                         case 0:
-                            _instructions.Add(new Instruction(OpCode.Call0, dest, calleeReg, 0));
+                            if (isMethodCall)
+                                _instructions.Add(new Instruction(OpCode.CallMethod0, dest, calleeReg, thisReg));
+                            else
+                                _instructions.Add(new Instruction(OpCode.Call0, dest, calleeReg, 0));
                             break;
                         case 1:
                         {
                             var arg0 = CompileExpression(optionalCall.Arguments[0]);
-                            _instructions.Add(new Instruction(OpCode.Call1, dest, calleeReg, arg0));
+                            if (isMethodCall)
+                                _instructions.Add(new Instruction(OpCode.CallMethod1, dest, calleeReg, thisReg, arg0));
+                            else
+                                _instructions.Add(new Instruction(OpCode.Call1, dest, calleeReg, arg0));
                             break;
                         }
                         default:
@@ -3422,20 +3562,20 @@ public sealed class BytecodeCompiler
                                 var argReg = CompileExpression(optionalCall.Arguments[i]);
                                 _instructions.Add(new Instruction(OpCode.Move, argStart + i, argReg, 0));
                                 if (i + 1 < optionalCall.Arguments.Count)
-                                {
                                     _ = AllocateRegister();
-                                }
                             }
-
-                            _instructions.Add(new Instruction(OpCode.CallN, dest, calleeReg, argStart, optionalCall.Arguments.Count));
+                            if (isMethodCall)
+                                _instructions.Add(new Instruction(OpCode.CallMethodN, dest, calleeReg, thisReg, argStart, optionalCall.Arguments.Count));
+                            else
+                                _instructions.Add(new Instruction(OpCode.CallN, dest, calleeReg, argStart, optionalCall.Arguments.Count));
                             break;
                         }
                     }
                 }
 
-                var endLabel = _instructions.Count;
-                PatchJump(jumpEndFromNull, endLabel);
-                PatchJump(jumpEndFromUndefined, endLabel);
+                var endLabelNonMethod = _instructions.Count;
+                PatchJump(jumpEndFromNull, endLabelNonMethod);
+                PatchJump(jumpEndFromUndefined, endLabelNonMethod);
                 return dest;
             }
             case UnaryExpressionNode unary:

@@ -375,7 +375,7 @@ public class JsObject : ITraceable
             _properties[slot] = null;
             return true;
         }
-        return false;
+        return true;
     }
 
     public void SetPrototype(ObjectHandle? prototypeHandle)

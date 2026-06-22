@@ -4256,7 +4256,14 @@ public sealed class JsParser
                 {
                     throw new JsParserException("Accessing private field via super is not allowed.");
                 }
-                left = new MemberExpressionNode(left, property.Text, Computed: false, PropertyExpression: null, MergeSpan(left.Span, property.Span));
+                if (left is OptionalMemberExpressionNode or OptionalCallExpressionNode)
+                {
+                    left = new OptionalMemberExpressionNode(left, property.Text, Computed: false, PropertyExpression: null, MergeSpan(left.Span, property.Span));
+                }
+                else
+                {
+                    left = new MemberExpressionNode(left, property.Text, Computed: false, PropertyExpression: null, MergeSpan(left.Span, property.Span));
+                }
                 continue;
             }
 
@@ -4266,7 +4273,14 @@ public sealed class JsParser
                 var propExpr = ParseExpression(0);
                 ExpectPunctuator("]");
                 var close = Previous();
-                left = new MemberExpressionNode(left, string.Empty, Computed: true, PropertyExpression: propExpr, MergeSpan(left.Span, close.Span));
+                if (left is OptionalMemberExpressionNode or OptionalCallExpressionNode)
+                {
+                    left = new OptionalMemberExpressionNode(left, string.Empty, Computed: true, PropertyExpression: propExpr, MergeSpan(left.Span, close.Span));
+                }
+                else
+                {
+                    left = new MemberExpressionNode(left, string.Empty, Computed: true, PropertyExpression: propExpr, MergeSpan(left.Span, close.Span));
+                }
                 continue;
             }
 
@@ -4274,12 +4288,23 @@ public sealed class JsParser
             {
                 var args = ParseCallArguments();
                 var end = Previous();
-                left = new CallExpressionNode(left, args, MergeSpan(left.Span, end.Span));
+                if (left is OptionalMemberExpressionNode or OptionalCallExpressionNode)
+                {
+                    left = new OptionalCallExpressionNode(left, args, MergeSpan(left.Span, end.Span));
+                }
+                else
+                {
+                    left = new CallExpressionNode(left, args, MergeSpan(left.Span, end.Span));
+                }
                 continue;
             }
 
             if (Current().Kind == TokenKind.Template)
             {
+                if (left is OptionalMemberExpressionNode or OptionalCallExpressionNode)
+                {
+                    throw new JsParserException("Template literal cannot appear at the tail of an optional chain.");
+                }
                 var template = ParseTemplateLiteral(Advance(), allowInvalidEscape: true);
                 left = new TaggedTemplateExpressionNode(left, template, MergeSpan(left.Span, template.Span));
                 continue;
@@ -4360,7 +4385,9 @@ public sealed class JsParser
             // ECMA-262: ExponentiationExpression does not allow UnaryExpression
             // on its left-hand side (only UpdateExpression). Unary operators like
             // ~, !, delete, void, typeof cannot directly precede **.
-            if (opToken.Text == "**" && left is UnaryExpressionNode)
+            // Prefix ++/-- are UpdateExpressions, which ARE valid on the LHS of **.
+            if (opToken.Text == "**" && left is UnaryExpressionNode un &&
+                un.Operator is not "preIncrement" and not "preDecrement" and not "postIncrement" and not "postDecrement")
                 throw new JsParserException("Unary expression cannot be the left-hand side of exponentiation.");
 
             // ECMA-262: NullishCoalescingExpression cannot contain && or ||, and
@@ -4405,11 +4432,7 @@ public sealed class JsParser
         if (token.Kind == TokenKind.Punctuator && (token.Text == "!" || token.Text == "-" || token.Text == "+" || token.Text == "~"))
         {
             var op = Advance();
-            // ECMA-262: unary - and + allow ** to bind first so -a**b => -(a**b).
-            // Other unary operators (~, !) use high precedence, so ~a**b would
-            // produce (~a)**b which is rejected as a SyntaxError below.
-            var opBp = (op.Text == "-" || op.Text == "+") ? 32 : 40;
-            var operand = ParseExpression(opBp);
+            var operand = ParseExpression(40);
             return new UnaryExpressionNode(op.Text, operand, MergeSpan(op.Span, operand.Span));
         }
 
@@ -6593,7 +6616,8 @@ public sealed class JsParser
     // Annex B: in non-strict mode, CallExpression is also a valid update
     // target (runtime ReferenceError, not parse-time SyntaxError).
     private bool IsUpdateTarget(ExpressionNode node) =>
-        node is IdentifierExpressionNode or MemberExpressionNode || (!_strictMode && node is CallExpressionNode);
+        node is IdentifierExpressionNode or MemberExpressionNode || (!_strictMode && node is CallExpressionNode) ||
+        (node is ParenthesizedExpressionNode pe && IsUpdateTarget(pe.Expression));
 
     // ECMA-262 13.15.1 — Simple AssignmentTargetType. Returns true for
     // anything that can sit on the LHS of `=` (or compound assignments).
@@ -6880,17 +6904,9 @@ public sealed class JsParser
     {
         var span = isPostfix ? MergeSpan(target.Span, opSpan) : MergeSpan(opSpan, target.Span);
 
-        // ECMA-262 13.4 Update Expressions. For simple Identifier / non-super
-        // member targets, carry the real update semantics (ToNumeric of the old
-        // value, ±1, store, then yield the old value for postfix or the new
-        // value for prefix) through a sentinel unary operator that the compiler
-        // lowers. The legacy `target = target + 1` desugar evaluated to the new
-        // value for both forms and string-concatenated non-numeric operands, so
-        // it is wrong for postfix and for non-number operands; keep it only for
-        // the exotic targets (CallExpression, super member) that the dedicated
-        // lowering does not model.
-        var simpleTarget = target is IdentifierExpressionNode ||
-            (target is MemberExpressionNode m && m.Object is not SuperExpressionNode);
+        var unwrapped = Unparenthesize(target);
+        var simpleTarget = unwrapped is IdentifierExpressionNode ||
+            (unwrapped is MemberExpressionNode m && m.Object is not SuperExpressionNode);
         if (simpleTarget)
         {
             var op = (updateOp, isPostfix) switch

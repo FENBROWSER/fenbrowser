@@ -350,6 +350,9 @@ public sealed partial class BytecodeInterpreter
         }
         if (lnum.Tag == JsValueTag.BigInt || rnum.Tag == JsValueTag.BigInt)
             throw new JsThrownException(CreateTypeError("Cannot mix BigInt and other types, use explicit conversions."));
-        return JsValue.FromNumber(Math.Pow(ToNumber(lnum), ToNumber(rnum)));
+        var l = ToNumber(lnum);
+        var r = ToNumber(rnum);
+        if (Math.Abs(l) == 1.0 && double.IsInfinity(r)) return JsValue.FromNumber(double.NaN);
+        return JsValue.FromNumber(Math.Pow(l, r));
     }
 }
