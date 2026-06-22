@@ -565,6 +565,35 @@ public sealed class JsParser
             _ => false
         };
 
+    // ECMA-262 14.2.1: arrow parameter defaults must not contain YieldExpression.
+    // Only matches actual YieldExpression nodes (UnaryExpression with operator
+    // "yield" or "yield*"), not identifier references named "yield".
+    private static bool ContainsYieldExpressionInDefault(ExpressionNode expression)
+    {
+        return expression switch
+        {
+            UnaryExpressionNode unary when unary.Operator is "yield" or "yield*" => true,
+            ParenthesizedExpressionNode parenthesized => ContainsYieldExpressionInDefault(parenthesized.Expression),
+            BinaryExpressionNode binary => ContainsYieldExpressionInDefault(binary.Left) || ContainsYieldExpressionInDefault(binary.Right),
+            AssignmentExpressionNode assignment => ContainsYieldExpressionInDefault(assignment.Left) || ContainsYieldExpressionInDefault(assignment.Right),
+            CallExpressionNode call => ContainsYieldExpressionInDefault(call.Callee) || call.Arguments.Any(ContainsYieldExpressionInDefault),
+            ObjectLiteralExpressionNode objectLiteral => objectLiteral.Properties.Any(p =>
+                (p.ComputedKey is not null && ContainsYieldExpressionInDefault(p.ComputedKey)) || ContainsYieldExpressionInDefault(p.Value)),
+            ArrayLiteralExpressionNode arrayLiteral => arrayLiteral.Elements.Any(ContainsYieldExpressionInDefault),
+            SpreadElementExpressionNode spread => ContainsYieldExpressionInDefault(spread.Argument),
+            MemberExpressionNode member => ContainsYieldExpressionInDefault(member.Object) ||
+                                           (member.PropertyExpression is not null && ContainsYieldExpressionInDefault(member.PropertyExpression)),
+            ConditionalExpressionNode conditional => ContainsYieldExpressionInDefault(conditional.Test) ||
+                                                     ContainsYieldExpressionInDefault(conditional.Consequent) ||
+                                                     ContainsYieldExpressionInDefault(conditional.Alternate),
+            NewExpressionNode @new => ContainsYieldExpressionInDefault(@new.Callee) || @new.Arguments.Any(ContainsYieldExpressionInDefault),
+            TemplateLiteralExpressionNode template => template.Expressions.Any(ContainsYieldExpressionInDefault),
+            TaggedTemplateExpressionNode taggedTemplate => ContainsYieldExpressionInDefault(taggedTemplate.Tag) ||
+                                                           ContainsYieldExpressionInDefault(taggedTemplate.Template),
+            _ => false
+        };
+    }
+
     private static HashSet<string> CollectTopLevelLexicallyDeclaredNames(IReadOnlyList<StatementNode> statements)
     {
         var names = new HashSet<string>(StringComparer.Ordinal);
@@ -2408,6 +2437,27 @@ public sealed class JsParser
                 foreach (var prop in obj.Properties)
                     CollectBoundNames(prop.Target, names);
                 if (obj.Rest is { } r) CollectBoundNames(r, names);
+                break;
+        }
+    }
+
+    // Like CollectBoundNames but collects in order (preserving duplicates) so
+    // callers can detect duplicate bound names within a single binding pattern.
+    private static void CollectBoundNamesInOrder(BindingPatternNode pattern, List<string> names)
+    {
+        switch (pattern)
+        {
+            case IdentifierBindingPatternNode id:
+                if (!IsSyntheticPatternBinding(id.Name)) names.Add(id.Name);
+                break;
+            case ArrayBindingPatternNode arr:
+                foreach (var el in arr.Elements)
+                    if (el.Target is { } t) CollectBoundNamesInOrder(t, names);
+                break;
+            case ObjectBindingPatternNode obj:
+                foreach (var prop in obj.Properties)
+                    CollectBoundNamesInOrder(prop.Target, names);
+                if (obj.Rest is { } r) CollectBoundNamesInOrder(r, names);
                 break;
         }
     }
@@ -5558,7 +5608,7 @@ public sealed class JsParser
         {
             Advance(); // async
 
-            if (IsIdentifierLike(Current()) && PeekIsPunctuator(1, "=") && PeekIsPunctuator(2, ">"))
+            if (IsIdentifierLike(Current()) && PeekIsPunctuator(1, "=") && PeekIsPunctuator(2, ">") && !HasLineTerminatorBetweenCurrentAnd(1))
             {
                 var parameter = Advance().Text;
                 Advance(); // =
@@ -5627,8 +5677,11 @@ public sealed class JsParser
 
                         if (IsPunctuator(","))
                         {
-                            Advance();
                             // ECMA-262 14.2: trailing comma is allowed (e.g., (a,) => {})
+                            // but NOT after a rest parameter.
+                            if (asyncRestParameterIndex == asyncParameters.Count - 1)
+                                throw new JsParserException("Rest parameter must be the last formal parameter.");
+                            Advance();
                             if (IsPunctuator(")"))
                                 break;
                             continue;
@@ -5661,7 +5714,7 @@ public sealed class JsParser
             _index = saved;
         }
 
-        if (IsIdentifierLike(Current()) && PeekIsPunctuator(1, "=") && PeekIsPunctuator(2, ">"))
+        if (IsIdentifierLike(Current()) && PeekIsPunctuator(1, "=") && PeekIsPunctuator(2, ">") && !HasLineTerminatorBetweenCurrentAnd(1))
         {
             var parameter = Advance().Text;
             Advance(); // =
@@ -5730,8 +5783,11 @@ public sealed class JsParser
 
                     if (IsPunctuator(","))
                     {
-                        Advance();
                         // ECMA-262 14.2: trailing comma is allowed (e.g., (a,) => {})
+                        // but NOT after a rest parameter.
+                        if (restParameterIndex == parameters.Count - 1)
+                            throw new JsParserException("Rest parameter must be the last formal parameter.");
+                        Advance();
                         if (IsPunctuator(")"))
                             break;
                         continue;
@@ -5777,13 +5833,16 @@ public sealed class JsParser
             (parameterDefaults is null || parameterDefaults.All(def => def is null));
 
         // ECMA-262 14.2.1: arrow function parameter defaults must not contain
-        // SuperCall or SuperProperty.
+        // SuperCall, SuperProperty, or YieldExpression.
         if (parameterDefaults is not null)
         {
             foreach (var def in parameterDefaults)
             {
-                if (def is not null && ContainsSuperCallInExpression(def))
+                if (def is null) continue;
+                if (ContainsSuperCallInExpression(def))
                     throw new JsParserException("super() calls and super.property access are not allowed in this context.");
+                if (ContainsYieldExpressionInDefault(def))
+                    throw new JsParserException("yield is not allowed in arrow function parameter defaults.");
             }
         }
 
@@ -5791,10 +5850,25 @@ public sealed class JsParser
         // ALWAYS forbid duplicate parameter names (even sloppy, simple lists).
         {
             var seen = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var p in parameters)
+            for (var i = 0; i < parameters.Count; i++)
             {
+                var p = parameters[i];
                 if (!IsSyntheticPatternBinding(p) && !seen.Add(p))
                     throw new JsParserException($"Duplicate parameter name '{p}' in arrow function.");
+                if (i < parameterBindings.Count && parameterBindings[i] is { } pattern)
+                {
+                    var patternBound = new List<string>();
+                    CollectBoundNamesInOrder(pattern, patternBound);
+                    // Check for duplicates within the pattern itself.
+                    var patternSeen = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var n in patternBound)
+                    {
+                        if (!patternSeen.Add(n))
+                            throw new JsParserException($"Duplicate parameter name '{n}' in arrow function.");
+                        if (!seen.Add(n))
+                            throw new JsParserException($"Duplicate parameter name '{n}' in arrow function.");
+                    }
+                }
             }
         }
 
@@ -5829,9 +5903,27 @@ public sealed class JsParser
         // bundles like x.com's main.js). Top-level async arrows only worked by accident
         // because the program default is [+Await].
         // Arrow functions clear the ClassStaticBlock depth so that `await`
-        // as a binding identifier is only rejected at the static block's top
-        // level, not inside nested arrow functions (ECMA-262 15.7).
+        // as a keyword is valid inside nested async arrow functions.
+        // However, ECMA-262 15.7 prohibits `await` as a BindingIdentifier
+        // or IdentifierReference ANYWHERE in the static block body, including
+        // nested function/arrow parameters and parameter defaults.
         var previousClassStaticBlockDepth = _classStaticBlockDepth;
+        if (previousClassStaticBlockDepth > 0)
+        {
+            foreach (var p in parameters)
+            {
+                if (!IsSyntheticPatternBinding(p) && string.Equals(p, "await", StringComparison.Ordinal))
+                    throw new JsParserException("'await' may not be used as a parameter name inside a class static block.");
+            }
+            if (parameterDefaults is not null)
+            {
+                foreach (var def in parameterDefaults)
+                {
+                    if (def is not null && ContainsIdentifierReferenceInExpression(def, "await"))
+                        throw new JsParserException("'await' may not be used as an identifier reference inside a class static block.");
+                }
+            }
+        }
         _classStaticBlockDepth = 0;
         try
         {

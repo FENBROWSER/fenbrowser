@@ -651,10 +651,24 @@ public sealed class StringBuiltin : IBuiltinModule
         if (TryDispatchToSymbolMethod(ctx, searchValue, "replace", JsValue.FromString(s), replaceValue, out var dispatched))
             return dispatched;
 
+        // ECMA-262 step 5-6: IsCallable and ToString coercion happen ONCE upfront.
+        var functionalReplace = IsCallable(ctx, replaceValue);
+        var replacement = functionalReplace ? replaceValue : JsValue.FromString(ctx.ToStringValue(replaceValue));
+
         var search = ctx.ToStringValue(searchValue);
-        if (search.Length == 0) return JsValue.FromString(s);
-        var replacement = replaceValue;
         var sb = new System.Text.StringBuilder();
+        if (search.Length == 0)
+        {
+            // Empty string matches at every position (before each char and after last).
+            for (var i = 0; i < s.Length; i++)
+            {
+                sb.Append(ResolveReplacement(ctx, replacement, s, i, search));
+                sb.Append(s[i]);
+            }
+            sb.Append(ResolveReplacement(ctx, replacement, s, s.Length, search));
+            return JsValue.FromString(sb.ToString());
+        }
+
         var start = 0;
         while (start <= s.Length)
         {
@@ -669,14 +683,13 @@ public sealed class StringBuiltin : IBuiltinModule
     }
 
     // ECMA-262 22.1.3.10 String.prototype.localeCompare(that). Without a full
-    // ECMA-402 Collator the comparison is implementation-defined; we use an ordinal
-    // comparison normalised to -1 / 0 / +1. RequireString runs RequireObjectCoercible
-    // (throws on null/undefined this) then ToString; the argument is ToString-coerced.
+    // ECMA-402 Collator the comparison is implementation-defined; we use an
+    // invariant-culture comparison that handles composed/decomposed Unicode forms.
     private static JsValue LocaleCompare(IBuiltinContext ctx, JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var s = RequireString(ctx, thisValue);
         var that = ctx.ToStringValue(args.Count > 0 ? args[0] : JsValue.Undefined);
-        var cmp = string.CompareOrdinal(s, that);
+        var cmp = string.Compare(s, that, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.CompareOptions.None);
         return JsValue.FromNumber(cmp < 0 ? -1 : cmp > 0 ? 1 : 0);
     }
 
@@ -782,19 +795,35 @@ public sealed class StringBuiltin : IBuiltinModule
         var s = RequireString(ctx, thisValue);
         var regexp = args.Count > 0 ? args[0] : JsValue.Undefined;
 
-        // 22.1.3.13 step 2.b: a RegExp argument must carry the global flag, else TypeError
-        // (checked before the @@matchAll dispatch).
-        if (regexp.Tag == JsValueTag.Object &&
-            ctx.Heap.GetObject(regexp.AsObjectHandle()) is RegExpObject &&
-            ctx.TryGetPropertyValue(ctx.Heap.GetObject(regexp.AsObjectHandle()), regexp, "flags", out var flagsValue) &&
-            ctx.ToStringValue(flagsValue).IndexOf('g') < 0)
+        // ECMA-262 22.1.3.13 step 2: only entered when regexp is Object.
+        if (regexp.Tag == JsValueTag.Object)
         {
-            throw new JsThrownException(ctx.CreateTypeError(
-                "String.prototype.matchAll called with a non-global RegExp argument."));
+            var regExpObj = ctx.Heap.GetObject(regexp.AsObjectHandle());
+
+            // Step 2.b: RegExp with non-global flag → TypeError.
+            if (regExpObj is RegExpObject &&
+                ctx.TryGetPropertyValue(regExpObj, regexp, "flags", out var flagsValue) &&
+                ctx.ToStringValue(flagsValue).IndexOf('g') < 0)
+            {
+                throw new JsThrownException(ctx.CreateTypeError(
+                    "String.prototype.matchAll called with a non-global RegExp argument."));
+            }
+
+            // Step 2.c-d: @@matchAll dispatch.
+            if (TryDispatchToSymbolMethod(ctx, regexp, "matchAll", JsValue.FromString(s), out var dispatched))
+                return dispatched;
         }
 
-        if (TryDispatchToSymbolMethod(ctx, regexp, "matchAll", JsValue.FromString(s), out var dispatched))
-            return dispatched;
+        // Step 4-5: create a RegExp with "g" flag and dispatch @@matchAll on it.
+        var pattern = regexp.Tag == JsValueTag.Undefined || regexp.Tag == JsValueTag.Null
+            ? JsValue.FromString(string.Empty)
+            : regexp.Tag == JsValueTag.String ? regexp : JsValue.FromString(ctx.ToStringValue(regexp));
+        var rx = ctx.ConstructFunction(JsValue.FromObject(ctx.MaterializeRegExpConstructor()),
+            new[] { pattern, JsValue.FromString("g") });
+
+        if (TryDispatchToSymbolMethod(ctx, rx, "matchAll", JsValue.FromString(s), out var dispatched2))
+            return dispatched2;
+
         return CreateArrayResult(ctx, new List<JsValue>());
     }
 

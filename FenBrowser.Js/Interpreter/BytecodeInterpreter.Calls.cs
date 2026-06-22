@@ -506,6 +506,9 @@ public sealed partial class BytecodeInterpreter
         {
             if (fn.Kind is FunctionKind.Generator or FunctionKind.AsyncGenerator)
                 throw new JsThrownException(CreateTypeError("Generator functions cannot be used as constructors."));
+            // Arrow functions have no [[Construct]] internal method (ECMA-262 10.2.1).
+            if (fn.Kind == FunctionKind.Arrow)
+                throw new JsThrownException(CreateTypeError("Arrow functions cannot be used as constructors."));
             // Concise methods and accessors (FunctionKind.Method) are not
             // constructors (ECMA-262 15.4 — MethodDefinitions have no [[Construct]]).
             if (fn.Kind == FunctionKind.Method)

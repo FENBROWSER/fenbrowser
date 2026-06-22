@@ -19,6 +19,9 @@ public sealed class BoundFunctionObject : JsObject
     // [[BoundArguments]] — the partial application args from .bind().
     public JsValue[] BoundArgs { get; }
 
+    // The target function's "name" for Function.prototype.toString output.
+    public string? TargetName { get; }
+
     // ECMA-262 10.4.1.3 — [[Call]] merges bound args + call-site args, then
     // calls [[BoundTargetFunction]] with [[BoundThis]] as the receiver.
 
@@ -31,6 +34,7 @@ public sealed class BoundFunctionObject : JsObject
         TargetFunction = targetFunction;
         BoundThis = boundThis;
         BoundArgs = boundArgs;
+        TargetName = targetName;
         _ = DefineOwnProperty(
             "length",
             new JsPropertyDescriptor(

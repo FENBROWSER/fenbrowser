@@ -162,5 +162,7 @@ public interface IBuiltinContext
     // ECMA-262 21.4.2.1 Date(...) [[Construct]]: builds a DateObject from the full
     // range of argument shapes (now / time value / string / component form).
     JsValue ConstructDate(IReadOnlyList<JsValue> args);
+    ObjectHandle MaterializeRegExpConstructor();
+
     void InstallRegExpPrototypeMethods(ObjectHandle protoHandle, JsObject proto);
 }

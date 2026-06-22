@@ -143,6 +143,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     ObjectHandle IBuiltinContext.MaterializeJsonObject() => EnsureJsonObject();
     ObjectHandle IBuiltinContext.MaterializeReflectObject() => EnsureReflectObject();
     ObjectHandle IBuiltinContext.MaterializeIteratorConstructor() => EnsureIteratorConstructor();
+    ObjectHandle IBuiltinContext.MaterializeRegExpConstructor() => EnsureRegExpConstructor();
     ObjectHandle IBuiltinContext.MaterializeWeakRefConstructor() => EnsureWeakRefConstructor();
     ObjectHandle IBuiltinContext.MaterializeFinalizationRegistryConstructor() => EnsureFinalizationRegistryConstructor();
     ObjectHandle IBuiltinContext.MaterializeAggregateErrorConstructor() => EnsureAggregateErrorConstructor();
@@ -887,6 +888,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _pendingNewTarget = JsValue.Undefined;
         }
 
+        // Arrow functions inherit new.target from the lexically enclosing
+        // non-arrow function (ECMA-262 10.2.1 — arrows have no own new.target).
+        if (function.Kind == FunctionKind.Arrow && frame.NewTarget.Tag == JsValueTag.Undefined)
+        {
+            var foundSelf = false;
+            foreach (var callerFrame in _activeFrames)
+            {
+                if (!foundSelf) { foundSelf = true; continue; }
+                if (callerFrame.Function?.Kind != FunctionKind.Arrow)
+                {
+                    frame.NewTarget = callerFrame.NewTarget;
+                    break;
+                }
+            }
+        }
+
         // Generator resume: restore saved execution state instead of fresh init.
         // ECMA-262 27.5.1.2 Resume — the [[GeneratorContext]] holds IP, registers,
         // and environment; we skip parameter binding and declaration instantiation
@@ -1339,9 +1356,25 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     frame.Registers[ins.A] = frame.NewTarget;
                     break;
                 case OpCode.InitThisBinding:
-                    if (frame.Environment is FunctionEnvironmentRecord fenInit && fenInit.ThisBindingStatus == ThisBindingStatus.Uninitialized)
-                        fenInit.BindThisValue(frame.ThisValue);
+                {
+                    // ECMA-262 8.1.1.3.1 BindThisValue: walk the environment chain to
+                    // find the enclosing derived constructor's FunctionEnvironmentRecord
+                    // (arrow functions and eval inherit the enclosing method's this binding).
+                    var initEnv = (EnvironmentRecord?)frame.Environment;
+                    while (initEnv is not null)
+                    {
+                        if (initEnv is FunctionEnvironmentRecord fenInit)
+                        {
+                            if (fenInit.ThisBindingStatus == ThisBindingStatus.Uninitialized)
+                                fenInit.BindThisValue(frame.ThisValue);
+                            else if (fenInit.ThisBindingStatus == ThisBindingStatus.Initialized)
+                                ThrowReferenceError(frame, "super() called twice in derived class constructor.");
+                            break;
+                        }
+                        initEnv = initEnv.OuterEnv;
+                    }
                     break;
+                }
                 case OpCode.Yield:
                 {
                     // ECMA-262 27.5.1.3 GeneratorYield — save frame state to the
@@ -12545,7 +12578,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             JsFunctionObject jfo => JsValue.FromString(
                 jfo.Function.SourceText
                 ?? $"function {(jfo.Function.Name ?? string.Empty)}() {{ [native code] }}"),
-            BoundFunctionObject => JsValue.FromString("function bound() { [native code] }"),
+            BoundFunctionObject bfo => JsValue.FromString($"function bound {bfo.TargetName ?? string.Empty}() {{ [native code] }}"),
             // ECMA-262 20.2.3.5 step 3: Proxy-wrapped callables don't have
             // [[SourceText]]; return an implementation-dependent NativeFunction
             // representation. Non-callable Proxy targets throw TypeError.

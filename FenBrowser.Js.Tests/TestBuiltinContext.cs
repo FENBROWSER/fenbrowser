@@ -177,6 +177,7 @@ internal sealed class TestBuiltinContext : IBuiltinContext
     public ObjectHandle MaterializeJsonObject() => throw new NotSupportedException();
     public ObjectHandle MaterializeReflectObject() => throw new NotSupportedException();
     public ObjectHandle MaterializeIteratorConstructor() => throw new NotSupportedException();
+    public ObjectHandle MaterializeRegExpConstructor() => throw new NotSupportedException();
     public ObjectHandle MaterializeWeakRefConstructor() => throw new NotSupportedException();
     public ObjectHandle MaterializeFinalizationRegistryConstructor() => throw new NotSupportedException();
     public ObjectHandle MaterializeAggregateErrorConstructor() => throw new NotSupportedException();
