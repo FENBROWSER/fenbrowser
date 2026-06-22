@@ -225,6 +225,7 @@ public sealed partial class BytecodeInterpreter
                 var genObj = new GeneratorObject(fn.Function, registers, fn.OuterEnvironment);
                 genObj.ThisValue = thisValue;
                 genObj.InitialArgs = args as JsValue[] ?? System.Linq.Enumerable.ToArray(args);
+                genObj.SelfHandle = fn.SelfHandle;
                 // ECMA-262 14.4.11: FunctionDeclarationInstantiation runs
                 // before OrdinaryCreateFromConstructor. Since our prologue
                 // performs param binding (including default-param side-effects
@@ -258,7 +259,8 @@ public sealed partial class BytecodeInterpreter
                 {
                     ThisValue = thisValue,
                     IsAsyncGenerator = true,
-                    InitialArgs = args as JsValue[] ?? System.Linq.Enumerable.ToArray(args)
+                    InitialArgs = args as JsValue[] ?? System.Linq.Enumerable.ToArray(args),
+                    SelfHandle = fn.SelfHandle
                 };
                 genObj.SetPrototype(EnsureAsyncGeneratorPrototype());
                 var genHandle = _heap.AllocateObject(genObj, AllocationSite.Current());

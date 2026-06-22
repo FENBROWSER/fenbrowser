@@ -141,58 +141,29 @@ public sealed class ErrorBuiltins : IBuiltinModule
                 //
                 // SetterThatIgnoresPrototypeProperties (this, home, p, v):
                 //   1. If this is not an Object, throw TypeError. (already checked)
-                //   2. If SameValue(this, home) is true, then
-                //      NOTE: emulates assignment to a non-writable data property
-                //      on the home object in strict mode code.
-                //      THROW TypeError.
+                //   2. If SameValue(this, home) is true, throw TypeError.
                 //   3. Let desc be ? this.[[GetOwnProperty]](p).
                 //   4. If desc is undefined → CreateDataPropertyOrThrow(this, p, v).
                 //   5. Else → Set(this, p, v, true).
                 //
-                // Step 2: if the receiver IS %Error.prototype%, throw TypeError to
-                // prevent infinite recursion (calling the setter would find the same
-                // accessor and call us again).
-                var obj = ctx.Heap.GetObject(thisValue.AsObjectHandle());
-                // Step 2: SameValue(this, home) — throw if receiver is the prototype itself.
-                // We detect this by comparing the handle; %Error.prototype% is the
-                // object pointed to by protoHandle.
+                // Step 2: SameValue check — prevent assignment directly to %Error.prototype%.
                 if (thisValue.AsObjectHandle() == handle)
                 {
                     throw new JsThrownException(ctx.CreateTypeError(
                         "Cannot assign to 'stack' property of %Error.prototype%."));
                 }
-                // Step 3: Check own property.
-                if (obj.TryGetOwnProperty("stack", out var ownDesc))
+                // Steps 3-5: Proxy-aware own-property check and set/create.
+                if (ctx.GetOwnPropertyOnReceiver(thisValue, "stack", out var ownDesc))
                 {
-                    // Step 5: existing own property — [[Set]] semantics.
-                    if (ownDesc.IsAccessor)
-                    {
-                        if (ownDesc.Set.Tag == JsValueTag.Object)
-                            ctx.CallFunction(ownDesc.Set, new[] { v }, thisValue);
-                        else
-                            throw new JsThrownException(ctx.CreateTypeError(
-                                "Cannot assign to 'stack' property of object which has only a getter."));
-                    }
-                    else if (!ownDesc.Writable)
-                    {
+                    if (!ctx.SetPropertyOnReceiver(thisValue, "stack", v, throwOnFailure: true))
                         throw new JsThrownException(ctx.CreateTypeError(
-                            "Cannot assign to read only property 'stack' of object."));
-                    }
-                    else
-                    {
-                        obj.DefineOwnProperty("stack", ownDesc with { Value = v });
-                    }
+                            "Cannot assign to 'stack' property."));
                 }
                 else
                 {
-                    // Step 4: no own property — CreateDataPropertyOrThrow.
-                    var newDesc = new JsPropertyDescriptor(v,
-                        Writable: true, Enumerable: true, Configurable: true);
-                    if (!obj.DefineOwnProperty("stack", newDesc))
-                    {
+                    if (!ctx.CreateDataPropertyOrThrowOnReceiver(thisValue, "stack", v, throwOnFailure: true))
                         throw new JsThrownException(ctx.CreateTypeError(
-                            "Cannot create property 'stack' on non-extensible object."));
-                    }
+                            "Cannot create property 'stack'."));
                 }
                 return JsValue.Undefined;
             }, length: 1);

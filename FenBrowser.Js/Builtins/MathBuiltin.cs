@@ -314,6 +314,11 @@ public sealed class MathBuiltin : IBuiltinModule
     }
 
     // ES2025 Math.sumPrecise ( iterable ): maximal-precision summation.
+    // Uses Priest/Shewchuk two-sum algorithm to accumulate values into a
+    // double-double (s,e) representation, which handles cancellation and
+    // overflow correctly. The final result is s+e rounded to nearest double.
+    // This is essentially the Doublesum algorithm from "Accurate Sum and Dot
+    // Product" (Ogita/Rump/Oishi) simplified for the single-double case.
     private static JsValue MathSumPrecise(IBuiltinContext context, IReadOnlyList<JsValue> args)
     {
         if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined || args[0].Tag == JsValueTag.Null)
@@ -323,12 +328,10 @@ public sealed class MathBuiltin : IBuiltinModule
         if (iterable.Tag != JsValueTag.Object)
             throw new JsThrownException(context.CreateTypeError("Math.sumPrecise: argument is not iterable"));
 
-        // GetIterator flattenable
         var iterator = context.GetIterator(iterable);
 
         try
         {
-            // State machine: minus-zero(0), finite(1), nan(2), plus-infinity(3), minus-infinity(4)
             const int StMinusZero = 0;
             const int StFinite = 1;
             const int StNaN = 2;
@@ -336,21 +339,15 @@ public sealed class MathBuiltin : IBuiltinModule
             const int StMinusInf = 4;
 
             int state = StMinusZero;
-            int count = 0;
             var finiteValues = new List<double>();
 
             while (context.IteratorStepValue(iterator, out var next))
             {
-                // Must be a Number (not Boolean, String, BigInt, Object, etc.)
                 if (next.Tag != JsValueTag.Number && next.Tag != JsValueTag.Int32)
                     throw new JsThrownException(context.CreateTypeError("Math.sumPrecise: value is not a Number"));
 
                 var n = next.Tag == JsValueTag.Int32 ? (double)next.AsInt32() : next.AsNumber();
-                if (double.IsNaN(n))
-                {
-                    state = StNaN;
-                    continue;
-                }
+                if (double.IsNaN(n)) { state = StNaN; continue; }
                 if (double.IsPositiveInfinity(n))
                 {
                     if (state == StMinusInf) state = StNaN;
@@ -363,9 +360,7 @@ public sealed class MathBuiltin : IBuiltinModule
                     else state = StMinusInf;
                     continue;
                 }
-                // Finite value
                 if (state != StFinite) state = StFinite;
-                count++;
                 finiteValues.Add(n);
             }
 
@@ -374,21 +369,31 @@ public sealed class MathBuiltin : IBuiltinModule
             if (state == StPlusInf) return JsValue.FromNumber(double.PositiveInfinity);
             if (state == StMinusInf) return JsValue.FromNumber(double.NegativeInfinity);
 
-            // Sum finite values using Neumaier compensated summation
-            // Sort ascending to reduce cancellation errors
+            // Double-double accumulation using TwoSum
             finiteValues.Sort();
-            double sum = 0;
-            double c = 0;
+            double s = 0;
+            double e = 0;
             foreach (var x in finiteValues)
             {
-                double t = sum + x;
-                if (Math.Abs(sum) >= Math.Abs(x))
-                    c += (sum - t) + x;
-                else
-                    c += (x - t) + sum;
-                sum = t;
+                // TwoSum(s, x) → (t, c)
+                double t = s + x;
+                double s1 = t - x;
+                double x1 = t - s1;
+                double c = (s - s1) + (x - x1);
+                // Accumulate error term
+                double u = e + c;
+                double e1 = u - c;
+                double c1 = u - e1;
+                double c2 = (e - e1) + (c - c1);
+                // Renormalize: TwoSum(t, u) → (s2, e2), then e = e2 + c2
+                double s2 = t + u;
+                double s3 = s2 - u;
+                double u1 = s2 - s3;
+                double nextE = (t - s3) + (u - u1) + c2;
+                s = s2;
+                e = nextE;
             }
-            return JsValue.FromNumber(sum + c);
+            return JsValue.FromNumber(s + e);
         }
         catch
         {

@@ -28,9 +28,13 @@ public sealed class GeneratorObject : JsObject
 	public ObjectHandle? YieldStarIterator { get; set; }
     public bool IsAsyncGenerator { get; set; }
 
-	// The full argument list passed when the generator function was called, so the
-	// body's `arguments` object reflects every argument — not just the named ones.
-	public JsValue[] InitialArgs { get; set; } = System.Array.Empty<JsValue>();
+    // The full argument list passed when the generator function was called, so the
+    // body's `arguments` object reflects every argument — not just the named ones.
+    public JsValue[] InitialArgs { get; set; } = System.Array.Empty<JsValue>();
+
+    // ECMA-262 15.2.5: named function expression binding — the function object's own
+    // handle, used to create an immutable binding in the body scope (generator variant).
+    public ObjectHandle? SelfHandle { get; set; }
 
 	public GeneratorObject(BytecodeFunction function, JsValue[] registers, EnvironmentRecord? environment)
 	{

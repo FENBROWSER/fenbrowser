@@ -113,7 +113,8 @@ public class DeclarativeEnvironmentRecord : EnvironmentRecord
 
         if (!binding.IsMutable)
         {
-            return BindingOpResult.ConstAssignment;
+            if (strict || binding.IsStrict) return BindingOpResult.ConstAssignment;
+            return BindingOpResult.Ok;
         }
 
         _bindings[name] = binding with { Value = value };

@@ -59,6 +59,33 @@ internal sealed class TestBuiltinContext : IBuiltinContext
     public bool TryGetPropertyValue(JsObject obj, JsValue receiver, string name, out JsValue value)
         => throw new NotSupportedException("TryGetPropertyValue is not supported in TestBuiltinContext.");
 
+    public bool HasProperty(JsObject obj, string name)
+        => throw new NotSupportedException("HasProperty is not supported in TestBuiltinContext.");
+
+    public bool SetPropertyOnReceiver(JsValue receiver, string key, JsValue value, bool throwOnFailure)
+        => throw new NotSupportedException("SetPropertyOnReceiver is not supported in TestBuiltinContext.");
+
+    public bool GetOwnPropertyOnReceiver(JsValue receiver, string key, out JsPropertyDescriptor desc)
+    {
+        desc = default;
+        throw new NotSupportedException("GetOwnPropertyOnReceiver is not supported in TestBuiltinContext.");
+    }
+
+    public bool CreateDataPropertyOrThrowOnReceiver(JsValue receiver, string key, JsValue value, bool throwOnFailure)
+        => throw new NotSupportedException("CreateDataPropertyOrThrowOnReceiver is not supported in TestBuiltinContext.");
+
+    public JsValue GetIterator(JsValue iterable)
+        => throw new NotSupportedException("GetIterator is not supported in TestBuiltinContext.");
+
+    public bool IteratorStepValue(JsValue iterator, out JsValue value)
+    {
+        value = JsValue.Undefined;
+        throw new NotSupportedException("IteratorStepValue is not supported in TestBuiltinContext.");
+    }
+
+    public void IteratorClose(JsValue iterator)
+        => throw new NotSupportedException("IteratorClose is not supported in TestBuiltinContext.");
+
     public int GetArrayLength(JsObject obj)
         => throw new NotSupportedException("GetArrayLength is not supported in TestBuiltinContext.");
 

@@ -32,6 +32,24 @@ public interface IBuiltinContext
     // inherited). Proxy `has` trap is invoked when O is a Proxy.
     bool HasProperty(JsObject obj, string name);
 
+    // Performs a Proxy-aware property set on the receiver. If the receiver already
+    // has an own property with the given key, [[Set]] semantics apply (including
+    // invoking Proxy `set` trap). Otherwise CreateDataPropertyOrThrow semantics
+    // apply (including invoking Proxy `defineProperty` trap). Returns false when
+    // the throw flag is false and the operation was rejected (e.g. non-writable
+    // target, defineProperty trap returned false).
+    bool SetPropertyOnReceiver(JsValue receiver, string key, JsValue value, bool throwOnFailure);
+
+    // ECMA-262 [[GetOwnProperty]] on the receiver, Proxy-aware. Returns true if an
+    // own property descriptor was found (even if it came from a Proxy getOwnPropertyDescriptor trap).
+    // Returns false when no own property exists for the key. When false, desc is set to default.
+    bool GetOwnPropertyOnReceiver(JsValue receiver, string key, out JsPropertyDescriptor desc);
+
+    // Creates a data property (writable, enumerable, configurable) on the receiver via
+    // [[DefineOwnProperty]], Proxy-aware (invokes defineProperty trap). Returns false
+    // and throws TypeError when throwOnFailure is true and the operation is rejected.
+    bool CreateDataPropertyOrThrowOnReceiver(JsValue receiver, string key, JsValue value, bool throwOnFailure);
+
     // ECMA-262 7.4.1 GetIterator ( obj ): returns an iterator for the given iterable.
     // Throws TypeError if obj is not iterable.
     JsValue GetIterator(JsValue iterable);

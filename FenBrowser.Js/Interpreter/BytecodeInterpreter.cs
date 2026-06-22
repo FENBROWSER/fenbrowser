@@ -100,6 +100,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     JsValue IBuiltinContext.ConstructFunction(JsValue ctor, IReadOnlyList<JsValue> args) => ConstructFunction(ctor, args);
     bool IBuiltinContext.TryGetPropertyValue(JsObject obj, JsValue receiver, string name, out JsValue value) => TryGetPropertyValue(obj, receiver, name, out value);
     bool IBuiltinContext.HasProperty(JsObject obj, string name) => HasPropertyIncludingProxy(obj, name);
+    bool IBuiltinContext.SetPropertyOnReceiver(JsValue receiver, string key, JsValue value, bool throwOnFailure) => SetPropertyOnReceiverBuiltin(receiver, key, value, throwOnFailure);
+    bool IBuiltinContext.GetOwnPropertyOnReceiver(JsValue receiver, string key, out JsPropertyDescriptor desc) => GetOwnPropertyOnReceiverBuiltin(receiver, key, out desc);
+    bool IBuiltinContext.CreateDataPropertyOrThrowOnReceiver(JsValue receiver, string key, JsValue value, bool throwOnFailure) => CreateDataPropertyOrThrowOnReceiverBuiltin(receiver, key, value, throwOnFailure);
     JsValue IBuiltinContext.GetIterator(JsValue iterable) => GetIteratorBuiltin(iterable);
     bool IBuiltinContext.IteratorStepValue(JsValue iterator, out JsValue value) => IteratorStepValueBuiltin(iterator, out value);
     void IBuiltinContext.IteratorClose(JsValue iterator) => IteratorRecordCloseNormal(iterator);
@@ -862,10 +865,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             _ = functionEnv.BindThisValue(thisValue);
             // ECMA-262 15.2.5: a named function expression binds its own name (immutably)
             // in scope of its body so it can reference itself (e.g. for recursion).
+            var nameSelfHandle = callee?.SelfHandle ?? ownerGenerator?.SelfHandle;
             if (function.BindsOwnNameInBody && function.Name is { Length: > 0 } selfName
-                && callee?.SelfHandle is { } selfHandle)
+                && nameSelfHandle is { } selfHandle)
             {
-                _ = functionEnv.CreateImmutableBinding(selfName, strict: true);
+                _ = functionEnv.CreateImmutableBinding(selfName, strict: function.IsStrictMode);
                 _ = functionEnv.InitializeBinding(selfName, JsValue.FromObject(selfHandle));
             }
             frameEnv = functionEnv;
@@ -13250,6 +13254,54 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // SetPropertyFromDescriptor.
         var defaultDesc = new JsPropertyDescriptor(JsValue.Undefined, Writable: true, Enumerable: true, Configurable: true);
         return SetPropertyFromDescriptor(ownerHandle, obj, key, defaultDesc, value, receiver);
+    }
+
+    // Builtin-facing Proxy-aware property set. Implements the same logic as
+    // SetPropertyValue but operates from a JsValue receiver (not an ownerHandle+obj
+    // pair). Used by the Error.prototype.stack setter which must observe Proxy traps.
+    [MayExecuteJs]
+    private bool SetPropertyOnReceiverBuiltin(JsValue receiver, string key, JsValue value, bool throwOnFailure)
+    {
+        if (receiver.Tag != JsValueTag.Object) return false;
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
+        return SetPropertyValue(receiver.AsObjectHandle(), obj, key, value, receiver);
+    }
+
+    // Builtin-facing Proxy-aware [[GetOwnProperty]]. Returns true if the receiver
+    // has an own property with the given key (invoking Proxy getOwnPropertyDescriptor
+    // trap when applicable).
+    [MayExecuteJs]
+    private bool GetOwnPropertyOnReceiverBuiltin(JsValue receiver, string key, out JsPropertyDescriptor desc)
+    {
+        desc = default;
+        if (receiver.Tag != JsValueTag.Object) return false;
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
+        if (obj is ProxyObject proxy)
+            return ProxyGetOwnProperty(proxy, key, out desc);
+        return obj.TryGetOwnProperty(key, out desc);
+    }
+
+    // Builtin-facing Proxy-aware CreateDataPropertyOrThrow. Creates a new own data
+    // property on the receiver (invoking Proxy defineProperty trap when applicable).
+    [MayExecuteJs]
+    private bool CreateDataPropertyOrThrowOnReceiverBuiltin(JsValue receiver, string key, JsValue value, bool throwOnFailure)
+    {
+        if (receiver.Tag != JsValueTag.Object) return false;
+        var obj = _heap.GetObject(receiver.AsObjectHandle());
+        if (obj is ProxyObject proxy)
+        {
+            var propDesc = BuildDataPropertyDescriptorObject(value);
+            var ok = ProxyDefineProperty(proxy, key, propDesc);
+            if (!ok && throwOnFailure)
+                throw new JsThrownException(CreateTypeError("Proxy defineProperty trap returned false."));
+            return ok;
+        }
+        var desc = new JsPropertyDescriptor(value, Writable: true, Enumerable: true, Configurable: true);
+        var result = obj.DefineOwnProperty(key, desc);
+        WriteDescriptorBarrier(receiver.AsObjectHandle(), desc);
+        if (!result && throwOnFailure)
+            throw new JsThrownException(CreateTypeError("Cannot create property on non-extensible object."));
+        return result;
     }
 
     // ECMA-262 10.4.2.4 ArraySetLength — assign an Array's "length", deleting own

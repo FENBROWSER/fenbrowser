@@ -2859,9 +2859,9 @@ public sealed class JsParser
         }
     }
 
-    private static void ValidateAwaitYieldFunctionName(string name, bool isAsync, bool isGenerator)
+    private void ValidateAwaitYieldFunctionName(string name, bool isAsync, bool isGenerator)
     {
-        if (isAsync && string.Equals(name, "await", StringComparison.Ordinal))
+        if (isAsync && string.Equals(name, "await", StringComparison.Ordinal) && _moduleMode)
         {
             throw new JsParserException(
                 "'await' is not a valid function name in an async function or async generator.");
