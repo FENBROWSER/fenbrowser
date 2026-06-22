@@ -24,7 +24,7 @@ public sealed class InterpreterFrame
 	}
 
 	public BytecodeFunction Function { get; }
-	public JsValue ThisValue { get; }
+	public JsValue ThisValue { get; set; }
 
 	public JsValue[] Registers { get; }
 

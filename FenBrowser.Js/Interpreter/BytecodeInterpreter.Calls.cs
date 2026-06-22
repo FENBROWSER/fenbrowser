@@ -601,13 +601,13 @@ public sealed partial class BytecodeInterpreter
             try
             {
                 var superResult = ConstructFunction(callee, args, frame.NewTarget);
-                if (superResult.Tag == JsValueTag.Object &&
-                    frame.Environment is FunctionEnvironmentRecord superEnv &&
-                    superEnv.ThisBindingStatus == ThisBindingStatus.Uninitialized)
-                {
-                    _ = superEnv.BindThisValue(superResult);
-                }
-
+                // Store the constructed instance as frame.ThisValue so the
+                // InitThisBinding opcode (emitted right after super() in the
+                // derived constructor bytecode) can bind it into the
+                // FunctionEnvironmentRecord. Only objects can be bound as this;
+                // non-object results from super() trigger a TypeError elsewhere.
+                if (superResult.Tag == JsValueTag.Object)
+                    frame.ThisValue = superResult;
                 frame.Registers[destinationRegister] = superResult;
             }
             catch (JsThrownException ex)
@@ -678,30 +678,44 @@ public sealed partial class BytecodeInterpreter
     // which reads newTarget.prototype.
     private JsValue ExecuteConstruct(JsFunctionObject callee, IReadOnlyList<JsValue> args, JsValue newTarget = default)
     {
-        var instanceObject = CreateOrdinaryObject();
-        var protoReceiver = newTarget.Tag == JsValueTag.Object
-            ? newTarget
-            : (callee.OwnerHandle is { } calleeHandle ? JsValue.FromObject(calleeHandle) : JsValue.Undefined);
-        var prototypeValue = protoReceiver.Tag == JsValueTag.Object
-            ? GetReceiverProperty(protoReceiver, "prototype")
-            : JsValue.Undefined;
-        if (prototypeValue.Tag == JsValueTag.Object)
+        // ECMA-262 9.2.2 [[Construct]]: derived constructors have [[ThisMode]] = "~uninitialized~"
+        // and must NOT receive a pre-allocated instance. super() will create the instance and
+        // InitThisBinding will bind it as `this` in the derived constructor's env.
+        var isDerived = callee.Function.IsDerivedConstructor;
+
+        JsValue defaultInstance;
+        if (isDerived)
         {
-            instanceObject.SetPrototype(prototypeValue.AsObjectHandle());
+            defaultInstance = JsValue.Undefined;
+        }
+        else
+        {
+            var instanceObject = CreateOrdinaryObject();
+            var protoReceiver = newTarget.Tag == JsValueTag.Object
+                ? newTarget
+                : (callee.OwnerHandle is { } calleeHandle ? JsValue.FromObject(calleeHandle) : JsValue.Undefined);
+            var prototypeValue = protoReceiver.Tag == JsValueTag.Object
+                ? GetReceiverProperty(protoReceiver, "prototype")
+                : JsValue.Undefined;
+            if (prototypeValue.Tag == JsValueTag.Object)
+            {
+                instanceObject.SetPrototype(prototypeValue.AsObjectHandle());
+            }
+
+            // ECMA-262 PrivateBrandAdd: every instance of a class that declares any private
+            // element is branded on construction — not only when a private *field*
+            // initializer happens to run. Without this, a class whose only private members
+            // are methods/accessors (no fields) never brands its instances, so every
+            // `this.#getter`/`this.#setter = v` would wrongly throw. Stamp before the
+            // constructor body executes so field inits and private calls inside it see it.
+            if (callee.Function.BrandTokens.Count > 0)
+            {
+                instanceObject.PrivateBrand = callee.Function.BrandTokens[0];
+            }
+
+            defaultInstance = JsValue.FromObject(_heap.AllocateObject(instanceObject, AllocationSite.Current()));
         }
 
-        // ECMA-262 PrivateBrandAdd: every instance of a class that declares any private
-        // element is branded on construction — not only when a private *field*
-        // initializer happens to run. Without this, a class whose only private members
-        // are methods/accessors (no fields) never brands its instances, so every
-        // `this.#getter`/`this.#setter = v` would wrongly throw. Stamp before the
-        // constructor body executes so field inits and private calls inside it see it.
-        if (callee.Function.BrandTokens.Count > 0)
-        {
-            instanceObject.PrivateBrand = callee.Function.BrandTokens[0];
-        }
-
-        var defaultInstance = JsValue.FromObject(_heap.AllocateObject(instanceObject, AllocationSite.Current()));
         _pendingNewTarget = newTarget.Tag == JsValueTag.Undefined
             ? JsValue.Undefined
             : newTarget;
