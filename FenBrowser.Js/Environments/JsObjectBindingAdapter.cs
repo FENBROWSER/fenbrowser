@@ -27,14 +27,20 @@ public sealed class JsObjectBindingAdapter : IGlobalObject
     // invoked with this binding object as the receiver). When null the adapter
     // falls back to the data-only path (getters surface as "unreadable").
     private readonly Func<ObjectHandle, string, JsValue>? _accessorGet;
+    // Optional proxy-aware HasProperty — when the binding object is a Proxy,
+    // delegates to the interpreter's ProxyHas so the `with` statement triggers
+    // the proxy's "has" trap instead of silently walking own properties.
+    private readonly Func<string, bool>? _proxyHas;
 
     public JsObjectBindingAdapter(
-        JsHeap heap, ObjectHandle handle, Func<ObjectHandle, string, JsValue>? accessorGet = null)
+        JsHeap heap, ObjectHandle handle, Func<ObjectHandle, string, JsValue>? accessorGet = null,
+        Func<string, bool>? proxyHas = null)
     {
         ArgumentNullException.ThrowIfNull(heap);
         _heap = heap;
         _handle = handle;
         _accessorGet = accessorGet;
+        _proxyHas = proxyHas;
     }
 
     public ObjectHandle? AsObjectHandle => _handle;
@@ -43,6 +49,8 @@ public sealed class JsObjectBindingAdapter : IGlobalObject
     {
         ArgumentNullException.ThrowIfNull(name);
         var obj = _heap.GetObject(_handle);
+        if (obj is ProxyObject && _proxyHas is not null)
+            return _proxyHas(name);
         return obj.TryGetProperty(name, ResolvePrototype, out _);
     }
 

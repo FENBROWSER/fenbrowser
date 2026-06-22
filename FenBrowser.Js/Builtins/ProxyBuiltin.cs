@@ -38,7 +38,7 @@ public sealed class ProxyBuiltin : IBuiltinModule
 
         var constructor = new NativeFunctionObject(
             "Proxy",
-            call: (_, args) => CreateProxy(args),
+            call: (_, _) => throw new JsThrownException(context.CreateTypeError("Proxy must be called with 'new'.")),
             construct: args => CreateProxy(args),
             length: 2);
         var functionCtorHandle = context.MaterializeFunctionConstructor();

@@ -5159,6 +5159,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return TryGetPropertyValue(obj, JsValue.FromObject(h), name, out var value)
                 ? value
                 : JsValue.Undefined;
+        }, name =>
+        {
+            var obj = _heap.GetObject(handle);
+            if (obj is ProxyObject proxy)
+                return ProxyHas(proxy, name);
+            return obj.TryGetProperty(name, h => _heap.GetObject(h), out _);
         });
 
     private GlobalEnvironmentRecord EnsureGlobalEnvironment()
@@ -8360,6 +8366,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             return resultDesc.Configurable;
         }
 
+        // ECMA-262 10.5.5 [[GetOwnProperty]] step 22:
+        // If resultDesc.[[Configurable]] is false, then
+        //   a. If targetDesc is undefined or targetDesc.[[Configurable]] is true,
+        //      throw a TypeError exception.
+        if (!resultDesc.Configurable && targetDesc.Configurable)
+        {
+            return false;
+        }
+
         if (!targetDesc.Configurable)
         {
             if (resultDesc.Configurable)
@@ -8380,6 +8395,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
 
                 if (!targetDesc.Writable && !AreStrictlyEqual(resultDesc.Value, targetDesc.Value))
+                {
+                    return false;
+                }
+
+                // ECMA-262 10.5.5 [[GetOwnProperty]] step 17.b:
+                // If resultDesc has [[Writable]] field and resultDesc.[[Writable]] is false,
+                // and targetDesc.[[Writable]] is true, throw TypeError.
+                // (The HasWritable flag true on the result desc means [[Writable]] was specified
+                // and is false; this is set during ToPropertyDescriptor parsing.)
+                if (targetDesc.Writable && !resultDesc.Writable && resultDesc.HasWritable)
                 {
                     return false;
                 }
@@ -8541,7 +8566,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             return ProxySet(nestedProxy, receiver, prop, value);
         }
-        return targetObj.SetProperty(prop, value);
+        // ECMA-262 10.5.9 Proxy [[Set]] step 7: no trap → target.[[Set]](P, V, Receiver).
+        // The ordinary [[Set]] algorithm uses `receiver` when creating a new property
+        // (step 5.f), so the proxy's defineProperty trap fires if applicable.
+        return SetPropertyValue(proxy.TargetHandle, targetObj, prop, value, receiver);
     }
 
     [MayExecuteJs]
@@ -8698,7 +8726,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             var target = JsValue.FromObject(proxy.TargetHandle);
             var result = CallFunction(trap.Value, new[] { target, protoValue }, JsValue.FromObject(proxy.HandlerHandle!.Value));
-            return ValueToBooleanProxy(result);
+            var trapResult = ValueToBooleanProxy(result);
+            // ECMA-262 28.2.2.13 [[SetPrototypeOf]] step 9: if trap result is false, return false.
+            if (!trapResult)
+                return false;
+            // Step 10: extensibleTarget = IsExtensible(target) — must be called.
+            var extensibleTarget = IsTargetExtensible(proxy.TargetHandle);
+            // Step 11: if extensibleTarget is true, return true.
+            if (extensibleTarget)
+                return true;
+            // Step 12: targetProto = target.[[GetPrototypeOf]]()
+            var spTargetObj = _heap.GetObject(proxy.TargetHandle);
+            if (spTargetObj is ProxyObject spNestedProxy)
+            {
+                var targetProto = ProxyGetPrototypeOf(spNestedProxy);
+                // Step 13: if SameValue(V, targetProto) is false, throw TypeError.
+                if (!AreStrictlyEqual(protoValue, targetProto))
+                    throw new JsThrownException(CreateTypeError(
+                        "Proxy setPrototypeOf trap cannot change prototype of a non-extensible target."));
+            }
+            else
+            {
+                var targetProto = spTargetObj.PrototypeHandle is { } proto ? JsValue.FromObject(proto) : JsValue.Null;
+                if (!AreStrictlyEqual(protoValue, targetProto))
+                    throw new JsThrownException(CreateTypeError(
+                        "Proxy setPrototypeOf trap cannot change prototype of a non-extensible target."));
+            }
+            return true;
         }
 
         var targetObj = _heap.GetObject(proxy.TargetHandle);
@@ -8758,7 +8812,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             var target = JsValue.FromObject(proxy.TargetHandle);
             var result = CallFunction(trap.Value, new[] { target }, JsValue.FromObject(proxy.HandlerHandle!.Value));
-            return ValueToBooleanProxy(result);
+            var trapResult = ValueToBooleanProxy(result);
+            // ECMA-262 28.2.2.15 [[PreventExtensions]] step 10.c:
+            // If trap result is true but target is still extensible, throw TypeError.
+            if (trapResult && IsTargetExtensible(proxy.TargetHandle))
+                throw new JsThrownException(CreateTypeError(
+                    "Proxy preventExtensions trap reported success but target is extensible."));
+            return trapResult;
         }
 
         var targetObj = _heap.GetObject(proxy.TargetHandle);
@@ -8801,7 +8861,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
                 else
                 {
-                    keys.Add(JsValue.FromString(ToPropertyKey(item)));
+                    // ECMA-262 28.2.2.11 step 8: CreateListFromArrayLike
+                    // with elementTypes « String, Symbol » — throw TypeError
+                    // for entries of any other type.
+                    throw new JsThrownException(CreateTypeError(
+                        "Proxy ownKeys trap returned an entry whose type is not String or Symbol."));
                 }
             }
 
@@ -8818,12 +8882,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 }
             }
 
-            // 2. Non-extensible target: all own property keys must be present.
+            // 2. Non-extensible target: all own property keys must be present,
+            // and the result must not contain extra keys not in the target.
             if (!IsTargetExtensible(proxy.TargetHandle))
             {
                 var targetObjForKeys = _heap.GetObject(proxy.TargetHandle);
+                var targetKeySet = new HashSet<string>();
                 foreach (var ownProp in targetObjForKeys.EnumerateOwnProperties())
                 {
+                    targetKeySet.Add(ownProp.Key);
                     if (!seen.Contains(ownProp.Key))
                     {
                         throw new JsThrownException(CreateTypeError(
@@ -8833,10 +8900,22 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 foreach (var ownSym in targetObjForKeys.EnumerateOwnSymbolProperties())
                 {
                     var symKey = $"@@{ownSym.Key}";
+                    targetKeySet.Add(symKey);
                     if (!seen.Contains(symKey))
                     {
                         throw new JsThrownException(CreateTypeError(
                             "Proxy ownKeys trap must include all own symbol keys for a non-extensible target."));
+                    }
+                }
+                // ECMA-262 28.2.2.11 step 20: any key in the trap result that is
+                // not an own property of the target must be rejected for a
+                // non-extensible target.
+                foreach (var k in seen)
+                {
+                    if (!targetKeySet.Contains(k))
+                    {
+                        throw new JsThrownException(CreateTypeError(
+                            "Proxy ownKeys trap returned a key not present on a non-extensible target."));
                     }
                 }
             }
@@ -8924,9 +9003,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var trap = TryGetProxyTrap(proxy, "defineProperty");
         if (trap is not null)
         {
+            // ECMA-262 28.2.2.6 [[DefineOwnProperty]] step 8:
+            // Let descObj be FromPropertyDescriptor(Desc) — a fresh object created
+            // in the current realm with %ObjectPrototype% as its [[Prototype]].
+            var descObj = FromPropertyDescriptorObject(descriptorValue);
             var target = JsValue.FromObject(proxy.TargetHandle);
             var key = JsValue.FromString(prop);
-            var result = CallFunction(trap.Value, new[] { target, key, descriptorValue }, JsValue.FromObject(proxy.HandlerHandle!.Value));
+            var result = CallFunction(trap.Value, new[] { target, key, descObj }, JsValue.FromObject(proxy.HandlerHandle!.Value));
             var trapResult = ValueToBooleanProxy(result);
             if (!trapResult)
             {
@@ -9091,6 +9174,33 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             : new JsPropertyDescriptor(hasValue ? value : JsValue.Undefined, writable, enumerable, configurable);
     }
 
+
+    // ECMA-262 6.2.5.4 FromPropertyDescriptor: creates a fresh object in the
+    // current realm with %ObjectPrototype% as its [[Prototype]], populated with
+    // the descriptor fields read from descriptorValue.
+    private JsValue FromPropertyDescriptorObject(JsValue descriptorValue)
+    {
+        // Parse to internal descriptor first (validates and normalizes fields).
+        var desc = ToPropertyDescriptor(descriptorValue);
+        var obj = CreateOrdinaryObject();
+        obj.SetPrototype(EnsureObjectPrototype());
+        if (desc.IsAccessor)
+        {
+            if (desc.Get.Tag != JsValueTag.Undefined)
+                obj.DefineOwnProperty("get", new JsPropertyDescriptor(desc.Get, Writable: true, Enumerable: true, Configurable: true));
+            if (desc.Set.Tag != JsValueTag.Undefined)
+                obj.DefineOwnProperty("set", new JsPropertyDescriptor(desc.Set, Writable: true, Enumerable: true, Configurable: true));
+        }
+        else
+        {
+            obj.DefineOwnProperty("value", new JsPropertyDescriptor(desc.Value, Writable: true, Enumerable: true, Configurable: true));
+            obj.DefineOwnProperty("writable", new JsPropertyDescriptor(JsValue.FromBoolean(desc.Writable), Writable: true, Enumerable: true, Configurable: true));
+        }
+        obj.DefineOwnProperty("enumerable", new JsPropertyDescriptor(JsValue.FromBoolean(desc.Enumerable), Writable: true, Enumerable: true, Configurable: true));
+        obj.DefineOwnProperty("configurable", new JsPropertyDescriptor(JsValue.FromBoolean(desc.Configurable), Writable: true, Enumerable: true, Configurable: true));
+        var handle = _heap.AllocateObject(obj, AllocationSite.Current());
+        return JsValue.FromObject(handle);
+    }
 
     private string NormalizeRegExpFlags(string flags)
     {
@@ -17029,12 +17139,14 @@ fallbackArraySpecies:
                 if (args.Count > 1 && args[1].Tag == JsValueTag.Object)
                 {
                     var opts = _heap.GetObject(args[1].AsObjectHandle());
-                    if (opts.TryGetProperty("maxByteLength", x => _heap.GetObject(x), out var mblDesc) &&
-                        mblDesc.Value.Tag is JsValueTag.Number or JsValueTag.Int32)
+                    if (TryGetPropertyValue(opts, args[1], "maxByteLength", out var mblValue) &&
+                        mblValue.Tag != JsValueTag.Undefined)
                     {
-                        var mbl = mblDesc.Value.AsNumber();
-                        if (mbl < length || mbl > int.MaxValue)
+                        var mbl = ToNumber(mblValue);
+                        if (double.IsNaN(mbl) || mbl < 0 || double.IsInfinity(mbl) || mbl > int.MaxValue)
                             throw new JsThrownException(CreateRangeError("Invalid ArrayBuffer maxByteLength."));
+                        if (mbl < length)
+                            throw new JsThrownException(CreateRangeError("maxByteLength must be >= length."));
                         maxByteLen = (int)mbl;
                         resizable = true;
                     }
@@ -17414,23 +17526,48 @@ fallbackArraySpecies:
         var constructor = new NativeFunctionObject(
             "DataView",
             (_, _2) => throw new JsThrownException(CreateTypeError("DataView constructor must be invoked with 'new'.")),
-            args =>
+            construct: null,
+            length: 1,
+            constructWithNewTarget: (args, newTarget) =>
             {
+                // ECMA-262 25.3.2.1 DataView(buffer, byteOffset, byteLength):
+                // Steps 2-3: require ArrayBuffer, then ToIndex(byteOffset) BEFORE
+                // IsDetachedBuffer in step 4 (side-effects may occur during coercion).
                 if (args.Count == 0 || args[0].Tag != JsValueTag.Object ||
                     _heap.GetObject(args[0].AsObjectHandle()) is not ArrayBufferObject buf)
                     throw new JsThrownException(CreateTypeError("DataView: first argument must be an ArrayBuffer."));
+                var byteOffset = args.Count > 1 ? ToIndexForView(args[1], "Invalid DataView byteOffset.") : 0;
+                // Step 4: IsDetachedBuffer(buffer) — checked after ToIndex so that
+                // valueOf / toString side-effects on byteOffset fire first.
                 if (buf.IsDetached)
                     throw new JsThrownException(CreateTypeError("DataView: ArrayBuffer is detached."));
-                var byteOffset = args.Count > 1 ? ToIndexForView(args[1], "Invalid DataView byteOffset.") : 0;
+                if (byteOffset > buf.ByteLength)
+                    throw new JsThrownException(CreateRangeError("DataView: byteOffset exceeds ArrayBuffer bounds."));
                 bool isAutoLength = args.Count <= 2 || args[2].Tag == JsValueTag.Undefined;
-                var byteLength = isAutoLength ? buf.ByteLength - byteOffset : ToIndexForView(args[2], "Invalid DataView byteLength.");
-                if (byteOffset + byteLength > buf.ByteLength)
+                var byteLength = isAutoLength
+                    ? buf.ByteLength - byteOffset
+                    : ToIndexForView(args[2], "Invalid DataView byteLength.");
+                if (byteLength < 0 || byteOffset + byteLength > buf.ByteLength)
                     throw new JsThrownException(CreateRangeError("DataView: offset + length exceeds ArrayBuffer bounds."));
+
+                // Step 10: OrdinaryCreateFromConstructor — access newTarget.prototype.
+                // This may run user code that detaches the buffer.
+                var proto = prototypeHandle;
+                if (newTarget.Tag == JsValueTag.Object)
+                {
+                    var protoValue = GetReceiverProperty(newTarget, "prototype");
+                    if (protoValue.Tag == JsValueTag.Object)
+                        proto = protoValue.AsObjectHandle();
+                }
+
+                // Step 11: re-check buffer detachment after prototype access.
+                if (buf.IsDetached)
+                    throw new JsThrownException(CreateTypeError("DataView: ArrayBuffer was detached during construction."));
+
                 var view = new DataViewObject(buf, byteOffset, byteLength, isLengthTracking: isAutoLength);
-                view.SetPrototype(prototypeHandle);
+                view.SetPrototype(proto);
                 return JsValue.FromObject(_heap.AllocateObject(view, AllocationSite.Current()));
-            },
-            length: 1);
+            });
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);
@@ -17449,11 +17586,21 @@ fallbackArraySpecies:
 
         prototype.DefineOwnProperty("byteLength", JsPropertyDescriptor.Accessor(
             JsValue.FromObject(_heap.AllocateObject(new NativeFunctionObject("get byteLength", (thisValue, _2) =>
-                JsValue.FromNumber(RequireDataView(thisValue).ByteLength), length: 0), AllocationSite.Current())), JsValue.Undefined, Enumerable: false, Configurable: true));
+            {
+                var dv = RequireDataView(thisValue);
+                if (dv.IsViewDetached)
+                    throw new JsThrownException(CreateTypeError("DataView byteLength: buffer is detached."));
+                return JsValue.FromNumber(dv.ByteLength);
+            }, length: 0), AllocationSite.Current())), JsValue.Undefined, Enumerable: false, Configurable: true));
 
         prototype.DefineOwnProperty("byteOffset", JsPropertyDescriptor.Accessor(
             JsValue.FromObject(_heap.AllocateObject(new NativeFunctionObject("get byteOffset", (thisValue, _2) =>
-                JsValue.FromNumber(RequireDataView(thisValue).ByteOffset), length: 0), AllocationSite.Current())), JsValue.Undefined, Enumerable: false, Configurable: true));
+            {
+                var dv = RequireDataView(thisValue);
+                if (dv.IsViewDetached)
+                    throw new JsThrownException(CreateTypeError("DataView byteOffset: buffer is detached."));
+                return JsValue.FromNumber(dv.ByteOffset);
+            }, length: 0), AllocationSite.Current())), JsValue.Undefined, Enumerable: false, Configurable: true));
 
         // Prototype methods: getInt8 through setBigUint64
         InstallDataViewPrototypeMethods(prototypeHandle, prototype);
@@ -17545,12 +17692,12 @@ fallbackArraySpecies:
             => index < args.Count && ValueToBooleanProxy(args[index]);
 
         double ReadNumberArg(IReadOnlyList<JsValue> args, int index)
-            => index < args.Count ? ToNumber(args[index]) : 0;
+            => index < args.Count ? ToNumber(args[index]) : double.NaN;
 
         BigInteger ReadBigIntArg(IReadOnlyList<JsValue> args, int index)
         {
             if (index >= args.Count)
-                return BigInteger.Zero;
+                throw new JsThrownException(CreateTypeError("Cannot convert undefined to BigInt."));
 
             var value = args[index];
             if (value.Tag == JsValueTag.Object)
