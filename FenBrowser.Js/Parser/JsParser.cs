@@ -736,10 +736,23 @@ public sealed class JsParser
         var letConstClassNames = new HashSet<string>(StringComparer.Ordinal);
         CollectVarConflictNamesRecursive(statements, varDeclNames, funcDeclNames, letConstClassNames);
 
+        // Collect which lexical names came from function declarations (vs let/const/class).
+        // In sloppy mode, function declarations are allowed to share names with var
+        // declarations (Annex B.3.1).
+        var lexicalFuncDeclNames = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var statement in statements)
+        {
+            if (statement is FunctionDeclarationNode funcDecl)
+                lexicalFuncDeclNames.Add(funcDecl.Name);
+        }
+
         foreach (var name in lexicalNames)
         {
             // Conflict (a): lexical name vs explicit `var` declaration.
-            if (varDeclNames.Contains(name))
+            // In sloppy mode, a function declaration sharing a name with a var
+            // declaration is NOT a conflict (Annex B.3.1: function hoists first,
+            // var assignment takes effect at its position).
+            if (varDeclNames.Contains(name) && !(!_strictMode && lexicalFuncDeclNames.Contains(name)))
             {
                 throw new JsParserException(
                     $"Block-scoped declaration '{name}' conflicts with a var declaration in the same block.");
@@ -799,9 +812,9 @@ public sealed class JsParser
             throw new JsParserException("A trailing comma is not allowed after a rest parameter.");
         }
 
-        if (parameterInfo.HasDuplicateNames)
+        if (parameterInfo.HasDuplicateNames && (strictMode || !parameterInfo.IsSimple))
         {
-            throw new JsParserException("Duplicate parameter names are not allowed in class methods.");
+            throw new JsParserException("Duplicate parameter names are not allowed in this context.");
         }
 
         if (parameterInfo.HasSuperCallInInitializers)
@@ -2498,6 +2511,8 @@ public sealed class JsParser
         }
 
         var name = ExpectIdentifier();
+        if (_classStaticBlockDepth > 0 && string.Equals(name.Text, "await", StringComparison.Ordinal))
+            throw new JsParserException("'await' may not be used as a binding name inside a class static block.");
         var (parameterInfo, body) = ParseFunctionParametersAndBody(
             allowYieldInBody: isGenerator,
             allowAwaitInBody: isAsync);
@@ -2867,7 +2882,7 @@ public sealed class JsParser
                 "'await' is not a valid function name in an async function or async generator.");
         }
 
-        if (isGenerator && string.Equals(name, "yield", StringComparison.Ordinal))
+        if (isGenerator && string.Equals(name, "yield", StringComparison.Ordinal) && _strictMode)
         {
             throw new JsParserException(
                 "'yield' is not a valid function name in a generator or async generator.");
@@ -3071,6 +3086,19 @@ public sealed class JsParser
             case WithStatementNode withStmt:
                 ValidateNoUndeclaredPrivateNames(withStmt.Object, outerDeclared);
                 ValidateAllPrivateNamesValidInStatement(withStmt.Body, outerDeclared);
+                break;
+            case FunctionDeclarationNode funcDecl:
+                // Function declarations introduce a new scope that shares the
+                // enclosing private environment. Recurse into body and defaults.
+                if (funcDecl.ParameterDefaults is not null)
+                {
+                    foreach (var def in funcDecl.ParameterDefaults)
+                    {
+                        if (def is not null)
+                            ValidateNoUndeclaredPrivateNames(def, outerDeclared);
+                    }
+                }
+                ValidateAllPrivateNamesValidInStatements(funcDecl.Body.Statements, outerDeclared);
                 break;
             // Function declarations, empty statements, debugger, import/export
             // don't contain expressions with potential private names.
@@ -3400,9 +3428,12 @@ public sealed class JsParser
             var savedStaticStart = Current().Span;
             bool isStatic = false;
             // The 'static' modifier is a contextual keyword (lexed as Identifier).
-            // Disambiguate against a method literally named "static" by peeking the
-            // next token: if it's '(', the current token is the method name.
-            if (IsUnescapedIdentifierLike(Current(), "static") && !IsPunctuatorAt(1, "("))
+            // Disambiguate against a field/method literally named "static" by
+            // checking the next token: if it starts a class member name, a '*',
+            // or a '{', the current token is the 'static' modifier. Otherwise it
+            // is a field or method named "static".
+            if (IsUnescapedIdentifierLike(Current(), "static")
+                && (IsClassMemberNameStartAt(1) || IsPunctuatorAt(1, "*") || IsPunctuatorAt(1, "{")))
             {
                 Advance();
                 isStatic = true;
@@ -4475,17 +4506,8 @@ public sealed class JsParser
             {
                 if (IsIdentifierLike(token))
                 {
-                    // Legacy FenJS behavior: allow yield-like expressions in non-generator
-                    // function bodies when the token is not an assignment target.
-                    if (minBindingPower <= 2 && !IsPunctuatorAt(1, "="))
-                    {
-                        // Fall through to parse as a yield expression.
-                    }
-                    else
-                    {
-                        Advance();
-                        return new IdentifierExpressionNode(token.Text, token.Span);
-                    }
+                    Advance();
+                    return new IdentifierExpressionNode(token.Text, token.Span);
                 }
                 else
                 {

@@ -237,8 +237,12 @@ public sealed class BytecodeCompiler
                 _ = GetOrCreateVariableSlot(annexBName);
             }
         }
+        var hasPrologue = prologueStatementCount > 0;
 
-        HoistFunctionDeclarations(program.Body);
+        if (!hasPrologue)
+        {
+            HoistFunctionDeclarations(program.Body);
+        }
 
         int prologueEndIp = 0;
         var stmtIndex = 0;
@@ -246,10 +250,24 @@ public sealed class BytecodeCompiler
         {
             CompileStatement(stmt);
             stmtIndex++;
-            if (stmtIndex == prologueStatementCount && prologueStatementCount > 0)
+            if (stmtIndex == prologueStatementCount && hasPrologue)
             {
                 prologueEndIp = _instructions.Count;
                 _instructions.Add(new Instruction(OpCode.PrologueEnd, 0, 0, 0));
+                // Hoist function declarations from the body portion AFTER the
+                // parameter default expressions (the prelude). This ensures
+                // that the StoreVar for a function declaration like
+                // `function arguments() {}` does not overwrite the `arguments`
+                // object binding before the default expression is evaluated
+                // (ECMA-262 10.2.1.3 step 28).
+                var bodyFuncDecls = new List<StatementNode>();
+                for (int bi = prologueStatementCount; bi < program.Body.Count; bi++)
+                {
+                    if (program.Body[bi] is FunctionDeclarationNode)
+                        bodyFuncDecls.Add(program.Body[bi]);
+                }
+                if (bodyFuncDecls.Count > 0)
+                    HoistFunctionDeclarations(bodyFuncDecls);
             }
         }
 
