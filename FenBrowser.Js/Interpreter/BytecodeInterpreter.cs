@@ -1368,15 +1368,39 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         {
                             // GetIterator(operand) — ECMA-262 7.4.1.
                             var operand = frame.Registers[ins.B];
-                            if (operand.Tag != JsValueTag.Object)
-                                throw new JsThrownException(CreateTypeError("yield* operand is not iterable."));
-                            var operandObj = _heap.GetObject(operand.AsObjectHandle());
                             var iteratorSymId = GetWellKnownSymbolId("iterator");
-                            if (iteratorSymId == 0 ||
-                                !operandObj.TryGetSymbolProperty(iteratorSymId, h => _heap.GetObject(h), out var iterFnDesc) ||
-                                iterFnDesc.Value.Tag != JsValueTag.Object)
+                            if (iteratorSymId == 0)
+                                throw new JsThrownException(CreateTypeError("yield* operand is not iterable."));
+
+                            JsPropertyDescriptor iterFnDesc;
+                            JsValue iteratorMethod;
+                            JsValue receiver;
+                            switch (operand.Tag)
+                            {
+                                case JsValueTag.Object:
+                                    var operandObj = _heap.GetObject(operand.AsObjectHandle());
+                                    if (!operandObj.TryGetSymbolProperty(iteratorSymId, h => _heap.GetObject(h), out iterFnDesc))
+                                        throw new JsThrownException(CreateTypeError("yield* operand is not iterable (missing @@iterator)."));
+                                    receiver = operand;
+                                    iteratorMethod = GetDescriptorValue(iterFnDesc, operand);
+                                    break;
+                                case JsValueTag.String:
+                                {
+                                    var stringProto = _heap.GetObject(GetGlobalPrototype("String"));
+                                    if (!stringProto.TryGetSymbolProperty(iteratorSymId, h => _heap.GetObject(h), out iterFnDesc))
+                                        throw new JsThrownException(CreateTypeError("yield* operand is not iterable (missing @@iterator)."));
+                                    receiver = operand;
+                                    iteratorMethod = GetDescriptorValue(iterFnDesc, operand);
+                                    break;
+                                }
+                                default:
+                                    throw new JsThrownException(CreateTypeError("yield* operand is not iterable."));
+                            }
+
+                            if (iteratorMethod.Tag != JsValueTag.Object)
                                 throw new JsThrownException(CreateTypeError("yield* operand is not iterable (missing @@iterator)."));
-                            var iterResult = CallFunction(iterFnDesc.Value, Array.Empty<JsValue>(), operand);
+
+                            var iterResult = CallFunction(iteratorMethod, Array.Empty<JsValue>(), receiver);
                             if (iterResult.Tag != JsValueTag.Object)
                                 throw new JsThrownException(CreateTypeError("@@iterator did not return an object."));
                             iterHandle = iterResult.AsObjectHandle();
@@ -1404,7 +1428,26 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         // generator itself completes with a return completion
                         // (ECMA-262 27.5.3.3 / yield* step 7.c.iii): run finally
                         // blocks covering the yield*, then finish with the value.
-                        if (!iterObj.TryGetProperty(methodName, h => _heap.GetObject(h), out _))
+                        // GetMethod semantics: null is treated as undefined.
+                        JsValue retMethod;
+                        try
+                        {
+                            if (!iterObj.TryGetProperty(methodName, h => _heap.GetObject(h), out var retPropDesc))
+                            {
+                                retMethod = JsValue.Undefined;
+                            }
+                            else
+                            {
+                                retMethod = GetDescriptorValue(retPropDesc, iterValue);
+                            }
+                        }
+                        catch (JsThrownException ex)
+                        {
+                            ThrowOrHandle(frame, ex.Value);
+                            break;
+                        }
+
+                        if (retMethod.Tag != JsValueTag.Object)
                         {
                             gen.YieldStarIterator = null;
                             if (!TryRouteReturnThroughFinally(frame, methodArg))
@@ -1431,17 +1474,27 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     JsValue innerResult;
                     try
                     {
-                        if (!iterObj.TryGetProperty(methodName, h => _heap.GetObject(h), out var methodDesc) ||
-                            methodDesc.Value.Tag != JsValueTag.Object)
+                        JsValue methodValue;
+                        if (!iterObj.TryGetProperty(methodName, h => _heap.GetObject(h), out var methodPropDesc))
                         {
-                            // Method missing.
+                            methodValue = JsValue.Undefined;
+                        }
+                        else
+                        {
+                            methodValue = GetDescriptorValue(methodPropDesc, iterValue);
+                        }
+
+                        if (methodValue.Tag != JsValueTag.Object)
+                        {
+                            // Method missing (GetMethod semantics: null/undefined treated as undefined).
                             if (methodName == "throw")
                             {
-                                // ECMA-262 15.5.5 step 5.c.ii — .throw() missing:
-                                // clear delegation state and propagate the exception.
+                                // ECMA-262 15.5.5 step 7.b.iii — .throw() missing:
+                                // call IteratorClose, then throw TypeError.
                                 gen.YieldStarIterator = null;
-                                ThrowOrHandle(frame, methodArg);
-                                break;
+                                IteratorCloseOnAbrupt(iterValue);
+                                throw new JsThrownException(CreateTypeError(
+                                    "Iterator does not have a 'throw' method."));
                             }
                             throw new JsThrownException(CreateTypeError(
                                 $"Iterator does not have a '{methodName}' method."));
@@ -1450,9 +1503,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         var callArgs = methodArg.Tag == JsValueTag.Undefined
                             ? Array.Empty<JsValue>()
                             : new[] { methodArg };
-                        innerResult = CallFunction(methodDesc.Value, callArgs, iterValue);
+                        innerResult = CallFunction(methodValue, callArgs, iterValue);
                     }
-                    catch (JsThrownException)
+                    catch (JsThrownException ex)
                     {
                         // ECMA-262 15.5.5 step 5.c.iii — if .throw() throws,
                         // clear delegation and propagate.
@@ -1460,7 +1513,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         {
                             gen.YieldStarIterator = null;
                         }
-                        throw;
+                        ThrowOrHandle(frame, ex.Value);
+                        break;
                     }
 
                     // Step 4: parse the result object.
@@ -1470,16 +1524,38 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         break;
                     }
                     var resultObj = _heap.GetObject(innerResult.AsObjectHandle());
-                    var done = resultObj.TryGetOwnProperty("done", out var doneDesc) &&
-                               doneDesc.Value.AsBoolean();
+
+                    bool done;
+                    JsValue doneValue;
+                    try
+                    {
+                        var hasDone = resultObj.TryGetOwnProperty("done", out var doneDesc);
+                        doneValue = hasDone ? GetDescriptorValue(doneDesc, innerResult) : JsValue.Undefined;
+                        done = hasDone && doneValue.AsBoolean();
+                    }
+                    catch (JsThrownException ex)
+                    {
+                        ThrowOrHandle(frame, ex.Value);
+                        break;
+                    }
 
                     if (done)
                     {
                         // Delegation complete (ECMA-262 15.5.5 step 5.d / 5.e).
                         gen.YieldStarIterator = null;
-                        var innerValue = resultObj.TryGetOwnProperty("value", out var vd)
-                            ? vd.Value
-                            : JsValue.Undefined;
+
+                        JsValue innerValue;
+                        try
+                        {
+                            innerValue = resultObj.TryGetOwnProperty("value", out var vd)
+                                ? GetDescriptorValue(vd, innerResult)
+                                : JsValue.Undefined;
+                        }
+                        catch (JsThrownException ex)
+                        {
+                            ThrowOrHandle(frame, ex.Value);
+                            break;
+                        }
 
                         // yield* step 7.c.viii: when the resume was a return
                         // completion and the inner iterator finished, the OUTER
@@ -1518,7 +1594,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         resultObj.TryGetOwnProperty("value", out var yd) ? yd.Value : JsValue.Undefined,
                         Writable: true, Enumerable: true, Configurable: true));
                     yieldObj.DefineOwnProperty("done", new JsPropertyDescriptor(
-                        JsValue.FromBoolean(false),
+                        doneValue,
                         Writable: true, Enumerable: true, Configurable: true));
                     return JsValue.FromObject(_heap.AllocateObject(yieldObj, AllocationSite.Current()));
                 }

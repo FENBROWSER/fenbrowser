@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using FenBrowser.Js.Ast;
 using FenBrowser.Js.AstValidation;
 using FenBrowser.Js.Objects;
@@ -4842,7 +4844,7 @@ public sealed class BytecodeCompiler
             throw new InvalidOperationException("Template literal quasi/expression count mismatch.");
         }
 
-        var currentReg = LoadStringConstant(template.Quasis[0]);
+        var currentReg = LoadStringConstant(CookTemplateQuasi(template.Quasis[0]));
         for (var i = 0; i < template.Expressions.Count; i++)
         {
             var expressionReg = CompileExpression(template.Expressions[i]);
@@ -4858,7 +4860,7 @@ public sealed class BytecodeCompiler
 
             if (template.Quasis[i + 1].Length > 0)
             {
-                var quasiReg = LoadStringConstant(template.Quasis[i + 1]);
+                var quasiReg = LoadStringConstant(CookTemplateQuasi(template.Quasis[i + 1]));
                 var nextReg = AllocateRegister();
                 _instructions.Add(new Instruction(OpCode.Add, nextReg, currentReg, quasiReg));
                 currentReg = nextReg;
@@ -4941,8 +4943,8 @@ public sealed class BytecodeCompiler
 
     private int CompileTemplateObject(TemplateLiteralExpressionNode template)
     {
-        var cookedArrayReg = CompileTemplateStringArray(template.Quasis);
-        var rawArrayReg = CompileTemplateStringArray(template.Quasis);
+        var cookedArrayReg = CompileTemplateStringArray(CookQuasis(template.Quasis));
+        var rawArrayReg = CompileTemplateStringArray(ComputeRawQuasis(template.Quasis));
         var rawNameIndex = GetOrCreatePropertyName("raw");
         _instructions.Add(new Instruction(OpCode.SetPropByName, cookedArrayReg, rawNameIndex, rawArrayReg));
         return cookedArrayReg;
@@ -4962,6 +4964,142 @@ public sealed class BytecodeCompiler
         }
 
         return arrayReg;
+    }
+
+    private static string CookTemplateQuasi(string raw)
+    {
+        var sb = new StringBuilder(raw.Length);
+        var i = 0;
+        while (i < raw.Length)
+        {
+            var ch = raw[i];
+            if (ch == '\\')
+            {
+                i++;
+                if (i >= raw.Length)
+                {
+                    sb.Append('\\');
+                    break;
+                }
+
+                var escape = raw[i];
+                if (escape == '\r' || escape == '\n' || escape == '\u2028' || escape == '\u2029')
+                {
+                    if (escape == '\r')
+                    {
+                        i++;
+                        if (i < raw.Length && raw[i] == '\n') i++;
+                    }
+                    else
+                    {
+                        i++;
+                    }
+                    continue;
+                }
+
+                i++;
+                switch (escape)
+                {
+                    case 'n': sb.Append('\n'); break;
+                    case 'r': sb.Append('\r'); break;
+                    case 't': sb.Append('\t'); break;
+                    case 'b': sb.Append('\b'); break;
+                    case 'f': sb.Append('\f'); break;
+                    case 'v': sb.Append('\v'); break;
+                    case '\'': sb.Append('\''); break;
+                    case '"': sb.Append('"'); break;
+                    case '\\': sb.Append('\\'); break;
+                    case '`': sb.Append('`'); break;
+                    case '0': sb.Append('\0'); break;
+                    case 'x':
+                    {
+                        if (i + 1 < raw.Length)
+                        {
+                            var hexStr = raw.Substring(i, 2);
+                            if (int.TryParse(hexStr, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var code))
+                                sb.Append((char)code);
+                            i += 2;
+                        }
+                        break;
+                    }
+                    case 'u':
+                    {
+                        if (i < raw.Length && raw[i] == '{')
+                        {
+                            i++;
+                            var braceStart = i;
+                            while (i < raw.Length && raw[i] != '}') i++;
+                            var hexDigits = raw.Substring(braceStart, i - braceStart);
+                            if (hexDigits.Length > 0 &&
+                                int.TryParse(hexDigits, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var cp) &&
+                                cp <= 0x10FFFF)
+                                sb.Append(char.ConvertFromUtf32(cp));
+                            i++;
+                        }
+                        else if (i + 3 < raw.Length)
+                        {
+                            var hexStr = raw.Substring(i, 4);
+                            if (int.TryParse(hexStr, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var code))
+                                sb.Append((char)code);
+                            i += 4;
+                        }
+                        break;
+                    }
+                    default:
+                        sb.Append(escape);
+                        break;
+                }
+                continue;
+            }
+
+            if (ch == '\r')
+            {
+                sb.Append('\n');
+                i++;
+                if (i < raw.Length && raw[i] == '\n') i++;
+                continue;
+            }
+
+            sb.Append(ch);
+            i++;
+        }
+        return sb.ToString();
+    }
+
+    private static string ComputeTemplateRawQuasi(string raw)
+    {
+        var sb = new StringBuilder(raw.Length);
+        var i = 0;
+        while (i < raw.Length)
+        {
+            var ch = raw[i];
+            if (ch == '\r')
+            {
+                sb.Append('\n');
+                i++;
+                if (i < raw.Length && raw[i] == '\n') i++;
+                continue;
+            }
+            sb.Append(ch);
+            i++;
+        }
+        return sb.ToString();
+    }
+
+    private static List<string> CookQuasis(IReadOnlyList<string> quasis)
+    {
+        var result = new List<string>(quasis.Count);
+        foreach (var q in quasis)
+            result.Add(CookTemplateQuasi(q));
+        return result;
+    }
+
+    private static List<string> ComputeRawQuasis(IReadOnlyList<string> quasis)
+    {
+        var result = new List<string>(quasis.Count);
+        foreach (var q in quasis)
+            result.Add(ComputeTemplateRawQuasi(q));
+        return result;
     }
 
     private int LoadStringConstant(string value)
