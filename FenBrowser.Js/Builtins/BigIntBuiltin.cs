@@ -414,6 +414,14 @@ public sealed class BigIntBuiltin : IBuiltinModule
             return TryParseRadix(trimmed[2..], 2, sign, out value);
         }
 
+        // After stripping the sign, the remainder must be plain NumericDigits
+        // (no nested signs, no hex/octal/binary prefixes). BigInteger.TryParse
+        // accepts leading signs which would make "++0" parse incorrectly.
+        if (hadExplicitSign && trimmed.Length > 0 && (trimmed[0] == '+' || trimmed[0] == '-'))
+        {
+            return false;
+        }
+
         if (!BigInteger.TryParse(trimmed, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out value))
         {
             return false;

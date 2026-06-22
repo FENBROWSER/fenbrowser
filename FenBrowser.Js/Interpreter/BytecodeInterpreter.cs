@@ -2391,34 +2391,16 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Exp:
-                    try
-                    {
-                        var left = frame.Registers[ins.B];
-                        var right = frame.Registers[ins.C];
-                        if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
-                        {
-                            var baseVal = left.AsBigInt();
-                            var expVal = right.AsBigInt();
-                            if (expVal < System.Numerics.BigInteger.Zero)
-                                throw new JsThrownException(CreateRangeError("BigInt exponent must be non-negative."));
-                            if (expVal > int.MaxValue)
-                                throw new JsThrownException(CreateRangeError("BigInt exponent is too large."));
-                            frame.Registers[ins.A] = JsValue.FromBigInt(System.Numerics.BigInteger.Pow(baseVal, (int)expVal));
-                        }
-                        else
-                        {
-                            var a = ToNumber(left);
-                            var b = ToNumber(right);
-                            frame.Registers[ins.A] = JsValue.FromNumber(Math.Pow(a, b));
-                        }
-                    }
+                    try { frame.Registers[ins.A] = ExponentiationOp(frame.Registers[ins.B], frame.Registers[ins.C]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Eq:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(AreEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
+                    try { frame.Registers[ins.A] = JsValue.FromBoolean(AreEqual(frame.Registers[ins.B], frame.Registers[ins.C])); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Neq:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(!AreEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
+                    try { frame.Registers[ins.A] = JsValue.FromBoolean(!AreEqual(frame.Registers[ins.B], frame.Registers[ins.C])); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.StrictEq:
                     frame.Registers[ins.A] = JsValue.FromBoolean(AreStrictlyEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
@@ -2451,16 +2433,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     break;
                 }
                 case OpCode.Lt:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(IsLessThan(frame.Registers[ins.B], frame.Registers[ins.C]));
+                    try { frame.Registers[ins.A] = JsValue.FromBoolean(IsLessThan(frame.Registers[ins.B], frame.Registers[ins.C])); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Gt:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(IsGreaterThan(frame.Registers[ins.B], frame.Registers[ins.C]));
+                    try { frame.Registers[ins.A] = JsValue.FromBoolean(IsGreaterThan(frame.Registers[ins.B], frame.Registers[ins.C])); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Le:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(IsLessThanOrEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
+                    try { frame.Registers[ins.A] = JsValue.FromBoolean(IsLessThanOrEqual(frame.Registers[ins.B], frame.Registers[ins.C])); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Ge:
-                    frame.Registers[ins.A] = JsValue.FromBoolean(IsGreaterThanOrEqual(frame.Registers[ins.B], frame.Registers[ins.C]));
+                    try { frame.Registers[ins.A] = JsValue.FromBoolean(IsGreaterThanOrEqual(frame.Registers[ins.B], frame.Registers[ins.C])); }
+                    catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.And:
                     frame.Registers[ins.A] = IsTruthy(frame.Registers[ins.B]) ? frame.Registers[ins.C] : frame.Registers[ins.B];
@@ -2469,31 +2455,31 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     frame.Registers[ins.A] = IsTruthy(frame.Registers[ins.B]) ? frame.Registers[ins.B] : frame.Registers[ins.C];
                     break;
                 case OpCode.BitAnd:
-                    try { frame.Registers[ins.A] = JsValue.FromNumber((double)((int)ToNumber(frame.Registers[ins.B]) & (int)ToNumber(frame.Registers[ins.C]))); }
+                    try { frame.Registers[ins.A] = BitwiseAndOp(frame.Registers[ins.B], frame.Registers[ins.C]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.BitOr:
-                    try { frame.Registers[ins.A] = JsValue.FromNumber((double)((int)ToNumber(frame.Registers[ins.B]) | (int)ToNumber(frame.Registers[ins.C]))); }
+                    try { frame.Registers[ins.A] = BitwiseOrOp(frame.Registers[ins.B], frame.Registers[ins.C]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.BitXor:
-                    try { frame.Registers[ins.A] = JsValue.FromNumber((double)((int)ToNumber(frame.Registers[ins.B]) ^ (int)ToNumber(frame.Registers[ins.C]))); }
+                    try { frame.Registers[ins.A] = BitwiseXorOp(frame.Registers[ins.B], frame.Registers[ins.C]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.BitNot:
-                    try { frame.Registers[ins.A] = JsValue.FromNumber((double)(~(int)ToNumber(frame.Registers[ins.B]))); }
+                    try { frame.Registers[ins.A] = BitwiseNotOp(frame.Registers[ins.B]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.ShiftLeft:
-                    try { var sl = (int)ToNumber(frame.Registers[ins.B]); var sc = (int)ToNumber(frame.Registers[ins.C]) & 0x1F; frame.Registers[ins.A] = JsValue.FromNumber((double)(sl << sc)); }
+                    try { frame.Registers[ins.A] = LeftShiftOp(frame.Registers[ins.B], frame.Registers[ins.C]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.ShiftRight:
-                    try { var sr = (int)ToNumber(frame.Registers[ins.B]); var sc2 = (int)ToNumber(frame.Registers[ins.C]) & 0x1F; frame.Registers[ins.A] = JsValue.FromNumber((double)(sr >> sc2)); }
+                    try { frame.Registers[ins.A] = RightShiftOp(frame.Registers[ins.B], frame.Registers[ins.C]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.UnsignedShiftRight:
-                    try { var u32 = (uint)(int)ToNumber(frame.Registers[ins.B]); var sc3 = (int)ToNumber(frame.Registers[ins.C]) & 0x1F; frame.Registers[ins.A] = JsValue.FromNumber((double)(u32 >> sc3)); }
+                    try { frame.Registers[ins.A] = UnsignedRightShiftOp(frame.Registers[ins.B], frame.Registers[ins.C]); }
                     catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                     break;
                 case OpCode.Return:
@@ -20484,32 +20470,16 @@ fallbackArraySpecies:
                 catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Exp:
-                try
-                {
-                    var left = frame.Registers[b];
-                    var right = frame.Registers[c];
-                    if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.BigInt)
-                    {
-                        var baseVal = left.AsBigInt();
-                        var expVal = right.AsBigInt();
-                        if (expVal < System.Numerics.BigInteger.Zero)
-                            throw new JsThrownException(CreateRangeError("BigInt exponent must be non-negative."));
-                        if (expVal > int.MaxValue)
-                            throw new JsThrownException(CreateRangeError("BigInt exponent is too large."));
-                        frame.Registers[a] = JsValue.FromBigInt(System.Numerics.BigInteger.Pow(baseVal, (int)expVal));
-                    }
-                    else
-                    {
-                        frame.Registers[a] = JsValue.FromNumber(Math.Pow(ToNumber(left), ToNumber(right)));
-                    }
-                }
+                try { frame.Registers[a] = ExponentiationOp(frame.Registers[b], frame.Registers[c]); }
                 catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Eq:
-                frame.Registers[a] = JsValue.FromBoolean(AreEqual(frame.Registers[b], frame.Registers[c]));
+                try { frame.Registers[a] = JsValue.FromBoolean(AreEqual(frame.Registers[b], frame.Registers[c])); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Neq:
-                frame.Registers[a] = JsValue.FromBoolean(!AreEqual(frame.Registers[b], frame.Registers[c]));
+                try { frame.Registers[a] = JsValue.FromBoolean(!AreEqual(frame.Registers[b], frame.Registers[c])); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.StrictEq:
                 frame.Registers[a] = JsValue.FromBoolean(AreStrictlyEqual(frame.Registers[b], frame.Registers[c]));
@@ -20518,16 +20488,20 @@ fallbackArraySpecies:
                 frame.Registers[a] = JsValue.FromBoolean(!AreStrictlyEqual(frame.Registers[b], frame.Registers[c]));
                 break;
             case OpCode.Lt:
-                frame.Registers[a] = JsValue.FromBoolean(IsLessThan(frame.Registers[b], frame.Registers[c]));
+                try { frame.Registers[a] = JsValue.FromBoolean(IsLessThan(frame.Registers[b], frame.Registers[c])); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Gt:
-                frame.Registers[a] = JsValue.FromBoolean(IsGreaterThan(frame.Registers[b], frame.Registers[c]));
+                try { frame.Registers[a] = JsValue.FromBoolean(IsGreaterThan(frame.Registers[b], frame.Registers[c])); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Le:
-                frame.Registers[a] = JsValue.FromBoolean(IsLessThanOrEqual(frame.Registers[b], frame.Registers[c]));
+                try { frame.Registers[a] = JsValue.FromBoolean(IsLessThanOrEqual(frame.Registers[b], frame.Registers[c])); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.Ge:
-                frame.Registers[a] = JsValue.FromBoolean(IsGreaterThanOrEqual(frame.Registers[b], frame.Registers[c]));
+                try { frame.Registers[a] = JsValue.FromBoolean(IsGreaterThanOrEqual(frame.Registers[b], frame.Registers[c])); }
+                catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.And:
                 frame.Registers[a] = IsTruthy(frame.Registers[b]) ? frame.Registers[c] : frame.Registers[b];
@@ -20536,27 +20510,27 @@ fallbackArraySpecies:
                 frame.Registers[a] = IsTruthy(frame.Registers[b]) ? frame.Registers[b] : frame.Registers[c];
                 break;
             case OpCode.BitAnd:
-                try { frame.Registers[a] = JsValue.FromNumber((double)((int)ToNumber(frame.Registers[b]) & (int)ToNumber(frame.Registers[c]))); }
+                try { frame.Registers[a] = BitwiseAndOp(frame.Registers[b], frame.Registers[c]); }
                 catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.BitOr:
-                try { frame.Registers[a] = JsValue.FromNumber((double)((int)ToNumber(frame.Registers[b]) | (int)ToNumber(frame.Registers[c]))); }
+                try { frame.Registers[a] = BitwiseOrOp(frame.Registers[b], frame.Registers[c]); }
                 catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.BitXor:
-                try { frame.Registers[a] = JsValue.FromNumber((double)((int)ToNumber(frame.Registers[b]) ^ (int)ToNumber(frame.Registers[c]))); }
+                try { frame.Registers[a] = BitwiseXorOp(frame.Registers[b], frame.Registers[c]); }
                 catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.ShiftLeft:
-                try { var sl = (int)ToNumber(frame.Registers[b]); var sc = (int)ToNumber(frame.Registers[c]) & 0x1F; frame.Registers[a] = JsValue.FromNumber((double)(sl << sc)); }
+                try { frame.Registers[a] = LeftShiftOp(frame.Registers[b], frame.Registers[c]); }
                 catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.ShiftRight:
-                try { var sr = (int)ToNumber(frame.Registers[b]); var sc2 = (int)ToNumber(frame.Registers[c]) & 0x1F; frame.Registers[a] = JsValue.FromNumber((double)(sr >> sc2)); }
+                try { frame.Registers[a] = RightShiftOp(frame.Registers[b], frame.Registers[c]); }
                 catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.UnsignedShiftRight:
-                try { var u32 = (uint)(int)ToNumber(frame.Registers[b]); var sc3 = (int)ToNumber(frame.Registers[c]) & 0x1F; frame.Registers[a] = JsValue.FromNumber((double)(u32 >> sc3)); }
+                try { frame.Registers[a] = UnsignedRightShiftOp(frame.Registers[b], frame.Registers[c]); }
                 catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             default:
@@ -20597,7 +20571,7 @@ fallbackArraySpecies:
                 frame.Registers[a] = JsValue.FromString(TypeOfValue(frame.Registers[b]));
                 break;
             case OpCode.BitNot:
-                try { frame.Registers[a] = JsValue.FromNumber((double)(~(int)ToNumber(frame.Registers[b]))); }
+                try { frame.Registers[a] = BitwiseNotOp(frame.Registers[b]); }
                 catch (JsThrownException ex) { ThrowOrHandle(frame, ex.Value); }
                 break;
             case OpCode.ToNumeric:
@@ -20774,6 +20748,38 @@ fallbackArraySpecies:
         if (left.Tag == JsValueTag.String && (right.Tag == JsValueTag.Int32 || right.Tag == JsValueTag.Number))
         {
             return ToNumberForEquality(left) == right.AsNumber();
+        }
+
+        // ECMA-262 7.2.15 step 6: BigInt == String → StringToBigInt
+        if (left.Tag == JsValueTag.BigInt && right.Tag == JsValueTag.String)
+        {
+            if (Builtins.BigIntBuiltin.TryParseStringToBigInt(right.AsString(), out var n))
+                return left.AsBigInt() == n;
+            return false;
+        }
+
+        // Step 7: String == BigInt → StringToBigInt
+        if (left.Tag == JsValueTag.String && right.Tag == JsValueTag.BigInt)
+        {
+            if (Builtins.BigIntBuiltin.TryParseStringToBigInt(left.AsString(), out var n))
+                return n == right.AsBigInt();
+            return false;
+        }
+
+        // Step 12: BigInt == Number (or Number == BigInt)
+        if (left.Tag == JsValueTag.BigInt && (right.Tag == JsValueTag.Int32 || right.Tag == JsValueTag.Number))
+        {
+            var rn = right.AsNumber();
+            if (double.IsNaN(rn) || double.IsInfinity(rn))
+                return false;
+            return CompareBigIntAndDouble(left.AsBigInt(), rn) == 0;
+        }
+        if ((left.Tag == JsValueTag.Int32 || left.Tag == JsValueTag.Number) && right.Tag == JsValueTag.BigInt)
+        {
+            var ln = left.AsNumber();
+            if (double.IsNaN(ln) || double.IsInfinity(ln))
+                return false;
+            return CompareBigIntAndDouble(right.AsBigInt(), ln) == 0;
         }
 
         if (left.Tag == JsValueTag.Boolean)
@@ -21279,6 +21285,11 @@ fallbackArraySpecies:
         if (px.Tag == JsValueTag.String && py.Tag == JsValueTag.String)
             return string.CompareOrdinal(px.AsString(), py.AsString()) < 0;
 
+        if (px.Tag == JsValueTag.BigInt && py.Tag == JsValueTag.Boolean)
+            return px.AsBigInt() < (py.AsBoolean() ? BigInteger.One : BigInteger.Zero);
+        if (py.Tag == JsValueTag.BigInt && px.Tag == JsValueTag.Boolean)
+            return (px.AsBoolean() ? BigInteger.One : BigInteger.Zero) < py.AsBigInt();
+
         if (px.Tag == JsValueTag.BigInt && py.Tag == JsValueTag.String)
         {
             if (Builtins.BigIntBuiltin.TryParseStringToBigInt(py.AsString(), out var ny))
@@ -21318,6 +21329,11 @@ fallbackArraySpecies:
 
         if (px.Tag == JsValueTag.String && py.Tag == JsValueTag.String)
             return string.CompareOrdinal(px.AsString(), py.AsString()) > 0;
+
+        if (px.Tag == JsValueTag.BigInt && py.Tag == JsValueTag.Boolean)
+            return px.AsBigInt() > (py.AsBoolean() ? BigInteger.One : BigInteger.Zero);
+        if (py.Tag == JsValueTag.BigInt && px.Tag == JsValueTag.Boolean)
+            return (px.AsBoolean() ? BigInteger.One : BigInteger.Zero) > py.AsBigInt();
 
         if (px.Tag == JsValueTag.BigInt && py.Tag == JsValueTag.String)
         {
@@ -21359,6 +21375,11 @@ fallbackArraySpecies:
         if (px.Tag == JsValueTag.String && py.Tag == JsValueTag.String)
             return string.CompareOrdinal(px.AsString(), py.AsString()) <= 0;
 
+        if (px.Tag == JsValueTag.BigInt && py.Tag == JsValueTag.Boolean)
+            return px.AsBigInt() <= (py.AsBoolean() ? BigInteger.One : BigInteger.Zero);
+        if (py.Tag == JsValueTag.BigInt && px.Tag == JsValueTag.Boolean)
+            return (px.AsBoolean() ? BigInteger.One : BigInteger.Zero) <= py.AsBigInt();
+
         if (px.Tag == JsValueTag.BigInt && py.Tag == JsValueTag.String)
         {
             if (Builtins.BigIntBuiltin.TryParseStringToBigInt(py.AsString(), out var ny))
@@ -21398,6 +21419,11 @@ fallbackArraySpecies:
 
         if (px.Tag == JsValueTag.String && py.Tag == JsValueTag.String)
             return string.CompareOrdinal(px.AsString(), py.AsString()) >= 0;
+
+        if (px.Tag == JsValueTag.BigInt && py.Tag == JsValueTag.Boolean)
+            return px.AsBigInt() >= (py.AsBoolean() ? BigInteger.One : BigInteger.Zero);
+        if (py.Tag == JsValueTag.BigInt && px.Tag == JsValueTag.Boolean)
+            return (px.AsBoolean() ? BigInteger.One : BigInteger.Zero) >= py.AsBigInt();
 
         if (px.Tag == JsValueTag.BigInt && py.Tag == JsValueTag.String)
         {

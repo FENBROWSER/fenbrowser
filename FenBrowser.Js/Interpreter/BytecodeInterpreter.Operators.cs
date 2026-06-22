@@ -1,3 +1,5 @@
+using System.Numerics;
+using FenBrowser.Js.Builtins;
 using FenBrowser.Js.Runtime;
 
 namespace FenBrowser.Js.Interpreter;
@@ -213,5 +215,141 @@ public sealed partial class BytecodeInterpreter
         }
 
         return text.TrimEnd('0').TrimEnd('.');
+    }
+
+    // BigInt::leftShift(x, y): if y < 0, floor division by 2^(-y); else x * 2^y.
+    private static BigInteger BigIntShiftLeft(BigInteger x, BigInteger y)
+    {
+        if (y < 0)
+        {
+            return BigIntShiftRightFloor(x, -y);
+        }
+        if (y > int.MaxValue)
+            throw new JsThrownException(JsValue.FromString("BigInt shift amount too large."));
+        return x << (int)y;
+    }
+
+    // BigInt::signedRightShift(x, y) = BigInt::leftShift(x, -y).
+    private static BigInteger BigIntShiftRight(BigInteger x, BigInteger y)
+    {
+        return BigIntShiftLeft(x, -y);
+    }
+
+    // Floor division by 2^shift: rounds towards -inf for negative numbers.
+    private static BigInteger BigIntShiftRightFloor(BigInteger x, BigInteger shift)
+    {
+        if (shift > int.MaxValue)
+            return x >= 0 ? BigInteger.Zero : BigInteger.MinusOne;
+        int s = (int)shift;
+        var pow = BigInteger.One << s;
+        if (x >= 0) return x / pow;
+        var q = x / pow;
+        if (x % pow != 0) q--;
+        return q;
+    }
+
+    // Applies bitwise AND: ToNumeric both, BigInt native, else ToInt32.
+    private JsValue BitwiseAndOp(JsValue left, JsValue right)
+    {
+        var lnum = ToNumericValue(left);
+        var rnum = ToNumericValue(right);
+        if (lnum.Tag == JsValueTag.BigInt && rnum.Tag == JsValueTag.BigInt)
+            return JsValue.FromBigInt(lnum.AsBigInt() & rnum.AsBigInt());
+        if (lnum.Tag == JsValueTag.BigInt || rnum.Tag == JsValueTag.BigInt)
+            throw new JsThrownException(CreateTypeError("Cannot mix BigInt and other types, use explicit conversions."));
+        return JsValue.FromNumber(MathHelpers.ToInt32(ToNumber(lnum)) & MathHelpers.ToInt32(ToNumber(rnum)));
+    }
+
+    // Applies bitwise OR.
+    private JsValue BitwiseOrOp(JsValue left, JsValue right)
+    {
+        var lnum = ToNumericValue(left);
+        var rnum = ToNumericValue(right);
+        if (lnum.Tag == JsValueTag.BigInt && rnum.Tag == JsValueTag.BigInt)
+            return JsValue.FromBigInt(lnum.AsBigInt() | rnum.AsBigInt());
+        if (lnum.Tag == JsValueTag.BigInt || rnum.Tag == JsValueTag.BigInt)
+            throw new JsThrownException(CreateTypeError("Cannot mix BigInt and other types, use explicit conversions."));
+        return JsValue.FromNumber(MathHelpers.ToInt32(ToNumber(lnum)) | MathHelpers.ToInt32(ToNumber(rnum)));
+    }
+
+    // Applies bitwise XOR.
+    private JsValue BitwiseXorOp(JsValue left, JsValue right)
+    {
+        var lnum = ToNumericValue(left);
+        var rnum = ToNumericValue(right);
+        if (lnum.Tag == JsValueTag.BigInt && rnum.Tag == JsValueTag.BigInt)
+            return JsValue.FromBigInt(lnum.AsBigInt() ^ rnum.AsBigInt());
+        if (lnum.Tag == JsValueTag.BigInt || rnum.Tag == JsValueTag.BigInt)
+            throw new JsThrownException(CreateTypeError("Cannot mix BigInt and other types, use explicit conversions."));
+        return JsValue.FromNumber(MathHelpers.ToInt32(ToNumber(lnum)) ^ MathHelpers.ToInt32(ToNumber(rnum)));
+    }
+
+    // Applies bitwise NOT: ToNumeric, BigInt ~, else ~ToInt32.
+    private JsValue BitwiseNotOp(JsValue value)
+    {
+        var numeric = ToNumericValue(value);
+        if (numeric.Tag == JsValueTag.BigInt)
+            return JsValue.FromBigInt(~numeric.AsBigInt());
+        return JsValue.FromNumber(~MathHelpers.ToInt32(ToNumber(numeric)));
+    }
+
+    // Applies left shift.
+    private JsValue LeftShiftOp(JsValue left, JsValue right)
+    {
+        var lnum = ToNumericValue(left);
+        var rnum = ToNumericValue(right);
+        if (lnum.Tag == JsValueTag.BigInt && rnum.Tag == JsValueTag.BigInt)
+            return JsValue.FromBigInt(BigIntShiftLeft(lnum.AsBigInt(), rnum.AsBigInt()));
+        if (lnum.Tag == JsValueTag.BigInt || rnum.Tag == JsValueTag.BigInt)
+            throw new JsThrownException(CreateTypeError("Cannot mix BigInt and other types, use explicit conversions."));
+        var sl = MathHelpers.ToInt32(ToNumber(lnum));
+        var sc = (int)(MathHelpers.ToUint32(ToNumber(rnum)) & 0x1F);
+        return JsValue.FromNumber(sl << sc);
+    }
+
+    // Applies signed right shift.
+    private JsValue RightShiftOp(JsValue left, JsValue right)
+    {
+        var lnum = ToNumericValue(left);
+        var rnum = ToNumericValue(right);
+        if (lnum.Tag == JsValueTag.BigInt && rnum.Tag == JsValueTag.BigInt)
+            return JsValue.FromBigInt(BigIntShiftRight(lnum.AsBigInt(), rnum.AsBigInt()));
+        if (lnum.Tag == JsValueTag.BigInt || rnum.Tag == JsValueTag.BigInt)
+            throw new JsThrownException(CreateTypeError("Cannot mix BigInt and other types, use explicit conversions."));
+        var sr = MathHelpers.ToInt32(ToNumber(lnum));
+        var sc = (int)(MathHelpers.ToUint32(ToNumber(rnum)) & 0x1F);
+        return JsValue.FromNumber(sr >> sc);
+    }
+
+    // Applies unsigned right shift: BigInt throws TypeError.
+    private JsValue UnsignedRightShiftOp(JsValue left, JsValue right)
+    {
+        var lnum = ToNumericValue(left);
+        var rnum = ToNumericValue(right);
+        if (lnum.Tag == JsValueTag.BigInt || rnum.Tag == JsValueTag.BigInt)
+            throw new JsThrownException(CreateTypeError("BigInt does not support unsigned right shift."));
+        var u = MathHelpers.ToUint32(ToNumber(lnum));
+        var sc = (int)(MathHelpers.ToUint32(ToNumber(rnum)) & 0x1F);
+        return JsValue.FromNumber(u >> sc);
+    }
+
+    // Applies exponentiation with proper ToNumeric coercion.
+    private JsValue ExponentiationOp(JsValue left, JsValue right)
+    {
+        var lnum = ToNumericValue(left);
+        var rnum = ToNumericValue(right);
+        if (lnum.Tag == JsValueTag.BigInt && rnum.Tag == JsValueTag.BigInt)
+        {
+            var baseVal = lnum.AsBigInt();
+            var expVal = rnum.AsBigInt();
+            if (expVal < BigInteger.Zero)
+                throw new JsThrownException(CreateRangeError("BigInt exponent must be non-negative."));
+            if (expVal > int.MaxValue)
+                throw new JsThrownException(CreateRangeError("BigInt exponent is too large."));
+            return JsValue.FromBigInt(BigInteger.Pow(baseVal, (int)expVal));
+        }
+        if (lnum.Tag == JsValueTag.BigInt || rnum.Tag == JsValueTag.BigInt)
+            throw new JsThrownException(CreateTypeError("Cannot mix BigInt and other types, use explicit conversions."));
+        return JsValue.FromNumber(Math.Pow(ToNumber(lnum), ToNumber(rnum)));
     }
 }
