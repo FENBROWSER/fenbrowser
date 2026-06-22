@@ -5567,33 +5567,38 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             {
                 if (env is DeclarativeEnvironmentRecord declEnv)
                 {
-                    foreach (var name in varNames)
+                    // ECMA-262 19.2.1.3 step 7: the varEnv (FunctionEnvironmentRecord)
+                    // is NOT checked for lexical conflicts — var declarations that
+                    // shadow the varEnv's bindings are handled later (silently skipped
+                    // in InstantiateVarDeclarations per step 8).
+                    if (env is FunctionEnvironmentRecord)
                     {
-                        if (env is FunctionEnvironmentRecord && callingFunction is not null &&
-                            (callingFunction.ParameterNames.Contains(name, StringComparer.Ordinal) ||
-                             callingFunction.VarDeclarationNames.Contains(name, StringComparer.Ordinal) ||
-                             (name == "arguments" && callingFunction.HasOwnArgumentsObject)))
+                        if (callingFunction is not null)
                         {
-                            // ECMA-262 10.2.1.2 step 25.c.i: if a direct eval in
-                            // parameter scope introduces a var binding that conflicts
-                            // with a parameter, throw SyntaxError.
-                            if (callingFunction.ParameterNames.Contains(name, StringComparer.Ordinal) &&
-                                callingFunction.PrologueEndIp > 0 &&
-                                _activeFrames.Count > 0)
+                            foreach (var name in varNames)
                             {
-                                var callingFrame = _activeFrames.Peek();
-                                if (callingFrame.InstructionPointer <= callingFunction.PrologueEndIp)
+                                if (callingFunction.ParameterNames.Contains(name, StringComparer.Ordinal) &&
+                                    callingFunction.PrologueEndIp > 0 &&
+                                    _activeFrames.Count > 0)
                                 {
-                                    throw new JsThrownException(CreateSyntaxError(
-                                        $"Cannot declare var binding '{name}' — a parameter binding with that name already exists and the var was introduced by a direct eval call in the parameter scope."));
+                                    var callingFrame = _activeFrames.Peek();
+                                    if (callingFrame.InstructionPointer <= callingFunction.PrologueEndIp)
+                                    {
+                                        throw new JsThrownException(CreateSyntaxError(
+                                            $"Cannot declare var binding '{name}' — a parameter binding with that name already exists and the var was introduced by a direct eval call in the parameter scope."));
+                                    }
                                 }
                             }
-                            continue;
                         }
-
-                        if (declEnv.HasLexicalBinding(name))
-                            throw new JsThrownException(CreateSyntaxError(
-                                $"Cannot declare var binding '{name}' — a lexical binding with that name already exists."));
+                    }
+                    else
+                    {
+                        foreach (var name in varNames)
+                        {
+                            if (declEnv.HasLexicalBinding(name))
+                                throw new JsThrownException(CreateSyntaxError(
+                                    $"Cannot declare var binding '{name}' — a lexical binding with that name already exists."));
+                        }
                     }
                 }
                 env = env.OuterEnv;
@@ -16789,14 +16794,20 @@ fallbackArraySpecies:
         var constructor = new NativeFunctionObject(
             "SharedArrayBuffer",
             (_, _2) => throw new JsThrownException(CreateTypeError("SharedArrayBuffer constructor must be invoked with 'new'.")),
-            args =>
+            // Use constructWithNewTarget so we can access newTarget.prototype before
+            // allocating the data block, matching ECMA-262 AllocateSharedArrayBuffer
+            // step 3 (OrdinaryCreateFromConstructor) before step 4 (CreateByteDataBlock).
+            construct: null,
+            length: 1,
+            constructWithNewTarget: (args, newTarget) =>
             {
-                // ECMA-262: ToIndex(length) then GetByteLengthOption(options).
+                // ECMA-262: ToIndex(length) validates the length is a valid index
+                // (non-NaN, non-negative). The int.MaxValue range check is deferred
+                // until after prototype access per AllocateSharedArrayBuffer ordering.
                 var lengthArg = args.Count > 0 ? args[0] : JsValue.Undefined;
                 var length = (long)ToNumber(lengthArg);
-                if (double.IsNaN((double)length) || length < 0 || length > int.MaxValue)
+                if (double.IsNaN((double)length) || length < 0)
                     throw new JsThrownException(CreateRangeError("Invalid SharedArrayBuffer length."));
-                var byteLength = (int)length;
 
                 // Parse options.maxByteLength (ES2024 25.2.3.1 GetByteLengthOption).
                 // Uses [[Get]] semantics so accessor getters fire (and their throws propagate).
@@ -16811,10 +16822,24 @@ fallbackArraySpecies:
                         if (double.IsNaN(mblNum) || mblNum < 0 || double.IsInfinity(mblNum) || mblNum > int.MaxValue)
                             throw new JsThrownException(CreateRangeError("Invalid SharedArrayBuffer maxByteLength."));
                         maxByteLength = (int)mblNum;
-                        if (maxByteLength.Value < byteLength)
+                        if (maxByteLength.Value < (int)length)
                             throw new JsThrownException(CreateRangeError("maxByteLength must be >= length."));
                     }
                 }
+
+                // ECMA-262 25.2.4.1 AllocateSharedArrayBuffer step 3:
+                // OrdinaryCreateFromConstructor accesses newTarget.prototype BEFORE
+                // step 4 CreateByteDataBlock. Trigger the prototype getter now so
+                // any throws fire before the buffer's data array is allocated.
+                if (newTarget.Tag == JsValueTag.Object)
+                {
+                    GetReceiverProperty(newTarget, "prototype");
+                }
+
+                // Deferred int.MaxValue check and data allocation.
+                if (length > int.MaxValue)
+                    throw new JsThrownException(CreateRangeError("Invalid SharedArrayBuffer length."));
+                var byteLength = (int)length;
 
                 ArrayBufferObject buf;
                 if (maxByteLength.HasValue && maxByteLength.Value > 0)
@@ -16824,8 +16849,7 @@ fallbackArraySpecies:
                     buf = new ArrayBufferObject(byteLength) { IsSharedArrayBuffer = true };
                 buf.SetPrototype(prototypeHandle);
                 return JsValue.FromObject(_heap.AllocateObject(buf, AllocationSite.Current()));
-            },
-            length: 1);
+            });
         _ = constructor.DefineOwnProperty("prototype", new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: false, Enumerable: false, Configurable: false));
         var constructorHandle = _heap.AllocateObject(constructor, AllocationSite.Current());
         _heap.PushRoot(constructorHandle);

@@ -93,6 +93,14 @@ public sealed partial class BytecodeInterpreter
         }
     }
 
+    private void ThrowIfViewOutOfBounds(Uint8Array u8, string method)
+    {
+        if (u8.IsViewOutOfBounds())
+        {
+            throw new JsThrownException(CreateTypeError($"Uint8Array.prototype.{method} called on an out-of-bounds buffer."));
+        }
+    }
+
     private JsValue MakeUint8Array(byte[] data)
     {
         var buffer = new ArrayBufferObject(data.Length);
@@ -383,6 +391,9 @@ public sealed partial class BytecodeInterpreter
     private JsValue Uint8ArraySetFromBase64(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var self = RequireUint8Array(thisValue, "setFromBase64");
+
+        ThrowIfViewOutOfBounds(self, "setFromBase64");
+
         var input = args.Count > 0 ? args[0] : JsValue.Undefined;
         if (input.Tag != JsValueTag.String)
         {
@@ -514,6 +525,9 @@ public sealed partial class BytecodeInterpreter
     private JsValue Uint8ArraySetFromHex(JsValue thisValue, IReadOnlyList<JsValue> args)
     {
         var self = RequireUint8Array(thisValue, "setFromHex");
+
+        ThrowIfViewOutOfBounds(self, "setFromHex");
+
         var input = args.Count > 0 ? args[0] : JsValue.Undefined;
         if (input.Tag != JsValueTag.String)
         {

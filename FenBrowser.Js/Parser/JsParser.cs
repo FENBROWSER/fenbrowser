@@ -2503,6 +2503,7 @@ public sealed class JsParser
             allowAwaitInBody: isAsync);
         var parameters = parameterInfo.Parameters;
         ValidateStrictModeFunctionName(name, body.Statements);
+        ValidateAwaitYieldFunctionName(name.Text, isAsync, isGenerator);
         ValidateDirectivePrologueStrictStringEscapes(body.Statements);
         // ECMA-262 early errors: same validation as function expressions.
         ValidateClassMethodEarlyErrors(
@@ -2855,6 +2856,21 @@ public sealed class JsParser
         {
             throw new JsParserException(
                 $"'{name.Text}' may not be used as a function name in strict mode.");
+        }
+    }
+
+    private static void ValidateAwaitYieldFunctionName(string name, bool isAsync, bool isGenerator)
+    {
+        if (isAsync && string.Equals(name, "await", StringComparison.Ordinal))
+        {
+            throw new JsParserException(
+                "'await' is not a valid function name in an async function or async generator.");
+        }
+
+        if (isGenerator && string.Equals(name, "yield", StringComparison.Ordinal))
+        {
+            throw new JsParserException(
+                "'yield' is not a valid function name in a generator or async generator.");
         }
     }
 
@@ -4929,6 +4945,11 @@ public sealed class JsParser
         if (nameToken is { } fnNameToken)
         {
             ValidateStrictModeFunctionName(fnNameToken, body.Statements);
+        }
+
+        if (name is not null)
+        {
+            ValidateAwaitYieldFunctionName(name, isAsync, isGenerator);
         }
 
         ValidateDirectivePrologueStrictStringEscapes(body.Statements);
