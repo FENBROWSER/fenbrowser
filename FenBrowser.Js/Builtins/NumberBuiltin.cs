@@ -247,16 +247,16 @@ public sealed class NumberBuiltin : IBuiltinModule
         var value = NumberThisValue(ctx, thisValue);
 
         // ECMA-262 21.1.3.2 step 10.b: fractionDigits undefined → use the fewest
-        // fraction digits whose exponential form still round-trips to x. The old "R"
-        // path never produced exponential notation, so (123.456).toExponential()
-        // wrongly returned "123.456" instead of "1.23456e+2".
+        // fraction digits whose exponential form still round-trips to x.
         if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
         {
             if (double.IsNaN(value)) return JsValue.FromString("NaN");
             if (double.IsInfinity(value)) return JsValue.FromString(value > 0 ? "Infinity" : "-Infinity");
+            var absValue = Math.Abs(value);
+            var sign = value < 0d ? "-" : "";
             for (var f = 0; f < 17; f++)
             {
-                var candidate = FormatExponentialFixed(value, f);
+                var candidate = sign + MathHelpers.FormatToExponential(absValue, f);
                 if (double.TryParse(candidate, System.Globalization.NumberStyles.Float,
                         System.Globalization.CultureInfo.InvariantCulture, out var back) && back == value)
                 {
@@ -264,7 +264,7 @@ public sealed class NumberBuiltin : IBuiltinModule
                 }
             }
 
-            return JsValue.FromString(FormatExponentialFixed(value, 17));
+            return JsValue.FromString(sign + MathHelpers.FormatToExponential(absValue, 17));
         }
 
         // Step 2: ToInteger(fractionDigits) runs (and observes valueOf side effects)
@@ -275,23 +275,9 @@ public sealed class NumberBuiltin : IBuiltinModule
         if (digits < 0 || digits > 100)
             throw new JsThrownException(ctx.CreateRangeError("toExponential() digits argument must be between 0 and 100."));
 
-        return JsValue.FromString(FormatExponentialFixed(value, digits));
-    }
-
-    // Format `value` in normalized ECMA-262 exponential notation with exactly
-    // `digits` fraction digits (e.g. digits=2 → "1.23e+4", digits=0 → "1e+4").
-    private static string FormatExponentialFixed(double value, int digits)
-    {
-        // ECMA-262: the sign for zero values is determined by step 8 (x < 0).
-        // -0 < 0 is false in IEEE 754, so both +0 and -0 produce unsigned output.
-        // .NET formats -0 as "-0e+0"; override by detecting zero (matches both ±0).
-        // f = 0 means no fraction digits and no decimal point.
-        if (value == 0d)
-            return "0" + (digits > 0 ? "." + new string('0', digits) : "") + "e+0";
-        var format = "0." + new string('0', digits) + "e+0";
-        var raw = value.ToString(format, System.Globalization.CultureInfo.InvariantCulture);
-        if (digits == 0) raw = raw.Replace(".e", "e", StringComparison.Ordinal);
-        return MathHelpers.NormaliseExponential(raw);
+        var abs2 = Math.Abs(value);
+        var sig2 = value < 0d ? "-" : "";
+        return JsValue.FromString(sig2 + MathHelpers.FormatToExponential(abs2, digits));
     }
 
     // 21.1.3.5 toPrecision
@@ -311,11 +297,9 @@ public sealed class NumberBuiltin : IBuiltinModule
         if (precision < 1 || precision > 100)
             throw new JsThrownException(ctx.CreateRangeError("toPrecision() precision argument must be between 1 and 100."));
 
-        if (value == 0d)
-            return JsValue.FromString(precision == 1 ? "0" : "0." + new string('0', precision - 1));
-
-        var formatted = value.ToString("G" + precision, System.Globalization.CultureInfo.InvariantCulture);
-        return JsValue.FromString(MathHelpers.NormaliseExponential(formatted));
+        var absValue = Math.Abs(value);
+        var negative = value < 0d;
+        return JsValue.FromString(MathHelpers.FormatToPrecision(absValue, precision, negative));
     }
 
     // 21.1.3.7 valueOf

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Numerics;
 
 namespace FenBrowser.Js.Builtins;
 
@@ -162,5 +163,152 @@ internal static class MathHelpers
     private static char DigitToChar(int digit)
     {
         return digit < 10 ? (char)('0' + digit) : (char)('a' + digit - 10);
+    }
+
+    // ECMA-262 21.1.3.5 Number.prototype.toPrecision — shared helper.
+    // Returns the formatted string for the absolute value with the given precision
+    // and sign. Handles step 7 (x=0) and steps 10-14 (format selection).
+    internal static string FormatToPrecision(double absValue, int precision, bool negative)
+    {
+        if (absValue == 0d)
+        {
+            if (precision == 1)
+                return "0";
+            return "0." + new string('0', precision - 1);
+        }
+
+        var (mantissa, exponent) = ComputeSignificantDigits(absValue, precision);
+        return FormatFromMantissaExponent(mantissa, exponent, precision, negative);
+    }
+
+    // ECMA-262 21.1.3.2 Number.prototype.toExponential — shared helper.
+    // Always returns exponential notation with the given fraction digits.
+    internal static string FormatToExponential(double absValue, int fractionDigits)
+    {
+        if (absValue == 0d)
+        {
+            var zeros = fractionDigits > 0 ? "." + new string('0', fractionDigits) : "";
+            return "0" + zeros + "e+0";
+        }
+
+        var precision = fractionDigits + 1;
+        var (mantissa, exponent) = ComputeSignificantDigits(absValue, precision);
+
+        if (fractionDigits == 0)
+            return mantissa + "e" + (exponent >= 0 ? "+" : "") + exponent;
+
+        return mantissa[0] + "." + mantissa.Substring(1) + "e" + (exponent >= 0 ? "+" : "") + exponent;
+    }
+
+    // Core algorithm: given abs(x) and desired number of significant digits p,
+    // returns (m, e) where m is a decimal string of exactly p digits (no leading
+    // zeros, padded if necessary) and e is the decimal exponent such that the
+    // value is approximately m × 10^(e-p+1). Rounding follows the spec: ties to
+    // the larger value (half-up).
+    private static (string mantissa, int exponent) ComputeSignificantDigits(double absValue, int precision)
+    {
+        var bits = BitConverter.DoubleToInt64Bits(absValue);
+        var binExp = (int)((bits >> 52) & 0x7FF);
+        long rawMantissa = bits & 0x000FFFFFFFFFFFFF;
+
+        var isSubnormal = binExp == 0;
+        if (isSubnormal)
+            binExp = 1;
+        else
+            rawMantissa |= 1L << 52;
+
+        binExp -= 1023 + 52;
+
+        var mantissa = new BigInteger(rawMantissa);
+
+        // Estimate decimal exponent e = floor(log10(absValue))
+        var log10Approx = binExp * 0.3010299956639812 + BigInteger.Log10(mantissa);
+        var e = (int)Math.Floor(log10Approx);
+
+        var pow10min = BigInteger.Pow(10, precision - 1);
+        var pow10max = BigInteger.Pow(10, precision);
+
+        // Compute n at current scale; if e was wrong, recompute at corrected scale.
+        BigInteger n;
+        while (true)
+        {
+            var scale = precision - 1 - e;
+
+            BigInteger num, den;
+            if (scale >= 0)
+            {
+                if (binExp >= 0)
+                {
+                    num = mantissa * BigInteger.Pow(2, binExp) * BigInteger.Pow(10, scale);
+                    den = BigInteger.One;
+                }
+                else
+                {
+                    num = mantissa * BigInteger.Pow(10, scale);
+                    den = BigInteger.Pow(2, -binExp);
+                }
+            }
+            else
+            {
+                var negScale = -scale;
+                if (binExp >= 0)
+                {
+                    num = mantissa * BigInteger.Pow(2, binExp);
+                    den = BigInteger.Pow(10, negScale);
+                }
+                else
+                {
+                    num = mantissa;
+                    den = BigInteger.Pow(2, -binExp) * BigInteger.Pow(10, negScale);
+                }
+            }
+
+            // Round half-up (spec: ties to larger)
+            n = (num * 2 + den) / (den * 2);
+
+            if (n >= pow10max)
+            {
+                e++;
+                continue;
+            }
+            if (n < pow10min)
+            {
+                e--;
+                continue;
+            }
+            break;
+        }
+
+        var m = n.ToString(CultureInfo.InvariantCulture);
+        while (m.Length < precision)
+            m = "0" + m;
+
+        return (m, e);
+    }
+
+    // ECMA-262 21.1.3.5 steps 10-14: format mantissa m (p digits) and exponent e
+    // into fixed or exponential notation depending on the range of e.
+    private static string FormatFromMantissaExponent(string m, int e, int p, bool negative)
+    {
+        var sign = negative ? "-" : "";
+
+        // Step 10.c: e < -6 or e ≥ p → exponential
+        if (e < -6 || e >= p)
+        {
+            if (p == 1)
+                return sign + m + "e" + (e >= 0 ? "+" : "") + e;
+            return sign + m[0] + "." + m.Substring(1) + "e" + (e >= 0 ? "+" : "") + e;
+        }
+
+        // Step 11: e = p-1 → return m as-is
+        if (e == p - 1)
+            return sign + m;
+
+        // Step 12: e ≥ 0 → insert decimal after e+1 digits
+        if (e >= 0)
+            return sign + m.Substring(0, e + 1) + "." + m.Substring(e + 1);
+
+        // Step 13: e < 0 → "0." + -(e+1) zeros + m
+        return sign + "0." + new string('0', -(e + 1)) + m;
     }
 }

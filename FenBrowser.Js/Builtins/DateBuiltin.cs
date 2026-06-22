@@ -25,8 +25,8 @@ public sealed class DateBuiltin : IBuiltinModule
         var capturedProto = prototypeHandle;
         var constructor = new NativeFunctionObject(
             "Date",
-            // Called as a function: return a string for "now" (arguments ignored).
-            (_, _) => JsValue.FromString(DateTimeOffset.UtcNow.ToString("ddd MMM dd yyyy HH:mm:ss 'GMT+0000 (Coordinated Universal Time)'", System.Globalization.CultureInfo.InvariantCulture)),
+            // Called as a function: return current time as string (same format as Date.prototype.toString).
+            (_, _) => JsValue.FromString(DateMath.DateToString(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())),
             // Called with new: full ECMA-262 21.4.2.1 argument handling.
             args => capturedCtx.ConstructDate(args),
             length: 7);
@@ -50,16 +50,17 @@ public sealed class DateBuiltin : IBuiltinModule
         {
             if (args.Count == 0) return JsValue.FromNumber(double.NaN);
             // ECMA-262 21.4.3.4: ToNumber every component (full double precision, not
-            // an int cast), map a 0-99 year to 1900+year, then compose via MakeDate.
+            // an int cast), apply ToInteger for the 0-99→1900+year offset, then compose via MakeDate.
             var year = context.ToNumber(args[0]);
-            if (double.IsFinite(year) && year >= 0 && year <= 99) year += 1900;
+            var yearInt = DateMath.ToInteger(year);
+            var yr = (!double.IsNaN(year) && yearInt >= 0 && yearInt <= 99) ? 1900.0 + yearInt : year;
             var month = args.Count > 1 ? context.ToNumber(args[1]) : 0;
             var day = args.Count > 2 ? context.ToNumber(args[2]) : 1;
             var hours = args.Count > 3 ? context.ToNumber(args[3]) : 0;
             var minutes = args.Count > 4 ? context.ToNumber(args[4]) : 0;
             var seconds = args.Count > 5 ? context.ToNumber(args[5]) : 0;
             var ms = args.Count > 6 ? context.ToNumber(args[6]) : 0;
-            var v = DateMath.MakeDate(DateMath.MakeDay(year, month, day), DateMath.MakeTime(hours, minutes, seconds, ms));
+            var v = DateMath.MakeDate(DateMath.MakeDay(yr, month, day), DateMath.MakeTime(hours, minutes, seconds, ms));
             return JsValue.FromNumber(DateMath.TimeClip(v));
         }, length: 7);
 
@@ -67,11 +68,7 @@ public sealed class DateBuiltin : IBuiltinModule
         context.DefineIntrinsicFunction(constructorHandle, constructor, "parse", (_, args) =>
         {
             var text = args.Count > 0 ? context.ToStringValue(args[0]) : "Invalid Date";
-            if (DateTimeOffset.TryParse(text, System.Globalization.CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
-                out var dt))
-                return JsValue.FromNumber(dt.ToUnixTimeMilliseconds());
-            return JsValue.FromNumber(double.NaN);
+            return JsValue.FromNumber(DateMath.ParseDateValue(text));
         }, length: 1);
 
         // Delegate prototype method installation to the interpreter

@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 
 namespace FenBrowser.Js.Objects;
 
@@ -19,7 +20,17 @@ internal static class DateMath
 
     private static double Trunc(double x) => x < 0 ? Math.Ceiling(x) : Math.Floor(x);
 
+    // ECMA-262 7.1.4 ToInteger: sign(number) * floor(abs(number))
+    public static double ToInteger(double x)
+    {
+        if (double.IsNaN(x) || x == 0.0) return 0.0;
+        if (double.IsInfinity(x)) return x;
+        return x < 0 ? Math.Ceiling(x) : Math.Floor(x);
+    }
+
     private static readonly int[] MonthStart = { 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 };
+    private static readonly string[] DayNames = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+    private static readonly string[] MonthNames = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
 
     public static double Day(double t) => Math.Floor(t / MsPerDay);
     public static double TimeWithinDay(double t) => Modulo(t, MsPerDay);
@@ -113,5 +124,182 @@ internal static class DateMath
     {
         if (!double.IsFinite(t) || Math.Abs(t) > 8.64e15) return double.NaN;
         return Trunc(t) + 0.0; // +0 normalises -0
+    }
+
+    // ECMA-262 21.4.4.41 Date.prototype.toString: "Www Mmm DD YYYY HH:mm:ss GMT+HHmm"
+    // LocalTZA is 0 in this engine, so the timezone suffix is always "GMT+0000".
+    public static string DateToString(double t)
+    {
+        if (!double.IsFinite(t)) return "Invalid Date";
+        return string.Format(CultureInfo.InvariantCulture,
+            "{0} {1} {2:D2} {3} {4:D2}:{5:D2}:{6:D2} GMT+0000",
+            DayNames[WeekDay(t)], MonthNames[MonthFromTime(t)], DateFromTime(t),
+            FormatYear4(t), HoursFromTime(t), MinFromTime(t), SecFromTime(t));
+    }
+
+    private static string FormatYear4(double t)
+    {
+        var y = YearFromTime(t);
+        return y >= 0
+            ? y.ToString("D4", CultureInfo.InvariantCulture)
+            : "-" + Math.Abs(y).ToString("D4", CultureInfo.InvariantCulture);
+    }
+
+    // ECMA-262 21.4.3.2 Date.parse semantics: ISO-8601, toString format, and the
+    // looser forms .NET understands. Returns NaN on failure. Applies TimeClip.
+    public static double ParseDateValue(string text)
+    {
+        if (text.Length >= 4 && text.All(char.IsDigit))
+        {
+            long year = long.Parse(text, CultureInfo.InvariantCulture);
+            if (year >= 0 && year <= 9999)
+            {
+                var d = MakeDate(MakeDay(year, 0, 1), MakeTime(0, 0, 0, 0));
+                return TimeClip(d);
+            }
+        }
+
+        if (text.Length > 0 && (text[0] == '+' || text[0] == '-') && text.Length >= 12)
+        {
+            var result = TryParseExtendedIsoDate(text);
+            if (result.HasValue) return result.Value;
+        }
+
+        {
+            var dtResult = TryParseDateToStringFormat(text);
+            if (dtResult.HasValue) return dtResult.Value;
+        }
+
+        if (DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var parsed))
+        {
+            return TimeClip(parsed.ToUnixTimeMilliseconds());
+        }
+        return double.NaN;
+    }
+
+    private static double? TryParseExtendedIsoDate(string text)
+    {
+        if (text.Length < 13) return null;
+        var sign = text[0] == '-' ? -1 : 1;
+        int pos = 1;
+        long year = 0;
+        while (pos < text.Length && char.IsDigit(text[pos]))
+        {
+            year = year * 10 + (text[pos] - '0');
+            pos++;
+        }
+        var yearDigits = pos - 1;
+        if (yearDigits < 4) return null;
+        if (sign < 0 && year == 0) return null;
+        if (sign < 0) year = -year;
+        if (pos >= text.Length || text[pos] != '-') return null;
+        pos++;
+        if (pos + 1 >= text.Length) return null;
+        var month = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
+        pos += 2;
+        if (month < 1 || month > 12) return null;
+        if (pos >= text.Length || text[pos] != '-') return null;
+        pos++;
+        if (pos + 1 >= text.Length) return null;
+        var day = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
+        pos += 2;
+        if (day < 1 || day > 31) return null;
+        long hours = 0, minutes = 0, seconds = 0, ms = 0;
+        if (pos < text.Length && (text[pos] == 'T' || text[pos] == ' '))
+        {
+            pos++;
+            if (pos + 1 >= text.Length) return null;
+            hours = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
+            pos += 2;
+            if (hours > 24) return null;
+            if (pos < text.Length && text[pos] == ':')
+            {
+                pos++;
+                if (pos + 1 >= text.Length) return null;
+                minutes = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
+                pos += 2;
+                if (minutes > 59) return null;
+            }
+            if (pos < text.Length && text[pos] == ':')
+            {
+                pos++;
+                if (pos + 1 >= text.Length) return null;
+                seconds = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
+                pos += 2;
+                if (seconds > 59) return null;
+            }
+            if (pos < text.Length && text[pos] == '.')
+            {
+                pos++;
+                var msDigits = 0;
+                ms = 0;
+                while (pos < text.Length && char.IsDigit(text[pos]) && msDigits < 3)
+                {
+                    ms = ms * 10 + (text[pos] - '0');
+                    pos++;
+                    msDigits++;
+                }
+                while (msDigits < 3) { ms *= 10; msDigits++; }
+            }
+        }
+        var dateMs = MakeDate(MakeDay(year, month - 1, day), MakeTime(hours, minutes, seconds, ms));
+        return TimeClip(dateMs);
+    }
+
+    private static double? TryParseDateToStringFormat(string text)
+    {
+        var t = text;
+        var commaIdx = t.IndexOf(',');
+        if (commaIdx >= 0 && commaIdx < 5)
+            t = t.Substring(commaIdx + 1).TrimStart();
+        else if (t.Length > 4 && t[3] == ' ')
+            t = t.Substring(4);
+
+        var gmtIdx = t.LastIndexOf("GMT", StringComparison.Ordinal);
+        if (gmtIdx < 0) return null;
+        var datePart = t.Substring(0, gmtIdx).Trim();
+        var tzStr = t.Substring(gmtIdx + 3);
+
+        var tzOffset = TimeSpan.Zero;
+        if (tzStr.Length >= 5 && (tzStr[0] == '+' || tzStr[0] == '-'))
+        {
+            if (int.TryParse(tzStr.Substring(0, 3), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var tzHours) &&
+                int.TryParse(tzStr.AsSpan(3, 2), NumberStyles.None, CultureInfo.InvariantCulture, out var tzMins))
+            {
+                tzOffset = new TimeSpan(tzHours, tzMins, 0);
+            }
+        }
+
+        var parts = datePart.Split(' ');
+        if (parts.Length >= 4)
+        {
+            var mIdx = Array.IndexOf(MonthNames, parts[0]);
+            if (mIdx >= 0 && int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var dd) &&
+                int.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out var yyyy))
+            {
+                var timeParts = parts[3].Split(':');
+                if (timeParts.Length == 3 &&
+                    int.TryParse(timeParts[0], NumberStyles.None, CultureInfo.InvariantCulture, out var hh) &&
+                    int.TryParse(timeParts[1], NumberStyles.None, CultureInfo.InvariantCulture, out var mm) &&
+                    int.TryParse(timeParts[2], NumberStyles.None, CultureInfo.InvariantCulture, out var ss))
+                {
+                    try
+                    {
+                        var dto = new DateTimeOffset(yyyy, mIdx + 1, dd, hh, mm, ss, TimeSpan.Zero);
+                        return TimeClip((dto - tzOffset).ToUnixTimeMilliseconds());
+                    }
+                    catch (ArgumentOutOfRangeException) { }
+                }
+            }
+        }
+
+        if (DateTimeOffset.TryParseExact(datePart, "dd MMM yyyy HH:mm:ss",
+                CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var dto2))
+        {
+            return TimeClip(dto2.ToUnixTimeMilliseconds());
+        }
+        return null;
     }
 }

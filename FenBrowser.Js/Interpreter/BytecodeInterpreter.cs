@@ -5811,10 +5811,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             }
 
             var year = ToNumber(args[0]);
-            if (double.IsFinite(year) && year >= 0 && year <= 99)
-            {
-                year += 1900;
-            }
+            var yearInt = DateMath.ToInteger(year);
+            var yr = (!double.IsNaN(year) && yearInt >= 0 && yearInt <= 99) ? 1900.0 + yearInt : year;
 
             var month = args.Count > 1 ? ToNumber(args[1]) : 0;
             var day = args.Count > 2 ? ToNumber(args[2]) : 1;
@@ -6172,8 +6170,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     {
         _ = args;
         var t = GetDateTimeValue(thisValue, "toString");
-        if (!double.IsFinite(t)) return JsValue.FromString("Invalid Date");
-        return JsValue.FromString(FormatDatePart(t) + " " + FormatTimePart(t));
+        return JsValue.FromString(DateMath.DateToString(t));
     }
 
     private JsValue DatePrototypeToLocaleString(JsValue thisValue, IReadOnlyList<JsValue> args)
@@ -6391,7 +6388,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 var prim = ToPrimitive(v, PrimitiveHint.Default);
                 if (prim.Tag == JsValueTag.String)
                 {
-                    timeValue = ParseDateValue(ToStringValue(prim));
+                    timeValue = DateMath.ParseDateValue(ToStringValue(prim));
                 }
                 else
                 {
@@ -6408,201 +6405,13 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             var minutes = args.Count > 4 ? ToNumber(args[4]) : 0;
             var seconds = args.Count > 5 ? ToNumber(args[5]) : 0;
             var ms = args.Count > 6 ? ToNumber(args[6]) : 0;
-            if (double.IsFinite(year) && year >= 0 && year <= 99)
-            {
-                year += 1900;
-            }
-            var v = DateMath.MakeDate(DateMath.MakeDay(year, month, day), DateMath.MakeTime(hours, minutes, seconds, ms));
+            var yearInt = DateMath.ToInteger(year);
+            var yr = (!double.IsNaN(year) && yearInt >= 0 && yearInt <= 99) ? 1900.0 + yearInt : year;
+            var v = DateMath.MakeDate(DateMath.MakeDay(yr, month, day), DateMath.MakeTime(hours, minutes, seconds, ms));
             timeValue = DateMath.TimeClip(v);
         }
 
         return CreateDateObject(timeValue);
-    }
-
-    // ECMA-262 21.4.3.2 Date.parse semantics: ISO-8601 and the looser forms .NET
-    // already understands; NaN on failure.
-    private static double ParseDateValue(string text)
-    {
-        // ECMA-262 §21.4.1.15 Date Time String Format: year-only form "YYYY"
-        // (4+ digits, no sign) defaults to January 1, 00:00:00.000 UTC.
-        if (text.Length >= 4 && text.All(char.IsDigit))
-        {
-            long year = long.Parse(text);
-            if (year >= 0 && year <= 9999)
-            {
-                var d = DateMath.MakeDate(DateMath.MakeDay(year, 0, 1), DateMath.MakeTime(0, 0, 0, 0));
-                return DateMath.TimeClip(d);
-            }
-        }
-
-        // ISO 8601 extended year format: [+-]YYYYYY-MM-DDTHH:mm:ss[.sss]Z
-        // .NET's DateTimeOffset.TryParse doesn't handle negative or >9999 years.
-        // Try manual ISO parse first for extended-year strings.
-        if (text.Length > 0 && (text[0] == '+' || text[0] == '-') && text.Length >= 12)
-        {
-            var result = TryParseExtendedIsoDate(text);
-            if (result.HasValue) return result.Value;
-        }
-
-        // Date.prototype.toString format: Www Mmm DD YYYY HH:MM:SS GMT[+-]HHMM
-        // e.g. "Thu Jan 01 1970 00:00:00 GMT+0000"
-        // ECMA-262 21.4.3.2 requires Date.parse to accept its own toString output.
-        {
-            var dtResult = TryParseDateToStringFormat(text);
-            if (dtResult.HasValue) return dtResult.Value;
-        }
-
-        if (DateTimeOffset.TryParse(text, System.Globalization.CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
-                out var parsed))
-        {
-            return parsed.ToUnixTimeMilliseconds();
-        }
-        return double.NaN;
-    }
-
-    // Parse the Date.prototype.toString / toUTCString format:
-    // toString:  "Thu Jan 01 1970 00:00:00 GMT+0000"
-    // toUTCString: "Thu, 01 Jan 1970 00:00:00 GMT"
-    private static double? TryParseDateToStringFormat(string text)
-    {
-        // Strip leading day-of-week (with optional comma)
-        var t = text;
-        var commaIdx = t.IndexOf(',');
-        if (commaIdx >= 0 && commaIdx < 5)
-            t = t.Substring(commaIdx + 1).TrimStart();
-        else if (t.Length > 4 && t[3] == ' ')
-            t = t.Substring(4); // strip "Thu "
-
-        // Find "GMT" and extract
-        var gmtIdx = t.LastIndexOf("GMT", StringComparison.Ordinal);
-        if (gmtIdx < 0) return null;
-        var datePart = t.Substring(0, gmtIdx).Trim();
-        var tzStr = t.Substring(gmtIdx + 3);
-
-        // Parse timezone offset: "+0000", "-0500", or empty (GMT = UTC+0)
-        var tzOffset = TimeSpan.Zero;
-        if (tzStr.Length >= 5 && (tzStr[0] == '+' || tzStr[0] == '-'))
-        {
-            var tzHours = int.Parse(tzStr.Substring(0, 3));
-            var tzMins = int.Parse(tzStr.Substring(3, 2));
-            tzOffset = new TimeSpan(tzHours, tzMins, 0);
-        }
-
-        // Try "MMM dd yyyy HH:mm:ss" (toString format)
-        // NOTE: TryParseExact with "MMM dd yyyy HH:mm:ss" is unreliable on some
-        // .NET versions for InvariantCulture. Fall back to manual parse.
-        var monthNames = new[] { "Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec" };
-        var parts = datePart.Split(' ');
-        if (parts.Length >= 4)
-        {
-            var mIdx = Array.IndexOf(monthNames, parts[0]);
-            if (mIdx >= 0 && int.TryParse(parts[1], out var dd) && int.TryParse(parts[2], out var yyyy))
-            {
-                var timeParts = parts[3].Split(':');
-                if (timeParts.Length == 3 &&
-                    int.TryParse(timeParts[0], out var hh) &&
-                    int.TryParse(timeParts[1], out var mm) &&
-                    int.TryParse(timeParts[2], out var ss))
-                {
-                    try
-                    {
-                        var dto1 = new DateTimeOffset(yyyy, mIdx + 1, dd, hh, mm, ss, TimeSpan.Zero);
-                        return DateMath.TimeClip((dto1 - tzOffset).ToUnixTimeMilliseconds());
-                    }
-                    catch { }
-                }
-            }
-        }
-        // Try "dd MMM yyyy HH:mm:ss" (toUTCString format)
-        if (DateTimeOffset.TryParseExact(datePart, "dd MMM yyyy HH:mm:ss",
-                System.Globalization.CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.AssumeUniversal, out var dto2))
-        {
-            return DateMath.TimeClip(dto2.ToUnixTimeMilliseconds());
-        }
-        return null;
-    }
-
-    // Parse ISO 8601 dates with extended year format: [+-]YYYYYY-MM-DDTHH:mm:ss[.sss]Z
-    // Returns null if the string doesn't match or values are out of range.
-    private static double? TryParseExtendedIsoDate(string text)
-    {
-        // Expected minimum: [+-]YYYYYY-MM-DD -> 13 chars
-        if (text.Length < 13) return null;
-        var sign = text[0] == '-' ? -1 : 1;
-        // Parse year: 6+ digits after sign
-        int pos = 1;
-        long year = 0;
-        while (pos < text.Length && char.IsDigit(text[pos]))
-        {
-            year = year * 10 + (text[pos] - '0');
-            pos++;
-        }
-        var yearDigits = pos - 1;
-        if (yearDigits < 4) return null; // at least 4-digit year
-        if (sign < 0 && year == 0) return null; // reject -000000 (year 0 is positive per ES2022)
-        if (sign < 0) year = -year;
-        // Expect '-'
-        if (pos >= text.Length || text[pos] != '-') return null;
-        pos++;
-        // Parse month (2 digits)
-        if (pos + 1 >= text.Length) return null;
-        var month = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
-        pos += 2;
-        if (month < 1 || month > 12) return null;
-        // Expect '-'
-        if (pos >= text.Length || text[pos] != '-') return null;
-        pos++;
-        // Parse day (2 digits)
-        if (pos + 1 >= text.Length) return null;
-        var day = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
-        pos += 2;
-        if (day < 1 || day > 31) return null;
-        // Optional time part: 'T' or space
-        long hours = 0, minutes = 0, seconds = 0, ms = 0;
-        if (pos < text.Length && (text[pos] == 'T' || text[pos] == ' '))
-        {
-            pos++;
-            if (pos + 1 >= text.Length) return null;
-            hours = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
-            pos += 2;
-            if (hours > 24) return null;
-            if (pos < text.Length && text[pos] == ':')
-            {
-                pos++;
-                if (pos + 1 >= text.Length) return null;
-                minutes = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
-                pos += 2;
-                if (minutes > 59) return null;
-            }
-            if (pos < text.Length && text[pos] == ':')
-            {
-                pos++;
-                if (pos + 1 >= text.Length) return null;
-                seconds = (text[pos] - '0') * 10 + (text[pos + 1] - '0');
-                pos += 2;
-                if (seconds > 59) return null;
-            }
-            if (pos < text.Length && text[pos] == '.')
-            {
-                pos++;
-                var msDigits = 0;
-                ms = 0;
-                while (pos < text.Length && char.IsDigit(text[pos]) && msDigits < 3)
-                {
-                    ms = ms * 10 + (text[pos] - '0');
-                    pos++;
-                    msDigits++;
-                }
-                while (msDigits < 3) { ms *= 10; msDigits++; }
-            }
-        }
-        // Skip optional timezone suffix (Z, +HH:MM, -HH:MM)
-        // For our purposes (local=UTC), timezone doesn't matter.
-        // Compute using DateMath (handles negative years correctly)
-        var dateMs = DateMath.MakeDate(DateMath.MakeDay(year, month - 1, day), DateMath.MakeTime(hours, minutes, seconds, ms));
-        return DateMath.TimeClip(dateMs);
     }
 
     private JsValue CreateDateObject(double timeValue)
@@ -18776,8 +18585,19 @@ fallbackArraySpecies:
 
         if (args.Count == 0 || args[0].Tag == JsValueTag.Undefined)
         {
-            // Round-trip then reformat to lowercase e per spec.
-            return JsValue.FromString(NormaliseExponential(value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)));
+            var absValue = Math.Abs(value);
+            var sign = value < 0d ? "-" : "";
+            for (var f = 0; f < 17; f++)
+            {
+                var candidate = sign + MathHelpers.FormatToExponential(absValue, f);
+                if (double.TryParse(candidate, System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var back) && back == value)
+                {
+                    return JsValue.FromString(candidate);
+                }
+            }
+
+            return JsValue.FromString(sign + MathHelpers.FormatToExponential(absValue, 17));
         }
 
         var digits = (int)ToNumber(args[0]);
@@ -18787,47 +18607,9 @@ fallbackArraySpecies:
                 "toExponential() digits argument must be between 0 and 100."));
         }
 
-        // ECMA-262 step 9: if x = 0, mantissa is f+1 unsigned zeros.
-        // -0 == 0 is true in IEEE 754, so this matches both +0 and -0.
-        // .NET formats -0 as "-0e+0" which is wrong per spec.
-        if (value == 0d)
-            return JsValue.FromString("0" + (digits > 0 ? "." + new string('0', digits) : "") + "e+0");
-
-        var format = "0." + new string('0', digits) + "e+0";
-        var raw = value.ToString(format, System.Globalization.CultureInfo.InvariantCulture);
-        if (digits == 0)
-            raw = raw.Replace(".e", "e", StringComparison.Ordinal);
-
-        return JsValue.FromString(NormaliseExponential(raw));
-    }
-
-    // Convert any "1.23E+05" / "1.23E5" style produced by .NET into the canonical
-    // ECMA-262 form "1.23e+5" (lowercase e, explicit sign, no leading zeros on the
-    // exponent).
-    private static string NormaliseExponential(string text)
-    {
-        var eIdx = text.IndexOfAny(['e', 'E']);
-        if (eIdx < 0)
-        {
-            return text;
-        }
-
-        var mantissa = text[..eIdx];
-        var expPart = text[(eIdx + 1)..];
-        var sign = "+";
-        if (expPart.Length > 0 && (expPart[0] == '+' || expPart[0] == '-'))
-        {
-            sign = expPart[0] == '-' ? "-" : "+";
-            expPart = expPart[1..];
-        }
-
-        expPart = expPart.TrimStart('0');
-        if (expPart.Length == 0)
-        {
-            expPart = "0";
-        }
-
-        return mantissa + "e" + sign + expPart;
+        var abs2 = Math.Abs(value);
+        var sig2 = value < 0d ? "-" : "";
+        return JsValue.FromString(sig2 + MathHelpers.FormatToExponential(abs2, digits));
     }
 
     // ECMA-262 21.1.3.5 Number.prototype.toPrecision(precision). When precision is
@@ -18859,19 +18641,9 @@ fallbackArraySpecies:
                 "toPrecision() precision argument must be between 1 and 100."));
         }
 
-        if (value == 0d)
-        {
-            return JsValue.FromString(precision == 1
-                ? "0"
-                : "0." + new string('0', precision - 1));
-        }
-
-        // "Gn" rounds to n significant digits without exponent unless necessary.
-        // For spec parity with V8/SM ("0.0001" -> precision 1 -> "0.0001" stays;
-        // very small or very large slip into scientific) we route through G then
-        // normalise the exponent form when present.
-        var formatted = value.ToString("G" + precision, System.Globalization.CultureInfo.InvariantCulture);
-        return JsValue.FromString(NormaliseExponential(formatted));
+        var absValue = Math.Abs(value);
+        var negative = value < 0d;
+        return JsValue.FromString(MathHelpers.FormatToPrecision(absValue, precision, negative));
     }
 
     // ECMA-262 21.1.3.3 Number.prototype.toFixed(fractionDigits). fractionDigits
