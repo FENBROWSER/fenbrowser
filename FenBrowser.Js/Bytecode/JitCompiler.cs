@@ -163,6 +163,10 @@ public static class JitCompiler
         .GetMethod(nameof(BytecodeInterpreter.StoreName), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiInitializeName = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.InitializeName), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiPreResolveBinding = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.PreResolveBinding), BindingFlags.Instance | BindingFlags.NonPublic)!;
+    private static readonly MethodInfo MiStoreToResolvedBinding = typeof(BytecodeInterpreter)
+        .GetMethod(nameof(BytecodeInterpreter.StoreToResolvedBinding), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiIsTruthy = typeof(BytecodeInterpreter)
         .GetMethod(nameof(BytecodeInterpreter.IsTruthy), BindingFlags.Instance | BindingFlags.NonPublic)!;
     private static readonly MethodInfo MiLoadThis = typeof(BytecodeInterpreter)
@@ -356,6 +360,14 @@ public static class JitCompiler
             case OpCode.InitVar:
                 if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
                 body.Add(Expression.Call(interp, MiInitializeName, frame, Expression.Constant(ins.B),
+                    Expression.ArrayAccess(registers, Expression.Constant(ins.A))));
+                return true;
+            case OpCode.PreResolveVar:
+                body.Add(Expression.Call(interp, MiPreResolveBinding, frame, Expression.Constant(ins.B)));
+                return true;
+            case OpCode.StoreResolvedVar:
+                if (ins.A < 0 || ins.A >= function.RegisterCount) return false;
+                body.Add(Expression.Call(interp, MiStoreToResolvedBinding, frame, Expression.Constant(ins.B),
                     Expression.ArrayAccess(registers, Expression.Constant(ins.A))));
                 return true;
             case OpCode.Return:

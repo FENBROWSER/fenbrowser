@@ -268,6 +268,15 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // up at frame setup and clears it. Stays Undefined for ordinary calls.
     private JsValue _pendingNewTarget = JsValue.Undefined;
 
+    // Cached binding resolution for PreResolveVar / StoreResolvedVar. The
+    // PreResolveVar opcode captures the owning EnvironmentRecord and binding
+    // name so StoreResolvedVar writes through that same resolution even if
+    // the binding's visibility has changed (e.g. a with-object property
+    // deleted by a side-effect in the initializer). ECMA-262 13.3.2.4 step 2
+    // requires ResolveBinding before evaluating Initializer.
+    private EnvironmentRecord? _preResolvedEnv;
+    private string? _preResolvedName;
+
     // Well-known symbol ids cached at first Symbol-constructor materialisation. JS
     // code that reads Symbol.iterator twice must get === values; a single id per
     // well-known symbol guarantees that.
@@ -949,7 +958,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         restValues[restIndex] = args[i + restIndex];
                     }
 
-                    var restArray = CreateArrayObject(restValues);
+                    var restArray = CreateArrayFromElements(restValues);
                     paramValue = JsValue.FromObject(_heap.AllocateObject(restArray, AllocationSite.Current()));
                 }
                 else if (function.RestParameterIndex >= 0 && i > function.RestParameterIndex)
@@ -1114,6 +1123,12 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     break;
                 case OpCode.StoreVarTop:
                     StoreNameInVariableEnvironment(frame, ins.B, frame.Registers[ins.A]);
+                    break;
+                case OpCode.PreResolveVar:
+                    PreResolveBinding(frame, ins.B);
+                    break;
+                case OpCode.StoreResolvedVar:
+                    StoreToResolvedBinding(frame, ins.B, frame.Registers[ins.A]);
                     break;
                 case OpCode.Move:
                     frame.Registers[ins.A] = frame.Registers[ins.B];
@@ -5243,6 +5258,58 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         }
 
         ThrowReferenceError(frame, $"Invalid variable slot {slot}.");
+    }
+
+    // ECMA-262 13.3.2.4 step 2: ResolveBinding before Initializer evaluation.
+    // Walks the current environment chain and captures the owning environment
+    // and name so a subsequent StoreResolvedVar can write through that same
+    // resolution even if the binding becomes invisible in between.
+    internal void PreResolveBinding(InterpreterFrame frame, int slot)
+    {
+        var name = SlotNameTable.GetName(frame.Function, slot);
+        if (name is null) return;
+
+        for (var env = (EnvironmentRecord?)frame.Environment; env is not null; env = env.OuterEnv)
+        {
+            if (env.HasBinding(name))
+            {
+                _preResolvedEnv = env;
+                _preResolvedName = name;
+                return;
+            }
+        }
+
+        _preResolvedEnv = null;
+        _preResolvedName = name;
+    }
+
+    // Writes through the pre-resolved binding captured by PreResolveBinding.
+    // If no resolution was cached (PreResolveVar was not emitted or the binding
+    // was not found), falls back to walking the environment chain.
+    internal void StoreToResolvedBinding(InterpreterFrame frame, int slot, JsValue value)
+    {
+        var name = SlotNameTable.GetName(frame.Function, slot);
+        if (name is null)
+        {
+            ThrowReferenceError(frame, $"Invalid variable slot {slot}.");
+            return;
+        }
+
+        var env = _preResolvedEnv;
+        var cachedName = _preResolvedName;
+        _preResolvedEnv = null;
+        _preResolvedName = null;
+
+        if (env is not null && cachedName == name)
+        {
+            var status = env.SetMutableBinding(name, value, strict: frame.Function.IsStrictMode);
+            if (status == BindingOpResult.Ok) return;
+            ThrowBindingFailure(frame, status, name, assignment: true);
+            return;
+        }
+
+        // Fallback: walk the chain like StoreName would.
+        StoreName(frame, slot, value);
     }
 
     // Annex B.3.3 web-compat (StoreVarTop): write `value` to the binding for the

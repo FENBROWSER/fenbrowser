@@ -413,10 +413,25 @@ public sealed class BytecodeCompiler
                     {
                         if (d.BindingPattern is null)
                         {
+                            var slot = GetOrCreateVariableSlot(d.Identifier);
+                            // ECMA-262 13.3.2.4: for `var x = init`, ResolveBinding
+                            // must happen before evaluating the Initializer so a
+                            // `with` binding is resolved before a side-effect in the
+                            // init (e.g. deleting the property) changes visibility.
+                            if (op == OpCode.StoreVar)
+                            {
+                                _instructions.Add(new Instruction(OpCode.PreResolveVar, 0, slot, 0));
+                            }
                             // NamedEvaluation: `var f = function(){}` names the function "f".
                             var reg = CompileNamedInitializer(d.Initializer, d.Identifier);
-                            var slot = GetOrCreateVariableSlot(d.Identifier);
-                            _instructions.Add(new Instruction(op, reg, slot, 0));
+                            if (op == OpCode.StoreVar)
+                            {
+                                _instructions.Add(new Instruction(OpCode.StoreResolvedVar, reg, slot, 0));
+                            }
+                            else
+                            {
+                                _instructions.Add(new Instruction(op, reg, slot, 0));
+                            }
                         }
                         else
                         {
@@ -3462,7 +3477,7 @@ public sealed class BytecodeCompiler
                         return deleteDest;
                     }
 
-                    if (unary.Operand is MemberExpressionNode member)
+                    if (deleteOperand is MemberExpressionNode member)
                     {
                         var objReg = CompileExpression(member.Object);
                         var deleteDest = AllocateRegister();
@@ -3480,7 +3495,8 @@ public sealed class BytecodeCompiler
                         return deleteDest;
                     }
 
-                    _ = CompileExpression(unary.Operand);
+                    // delete on a non-reference expression: ECMA-262 13.5.1.2
+                    // says return true without evaluating the operand.
                     var defaultDeleteResult = AllocateRegister();
                     var ciDeleteTrue = AddConstant(JsValue.FromBoolean(true));
                     _instructions.Add(new Instruction(OpCode.LoadConst, defaultDeleteResult, ciDeleteTrue, 0));

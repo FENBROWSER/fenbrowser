@@ -299,4 +299,12 @@ public enum OpCode : byte
 
 		// Load a pre-computed field key from ComputedFieldKeys list.
 		LoadFieldKey,
-}
+
+		// ECMA-262 13.3.2.4 VariableDeclaration: ResolveBinding BEFORE evaluating
+		// Initializer. PreResolveVar captures the owning environment for a slot name
+		// so a subsequent StoreResolvedVar writes through that same resolution even
+		// if the binding's visibility changes between the two (e.g. a with-object
+		// property deleted by the initializer).
+		PreResolveVar,
+		StoreResolvedVar,
+	}

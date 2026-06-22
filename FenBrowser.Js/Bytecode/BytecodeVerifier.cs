@@ -129,6 +129,10 @@ public sealed class BytecodeVerifier
             case OpCode.StoreVar:
             case OpCode.InitVar:
             case OpCode.StoreVarTop:
+            case OpCode.PreResolveVar:
+                ValidateVariableSlot(function, ip, ins.B);
+                break;
+            case OpCode.StoreResolvedVar:
                 ValidateRegister(ins.A, function.RegisterCount, ip, "A");
                 ValidateVariableSlot(function, ip, ins.B);
                 break;
