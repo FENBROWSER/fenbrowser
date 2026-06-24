@@ -13,6 +13,7 @@ public class BrowserTab
     private static int _nextId = 1;
     private readonly object _initialNavigationLock = new();
     private string _pendingInitialNavigationUrl;
+    private string _pendingNavigationDisplayUrl;
     private bool _initialNavigationDispatched;
     
     /// <summary>
@@ -66,12 +67,12 @@ public class BrowserTab
             var url = Url;
             if (!string.IsNullOrEmpty(url))
             {
-                return url;
+                return NormalizeDisplayUrl(url);
             }
 
             lock (_initialNavigationLock)
             {
-                return _pendingInitialNavigationUrl ?? string.Empty;
+                return NormalizeDisplayUrl(_pendingNavigationDisplayUrl ?? _pendingInitialNavigationUrl ?? string.Empty);
             }
         }
     }
@@ -113,6 +114,14 @@ public class BrowserTab
         
         Browser.UrlChanged += url =>
         {
+            if (!string.IsNullOrEmpty(url))
+            {
+                lock (_initialNavigationLock)
+                {
+                    _pendingNavigationDisplayUrl = null;
+                }
+            }
+
             // Update title from URL only if it's currently generic
             if (Title == "New Tab" || Title == "Loading...")
             {
@@ -144,6 +153,7 @@ public class BrowserTab
     public async Task NavigateAsync(string url)
     {
         IsCrashed = false; // Reset crash state on new navigation
+        SetPendingNavigationDisplayUrl(url);
         ProcessIsolationRuntime.Current?.OnNavigationRequested(this, url, isUserInput: true);
         await Browser.NavigateAsync(url);
     }
@@ -154,8 +164,34 @@ public class BrowserTab
     public async Task NavigateProgrammaticAsync(string url)
     {
         IsCrashed = false; // Reset crash state on new navigation
+        SetPendingNavigationDisplayUrl(url);
         ProcessIsolationRuntime.Current?.OnNavigationRequested(this, url, isUserInput: false);
         await Browser.NavigateProgrammaticAsync(url);
+    }
+
+    private void SetPendingNavigationDisplayUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return;
+        }
+
+        lock (_initialNavigationLock)
+        {
+            _pendingNavigationDisplayUrl = NormalizeDisplayUrl(url);
+        }
+    }
+
+    private static string NormalizeDisplayUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return string.Empty;
+        }
+
+        return url.Equals("fen://newtab/", StringComparison.OrdinalIgnoreCase)
+            ? "fen://newtab"
+            : url;
     }
 
     public void StartInitialNavigation(string url)

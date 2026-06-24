@@ -49,6 +49,25 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public async Task NavigateAsync_PreservesDisplayUrlBeforeCommit()
+        {
+            var tab = new BrowserTab();
+
+            try
+            {
+                Task navigation = tab.NavigateAsync("fen://newtab");
+
+                Assert.Equal("fen://newtab", tab.DisplayUrl);
+
+                await navigation;
+            }
+            finally
+            {
+                ShutdownEngineLoop(tab.Browser);
+            }
+        }
+
+        [Fact]
         public void GetAddressBarText_ShowsInternalNewTabUrl()
         {
             var tab = new BrowserTab();
