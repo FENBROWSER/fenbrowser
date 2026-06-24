@@ -16,7 +16,7 @@ Top clusters: intl402(694) staging(588) Temporal(566) RegExp(447) module-code(36
 Much of this file and the `docs/` Volumes describe the original architecture. The repo has since pivoted; these facts override anything below that conflicts:
 
 - **Target framework is `net10.0`** (not net8.0) across all projects.
-- **The active JavaScript engine is `FenBrowser.Js`** — a standalone tree-walking/bytecode engine (`Lexer → Parser → Ast → BytecodeCompiler → BytecodeVerifier → BytecodeInterpreter`). This is where all current JS conformance work happens. The legacy JS engine inside `FenBrowser.FenEngine/Core/Bytecode/` (the `FenRuntime`/`VirtualMachine`/`FenValue` API) is **no longer the focus** — ignore it for JS work unless explicitly told otherwise.
+- **`FenBrowser.Js` is the sole JavaScript engine.** The legacy engine (`FenBrowser.FenEngine/Core/Bytecode/`, `FenRuntime`, `VirtualMachine`, `JavaScriptEngine`, `FenValue`, DOM wrappers, WebAPIs, Workers, JIT) was removed 2026-06-24. All JS execution goes through `FenBrowser.Js` (Lexer → Parser → Ast → BytecodeCompiler → BytecodeVerifier → BytecodeInterpreter). No fallback.
 - **`FenBrowser.WPT` and `FenBrowser.Test262` projects no longer exist.** Test262 now runs through **`FenBrowser.Js.Test262`** with a completely different CLI (see Test262 section). There is no in-tree WPT runner at present.
 - **New projects**: `FenBrowser.Js` (engine), `FenBrowser.Js.Tests` (xUnit), `FenBrowser.Js.Test262` (conformance runner), `FenBrowser.Js.Shell` (REPL/CLI), `FenBrowser.Js.Compare` (differential vs. a reference engine), `FenBrowser.Js.Fuzz` (fuzzing), `FenBrowser.Core.Tests`, `FenBrowser.Tooling`.
 - **JS resume protocol**: all FenJS revamp work resumes from `.fenjs-progress.md` at the repo root — never restart from step 1.
@@ -225,7 +225,7 @@ FenBrowser.Js.Fuzz       ← JS engine fuzzing
 
 FenBrowser.Core          ← foundational types, DOM, CSS interfaces, networking
     ↑
-FenBrowser.FenEngine     ← layout, rendering, WebAPIs, legacy JS engine (depends on Core)
+FenBrowser.FenEngine     ← layout, rendering, CSS engine, browser integration (depends on Core + Js)
     ↑
 FenBrowser.Host          ← process orchestration, BrowserIntegration, IPC coordinators
 FenBrowser.DevTools      ← CDP-like debug server (DOM/CSS/Runtime domains)
@@ -264,16 +264,13 @@ Platform-agnostic primitives. Key subsystems:
 
 ### FenBrowser.FenEngine
 The rendering and scripting engine. Key subsystems:
-- **JavaScript Engine (LEGACY — not the active engine)** (`Core/`): `FenRuntime` → `BytecodeCompiler` (`Core/Bytecode/Compiler/`) → `VirtualMachine` (`Core/Bytecode/VM/`). Integrated via `JavaScriptEngine` (`Scripting/JavaScriptEngine.cs`) which implements `IDomBridge`. **For JS work use `FenBrowser.Js` instead.**
-- **JS Types** (`Core/Types/`): `JsMap`, `JsSet`, `JsWeakMap`, `JsWeakSet`, `JsPromise`, `JsBigInt`, `JsSymbol`, `JsTypedArray`, `JsIntl`
-- **DOM Wrappers** (`DOM/`): `ElementWrapper`, `DomWrapperFactory`, `CustomElementRegistry`, `MutationObserver`
+- **Browser Script Engine** (`Scripting/BrowserScriptEngineRuntime.cs`): `FenJsBrowserScriptEngine` wraps FenJS for the browser pipeline. `BrowserFenJsHostHooks` bridges DOM objects via `HostObjectTable`.
+- **DOM Wrappers** (`DOM/`): `CustomElementRegistry`, `MutationObserver`
 - **Layout Engine** (`Layout/`): `LayoutEngine`, `BoxTreeBuilder`, formatting contexts (Block, Inline, Flex, Grid, Table, Float, AbsolutePosition), `MarginCollapseComputer`, `TextLayoutComputer`
 - **Rendering** (`Rendering/`): SkiaSharp-based paint pipeline, `BrowserApi` (WebDriver API facade), compositing (`DamageTracker`, `BaseFrameReusePolicy`, `FrameBudgetAdaptivePolicy`), `BidiResolver`
 - **CSS Engine** (`Rendering/Css/`): `CascadeEngine`, custom properties, container queries, media range queries
 - **Web APIs** (`WebAPIs/`): Fetch, XHR, WebStorage, IndexedDB, Cache/CacheStorage, WebAudio, WebRTC, IntersectionObserver, ResizeObserver
 - **Workers** (`Workers/`): `WorkerRuntime`
-- **WebIDL Bindings** (`Bindings/Generated/`): auto-generated before each build from `FenBrowser.Core/WebIDL/Idl/*.idl`
-- **JIT** (`Jit/`): `JitRuntime`, `BytecodeCompiler`, `FenBytecode`
 - **Event Loop** (`Core/EventLoop/`): `EventLoopCoordinator`, `MicrotaskQueue`, `TaskQueue`
 
 ### FenBrowser.Host
@@ -328,10 +325,8 @@ Knowing the namespace means you can go directly to the file without searching:
 | `FenBrowser.Core.Memory` | `FenBrowser.Core/Memory/` |
 | `FenBrowser.Core.WebIDL` | `FenBrowser.Core/WebIDL/` |
 | `FenBrowser.FenEngine.Core` | `FenBrowser.FenEngine/Core/` |
-| `FenBrowser.FenEngine.Core.Types` | `FenBrowser.FenEngine/Core/Types/` |
-| `FenBrowser.FenEngine.Core.Bytecode` | `FenBrowser.FenEngine/Core/Bytecode/` |
 | `FenBrowser.FenEngine.Core.EventLoop` | `FenBrowser.FenEngine/Core/EventLoop/` |
-| `FenBrowser.FenEngine.Scripting` | `FenBrowser.FenEngine/Scripting/JavaScriptEngine.cs` |
+| `FenBrowser.FenEngine.Scripting` | `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs` |
 | `FenBrowser.FenEngine.DOM` | `FenBrowser.FenEngine/DOM/` |
 | `FenBrowser.FenEngine.WebAPIs` | `FenBrowser.FenEngine/WebAPIs/` |
 | `FenBrowser.FenEngine.Layout` | `FenBrowser.FenEngine/Layout/` |
@@ -356,9 +351,6 @@ Knowing the namespace means you can go directly to the file without searching:
 | New JS opcode | `FenBrowser.Js/Bytecode/` (opcode + `BytecodeCompiler` + `BytecodeVerifier`) + `FenBrowser.Js/Interpreter/BytecodeInterpreter*.cs` |
 | New JS syntax | `FenBrowser.Js/Lexer/` + `FenBrowser.Js/Parser/` + `FenBrowser.Js/Ast/` (+ AstValidation) then compiler/interpreter |
 | New JS engine unit test | `FenBrowser.Js.Tests/<FeatureName>Tests.cs` |
-| New Web API (legacy engine) | `FenBrowser.FenEngine/WebAPIs/<ApiName>.cs` + register in `Scripting/JavaScriptEngine.cs` |
-| New JS built-in type | `FenBrowser.FenEngine/Core/Types/Js<TypeName>.cs` |
-| New JS built-in op/opcode | `FenBrowser.FenEngine/Core/Bytecode/OpCode.cs` + `Compiler/BytecodeCompiler.cs` + `VM/VirtualMachine.cs` |
 | New DOM method/property | `FenBrowser.Core/Dom/V2/Element.cs` or `Document.cs` or `Node.cs` |
 | New CSS property | `FenBrowser.FenEngine/Rendering/Css/CascadeEngine.cs` + `FenBrowser.Core/Css/CssComputed.cs` |
 | New layout feature | `FenBrowser.FenEngine/Layout/LayoutEngine.cs` + relevant formatting context |
