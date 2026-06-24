@@ -2526,9 +2526,9 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 case OpCode.In:
                 {
                     var rhs = frame.Registers[ins.C];
-                    if (rhs.Tag != JsValueTag.Object)
+                    if (rhs.Tag != JsValueTag.Object && rhs.Tag != JsValueTag.HostObject)
                     {
-                        ThrowTypeError(frame, "Right-hand side of 'in' must be an object.");
+                        ThrowTypeError(frame, $"Right-hand side of 'in' must be an object (got {rhs.Tag}).");
                         break;
                     }
 
@@ -21101,9 +21101,9 @@ fallbackArraySpecies:
     {
         var key = ToPropertyKey(frame.Registers[keyReg]);
         var rhs = frame.Registers[objReg];
-        if (rhs.Tag != JsValueTag.Object)
+        if (rhs.Tag != JsValueTag.Object && rhs.Tag != JsValueTag.HostObject)
         {
-            ThrowTypeError(frame, "Right-hand side of 'in' must be an object.");
+            ThrowTypeError(frame, $"Right-hand side of 'in' must be an object (got {rhs.Tag}).");
             return;
         }
 
@@ -21987,7 +21987,7 @@ fallbackArraySpecies:
     {
         result = false;
 
-        if (right.Tag != JsValueTag.Object)
+        if (right.Tag != JsValueTag.Object && right.Tag != JsValueTag.HostObject)
         {
             ThrowTypeError(frame, "Right-hand side of 'instanceof' must be an object.");
             return false;

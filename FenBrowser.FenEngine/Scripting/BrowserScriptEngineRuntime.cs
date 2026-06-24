@@ -2546,8 +2546,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
             DispatchScriptElementEvent(scriptElement, "load");
         }
-        catch
+        catch (Exception ex)
         {
+            Console.Error.WriteLine($"[ExtScript] FAIL: {ex.Message}");
             DispatchScriptElementEvent(scriptElement, "error");
         }
 
