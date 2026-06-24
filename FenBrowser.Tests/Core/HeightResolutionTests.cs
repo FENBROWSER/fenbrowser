@@ -576,6 +576,151 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public void GoogleRootHeightChain_DoesNotCreateSecondViewport()
+        {
+            var renderer = new SkiaDomRenderer();
+            var styles = new Dictionary<Node, CssComputed>();
+
+            var html = new Element("html");
+            var body = new Element("body");
+            var page = new Element("div");
+            var topNav = new Element("div");
+            var heroBand = new Element("div");
+            var searchShell = new Element("div");
+            var footer = new Element("div");
+
+            page.SetAttribute("class", "L3eUgb");
+            heroBand.SetAttribute("class", "LLD4me");
+            searchShell.SetAttribute("class", "RNNXgb");
+
+            html.AppendChild(body);
+            body.AppendChild(page);
+            page.AppendChild(topNav);
+            page.AppendChild(heroBand);
+            page.AppendChild(searchShell);
+            page.AppendChild(footer);
+
+            styles[html] = new CssComputed
+            {
+                Display = "block",
+                HeightPercent = 100
+            };
+            styles[body] = new CssComputed
+            {
+                Display = "block",
+                HeightPercent = 100
+            };
+            styles[page] = new CssComputed
+            {
+                Display = "flex",
+                FlexDirection = "column",
+                HeightPercent = 100
+            };
+            styles[topNav] = new CssComputed
+            {
+                Display = "block",
+                Height = 60
+            };
+            styles[heroBand] = new CssComputed
+            {
+                Display = "flex",
+                FlexDirection = "column",
+                HeightExpression = "calc(100% - 560px)",
+                MinHeight = 150,
+                MaxHeight = 290
+            };
+            styles[searchShell] = new CssComputed
+            {
+                Display = "flex",
+                MinHeight = 50
+            };
+            styles[footer] = new CssComputed
+            {
+                Display = "block",
+                Height = 94
+            };
+
+            const float viewportWidth = 1920;
+            const float viewportHeight = 899;
+            using var bitmap = new SKBitmap((int)viewportWidth, (int)viewportHeight);
+            using var canvas = new SKCanvas(bitmap);
+
+            renderer.Render(
+                html,
+                canvas,
+                styles,
+                new SKRect(0, 0, viewportWidth, viewportHeight),
+                "https://www.google.com/",
+                (size, overlays) => { });
+
+            Assert.True(renderer.LastLayout.TryGetElementRect(body, out var bodyRect));
+            Assert.True(renderer.LastLayout.TryGetElementRect(page, out var pageRect));
+            Assert.True(renderer.LastLayout.TryGetElementRect(searchShell, out var searchRect));
+
+            Assert.InRange(bodyRect.Top, -0.5f, 0.5f);
+            Assert.InRange(pageRect.Top, -0.5f, 0.5f);
+            Assert.True(searchRect.Top < viewportHeight * 0.5f, $"Expected search shell in first viewport, got top={searchRect.Top}.");
+            Assert.InRange(renderer.LastLayout.ContentHeight, viewportHeight - 0.5f, viewportHeight + 0.5f);
+        }
+
+        [Fact]
+        public void FixedViewportChild_DoesNotContributeToInFlowBlockHeight()
+        {
+            var renderer = new SkiaDomRenderer();
+            var styles = new Dictionary<Node, CssComputed>();
+
+            var root = new Element("div");
+            var wrapper = new Element("div");
+            var fixedPanel = new Element("div");
+            var following = new Element("div");
+
+            root.AppendChild(wrapper);
+            wrapper.AppendChild(fixedPanel);
+            root.AppendChild(following);
+
+            styles[root] = new CssComputed
+            {
+                Display = "flex",
+                FlexDirection = "column",
+                Height = 600
+            };
+            styles[wrapper] = new CssComputed
+            {
+                Display = "block"
+            };
+            styles[fixedPanel] = new CssComputed
+            {
+                Display = "block",
+                Position = "fixed",
+                HeightExpression = "100vh",
+                Width = 72
+            };
+            styles[following] = new CssComputed
+            {
+                Display = "block",
+                Height = 100
+            };
+
+            using var bitmap = new SKBitmap(800, 600);
+            using var canvas = new SKCanvas(bitmap);
+
+            renderer.Render(
+                root,
+                canvas,
+                styles,
+                new SKRect(0, 0, 800, 600),
+                "https://www.google.com/",
+                (size, overlays) => { });
+
+            Assert.True(renderer.LastLayout.TryGetElementRect(wrapper, out var wrapperRect));
+            Assert.True(renderer.LastLayout.TryGetElementRect(following, out var followingRect));
+
+            Assert.InRange(wrapperRect.Height, -0.5f, 0.5f);
+            Assert.InRange(followingRect.Top, -0.5f, 0.5f);
+            Assert.InRange(renderer.LastLayout.ContentHeight, 600f - 0.5f, 600f + 0.5f);
+        }
+
+        [Fact]
         public void InlineSvgWithPathChildren_RemainsAtomicAtIntrinsicSize()
         {
             var renderer = new SkiaDomRenderer();

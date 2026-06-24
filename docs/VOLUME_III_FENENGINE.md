@@ -8593,3 +8593,18 @@ Verification:
 - `intl402/Temporal/PlainYearMonth/prototype/add`: pass (`41/41`).
 - `intl402/Temporal/PlainYearMonth/prototype/subtract`: pass (`41/41`).
 - `intl402/Temporal`: category improved from `1734/2029` to `1894/2029`; remaining failures `135`.
+
+## 2.315 Flex Out-of-Flow Height Recovery Guard (2026-06-24)
+
+- `FenBrowser.FenEngine/Layout/Contexts/FlexFormattingContext.cs`
+  - Collapsed flex-item recovery no longer counts out-of-flow descendants when deriving descendant extents.
+  - Column flex items whose descendants are only out-of-flow content or ignorable text are normalized back to zero normal-flow height instead of receiving the generic 1px collapsed-item fallback.
+  - Remaining free-space recovery is now limited to column flex items that actually declare positive flex growth.
+
+Net effect:
+
+- Fixed or absolutely positioned children can still render in their viewport/containing-block position, but their ordinary wrapper no longer consumes a full viewport of in-flow flex height. This prevents Google-style hidden `position:fixed; height:100vh` wrappers from pushing the logo/search area below the first viewport.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~HeightResolutionTests.FixedViewportChild_DoesNotContributeToInFlowBlockHeight|FullyQualifiedName~HeightResolutionTests.GoogleRootHeightChain_DoesNotCreateSecondViewport" --logger "console;verbosity=minimal"`: pass (`2/2`) on `2026-06-24`.

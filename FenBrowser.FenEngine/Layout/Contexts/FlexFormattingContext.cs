@@ -539,6 +539,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 foreach (var item in items)
                 {
                     if (item.Geometry.ContentBox.Height > 1f) continue;
+                    if (HasOnlyOutOfFlowOrIgnorableDescendants(item))
+                    {
+                        LayoutBoxOps.ComputeBoxModelFromContent(item, item.Geometry.ContentBox.Width, 0f);
+                        continue;
+                    }
 
                     ApplyCollapsedFlexItemFallback(item);
                     if (item.Geometry.ContentBox.Height > 1f) continue;
@@ -549,10 +554,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         descendantHeight = Math.Max(0f, requiredHeight);
                     }
 
+                    bool canUseRemainingSpace = ResolveFlexGrow(item.ComputedStyle).GetValueOrDefault() > 0;
                     float currentItemSize = GetColumnMainSize(item);
                     float targetHeight = descendantHeight > 1f
                         ? Math.Min(containerMainSize, descendantHeight)
-                        : Math.Max(0, containerMainSize - (totalMainSize - currentItemSize));
+                        : canUseRemainingSpace
+                            ? Math.Max(0, containerMainSize - (totalMainSize - currentItemSize))
+                            : 0f;
 
                     if (targetHeight <= 1f) continue;
 
@@ -1909,6 +1917,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return;
             }
 
+            if (node.IsOutOfFlow)
+            {
+                return;
+            }
+
             float left = node.Geometry.MarginBox.Left - originLeft;
             float right = node.Geometry.MarginBox.Right - originLeft;
             float top = node.Geometry.MarginBox.Top - originTop;
@@ -2147,6 +2160,31 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return true;
             }
             return box.Children.All(IsIgnorableFlexDescendant);
+        }
+
+        private static bool HasOnlyOutOfFlowOrIgnorableDescendants(LayoutBox box)
+        {
+            if (box == null || box.Children.Count == 0) return false;
+            return box.Children.All(IsOutOfFlowOrIgnorableDescendant);
+        }
+
+        private static bool IsOutOfFlowOrIgnorableDescendant(LayoutBox box)
+        {
+            if (box == null) return true;
+            if (box.IsOutOfFlow) return true;
+            if (box is TextLayoutBox textBox)
+            {
+                return string.IsNullOrWhiteSpace(textBox.TextContent);
+            }
+            if (box.SourceNode is Text textNode)
+            {
+                return string.IsNullOrWhiteSpace(textNode.Data);
+            }
+            if (box.Children.Count == 0)
+            {
+                return false;
+            }
+            return box.Children.All(IsOutOfFlowOrIgnorableDescendant);
         }
 
         private static double? ResolveFlexGrow(CssComputed style)
