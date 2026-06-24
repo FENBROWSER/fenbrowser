@@ -1469,6 +1469,7 @@ pre {{
                 TryLogDebug($"[BrowserApi] RenderAsync finished for {_current?.AbsoluteUri}. Firing RepaintReady...", LogCategory.General);
                 
                 TryInvokeRepaintReady(elem);
+                SyncDocumentMetadata(uri);
                 _navigationLifecycle.MarkInteractive(navigationId, BuildInteractiveLifecycleDetail(result));
 
                 TryCaptureNavigationDiagnosticsSnapshot(navigationId, uri, allowIncomplete: true);
@@ -2226,7 +2227,8 @@ pre {{
                         await stream.CopyToAsync(ms);
                         ms.Position = 0;
                         
-                        var bitmap = SKBitmap.Decode(ms);
+                        var bytes = ms.ToArray();
+                        var bitmap = DecodeFavicon(bytes);
                         if (bitmap != null)
                         {
                             if (!IsLatestNavigation(navigationId))
@@ -2256,6 +2258,128 @@ pre {{
             {
                 FenBrowser.Core.EngineLogCompat.Warn($"[BrowserHost] Failed to fetch favicon: {ex.Message}", FenBrowser.Core.Logging.LogCategory.General);
             }
+        }
+
+        private void SyncDocumentMetadata(Uri pageUrl)
+        {
+            try
+            {
+                var title = ExtractDocumentTitle(_engine.GetActiveDom());
+                if (string.IsNullOrWhiteSpace(title))
+                {
+                    title = pageUrl?.Host;
+                }
+
+                if (!string.IsNullOrWhiteSpace(title))
+                {
+                    TitleChanged?.Invoke(this, title.Trim());
+                }
+            }
+            catch (Exception ex)
+            {
+                TryLogWarn($"[BrowserHost] Document metadata sync failed: {ex.Message}", LogCategory.Navigation);
+            }
+        }
+
+        private static string ExtractDocumentTitle(Node dom)
+        {
+            var titleNode = dom?
+                .Descendants()
+                .FirstOrDefault(n => string.Equals(n.NodeName, "title", StringComparison.OrdinalIgnoreCase));
+
+            return titleNode?.TextContent?.Trim() ?? string.Empty;
+        }
+
+        private static SKBitmap DecodeFavicon(byte[] bytes)
+        {
+            if (bytes == null || bytes.Length == 0)
+            {
+                return null;
+            }
+
+            var bitmap = SKBitmap.Decode(bytes);
+            if (bitmap != null)
+            {
+                return bitmap;
+            }
+
+            return DecodeIcoFavicon(bytes);
+        }
+
+        private static SKBitmap DecodeIcoFavicon(byte[] bytes)
+        {
+            const int HeaderSize = 6;
+            const int DirectoryEntrySize = 16;
+            if (bytes.Length < HeaderSize)
+            {
+                return null;
+            }
+
+            ushort reserved = ReadUInt16Le(bytes, 0);
+            ushort type = ReadUInt16Le(bytes, 2);
+            ushort count = ReadUInt16Le(bytes, 4);
+            if (reserved != 0 || type != 1 || count == 0)
+            {
+                return null;
+            }
+
+            SKBitmap fallback = null;
+            int fallbackArea = -1;
+
+            for (int i = 0; i < count; i++)
+            {
+                int entryOffset = HeaderSize + i * DirectoryEntrySize;
+                if (entryOffset + DirectoryEntrySize > bytes.Length)
+                {
+                    break;
+                }
+
+                int width = bytes[entryOffset] == 0 ? 256 : bytes[entryOffset];
+                int height = bytes[entryOffset + 1] == 0 ? 256 : bytes[entryOffset + 1];
+                uint imageSize = ReadUInt32Le(bytes, entryOffset + 8);
+                uint imageOffset = ReadUInt32Le(bytes, entryOffset + 12);
+                if (imageSize == 0 ||
+                    imageOffset >= bytes.Length ||
+                    imageOffset + imageSize > bytes.Length)
+                {
+                    continue;
+                }
+
+                var iconBytes = new byte[imageSize];
+                Buffer.BlockCopy(bytes, (int)imageOffset, iconBytes, 0, (int)imageSize);
+                var decoded = SKBitmap.Decode(iconBytes);
+                if (decoded == null)
+                {
+                    continue;
+                }
+
+                int area = width * height;
+                if (area > fallbackArea)
+                {
+                    fallback?.Dispose();
+                    fallback = decoded;
+                    fallbackArea = area;
+                }
+                else
+                {
+                    decoded.Dispose();
+                }
+            }
+
+            return fallback;
+        }
+
+        private static ushort ReadUInt16Le(byte[] bytes, int offset)
+        {
+            return (ushort)(bytes[offset] | (bytes[offset + 1] << 8));
+        }
+
+        private static uint ReadUInt32Le(byte[] bytes, int offset)
+        {
+            return (uint)(bytes[offset] |
+                         (bytes[offset + 1] << 8) |
+                         (bytes[offset + 2] << 16) |
+                         (bytes[offset + 3] << 24));
         }
 
         // OLD CaptureScreenshotAsync removed - new one with string return is in NEW WEBDRIVER METHODS section

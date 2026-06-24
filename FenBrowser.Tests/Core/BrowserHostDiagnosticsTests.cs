@@ -89,6 +89,34 @@ namespace FenBrowser.Tests.Core
             Assert.Null(browser.Favicon);
         }
 
+        [Fact]
+        public void ExtractDocumentTitle_ReturnsParsedTitleText()
+        {
+            var document = ParseHtml("<!DOCTYPE html><html><head><title> Google </title></head><body></body></html>");
+
+            var title = (string)InvokePrivateStatic(
+                typeof(BrowserHost),
+                "ExtractDocumentTitle",
+                document.DocumentElement);
+
+            Assert.Equal("Google", title);
+        }
+
+        [Fact]
+        public void DecodeFavicon_DecodesPngBackedIcoContainer()
+        {
+            var icoBytes = CreatePngBackedIcoBytes();
+
+            using var bitmap = (SKBitmap)InvokePrivateStatic(
+                typeof(BrowserHost),
+                "DecodeFavicon",
+                icoBytes);
+
+            Assert.NotNull(bitmap);
+            Assert.Equal(16, bitmap.Width);
+            Assert.Equal(16, bitmap.Height);
+        }
+
         private static Document ParseHtml(string html)
         {
             return new HtmlParser(html, new Uri("https://example.test/")).Parse();
@@ -126,6 +154,44 @@ namespace FenBrowser.Tests.Core
             var nestedField = nestedOwner!.GetType().GetField(nestedFieldName, BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(nestedField);
             nestedField!.SetValue(nestedOwner, value);
+        }
+
+        private static byte[] CreatePngBackedIcoBytes()
+        {
+            using var bitmap = new SKBitmap(16, 16);
+            bitmap.Erase(SKColors.DeepSkyBlue);
+            using var image = SKImage.FromBitmap(bitmap);
+            using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+            var png = data.ToArray();
+
+            var ico = new byte[22 + png.Length];
+            WriteUInt16Le(ico, 0, 0);
+            WriteUInt16Le(ico, 2, 1);
+            WriteUInt16Le(ico, 4, 1);
+            ico[6] = 16;
+            ico[7] = 16;
+            ico[8] = 0;
+            ico[9] = 0;
+            WriteUInt16Le(ico, 10, 1);
+            WriteUInt16Le(ico, 12, 32);
+            WriteUInt32Le(ico, 14, (uint)png.Length);
+            WriteUInt32Le(ico, 18, 22);
+            Buffer.BlockCopy(png, 0, ico, 22, png.Length);
+            return ico;
+        }
+
+        private static void WriteUInt16Le(byte[] bytes, int offset, ushort value)
+        {
+            bytes[offset] = (byte)(value & 0xff);
+            bytes[offset + 1] = (byte)(value >> 8);
+        }
+
+        private static void WriteUInt32Le(byte[] bytes, int offset, uint value)
+        {
+            bytes[offset] = (byte)(value & 0xff);
+            bytes[offset + 1] = (byte)((value >> 8) & 0xff);
+            bytes[offset + 2] = (byte)((value >> 16) & 0xff);
+            bytes[offset + 3] = (byte)((value >> 24) & 0xff);
         }
     }
 }
