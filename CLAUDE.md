@@ -20,7 +20,10 @@ Much of this file and the `docs/` Volumes describe the original architecture. Th
 - **`FenBrowser.WPT` and `FenBrowser.Test262` projects no longer exist.** Test262 now runs through **`FenBrowser.Js.Test262`** with a completely different CLI (see Test262 section). There is no in-tree WPT runner at present.
 - **New projects**: `FenBrowser.Js` (engine), `FenBrowser.Js.Tests` (xUnit), `FenBrowser.Js.Test262` (conformance runner), `FenBrowser.Js.Shell` (REPL/CLI), `FenBrowser.Js.Compare` (differential vs. a reference engine), `FenBrowser.Js.Fuzz` (fuzzing), `FenBrowser.Core.Tests`, `FenBrowser.Tooling`.
 - **JS resume protocol**: all FenJS revamp work resumes from `.fenjs-progress.md` at the repo root — never restart from step 1.
-- test262 root on this machine: `C:\Users\udayk\Videos\test262`.
+- **Test repos are local — NEVER search the internet for them:**
+  - test262 root: `C:\Users\udayk\Videos\test262`
+  - WPT root: `C:\Users\udayk\Videos\wpt`
+  - These are full git checkouts. All test counts, file searches, and conformance data come from these local paths — never from GitHub, web search, or any remote source.
 
 ## Documentation Index (Read Before Modifying Subsystems)
 
