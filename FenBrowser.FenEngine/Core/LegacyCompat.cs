@@ -1,0 +1,512 @@
+// Legacy compatibility stubs — minimal types needed by remaining code after
+// the legacy JS engine (Bytecode/, JavaScriptEngine, etc.) was removed.
+// These are thin facades; full implementations will be rebuilt against FenJS.
+
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using FenBrowser.Core;
+using FenBrowser.Core.Dom.V2;
+
+namespace FenBrowser.FenEngine.Core.Interfaces
+{
+    public enum ValueType
+    {
+        Undefined, Null, Boolean, Number, String, Object, Function, Symbol, BigInt, Error
+    }
+
+    public interface IValue
+    {
+        ValueType Type { get; }
+        bool ToBoolean();
+        double ToNumber();
+        string ToString();
+        IObject ToObject();
+        bool IsUndefined { get; }
+        bool IsNull { get; }
+        bool IsBoolean { get; }
+        bool IsNumber { get; }
+        bool IsString { get; }
+        bool IsObject { get; }
+        bool IsFunction { get; }
+        IObject AsObject();
+        double AsNumber(IExecutionContext context = null);
+        bool AsBoolean();
+        string AsString(IExecutionContext context = null);
+    }
+
+    public interface IObject
+    {
+        IValue Get(string key);
+        IValue Get(string key, object context);
+        void Set(string key, IValue value);
+        bool Has(string key);
+        bool Delete(string key);
+        IEnumerable<string> Keys();
+        IObject GetPrototype();
+        string GetOwnPropertyDescriptor(string key);
+    }
+
+    public interface IHistoryBridge
+    {
+        void PushState(object state, string title, string url);
+        void ReplaceState(object state, string title, string url);
+        void Go(int delta);
+        int Length { get; }
+        object State { get; }
+        Uri CurrentUrl { get; }
+    }
+
+    public interface IExecutionContext
+    {
+        Uri DocumentUrl { get; }
+        int CallStackDepth { get; }
+        IValue Environment { get; }
+    }
+
+    public interface IModuleLoader
+    {
+        string Resolve(string specifier, string referrer);
+        IObject LoadModule(string path);
+    }
+
+    public interface IHtmlDdaObject { }
+}
+
+namespace FenBrowser.FenEngine.Core.Types
+{
+    using FenBrowser.FenEngine.Core.Interfaces;
+
+    public sealed class JsSymbol
+    {
+        public string Description { get; }
+        public JsSymbol(string description) => Description = description ?? string.Empty;
+        public override string ToString() => $"Symbol({Description})";
+
+        public string ToPropertyKey() => Description;
+
+        public static class ToPrimitive
+        {
+            public static readonly JsSymbol Instance = new("Symbol.toPrimitive");
+            public static string ToPropertyKey() => "Symbol.toPrimitive";
+        }
+
+        public static class Iterator
+        {
+            public static readonly JsSymbol Instance = new("Symbol.iterator");
+            public static string ToPropertyKey() => "Symbol.iterator";
+        }
+    }
+
+    public sealed class JsPromise
+    {
+        public IValue Result { get; set; }
+        public string State { get; set; } = "pending";
+    }
+
+    public sealed class JsBigInt
+    {
+        public System.Numerics.BigInteger Value { get; }
+        public JsBigInt(System.Numerics.BigInteger value) => Value = value;
+        public override string ToString() => Value.ToString();
+    }
+
+    // Minimal IValue implementation for compat stubs (FenValue.cs is excluded pending FenJS JsValue migration)
+    internal sealed class StubValue : IValue
+    {
+        public static readonly StubValue Undef = new() { Type = ValueType.Undefined };
+        public static readonly StubValue Error = new() { Type = ValueType.Error };
+        public ValueType Type { get; set; }
+        public bool ToBoolean() => false;
+        public double ToNumber() => 0;
+        public string ToString() => Type == ValueType.Undefined ? "undefined" : Type == ValueType.Null ? "null" : string.Empty;
+        public IObject ToObject() => null;
+        public bool IsUndefined => Type == ValueType.Undefined;
+        public bool IsNull => Type == ValueType.Null;
+        public bool IsBoolean => Type == ValueType.Boolean;
+        public bool IsNumber => Type == ValueType.Number;
+        public bool IsString => Type == ValueType.String;
+        public bool IsObject => Type == ValueType.Object;
+        public bool IsFunction => Type == ValueType.Function;
+        public IObject AsObject() => null;
+        public double AsNumber(IExecutionContext context = null) => 0;
+        public bool AsBoolean() => false;
+        public string AsString(IExecutionContext context = null) => ToString();
+    }
+
+    public sealed class FenFunction
+    {
+        public string Name { get; set; }
+        public IValue Call(IValue thisValue, params IValue[] args) => StubValue.Undef;
+        public IValue Invoke(IValue[] args, object context) => StubValue.Undef;
+    }
+}
+
+namespace FenBrowser.FenEngine.Errors
+{
+    using FenBrowser.FenEngine.Core.Interfaces;
+
+    public static class FenError
+    {
+        public static IValue FromException(Exception ex) => Core.Types.StubValue.Error;
+    }
+}
+
+namespace FenBrowser.FenEngine.Scripting
+{
+    using FenBrowser.Core.Dom.V2;
+
+    // Stub — full replacement will be rebuilt on FenJS
+    public interface IJsHost
+    {
+        void Navigate(Uri target);
+        void PostForm(Uri target, string body);
+        void SetStatus(string s);
+        void SetTitle(string tval);
+        void Alert(string msg);
+        bool Confirm(string msg);
+        string Prompt(string msg, string defaultValue);
+        void Log(string msg);
+        void ScrollToElement(Element element);
+        void FocusNode(Element element);
+        object GetLayoutEngine() => null;
+    }
+
+    public interface IJsHostRepaint
+    {
+        void RequestRender();
+        void InvokeOnUiThread(Action action);
+    }
+
+    public sealed class JsContext
+    {
+        public Uri BaseUri { get; set; }
+    }
+
+    public sealed class JsHostAdapter : IJsHost, IJsHostRepaint
+    {
+        private readonly Action<Uri> _navigate;
+        private readonly Action<Uri, string> _post;
+        private readonly Action<string> _status;
+        private readonly Action _requestRender;
+        private readonly Action<Action> _invokeOnUiThread;
+        private readonly Action<string> _setTitle;
+        private readonly Action<string> _alert;
+        private readonly Func<string, bool> _confirm;
+        private readonly Func<string, string, string> _prompt;
+        private readonly Action<string> _log;
+        private readonly Action<Element> _scrollToElement;
+        private readonly Action<Element> _focusNode;
+
+        public JsHostAdapter(
+            Action<Uri> navigate, Action<Uri, string> post, Action<string> status,
+            Action requestRender = null, Action<Action> invokeOnUiThread = null,
+            Action<string> setTitle = null, Action<string> alert = null,
+            Func<string, bool> confirm = null, Func<string, string, string> prompt = null,
+            Action<string> log = null, Action<Element> scrollToElement = null,
+            Action<Element> focusNode = null)
+        {
+            _navigate = navigate ?? (_ => { });
+            _post = post ?? ((_, __) => { });
+            _status = status ?? (_ => { });
+            _requestRender = requestRender ?? (() => { });
+            _invokeOnUiThread = invokeOnUiThread ?? (a => { try { a(); } catch { } });
+            _setTitle = setTitle ?? (_ => { });
+            _alert = alert ?? (_ => { });
+            _confirm = confirm ?? (_ => false);
+            _prompt = prompt ?? ((_, __) => string.Empty);
+            _log = log ?? (_ => { });
+            _scrollToElement = scrollToElement ?? (_ => { });
+            _focusNode = focusNode ?? (_ => { });
+        }
+
+        public void Navigate(Uri target) => _navigate(target);
+        public void PostForm(Uri target, string body) => _post(target, body);
+        public void SetStatus(string s) => _status(s);
+        public void SetTitle(string tval) => _setTitle(tval);
+        public void Alert(string msg) => _alert(msg);
+        public bool Confirm(string msg) => _confirm(msg);
+        public string Prompt(string msg, string defaultValue) => _prompt(msg, defaultValue);
+        public void Log(string msg) => _log(msg);
+        public void ScrollToElement(Element element) => _scrollToElement(element);
+        public void FocusNode(Element element) => _focusNode(element);
+        public object GetLayoutEngine() => null;
+        public void RequestRender() => _requestRender();
+        public void InvokeOnUiThread(Action action) => _invokeOnUiThread(action);
+    }
+}
+
+namespace FenBrowser.FenEngine.Core
+{
+    // Minimal stubs — will be rebuilt on FenJS
+    public sealed class EngineLoop
+    {
+        public void Pulse() { }
+    }
+
+    public sealed class ExecutionContext
+    {
+        public Uri DocumentUrl { get; set; }
+        public int CallStackDepth { get; set; }
+        public Interfaces.IValue Environment { get; set; }
+    }
+}
+
+namespace FenBrowser.FenEngine
+{
+    public sealed class InputManager
+    {
+        public InputManager() { }
+    }
+
+    public enum InputEventType
+    {
+        KeyDown, KeyUp, KeyPress,
+        MouseDown, MouseUp, MouseMove, Click, DblClick,
+        TouchStart, TouchEnd, TouchMove, TouchCancel,
+        Wheel, PointerDown, PointerUp, PointerMove, PointerCancel
+    }
+
+    public static class EnginePhaseManager
+    {
+        public static void AssertNotInPhase(params FenBrowser.Core.Engine.EnginePhase[] phases) { }
+    }
+}
+
+namespace FenBrowser.FenEngine.WebAPIs
+{
+    public static class TestConsoleCapture
+    {
+        public static void AddEntry(string level, string message) { }
+    }
+}
+
+namespace FenBrowser.FenEngine.DOM
+{
+    using FenBrowser.Core.Dom.V2;
+
+    public static class ElementWrapper
+    {
+        public static bool TryGetCachedIframeDocument(Element element, out Document iframeDocument)
+        {
+            iframeDocument = null;
+            return false;
+        }
+    }
+}
+
+namespace FenBrowser.FenEngine.Core
+{
+    // Minimal stub for FenObject — used by BrowserApi WebDriver converter
+    public sealed class FenObject : Interfaces.IObject
+    {
+        private readonly Dictionary<string, Interfaces.IValue> _props = new(StringComparer.Ordinal);
+        public Interfaces.IValue Get(string key) => _props.TryGetValue(key, out var v) ? v : Types.StubValue.Undef;
+        public Interfaces.IValue Get(string key, object context) => Get(key);
+        public void Set(string key, Interfaces.IValue value) => _props[key] = value;
+        public bool Has(string key) => _props.ContainsKey(key);
+        public bool Delete(string key) => _props.Remove(key);
+        public IEnumerable<string> Keys() => _props.Keys;
+        public Interfaces.IObject GetPrototype() => null;
+        public string GetOwnPropertyDescriptor(string key) => null;
+    }
+}
+
+namespace FenBrowser.FenEngine.DOM
+{
+    using FenBrowser.FenEngine.Core.Interfaces;
+    using FenBrowser.Core.Dom.V2;
+
+    public sealed class DomEvent
+    {
+        public string Type { get; }
+        public bool Bubbles { get; }
+        public bool Cancelable { get; }
+        public IValue Target { get; set; }
+        public bool DefaultPrevented { get; set; }
+
+        public DomEvent(string type, bool bubbles, bool cancelable, IExecutionContext context)
+        {
+            Type = type;
+            Bubbles = bubbles;
+            Cancelable = cancelable;
+        }
+
+        public DomEvent(string type, bool bubbles, bool cancelable, bool composed, IExecutionContext context)
+        {
+            Type = type;
+            Bubbles = bubbles;
+            Cancelable = cancelable;
+        }
+
+        public void PreventDefault() => DefaultPrevented = true;
+        public void StopPropagation() { }
+    }
+
+    public static class EventTarget
+    {
+        public sealed class Registry
+        {
+            public static List<object> Get(Element element, string eventType, bool capture)
+                => new();
+        }
+
+        public static bool DispatchEvent(Element target, DomEvent evt, object context)
+        {
+            return true;
+        }
+
+        public static bool DispatchEvent(Element target, DomEvent evt, IExecutionContext context)
+        {
+            return true;
+        }
+    }
+}
+
+namespace FenBrowser.FenEngine.Rendering
+{
+    public interface IBrowser { }
+    public sealed class BrowserHost : IBrowser, IDisposable
+    {
+        public void Dispose() { }
+        public void UpdateViewportHint(int width, int height) { }
+        public void UpdateViewportHint(double width, double height) { }
+        public Task NavigateUserInputAsync(string url) => Task.CompletedTask;
+        public Task<bool> NavigateAsync(string url) => Task.FromResult(true);
+        public bool OnMouseDown(double x, double y, int button) => false;
+        public bool OnMouseUp(double x, double y, int button) => false;
+        public bool OnClick(double x, double y, int button) => false;
+        public void OnMouseMove(double x, double y) { }
+        public void OnScroll(double deltaX, double deltaY) { }
+        public void OnKeyDown(string key, int keyCode) { }
+        public void OnKeyUp(string key, int keyCode) { }
+        public Task HandleKeyPress(string key, int keyCode = 0) => Task.CompletedTask;
+        public FenBrowser.Core.Dom.V2.Node GetDomRoot() => null;
+        public System.Collections.Generic.IDictionary<FenBrowser.Core.Dom.V2.Node, FenBrowser.Core.Css.CssComputed> ComputedStyles => null;
+        public System.Uri CurrentUri => null;
+        public event Action<string> ConsoleMessage;
+        public event Action<string, string> NavigationFailed;
+        public Task<object> ExecuteScriptAsync(string script) => Task.FromResult<object>(null);
+        public string GetRawHtml() => string.Empty;
+        public string GetTextContent() => string.Empty;
+        public FenBrowser.Core.Dom.V2.Document Document => null;
+    }
+}
+
+namespace FenBrowser.FenEngine
+{
+    public static class ProcessIsolationRuntime
+    {
+        public static bool IsEnabled => false;
+    }
+}
+
+namespace FenBrowser.Tooling
+{
+    public static class VerificationRunner
+    {
+        public static Task GenerateSnapshot(string path, string output) => Task.CompletedTask;
+    }
+
+    public sealed class AcidTestResult
+    {
+        public bool Passed { get; set; } = true;
+        public string Message { get; set; } = string.Empty;
+        public double Score { get; set; } = 1.0;
+        public string DiffImagePath { get; set; } = string.Empty;
+    }
+
+    public sealed class AcidTestRunner
+    {
+        public AcidTestRunner() { }
+        public AcidTestRunner(string dir) { }
+        public Task<AcidTestResult> RunAcid2Async(
+            Func<string, Task<SkiaSharp.SKBitmap>> navigationScreenshotCallback,
+            string outputPath = null, int settleMs = 4000) =>
+            Task.FromResult(new AcidTestResult());
+        public Task<AcidTestResult> CompareWithReferenceAsync(
+            object actualOrPath,
+            object referenceOrBitmap,
+            string outputDir = null,
+            double threshold = 0.0) =>
+            Task.FromResult(new AcidTestResult());
+    }
+
+    public sealed class Test262ToolRunner
+    {
+        public static Task RunAsync(string[] args) => Task.CompletedTask;
+    }
+
+    public sealed class MultiTabHeadlessRunner
+    {
+        public static Task RunAsync(string[] args) => Task.CompletedTask;
+    }
+}
+
+namespace FenBrowser.Host
+{
+    public sealed class ChromeManager
+    {
+        public static readonly ChromeManager Instance = new();
+        public void Initialize(string url) { }
+    }
+
+    namespace Tabs
+    {
+        public sealed class BrowserTab
+        {
+            public Task NavigateAsync(string url) => Task.CompletedTask;
+            public FenBrowser.FenEngine.Rendering.BrowserHost Browser => new();
+            public string Url => string.Empty;
+            public bool IsLoading => false;
+        }
+
+        public sealed class TabManager
+        {
+            public static readonly TabManager Instance = new();
+            public BrowserTab ActiveTab => null;
+            public event Action<BrowserTab> ActiveTabChanged;
+            public BrowserTab CreateTab(string url) => new();
+        }
+    }
+
+    namespace WebDriver
+    {
+        public sealed class HostBrowserDriver
+        {
+            public Task<string> ExecuteScriptAsync(string script) => Task.FromResult(string.Empty);
+            public Task NavigateAsync(string url) => Task.CompletedTask;
+            public Task<string> GetPageSourceAsync() => Task.FromResult(string.Empty);
+            public Task<string> GetCurrentUrlAsync() => Task.FromResult(string.Empty);
+            public Task<string> GetTitleAsync() => Task.FromResult(string.Empty);
+        }
+    }
+}
+
+namespace FenBrowser.FenEngine.DevTools
+{
+    public sealed class NetworkRequest
+    {
+        public string Url { get; set; }
+        public string Method { get; set; }
+        public int StatusCode { get; set; }
+        public Dictionary<string, string> ResponseHeaders { get; set; } = new();
+    }
+
+    public sealed class Cookie
+    {
+        public string Name { get; set; }
+        public string Value { get; set; }
+        public string Domain { get; set; }
+        public string Path { get; set; }
+        public bool Secure { get; set; }
+        public bool HttpOnly { get; set; }
+        public string SameSite { get; set; }
+    }
+
+    public sealed class DebugConfig
+    {
+        public bool ShowLayoutBounds { get; set; }
+        public bool ShowPaintInvalidations { get; set; }
+    }
+}
