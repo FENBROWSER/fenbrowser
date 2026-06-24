@@ -7,6 +7,10 @@
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
     <AnalysisLevel>latest</AnalysisLevel>
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <!-- When publishing as Native AOT, define PUBLISH_AOT so #if guards
+         exclude the System.Linq.Expressions JIT compiler (which can't
+         survive trimming). -->
+    <DefineConstants Condition="'$(PublishAot)' == 'true'">$(DefineConstants);PUBLISH_AOT</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <!-- Force ICU globalization on all platforms for CLDR-compliant Intl formatting

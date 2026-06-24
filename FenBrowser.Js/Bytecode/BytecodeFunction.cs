@@ -93,8 +93,10 @@ public sealed class BytecodeFunction
     // a function with one invocation but a million loop iterations still
     // gets JIT-compiled on the next call. See audit doc §3.2.
     internal int BackEdges;
-    internal JitCompiler.JitDelegate? JitDelegate;
+#if !PUBLISH_AOT
     internal bool JitCompileAttempted;
+    internal JitCompiler.JitDelegate? JitDelegate;
+#endif
 
     // Read-only accessors for test/diagnostic use. The setters are
     // internal so only the interpreter mutates them; the getters expose
@@ -102,8 +104,10 @@ public sealed class BytecodeFunction
     // introspection by tooling.
     public int InvocationsObserved => Invocations;
     public int BackEdgesObserved => BackEdges;
+#if !PUBLISH_AOT
     public bool JitCompiled => JitDelegate is not null;
     public bool JitCompileWasAttempted => JitCompileAttempted;
+#endif
 
     // Brand tokens for private fields/methods. Each class with private members
     // gets a unique long token. The D field on DefinePrivateField/GetPrivateField/

@@ -1010,6 +1010,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
             InstantiateLexicalDeclarations(function, frame);
         }
 
+#if !PUBLISH_AOT
         // Tier 4 #24: if a JIT delegate is available, run it instead of
         // the dispatch loop. The delegate executes the entire function
         // body and returns the function's return value. Exceptions
@@ -1018,6 +1019,7 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             return jitFn(this, frame);
         }
+#endif
 
         while (frame.InstructionPointer < function.Instructions.Count)
         {

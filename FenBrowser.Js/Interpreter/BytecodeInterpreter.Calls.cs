@@ -282,6 +282,7 @@ public sealed partial class BytecodeInterpreter
             // interpreter's helper methods.
             var bcFn = fn.Function;
             bcFn.Invocations++;
+#if !PUBLISH_AOT
             // Tier-4 #24 (audit §3.2): combined invocation + back-edge
             // trigger. Either 100 calls OR 10,000 cross-call loop
             // iterations OR a balanced mix gets the function JIT-compiled.
@@ -295,6 +296,7 @@ public sealed partial class BytecodeInterpreter
                 bcFn.JitCompileAttempted = true;
                 bcFn.JitDelegate = JitCompiler.TryCompile(bcFn);
             }
+#endif
             return ExecuteInternal(fn.Function, args, thisValue, fn.OuterEnvironment, callee: fn);
         }
 

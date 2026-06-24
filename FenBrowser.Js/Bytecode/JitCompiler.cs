@@ -3,6 +3,7 @@ using System.Reflection;
 using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Runtime;
 
+#if !PUBLISH_AOT
 namespace FenBrowser.Js.Bytecode;
 
 // Tier 4 #24 baseline JIT.
@@ -28,7 +29,10 @@ namespace FenBrowser.Js.Bytecode;
 // opcodes are added by extending TryEmitOpcode below.
 public static class JitCompiler
 {
-    public const int TierUpThreshold = 100;
+    // Tier-up after 10 calls (was 100).  Page scripts often call the same utility
+    // function 10-50 times during bootstrap; 100 misses most of those.  10 catches
+    // the hot path without JIT-compiling every single-call initializer.
+    public const int TierUpThreshold = 10;
 
     // JIT-compiled body. Runs to completion inside the caller-set-up
     // InterpreterFrame and returns the function's return value. Throws
@@ -923,3 +927,4 @@ public static class JitCompiler
         return ic;
     }
 }
+#endif // !PUBLISH_AOT
