@@ -1271,11 +1271,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 Element.prototype.closest = function () { return this.closest.apply(this, arguments); };
                 Element.prototype.querySelector = function () { return this.querySelector.apply(this, arguments); };
                 Element.prototype.querySelectorAll = function () { return this.querySelectorAll.apply(this, arguments); };
+                Element.prototype.getElementsByTagName = function () { return this.getElementsByTagName.apply(this, arguments); };
                 Element.prototype.appendChild = function () { return this.appendChild.apply(this, arguments); };
                 Element.prototype.cloneNode = function () { return this.cloneNode.apply(this, arguments); };
 
                 HTMLElement.prototype.matches = Element.prototype.matches;
                 HTMLElement.prototype.closest = Element.prototype.closest;
+                HTMLElement.prototype.getElementsByTagName = Element.prototype.getElementsByTagName;
             })();
             """);
     }
@@ -2330,9 +2332,57 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
 
         var src = scriptElement.GetAttribute("src");
-        if (string.IsNullOrWhiteSpace(src) ||
-            !AllowExternalScripts ||
-            !Sandbox.Allows(SandboxFeature.ExternalScripts))
+
+        // Inline script: execute textContent directly.
+        if (string.IsNullOrWhiteSpace(src))
+        {
+            var inlineCode = scriptElement.TextContent;
+            if (!string.IsNullOrWhiteSpace(inlineCode))
+            {
+                SetCurrentScriptElement(scriptElement);
+                try
+                {
+                    EvaluateWithFenJsRaw(inlineCode);
+                }
+                finally
+                {
+                    SetCurrentScriptElement(null);
+                }
+
+                DispatchScriptElementEvent(scriptElement, "load");
+            }
+
+            return ToHostNodeOrNull(scriptElement);
+        }
+
+        // Data: URLs contain inline code — decode and execute directly.
+        if (src.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        {
+            var dataCode = DecodeDataUrl(src);
+            if (dataCode != null)
+            {
+                SetCurrentScriptElement(scriptElement);
+                try
+                {
+                    EvaluateWithFenJsRaw(dataCode);
+                }
+                finally
+                {
+                    SetCurrentScriptElement(null);
+                }
+
+                DispatchScriptElementEvent(scriptElement, "load");
+            }
+            else
+            {
+                DispatchScriptElementEvent(scriptElement, "error");
+            }
+
+            return ToHostNodeOrNull(scriptElement);
+        }
+
+        // External script: fetch and execute.
+        if (!AllowExternalScripts || !Sandbox.Allows(SandboxFeature.ExternalScripts))
         {
             return ToHostNodeOrNull(scriptElement);
         }
@@ -2645,6 +2695,53 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             ["name"] = JsValue.FromString(name ?? "Error"),
             ["message"] = JsValue.FromString(message ?? string.Empty)
         }));
+    }
+
+    /// <summary>
+    /// Decodes a data: URL into its content string.  Supports text/plain and
+    /// text/javascript with optional base64 encoding.  Returns null if the URL
+    /// is not a valid data: URL or decoding fails.
+    /// </summary>
+    private static string DecodeDataUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url) || !url.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        // data:[<mediatype>][;base64],<data>
+        var commaIdx = url.IndexOf(',');
+        if (commaIdx < 0)
+        {
+            return null;
+        }
+
+        var header = url.Substring(5, commaIdx - 5); // skip "data:"
+        var data = url.Substring(commaIdx + 1);
+        var isBase64 = header.EndsWith(";base64", StringComparison.OrdinalIgnoreCase);
+
+        if (isBase64)
+        {
+            try
+            {
+                var bytes = Convert.FromBase64String(data);
+                return Encoding.UTF8.GetString(bytes);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        // URL-encoded data
+        try
+        {
+            return Uri.UnescapeDataString(data);
+        }
+        catch
+        {
+            return data; // best-effort
+        }
     }
 
     private static string CoerceToHostString(JsValue value)
@@ -3678,6 +3775,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             {
                                 return _owner.CreateNodeArrayLike(Array.Empty<Node>());
                             }
+                        },
+                        length: 1);
+                    return true;
+                case "getElementsByTagName":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "getElementsByTagName",
+                        (_, args) =>
+                        {
+                            var qualifiedName = args.Count > 0 ? CoerceToHostString(args[0]) : "*";
+                            return _owner.ToHostOrNull(
+                                new FenJsHtmlCollectionHost(element.GetElementsByTagName(qualifiedName)),
+                                HostObjectKind.Other);
                         },
                         length: 1);
                     return true;

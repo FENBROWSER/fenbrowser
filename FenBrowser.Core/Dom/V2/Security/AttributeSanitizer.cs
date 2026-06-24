@@ -58,6 +58,9 @@ namespace FenBrowser.Core.Dom.V2.Security
             "image/webp",
             "image/svg+xml", // Note: SVG can contain scripts, may want to filter
             "text/plain",
+            "text/javascript",
+            "application/javascript",
+            "application/x-javascript",
         };
 
         // --- Event Handler Attributes ---
