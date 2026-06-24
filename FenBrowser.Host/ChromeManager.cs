@@ -505,8 +505,7 @@ namespace FenBrowser.Host
                 return string.Empty;
             }
 
-            var displayUrl = tab.DisplayUrl;
-            return IsNewTabUrl(displayUrl) ? string.Empty : displayUrl;
+            return tab.DisplayUrl;
         }
 
         private static bool IsNewTabUrl(string url)
@@ -526,9 +525,8 @@ namespace FenBrowser.Host
 
             RunOnUiThread(() =>
             {
-                var addressBarText = IsNewTabUrl(url) ? string.Empty : url;
-                _toolbar.SetUrl(addressBarText);
-                UpdateBookmarkStar(addressBarText);
+                _toolbar.SetUrl(url);
+                UpdateBookmarkStar(url);
                 _root?.Invalidate();
             });
         }

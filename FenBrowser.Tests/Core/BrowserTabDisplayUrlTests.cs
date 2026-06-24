@@ -49,7 +49,7 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
-        public void GetAddressBarText_HidesInternalNewTabUrl()
+        public void GetAddressBarText_ShowsInternalNewTabUrl()
         {
             var tab = new BrowserTab();
 
@@ -58,7 +58,7 @@ namespace FenBrowser.Tests.Core
                 tab.StartInitialNavigation("fen://newtab");
 
                 Assert.Equal("fen://newtab", tab.DisplayUrl);
-                Assert.Equal(string.Empty, ChromeManager.GetAddressBarText(tab));
+                Assert.Equal("fen://newtab", ChromeManager.GetAddressBarText(tab));
             }
             finally
             {
