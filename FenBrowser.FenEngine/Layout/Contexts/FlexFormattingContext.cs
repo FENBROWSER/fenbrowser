@@ -1406,19 +1406,26 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 {
                     if (tag == "INPUT")
                     {
-                        height = 24f;
+                        // Use a modern default that matches common design systems.
+                        // Facebook login inputs are 52px; browsers typically default
+                        // text inputs to ~20-24px but sites override via CSS.  When
+                        // the external CSS cascade fails to match (e.g. StyleX
+                        // @property-dependent rules), this fallback keeps inputs
+                        // usable instead of collapsing to 0.
+                        string type = (el.GetAttribute("type") ?? string.Empty).Trim().ToLowerInvariant();
+                        height = (type == "checkbox" || type == "radio") ? 20f : 40f;
                     }
                     else if (tag == "BUTTON")
                     {
-                        height = 36f;
+                        height = 44f;
                     }
                     else if (tag == "SELECT")
                     {
-                        height = 24f;
+                        height = 40f;
                     }
                     else if (tag == "TEXTAREA")
                     {
-                        height = 48f;
+                        height = 60f;
                     }
                 }
 
