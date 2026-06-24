@@ -7,6 +7,9 @@ using System.Collections.Generic;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Core.Types;
 using FenBrowser.FenEngine.Errors;
+using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Core.Types;
+using FenBrowser.FenEngine.Errors;
 
 namespace FenBrowser.FenEngine.Core
 {
@@ -110,6 +113,29 @@ namespace FenBrowser.FenEngine.Core
         public JsSymbol AsSymbol() => _refValue as JsSymbol;
         public JsBigInt AsBigInt() => _refValue as JsBigInt;
         public Exception AsException() => _refValue as Exception;
+        public string AsError() => (_refValue as Exception)?.Message ?? _refValue?.ToString() ?? "Unknown error";
+        public object ToNativeObject() => _refValue;
+
+        // IValue.Set/Get — forward to wrapped object
+        void Interfaces.IValue.Set(string key, Interfaces.IValue value)
+        {
+            if (_refValue is IObject iobj)
+                iobj.Set(key, value);
+        }
+
+        Interfaces.IValue Interfaces.IValue.Get(string key)
+        {
+            if (_refValue is IObject iobj)
+                return iobj.Get(key);
+            return Undefined;
+        }
+
+        void Interfaces.IValue.Revoke(object reason)
+        {
+            _ = reason;
+            _refValue = null;
+            _type = Interfaces.ValueType.Undefined;
+        }
 
         // Forward Set/Get to wrapped object (used by BrowserApi.cs for event objects)
         public void Set(string key, FenValue value)

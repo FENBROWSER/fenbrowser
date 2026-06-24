@@ -5215,8 +5215,8 @@ pre {{
             domEvent.Set("which", FenBrowser.FenEngine.Core.FenValue.FromNumber(keyCode));
             domEvent.Set("keyCode", FenBrowser.FenEngine.Core.FenValue.FromNumber(keyCode));
 
-            FenBrowser.FenEngine.Core.FenValue previousWindowEvent = FenBrowser.FenEngine.Core.FenValue.Undefined;
-            FenBrowser.FenEngine.Core.FenValue previousGlobalEvent = FenBrowser.FenEngine.Core.FenValue.Undefined;
+            FenBrowser.FenEngine.Core.Interfaces.IValue previousWindowEvent = FenBrowser.FenEngine.Core.FenValue.Undefined;
+            FenBrowser.FenEngine.Core.Interfaces.IValue previousGlobalEvent = FenBrowser.FenEngine.Core.FenValue.Undefined;
             var windowValue = context?.Environment?.Get("window") ?? FenBrowser.FenEngine.Core.FenValue.Undefined;
             if (windowValue.IsObject)
             {
@@ -7672,13 +7672,13 @@ pre {{
             }
         }
 
-        private object ConvertFenValueForWebDriver(FenBrowser.FenEngine.Core.FenValue fenValue)
+        private object ConvertFenValueForWebDriver(FenBrowser.FenEngine.Core.Interfaces.IValue fenValue)
         {
             return ConvertFenValueForWebDriver(fenValue, new HashSet<FenBrowser.FenEngine.Core.Interfaces.IObject>(ReferenceEqualityComparer.Instance), 0);
         }
 
         private object ConvertFenValueForWebDriver(
-            FenBrowser.FenEngine.Core.FenValue fenValue,
+            FenBrowser.FenEngine.Core.Interfaces.IValue fenValue,
             HashSet<FenBrowser.FenEngine.Core.Interfaces.IObject> visited,
             int depth)
         {

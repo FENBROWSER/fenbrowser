@@ -34,6 +34,10 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         double AsNumber(IExecutionContext context = null);
         bool AsBoolean();
         string AsString(IExecutionContext context = null);
+        void Set(string key, IValue value);
+        IValue Get(string key);
+        void Revoke(object reason = null);
+        object ToNativeObject();
     }
 
     public interface IObject
@@ -63,6 +67,8 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         Uri DocumentUrl { get; }
         int CallStackDepth { get; }
         IValue Environment { get; }
+        IValue Permissions { get; }
+        Action<IValue, string> OnUncaughtException { get; set; }
     }
 
     public interface IModuleLoader
@@ -127,6 +133,45 @@ namespace FenBrowser.FenEngine.Errors
     public static class FenError
     {
         public static IValue FromException(Exception ex) => Core.FenValue.Undefined;
+    }
+
+    public sealed class FenTimeoutError : Exception
+    {
+        public FenTimeoutError(string message) : base(message) { }
+    }
+}
+
+namespace FenBrowser.FenEngine.Diagnostics
+{
+    public static class JsDiagnosticsRecorder
+    {
+        public static void RecordEvaluation(string source, long durationMs) { }
+        public static void RecordException(FenBrowser.FenEngine.Core.Interfaces.IValue ex, string source = null, string stack = null) { }
+        public static void RecordException(Exception ex, string source = null, string stack = null) { }
+        public static void RecordConsole(string level, string message, string source = null) { }
+    }
+}
+
+namespace FenBrowser.FenEngine.WebAPIs
+{
+    public sealed class StorageApi
+    {
+        public static readonly StorageApi Instance = new();
+        public string GetItem(string key) => null;
+        public void SetItem(string key, string value) { }
+        public void RemoveItem(string key) { }
+        public void Clear() { }
+        public static void ClearAllStorage(bool deletePersistentFile = false) { }
+    }
+}
+
+namespace FenBrowser.FenEngine.Scripting
+{
+    public static class JavaScriptEngine
+    {
+        public static Core.FenValue Evaluate(string script) => Core.FenValue.Undefined;
+        public static bool TryGetVisualRect(FenBrowser.Core.Dom.V2.Element element, out double x, out double y, out double w, out double h) { x = y = w = h = 0; return false; }
+        public static void SetVisualRectProvider(Func<FenBrowser.Core.Dom.V2.Element, SkiaSharp.SKRect?> provider) { }
     }
 }
 
@@ -220,13 +265,17 @@ namespace FenBrowser.FenEngine.Core
     public sealed class EngineLoop
     {
         public void Pulse() { }
+        public void RunFrame() { }
+        public void SetRoot(object root) { }
     }
 
-    public sealed class ExecutionContext
+    public sealed class ExecutionContext : Interfaces.IExecutionContext
     {
         public Uri DocumentUrl { get; set; }
         public int CallStackDepth { get; set; }
         public Interfaces.IValue Environment { get; set; }
+        public Interfaces.IValue Permissions { get; set; }
+        public Action<Interfaces.IValue, string> OnUncaughtException { get; set; }
     }
 }
 
@@ -235,6 +284,29 @@ namespace FenBrowser.FenEngine
     public sealed class InputManager
     {
         public InputManager() { }
+        public bool ProcessEvent(InputEvent evt, object context, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext execCtx) => false;
+    }
+
+    public sealed class InputEvent
+    {
+        public InputEventType Type { get; set; }
+        public string Key { get; set; }
+        public int KeyCode { get; set; }
+        public double X { get; set; }
+        public double Y { get; set; }
+        public int Button { get; set; }
+        public double DeltaX { get; set; }
+        public double DeltaY { get; set; }
+        public int Buttons { get; set; }
+        public int PointerId { get; set; }
+        public string PointerType { get; set; }
+        public double Pressure { get; set; }
+        public bool IsPrimary { get; set; }
+        public double PageX { get; set; }
+        public double PageY { get; set; }
+        public double ScreenX { get; set; }
+        public double ScreenY { get; set; }
+        public Element Target { get; set; }
     }
 
     public enum InputEventType
@@ -270,6 +342,7 @@ namespace FenBrowser.FenEngine.DOM
             iframeDocument = null;
             return false;
         }
+        public static bool IsRemoteFrameElement(Element element, string checkOopif = null) => false;
     }
 }
 
@@ -295,28 +368,39 @@ namespace FenBrowser.FenEngine.DOM
     using FenBrowser.FenEngine.Core.Interfaces;
     using FenBrowser.Core.Dom.V2;
 
-    public sealed class DomEvent
+    public sealed class DomEvent : FenBrowser.FenEngine.Core.Interfaces.IObject
     {
+        private readonly Dictionary<string, FenBrowser.FenEngine.Core.Interfaces.IValue> _props = new(StringComparer.Ordinal);
+        FenBrowser.FenEngine.Core.Interfaces.IValue FenBrowser.FenEngine.Core.Interfaces.IObject.Get(string key) => _props.TryGetValue(key, out var v) ? v : Core.FenValue.Undefined;
+        FenBrowser.FenEngine.Core.Interfaces.IValue FenBrowser.FenEngine.Core.Interfaces.IObject.Get(string key, object context) => ((FenBrowser.FenEngine.Core.Interfaces.IObject)this).Get(key);
+        void FenBrowser.FenEngine.Core.Interfaces.IObject.Set(string key, FenBrowser.FenEngine.Core.Interfaces.IValue value) => _props[key] = value;
+        bool FenBrowser.FenEngine.Core.Interfaces.IObject.Has(string key) => _props.ContainsKey(key);
+        bool FenBrowser.FenEngine.Core.Interfaces.IObject.Delete(string key) => _props.Remove(key);
+        IEnumerable<string> FenBrowser.FenEngine.Core.Interfaces.IObject.Keys() => _props.Keys;
+        FenBrowser.FenEngine.Core.Interfaces.IObject FenBrowser.FenEngine.Core.Interfaces.IObject.GetPrototype() => null;
+        string FenBrowser.FenEngine.Core.Interfaces.IObject.GetOwnPropertyDescriptor(string key) => null;
         public string Type { get; }
         public bool Bubbles { get; }
         public bool Cancelable { get; }
-        public IValue Target { get; set; }
+        public FenBrowser.FenEngine.Core.Interfaces.IValue Target { get; set; }
         public bool DefaultPrevented { get; set; }
 
-        public DomEvent(string type, bool bubbles, bool cancelable, IExecutionContext context)
+        public DomEvent(string type, bool bubbles, bool cancelable, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context)
         {
             Type = type;
             Bubbles = bubbles;
             Cancelable = cancelable;
         }
 
-        public DomEvent(string type, bool bubbles, bool cancelable, bool composed, IExecutionContext context)
+        public DomEvent(string type, bool bubbles, bool cancelable, bool composed, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context)
         {
             Type = type;
             Bubbles = bubbles;
             Cancelable = cancelable;
         }
 
+        public void Set(string key, FenBrowser.FenEngine.Core.Interfaces.IValue value) =>
+            ((FenBrowser.FenEngine.Core.Interfaces.IObject)this).Set(key, value);
         public void PreventDefault() => DefaultPrevented = true;
         public void StopPropagation() { }
     }
@@ -334,7 +418,7 @@ namespace FenBrowser.FenEngine.DOM
             return true;
         }
 
-        public static bool DispatchEvent(Element target, DomEvent evt, IExecutionContext context)
+        public static bool DispatchEvent(Element target, DomEvent evt, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext context)
         {
             return true;
         }
@@ -362,34 +446,18 @@ namespace FenBrowser.Host
     }
 }
 
-namespace FenBrowser.FenEngine.Rendering
+namespace FenBrowser.FenEngine.DevTools
 {
-    // Minimal BrowserHost stub for Host/Tooling projects.
-    // BrowserApi.cs defines the real BrowserHost; excluded pending FenJS migration.
-    public sealed class BrowserHost : IDisposable
+    public sealed class DevToolsCore
     {
-        public void Dispose() { }
-        public void UpdateViewportHint(int width, int height) { }
-        public void UpdateViewportHint(double width, double height) { }
-        public Task NavigateUserInputAsync(string url) => Task.CompletedTask;
-        public Task<bool> NavigateAsync(string url) => Task.FromResult(true);
-        public bool OnMouseDown(double x, double y, int button) => false;
-        public bool OnMouseUp(double x, double y, int button) => false;
-        public bool OnClick(double x, double y, int button) => false;
-        public void OnMouseMove(double x, double y) { }
-        public void OnScroll(double deltaX, double deltaY) { }
-        public void OnKeyDown(string key, int keyCode) { }
-        public void OnKeyUp(string key, int keyCode) { }
-        public Task HandleKeyPress(string key, int keyCode = 0) => Task.CompletedTask;
-        public Node GetDomRoot() => null;
-        public System.Collections.Generic.IDictionary<Node, FenBrowser.Core.Css.CssComputed> ComputedStyles => null;
-        public System.Uri CurrentUri => null;
-        public event Action<string> ConsoleMessage;
-        public event Action<string, string> NavigationFailed;
-        public Task<object> ExecuteScriptAsync(string script) => Task.FromResult<object>(null);
-        public string GetRawHtml() => string.Empty;
-        public string GetTextContent() => string.Empty;
-        public FenBrowser.Core.Dom.V2.Document Document => null;
+        public static readonly DevToolsCore Instance = new();
+        public void RecordRequest(string url, string method, Dictionary<string, string> headers, string id) { }
+        public void CompleteRequest(string id, int statusCode, Dictionary<string, string> headers, long size, string mimeType) { }
+        public void CompleteRequest(string id, int statusCode, object headers, long size, string mimeType) { }
+        public Func<IEnumerable<FenBrowser.FenEngine.DevTools.Cookie>> CookieSnapshotProvider { get; set; }
+        public Action<FenBrowser.FenEngine.DevTools.Cookie> CookieSetter { get; set; }
+        public Action<string, string> CookieDeleteHandler { get; set; }
+        public Action CookieClearHandler { get; set; }
     }
 }
 
