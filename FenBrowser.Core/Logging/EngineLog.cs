@@ -50,20 +50,25 @@ public static class EngineLog
     public static void InitializeFromSettings()
     {
         var settings = BrowserSettings.Instance?.Logging;
+        var loggingEnabled = settings?.EnableLogging ?? true;
+        var logToFile = loggingEnabled && (settings?.LogToFile ?? true);
+        var logToDebug = loggingEnabled && (settings?.LogToDebug ?? true);
         var opts = new EngineLoggingOptions
         {
-            Enabled = settings?.EnableLogging ?? true,
+            Enabled = loggingEnabled,
+            EnabledCategories = settings != null ? (LogCategory)settings.EnabledCategories : LogCategory.All,
             GlobalMinimumSeverity = settings != null
                 ? EngineLogCompatibility.FromLegacyLevel((LogLevel)settings.MinimumLevel)
                 : LogSeverity.Info,
-            EnableConsoleSink = true,
-            EnableNdjsonSink = true,
-            EnableRingBufferSink = true,
-            EnableTraceSink = true,
+            EnableConsoleSink = logToDebug,
+            EnableDebugSink = logToDebug,
+            EnableNdjsonSink = logToFile,
+            EnableRingBufferSink = loggingEnabled,
+            EnableTraceSink = logToFile,
             RingBufferCapacity = Math.Max(1000, settings?.MemoryBufferSize ?? 5000),
             DispatcherQueueCapacity = 32768,
-            NdjsonFilePath = BuildNdjsonPath(settings?.LogPath),
-            TraceFilePath = BuildTracePath(settings?.LogPath)
+            NdjsonFilePath = logToFile ? BuildNdjsonPath(settings?.LogPath) : null,
+            TraceFilePath = logToFile ? BuildTracePath(settings?.LogPath) : null
         };
 
         var preset = Environment.GetEnvironmentVariable("FEN_LOG_PRESET");
@@ -73,6 +78,7 @@ public static class EngineLog
         }
 
         EngineLoggingPresets.Apply(preset, opts);
+        ApplySettingsSinkGates(opts, settings);
 
         Configure(opts);
     }
@@ -87,6 +93,10 @@ public static class EngineLog
             _logger = BuildLogger(_options);
             _logger.EventWritten += OnEngineEvent;
             _compatibilityBufferCap = Math.Max(1000, _options.RingBufferCapacity);
+            if (!_options.Enabled)
+            {
+                ClearCompatibilityBuffer();
+            }
         }
     }
 
@@ -312,7 +322,7 @@ public static class EngineLog
 
         if (options.EnableConsoleSink)
         {
-            sinks.Add(new ConsoleEngineLogSink());
+            sinks.Add(new ConsoleEngineLogSink(writeConsole: true, writeDebug: options.EnableDebugSink));
         }
 
         if (options.EnableNdjsonSink && !string.IsNullOrWhiteSpace(options.NdjsonFilePath))
@@ -327,6 +337,32 @@ public static class EngineLog
 
         var dispatcher = new EngineLogDispatcher(options.DispatcherQueueCapacity, sinks);
         return new EngineLogger(options, dispatcher, ring);
+    }
+
+    private static void ApplySettingsSinkGates(EngineLoggingOptions options, LogSettings settings)
+    {
+        if (settings == null)
+        {
+            return;
+        }
+
+        options.Enabled = settings.EnableLogging;
+        options.EnabledCategories = (LogCategory)settings.EnabledCategories;
+        options.EnableConsoleSink = settings.EnableLogging && settings.LogToDebug;
+        options.EnableDebugSink = settings.EnableLogging && settings.LogToDebug;
+        options.EnableNdjsonSink = settings.EnableLogging && settings.LogToFile;
+        options.EnableTraceSink = settings.EnableLogging && settings.LogToFile;
+        options.EnableRingBufferSink = settings.EnableLogging;
+
+        if (!options.EnableNdjsonSink)
+        {
+            options.NdjsonFilePath = null;
+        }
+
+        if (!options.EnableTraceSink)
+        {
+            options.TraceFilePath = null;
+        }
     }
 
     private static string BuildNdjsonPath(string configuredPath)

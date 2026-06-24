@@ -150,9 +150,11 @@ public sealed class EngineLoggingOptions
 {
     public bool Enabled { get; set; } = true;
     public LogSeverity GlobalMinimumSeverity { get; set; } = LogSeverity.Info;
+    public LogCategory EnabledCategories { get; set; } = LogCategory.All;
     public Dictionary<LogSubsystem, LogSeverity> SubsystemOverrides { get; } = new();
     public int DispatcherQueueCapacity { get; set; } = 32768;
     public bool EnableConsoleSink { get; set; } = true;
+    public bool EnableDebugSink { get; set; } = true;
     public bool EnableNdjsonSink { get; set; } = true;
     public bool EnableRingBufferSink { get; set; } = true;
     public int RingBufferCapacity { get; set; } = 20000;

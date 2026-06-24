@@ -161,16 +161,23 @@ public static class EngineLogCompat
 
     private static void ConfigureEngineLogging(bool enabled, string? logFilePath)
     {
-        var minimumLevel = BrowserSettings.Instance?.Logging?.MinimumLevel ?? (int)LogLevel.Info;
+        var loggingSettings = BrowserSettings.Instance?.Logging;
+        var settingsEnabled = loggingSettings?.EnableLogging ?? true;
+        var effectiveEnabled = enabled && settingsEnabled;
+        var logToFile = loggingSettings?.LogToFile ?? true;
+        var logToDebug = loggingSettings?.LogToDebug ?? true;
+        var minimumLevel = loggingSettings?.MinimumLevel ?? (int)LogLevel.Info;
         var options = new EngineLoggingOptions
         {
-            Enabled = enabled,
+            Enabled = effectiveEnabled,
+            EnabledCategories = loggingSettings != null ? (LogCategory)loggingSettings.EnabledCategories : LogCategory.All,
             GlobalMinimumSeverity = EngineLogCompatibility.FromLegacyLevel((LogLevel)minimumLevel),
-            EnableConsoleSink = true,
-            EnableNdjsonSink = true,
-            EnableRingBufferSink = true,
-            EnableTraceSink = true,
-            RingBufferCapacity = Math.Max(1000, BrowserSettings.Instance?.Logging?.MemoryBufferSize ?? 5000),
+            EnableConsoleSink = effectiveEnabled && logToDebug,
+            EnableDebugSink = effectiveEnabled && logToDebug,
+            EnableNdjsonSink = effectiveEnabled && logToFile,
+            EnableRingBufferSink = effectiveEnabled,
+            EnableTraceSink = effectiveEnabled && logToFile,
+            RingBufferCapacity = Math.Max(1000, loggingSettings?.MemoryBufferSize ?? 5000),
             DispatcherQueueCapacity = 32768
         };
 
@@ -181,12 +188,22 @@ public static class EngineLogCompat
         }
 
         EngineLoggingPresets.Apply(preset, options);
+        options.Enabled = effectiveEnabled;
+        options.EnabledCategories = loggingSettings != null ? (LogCategory)loggingSettings.EnabledCategories : LogCategory.All;
+        options.EnableConsoleSink = effectiveEnabled && logToDebug;
+        options.EnableDebugSink = effectiveEnabled && logToDebug;
+        options.EnableNdjsonSink = effectiveEnabled && logToFile;
+        options.EnableRingBufferSink = effectiveEnabled;
+        options.EnableTraceSink = effectiveEnabled && logToFile;
 
-        var logsPath = ResolveNdjsonPath(logFilePath);
-        if (!string.IsNullOrWhiteSpace(logsPath))
+        if (effectiveEnabled && logToFile)
         {
-            options.NdjsonFilePath = logsPath;
-            options.TraceFilePath = logsPath.Replace(".jsonl", "_trace.jsonl", StringComparison.OrdinalIgnoreCase);
+            var logsPath = ResolveNdjsonPath(logFilePath);
+            if (!string.IsNullOrWhiteSpace(logsPath))
+            {
+                options.NdjsonFilePath = logsPath;
+                options.TraceFilePath = logsPath.Replace(".jsonl", "_trace.jsonl", StringComparison.OrdinalIgnoreCase);
+            }
         }
 
         EngineLog.Configure(options);

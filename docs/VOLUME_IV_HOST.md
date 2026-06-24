@@ -1278,3 +1278,18 @@ Verification:
 
 - `dotnet build FenBrowser.Host\FenBrowser.Host.csproj`: pass on `2026-06-24`.
 - Clean no-URL Host repro on `2026-06-24`: `logs/fenbrowser_20260624_125007.jsonl` recorded bootstrap frame scheduling at `07:20:08.395Z`, initial tab creation at `07:20:08.400Z`, and first Google navigation at `07:20:08.991Z`; `logs/debug_screenshot.png` showed nonblack Google content.
+
+### 6.59 Settings-Gated Engine Logging (2026-06-24)
+
+- `FenBrowser.Core/Logging/EngineLog.cs` and `EngineLogCompat.cs`
+  - Runtime logging initialization now honors Settings' master logging switch, selected categories, file sink toggle, and debug sink toggle after preset application.
+  - Turning logging off clears the in-memory compatibility log buffer so Settings/DevTools log views stop showing stale entries after the operator disables logging.
+
+Net effect:
+
+- Settings is the source of truth for which logs are visible or persisted.
+- If logging is Off, structured writes, compatibility log entries, ring-buffer output, file output, debug output, and forwarded child-process log batches are suppressed by the core logger.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~EngineLogSettingsTests|FullyQualifiedName~BrowserSettingsTests" --logger "console;verbosity=minimal"`: pass (`7/7`) on `2026-06-24`.

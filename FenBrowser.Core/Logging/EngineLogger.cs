@@ -28,12 +28,23 @@ internal sealed class EngineLogger : IEngineLogger, IDisposable
             return false;
         }
 
+        if (!IsCategoryEnabled(subsystem))
+        {
+            return false;
+        }
+
         if (_options.SubsystemOverrides.TryGetValue(subsystem, out var overrideLevel))
         {
             return severity >= overrideLevel;
         }
 
         return severity >= _options.GlobalMinimumSeverity;
+    }
+
+    private bool IsCategoryEnabled(LogSubsystem subsystem)
+    {
+        var category = EngineLogCompatibility.ToLegacyCategory(subsystem);
+        return category != LogCategory.None && (_options.EnabledCategories & category) != 0;
     }
 
     public void Write(

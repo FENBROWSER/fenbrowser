@@ -10,6 +10,15 @@ namespace FenBrowser.Core.Logging;
 
 internal sealed class ConsoleEngineLogSink : ILogSink
 {
+    private readonly bool _writeConsole;
+    private readonly bool _writeDebug;
+
+    public ConsoleEngineLogSink(bool writeConsole = true, bool writeDebug = true)
+    {
+        _writeConsole = writeConsole;
+        _writeDebug = writeDebug;
+    }
+
     public void Write(in EngineLogEvent evt)
     {
         var marker = evt.Header.Marker == LogMarker.None ? string.Empty : $"[{evt.Header.Marker}]";
@@ -17,22 +26,28 @@ internal sealed class ConsoleEngineLogSink : ILogSink
         var source = string.IsNullOrWhiteSpace(evt.Payload?.SourceFile) ? string.Empty : $" | source={evt.Payload.SourceFile}:{evt.Payload.SourceLine}";
         var line = $"{evt.Header.TimestampUtc:HH:mm:ss.fff} [{evt.Header.Subsystem}][{evt.Header.Severity}]{marker} {evt.Payload?.MessageTemplate ?? string.Empty}{ctx}{source}";
 
-        try
+        if (_writeConsole)
         {
-            Console.WriteLine(line);
-        }
-        catch
-        {
-            // no-op
+            try
+            {
+                Console.WriteLine(line);
+            }
+            catch
+            {
+                // no-op
+            }
         }
 
-        try
+        if (_writeDebug)
         {
-            System.Diagnostics.Debug.WriteLine(line);
-        }
-        catch
-        {
-            // no-op
+            try
+            {
+                System.Diagnostics.Debug.WriteLine(line);
+            }
+            catch
+            {
+                // no-op
+            }
         }
     }
 
