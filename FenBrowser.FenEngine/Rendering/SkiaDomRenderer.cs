@@ -28,6 +28,8 @@ namespace FenBrowser.FenEngine.Rendering
     /// </summary>
     public class SkiaDomRenderer : IRenderFramePipeline, Core.ILayoutEngine
     {
+        private const double DefaultLayoutDeadlineMs = 3000d;
+
         private readonly SkiaRenderer _renderer = new SkiaRenderer();
         private readonly Dictionary<Node, BoxModel> _boxes = new Dictionary<Node, BoxModel>();
         private readonly Interaction.ScrollManager _scrollManager = new Interaction.ScrollManager();
@@ -196,7 +198,13 @@ namespace FenBrowser.FenEngine.Rendering
 
             var effectiveStyles = styles ?? new Dictionary<Node, CssComputed>();
             var layoutEngine = GetOrCreateLayoutEngine(effectiveStyles, baseUrl);
-            _lastLayout = layoutEngine.ComputeLayout(root, _viewportWidth, _viewportHeight);
+            _lastLayout = layoutEngine.ComputeLayout(
+                root,
+                0,
+                0,
+                _viewportWidth,
+                availableHeight: _viewportHeight,
+                deadline: CreateLayoutDeadline("EnsureLayout"));
             _boxes.Clear();
             foreach (var box in layoutEngine.AllBoxes)
             {
@@ -511,7 +519,13 @@ namespace FenBrowser.FenEngine.Rendering
                             var effectiveStyles = (IReadOnlyDictionary<Node, CssComputed>)(styles ?? new Dictionary<Node, CssComputed>());
                             var layoutEngine = GetOrCreateLayoutEngine(effectiveStyles, baseUrl);
 
-                            _lastLayout = layoutEngine.ComputeLayout(root, _viewportWidth, _viewportHeight);
+                            _lastLayout = layoutEngine.ComputeLayout(
+                                root,
+                                0,
+                                0,
+                                _viewportWidth,
+                                availableHeight: _viewportHeight,
+                                deadline: CreateLayoutDeadline("RenderFrame.Layout"));
                             _boxes.Clear();
                             foreach (var box in layoutEngine.AllBoxes)
                             {
@@ -959,6 +973,27 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
+        private static FenBrowser.Core.Deadlines.FrameDeadline CreateLayoutDeadline(string contextName)
+        {
+            double budgetMs = DefaultLayoutDeadlineMs;
+            var rawBudget = Environment.GetEnvironmentVariable("FEN_LAYOUT_DEADLINE_MS");
+            if (!string.IsNullOrWhiteSpace(rawBudget) &&
+                double.TryParse(rawBudget, out var parsedBudget) &&
+                !double.IsNaN(parsedBudget) &&
+                !double.IsInfinity(parsedBudget) &&
+                parsedBudget >= 0d)
+            {
+                budgetMs = parsedBudget;
+            }
+
+            if (budgetMs <= 0d)
+            {
+                return null;
+            }
+
+            return new FenBrowser.Core.Deadlines.FrameDeadline(budgetMs, contextName);
+        }
+
         private static (Element html, Element body) ResolveDocumentElements(Node root)
         {
             if (root is Document doc)
@@ -1228,7 +1263,13 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 var layoutEngine = GetOrCreateLayoutEngine(styles, baseUrl);
-                var partial = layoutEngine.ComputeLayout(dirtyRoot, availableWidth, availableHeight);
+                var partial = layoutEngine.ComputeLayout(
+                    dirtyRoot,
+                    0,
+                    0,
+                    availableWidth,
+                    availableHeight: availableHeight,
+                    deadline: CreateLayoutDeadline("RenderFrame.IncrementalLayout"));
                 if (partial == null)
                 {
                     return false;

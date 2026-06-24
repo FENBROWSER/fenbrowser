@@ -996,7 +996,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         lineMainPos += colMain + gap + itemStepExtra + autoAfter;
                     }
 
-                    if (isRow && previousItem != null && !HasNegativeInlineMargins(previousItem) && !HasNegativeInlineMargins(item))
+                    if (isRow &&
+                        previousItem != null &&
+                        !HasNegativeInlineMargins(previousItem) &&
+                        !HasNegativeInlineMargins(item) &&
+                        !IsRelativelyPositioned(previousItem) &&
+                        !IsRelativelyPositioned(item))
                     {
                         // Guard against geometry drift where a measured item advances the main-axis
                         // cursor less than its painted margin-box width, causing visible overlap.
@@ -1014,6 +1019,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
 
                     LayoutBoxOps.PositionSubtree(item, x, y, state);
+                    if (IsRelativelyPositioned(item))
+                    {
+                        ClampRelativeDescendantsToItemStart(item);
+                    }
 
                     // Final anti-overlap guard for Google top-right controls:
                     // ensure Sign in starts to the right of previously placed siblings.
@@ -1463,6 +1472,58 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             return item.ComputedStyle.Margin.Left < 0 || item.ComputedStyle.Margin.Right < 0;
+        }
+
+        private static bool IsRelativelyPositioned(LayoutBox item)
+        {
+            return string.Equals(
+                LayoutStyleResolver.GetEffectivePosition(item?.ComputedStyle),
+                "relative",
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void ClampRelativeDescendantsToItemStart(LayoutBox item)
+        {
+            if (item?.Geometry == null)
+            {
+                return;
+            }
+
+            foreach (var child in item.Children)
+            {
+                ClampRelativeDescendantToItemStart(item, child);
+            }
+        }
+
+        private static void ClampRelativeDescendantToItemStart(LayoutBox item, LayoutBox child)
+        {
+            if (child?.Geometry == null)
+            {
+                return;
+            }
+
+            var position = LayoutStyleResolver.GetEffectivePosition(child.ComputedStyle);
+            if (string.Equals(position, "fixed", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            float dx = child.Geometry.MarginBox.Left < item.Geometry.MarginBox.Left
+                ? item.Geometry.MarginBox.Left - child.Geometry.MarginBox.Left
+                : 0f;
+            float dy = child.Geometry.MarginBox.Top < item.Geometry.MarginBox.Top
+                ? item.Geometry.MarginBox.Top - child.Geometry.MarginBox.Top
+                : 0f;
+
+            if (dx != 0f || dy != 0f)
+            {
+                LayoutBoxOps.ShiftSubtree(child, dx, dy);
+            }
+
+            foreach (var grandchild in child.Children)
+            {
+                ClampRelativeDescendantToItemStart(item, grandchild);
+            }
         }
 
         private static bool IsGoogleTopRightAppsToSignInPair(LayoutBox container, LayoutBox previousItem, LayoutBox currentItem)

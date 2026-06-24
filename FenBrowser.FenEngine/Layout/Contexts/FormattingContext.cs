@@ -14,6 +14,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
         public void Layout(LayoutBox box, LayoutState state)
         {
+            state.Deadline?.Check();
+
             if (_layoutDepth >= MaxLayoutDepth)
             {
                 FenBrowser.Core.EngineLogCompat.Warn($"[Layout] Max depth {MaxLayoutDepth} exceeded for {box.SourceNode?.NodeName}. Skipping.", FenBrowser.Core.Logging.LogCategory.Layout);

@@ -612,7 +612,8 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
         private static void LogLayoutDecision(Node node, string decision, string display)
         {
-            if (!EngineLog.IsEnabled(LogSubsystem.Layout, LogSeverity.Debug))
+            if (!LayoutEngine.LayoutDebugLogEnabled ||
+                !EngineLog.IsEnabled(LogSubsystem.Layout, LogSeverity.Debug))
             {
                 return;
             }

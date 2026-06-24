@@ -40,61 +40,86 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 .Where(node => node != null)
                 .ToList();
             var arrangedBoxes = new Dictionary<Node, BoxModel>();
+            var measureCache = new Dictionary<GridMeasureKey, LayoutMetrics>();
+            var activeMeasurements = new HashSet<GridMeasureKey>();
 
             LayoutMetrics MeasureNode(Node node, SKSize availableSize, int depth)
             {
+                state.Deadline?.Check();
+
                 if (!nodeToBox.TryGetValue(node, out var childBox))
                 {
                     return new LayoutMetrics();
                 }
 
-                float childWidth = availableSize.Width;
-                if (float.IsNaN(childWidth))
+                var key = GridMeasureKey.Create(node, availableSize);
+                if (measureCache.TryGetValue(key, out var cachedMetrics))
                 {
-                    childWidth = 0f;
+                    return cachedMetrics;
                 }
 
-                float childHeight = availableSize.Height;
-                bool hasDefiniteChildHeight =
-                    !float.IsNaN(childHeight) &&
-                    !float.IsInfinity(childHeight) &&
-                    childHeight > 0f;
-                if (!hasDefiniteChildHeight)
+                if (!activeMeasurements.Add(key))
                 {
-                    // Intrinsic grid measurement is not a definite containing block
-                    // for percentage-height items. Falling back to the viewport here
-                    // lets grid items center inside a synthetic viewport-height track
-                    // while the auto-height grid container later shrinks to content.
-                    childHeight = 0f;
+                    return BuildMetricsFromCurrentGeometry(childBox);
                 }
 
-                float containingWidth = (!float.IsInfinity(childWidth) && childWidth > 0f)
-                    ? childWidth
-                    : Math.Max(0f, container.Geometry.ContentBox.Width);
-
-                var childState = new LayoutState(
-                    new SKSize(childWidth, childHeight),
-                    containingWidth,
-                    hasDefiniteChildHeight ? childHeight : 0f,
-                    state.ViewportWidth,
-                    state.ViewportHeight,
-                    state.Deadline);
-
-                FormattingContext.Resolve(childBox).Layout(childBox, childState);
-
-                float baseline = 0f;
-                if (LayoutBoxOps.TryResolveBaselineOffsetFromMarginTop(childBox, out float resolvedBaseline))
+                try
                 {
-                    baseline = resolvedBaseline;
+                    float childWidth = availableSize.Width;
+                    if (float.IsNaN(childWidth))
+                    {
+                        childWidth = 0f;
+                    }
+
+                    float childHeight = availableSize.Height;
+                    bool hasDefiniteChildHeight =
+                        !float.IsNaN(childHeight) &&
+                        !float.IsInfinity(childHeight) &&
+                        childHeight > 0f;
+                    if (!hasDefiniteChildHeight)
+                    {
+                        // Intrinsic grid measurement is not a definite containing block
+                        // for percentage-height items. Falling back to the viewport here
+                        // lets grid items center inside a synthetic viewport-height track
+                        // while the auto-height grid container later shrinks to content.
+                        childHeight = 0f;
+                    }
+
+                    float containingWidth = (!float.IsInfinity(childWidth) && childWidth > 0f)
+                        ? childWidth
+                        : Math.Max(0f, container.Geometry.ContentBox.Width);
+
+                    var childState = new LayoutState(
+                        new SKSize(childWidth, childHeight),
+                        containingWidth,
+                        hasDefiniteChildHeight ? childHeight : 0f,
+                        state.ViewportWidth,
+                        state.ViewportHeight,
+                        state.Deadline);
+
+                    FormattingContext.Resolve(childBox).Layout(childBox, childState);
+
+                    float baseline = 0f;
+                    if (LayoutBoxOps.TryResolveBaselineOffsetFromMarginTop(childBox, out float resolvedBaseline))
+                    {
+                        baseline = resolvedBaseline;
+                    }
+
+                    var metrics = new LayoutMetrics
+                    {
+                        MaxChildWidth = Math.Max(0f, childBox.Geometry.MarginBox.Width),
+                        ContentHeight = Math.Max(0f, childBox.Geometry.MarginBox.Height),
+                        ActualHeight = Math.Max(0f, childBox.Geometry.MarginBox.Height),
+                        Baseline = baseline
+                    };
+
+                    measureCache[key] = metrics;
+                    return metrics;
                 }
-
-                return new LayoutMetrics
+                finally
                 {
-                    MaxChildWidth = Math.Max(0f, childBox.Geometry.MarginBox.Width),
-                    ContentHeight = Math.Max(0f, childBox.Geometry.MarginBox.Height),
-                    ActualHeight = Math.Max(0f, childBox.Geometry.MarginBox.Height),
-                    Baseline = baseline
-                };
+                    activeMeasurements.Remove(key);
+                }
             }
 
             void ArrangeNode(Node node, SKRect rect, int depth)
@@ -103,6 +128,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 {
                     return;
                 }
+
+                state.Deadline?.Check();
 
                 float width = Math.Max(0f, rect.Width);
                 float height = Math.Max(0f, rect.Height);
@@ -156,6 +183,87 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             computedContentHeight = ApplyHeightConstraints(containerStyle, computedContentHeight, state);
 
             LayoutBoxOps.ComputeBoxModelFromContent(container, container.Geometry.ContentBox.Width, computedContentHeight);
+        }
+
+        private static LayoutMetrics BuildMetricsFromCurrentGeometry(LayoutBox box)
+        {
+            if (box?.Geometry == null)
+            {
+                return new LayoutMetrics();
+            }
+
+            float baseline = 0f;
+            if (LayoutBoxOps.TryResolveBaselineOffsetFromMarginTop(box, out float resolvedBaseline))
+            {
+                baseline = resolvedBaseline;
+            }
+
+            return new LayoutMetrics
+            {
+                MaxChildWidth = Math.Max(0f, box.Geometry.MarginBox.Width),
+                ContentHeight = Math.Max(0f, box.Geometry.MarginBox.Height),
+                ActualHeight = Math.Max(0f, box.Geometry.MarginBox.Height),
+                Baseline = baseline
+            };
+        }
+
+        private readonly struct GridMeasureKey : IEquatable<GridMeasureKey>
+        {
+            private readonly Node _node;
+            private readonly int _width;
+            private readonly int _height;
+
+            private GridMeasureKey(Node node, int width, int height)
+            {
+                _node = node;
+                _width = width;
+                _height = height;
+            }
+
+            public static GridMeasureKey Create(Node node, SKSize availableSize)
+            {
+                return new GridMeasureKey(
+                    node,
+                    NormalizeDimension(availableSize.Width),
+                    NormalizeDimension(availableSize.Height));
+            }
+
+            public bool Equals(GridMeasureKey other)
+            {
+                return ReferenceEquals(_node, other._node) &&
+                       _width == other._width &&
+                       _height == other._height;
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is GridMeasureKey other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                return HashCode.Combine(_node, _width, _height);
+            }
+
+            private static int NormalizeDimension(float value)
+            {
+                if (float.IsNaN(value))
+                {
+                    return int.MinValue;
+                }
+
+                if (float.IsPositiveInfinity(value))
+                {
+                    return int.MaxValue;
+                }
+
+                if (float.IsNegativeInfinity(value))
+                {
+                    return int.MinValue + 1;
+                }
+
+                return (int)MathF.Round(value * 100f);
+            }
         }
 
         private static void CollectNodeMappings(
