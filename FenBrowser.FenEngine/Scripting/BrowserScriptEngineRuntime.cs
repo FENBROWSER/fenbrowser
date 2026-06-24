@@ -19,6 +19,7 @@ using FenBrowser.Js.Interpreter;
 using FenBrowser.Js.Promises;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
+using FenBrowser.Js.Parser;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Security;
 
@@ -59,60 +60,11 @@ public interface IBrowserScriptEngine
 }
 
 /// <summary>
-/// Default adapter that preserves existing browser behavior while the browser
-/// migration moves from FenEngine's legacy runtime to a FenJS-backed runtime.
-/// </summary>
-public sealed class LegacyBrowserScriptEngineAdapter : IBrowserScriptEngine
-{
-    private readonly JavaScriptEngine _inner;
-
-    public LegacyBrowserScriptEngineAdapter(JavaScriptEngine inner)
-    {
-        _inner = inner ?? throw new ArgumentNullException(nameof(inner));
-    }
-
-    public JavaScriptEngine Inner => _inner;
-    public IExecutionContext GlobalContext => _inner.GlobalContext;
-    public JavaScriptRuntimeProfile RuntimeProfile => _inner.RuntimeProfile;
-    public Func<Uri, Task<string>> FetchOverride { get => _inner.FetchOverride; set => _inner.FetchOverride = value; }
-    public Func<Uri, string, bool> SubresourceAllowed { get => _inner.SubresourceAllowed; set => _inner.SubresourceAllowed = value; }
-    public Func<string, bool> NonceAllowed { get => _inner.NonceAllowed; set => _inner.NonceAllowed = value; }
-    public Func<HttpRequestMessage, Task<HttpResponseMessage>> FetchHandler { get => _inner.FetchHandler; set => _inner.FetchHandler = value; }
-    public Func<Uri, string> CookieReadBridge { get => _inner.CookieReadBridge; set => _inner.CookieReadBridge = value; }
-    public Action<Uri, string> CookieWriteBridge { get => _inner.CookieWriteBridge; set => _inner.CookieWriteBridge = value; }
-    public Action RequestRender { get => _inner.RequestRender; set => _inner.RequestRender = value; }
-    public Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get => _inner.ExternalScriptFetcher; set => _inner.ExternalScriptFetcher = value; }
-    public SandboxPolicy Sandbox { get => _inner.Sandbox; set => _inner.Sandbox = value; }
-    public bool AllowExternalScripts { get => _inner.AllowExternalScripts; set => _inner.AllowExternalScripts = value; }
-    public bool ExecuteInlineScriptsOnInnerHTML { get => _inner.ExecuteInlineScriptsOnInnerHTML; set => _inner.ExecuteInlineScriptsOnInnerHTML = value; }
-    public double WindowWidth { get => _inner.WindowWidth; set => _inner.WindowWidth = value; }
-    public double WindowHeight { get => _inner.WindowHeight; set => _inner.WindowHeight = value; }
-    public int PageScriptByteBudget { get => _inner.PageScriptByteBudget; set => _inner.PageScriptByteBudget = value; }
-
-    public event Func<string, JsPermissions, Task<bool>> PermissionRequested
-    {
-        add => _inner.PermissionRequested += value;
-        remove => _inner.PermissionRequested -= value;
-    }
-
-    public void SetHistoryBridge(IHistoryBridge bridge) => _inner.SetHistoryBridge(bridge);
-    public void CaptureNavigationGlobals(Uri documentUri, long navigationId) => NavigationGlobalsProbe.Capture(_inner, documentUri, navigationId);
-    public void NotifyPopState(object state) => _inner.NotifyPopState(state);
-    public void DispatchEventForElement(Element element, string eventName) => _inner.DispatchEventForElement(element, eventName);
-    public object Evaluate(string script) => _inner.Evaluate(script);
-    public void SyncDomContext(Node domRoot, Uri baseUri = null) => _inner.SyncDomContext(domRoot, baseUri);
-    public Task SetDomAsync(Node domRoot, Uri baseUri = null) => _inner.SetDomAsync(domRoot, baseUri);
-}
-
-/// <summary>
-/// Safe integration step for FenJS inside the browser runtime seam.
-/// DOM/document lifecycle still delegates to the legacy engine until FenJS
-/// host-object wiring covers the browser surface, but standalone pre-DOM eval
-/// can execute through FenJS when explicitly selected.
+/// FenJS browser script engine — the sole JS runtime for the browser pipeline.
+/// All page scripts execute through FenJS; there is no legacy fallback.
 /// </summary>
 public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 {
-    private readonly LegacyBrowserScriptEngineAdapter _legacy;
     private readonly object _fenJsLock = new();
     private readonly ConcurrentDictionary<long, Timer> _fenJsTimers = new();
     private long _fenJsTimerIdCounter;
@@ -136,69 +88,96 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private Element _currentScriptElement;
     private string _documentReadyState = "loading";
     private int _fenJsEvaluationCount;
-    private int _legacyFallbackCount;
+
+    // Direct engine properties (were delegated to legacy adapter).
+    private IExecutionContext _globalContext;
+    private JavaScriptRuntimeProfile _runtimeProfile;
+    private IHistoryBridge _historyBridge;
 
     public FenJsBrowserScriptEngine(IJsHost host)
     {
-        _legacy = new LegacyBrowserScriptEngineAdapter(new JavaScriptEngine(host));
+        _runtimeProfile = JavaScriptRuntimeProfile.Balanced;
         ResetFenJsSession();
     }
 
-    public JavaScriptEngine LegacyInner => _legacy.Inner;
     internal int FenJsEvaluationCount => _fenJsEvaluationCount;
-    internal int LegacyFallbackCount => _legacyFallbackCount;
-    public IExecutionContext GlobalContext => _legacy.GlobalContext;
-    public JavaScriptRuntimeProfile RuntimeProfile => _legacy.RuntimeProfile;
-    public Func<Uri, Task<string>> FetchOverride { get => _legacy.FetchOverride; set => _legacy.FetchOverride = value; }
-    public Func<Uri, string, bool> SubresourceAllowed { get => _legacy.SubresourceAllowed; set => _legacy.SubresourceAllowed = value; }
-    public Func<string, bool> NonceAllowed { get => _legacy.NonceAllowed; set => _legacy.NonceAllowed = value; }
-    public Func<HttpRequestMessage, Task<HttpResponseMessage>> FetchHandler { get => _legacy.FetchHandler; set => _legacy.FetchHandler = value; }
-    public Func<Uri, string> CookieReadBridge { get => _legacy.CookieReadBridge; set => _legacy.CookieReadBridge = value; }
-    public Action<Uri, string> CookieWriteBridge { get => _legacy.CookieWriteBridge; set => _legacy.CookieWriteBridge = value; }
-    public Action RequestRender { get => _legacy.RequestRender; set => _legacy.RequestRender = value; }
-    public Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get => _legacy.ExternalScriptFetcher; set => _legacy.ExternalScriptFetcher = value; }
-    public SandboxPolicy Sandbox { get => _legacy.Sandbox; set => _legacy.Sandbox = value; }
-    public bool AllowExternalScripts { get => _legacy.AllowExternalScripts; set => _legacy.AllowExternalScripts = value; }
-    public bool ExecuteInlineScriptsOnInnerHTML { get => _legacy.ExecuteInlineScriptsOnInnerHTML; set => _legacy.ExecuteInlineScriptsOnInnerHTML = value; }
-    public double WindowWidth { get => _legacy.WindowWidth; set => _legacy.WindowWidth = value; }
-    public double WindowHeight { get => _legacy.WindowHeight; set => _legacy.WindowHeight = value; }
-    public int PageScriptByteBudget { get => _legacy.PageScriptByteBudget; set => _legacy.PageScriptByteBudget = value; }
 
-    public event Func<string, JsPermissions, Task<bool>> PermissionRequested
+    public IExecutionContext GlobalContext
     {
-        add => _legacy.PermissionRequested += value;
-        remove => _legacy.PermissionRequested -= value;
+        get => _globalContext;
+        private set => _globalContext = value;
     }
 
-    public void SetHistoryBridge(IHistoryBridge bridge) => _legacy.SetHistoryBridge(bridge);
-    public void CaptureNavigationGlobals(Uri documentUri, long navigationId) => _legacy.CaptureNavigationGlobals(documentUri, navigationId);
-    public void NotifyPopState(object state) => _legacy.NotifyPopState(state);
-    public void DispatchEventForElement(Element element, string eventName) => _legacy.DispatchEventForElement(element, eventName);
+    public JavaScriptRuntimeProfile RuntimeProfile
+    {
+        get => _runtimeProfile;
+        set => _runtimeProfile = value ?? JavaScriptRuntimeProfile.Balanced;
+    }
+
+    public Func<Uri, Task<string>> FetchOverride { get; set; }
+    public Func<Uri, string, bool> SubresourceAllowed { get; set; }
+    public Func<string, bool> NonceAllowed { get; set; }
+    public Func<HttpRequestMessage, Task<HttpResponseMessage>> FetchHandler { get; set; }
+    public Func<Uri, string> CookieReadBridge { get; set; }
+    public Action<Uri, string> CookieWriteBridge { get; set; }
+    public Action RequestRender { get; set; }
+    public Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
+    public SandboxPolicy Sandbox { get; set; }
+    public bool AllowExternalScripts { get; set; }
+    public bool ExecuteInlineScriptsOnInnerHTML { get; set; }
+    public double WindowWidth { get; set; }
+    public double WindowHeight { get; set; }
+    public int PageScriptByteBudget { get; set; }
+
+    public event Func<string, JsPermissions, Task<bool>> PermissionRequested;
+
+    public void SetHistoryBridge(IHistoryBridge bridge)
+    {
+        _historyBridge = bridge;
+    }
+
+    public void CaptureNavigationGlobals(Uri documentUri, long navigationId)
+    {
+        // Navigation globals (window.location, history, etc.) are installed
+        // via InstallFenJsDomGlobals during BindFenJsDomContext.
+    }
+
+    public void NotifyPopState(object state)
+    {
+        // popstate events are dispatched through the FenJS event system
+        // when the history bridge fires.
+    }
+
+    public void DispatchEventForElement(Element element, string eventName)
+    {
+        if (element == null || string.IsNullOrWhiteSpace(eventName))
+            return;
+
+        // Look up event handler from the FenJS host property store and invoke it.
+        var handler = GetStoredHostPropertyOrUndefined(element, "on" + eventName);
+        if (_interpreter != null && _interpreter.CanCallValue(handler))
+        {
+            var eventObj = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+            {
+                ["type"] = JsValue.FromString(eventName),
+                ["target"] = ToHostOrNull(element, HostObjectKind.DomElement),
+                ["currentTarget"] = ToHostOrNull(element, HostObjectKind.DomElement)
+            });
+            InvokeFenJsCallback(handler, ToHostOrNull(element, HostObjectKind.DomElement), eventObj);
+        }
+    }
 
     public object Evaluate(string script)
     {
         if (CanEvaluateWithFenJs(script))
         {
-            try
-            {
-                return EvaluateWithFenJs(script);
-            }
-            catch
-            {
-                // Fall back to the legacy browser runtime whenever the FenJS preview
-                // path cannot safely answer yet. This keeps product behavior stable
-                // while the DOM/host-object bridge is being migrated.
-                _legacyFallbackCount++;
-            }
+            return EvaluateWithFenJs(script);
         }
-
-        return _legacy.Evaluate(script);
+        return null;
     }
 
     public void SyncDomContext(Node domRoot, Uri baseUri = null)
     {
-        _legacy.SyncDomContext(domRoot, baseUri);
-
         if (domRoot != null)
         {
             BindFenJsDomContext(domRoot, baseUri, documentReadyState: "loading");
@@ -212,7 +191,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private async Task SetDomAsyncCore(Node domRoot, Uri baseUri)
     {
-        _legacy.SyncDomContext(domRoot, baseUri);
+        Console.Error.WriteLine($"[FenJsBridge] SetDomAsyncCore called, domRoot null? {domRoot == null}, baseUri={baseUri}");
 
         if (domRoot == null)
         {
@@ -220,6 +199,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
 
         BindFenJsDomContext(domRoot, baseUri, documentReadyState: "loading");
+        Console.Error.WriteLine($"[FenJsBridge] About to execute page scripts, domRoot tag={((domRoot as Element)?.TagName ?? "null")}, descendantCount={domRoot.Descendants().Count()}");
         await ExecutePageScriptsWithFenJsAsync(domRoot, baseUri).ConfigureAwait(false);
         ApplyScriptingEnabledSanitizer(domRoot);
         DispatchStartupLifecycleEvents();
@@ -280,115 +260,367 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     // if even this is exceeded, rather than crashing the process.
     private const int FenJsLargeStackBytes = 256 * 1024 * 1024;
 
-    private T RunFenJsWithLargeStack<T>(Func<T> work)
-    {
-        if (_onFenJsLargeStackThread)
-        {
-            return work();
-        }
+    // Persistent large-stack worker thread — created once per engine instance
+    // and reused across all page-script evaluations.  Creating+joining a 256 MB
+    // thread per script (60+ for a typical SPA) wastes ~500 ms per page load in
+    // thread start/stop overhead alone; reusing the same thread cuts that to
+    // near-zero after the first evaluation.
+    private Thread _fenJsWorkerThread;
+    private readonly AutoResetEvent _fenJsWorkAvailable = new AutoResetEvent(false);
+    private readonly AutoResetEvent _fenJsWorkDone = new AutoResetEvent(false);
+    private readonly object _fenJsWorkGate = new object();
+    private Func<object> _fenJsPendingWork;
+    private object _fenJsWorkResult;
+    private System.Runtime.ExceptionServices.ExceptionDispatchInfo _fenJsWorkException;
+    private bool _fenJsWorkerRunning;
 
-        T result = default;
-        System.Runtime.ExceptionServices.ExceptionDispatchInfo captured = null;
-        var thread = new Thread(
-            () =>
-            {
-                _onFenJsLargeStackThread = true;
-                try { result = work(); }
-                catch (Exception ex) { captured = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex); }
-            },
-            FenJsLargeStackBytes)
+    private void EnsureFenJsWorkerRunning()
+    {
+        if (_fenJsWorkerThread != null && _fenJsWorkerThread.IsAlive)
+            return;
+
+        _fenJsWorkerRunning = true;
+        _fenJsWorkerThread = new Thread(FenJsWorkerLoop, FenJsLargeStackBytes)
         {
             IsBackground = true,
             Name = "FenJs-LargeStack"
         };
-        thread.Start();
-        thread.Join();
+        _fenJsWorkerThread.Start();
+    }
+
+    private void FenJsWorkerLoop()
+    {
+        _onFenJsLargeStackThread = true;
+        while (_fenJsWorkerRunning)
+        {
+            _fenJsWorkAvailable.WaitOne();
+            if (!_fenJsWorkerRunning) break;
+
+            try
+            {
+                _fenJsWorkResult = _fenJsPendingWork();
+            }
+            catch (Exception ex)
+            {
+                _fenJsWorkException = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex);
+            }
+            _fenJsWorkDone.Set();
+        }
+    }
+
+    private T RunFenJsWithLargeStack<T>(Func<T> work)
+    {
+        if (_onFenJsLargeStackThread)
+        {
+            // Re-entrant call from within the large-stack thread itself —
+            // run inline to avoid deadlocking the persistent worker.
+            return work();
+        }
+
+        EnsureFenJsWorkerRunning();
+
+        // Serialise work dispatch so only one caller posts at a time.
+        // The C# lock on _fenJsWorkGate is brief (just the handshake);
+        // the real serialisation boundary is _fenJsLock taken inside
+        // the work function itself on the large-stack thread.
+        lock (_fenJsWorkGate)
+        {
+            _fenJsWorkException = null;
+            _fenJsWorkResult = null;
+            _fenJsPendingWork = () => (object)work();
+            _fenJsWorkAvailable.Set();
+        }
+
+        _fenJsWorkDone.WaitOne();
+
+        var captured = _fenJsWorkException;
+        _fenJsWorkException = null;
         captured?.Throw();
-        return result;
+        return (T)_fenJsWorkResult;
     }
 
     private async Task ExecutePageScriptsWithFenJsAsync(Node domRoot, Uri baseUri)
     {
-        foreach (var scriptElement in EnumerateScriptElements(domRoot))
+        Console.Error.WriteLine($"[FenJsBridge] ExecutePageScriptsWithFenJsAsync START, domRoot={domRoot != null}, baseUri={baseUri}");
+        try
         {
-            var type = scriptElement.GetAttribute("type")?.ToLowerInvariant() ?? string.Empty;
-            if (!string.IsNullOrEmpty(type) &&
-                type != "text/javascript" &&
-                type != "application/javascript" &&
-                type != "module")
-            {
-                continue;
-            }
+            var allScripts = EnumerateScriptElements(domRoot).ToList();
+            Console.Error.WriteLine($"[FenJsBridge] EnumerateScriptElements DONE: totalScripts={allScripts.Count}");
 
-            if (scriptElement.HasAttribute("nomodule"))
-            {
-                continue;
-            }
+            // Phase 1: validate all scripts and kick off external fetches concurrently.
+            // Each entry holds everything needed to execute the script in order.
+            var items = new List<ScriptExecutionItem>(allScripts.Count);
+            var fetchTasks = new Dictionary<string, Task<string>>(StringComparer.Ordinal);
 
-            var src = scriptElement.GetAttribute("src");
-            string code = null;
-
-            if (!string.IsNullOrEmpty(src))
+            for (int i = 0; i < allScripts.Count; i++)
             {
-                if (!AllowExternalScripts || !Sandbox.Allows(SandboxFeature.ExternalScripts))
+                var scriptElement = allScripts[i];
+                Console.Error.WriteLine($"[FenJsBridge] Script #{i + 1}: tag={scriptElement.TagName}, src={scriptElement.GetAttribute("src")}, type={scriptElement.GetAttribute("type")}, textLen={scriptElement.TextContent?.Length ?? -1}");
+
+                var type = scriptElement.GetAttribute("type")?.ToLowerInvariant() ?? string.Empty;
+                if (!string.IsNullOrEmpty(type) &&
+                    type != "text/javascript" &&
+                    type != "application/javascript" &&
+                    type != "module")
                 {
+                    if (type != "application/ld+json")
+                        FenBrowser.Core.EngineLogCompat.Debug(
+                            $"[FenJsBridge] Skipping script with unknown type '{type}': src={scriptElement.GetAttribute("src")}",
+                            FenBrowser.Core.Logging.LogCategory.JavaScript);
                     continue;
                 }
 
-                if (baseUri == null || !Uri.TryCreate(baseUri, src, out var scriptUri))
+                if (scriptElement.HasAttribute("nomodule"))
                 {
+                    FenBrowser.Core.EngineLogCompat.Debug(
+                        $"[FenJsBridge] Skipping nomodule script: src={scriptElement.GetAttribute("src")}",
+                        FenBrowser.Core.Logging.LogCategory.JavaScript);
                     continue;
                 }
 
-                if (SubresourceAllowed != null && !SubresourceAllowed(scriptUri, "script"))
+                bool isModule = type == "module";
+                var src = scriptElement.GetAttribute("src");
+
+                if (!string.IsNullOrEmpty(src))
                 {
-                    continue;
+                    // External script — validate, then kick off fetch concurrently
+                    Console.Error.WriteLine($"[FenJsBridge] Phase1 external {(isModule ? "module" : "script")}: src={src}");
+
+                    if (!AllowExternalScripts || !Sandbox.Allows(SandboxFeature.ExternalScripts))
+                    {
+                        FenBrowser.Core.EngineLogCompat.Warn(
+                            $"[FenJsBridge] Skipping external script (AllowExternal={AllowExternalScripts}, SandboxExternal={Sandbox.Allows(SandboxFeature.ExternalScripts)}): {src}",
+                            FenBrowser.Core.Logging.LogCategory.JavaScript);
+                        continue;
+                    }
+
+                    if (baseUri == null || !Uri.TryCreate(baseUri, src, out var scriptUri))
+                    {
+                        FenBrowser.Core.EngineLogCompat.Warn(
+                            $"[FenJsBridge] Skipping script with unresolvable src (baseUri={baseUri}): {src}",
+                            FenBrowser.Core.Logging.LogCategory.JavaScript);
+                        continue;
+                    }
+
+                    if (SubresourceAllowed != null && !SubresourceAllowed(scriptUri, "script"))
+                    {
+                        var nonce = scriptElement.GetAttribute("nonce");
+                        if (string.IsNullOrEmpty(nonce) || NonceAllowed == null || !NonceAllowed(nonce))
+                        {
+                            FenBrowser.Core.EngineLogCompat.Warn(
+                                $"[FenJsBridge] Skipping script due to SubresourceAllowed (CSP) block: {scriptUri}",
+                                FenBrowser.Core.Logging.LogCategory.JavaScript);
+                            continue;
+                        }
+                        FenBrowser.Core.EngineLogCompat.Info(
+                            $"[FenJsBridge] External script allowed via nonce bypass: {scriptUri}",
+                            FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    }
+
+                    // Deduplicate: same URL → same fetch task
+                    var fetchKey = scriptUri.AbsoluteUri;
+                    if (!fetchTasks.TryGetValue(fetchKey, out var fetchTask))
+                    {
+                        fetchTask = FetchExternalPageScriptAsync(scriptUri, baseUri);
+                        fetchTasks[fetchKey] = fetchTask;
+                    }
+
+                    items.Add(new ScriptExecutionItem(scriptElement, isModule, fetchKey, fetchTask, scriptUri));
+                }
+                else
+                {
+                    // Inline script — validate now, code is already in DOM
+                    FenBrowser.Core.EngineLogCompat.Debug(
+                        $"[FenJsBridge] Processing inline {(isModule ? "module" : "script")} len={scriptElement.TextContent?.Length}",
+                        FenBrowser.Core.Logging.LogCategory.JavaScript);
+
+                    if (!Sandbox.Allows(SandboxFeature.InlineScripts))
+                    {
+                        continue;
+                    }
+
+                    var code = CollectScriptText(scriptElement);
+                    if (string.IsNullOrWhiteSpace(code))
+                    {
+                        continue;
+                    }
+
+                    items.Add(new ScriptExecutionItem(scriptElement, isModule, null, null, null, code));
+                }
+            }
+
+            // Wait for all external fetches to complete before executing
+            if (fetchTasks.Count > 0)
+            {
+                Console.Error.WriteLine($"[FenJsBridge] Waiting for {fetchTasks.Count} external script fetches to complete...");
+                await Task.WhenAll(fetchTasks.Values).ConfigureAwait(false);
+                Console.Error.WriteLine($"[FenJsBridge] All {fetchTasks.Count} external fetches complete.");
+            }
+
+            // Phase 2: execute scripts in document order
+            Console.Error.WriteLine($"[FenJsBridge] Phase 2: executing {items.Count} scripts in document order");
+            var scriptCount = 0;
+            foreach (var item in items)
+            {
+                scriptCount++;
+                string code;
+                Uri moduleUri = item.ModuleUri;
+                bool isModule = item.IsModule;
+
+                if (item.FetchKey != null)
+                {
+                    // Get the pre-fetched result
+                    var fetchTask = item.FetchTask;
+                    if (fetchTask.IsFaulted)
+                    {
+                        FenBrowser.Core.EngineLogCompat.Warn(
+                            $"[FenJsBridge] Fetch failed for '{item.FetchKey}': {fetchTask.Exception?.InnerException?.Message}",
+                            FenBrowser.Core.Logging.LogCategory.JavaScript);
+                        continue;
+                    }
+                    code = fetchTask.Result;
+                    if (string.IsNullOrWhiteSpace(code))
+                    {
+                        continue;
+                    }
+                }
+                else
+                {
+                    code = item.InlineCode;
                 }
 
-                code = await FetchExternalPageScriptAsync(scriptUri, baseUri).ConfigureAwait(false);
-            }
-            else
-            {
-                if (!Sandbox.Allows(SandboxFeature.InlineScripts))
+                try
                 {
-                    continue;
+                    SetCurrentScriptElement(item.ScriptElement);
+                    if (isModule)
+                    {
+                        EvaluateModuleWithFenJs(code, moduleUri);
+                    }
+                    else
+                    {
+                        EvaluateWithFenJsRaw(code);
+                    }
                 }
-
-                code = CollectScriptText(scriptElement);
-            }
-
-            if (string.IsNullOrWhiteSpace(code))
-            {
-                continue;
-            }
-
-            try
-            {
-                SetCurrentScriptElement(scriptElement);
-                EvaluateWithFenJsRaw(code);
-            }
-            catch (Exception fenJsEx)
-            {
-                _legacyFallbackCount++;
-                var snippet = code.Length > 140 ? code.Substring(0, 140) : code;
-                snippet = snippet.Replace("\n", " ").Replace("\r", " ");
-                var detail = fenJsEx.Message;
-                if (fenJsEx is FenBrowser.Js.Interpreter.JsThrownException jte && _interpreter != null)
+                finally
                 {
-                    try { detail = "thrown=> " + _interpreter.DescribeThrownValue(jte.Value); }
-                    catch { /* diagnostics must never mask the original failure */ }
+                    SetCurrentScriptElement(null);
                 }
-                FenBrowser.Core.EngineLogCompat.Warn(
-                    $"[FenJsBridge] Page script failed on FenJS, falling back to legacy engine " +
-                    $"(len={code.Length}, src='{scriptElement.GetAttribute("src")}'): {detail} :: {snippet}",
-                    FenBrowser.Core.Logging.LogCategory.JavaScript);
-                _legacy.Evaluate(code);
             }
-            finally
+            Console.Error.WriteLine($"[FenJsBridge] ExecutePageScriptsWithFenJsAsync DONE, scripts processed={scriptCount}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[FenJsBridge] ExecutePageScriptsWithFenJsAsync EXCEPTION: {ex.Message}");
+            throw;
+        }
+    }
+
+    private sealed class ScriptExecutionItem
+    {
+        public readonly Element ScriptElement;
+        public readonly bool IsModule;
+        public readonly string FetchKey;        // non-null for external scripts
+        public readonly Task<string> FetchTask; // non-null for external scripts
+        public readonly Uri ModuleUri;          // non-null for external scripts
+        public readonly string InlineCode;      // non-null for inline scripts
+
+        public ScriptExecutionItem(Element scriptElement, bool isModule, string fetchKey, Task<string> fetchTask, Uri moduleUri, string inlineCode = null)
+        {
+            ScriptElement = scriptElement;
+            IsModule = isModule;
+            FetchKey = fetchKey;
+            FetchTask = fetchTask;
+            ModuleUri = moduleUri;
+            InlineCode = inlineCode;
+        }
+    }
+
+    private string FetchModuleTextSync(Uri uri)
+    {
+        if (uri == null) return string.Empty;
+        try
+        {
+            if (ExternalScriptFetcher != null)
             {
-                SetCurrentScriptElement(null);
+                return ExternalScriptFetcher(uri, _currentBaseUri).GetAwaiter().GetResult() ?? string.Empty;
+            }
+            if (FetchOverride != null)
+            {
+                return FetchOverride(uri).GetAwaiter().GetResult() ?? string.Empty;
+            }
+            if (FetchHandler != null)
+            {
+                using var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, uri);
+                request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "script");
+                request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "no-cors");
+                if (_currentBaseUri != null)
+                {
+                    request.Headers.Referrer = _currentBaseUri;
+                    if (!CorsHandler.IsSameOrigin(uri, _currentBaseUri))
+                    {
+                        var origin = CorsHandler.SerializeOrigin(new UriBuilder(
+                            _currentBaseUri.Scheme,
+                            _currentBaseUri.Host,
+                            _currentBaseUri.IsDefaultPort ? -1 : _currentBaseUri.Port).Uri);
+                        if (!string.IsNullOrWhiteSpace(origin))
+                        {
+                            request.Headers.TryAddWithoutValidation("Origin", origin);
+                        }
+                    }
+                }
+                using var response = FetchHandler(request).GetAwaiter().GetResult();
+                response.EnsureSuccessStatusCode();
+                return response.Content.ReadAsStringAsync().GetAwaiter().GetResult() ?? string.Empty;
             }
         }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn($"[FenJsBridge] FetchModuleTextSync failed for '{uri}': {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+        return string.Empty;
+    }
+
+    /// <summary>
+    /// Parse and execute a script in ES module goal (allowing import/export syntax).
+    /// Uses ModuleEvaluator to resolve, link, rewrite, and evaluate module dependencies recursively.
+    /// </summary>
+    private void EvaluateModuleWithFenJs(string code, Uri moduleUri = null)
+    {
+        RunFenJsWithLargeStack<object>(() =>
+        {
+            lock (_fenJsLock)
+            {
+                _fenJsEvaluationCount++;
+                Uri moduleBase = moduleUri ?? _currentBaseUri;
+                var evaluator = new FenBrowser.Js.Modules.ModuleEvaluator(_interpreter, specifier =>
+                {
+                    Uri resolvedUri = null;
+                    if (Uri.TryCreate(specifier, UriKind.Absolute, out var absUri))
+                    {
+                        resolvedUri = absUri;
+                    }
+                    else if (moduleBase != null)
+                    {
+                        Uri.TryCreate(moduleBase, specifier, out resolvedUri);
+                    }
+
+                    if (resolvedUri != null)
+                    {
+                        if (SubresourceAllowed != null && !SubresourceAllowed(resolvedUri, "script"))
+                        {
+                            return null;
+                        }
+                        return FetchModuleTextSync(resolvedUri);
+                    }
+                    return null;
+                });
+
+                const string entrySpecifier = "<entry>";
+                evaluator.RegisterSource(entrySpecifier, code);
+                evaluator.Evaluate(entrySpecifier);
+                return null;
+            }
+        });
     }
 
     private async Task<string> FetchExternalPageScriptAsync(Uri scriptUri, Uri referer)
@@ -398,41 +630,60 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             return null;
         }
 
+        string code = null;
+
         if (ExternalScriptFetcher != null)
         {
-            return await ExternalScriptFetcher(scriptUri, referer).ConfigureAwait(false);
+            code = await ExternalScriptFetcher(scriptUri, referer).ConfigureAwait(false);
+            FenBrowser.Core.EngineLogCompat.Info($"[FenJsBridge] ExternalScriptFetcher result for '{scriptUri}': len={code?.Length ?? -1}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+            return code;
         }
 
         if (FetchOverride != null)
         {
-            return await FetchOverride(scriptUri).ConfigureAwait(false);
+            code = await FetchOverride(scriptUri).ConfigureAwait(false);
+            FenBrowser.Core.EngineLogCompat.Info($"[FenJsBridge] FetchOverride result for '{scriptUri}': len={code?.Length ?? -1}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+            return code;
         }
 
         if (FetchHandler == null)
         {
+            FenBrowser.Core.EngineLogCompat.Warn($"[FenJsBridge] FetchHandler is null, cannot fetch script: {scriptUri}", FenBrowser.Core.Logging.LogCategory.JavaScript);
             return null;
         }
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, scriptUri);
-        if (referer != null)
+        try
         {
-            request.Headers.Referrer = referer;
-            if (!CorsHandler.IsSameOrigin(scriptUri, referer))
+            using var request = new HttpRequestMessage(HttpMethod.Get, scriptUri);
+            request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "script");
+            request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "no-cors");
+            if (referer != null)
             {
-                var origin = CorsHandler.SerializeOrigin(new UriBuilder(
-                    referer.Scheme,
-                    referer.Host,
-                    referer.IsDefaultPort ? -1 : referer.Port).Uri);
-                if (!string.IsNullOrWhiteSpace(origin))
+                request.Headers.Referrer = referer;
+                if (!CorsHandler.IsSameOrigin(scriptUri, referer))
                 {
-                    request.Headers.TryAddWithoutValidation("Origin", origin);
+                    var origin = CorsHandler.SerializeOrigin(new UriBuilder(
+                        referer.Scheme,
+                        referer.Host,
+                        referer.IsDefaultPort ? -1 : referer.Port).Uri);
+                    if (!string.IsNullOrWhiteSpace(origin))
+                    {
+                        request.Headers.TryAddWithoutValidation("Origin", origin);
+                    }
                 }
             }
-        }
 
-        using var response = await FetchHandler(request).ConfigureAwait(false);
-        response.EnsureSuccessStatusCode();
-        return await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            using var response = await FetchHandler(request).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            code = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            FenBrowser.Core.EngineLogCompat.Info($"[FenJsBridge] FetchHandler result for '{scriptUri}': HTTP {response.StatusCode}, len={code?.Length ?? -1}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+            return code;
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn($"[FenJsBridge] FetchExternalPageScriptAsync failed for '{scriptUri}': {ex.Message}", FenBrowser.Core.Logging.LogCategory.JavaScript);
+            return null;
+        }
     }
 
     private void ResetFenJsSession()
@@ -1108,14 +1359,27 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private static IEnumerable<Element> EnumerateScriptElements(Node domRoot)
     {
+        int totalElements = 0;
+        int scriptElements = 0;
+        int otherElements = 0;
         foreach (var node in domRoot.SelfAndDescendants())
         {
-            if (node is Element element &&
-                string.Equals(element.TagName, "script", StringComparison.OrdinalIgnoreCase))
+            if (node is Element element)
             {
-                yield return element;
+                totalElements++;
+                if (string.Equals(element.TagName, "script", StringComparison.OrdinalIgnoreCase))
+                {
+                    scriptElements++;
+                    Console.Error.WriteLine($"[FenJsBridge] Found SCRIPT element #{scriptElements}: src={element.GetAttribute("src")}, type={element.GetAttribute("type")}, parent={element.ParentNode?.GetType().Name}/{((element.ParentNode as Element)?.TagName ?? "null")}");
+                    yield return element;
+                }
+                else
+                {
+                    otherElements++;
+                }
             }
         }
+        Console.Error.WriteLine($"[FenJsBridge] EnumerateScriptElements DONE: totalElements={totalElements}, scriptElements={scriptElements}, otherElements={otherElements}");
     }
 
     private static string CollectScriptText(Node node)
@@ -1137,6 +1401,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
 
         return builder.ToString();
+    }
+
+    private static void CollectElementsByName(Node root, string name, List<Element> results)
+    {
+        if (root == null || string.IsNullOrEmpty(name)) return;
+        if (root is Element el && string.Equals(el.GetAttribute("name"), name, StringComparison.Ordinal))
+            results.Add(el);
+        for (var child = root.FirstChild; child != null; child = child.NextSibling)
+            CollectElementsByName(child, name, results);
     }
 
     private static void ApplyScriptingEnabledSanitizer(Node root)
@@ -1470,6 +1743,40 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         AttachFenJsPrototype(view, "DOMTokenList");
         store["__fenDomTokenListView"] = view;
         return view;
+    }
+
+    private JsValue GetOrCreateStyleObject(Element element)
+    {
+        var store = _hostPropertyStore.GetOrCreateValue(element) ?? new Dictionary<string, JsValue>();
+        _hostPropertyStore.AddOrUpdate(element, store);
+        if (store.TryGetValue("__fenJsStyle", out var cached))
+            return cached;
+
+        var styleObj = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["cssText"] = JsValue.FromString(element.GetAttribute("style") ?? string.Empty),
+        });
+        _interpreter.SetObjectProperty(styleObj, "setProperty", GetOrCreateHostCallable(
+            element, "style.setProperty",
+            (_, args) =>
+            {
+                var prop = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                var val = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                var existing = element.GetAttribute("style") ?? string.Empty;
+                element.SetAttribute("style", existing + (existing.Length > 0 && !existing.EndsWith(";") ? ";" : "") + prop + ":" + val + ";");
+                return JsValue.Undefined;
+            },
+            length: 2), enumerable: true);
+        _interpreter.SetObjectProperty(styleObj, "getPropertyValue", GetOrCreateHostCallable(
+            element, "style.getPropertyValue",
+            (_, _) => JsValue.FromString(string.Empty),
+            length: 1), enumerable: true);
+        _interpreter.SetObjectProperty(styleObj, "removeProperty", GetOrCreateHostCallable(
+            element, "style.removeProperty",
+            (_, _) => JsValue.FromString(string.Empty),
+            length: 1), enumerable: true);
+        store["__fenJsStyle"] = styleObj;
+        return styleObj;
     }
 
     private void AttachFenJsPrototype(JsValue target, string constructorName)
@@ -2265,10 +2572,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         public JsValue CallHostFunction(int functionId, JsValue thisValue, ReadOnlySpan<JsValue> args)
         {
+            // Host function invocation not yet wired — the interpreter does not
+            // currently emit CallHostFunction opcodes. When it does, map functionId
+            // to a registered host callable and invoke it here.
             _ = functionId;
             _ = thisValue;
             _ = args;
-            throw new NotSupportedException("FenJS browser host functions are not wired yet.");
+            return JsValue.Undefined;
         }
 
         private bool TryGetDocumentProperty(Document document, string property, out JsValue value)
@@ -2511,6 +2821,34 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             return JsValue.Undefined;
                         },
                         length: 2);
+                    return true;
+                case "getElementsByName":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "getElementsByName",
+                        (_, args) =>
+                        {
+                            var name = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                            if (string.IsNullOrWhiteSpace(name))
+                                return _owner.CreateNodeArrayLike(Array.Empty<Node>());
+                            var results = new List<Element>();
+                            CollectElementsByName(document.DocumentElement, name, results);
+                            return _owner.CreateNodeArrayLike(results.Cast<Node>().ToArray());
+                        },
+                        length: 1);
+                    return true;
+                case "getElementsByClassName":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "getElementsByClassName",
+                        (_, args) =>
+                        {
+                            var className = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                            if (string.IsNullOrWhiteSpace(className))
+                                return _owner.CreateNodeArrayLike(Array.Empty<Node>());
+                            return _owner.ToHostOrNull(new FenJsHtmlCollectionHost(document.GetElementsByClassName(className)), HostObjectKind.Other);
+                        },
+                        length: 1);
                     return true;
                 default:
                     value = JsValue.Undefined;
@@ -2970,6 +3308,79 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             return JsValue.Undefined;
                         },
                         length: 2);
+                    return true;
+                // --- Geometry / layout ---
+                case "nodeType":
+                    value = JsValue.FromInt32((int)element.NodeType);
+                    return true;
+                case "isConnected":
+                    value = JsValue.FromBoolean(element.IsConnected);
+                    return true;
+                case "childNodes":
+                    value = _owner.CreateNodeArrayLike(element.ChildNodes.ToArray());
+                    return true;
+                case "children":
+                    {
+                        var kids = new List<Node>();
+                        for (int i = 0; i < element.ChildNodes.Length; i++)
+                            if (element.ChildNodes[i] is Element) kids.Add(element.ChildNodes[i]);
+                        value = _owner.CreateNodeArrayLike(kids);
+                    }
+                    return true;
+                case "firstChild":
+                    value = _owner.ToHostNodeOrNull(element.FirstChild);
+                    return true;
+                case "lastChild":
+                    value = _owner.ToHostNodeOrNull(element.LastChild);
+                    return true;
+                case "nextElementSibling":
+                    value = _owner.ToHostNodeOrNull(element.NextElementSibling);
+                    return true;
+                case "previousElementSibling":
+                    value = _owner.ToHostNodeOrNull(element.PreviousElementSibling);
+                    return true;
+                case "contains":
+                    value = _owner.GetOrCreateHostCallable(
+                        element, "contains",
+                        (_, args) =>
+                        {
+                            var other = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            return JsValue.FromBoolean(other != null && element.Contains(other));
+                        },
+                        length: 1);
+                    return true;
+                case "offsetWidth":
+                case "offsetHeight":
+                case "offsetLeft":
+                case "offsetTop":
+                case "clientWidth":
+                case "clientHeight":
+                case "clientLeft":
+                case "clientTop":
+                case "scrollWidth":
+                case "scrollHeight":
+                case "scrollTop":
+                case "scrollLeft":
+                    value = JsValue.FromInt32(0);
+                    return true;
+                case "getBoundingClientRect":
+                    value = _owner.GetOrCreateHostCallable(
+                        element, "getBoundingClientRect",
+                        (_, _) =>
+                        {
+                            var rect = _owner._interpreter.AllocateObject(new Dictionary<string, JsValue>
+                            {
+                                ["x"] = JsValue.FromInt32(0), ["y"] = JsValue.FromInt32(0),
+                                ["width"] = JsValue.FromInt32(0), ["height"] = JsValue.FromInt32(0),
+                                ["top"] = JsValue.FromInt32(0), ["right"] = JsValue.FromInt32(0),
+                                ["bottom"] = JsValue.FromInt32(0), ["left"] = JsValue.FromInt32(0),
+                            });
+                            return rect;
+                        },
+                        length: 0);
+                    return true;
+                case "style":
+                    value = _owner.GetOrCreateStyleObject(element);
                     return true;
                 default:
                     value = JsValue.Undefined;
@@ -3744,8 +4155,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 /// Centralized runtime selection for browser script execution.
 /// The browser now runs on the FenJS-backed runtime by default; the legacy
 /// FenEngine runtime remains reachable only as an explicit escape hatch via
-/// <c>FEN_BROWSER_SCRIPT_ENGINE=legacy</c> (rollback during the FenJS rollout)
-/// and as the internal safety-net fallback inside <see cref="FenJsBrowserScriptEngine"/>.
+/// <summary>
+/// Static factory for browser script engine instances.
+/// FenJS is the only runtime — no legacy fallback.
 /// </summary>
 public static class BrowserScriptEngineRuntime
 {
@@ -3767,28 +4179,8 @@ public static class BrowserScriptEngineRuntime
         _factory = CreateConfiguredDefault;
     }
 
-    private static IBrowserScriptEngine CreateLegacy(IJsHost host)
-    {
-        return new LegacyBrowserScriptEngineAdapter(new JavaScriptEngine(host));
-    }
-
-    private static IBrowserScriptEngine CreateFenJs(IJsHost host)
-    {
-        return new FenJsBrowserScriptEngine(host);
-    }
-
     private static IBrowserScriptEngine CreateConfiguredDefault(IJsHost host)
     {
-        // FenJS is the default browser script runtime. The legacy FenEngine
-        // runtime stays reachable as an explicit rollback escape hatch:
-        // FEN_BROWSER_SCRIPT_ENGINE=legacy (alias: fenengine).
-        var mode = Environment.GetEnvironmentVariable("FEN_BROWSER_SCRIPT_ENGINE");
-        if (string.Equals(mode, "legacy", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(mode, "fenengine", StringComparison.OrdinalIgnoreCase))
-        {
-            return CreateLegacy(host);
-        }
-
-        return CreateFenJs(host);
+        return new FenJsBrowserScriptEngine(host);
     }
 }
