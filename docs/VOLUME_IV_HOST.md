@@ -1262,3 +1262,19 @@ Verification:
 
 - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~RendererProcessPoolTests|FullyQualifiedName~ProcessIsolation"`: pass (`19/19`) on `2026-06-24`.
 - Live GitHub repro logs on `2026-06-24` show network/GPU/utility/renderer child spawn failures reported as `retrying with job-only fallback`.
+
+### 6.58 Startup Bootstrap Frame Before Initial Navigation (2026-06-24)
+
+- `FenBrowser.Host/ChromeManager.cs`
+  - Window render/input events are now wired before the initial tab is created.
+  - Host startup requests a bootstrap chrome frame first, then schedules initial tab creation back onto the UI thread after that first presentation callback.
+
+Net effect:
+
+- The native FenBrowser window presents chrome promptly instead of remaining black while initial renderer process launch and default-page navigation begin.
+- Initial navigation behavior is unchanged; the default no-URL startup still proceeds to the configured initial URL after the bootstrap frame.
+
+Verification:
+
+- `dotnet build FenBrowser.Host\FenBrowser.Host.csproj`: pass on `2026-06-24`.
+- Clean no-URL Host repro on `2026-06-24`: `logs/fenbrowser_20260624_125007.jsonl` recorded bootstrap frame scheduling at `07:20:08.395Z`, initial tab creation at `07:20:08.400Z`, and first Google navigation at `07:20:08.991Z`; `logs/debug_screenshot.png` showed nonblack Google content.

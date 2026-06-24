@@ -65,6 +65,8 @@ namespace FenBrowser.Host
         private bool _hostPresentedScreenshotCaptured;
         private string _pendingHostPresentedScreenshotReason;
         private long _pendingHostPresentedCaptureAfterFrameSequence;
+        private string _pendingInitialTabUrl;
+        private bool _initialTabCreationScheduled;
 
         private ChromeManager() { }
 
@@ -98,19 +100,21 @@ namespace FenBrowser.Host
                 WindowManager.Instance.LogicalHeight,
                 WindowManager.Instance.DpiScale);
             _compositorThread.Start();
+            
+            // Wire WindowManager events before any tab/page startup work so the
+            // native window can present chrome instead of a black startup frame.
+            WireWindowEvents();
 
             // Wire TabManager
             TabManager.Instance.ActiveTabChanged += OnActiveTabChanged;
             TabManager.Instance.TabAdded += tab => _processIsolation?.OnTabCreated(tab);
             TabManager.Instance.TabRemoved += tab => _processIsolation?.OnTabClosed(tab);
             
-            // Create Initial Tab
-            TabManager.Instance.CreateTab(initialUrl);
+            _pendingInitialTabUrl = initialUrl;
+            _root.Invalidate();
+            _compositorThread.RequestFrame();
             
             RegisterKeyboardShortcuts();
-            
-            // Wire WindowManager Events
-            WireWindowEvents();
         }
 
         private void TryWireProcessIsolationAutoFallback()
@@ -644,6 +648,35 @@ namespace FenBrowser.Host
 
             DrawTooltip(canvas);
             TryCaptureHostPresentedScreenshotAfterFramePresent();
+            ScheduleInitialTabCreationAfterBootstrapFrame();
+        }
+
+        private void ScheduleInitialTabCreationAfterBootstrapFrame()
+        {
+            if (_initialTabCreationScheduled || string.IsNullOrWhiteSpace(_pendingInitialTabUrl))
+            {
+                return;
+            }
+
+            _initialTabCreationScheduled = true;
+            var initialUrl = _pendingInitialTabUrl;
+            EngineLogBridge.Info("[ChromeManager] Bootstrap frame presented; scheduling initial tab creation.", LogCategory.General);
+
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(1).ConfigureAwait(false);
+                await WindowManager.Instance.RunOnMainThread(() =>
+                {
+                    if (!string.Equals(_pendingInitialTabUrl, initialUrl, StringComparison.Ordinal))
+                    {
+                        return;
+                    }
+
+                    _pendingInitialTabUrl = null;
+                    EngineLogBridge.Info("[ChromeManager] Creating initial tab after bootstrap frame.", LogCategory.General);
+                    TabManager.Instance.CreateTab(initialUrl);
+                }).ConfigureAwait(false);
+            });
         }
 
         private void TryCaptureHostPresentedScreenshotAfterFramePresent()
