@@ -197,6 +197,15 @@ Typical order:
 
 Do not run large suites by default when a smaller proof is sufficient.
 
+### Test repository roots (mandatory — NEVER search the internet)
+
+The conformance test repositories are local checkouts. All test counts, file searches, result data, and conformance information come from these local paths — **never from GitHub, web search, or any remote source**:
+
+- **test262 root**: `C:\Users\udayk\Videos\test262`
+- **WPT root**: `C:\Users\udayk\Videos\wpt`
+
+Do not fetch test counts or repo info from github.com or anywhere else — use these local directories.
+
 ### test262 timeout policy (mandatory, no exceptions)
 
 Every test262 run MUST enforce a **2-second per-test timeout**. Any test exceeding 2s is **skipped**, never awaited — a single test must never hang or block the suite. Always pass `--timeout-ms 2000` (CLI) / `-TimeoutMs 2000` (scripts) plus a stall watchdog (`-StallTimeoutSec 30`). This applies to every test262 invocation — quick categories, full chunks, single reruns — with no exception.
