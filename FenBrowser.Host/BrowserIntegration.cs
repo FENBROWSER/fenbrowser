@@ -51,6 +51,14 @@ public class BrowserIntegration
     // (though possibly slightly stale) view of the last committed frame.
     private ContentSnapshot _latestSnapshot;
 
+    // Deferred-disposal slot: the engine thread cannot safely Dispose() the
+    // Frame SKPicture immediately after publishing a new ContentSnapshot,
+    // because the compositor thread may have already loaded the old reference
+    // and be about to call DrawPicture on it.  We retire the previous frame
+    // here and dispose it one publish later, guaranteeing the compositor has
+    // moved on.  Engine-thread-only — no lock needed.
+    private SKPicture _pendingDisposeFrame;
+
     // Frame seed image for incremental-damage base-frame reuse.
     // Only accessed by the engine thread — no lock needed.
     private SKImage _currentFrameSeedImage;
@@ -251,6 +259,8 @@ public class BrowserIntegration
                 var oldSnapshot = _latestSnapshot;
                 _latestSnapshot = null;
                 oldSnapshot?.Frame?.Dispose();
+                _pendingDisposeFrame?.Dispose();
+                _pendingDisposeFrame = null;
                 _currentFrameSeedImage?.Dispose();
                 _currentFrameSeedImage = null;
                 _currentFrameSeedCreatedUtc = DateTime.MinValue;
@@ -1423,18 +1433,27 @@ public class BrowserIntegration
             var newFrame = _recorder.EndRecording();
             var newSeedImage = CreateSeedImageFromFrame(newFrame, viewportSize);
 
-            // Dispose the previous frame picture (no longer needed).
-            var oldSnapshot = _latestSnapshot;
-            oldSnapshot?.Frame?.Dispose();
-
-            // Publish the new content snapshot — atomic reference write, visible
-            // to the compositor thread immediately without any lock.
+            // Publish the new content snapshot FIRST — atomic reference write,
+            // visible to the compositor thread immediately without any lock.
+            // The compositor always reads _latestSnapshot once at the top of
+            // Render(); swapping before dispose guarantees it sees either the
+            // old (valid) frame or the new frame, never a disposed one.
+            var retiringSnapshot = _latestSnapshot;
             _latestSnapshot = new ContentSnapshot(
                 newFrame,
                 frameOverlays,
                 viewportSize,
                 _scrollY,
                 _contentHeight);
+
+            // Retire the previous frame for deferred disposal.  The compositor
+            // may still hold a reference to retiringSnapshot, but by the time
+            // we get here it has already entered Render() and loaded its local
+            // `snapshot` variable — so it either got the new snapshot or the
+            // old one.  We defer the actual Dispose() by one publish cycle to
+            // guarantee the compositor won't touch a disposed SKPicture.
+            _pendingDisposeFrame?.Dispose();
+            _pendingDisposeFrame = retiringSnapshot?.Frame;
 
             // Seed-image management is engine-thread-only; no lock needed.
             _currentFrameSeedImage?.Dispose();
@@ -2230,6 +2249,8 @@ public class BrowserIntegration
                 var oldSnapshot = _latestSnapshot;
                 _latestSnapshot = null;
                 oldSnapshot?.Frame?.Dispose();
+                _pendingDisposeFrame?.Dispose();
+                _pendingDisposeFrame = null;
                 _currentFrameSeedImage?.Dispose();
                 _currentFrameSeedImage = null;
                 _currentFrameSeedCreatedUtc = DateTime.MinValue;
