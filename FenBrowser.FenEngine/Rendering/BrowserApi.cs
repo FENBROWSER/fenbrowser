@@ -585,6 +585,23 @@ namespace FenBrowser.FenEngine.Rendering
             catch (Exception ex) { TryLogWarn($"[BrowserHost] LoadingChanged handler failed: {ex.Message}", LogCategory.Navigation); }
         }
 
+        private void ClearFaviconForNavigation()
+        {
+            if (Favicon == null)
+            {
+                return;
+            }
+
+            Favicon = null;
+            TryLogDebug("[BrowserHost] Cleared favicon for new navigation", LogCategory.Navigation);
+
+            try { RepaintReady?.Invoke(this, null); }
+            catch (Exception ex) { TryLogWarn($"[BrowserHost] RepaintReady handler failed while clearing favicon: {ex.Message}", LogCategory.Events); }
+
+            try { FaviconChanged?.Invoke(this, null); }
+            catch (Exception ex) { TryLogWarn($"[BrowserHost] FaviconChanged handler failed while clearing favicon: {ex.Message}", LogCategory.Events); }
+        }
+
         private void TryInvokeNavigationLifecycleChanged(NavigationLifecycleTransition transition)
         {
             try { NavigationLifecycleChanged?.Invoke(this, transition); }
@@ -1130,6 +1147,7 @@ namespace FenBrowser.FenEngine.Rendering
                 {
                     _navigationSubresources.AbandonNavigation(previousNavigationId);
                 }
+                ClearFaviconForNavigation();
                 _navigationSubresources.ResetNavigation(navigationId);
                 _navigationLifecycle.MarkFetching(navigationId, url);
 

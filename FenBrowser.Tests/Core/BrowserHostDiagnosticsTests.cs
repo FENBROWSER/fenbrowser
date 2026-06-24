@@ -4,6 +4,7 @@ using System.Reflection;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Rendering;
+using SkiaSharp;
 using Xunit;
 
 namespace FenBrowser.Tests.Core
@@ -65,6 +66,29 @@ namespace FenBrowser.Tests.Core
             Assert.Contains("Second line", text);
         }
 
+        [Fact]
+        public void ClearFaviconForNavigation_RaisesNullFaviconUpdate()
+        {
+            using var browser = new BrowserHost();
+            using var bitmap = new SKBitmap(2, 2);
+            bitmap.Erase(SKColors.DeepSkyBlue);
+            SetPrivateProperty(browser, "Favicon", bitmap);
+
+            SKBitmap raisedIcon = bitmap;
+            var eventRaised = false;
+            browser.FaviconChanged += (_, icon) =>
+            {
+                eventRaised = true;
+                raisedIcon = icon;
+            };
+
+            InvokePrivateInstance(browser, "ClearFaviconForNavigation");
+
+            Assert.True(eventRaised);
+            Assert.Null(raisedIcon);
+            Assert.Null(browser.Favicon);
+        }
+
         private static Document ParseHtml(string html)
         {
             return new HtmlParser(html, new Uri("https://example.test/")).Parse();
@@ -75,6 +99,20 @@ namespace FenBrowser.Tests.Core
             var method = type.GetMethod(methodName, BindingFlags.Static | BindingFlags.NonPublic);
             Assert.NotNull(method);
             return method!.Invoke(null, args);
+        }
+
+        private static object InvokePrivateInstance(object owner, string methodName, params object[] args)
+        {
+            var method = owner.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(method);
+            return method!.Invoke(owner, args);
+        }
+
+        private static void SetPrivateProperty(object owner, string propertyName, object value)
+        {
+            var property = owner.GetType().GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            Assert.NotNull(property);
+            property!.SetValue(owner, value);
         }
 
         private static void SetPrivateField(object owner, string fieldName, string nestedFieldName, object value)
