@@ -24,6 +24,7 @@ namespace FenBrowser.Host.ProcessIsolation
         Input,
         FrameRequest,
         FrameReady,
+        MetadataChanged,
         TabActivated,
         TabClosed,
         Shutdown,
@@ -99,6 +100,14 @@ namespace FenBrowser.Host.ProcessIsolation
         /// to size the viewport scrollbar without re-running layout.
         /// </summary>
         public float ContentHeight { get; set; }
+    }
+
+    public sealed class RendererMetadataChangedPayload
+    {
+        public string Url { get; set; }
+        public string Title { get; set; }
+        public bool FaviconChanged { get; set; }
+        public byte[] FaviconPngBytes { get; set; }
     }
 
     internal static class RendererIpc
@@ -214,6 +223,7 @@ namespace FenBrowser.Host.ProcessIsolation
         {
             return messageType == RendererIpcMessageType.Ready ||
                    messageType == RendererIpcMessageType.FrameReady ||
+                   messageType == RendererIpcMessageType.MetadataChanged ||
                    messageType == RendererIpcMessageType.Error ||
                    messageType == RendererIpcMessageType.LogBatch ||
                    messageType == RendererIpcMessageType.Pong;
@@ -259,6 +269,7 @@ namespace FenBrowser.Host.ProcessIsolation
         private readonly int _parentPid = Environment.ProcessId;
 
         public event Action<int, RendererFrameReadyPayload> FrameReceived;
+        public event Action<int, RendererMetadataChangedPayload> MetadataChanged;
 
         public int TabId { get; }
         public string PipeName { get; }
@@ -520,6 +531,14 @@ namespace FenBrowser.Host.ProcessIsolation
                             }
 
                             FrameReceived?.Invoke(TabId, payload);
+                        }
+                    }
+                    else if (messageType == RendererIpcMessageType.MetadataChanged)
+                    {
+                        var payload = RendererIpc.DeserializePayload<RendererMetadataChangedPayload>(envelope);
+                        if (payload != null)
+                        {
+                            MetadataChanged?.Invoke(TabId, payload);
                         }
                     }
                     else if (messageType == RendererIpcMessageType.Error)

@@ -387,6 +387,50 @@ namespace FenBrowser.Host
 
             bool handshakeComplete = false;
             bool running = true;
+            void SendMetadata(string title = null, SkiaSharp.SKBitmap favicon = null, bool faviconChanged = false)
+            {
+                if (!handshakeComplete)
+                {
+                    return;
+                }
+
+                byte[] faviconBytes = null;
+                if (favicon != null)
+                {
+                    try
+                    {
+                        using var image = SkiaSharp.SKImage.FromBitmap(favicon);
+                        using var data = image?.Encode(SkiaSharp.SKEncodedImageFormat.Png, 100);
+                        faviconBytes = data?.ToArray();
+                    }
+                    catch (Exception ex)
+                    {
+                        EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[RendererChild] Failed to encode favicon metadata for tab={tabId}: {ex.Message}");
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(title) && !faviconChanged)
+                {
+                    return;
+                }
+
+                SendRendererEnvelope(writer, new RendererIpcEnvelope
+                {
+                    Type = RendererIpcMessageType.MetadataChanged.ToString(),
+                    TabId = tabId,
+                    CorrelationId = Guid.NewGuid().ToString("N"),
+                    Payload = RendererIpc.SerializePayload(new RendererMetadataChangedPayload
+                    {
+                        Url = browser.CurrentUri?.AbsoluteUri ?? string.Empty,
+                        Title = title,
+                        FaviconChanged = faviconChanged,
+                        FaviconPngBytes = faviconBytes
+                    })
+                });
+            }
+
+            browser.TitleChanged += (_, title) => SendMetadata(title: title);
+            browser.FaviconChanged += (_, favicon) => SendMetadata(favicon: favicon, faviconChanged: true);
 
             while (running)
             {
@@ -1383,8 +1427,11 @@ namespace FenBrowser.Host
 
             try
             {
-                writer.WriteLine(RendererIpc.SerializeEnvelope(envelope));
-                writer.Flush();
+                lock (writer)
+                {
+                    writer.WriteLine(RendererIpc.SerializeEnvelope(envelope));
+                    writer.Flush();
+                }
             }
             catch
             {

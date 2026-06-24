@@ -358,6 +358,7 @@ public class BrowserIntegration
         if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current != null)
         {
             FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.FrameReceived += OnFrameReceivedFromRenderer;
+            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.MetadataChanged += OnMetadataChangedFromRenderer;
         }
 
         // Wire CSS animation/transition engine → repaint loop.
@@ -619,6 +620,44 @@ public class BrowserIntegration
         }
 
         RequestFrame(RenderFrameInvalidationReason.ProcessIsolation, "RendererChild.FrameReady", notifyUi: true);
+    }
+
+    private void OnMetadataChangedFromRenderer(int tabId, FenBrowser.Host.ProcessIsolation.RendererMetadataChangedPayload payload)
+    {
+        if (OwnerTab != null && OwnerTab.Id != tabId)
+        {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(payload?.Title))
+        {
+            TitleChanged?.Invoke(payload.Title.Trim());
+        }
+
+        if (payload?.FaviconChanged == true)
+        {
+            if (payload.FaviconPngBytes == null || payload.FaviconPngBytes.Length == 0)
+            {
+                FaviconChanged?.Invoke(null);
+                NeedsRepaint?.Invoke();
+            }
+            else
+            {
+                try
+                {
+                    var bitmap = SKBitmap.Decode(payload.FaviconPngBytes);
+                    if (bitmap != null)
+                    {
+                        FaviconChanged?.Invoke(bitmap);
+                        NeedsRepaint?.Invoke();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    EngineLogBridge.Warn($"[BrowserIntegration] Failed to decode renderer favicon for tab={tabId}: {ex.Message}", LogCategory.Rendering);
+                }
+            }
+        }
     }
 
     /// <summary>

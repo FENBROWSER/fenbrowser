@@ -36,6 +36,7 @@ namespace FenBrowser.Host.ProcessIsolation
         public bool UsesOutOfProcessRenderer => true;
 
         public event Action<int, RendererFrameReadyPayload> FrameReceived;
+        public event Action<int, RendererMetadataChangedPayload> MetadataChanged;
         public event Action<int, string> RendererCrashed;
 
         public BrokeredProcessIsolationCoordinator()
@@ -296,6 +297,7 @@ namespace FenBrowser.Host.ProcessIsolation
 
                         // Remap pooled session tab ids back to the owning host tab id.
                         pooledSession.FrameReceived += (_, payload) => FrameReceived?.Invoke(state.TabId, payload);
+                        pooledSession.MetadataChanged += (_, payload) => MetadataChanged?.Invoke(state.TabId, payload);
 
                         state.Sandbox?.Dispose();
                         state.Sandbox = null;
@@ -325,6 +327,7 @@ namespace FenBrowser.Host.ProcessIsolation
             var token = CreateAuthToken();
             var session = new RendererChildSession(state.TabId, pipeName, token);
             session.FrameReceived += (_, payload) => FrameReceived?.Invoke(state.TabId, payload);
+            session.MetadataChanged += (_, payload) => MetadataChanged?.Invoke(state.TabId, payload);
 
             var process = StartRendererChildWithSandbox(state.TabId, pipeName, token, assignmentForLaunch, out var sandbox);
             if (process == null)
