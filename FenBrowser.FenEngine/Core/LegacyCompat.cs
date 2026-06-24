@@ -13,7 +13,7 @@ namespace FenBrowser.FenEngine.Core.Interfaces
 {
     public enum ValueType
     {
-        Undefined, Null, Boolean, Number, String, Object, Function, Symbol, BigInt, Error
+        Undefined, Null, Boolean, Number, String, Object, Function, Symbol, BigInt, Error, Throw, ReturnValue
     }
 
     public interface IValue
@@ -49,7 +49,8 @@ namespace FenBrowser.FenEngine.Core.Interfaces
         bool Delete(string key);
         IEnumerable<string> Keys();
         IObject GetPrototype();
-        string GetOwnPropertyDescriptor(string key);
+        Core.PropertyDescriptor GetOwnPropertyDescriptor(string key);
+        IEnumerable<string> GetOwnPropertyNames();
     }
 
     public interface IHistoryBridge
@@ -78,6 +79,17 @@ namespace FenBrowser.FenEngine.Core.Interfaces
     }
 
     public interface IHtmlDdaObject { }
+}
+
+namespace FenBrowser.FenEngine.Core
+{
+    public sealed class PropertyDescriptor
+    {
+        public bool Writable { get; set; }
+        public bool Configurable { get; set; }
+        public bool Enumerable { get; set; }
+        public Interfaces.IValue Value { get; set; }
+    }
 }
 
 namespace FenBrowser.FenEngine.Core.Types
@@ -172,6 +184,7 @@ namespace FenBrowser.FenEngine.Scripting
         public static Core.FenValue Evaluate(string script) => Core.FenValue.Undefined;
         public static bool TryGetVisualRect(FenBrowser.Core.Dom.V2.Element element, out double x, out double y, out double w, out double h) { x = y = w = h = 0; return false; }
         public static void SetVisualRectProvider(Func<FenBrowser.Core.Dom.V2.Element, SkiaSharp.SKRect?> provider) { }
+        public static void SetScrollToElementProvider(Action<FenBrowser.Core.Dom.V2.Element> provider) { }
     }
 }
 
@@ -359,7 +372,9 @@ namespace FenBrowser.FenEngine.Core
         public bool Delete(string key) => _props.Remove(key);
         public IEnumerable<string> Keys() => _props.Keys;
         public Interfaces.IObject GetPrototype() => null;
-        public string GetOwnPropertyDescriptor(string key) => null;
+        public Core.PropertyDescriptor GetOwnPropertyDescriptor(string key) =>
+            _props.ContainsKey(key) ? new Core.PropertyDescriptor { Writable = true, Configurable = true, Enumerable = true } : null;
+        public IEnumerable<string> GetOwnPropertyNames() => _props.Keys;
     }
 }
 
@@ -378,7 +393,9 @@ namespace FenBrowser.FenEngine.DOM
         bool FenBrowser.FenEngine.Core.Interfaces.IObject.Delete(string key) => _props.Remove(key);
         IEnumerable<string> FenBrowser.FenEngine.Core.Interfaces.IObject.Keys() => _props.Keys;
         FenBrowser.FenEngine.Core.Interfaces.IObject FenBrowser.FenEngine.Core.Interfaces.IObject.GetPrototype() => null;
-        string FenBrowser.FenEngine.Core.Interfaces.IObject.GetOwnPropertyDescriptor(string key) => null;
+        Core.PropertyDescriptor FenBrowser.FenEngine.Core.Interfaces.IObject.GetOwnPropertyDescriptor(string key) =>
+            _props.ContainsKey(key) ? new Core.PropertyDescriptor { Writable = true, Configurable = true, Enumerable = true } : null;
+        IEnumerable<string> FenBrowser.FenEngine.Core.Interfaces.IObject.GetOwnPropertyNames() => _props.Keys;
         public string Type { get; }
         public bool Bubbles { get; }
         public bool Cancelable { get; }
@@ -425,29 +442,15 @@ namespace FenBrowser.FenEngine.DOM
     }
 }
 
-namespace FenBrowser.Host
-{
-    public sealed class WindowManager
-    {
-        public static readonly WindowManager Instance = new();
-        public void Initialize(string url, bool isHeadless = true) { }
-        public event Action OnLoad;
-        public async Task<T> RunOnMainThread<T>(Func<T> func)
-        {
-            var result = func();
-            if (result is Task t) { await t.ConfigureAwait(false); return (T)(object)null; }
-            return result;
-        }
-        public async Task RunOnMainThread(Func<Task> func) => await func();
-        public Task RunOnMainThread(Action action) { action(); return Task.CompletedTask; }
-        public SkiaSharp.SKBitmap CaptureScreenshot() => null;
-        public object Window => null;
-        public void Run() { }
-    }
-}
-
 namespace FenBrowser.FenEngine.DevTools
 {
+    public sealed class SourceFile
+    {
+        public string Url { get; set; }
+        public string Content { get; set; }
+        public string ScriptId { get; set; }
+    }
+
     public sealed class DevToolsCore
     {
         public static readonly DevToolsCore Instance = new();
@@ -458,6 +461,8 @@ namespace FenBrowser.FenEngine.DevTools
         public Action<FenBrowser.FenEngine.DevTools.Cookie> CookieSetter { get; set; }
         public Action<string, string> CookieDeleteHandler { get; set; }
         public Action CookieClearHandler { get; set; }
+        public event Action<NetworkRequest> OnNetworkRequest;
+        public IEnumerable<SourceFile> GetSources() => Array.Empty<SourceFile>();
     }
 }
 
@@ -511,46 +516,6 @@ namespace FenBrowser.Tooling
     }
 }
 
-namespace FenBrowser.Host
-{
-    public sealed class ChromeManager
-    {
-        public static readonly ChromeManager Instance = new();
-        public void Initialize(string url) { }
-    }
-
-    namespace Tabs
-    {
-        public sealed class BrowserTab
-        {
-            public Task NavigateAsync(string url) => Task.CompletedTask;
-            public FenBrowser.FenEngine.Rendering.BrowserHost Browser => new();
-            public string Url => string.Empty;
-            public bool IsLoading => false;
-        }
-
-        public sealed class TabManager
-        {
-            public static readonly TabManager Instance = new();
-            public BrowserTab ActiveTab => null;
-            public event Action<BrowserTab> ActiveTabChanged;
-            public BrowserTab CreateTab(string url) => new();
-        }
-    }
-
-    namespace WebDriver
-    {
-        public sealed class HostBrowserDriver
-        {
-            public Task<string> ExecuteScriptAsync(string script) => Task.FromResult(string.Empty);
-            public Task NavigateAsync(string url) => Task.CompletedTask;
-            public Task<string> GetPageSourceAsync() => Task.FromResult(string.Empty);
-            public Task<string> GetCurrentUrlAsync() => Task.FromResult(string.Empty);
-            public Task<string> GetTitleAsync() => Task.FromResult(string.Empty);
-        }
-    }
-}
-
 namespace FenBrowser.FenEngine.DevTools
 {
     public sealed class NetworkRequest
@@ -559,6 +524,15 @@ namespace FenBrowser.FenEngine.DevTools
         public string Method { get; set; }
         public int StatusCode { get; set; }
         public Dictionary<string, string> ResponseHeaders { get; set; } = new();
+        public string Status => StatusCode > 0 ? "complete" : "pending";
+        public string Id { get; set; }
+        public DateTime StartTime { get; set; }
+        public DateTime EndTime { get; set; }
+        public Dictionary<string, string> RequestHeaders { get; set; } = new();
+        public string MimeType { get; set; }
+        public long Size { get; set; }
+        public string RequestBody { get; set; }
+        public string ResponseBody { get; set; }
     }
 
     public sealed class Cookie

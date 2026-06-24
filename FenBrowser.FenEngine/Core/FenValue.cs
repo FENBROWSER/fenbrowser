@@ -114,6 +114,8 @@ namespace FenBrowser.FenEngine.Core
         public JsBigInt AsBigInt() => _refValue as JsBigInt;
         public Exception AsException() => _refValue as Exception;
         public string AsError() => (_refValue as Exception)?.Message ?? _refValue?.ToString() ?? "Unknown error";
+        public FenValue GetThrownValue() => _refValue is FenValue fv ? fv : Undefined;
+        public FenValue GetReturnValue() => _refValue is FenValue fv ? fv : Undefined;
         public object ToNativeObject() => _refValue;
 
         // IValue.Set/Get — forward to wrapped object

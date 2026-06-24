@@ -382,7 +382,7 @@ namespace FenBrowser.Host
 
             using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: 4096, leaveOpen: true);
             using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true };
-            // BrowserHost excluded pending FenJS rewrite — using var browser = new FenBrowser.FenEngine.Rendering.BrowserHost();
+            using var browser = new FenBrowser.FenEngine.Rendering.BrowserHost();
             using var logForwarder = new ChildProcessLogForwarder("renderer", tabId);
 
             bool handshakeComplete = false;

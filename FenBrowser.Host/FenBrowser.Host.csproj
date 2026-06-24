@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>Library</OutputType>
+    <OutputType>WinExe</OutputType>
     <AssemblyName>FenBrowser.Host</AssemblyName>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -39,30 +39,6 @@
     <None Update="icon.png">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
-  </ItemGroup>
-
-  <!-- BrowserApi-dependent files excluded pending FenJS migration -->
-  <ItemGroup>
-    <Compile Remove="BrowserIntegration.cs" />
-    <Compile Remove="ChromeManager.cs" />
-    <Compile Remove="DevToolsHostAdapter.cs" />
-    <Compile Remove="WebDriver\FenBrowserDriver.cs" />
-    <Compile Remove="WebDriver\HostBrowserDriver.cs" />
-    <Compile Remove="Tabs\BrowserTab.cs" />
-    <Compile Remove="Tabs\TabManager.cs" />
-    <Compile Remove="ProcessIsolation\BrokeredProcessIsolationCoordinator.cs" />
-    <Compile Remove="ProcessIsolation\IProcessIsolationCoordinator.cs" />
-    <Compile Remove="ProcessIsolation\InProcessIsolationCoordinator.cs" />
-    <Compile Remove="Widgets\**\*.cs" />
-    <Compile Remove="ProcessIsolation\ProcessIsolationCoordinatorFactory.cs" />
-    <Compile Remove="ProcessIsolation\ProcessIsolationRuntime.cs" />
-    <Compile Remove="RootWidget.cs" />
-    <Compile Remove="ProcessIsolation\Gpu\GpuCompositorWorkSubmitter.cs" />
-    <Compile Remove="CompositorThread.cs" />
-    <Compile Remove="Compositor.cs" />
-    <Compile Remove="Input\**\*.cs" />
-    <Compile Remove="WindowManager.cs" />
-    <Compile Remove="Program.cs" />
   </ItemGroup>
 
   <ItemGroup>

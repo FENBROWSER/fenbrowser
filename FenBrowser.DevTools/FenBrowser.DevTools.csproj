@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <AssemblyName>FenBrowser.DevTools</AssemblyName>
@@ -23,13 +23,6 @@
   <ItemGroup>
     <ProjectReference Include="..\FenBrowser.Core\FenBrowser.Core.csproj" />
     <ProjectReference Include="..\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Compile Remove="Domains\RuntimeDomain.cs" />
-    <Compile Remove="Core\DevToolsServer.cs" />
-    <Compile Remove="Core\RemoteDebugServer.cs" />
-    <Compile Remove="Instrumentation\DomInstrumenter.cs" />
   </ItemGroup>
 
 </Project>
