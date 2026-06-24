@@ -471,14 +471,11 @@ namespace FenBrowser.Host
                 tab.Browser.ContextMenuRequested += OnContextMenuRequested;
                 tab.LoadingChanged += OnActiveTabLoadingChanged;
                 tab.TitleChanged += OnActiveTabTitleChanged;
-                // BrowserTab.Url remains empty while an initial navigation waits for
-                // the first viewport. DisplayUrl includes that pending target so a new
-                // tab immediately replaces the previous tab's address.
-                var displayUrl = tab.DisplayUrl;
-                if (!string.IsNullOrEmpty(displayUrl))
+                var addressBarText = GetAddressBarText(tab);
+                if (!string.IsNullOrEmpty(addressBarText))
                 {
-                    _toolbar.SetUrl(displayUrl);
-                    UpdateBookmarkStar(displayUrl);
+                    _toolbar.SetUrl(addressBarText);
+                    UpdateBookmarkStar(addressBarText);
                 }
                 else
                 {
@@ -489,10 +486,9 @@ namespace FenBrowser.Host
                 _statusBar.SetLoading(tab.IsLoading);
                 tab.Browser.RequestRepaint();
 
-                if (displayUrl.StartsWith("fen://newtab", StringComparison.OrdinalIgnoreCase))
+                if (IsNewTabUrl(tab.DisplayUrl))
                 {
                     InputManager.Instance.RequestFocus(_toolbar.AddressBar);
-                    _toolbar.AddressBar.SelectAll();
                 }
             }
             else
@@ -502,12 +498,37 @@ namespace FenBrowser.Host
             _root.Invalidate();
         }
 
+        internal static string GetAddressBarText(BrowserTab tab)
+        {
+            if (tab == null)
+            {
+                return string.Empty;
+            }
+
+            var displayUrl = tab.DisplayUrl;
+            return IsNewTabUrl(displayUrl) ? string.Empty : displayUrl;
+        }
+
+        private static bool IsNewTabUrl(string url)
+        {
+            return url != null &&
+                   (url.Equals("fen://newtab", StringComparison.OrdinalIgnoreCase) ||
+                    url.Equals("fen://newtab/", StringComparison.OrdinalIgnoreCase) ||
+                    url.Equals("about:newtab", StringComparison.OrdinalIgnoreCase));
+        }
+
         private void OnBrowserUrlChanged(string url)
         {
+            if (string.IsNullOrEmpty(url))
+            {
+                return;
+            }
+
             RunOnUiThread(() =>
             {
-                _toolbar.SetUrl(url);
-                UpdateBookmarkStar(url);
+                var addressBarText = IsNewTabUrl(url) ? string.Empty : url;
+                _toolbar.SetUrl(addressBarText);
+                UpdateBookmarkStar(addressBarText);
                 _root?.Invalidate();
             });
         }

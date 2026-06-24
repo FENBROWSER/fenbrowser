@@ -123,11 +123,14 @@ public class WebContentWidget : Widget
     
     public override void Paint(SKCanvas canvas)
     {
+        using var backgroundPaint = new SKPaint { Color = SKColors.White };
+        canvas.DrawRect(Bounds, backgroundPaint);
+
         var activeTab = TabManager.Instance.ActiveTab;
         if (activeTab != null)
         {
             // Check for internal protocols
-            if (activeTab.Url.StartsWith("fen://settings", StringComparison.OrdinalIgnoreCase))
+            if (activeTab.DisplayUrl.StartsWith("fen://settings", StringComparison.OrdinalIgnoreCase))
             {
                 canvas.Save();
                 // Ensure we clip to our content area so settings doesn't bleed out

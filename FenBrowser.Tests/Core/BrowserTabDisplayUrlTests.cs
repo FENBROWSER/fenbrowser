@@ -48,6 +48,24 @@ namespace FenBrowser.Tests.Core
             }
         }
 
+        [Fact]
+        public void GetAddressBarText_HidesInternalNewTabUrl()
+        {
+            var tab = new BrowserTab();
+
+            try
+            {
+                tab.StartInitialNavigation("fen://newtab");
+
+                Assert.Equal("fen://newtab", tab.DisplayUrl);
+                Assert.Equal(string.Empty, ChromeManager.GetAddressBarText(tab));
+            }
+            finally
+            {
+                ShutdownEngineLoop(tab.Browser);
+            }
+        }
+
         private static void ShutdownEngineLoop(BrowserIntegration integration)
         {
             var runningField = typeof(BrowserIntegration).GetField("_running", BindingFlags.Instance | BindingFlags.NonPublic);
