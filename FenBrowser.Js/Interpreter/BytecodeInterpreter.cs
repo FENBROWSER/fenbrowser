@@ -2532,17 +2532,42 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                         break;
                     }
 
-                    var obj = ResolveObject(rhs);
-                    var keyValue = frame.Registers[ins.B];
                     bool has;
-                    if (keyValue.Tag == JsValueTag.Symbol)
+                    if (rhs.Tag == JsValueTag.HostObject)
                     {
-                        has = HasSymbolProperty(obj, keyValue.AsSymbolId());
+                        // Host objects: check property existence via host hooks.
+                        var resolution = _hostObjectTable.Resolve(rhs.AsHostObjectHandle(), _hostResolveContext);
+                        if (!resolution.IsOk)
+                        {
+                            ThrowTypeError(frame, "'in' on a stale host object handle.");
+                            break;
+                        }
+
+                        var keyValue = frame.Registers[ins.B];
+                        if (keyValue.Tag == JsValueTag.Symbol)
+                        {
+                            // Symbols are unlikely on host objects; fall through to false.
+                            has = false;
+                        }
+                        else
+                        {
+                            var key = ToPropertyKey(keyValue);
+                            has = _hostHooks.TryGetHostProperty(rhs.AsHostObjectHandle(), key, out _);
+                        }
                     }
                     else
                     {
-                        var key = ToPropertyKey(keyValue);
-                        has = HasPropertyIncludingProxy(obj, key);
+                        var obj = ResolveObject(rhs);
+                        var keyValue = frame.Registers[ins.B];
+                        if (keyValue.Tag == JsValueTag.Symbol)
+                        {
+                            has = HasSymbolProperty(obj, keyValue.AsSymbolId());
+                        }
+                        else
+                        {
+                            var key = ToPropertyKey(keyValue);
+                            has = HasPropertyIncludingProxy(obj, key);
+                        }
                     }
                     frame.Registers[ins.A] = JsValue.FromBoolean(has);
                     break;
