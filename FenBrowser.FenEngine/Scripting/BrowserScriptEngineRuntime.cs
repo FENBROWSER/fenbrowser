@@ -4940,6 +4940,33 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "cookieEnabled":
                     value = JsValue.FromBoolean(navigator.CookieEnabled);
                     return true;
+                case "hardwareConcurrency":
+                    value = JsValue.FromInt32(Math.Max(1, Environment.ProcessorCount));
+                    return true;
+                case "maxTouchPoints":
+                    value = JsValue.FromInt32(0);
+                    return true;
+                case "deviceMemory":
+                    value = JsValue.FromNumber(4); // common default
+                    return true;
+                case "language":
+                    value = JsValue.FromString(navigator.Language ?? System.Globalization.CultureInfo.CurrentCulture.TwoLetterISOLanguageName);
+                    return true;
+                case "languages":
+                    value = JsValue.FromString(navigator.Language ?? "en-US"); // simplified: return string, not array
+                    return true;
+                case "onLine":
+                    value = JsValue.FromBoolean(true);
+                    return true;
+                case "appName":
+                    value = JsValue.FromString("Netscape");
+                    return true;
+                case "appVersion":
+                    value = JsValue.FromString("5.0");
+                    return true;
+                case "product":
+                    value = JsValue.FromString("Gecko");
+                    return true;
                 default:
                     value = JsValue.Undefined;
                     return false;
