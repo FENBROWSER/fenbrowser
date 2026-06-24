@@ -2519,6 +2519,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             if (ExternalScriptFetcher != null)
             {
                 code = ExternalScriptFetcher(scriptUri, baseUri).GetAwaiter().GetResult();
+                // code fetched from ExternalScriptFetcher
             }
             else if (FetchOverride != null)
             {

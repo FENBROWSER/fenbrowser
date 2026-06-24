@@ -672,7 +672,12 @@ public sealed class JsLexer
         var token = _lastSignificantToken.Value;
         if (token.Kind == TokenKind.Keyword)
         {
-            return token.Text is "return" or "throw" or "case" or "typeof" or "new" or "delete" or "void" or "in" or "instanceof";
+            // ECMA-262 §12.3: a '/' following these keywords starts a
+            // RegularExpressionLiteral because none of them can legally be
+            // followed by a division operator at this position.
+            return token.Text is "return" or "throw" or "case" or "typeof"
+                or "new" or "delete" or "void" or "in" or "instanceof"
+                or "else" or "do" or "yield" or "await" or "debugger";
         }
 
         if (token.Kind != TokenKind.Punctuator)
