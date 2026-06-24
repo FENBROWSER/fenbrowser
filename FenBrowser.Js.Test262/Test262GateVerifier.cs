@@ -67,28 +67,46 @@ public static class Test262GateVerifier
             violations.Add($"No expected failure without owner/area/reason/milestone violated: entries={missingExpectationOwnerOrMilestone}.");
         }
 
-        var payload = new
+        var payload = new Test262GateVerificationPayload
         {
-            generatedAtUtc = DateTime.UtcNow,
-            source = new
+            GeneratedAtUtc = DateTime.UtcNow,
+            Source = new Test262DashboardSource
             {
-                current = currentResultPath,
-                previous = previousResultPath
+                Current = currentResultPath,
+                Previous = previousResultPath
             },
-            summary = new
+            Summary = new Test262GateSummary
             {
-                current = currentSummary,
-                previous = previousSummary
+                Current = new Test262GateSummaryValues
+                {
+                    Total = currentSummary.Total,
+                    Passed = currentSummary.Passed,
+                    Unsupported = currentSummary.Unsupported,
+                    ParserErrors = currentSummary.ParserErrors,
+                    Crashes = currentSummary.Crashes,
+                    ExpectedFailures = currentSummary.ExpectedFailures,
+                    UnexpectedPasses = currentSummary.UnexpectedPasses
+                },
+                Previous = previousSummary is null ? null : new Test262GateSummaryValues
+                {
+                    Total = previousSummary.Value.Total,
+                    Passed = previousSummary.Value.Passed,
+                    Unsupported = previousSummary.Value.Unsupported,
+                    ParserErrors = previousSummary.Value.ParserErrors,
+                    Crashes = previousSummary.Value.Crashes,
+                    ExpectedFailures = previousSummary.Value.ExpectedFailures,
+                    UnexpectedPasses = previousSummary.Value.UnexpectedPasses
+                }
             },
-            newFailures = newFailures.Take(200).ToArray(),
-            unknownCrashes,
-            uncategorizedFailures = uncategorized,
-            expectationMetadataViolations = missingExpectationOwnerOrMilestone,
-            passed = violations.Count == 0,
-            violations
+            NewFailures = newFailures.Take(200).ToArray(),
+            UnknownCrashes = unknownCrashes,
+            UncategorizedFailures = uncategorized,
+            ExpectationMetadataViolations = missingExpectationOwnerOrMilestone,
+            Passed = violations.Count == 0,
+            Violations = violations
         };
 
-        var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
+        var json = JsonSerializer.Serialize(payload, Test262JsonContext.Default.Test262GateVerificationPayload);
         return new GateVerificationResult(violations.Count == 0, violations, json);
     }
 

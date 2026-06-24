@@ -36,12 +36,12 @@ public static class Test262DashboardWriter
         }
 
         var topFailingDirectories = failurePaths
-            .Select(p => NormalizePath(p))
+            .Select(NormalizePath)
             .Select(GetDirectoryKey)
             .GroupBy(d => d, StringComparer.OrdinalIgnoreCase)
-            .Select(g => new { directory = g.Key, count = g.Count() })
-            .OrderByDescending(x => x.count)
-            .ThenBy(x => x.directory, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new TopFailingDirectory { Directory = g.Key, Count = g.Count() })
+            .OrderByDescending(x => x.Count)
+            .ThenBy(x => x.Directory, StringComparer.OrdinalIgnoreCase)
             .Take(20)
             .ToArray();
 
@@ -60,36 +60,36 @@ public static class Test262DashboardWriter
         var newRegressions = currentFailures.Except(previousFailures, StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
         var fixedTests = previousFailures.Except(currentFailures, StringComparer.OrdinalIgnoreCase).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToArray();
 
-        var payload = new
+        var payload = new Test262DashboardResult
         {
-            generatedAtUtc = DateTime.UtcNow,
-            source = new
+            GeneratedAtUtc = DateTime.UtcNow,
+            Source = new Test262DashboardSource
             {
-                current = currentResultPath,
-                previous = previousResultPath
+                Current = currentResultPath,
+                Previous = previousResultPath
             },
-            metrics = new
+            Metrics = new Test262DashboardMetrics
             {
-                totalTests = total,
-                enabledTests = enabled,
-                passed,
-                failed,
-                crashed,
-                timedOut,
-                unsupported,
-                expectedFailures,
-                unexpectedPasses,
-                passRateEnabled,
-                passRateExcludingUnsupported,
-                passRateContext = "Rates include enabled tests and explicitly report unsupported and expected failure counts."
+                TotalTests = total,
+                EnabledTests = enabled,
+                Passed = passed,
+                Failed = failed,
+                Crashed = crashed,
+                TimedOut = timedOut,
+                Unsupported = unsupported,
+                ExpectedFailures = expectedFailures,
+                UnexpectedPasses = unexpectedPasses,
+                PassRateEnabled = passRateEnabled,
+                PassRateExcludingUnsupported = passRateExcludingUnsupported,
+                PassRateContext = "Rates include enabled tests and explicitly report unsupported and expected failure counts."
             },
-            topFailingDirectories,
-            crashList,
-            newRegressions,
-            fixedTests
+            TopFailingDirectories = topFailingDirectories,
+            CrashList = crashList,
+            NewRegressions = newRegressions,
+            FixedTests = fixedTests
         };
 
-        var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
+        var json = JsonSerializer.Serialize(payload, Test262JsonContext.Default.Test262DashboardResult);
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath) ?? ".");
         File.WriteAllText(outputPath, json);
     }

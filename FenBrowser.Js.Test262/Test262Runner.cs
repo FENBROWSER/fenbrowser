@@ -231,8 +231,8 @@ public sealed class Test262Runner
         var invalidTestConfiguration = 0;
         var expectedFailures = 0;
         var unexpectedPasses = 0;
-        var failures = new List<object>();
-        var unexpectedPassesList = new List<object>();
+        var failures = new List<Test262FailureEntry>();
+        var unexpectedPassesList = new List<Test262UnexpectedPassEntry>();
         var tests = new List<TestEntry>(subset.Count);
         foreach (var file in subset)
         {
@@ -249,12 +249,12 @@ public sealed class Test262Runner
             {
                 invalidTestConfiguration++;
                 testSw.Stop();
-                failures.Add(new
+                failures.Add(new Test262FailureEntry
                 {
-                    path = file,
-                    relativePath,
-                    classification = "invalid-test-configuration",
-                    message = invalidReason
+                    Path = file,
+                    RelativePath = relativePath,
+                    Classification = "invalid-test-configuration",
+                    Message = invalidReason
                 });
 
                 var te = TestEntry.FromFrontmatter(relativePath, frontmatter);
@@ -277,18 +277,18 @@ public sealed class Test262Runner
                     expectedFailures++;
                 }
 
-                failures.Add(new
+                failures.Add(new Test262FailureEntry
                 {
-                    path = file,
-                    relativePath,
-                    classification = "unsupported",
-                    feature = unsupportedFeature,
-                    message = $"Feature '{unsupportedFeature}' is not in supported feature set.",
-                    expected = expected is not null,
-                    expectedReason = expected?.Reason,
-                    expectedOwner = expected?.Owner,
-                    expectedArea = expected?.Area,
-                    expiresAtMilestone = expected?.ExpiresAtMilestone
+                    Path = file,
+                    RelativePath = relativePath,
+                    Classification = "unsupported",
+                    Feature = unsupportedFeature,
+                    Message = $"Feature '{unsupportedFeature}' is not in supported feature set.",
+                    Expected = expected is not null,
+                    ExpectedReason = expected?.Reason,
+                    ExpectedOwner = expected?.Owner,
+                    ExpectedArea = expected?.Area,
+                    ExpiresAtMilestone = expected?.ExpiresAtMilestone
                 });
 
                 var te = TestEntry.FromFrontmatter(relativePath, frontmatter);
@@ -341,17 +341,17 @@ public sealed class Test262Runner
                         expectedFailures++;
                     }
 
-                    failures.Add(new
+                    failures.Add(new Test262FailureEntry
                     {
-                        path = file,
-                        relativePath,
-                        classification = "timeout",
-                        message = $"Parsing exceeded timeout of {timeoutMs} ms.",
-                        expected = expected is not null,
-                        expectedReason = expected?.Reason,
-                        expectedOwner = expected?.Owner,
-                        expectedArea = expected?.Area,
-                        expiresAtMilestone = expected?.ExpiresAtMilestone
+                        Path = file,
+                        RelativePath = relativePath,
+                        Classification = "timeout",
+                        Message = $"Parsing exceeded timeout of {timeoutMs} ms.",
+                        Expected = expected is not null,
+                        ExpectedReason = expected?.Reason,
+                        ExpectedOwner = expected?.Owner,
+                        ExpectedArea = expected?.Area,
+                        ExpiresAtMilestone = expected?.ExpiresAtMilestone
                     });
 
                     var toutTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
@@ -366,13 +366,13 @@ public sealed class Test262Runner
                 if (expectsSyntaxError)
                 {
                     parserErrors++;
-                    failures.Add(new
+                    failures.Add(new Test262FailureEntry
                     {
-                        path = file,
-                        relativePath,
-                        classification = "parser-error",
-                        message = "Expected parser to fail with SyntaxError due to test262 negative metadata, but parse succeeded.",
-                        expected = false
+                        Path = file,
+                        RelativePath = relativePath,
+                        Classification = "parser-error",
+                        Message = "Expected parser to fail with SyntaxError due to test262 negative metadata, but parse succeeded.",
+                        Expected = false
                     });
 
                     var peTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
@@ -392,15 +392,15 @@ public sealed class Test262Runner
                     if (expected is not null)
                     {
                         unexpectedPasses++;
-                        unexpectedPassesList.Add(new
+                        unexpectedPassesList.Add(new Test262UnexpectedPassEntry
                         {
-                            path = file,
-                            relativePath,
-                            expectedStatus = expected.Status,
-                            expectedReason = expected.Reason,
-                            expectedOwner = expected.Owner,
-                            expectedArea = expected.Area,
-                            expiresAtMilestone = expected.ExpiresAtMilestone
+                            Path = file,
+                            RelativePath = relativePath,
+                            ExpectedStatus = expected.Status,
+                            ExpectedReason = expected.Reason,
+                            ExpectedOwner = expected.Owner,
+                            ExpectedArea = expected.Area,
+                            ExpiresAtMilestone = expected.ExpiresAtMilestone
                         });
 
                         var upTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
@@ -427,18 +427,18 @@ public sealed class Test262Runner
                     expectedFailures++;
                 }
 
-                failures.Add(new
+                failures.Add(new Test262FailureEntry
                 {
-                    path = file,
-                    relativePath,
-                    classification = "unsupported",
-                    feature = ex.FeatureName,
-                    location = $"{ex.Span.Line}:{ex.Span.Column}",
-                    expected = expected is not null,
-                    expectedReason = expected?.Reason,
-                    expectedOwner = expected?.Owner,
-                    expectedArea = expected?.Area,
-                    expiresAtMilestone = expected?.ExpiresAtMilestone
+                    Path = file,
+                    RelativePath = relativePath,
+                    Classification = "unsupported",
+                    Feature = ex.FeatureName,
+                    Location = $"{ex.Span.Line}:{ex.Span.Column}",
+                    Expected = expected is not null,
+                    ExpectedReason = expected?.Reason,
+                    ExpectedOwner = expected?.Owner,
+                    ExpectedArea = expected?.Area,
+                    ExpiresAtMilestone = expected?.ExpiresAtMilestone
                 });
 
                 var ufeTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
@@ -468,17 +468,17 @@ public sealed class Test262Runner
                     expectedFailures++;
                 }
 
-                failures.Add(new
+                failures.Add(new Test262FailureEntry
                 {
-                    path = file,
-                    relativePath,
-                    classification = "parser-error",
-                    message = ex.Message,
-                    expected = expected is not null,
-                    expectedReason = expected?.Reason,
-                    expectedOwner = expected?.Owner,
-                    expectedArea = expected?.Area,
-                    expiresAtMilestone = expected?.ExpiresAtMilestone
+                    Path = file,
+                    RelativePath = relativePath,
+                    Classification = "parser-error",
+                    Message = ex.Message,
+                    Expected = expected is not null,
+                    ExpectedReason = expected?.Reason,
+                    ExpectedOwner = expected?.Owner,
+                    ExpectedArea = expected?.Area,
+                    ExpiresAtMilestone = expected?.ExpiresAtMilestone
                 });
 
                 var jpeTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
@@ -498,17 +498,17 @@ public sealed class Test262Runner
                     expectedFailures++;
                 }
 
-                failures.Add(new
+                failures.Add(new Test262FailureEntry
                 {
-                    path = file,
-                    relativePath,
-                    classification = "crash",
-                    message = ex.Message,
-                    expected = expected is not null,
-                    expectedReason = expected?.Reason,
-                    expectedOwner = expected?.Owner,
-                    expectedArea = expected?.Area,
-                    expiresAtMilestone = expected?.ExpiresAtMilestone
+                    Path = file,
+                    RelativePath = relativePath,
+                    Classification = "crash",
+                    Message = ex.Message,
+                    Expected = expected is not null,
+                    ExpectedReason = expected?.Reason,
+                    ExpectedOwner = expected?.Owner,
+                    ExpectedArea = expected?.Area,
+                    ExpiresAtMilestone = expected?.ExpiresAtMilestone
                 });
 
                 var crTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
@@ -652,8 +652,8 @@ public sealed class Test262Runner
         var invalidTestConfiguration = 0;
         var expectedFailures = 0;
         var unexpectedPasses = 0;
-        var failures = new List<object>();
-        var unexpectedPassesList = new List<object>();
+        var failures = new List<Test262FailureEntry>();
+        var unexpectedPassesList = new List<Test262UnexpectedPassEntry>();
         var tests = new List<TestEntry>(subset.Count);
         var completed = 0;
         var progressEvery = Math.Max(25, Math.Min(200, subset.Count / 50));
@@ -728,7 +728,7 @@ public sealed class Test262Runner
                 {
                     invalidTestConfiguration++;
                     testSw.Stop();
-                    failures.Add(new { path = file, relativePath, classification = "invalid-test-configuration", message = invalidReason });
+                    failures.Add(new Test262FailureEntry { Path = file, RelativePath = relativePath, Classification = "invalid-test-configuration", Message = invalidReason });
                     var ivTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
                     ivTe.Status = "InvalidTestConfiguration";
                     ivTe.DurationMs = testSw.ElapsedMilliseconds;
@@ -743,7 +743,7 @@ public sealed class Test262Runner
             {
                 harnessUnsupported++;
                 testSw.Stop();
-                failures.Add(new { path = file, relativePath, classification = "harness-unsupported", include = unsupportedHarnessInclude, message = $"Harness include '{unsupportedHarnessInclude}' is not supported in runtime-subset mode." });
+                failures.Add(new Test262FailureEntry { Path = file, RelativePath = relativePath, Classification = "harness-unsupported", Include = unsupportedHarnessInclude, Message = $"Harness include '{unsupportedHarnessInclude}' is not supported in runtime-subset mode." });
                 var uhTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
                 uhTe.Status = "HarnessUnsupported";
                 uhTe.DurationMs = testSw.ElapsedMilliseconds;
@@ -764,18 +764,18 @@ public sealed class Test262Runner
                     expectedFailures++;
                 }
 
-                failures.Add(new
+                failures.Add(new Test262FailureEntry
                 {
-                    path = file,
-                    relativePath,
-                    classification = "unsupported",
-                    feature = unsupportedFeature,
-                    message = $"Feature '{unsupportedFeature}' is not in supported feature set.",
-                    expected = expected is not null,
-                    expectedReason = expected?.Reason,
-                    expectedOwner = expected?.Owner,
-                    expectedArea = expected?.Area,
-                    expiresAtMilestone = expected?.ExpiresAtMilestone
+                    Path = file,
+                    RelativePath = relativePath,
+                    Classification = "unsupported",
+                    Feature = unsupportedFeature,
+                    Message = $"Feature '{unsupportedFeature}' is not in supported feature set.",
+                    Expected = expected is not null,
+                    ExpectedReason = expected?.Reason,
+                    ExpectedOwner = expected?.Owner,
+                    ExpectedArea = expected?.Area,
+                    ExpiresAtMilestone = expected?.ExpiresAtMilestone
                 });
                 var ufTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
                 ufTe.Status = expected is null ? "UnsupportedFeature" : "ExpectedFailure";
@@ -869,17 +869,17 @@ public sealed class Test262Runner
                     timedOut++;
                     var expected = FindMatchingExpectation(expectations, relativePath, "Timeout");
                     if (expected is not null) expectedFailures++;
-                    failures.Add(new
+                    failures.Add(new Test262FailureEntry
                     {
-                        path = file,
-                        relativePath,
-                        classification = "timeout",
-                        message = $"Runtime execution exceeded timeout of {timeoutMs} ms.",
-                        expected = expected is not null,
-                        expectedReason = expected?.Reason,
-                        expectedOwner = expected?.Owner,
-                        expectedArea = expected?.Area,
-                        expiresAtMilestone = expected?.ExpiresAtMilestone
+                        Path = file,
+                        RelativePath = relativePath,
+                        Classification = "timeout",
+                        Message = $"Runtime execution exceeded timeout of {timeoutMs} ms.",
+                        Expected = expected is not null,
+                        ExpectedReason = expected?.Reason,
+                        ExpectedOwner = expected?.Owner,
+                        ExpectedArea = expected?.Area,
+                        ExpiresAtMilestone = expected?.ExpiresAtMilestone
                     });
                     var toTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
                     toTe.Status = expected is null ? "TimedOut" : "ExpectedFailure";
@@ -899,17 +899,17 @@ public sealed class Test262Runner
                         expectedFailures++;
                     }
 
-                    failures.Add(new
+                    failures.Add(new Test262FailureEntry
                     {
-                        path = file,
-                        relativePath,
-                        classification = "runtime-error",
-                        message = "Expected failure did not occur in runtime-subset execution.",
-                        expected = expected is not null,
-                        expectedReason = expected?.Reason,
-                        expectedOwner = expected?.Owner,
-                        expectedArea = expected?.Area,
-                        expiresAtMilestone = expected?.ExpiresAtMilestone
+                        Path = file,
+                        RelativePath = relativePath,
+                        Classification = "runtime-error",
+                        Message = "Expected failure did not occur in runtime-subset execution.",
+                        Expected = expected is not null,
+                        ExpectedReason = expected?.Reason,
+                        ExpectedOwner = expected?.Owner,
+                        ExpectedArea = expected?.Area,
+                        ExpiresAtMilestone = expected?.ExpiresAtMilestone
                     });
                     var efTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
                     efTe.Status = expected is null ? "Failed" : "ExpectedFailure";
@@ -927,7 +927,7 @@ public sealed class Test262Runner
                     if (expected is not null)
                     {
                         unexpectedPasses++;
-                        unexpectedPassesList.Add(new { path = file, relativePath, expectedStatus = expected.Status, expectedReason = expected.Reason, expectedOwner = expected.Owner, expectedArea = expected.Area, expiresAtMilestone = expected.ExpiresAtMilestone });
+                        unexpectedPassesList.Add(new Test262UnexpectedPassEntry { Path = file, RelativePath = relativePath, ExpectedStatus = expected.Status, ExpectedReason = expected.Reason, ExpectedOwner = expected.Owner, ExpectedArea = expected.Area, ExpiresAtMilestone = expected.ExpiresAtMilestone });
                         var upTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
                         upTe.Status = "UnexpectedPass";
                         upTe.DurationMs = testSw.ElapsedMilliseconds;
@@ -962,18 +962,18 @@ public sealed class Test262Runner
                     expectedFailures++;
                 }
 
-                failures.Add(new
+                failures.Add(new Test262FailureEntry
                 {
-                    path = file,
-                    relativePath,
-                    classification = "unsupported",
-                    feature = ex.FeatureName,
-                    location = $"{ex.Span.Line}:{ex.Span.Column}",
-                    expected = expected is not null,
-                    expectedReason = expected?.Reason,
-                    expectedOwner = expected?.Owner,
-                    expectedArea = expected?.Area,
-                    expiresAtMilestone = expected?.ExpiresAtMilestone
+                    Path = file,
+                    RelativePath = relativePath,
+                    Classification = "unsupported",
+                    Feature = ex.FeatureName,
+                    Location = $"{ex.Span.Line}:{ex.Span.Column}",
+                    Expected = expected is not null,
+                    ExpectedReason = expected?.Reason,
+                    ExpectedOwner = expected?.Owner,
+                    ExpectedArea = expected?.Area,
+                    ExpiresAtMilestone = expected?.ExpiresAtMilestone
                 });
                 var ufeTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
                 ufeTe.Status = expected is null ? "UnsupportedFeature" : "ExpectedFailure";
@@ -1002,17 +1002,17 @@ public sealed class Test262Runner
                     expectedFailures++;
                 }
 
-                failures.Add(new
+                failures.Add(new Test262FailureEntry
                 {
-                    path = file,
-                    relativePath,
-                    classification = "parser-error",
-                    message = ex.Message,
-                    expected = expected is not null,
-                    expectedReason = expected?.Reason,
-                    expectedOwner = expected?.Owner,
-                    expectedArea = expected?.Area,
-                    expiresAtMilestone = expected?.ExpiresAtMilestone
+                    Path = file,
+                    RelativePath = relativePath,
+                    Classification = "parser-error",
+                    Message = ex.Message,
+                    Expected = expected is not null,
+                    ExpectedReason = expected?.Reason,
+                    ExpectedOwner = expected?.Owner,
+                    ExpectedArea = expected?.Area,
+                    ExpiresAtMilestone = expected?.ExpiresAtMilestone
                 });
                 var jpeTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
                 jpeTe.Status = expected is null ? "Failed" : "ExpectedFailure";
@@ -1041,18 +1041,18 @@ public sealed class Test262Runner
                     expectedFailures++;
                 }
 
-                failures.Add(new
+                failures.Add(new Test262FailureEntry
                 {
-                    path = file,
-                    relativePath,
-                    classification = "runtime-error",
-                    message = "Unhandled runtime throw.",
-                    details = FormatThrownValue(ex.Value, ex.Description),
-                    expected = expected is not null,
-                    expectedReason = expected?.Reason,
-                    expectedOwner = expected?.Owner,
-                    expectedArea = expected?.Area,
-                    expiresAtMilestone = expected?.ExpiresAtMilestone
+                    Path = file,
+                    RelativePath = relativePath,
+                    Classification = "runtime-error",
+                    Message = "Unhandled runtime throw.",
+                    Details = FormatThrownValue(ex.Value, ex.Description),
+                    Expected = expected is not null,
+                    ExpectedReason = expected?.Reason,
+                    ExpectedOwner = expected?.Owner,
+                    ExpectedArea = expected?.Area,
+                    ExpiresAtMilestone = expected?.ExpiresAtMilestone
                 });
                 var jteTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
                 jteTe.Status = expected is null ? "Failed" : "ExpectedFailure";
@@ -1082,17 +1082,17 @@ public sealed class Test262Runner
                     expectedFailures++;
                 }
 
-                failures.Add(new
+                failures.Add(new Test262FailureEntry
                 {
-                    path = file,
-                    relativePath,
-                    classification = "runtime-error",
-                    message = ex.Message,
-                    expected = expected is not null,
-                    expectedReason = expected?.Reason,
-                    expectedOwner = expected?.Owner,
-                    expectedArea = expected?.Area,
-                    expiresAtMilestone = expected?.ExpiresAtMilestone
+                    Path = file,
+                    RelativePath = relativePath,
+                    Classification = "runtime-error",
+                    Message = ex.Message,
+                    Expected = expected is not null,
+                    ExpectedReason = expected?.Reason,
+                    ExpectedOwner = expected?.Owner,
+                    ExpectedArea = expected?.Area,
+                    ExpiresAtMilestone = expected?.ExpiresAtMilestone
                 });
                 var ioeTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
                 ioeTe.Status = expected is null ? "Failed" : "ExpectedFailure";
@@ -1121,17 +1121,17 @@ public sealed class Test262Runner
                         expectedFailures++;
                     }
 
-                    failures.Add(new
+                    failures.Add(new Test262FailureEntry
                     {
-                        path = file,
-                        relativePath,
-                        classification = "crash",
-                        message = ex.Message,
-                        expected = expected is not null,
-                        expectedReason = expected?.Reason,
-                        expectedOwner = expected?.Owner,
-                        expectedArea = expected?.Area,
-                        expiresAtMilestone = expected?.ExpiresAtMilestone
+                        Path = file,
+                        RelativePath = relativePath,
+                        Classification = "crash",
+                        Message = ex.Message,
+                        Expected = expected is not null,
+                        ExpectedReason = expected?.Reason,
+                        ExpectedOwner = expected?.Owner,
+                        ExpectedArea = expected?.Area,
+                        ExpiresAtMilestone = expected?.ExpiresAtMilestone
                     });
                     var crTe = TestEntry.FromFrontmatter(relativePath, frontmatter);
                     crTe.Status = expected is null ? "Crashed" : "ExpectedFailure";

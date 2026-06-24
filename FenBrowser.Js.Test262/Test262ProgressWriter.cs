@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace FenBrowser.Js.Test262;
 
@@ -116,7 +117,7 @@ public sealed class Test262ProgressWriter : IDisposable
             if (_disposed) return;
             try
             {
-                var json = JsonSerializer.Serialize(fields);
+                var json = JsonSerializer.Serialize(fields, Test262JsonContext.Default.DictionaryStringObject);
                 _writer.WriteLine(json);
                 // Flush after heartbeat/batch_complete so the TUI sees updates promptly.
                 // Per-test events (test_result) stay buffered for performance.
