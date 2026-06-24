@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>WinExe</OutputType>
+    <OutputType>Library</OutputType>
     <AssemblyName>FenBrowser.Host</AssemblyName>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -19,7 +19,6 @@
     <Deterministic>true</Deterministic>
     <DebugType>portable</DebugType>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
-    <!-- Work around machine-specific MSBuild project-reference resolution instability. -->
     <BuildInParallel>false</BuildInParallel>
   </PropertyGroup>
 
@@ -42,7 +41,7 @@
     </None>
   </ItemGroup>
 
-  <!-- Legacy-engine-dependent files excluded pending FenJS JsValue migration -->
+  <!-- BrowserApi-dependent files excluded pending FenJS migration -->
   <ItemGroup>
     <Compile Remove="BrowserIntegration.cs" />
     <Compile Remove="ChromeManager.cs" />
@@ -54,54 +53,34 @@
     <Compile Remove="ProcessIsolation\BrokeredProcessIsolationCoordinator.cs" />
     <Compile Remove="ProcessIsolation\IProcessIsolationCoordinator.cs" />
     <Compile Remove="ProcessIsolation\InProcessIsolationCoordinator.cs" />
-    <Compile Remove="Widgets\TabBarWidget.cs" />
-    <Compile Remove="Widgets\TabWidget.cs" />
-    <Compile Remove="Widgets\WebContentWidget.cs" />
+    <Compile Remove="Widgets\**\*.cs" />
     <Compile Remove="ProcessIsolation\ProcessIsolationCoordinatorFactory.cs" />
     <Compile Remove="ProcessIsolation\ProcessIsolationRuntime.cs" />
     <Compile Remove="RootWidget.cs" />
     <Compile Remove="ProcessIsolation\Gpu\GpuCompositorWorkSubmitter.cs" />
     <Compile Remove="CompositorThread.cs" />
-    <Compile Remove="Widgets\SettingsPageWidget.cs" />
-    <Compile Remove="Widgets\WebContentWidget.cs" />
-    <Compile Remove="Widgets\TabBarWidget.cs" />
-    <Compile Remove="Widgets\TabWidget.cs" />
-    <Compile Remove="Widgets\SettingsPageWidget.cs" />
+    <Compile Remove="Compositor.cs" />
+    <Compile Remove="Input\**\*.cs" />
+    <Compile Remove="WindowManager.cs" />
+    <Compile Remove="Program.cs" />
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Silk.NET for native windowing and input -->
     <PackageReference Include="Silk.NET.OpenGLES" Version="2.21.0" />
     <PackageReference Include="Silk.NET.OpenGLES.ANGLE.Native" Version="2025.9.12" />
     <PackageReference Include="Silk.NET.OpenGLES.Extensions.EXT" Version="2.23.0" />
     <PackageReference Include="Silk.NET.Windowing" Version="2.21.0" />
     <PackageReference Include="Silk.NET.Input" Version="2.21.0" />
-    
-    <!-- SkiaSharp for 2D rendering -->
     <PackageReference Include="SkiaSharp" Version="2.88.9" />
     <PackageReference Include="SkiaSharp.HarfBuzz" Version="2.88.9" />
     <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="2.88.9" />
     <PackageReference Include="Topten.RichTextKit" Version="0.4.164" />
   </ItemGroup>
 
-  <!-- Clean up debug logs before each build for fresh logging -->
   <Target Name="CleanupLogs" BeforeTargets="Build">
     <Exec Command="if exist &quot;$(MSBuildProjectDirectory)\..\cleanup_logs.bat&quot; call &quot;$(MSBuildProjectDirectory)\..\cleanup_logs.bat&quot;" IgnoreExitCode="true" />
   </Target>
 
-  <!--
-    Raise the main-thread stack reserve in the produced PE header to 16 MB.
-    The .NET 8 main thread inherits its stack size from the PE header's
-    SizeOfStackReserve field (default 1 MB on x64 Windows). Heavy SPAs
-    (React/Vue/Angular) recursing through paint/layout/event chains on the
-    UI message-pump thread routinely blow that, producing silent-exit
-    StackOverflowExceptions that WER cannot capture cleanly. Worker threads
-    (engine, compositor) get their stack via `new Thread(stackSize)` in
-    code; this post-build editbin step is the only way to bump the main
-    thread short of restructuring Program.Main() into a worker-thread shim.
-    `vswhere`-located editbin.exe is invoked silently; failure is non-fatal
-    (the build still succeeds; we just keep the 1 MB default).
-  -->
   <Target Name="BumpMainThreadStack" AfterTargets="Build" Condition="'$(OS)' == 'Windows_NT'">
     <PropertyGroup>
       <ExePath>$(TargetDir)$(AssemblyName).exe</ExePath>

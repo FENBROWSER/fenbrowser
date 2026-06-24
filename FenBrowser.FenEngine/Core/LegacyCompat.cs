@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using FenBrowser.Core;
+using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 
 namespace FenBrowser.FenEngine.Core.Interfaces
@@ -340,10 +341,32 @@ namespace FenBrowser.FenEngine.DOM
     }
 }
 
+namespace FenBrowser.Host
+{
+    public sealed class WindowManager
+    {
+        public static readonly WindowManager Instance = new();
+        public void Initialize(string url, bool isHeadless = true) { }
+        public event Action OnLoad;
+        public async Task<T> RunOnMainThread<T>(Func<T> func)
+        {
+            var result = func();
+            if (result is Task t) { await t.ConfigureAwait(false); return (T)(object)null; }
+            return result;
+        }
+        public async Task RunOnMainThread(Func<Task> func) => await func();
+        public Task RunOnMainThread(Action action) { action(); return Task.CompletedTask; }
+        public SkiaSharp.SKBitmap CaptureScreenshot() => null;
+        public object Window => null;
+        public void Run() { }
+    }
+}
+
 namespace FenBrowser.FenEngine.Rendering
 {
-    public interface IBrowser { }
-    public sealed class BrowserHost : IBrowser, IDisposable
+    // Minimal BrowserHost stub for Host/Tooling projects.
+    // BrowserApi.cs defines the real BrowserHost; excluded pending FenJS migration.
+    public sealed class BrowserHost : IDisposable
     {
         public void Dispose() { }
         public void UpdateViewportHint(int width, int height) { }
@@ -358,8 +381,8 @@ namespace FenBrowser.FenEngine.Rendering
         public void OnKeyDown(string key, int keyCode) { }
         public void OnKeyUp(string key, int keyCode) { }
         public Task HandleKeyPress(string key, int keyCode = 0) => Task.CompletedTask;
-        public FenBrowser.Core.Dom.V2.Node GetDomRoot() => null;
-        public System.Collections.Generic.IDictionary<FenBrowser.Core.Dom.V2.Node, FenBrowser.Core.Css.CssComputed> ComputedStyles => null;
+        public Node GetDomRoot() => null;
+        public System.Collections.Generic.IDictionary<Node, FenBrowser.Core.Css.CssComputed> ComputedStyles => null;
         public System.Uri CurrentUri => null;
         public event Action<string> ConsoleMessage;
         public event Action<string, string> NavigationFailed;

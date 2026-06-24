@@ -104,6 +104,44 @@ namespace FenBrowser.FenEngine.Rendering
             double vpWidth = CssParser.MediaViewportWidth ?? 1920.0;
             double vpHeight = CssParser.MediaViewportHeight ?? 1080.0;
 
+            // Dynamic viewport units (CSS Values 4): dvw/svw/lvw map to vw,
+            // dvh/svh/lvh map to vh. On desktop there is no dynamic toolbar so
+            // all three variants resolve identically to the standard unit.
+            // These MUST be checked before the shorter "vw"/"vh" suffixes.
+            if (sl.EndsWith("dvw") || sl.EndsWith("svw") || sl.EndsWith("lvw"))
+            {
+                var num = s.Substring(0, s.Length - 3).Trim();
+                double v;
+                if (TryDouble(num, out v)) { px = v * vpWidth / 100.0; return true; }
+                return false;
+            }
+
+            if (sl.EndsWith("dvh") || sl.EndsWith("svh") || sl.EndsWith("lvh"))
+            {
+                var num = s.Substring(0, s.Length - 3).Trim();
+                double v;
+                if (TryDouble(num, out v)) { px = v * vpHeight / 100.0; return true; }
+                return false;
+            }
+
+            // vmin (smaller of vw or vh) — check before vw/vh (longer suffix)
+            if (sl.EndsWith("vmin"))
+            {
+                var num = s.Substring(0, s.Length - 4).Trim();
+                double v;
+                if (TryDouble(num, out v)) { px = v * Math.Min(vpWidth, vpHeight) / 100.0; return true; }
+                return false;
+            }
+
+            // vmax (larger of vw or vh) — check before vw/vh (longer suffix)
+            if (sl.EndsWith("vmax"))
+            {
+                var num = s.Substring(0, s.Length - 4).Trim();
+                double v;
+                if (TryDouble(num, out v)) { px = v * Math.Max(vpWidth, vpHeight) / 100.0; return true; }
+                return false;
+            }
+
             // vw (viewport width percentage)
             if (sl.EndsWith("vw"))
             {
@@ -119,24 +157,6 @@ namespace FenBrowser.FenEngine.Rendering
                 var num = s.Substring(0, s.Length - 2).Trim();
                 double v;
                 if (TryDouble(num, out v)) { px = v * vpHeight / 100.0; return true; }
-                return false;
-            }
-
-            // vmin (smaller of vw or vh)
-            if (sl.EndsWith("vmin"))
-            {
-                var num = s.Substring(0, s.Length - 4).Trim();
-                double v;
-                if (TryDouble(num, out v)) { px = v * Math.Min(vpWidth, vpHeight) / 100.0; return true; }
-                return false;
-            }
-
-            // vmax (larger of vw or vh)
-            if (sl.EndsWith("vmax"))
-            {
-                var num = s.Substring(0, s.Length - 4).Trim();
-                double v;
-                if (TryDouble(num, out v)) { px = v * Math.Max(vpWidth, vpHeight) / 100.0; return true; }
                 return false;
             }
 

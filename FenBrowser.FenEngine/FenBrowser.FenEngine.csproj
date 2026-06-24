@@ -105,9 +105,9 @@
     <Compile Remove="Bindings\Generated\**\*.cs" />
     <Compile Remove="Testing\**\*.cs" />
     <Compile Remove="Diagnostics\**\*.cs" />
-    <Compile Remove="Rendering\DebugOverlay.cs" />
     <Compile Remove="Rendering\BrowserApi.cs" />
     <Compile Remove="Rendering\CustomHtmlEngine.cs" />
+    <Compile Remove="Rendering\DebugOverlay.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -49,13 +49,18 @@ namespace FenBrowser.FenEngine.Rendering
         // -------------------------------------------------------------------------
         // CSS PERFORMANCE CACHES
         // -------------------------------------------------------------------------
+        // Parse cache: shared across tabs (same URL+CSS → same parsed rules).
         private static readonly Dictionary<string, List<NewCss.CssRule>> _parsedRulesCache = new Dictionary<string, List<NewCss.CssRule>>();
         private static readonly Dictionary<string, Task<List<NewCss.CssRule>>> _inFlightParses = new Dictionary<string, Task<List<NewCss.CssRule>>>();
         private static readonly System.Threading.SemaphoreSlim _globalParseGate = new System.Threading.SemaphoreSlim(Environment.ProcessorCount > 2 ? Environment.ProcessorCount - 1 : 2);
-        private static readonly System.Threading.SemaphoreSlim _globalComputeGate = new System.Threading.SemaphoreSlim(1, 1);
-        private static readonly Dictionary<(Element, SelectorChain), bool> _matchCache = new Dictionary<(Element, SelectorChain), bool>();
-        private static readonly Dictionary<Element, List<NewCss.CssRule>> _elementMatchedRulesCache = new Dictionary<Element, List<NewCss.CssRule>>();
-        private static readonly Dictionary<Element, CssComputed> _elementStyleCache = new Dictionary<Element, CssComputed>();
+        // Compute gate: was 1 (serialised ALL CSS work across tabs).  Now allows
+        // concurrent computation per core so Tab1 and Tab2 cascade in parallel.
+        // The element-keyed caches below use ConcurrentDictionary for thread safety.
+        private static readonly System.Threading.SemaphoreSlim _globalComputeGate = new System.Threading.SemaphoreSlim(Math.Max(2, Environment.ProcessorCount));
+        // Element-keyed caches — ConcurrentDictionary so concurrent tab cascades
+        // don't corrupt each other.  Keys are Element instances, unique per tab DOM.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<(Element, SelectorChain), bool> _matchCache = new();
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<Element, List<NewCss.CssRule>> _elementMatchedRulesCache = new();
         private static int _stylesheetRegistrationCounter;
 
         // UA stylesheet cache â€” read from disk only once per process lifetime
@@ -76,9 +81,8 @@ namespace FenBrowser.FenEngine.Rendering
         {
             lock (_parsedRulesCache) _parsedRulesCache.Clear();
             lock (_inFlightParses) _inFlightParses.Clear();
-            lock (_matchCache) _matchCache.Clear();
-            lock (_elementMatchedRulesCache) _elementMatchedRulesCache.Clear();
-            lock (_elementStyleCache) _elementStyleCache.Clear();
+            _matchCache.Clear();
+            _elementMatchedRulesCache.Clear();
             lock (_customProperties) _customProperties.Clear();
             _rootFontSize = 16.0;
             _keyframes.Clear();
@@ -3157,10 +3161,9 @@ private static double? ExtractPx(string text, string prop)
 
         private static Dictionary<Node, CssComputed> CascadeIntoComputedStyles(Element root, StyleSet styleSet, Action<string> log, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
-            FenBrowser.Core.EngineLogCompat.Info($"[DEBUG] CascadeIntoComputedStyles called for root {root?.TagName}. Sheet count: {styleSet?.Count}", FenBrowser.Core.Logging.LogCategory.CSS);
             var result = new Dictionary<Node, CssComputed>();
             if (root == null) return result;
-            
+
             var engine = new CascadeEngine(styleSet);
 
             // Pre-flatten the DOM into a list
@@ -3171,7 +3174,6 @@ private static double? ExtractPx(string text, string prop)
             {
                 var n = stack.Pop();
                 nodes.Add(n);
-                // Use ChildNodes and filter for Elements to ensure compatibility
                 var children = n.ChildNodes;
                 for (int i = children.Length - 1; i >= 0; i--)
                 {
@@ -3180,12 +3182,27 @@ private static double? ExtractPx(string text, string prop)
                 }
             }
 
+            int cacheHits = 0;
+            int cacheMisses = 0;
             foreach (var n in nodes)
             {
-                // Reliability Gate: Check intra-frame deadline
                 deadline?.Check();
 
                 if (n.IsText()) continue;
+
+                // PERF: Skip cascade for clean elements that already have computed
+                // styles from a previous cascade.  Element.ComputedStyle is set on
+                // line ~3271 below.  StyleDirty is cleared after each cascade and
+                // re-set by DOM mutations (class/id/style changes from JS).  On the
+                // first cascade every element is dirty; on incremental recascades
+                // only mutated elements need recomputation.
+                if (!n.StyleDirty && n.ComputedStyle != null)
+                {
+                    result[n] = n.ComputedStyle;
+                    cacheHits++;
+                    continue;
+                }
+                cacheMisses++;
 
                 CssComputed parentCss = null;
                 if (n.ParentElement != null)
@@ -3196,6 +3213,10 @@ private static double? ExtractPx(string text, string prop)
                     // 1. Compute Main Styles
                     var mainProps = engine.ComputeCascadedValues(n, null);
                     var css = ResolveStyle(n, parentCss, mainProps);
+
+                    // Clear the dirty flag so subsequent incremental recascades
+                    // skip this element (cache hit via ComputedStyle above).
+                    n.ClearStyleDirty();
 
                     // Keep rem basis aligned to the computed root font-size, including
                     // cases where root size comes from `font` shorthand.
@@ -3231,7 +3252,14 @@ private static double? ExtractPx(string text, string prop)
                     n.ComputedStyle = result[n];  // Also attach recovery style
                 }
             }
-            
+
+            if (cacheHits > 0 || cacheMisses > 0)
+            {
+                EngineLogCompat.Info(
+                    $"[PERF-CSS] Cascade: {cacheHits} cache hits, {cacheMisses} computed ({(cacheHits * 100.0 / (cacheHits + cacheMisses)):F0}% hit rate)",
+                    LogCategory.CSS);
+            }
+
             return result;
         }
 
@@ -6310,6 +6338,16 @@ private static double? ExtractPx(string text, string prop)
                 return s.EndsWith("px") || s.EndsWith("%") || s.EndsWith("em") || s.EndsWith("rem") || s == "auto" || s == "content";
             };
 
+            // Helper to resolve a basis value from a string
+            Func<string, (bool success, double value, bool isAuto)> resolveBasis = (s) =>
+            {
+                double val;
+                if (s.ToLowerInvariant() == "auto") return (true, double.NaN, true);
+                if (TryPx(s, out val)) return (true, val, false);
+                if (TryPercent(s, out val)) return (true, val, false);
+                return (false, double.NaN, false);
+            };
+
             // Parse parts
             if (parts.Count == 1)
             {
@@ -6317,14 +6355,14 @@ private static double? ExtractPx(string text, string prop)
                 double val;
                 if (isLength(parts[0]))
                 {
-                    if (TryPx(parts[0], out val) || parts[0].ToLowerInvariant() == "auto")
+                    var (ok, bv, _) = resolveBasis(parts[0]);
+                    if (ok)
                     {
-                        grow = 1; shrink = 1; basis = (parts[0].ToLowerInvariant() == "auto" ? double.NaN : val);
+                        grow = 1; shrink = 1; basis = bv;
                     }
-                    else if (TryPercent(parts[0], out val))
+                    else
                     {
-                         // Treat percentage basis as Auto (NaN) for now but ensure Grow=1 is set
-                         grow = 1; shrink = 1; basis = double.NaN;
+                        grow = 1; shrink = 1; basis = double.NaN;
                     }
                 }
                 else if (TryDouble(parts[0], out val))
@@ -6343,8 +6381,8 @@ private static double? ExtractPx(string text, string prop)
                 if (isLength(parts[1]))
                 {
                     shrink = 1;
-                    if (TryPx(parts[1], out val2) || parts[1].ToLowerInvariant() == "auto")
-                        basis = (parts[1].ToLowerInvariant() == "auto" ? double.NaN : val2);
+                    var (ok, bv, _) = resolveBasis(parts[1]);
+                    basis = ok ? bv : double.NaN;
                 }
                 else if (TryDouble(parts[1], out val2))
                 {
@@ -6357,8 +6395,8 @@ private static double? ExtractPx(string text, string prop)
                 double v;
                 if (TryDouble(parts[0], out v)) grow = v;
                 if (TryDouble(parts[1], out v)) shrink = v;
-                if (TryPx(parts[2], out v) || parts[2].ToLowerInvariant() == "auto")
-                    basis = (parts[2].ToLowerInvariant() == "auto" ? double.NaN : v);
+                var (ok, bv, _) = resolveBasis(parts[2]);
+                if (ok) basis = bv;
             }
 
             return true;

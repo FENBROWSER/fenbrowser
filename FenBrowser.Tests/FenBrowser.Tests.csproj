@@ -49,6 +49,7 @@
     <Compile Remove="Testing\**\*.cs" />
     <Compile Remove="Rendering\**\*.cs" />
     <Compile Remove="DevTools\**\*.cs" />
+    <Compile Remove="Architecture\**\*.cs" />
     <Compile Remove="Core\ControlFlowInvariantTests.cs" />
     <Compile Remove="Core\EventInvariantTests.cs" />
   </ItemGroup>

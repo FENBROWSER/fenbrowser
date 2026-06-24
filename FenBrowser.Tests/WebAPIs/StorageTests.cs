@@ -21,6 +21,7 @@ namespace FenBrowser.Tests.WebAPIs
             public FenValue QuerySelector(string selector) => FenValue.Undefined;
             public FenValue GetElementsByTagName(string tagName) => FenValue.Undefined;
             public FenValue GetElementsByClassName(string classNames) => FenValue.Undefined;
+            public FenValue GetElementsByName(string name) => FenValue.Undefined;
             public void AddEventListener(string elementId, string eventName, FenValue callback) { }
             public FenValue CreateElement(string tagName) => FenValue.Undefined;
             public FenValue CreateElementNS(string namespaceUri, string qualifiedName) => FenValue.Undefined;

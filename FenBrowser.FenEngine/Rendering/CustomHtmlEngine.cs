@@ -2048,8 +2048,11 @@ public void Dispose()
             int totalElements = 0;
             CollectDirtySubtrees(domEl, dirtyRoots, ref totalElements);
 
-            // Fallback: if >30% dirty, full recascade is cheaper than incremental
-            if (totalElements > 0 && dirtyRoots.Count > totalElements * 0.3)
+            // Fallback: if >60% dirty, full recascade is cheaper than incremental.
+            // Most JS-driven DOM mutations affect <5% of elements (class toggle, style
+            // change on a single element).  The old 30% threshold was too conservative
+            // and caused full recascades for small mutations on medium pages.
+            if (totalElements > 0 && dirtyRoots.Count > totalElements * 0.6)
             {
                 EngineLogCompat.Info($"[CustomHtmlEngine] Incremental too broad ({dirtyRoots.Count}/{totalElements} dirty) — falling back to full recascade", LogCategory.CSS);
                 await RecascadeAsync().ConfigureAwait(false);
@@ -2414,7 +2417,7 @@ public void Dispose()
         {
             if (js == null) return;
             
-            EngineLogCompat.Debug("[RenderAsync] Running Scripts", LogCategory.Rendering);
+            EngineLogCompat.Info("[RenderAsync] Running Scripts (starting execution)", LogCategory.Rendering);
 
             // 1. Detection helper
             try
@@ -2781,6 +2784,7 @@ public void Dispose()
                 }
 
                 _activeJs = SetupJavaScriptEngine(baseUri, onNavigate, allowJs, fetchExternalCssAsync, viewportWidth, viewportHeight);
+                EngineLogCompat.Info($"[RenderAsync] JS Engine setup complete. ActiveJs={(_activeJs != null ? "yes" : "no")} allowJs={allowJs}", LogCategory.Rendering);
                 if (_activeJs != null && _historyBridge != null) _activeJs.SetHistoryBridge(_historyBridge);
                 if (_activeJs == null && deferStableSnapshotUntilPostScript)
                 {
@@ -2800,13 +2804,30 @@ public void Dispose()
                 lastStageMarkMs = elapsed;
                 EngineLogCompat.Debug($"[PERF] Visual Tree 1: {elapsed}ms", LogCategory.Rendering);
 
-                // 6. Run Scripts
+                // 6. Run Scripts — fire-and-forget after first paint.
+                // Real browsers show DOM+CSS immediately and let JS run in the
+                // background.  Blocking navigation on 70+ module scripts (github.com)
+                // made the browser appear frozen for 45-80 s.  Now the page becomes
+                // interactive as soon as the first visual tree is ready; scripts,
+                // post-script style refresh, and the second visual tree rebuild
+                // happen off the critical path.
                 object element = control;
                 if (_activeJs != null)
                 {
-                    // CSSOM: getBoundingClientRect / offsetWidth / etc. must observe an
-                    // up-to-date layout. Flush layout into the renderer's box cache before
-                    // executing inline scripts so they don't see zeroed rects.
+                    var js = _activeJs;
+                    var capturedDom = dom;
+                    var capturedBaseUri = baseUri;
+                    var capturedCssFetcher = fetchExternalCssAsync;
+                    var capturedImageLoader = imageLoader;
+                    var capturedOnNavigate = onNavigate;
+                    var capturedViewportWidth = viewportWidth;
+                    var capturedViewportHeight = viewportHeight;
+                    var capturedOnFixedBg = onFixedBackground;
+                    var capturedShouldNormalize = shouldNormalizeNoJsFallback;
+                    var capturedDeferSnapshot = deferStableSnapshotUntilPostScript;
+
+                    // The pre-script layout flush must happen before we release the
+                    // render thread, so scripts can read correct getBoundingClientRect.
                     if (control is SkiaDomRenderer activeRenderer && (dom as Element) != null)
                     {
                         try
@@ -2824,58 +2845,43 @@ public void Dispose()
                         }
                     }
 
-                    javascriptExecuted = true;
-                    try
+                    // Run scripts + post-script work in background.
+                    _ = RunDetachedAsync(async () =>
                     {
-                        await RunScriptsAsync(_activeJs, dom as Element, baseUri);
-                        if (shouldNormalizeNoJsFallback)
+                        try
                         {
-                            var normalizeRootAfterScripts = (dom as Element) ?? (dom as Document)?.DocumentElement;
-                            NormalizeNoJsFallbackClasses(normalizeRootAfterScripts);
+                            await RunScriptsAsync(js, capturedDom as Element, capturedBaseUri).ConfigureAwait(false);
+                            javascriptExecuted = true;
+
+                            if (capturedShouldNormalize)
+                            {
+                                var normalizeRoot = (capturedDom as Element) ?? (capturedDom as Document)?.DocumentElement;
+                                NormalizeNoJsFallbackClasses(normalizeRoot);
+                            }
+                            ForceGoogleChallengeBannerVisible(capturedDom, capturedBaseUri, removeUnhideScript: false);
+
+                            if (NeedsPostScriptStyleRefresh(capturedDom, LastComputedStyles))
+                            {
+                                EngineLogCompat.Debug("[RenderAsync] Recomputing CSS after script-driven DOM/style mutations", LogCategory.Rendering);
+                                await LoadCssAsync((capturedDom as Element) ?? (capturedDom as Document)?.DocumentElement, capturedBaseUri, capturedCssFetcher, capturedViewportWidth, capturedViewportHeight).ConfigureAwait(false);
+                            }
+
+                            var vh2 = capturedViewportHeight ?? _activeViewportHeight ?? GetPrimaryWindowHeight();
+                            await BuildVisualTreeAsync(capturedDom as Element, capturedBaseUri, capturedCssFetcher, capturedImageLoader, capturedOnNavigate, js, capturedViewportWidth, vh2, capturedOnFixedBg, includeDiagnosticsBanner: false).ConfigureAwait(false);
                         }
-                        var postScriptGoogleSanitized = ForceGoogleChallengeBannerVisible(dom, baseUri, removeUnhideScript: false);
-                        if (postScriptGoogleSanitized > 0)
+                        catch (Exception bgEx)
                         {
-                            EngineLogCompat.Info($"[CustomHtmlEngine] GoogleChallengeBannerForcedVisible postScriptChanges={postScriptGoogleSanitized}", LogCategory.Rendering);
+                            EngineLogCompat.Warn($"[RenderAsync] Background script/post-script work failed: {bgEx.Message}", LogCategory.Rendering);
                         }
-                        if (NeedsPostScriptStyleRefresh(dom, LastComputedStyles))
+                        finally
                         {
-                            EngineLogCompat.Debug("[RenderAsync] Recomputing CSS after script-driven DOM/style mutations", LogCategory.Rendering);
-                            await LoadCssAsync((dom as Element) ?? (dom as Document)?.DocumentElement, baseUri, fetchExternalCssAsync, viewportWidth, viewportHeight);
-                        }
-                        elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
-                        scriptExecutionMs = Math.Max(0, elapsed - lastStageMarkMs);
-                        lastStageMarkMs = elapsed;
-                        EngineLogCompat.Debug($"[PERF] Script Run: {elapsed}ms", LogCategory.Rendering);
-                        // Re-build visual tree after scripts
-                        EngineLogCompat.Debug("[RenderAsync] Re-building visual tree...", LogCategory.Rendering);
-                        var vh2 = viewportHeight ?? _activeViewportHeight ?? GetPrimaryWindowHeight();
-                        element = await BuildVisualTreeAsync(dom as Element, baseUri, cssFetcher, imageLoader, onNavigate, _activeJs, viewportWidth, vh2, onFixedBackground, includeDiagnosticsBanner: false).ConfigureAwait(false);
-                        elapsed = _pageLoadStopwatch.ElapsedMilliseconds;
-                        postScriptVisualTreeMs = Math.Max(0, elapsed - lastStageMarkMs);
-                        lastStageMarkMs = elapsed;
-                        EngineLogCompat.Debug($"[PERF] Visual Tree 2: {elapsed}ms", LogCategory.Rendering);
-                        if (deferStableSnapshotUntilPostScript)
-                        {
-                            EndAwaitingPostScriptSnapshot();
-                            deferStableSnapshotUntilPostScript = false;
-                        }
-                        // Fire repaint so the engine loop re-renders with post-script DOM state.
-                        OnRepaintReady(_activeDom);
-                    }
-                    catch (Exception vtEx)
-                    {
-                        EngineLogCompat.Error($"[RenderAsync] Visual tree error: {vtEx}", LogCategory.Rendering);
-                        return null;
-                    }
-                    finally
-                    {
-                        if (deferStableSnapshotUntilPostScript)
-                        {
-                            EndAwaitingPostScriptSnapshot();
+                            if (capturedDeferSnapshot)
+                            {
+                                EndAwaitingPostScriptSnapshot();
+                            }
                             OnRepaintReady(_activeDom);
                         }
-                    }
+                    });
                 }
                 else
                 {

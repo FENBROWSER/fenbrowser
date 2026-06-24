@@ -195,4 +195,50 @@ public sealed class RegExpExecTests
             """);
         Assert.True(result.AsBoolean());
     }
+
+    [Fact]
+    public void MatchAllCoercesInputObjectAndReturnsMatchRecords()
+    {
+        var result = Run("""
+            var assert = function(value, message) {
+              if (!value) throw new Error(message || "assertion failed");
+            };
+            assert.sameValue = function(actual, expected, message) {
+              if (!Object.is(actual, expected)) throw new Error(message || "sameValue failed");
+            };
+            assert.compareArray = function(actual, expected, message) {
+              if (actual.length !== expected.length) throw new Error(message || "length mismatch");
+              for (var i = 0; i < actual.length; i++) {
+                if (!Object.is(actual[i], expected[i])) throw new Error(message || "entry mismatch");
+              }
+            };
+            function matchValidator(expectedEntries, expectedIndex, expectedInput) {
+              return function(match) {
+                assert.compareArray(match, expectedEntries, "Match entries");
+                assert.sameValue(match.index, expectedIndex, "Match index");
+                assert.sameValue(match.input, expectedInput, "Match input");
+              };
+            }
+            assert.compareIterator = function(iter, validators) {
+              var i, result;
+              for (i = 0; i < validators.length; i++) {
+                result = iter.next();
+                assert(!result.done);
+                validators[i](result.value);
+              }
+              result = iter.next();
+              assert(result.done);
+              assert.sameValue(result.value, undefined);
+            };
+
+            var input = { toString: function() { return "a*b"; } };
+            var regexp = /\w/g;
+            assert.compareIterator(regexp[Symbol.matchAll](input), [
+              matchValidator(["a"], 0, "a*b"),
+              matchValidator(["b"], 2, "a*b")
+            ]);
+            true;
+            """);
+        Assert.True(result.AsBoolean());
+    }
 }

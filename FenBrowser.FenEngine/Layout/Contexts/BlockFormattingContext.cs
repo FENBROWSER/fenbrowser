@@ -30,7 +30,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         /// re-entry to avoid an infinite loop on self-sizing flex/block containers.
         /// </summary>
         [ThreadStatic] private static int _shrinkToFitDepth;
-        private const int MaxShrinkToFitDepth = 2;
+        private const int MaxShrinkToFitDepth = 8;
 
         protected override void LayoutCore(LayoutBox box, LayoutState state)
         {

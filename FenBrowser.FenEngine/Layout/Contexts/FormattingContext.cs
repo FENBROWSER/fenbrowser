@@ -10,7 +10,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
     public abstract class FormattingContext
     {
         [ThreadStatic] private static int _layoutDepth;
-        private const int MaxLayoutDepth = 40;
+        private const int MaxLayoutDepth = 120;
 
         public void Layout(LayoutBox box, LayoutState state)
         {

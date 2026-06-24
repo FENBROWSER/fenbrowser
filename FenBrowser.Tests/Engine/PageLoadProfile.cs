@@ -3,12 +3,14 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Threading.Tasks;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Core;
 using FenBrowser.FenEngine.Layout;
 using FenBrowser.FenEngine.Rendering.Css;
+using FenBrowser.FenEngine.Scripting;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -85,36 +87,99 @@ namespace FenBrowser.Tests.Engine
             sw2.Stop();
             WriteLine($"  re-parse       {sw2.Elapsed.TotalMilliseconds,10:F1} ms  (warm)");
 
-            // === 2. JS execution (inline <script> bodies only, no external network) ===
+            // === 2. JS execution (full engine with external script loading) ===
             var swJs = Stopwatch.StartNew();
             long jsBytes = 0;
             int jsExecuted = 0;
             int jsErrored = 0;
+            var httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (FenBrowser test)");
             try
             {
-                var runtime = new FenRuntime();
-                foreach (var script in EnumerateInlineScripts(doc.DocumentElement))
+                var host = new JsHostAdapter(
+                    navigate: _ => { },
+                    post: (_, __) => { },
+                    status: _ => { },
+                    requestRender: () => { },
+                    setTitle: _ => { },
+                    alert: _ => { },
+                    confirm: _ => true,
+                    prompt: (_, def) => def ?? "",
+                    log: msg => { try { WriteLine($"  [console] {msg}"); } catch { } },
+                    scrollToElement: _ => { },
+                    focusNode: _ => { }
+                );
+
+                var jsEngine = BrowserScriptEngineRuntime.Create(host);
+                jsEngine.AllowExternalScripts = true;
+                jsEngine.FetchHandler = async (req) =>
                 {
-                    jsBytes += script.Length;
                     try
                     {
-                        runtime.ExecuteSimple(script);
-                        jsExecuted++;
+                        var resp = await httpClient.SendAsync(req);
+                        return resp;
                     }
-                    catch (Exception)
+                    catch (Exception ex)
                     {
-                        jsErrored++;
+                        WriteLine($"  [fetch-fail] {req.RequestUri}: {ex.Message}");
+                        throw;
+                    }
+                };
+                jsEngine.ExternalScriptFetcher = async (uri, referer) =>
+                {
+                    try
+                    {
+                        using var req = new HttpRequestMessage(HttpMethod.Get, uri);
+                        req.Headers.Referrer = referer;
+                        using var resp = await httpClient.SendAsync(req);
+                        resp.EnsureSuccessStatusCode();
+                        var content = await resp.Content.ReadAsStringAsync();
+                        var len = content?.Length ?? 0;
+                        Interlocked.Add(ref jsBytes, len);
+                        Interlocked.Increment(ref jsExecuted);
+                        return content;
+                    }
+                    catch (Exception ex)
+                    {
+                        Interlocked.Increment(ref jsErrored);
+                        WriteLine($"  [script-fail] {uri}: {ex.Message}");
+                        return null;
+                    }
+                };
+
+                var xcomUri = new Uri("https://x.com/");
+                await jsEngine.SetDomAsync(doc, xcomUri);
+
+                // Dump DOM state after JS execution
+                try
+                {
+                    var bodyEl = doc.DocumentElement?.ChildNodes?.OfType<Element>()
+                        .FirstOrDefault(e => string.Equals(e.LocalName, "body", StringComparison.OrdinalIgnoreCase));
+                    if (bodyEl != null)
+                    {
+                        int bodyChildCount = 0;
+                        for (var c = bodyEl.FirstChild; c != null; c = c.NextSibling) bodyChildCount++;
+                        WriteLine($"  [DOM] body children after JS: {bodyChildCount}");
+                        var reactRoot = bodyEl.ChildNodes.OfType<Element>()
+                            .FirstOrDefault(e => string.Equals(e.GetAttribute("id"), "react-root", StringComparison.OrdinalIgnoreCase));
+                        if (reactRoot != null)
+                        {
+                            int rootChildCount = 0;
+                            for (var c = reactRoot.FirstChild; c != null; c = c.NextSibling) rootChildCount++;
+                            WriteLine($"  [DOM] #react-root children: {rootChildCount}");
+                        }
                     }
                 }
+                catch (Exception dex) { WriteLine($"  [DOM] dump failed: {dex.Message}"); }
             }
             catch (Exception ex)
             {
                 WriteLine($"  JS phase aborted: {ex.GetType().Name}: {ex.Message}");
             }
             swJs.Stop();
-            WriteLine($"JS execute       {swJs.Elapsed.TotalMilliseconds,10:F1} ms  ({jsExecuted} ok, {jsErrored} err, {jsBytes:N0} bytes)");
+            WriteLine($"JS execute       {swJs.Elapsed.TotalMilliseconds,10:F1} ms  ({jsExecuted} external, {jsErrored} err, {jsBytes:N0} bytes)");
 
-            // === 3. CSS cascade (inline <style> bodies; external skipped to stay offline) ===
+            // === 3. CSS cascade (full cascade with engine-generated DOM) ===
             var swStyle = Stopwatch.StartNew();
             Dictionary<Node, FenBrowser.Core.Css.CssComputed> styles = null;
             try

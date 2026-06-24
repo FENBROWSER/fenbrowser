@@ -673,6 +673,32 @@ namespace FenBrowser.Tests.Engine
             Assert.False(fenJs.LegacyInner.SubresourceAllowed(new Uri("https://example.com/a.js"), "script"));
         }
 
+        [Fact]
+        public async Task FenJsMode_SetDomAsync_ExecutesModuleScriptWithImportsExportsThroughFenJs()
+        {
+            Environment.SetEnvironmentVariable(RuntimeSelectorVariable, "fenjs");
+            BrowserScriptEngineRuntime.Reset();
+
+            var baseUri = new Uri("https://example.com/app/index.html");
+            var document = new HtmlParser(
+                "<html><body><script type=\"module\">import { x } from './mod.js'; globalThis.__moduleResult = x;</script></body></html>",
+                baseUri).Parse();
+            var engine = Assert.IsType<FenJsBrowserScriptEngine>(BrowserScriptEngineRuntime.Create(CreateHost()));
+            engine.AllowExternalScripts = true;
+            engine.ExternalScriptFetcher = static (u, _) => {
+                if (u.AbsoluteUri.EndsWith("mod.js"))
+                {
+                    return Task.FromResult("export const x = 42;");
+                }
+                return Task.FromResult("");
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("42", engine.Evaluate("globalThis.__moduleResult")?.ToString());
+            Assert.Equal(0, engine.LegacyFallbackCount);
+        }
+
         public void Dispose()
         {
             Environment.SetEnvironmentVariable(RuntimeSelectorVariable, _originalMode);
