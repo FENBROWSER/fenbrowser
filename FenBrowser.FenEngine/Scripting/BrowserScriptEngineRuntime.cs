@@ -516,6 +516,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
         catch (Exception ex)
         {
+            if (ex is JsThrownException jte && string.IsNullOrEmpty(jte.Description))
+            {
+                try { jte.Description = _interpreter.DescribeThrownValue(jte.Value); } catch { }
+            }
             Console.Error.WriteLine($"[FenJsBridge] ExecutePageScriptsWithFenJsAsync EXCEPTION: {ex.Message}");
             throw;
         }
@@ -1460,6 +1464,200 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 };
                 ResizeObserver.prototype.disconnect = function () {
                     this._targets.length = 0;
+                };
+
+                // ── Event ── https://dom.spec.whatwg.org/#interface-event
+                // GitHub uses new Event('click'), new Event('DOMContentLoaded'), etc.
+                // Minimal constructor: stores type + options, supports stopPropagation /
+                // preventDefault / stopImmediatePropagation.
+                globalThis.Event = function Event(type, options) {
+                    if (typeof type !== 'string') {
+                        throw new TypeError("Failed to construct 'Event': 1 argument required.");
+                    }
+                    options = options || {};
+                    this.type = type;
+                    this.bubbles = !!options.bubbles;
+                    this.cancelable = !!options.cancelable;
+                    this.composed = !!options.composed;
+                    this.defaultPrevented = false;
+                    this.cancelBubble = false;
+                    this.returnValue = true;
+                    this.eventPhase = 0;
+                    this.isTrusted = false;
+                    this.target = null;
+                    this.currentTarget = null;
+                    this.srcElement = null;
+                    this.timeStamp = Date.now();
+                    this._propagationStopped = false;
+                    this._immediatePropagationStopped = false;
+                };
+                Event.prototype.stopPropagation = function () {
+                    this._propagationStopped = true;
+                };
+                Event.prototype.stopImmediatePropagation = function () {
+                    this._propagationStopped = true;
+                    this._immediatePropagationStopped = true;
+                };
+                Event.prototype.preventDefault = function () {
+                    if (this.cancelable) {
+                        this.defaultPrevented = true;
+                    }
+                };
+                Event.prototype.composedPath = function () {
+                    return [];
+                };
+                Event.NONE = 0;
+                Event.CAPTURING_PHASE = 1;
+                Event.AT_TARGET = 2;
+                Event.BUBBLING_PHASE = 3;
+
+                // ── CustomEvent ── https://dom.spec.whatwg.org/#interface-customevent
+                globalThis.CustomEvent = function CustomEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.detail = options.detail !== undefined ? options.detail : null;
+                };
+                CustomEvent.prototype = Object.create(Event.prototype);
+                CustomEvent.prototype.constructor = CustomEvent;
+
+                // ── XMLHttpRequest ── https://xhr.spec.whatwg.org/
+                // Amazon and many sites use XHR for API calls.  Stub that fires
+                // onerror immediately so callers can handle the failure gracefully.
+                globalThis.XMLHttpRequest = function XMLHttpRequest() {
+                    this.readyState = 0;
+                    this.status = 0;
+                    this.statusText = '';
+                    this.responseText = '';
+                    this.responseXML = null;
+                    this.response = null;
+                    this.responseType = '';
+                    this.timeout = 0;
+                    this.withCredentials = false;
+                    this.upload = {};
+                    this.onreadystatechange = null;
+                    this.onload = null;
+                    this.onerror = null;
+                    this.onabort = null;
+                    this.ontimeout = null;
+                    this.onloadend = null;
+                    this.onloadstart = null;
+                    this.onprogress = null;
+                    this._requestHeaders = {};
+                    this._aborted = false;
+                };
+                XMLHttpRequest.UNSENT = 0;
+                XMLHttpRequest.OPENED = 1;
+                XMLHttpRequest.HEADERS_RECEIVED = 2;
+                XMLHttpRequest.LOADING = 3;
+                XMLHttpRequest.DONE = 4;
+                XMLHttpRequest.prototype.open = function (method, url, async, user, password) {
+                    this._method = method;
+                    this._url = url;
+                    this._async = async !== false;
+                    this.readyState = XMLHttpRequest.OPENED;
+                };
+                XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
+                    this._requestHeaders[name] = value;
+                };
+                XMLHttpRequest.prototype.send = function (body) {
+                    var self = this;
+                    // Simulate an immediate network failure so callers get onerror.
+                    self.readyState = XMLHttpRequest.DONE;
+                    self.status = 0;
+                    self.statusText = 'Network Error (stub)';
+                    if (self.onerror) self.onerror(new Event('error'));
+                    if (self.onloadend) self.onloadend(new Event('loadend'));
+                    if (self.onreadystatechange) self.onreadystatechange();
+                };
+                XMLHttpRequest.prototype.abort = function () {
+                    this._aborted = true;
+                    if (this.onabort) this.onabort(new Event('abort'));
+                };
+                XMLHttpRequest.prototype.getResponseHeader = function (name) {
+                    return null;
+                };
+                XMLHttpRequest.prototype.getAllResponseHeaders = function () {
+                    return '';
+                };
+                XMLHttpRequest.prototype.overrideMimeType = function (mime) {};
+
+                // ── AbortSignal / AbortController ── https://dom.spec.whatwg.org/#abortcontroller
+                // GitHub uses fetch() with { signal: AbortSignal.timeout(...) }.
+                globalThis.AbortSignal = function AbortSignal() {
+                    this.aborted = false;
+                    this.reason = undefined;
+                    this.onabort = null;
+                };
+                AbortSignal.prototype.throwIfAborted = function () {
+                    if (this.aborted) throw this.reason || new DOMException('The operation was aborted.', 'AbortError');
+                };
+                AbortSignal.timeout = function (ms) {
+                    var signal = new AbortSignal();
+                    setTimeout(function () {
+                        signal.aborted = true;
+                        signal.reason = new DOMException('The operation was aborted due to timeout.', 'TimeoutError');
+                        if (signal.onabort) signal.onabort(new Event('abort'));
+                    }, ms);
+                    return signal;
+                };
+                AbortSignal.any = function (signals) {
+                    var signal = new AbortSignal();
+                    if (signals && signals.length) {
+                        signals.forEach(function (s) {
+                            if (s && s.aborted) {
+                                signal.aborted = true;
+                                signal.reason = s.reason;
+                            }
+                        });
+                    }
+                    return signal;
+                };
+
+                globalThis.AbortController = function AbortController() {
+                    this.signal = new AbortSignal();
+                };
+                AbortController.prototype.abort = function (reason) {
+                    if (this.signal.aborted) return;
+                    this.signal.aborted = true;
+                    this.signal.reason = reason || new DOMException('The operation was aborted.', 'AbortError');
+                    if (this.signal.onabort) this.signal.onabort(new Event('abort'));
+                };
+
+                // ── customElements ── https://html.spec.whatwg.org/#custom-elements
+                // GitHub uses customElements.define() for web components.
+                globalThis.customElements = {
+                    _registry: Object.create(null),
+                    define: function (name, constructor, options) {
+                        if (this._registry[name]) {
+                            throw new DOMException("Failed to execute 'define': '" + name + "' has already been defined.", "NotSupportedError");
+                        }
+                        this._registry[name] = { constructor: constructor, options: options };
+                    },
+                    get: function (name) {
+                        var entry = this._registry[name];
+                        return entry ? entry.constructor : undefined;
+                    },
+                    whenDefined: function (name) {
+                        if (this._registry[name]) {
+                            return Promise.resolve(this._registry[name].constructor);
+                        }
+                        return new Promise(function () {}); // never resolves (stub)
+                    },
+                    upgrade: function (root) {}
+                };
+
+                // ── DOMException ──
+                globalThis.DOMException = function DOMException(message, name) {
+                    this.message = message || '';
+                    this.name = name || 'Error';
+                };
+                DOMException.prototype = Object.create(Error.prototype);
+                DOMException.prototype.constructor = DOMException;
+
+                // ── fetch ── Minimal stub that rejects with a network error.
+                // GitHub and many sites use fetch() for API calls.
+                globalThis.fetch = function (input, init) {
+                    return Promise.reject(new TypeError('Failed to fetch: network is unavailable (stub).'));
                 };
             })();
             """);
