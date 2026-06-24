@@ -154,7 +154,14 @@ namespace FenBrowser.Host.ProcessIsolation
                 session = state.Session;
             }
 
-            session?.SendNavigate(url, isUserInput);
+            var viewport = tab.Browser?.ViewportSize ?? default;
+            if (viewport.Width > 1f && viewport.Height > 1f)
+            {
+                state.LastViewportWidth = viewport.Width;
+                state.LastViewportHeight = viewport.Height;
+            }
+
+            session?.SendNavigate(url, isUserInput, viewport.Width, viewport.Height);
         }
 
         private void RecycleSessionForAssignmentChange(TabProcessState state, string newAssignment)
@@ -198,6 +205,12 @@ namespace FenBrowser.Host.ProcessIsolation
 
             if (_tabStates.TryGetValue(tab.Id, out var state))
             {
+                if (viewportWidth > 1f && viewportHeight > 1f)
+                {
+                    state.LastViewportWidth = viewportWidth;
+                    state.LastViewportHeight = viewportHeight;
+                }
+
                 state.Session?.SendFrameRequest(viewportWidth, viewportHeight, scrollY);
             }
         }
@@ -422,7 +435,11 @@ namespace FenBrowser.Host.ProcessIsolation
 
                 if (!string.IsNullOrWhiteSpace(exitDecision.ReplayUrl))
                 {
-                    state.Session?.SendNavigate(exitDecision.ReplayUrl, exitDecision.ReplayIsUserInput);
+                    state.Session?.SendNavigate(
+                        exitDecision.ReplayUrl,
+                        exitDecision.ReplayIsUserInput,
+                        state.LastViewportWidth,
+                        state.LastViewportHeight);
                 }
             });
         }
@@ -802,6 +819,8 @@ namespace FenBrowser.Host.ProcessIsolation
             public bool IsClosed { get; set; }
             public string AssignmentKey { get; set; }
             public RendererProcessSlot PooledSlot { get; set; }
+            public float LastViewportWidth { get; set; }
+            public float LastViewportHeight { get; set; }
 
             /// <summary>
             /// The OS-level sandbox applied to the renderer child process.

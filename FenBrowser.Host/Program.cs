@@ -486,6 +486,11 @@ namespace FenBrowser.Host
                         var url = payload?.Url ?? string.Empty;
                         if (!string.IsNullOrWhiteSpace(url))
                         {
+                            if (payload.ViewportWidth > 1f && payload.ViewportHeight > 1f)
+                            {
+                                browser.UpdateViewportHint(payload.ViewportWidth, payload.ViewportHeight);
+                            }
+
                             if (payload.IsUserInput)
                                 await browser.NavigateUserInputAsync(url).ConfigureAwait(false);
                             else

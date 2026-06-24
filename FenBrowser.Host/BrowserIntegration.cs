@@ -2065,6 +2065,7 @@ public class BrowserIntegration
     
     public bool NeedsRender => _needsRepaint;
     public bool HasViewport => _hasReceivedViewportSize && _lastViewportSize.Width > 1 && _lastViewportSize.Height > 1;
+    public SKSize ViewportSize => _lastViewportSize;
     
     /// <summary>
     /// Get the current scroll position.

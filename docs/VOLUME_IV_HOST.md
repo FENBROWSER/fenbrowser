@@ -1293,3 +1293,20 @@ Net effect:
 Verification:
 
 - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~EngineLogSettingsTests|FullyQualifiedName~BrowserSettingsTests" --logger "console;verbosity=minimal"`: pass (`7/7`) on `2026-06-24`.
+
+### 6.60 Renderer Navigation Viewport Seeding (2026-06-24)
+
+- `FenBrowser.Host/ProcessIsolation/RendererIpc.cs`
+  - `RendererNavigatePayload` now carries the host web-content viewport width and height.
+- `FenBrowser.Host/ProcessIsolation/BrokeredProcessIsolationCoordinator.cs`
+  - Brokered navigation stores the latest valid tab viewport and includes it in initial navigation and replay navigation IPC.
+- `FenBrowser.Host/Program.cs`
+  - Renderer-child navigation applies the viewport hint before executing the navigation.
+
+Net effect:
+
+- Brokered renderer children resolve viewport-dependent media queries, percentage heights, and viewport units against the real host viewport on the first page layout instead of the default fallback size.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~RendererIpcViewportTests|FullyQualifiedName~BrowserIntegrationViewportHintTests|FullyQualifiedName~BrowserTabStartupNavigationTests" --logger "console;verbosity=minimal"`: pass (`5/5`) on `2026-06-24`.

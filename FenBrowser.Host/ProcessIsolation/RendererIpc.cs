@@ -47,6 +47,8 @@ namespace FenBrowser.Host.ProcessIsolation
     {
         public string Url { get; set; }
         public bool IsUserInput { get; set; }
+        public float ViewportWidth { get; set; }
+        public float ViewportHeight { get; set; }
     }
 
     public sealed class RendererFrameRequestPayload
@@ -307,12 +309,14 @@ namespace FenBrowser.Host.ProcessIsolation
             return false;
         }
 
-        public void SendNavigate(string url, bool isUserInput)
+        public void SendNavigate(string url, bool isUserInput, float viewportWidth = 0f, float viewportHeight = 0f)
         {
             var payload = new RendererNavigatePayload
             {
                 Url = url ?? string.Empty,
-                IsUserInput = isUserInput
+                IsUserInput = isUserInput,
+                ViewportWidth = viewportWidth,
+                ViewportHeight = viewportHeight
             };
 
             Send(new RendererIpcEnvelope
