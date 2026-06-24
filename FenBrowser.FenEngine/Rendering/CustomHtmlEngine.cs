@@ -2384,6 +2384,10 @@ public void Dispose()
                  // [Compliance] Inject Window Dimensions
                 if (viewportWidth.HasValue) js.WindowWidth = viewportWidth.Value;
                 if (viewportHeight.HasValue) js.WindowHeight = viewportHeight.Value;
+                // Wire layout box resolution for getBoundingClientRect / offsetHeight etc.
+                // Use a late-bound lookup so scripts that run after layout completes
+                // (setTimeout, event handlers, React hydration) see real box geometry.
+                js.LayoutBoxResolver = el => _cachedRenderer?.GetElementBox(el);
 
                 // Capture every uncaught script exception to logs/js_diagnostics.log.
                 // This is how we find out *why* a heavily-fenced site (x.com, etc.)

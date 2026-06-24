@@ -10,6 +10,7 @@ using System.Threading;
 using System.Text;
 using System.Threading.Tasks;
 using FenBrowser.Core;
+using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Network.Handlers;
 using FenBrowser.Core.Parsing;
@@ -23,6 +24,7 @@ using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
 using FenBrowser.Js.Parser;
 using FenBrowser.FenEngine.Core.Interfaces;
+using FenBrowser.FenEngine.Layout;
 using FenBrowser.FenEngine.Security;
 
 namespace FenBrowser.FenEngine.Scripting;
@@ -44,6 +46,7 @@ public interface IBrowserScriptEngine
     Action<Uri, string> CookieWriteBridge { get; set; }
     Action RequestRender { get; set; }
     Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
+    Func<Element, object> LayoutBoxResolver { get; set; }
     SandboxPolicy Sandbox { get; set; }
     bool AllowExternalScripts { get; set; }
     bool ExecuteInlineScriptsOnInnerHTML { get; set; }
@@ -124,6 +127,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     public Action<Uri, string> CookieWriteBridge { get; set; }
     public Action RequestRender { get; set; }
     public Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
+    public Func<Element, object> LayoutBoxResolver { get; set; }
     public SandboxPolicy Sandbox { get; set; }
     public bool AllowExternalScripts { get; set; }
     public bool ExecuteInlineScriptsOnInnerHTML { get; set; }
@@ -1459,6 +1463,115 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 };
             })();
             """);
+
+        // window.getComputedStyle(element) → returns a CSSStyleDeclaration-like object
+        // with the element's computed CSS properties.  React and other frameworks call
+        // this during hydration to determine whether the server HTML matches the
+        // client-side render.  Without it, hydration always fails and the app falls
+        // back to a full client render (or crashes with TypeError).
+        var getComputedStyleFn = _interpreter.AllocateNativeFunction(
+            "getComputedStyle",
+            (_, args) =>
+            {
+                if (args.Count == 0)
+                {
+                    return _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+                }
+
+                var element = ResolveHostObjectOrNull<Element>(args[0]);
+                if (element == null)
+                {
+                    return _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+                }
+
+                var cs = element.GetComputedStyle();
+                if (cs == null)
+                {
+                    return _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+                }
+
+                var props = new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase);
+                // Populate from the raw Map first (all CSS properties)
+                if (cs.Map != null)
+                {
+                    foreach (var kv in cs.Map)
+                    {
+                        props[kv.Key] = JsValue.FromString(kv.Value ?? string.Empty);
+                    }
+                }
+
+                // Override/add typed properties for correctness
+                if (cs.Display != null) props["display"] = JsValue.FromString(cs.Display);
+                if (cs.Position != null) props["position"] = JsValue.FromString(cs.Position);
+                if (cs.FlexDirection != null) props["flexDirection"] = JsValue.FromString(cs.FlexDirection);
+                if (cs.FlexWrap != null) props["flexWrap"] = JsValue.FromString(cs.FlexWrap);
+                if (cs.JustifyContent != null) props["justifyContent"] = JsValue.FromString(cs.JustifyContent);
+                if (cs.AlignItems != null) props["alignItems"] = JsValue.FromString(cs.AlignItems);
+                if (cs.AlignContent != null) props["alignContent"] = JsValue.FromString(cs.AlignContent);
+                if (cs.Width.HasValue) props["width"] = JsValue.FromString(cs.Width.Value + "px");
+                if (cs.Height.HasValue) props["height"] = JsValue.FromString(cs.Height.Value + "px");
+                if (cs.MinWidth.HasValue) props["minWidth"] = JsValue.FromString(cs.MinWidth.Value + "px");
+                if (cs.MinHeight.HasValue) props["minHeight"] = JsValue.FromString(cs.MinHeight.Value + "px");
+                if (cs.MaxWidth.HasValue) props["maxWidth"] = JsValue.FromString(cs.MaxWidth.Value + "px");
+                if (cs.MaxHeight.HasValue) props["maxHeight"] = JsValue.FromString(cs.MaxHeight.Value + "px");
+                if (cs.FontSize.HasValue) props["fontSize"] = JsValue.FromString(cs.FontSize.Value + "px");
+                if (cs.ForegroundColor.HasValue) props["color"] = JsValue.FromString(cs.ForegroundColor.Value.ToString());
+                if (cs.BackgroundColor.HasValue) props["backgroundColor"] = JsValue.FromString(cs.BackgroundColor.Value.ToString());
+                if (cs.Opacity.HasValue) props["opacity"] = JsValue.FromString(cs.Opacity.Value.ToString(CultureInfo.InvariantCulture));
+                if (cs.Visibility != null) props["visibility"] = JsValue.FromString(cs.Visibility);
+                if (cs.Overflow != null) props["overflow"] = JsValue.FromString(cs.Overflow);
+                if (cs.OverflowX != null) props["overflowX"] = JsValue.FromString(cs.OverflowX);
+                if (cs.OverflowY != null) props["overflowY"] = JsValue.FromString(cs.OverflowY);
+                if (cs.BoxSizing != null) props["boxSizing"] = JsValue.FromString(cs.BoxSizing);
+                if (cs.ZIndex.HasValue) props["zIndex"] = JsValue.FromString(cs.ZIndex.Value.ToString(CultureInfo.InvariantCulture));
+                if (cs.LineHeight.HasValue) props["lineHeight"] = JsValue.FromString(cs.LineHeight.Value + "px");
+                if (cs.TextAlign.HasValue) props["textAlign"] = JsValue.FromString(cs.TextAlign.Value.ToString());
+                if (cs.FontWeight.HasValue) props["fontWeight"] = JsValue.FromString(cs.FontWeight.Value.ToString(CultureInfo.InvariantCulture));
+                if (cs.FontFamilyName != null) props["fontFamily"] = JsValue.FromString(cs.FontFamilyName);
+                // Border from Thickness + Brush
+                var bt = cs.BorderThickness;
+                if (bt.Left != 0 || bt.Right != 0 || bt.Top != 0 || bt.Bottom != 0)
+                {
+                    props["borderTopWidth"] = JsValue.FromString(bt.Top + "px");
+                    props["borderRightWidth"] = JsValue.FromString(bt.Right + "px");
+                    props["borderBottomWidth"] = JsValue.FromString(bt.Bottom + "px");
+                    props["borderLeftWidth"] = JsValue.FromString(bt.Left + "px");
+                }
+                if (cs.BorderBrush.HasValue)
+                    props["borderTopColor"] = JsValue.FromString(cs.BorderBrush.Value.ToString());
+
+                // Margin/padding shorthand (from Map if not explicit)
+                if (cs.Margin != null)
+                {
+                    props["marginTop"] = JsValue.FromString(cs.Margin.Top + "px");
+                    props["marginRight"] = JsValue.FromString(cs.Margin.Right + "px");
+                    props["marginBottom"] = JsValue.FromString(cs.Margin.Bottom + "px");
+                    props["marginLeft"] = JsValue.FromString(cs.Margin.Left + "px");
+                }
+                if (cs.Padding != null)
+                {
+                    props["paddingTop"] = JsValue.FromString(cs.Padding.Top + "px");
+                    props["paddingRight"] = JsValue.FromString(cs.Padding.Right + "px");
+                    props["paddingBottom"] = JsValue.FromString(cs.Padding.Bottom + "px");
+                    props["paddingLeft"] = JsValue.FromString(cs.Padding.Left + "px");
+                }
+
+                // Custom properties (CSS variables)
+                if (cs.CustomProperties != null)
+                {
+                    foreach (var kv in cs.CustomProperties)
+                    {
+                        var propName = kv.Key.StartsWith("--") ? kv.Key : "--" + kv.Key;
+                        if (!props.ContainsKey(propName))
+                            props[propName] = JsValue.FromString(kv.Value ?? string.Empty);
+                    }
+                }
+
+                return _interpreter.AllocateObject(props);
+            },
+            length: 1);
+
+        _interpreter.RegisterGlobalValue("getComputedStyle", getComputedStyleFn);
     }
 
     /// <summary>
@@ -2683,6 +2796,65 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return ResolveHostObjectOrNull(value) as T;
     }
 
+    /// <summary>
+    /// Reads a layout dimension (offsetHeight, clientWidth, etc.) for an element
+    /// by resolving its layout box from the renderer.
+    /// </summary>
+    private JsValue ReadElementLayoutDimension(Element element, string property)
+    {
+        var box = LayoutBoxResolver?.Invoke(element) as BoxModel;
+        if (box == null)
+            return JsValue.FromInt32(0);
+
+        return property switch
+        {
+            "offsetWidth" => JsValue.FromNumber(box.BorderBox.Width),
+            "offsetHeight" => JsValue.FromNumber(box.BorderBox.Height),
+            "clientWidth" => JsValue.FromNumber(box.PaddingBox.Width),
+            "clientHeight" => JsValue.FromNumber(box.PaddingBox.Height),
+            "offsetLeft" => JsValue.FromNumber(box.BorderBox.Left),
+            "offsetTop" => JsValue.FromNumber(box.BorderBox.Top),
+            "clientLeft" => JsValue.FromNumber(box.BorderBox.Left - box.PaddingBox.Left),
+            "clientTop" => JsValue.FromNumber(box.BorderBox.Top - box.PaddingBox.Top),
+            "scrollWidth" => JsValue.FromNumber(box.ContentBox.Width),
+            "scrollHeight" => JsValue.FromNumber(box.ContentBox.Height),
+            "scrollTop" => JsValue.FromInt32(0),
+            "scrollLeft" => JsValue.FromInt32(0),
+            _ => JsValue.FromInt32(0)
+        };
+    }
+
+    /// <summary>
+    /// Returns a getBoundingClientRect result for an element from its layout box.
+    /// </summary>
+    private JsValue ReadElementBoundingClientRect(Element element)
+    {
+        var box = LayoutBoxResolver?.Invoke(element) as BoxModel;
+        if (box == null)
+        {
+            return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+            {
+                ["x"] = JsValue.FromInt32(0), ["y"] = JsValue.FromInt32(0),
+                ["width"] = JsValue.FromInt32(0), ["height"] = JsValue.FromInt32(0),
+                ["top"] = JsValue.FromInt32(0), ["right"] = JsValue.FromInt32(0),
+                ["bottom"] = JsValue.FromInt32(0), ["left"] = JsValue.FromInt32(0),
+            });
+        }
+
+        var r = box.BorderBox;
+        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["x"] = JsValue.FromNumber(r.Left),
+            ["y"] = JsValue.FromNumber(r.Top),
+            ["width"] = JsValue.FromNumber(r.Width),
+            ["height"] = JsValue.FromNumber(r.Height),
+            ["top"] = JsValue.FromNumber(r.Top),
+            ["right"] = JsValue.FromNumber(r.Right),
+            ["bottom"] = JsValue.FromNumber(r.Bottom),
+            ["left"] = JsValue.FromNumber(r.Left),
+        });
+    }
+
     private void ThrowHierarchyRequestError(string message)
     {
         ThrowDomException("HierarchyRequestError", message ?? "Hierarchy request error.");
@@ -3856,22 +4028,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "scrollHeight":
                 case "scrollTop":
                 case "scrollLeft":
-                    value = JsValue.FromInt32(0);
+                    value = _owner.ReadElementLayoutDimension(element, property);
                     return true;
                 case "getBoundingClientRect":
                     value = _owner.GetOrCreateHostCallable(
                         element, "getBoundingClientRect",
-                        (_, _) =>
-                        {
-                            var rect = _owner._interpreter.AllocateObject(new Dictionary<string, JsValue>
-                            {
-                                ["x"] = JsValue.FromInt32(0), ["y"] = JsValue.FromInt32(0),
-                                ["width"] = JsValue.FromInt32(0), ["height"] = JsValue.FromInt32(0),
-                                ["top"] = JsValue.FromInt32(0), ["right"] = JsValue.FromInt32(0),
-                                ["bottom"] = JsValue.FromInt32(0), ["left"] = JsValue.FromInt32(0),
-                            });
-                            return rect;
-                        },
+                        (_, _) => _owner.ReadElementBoundingClientRect(element),
                         length: 0);
                     return true;
                 case "style":
