@@ -16,4 +16,10 @@
     <ProjectReference Include="..\FenBrowser.Tooling\FenBrowser.Tooling.csproj" />
   </ItemGroup>
 
+  <!-- Legacy-engine-dependent files excluded pending FenJS migration -->
+  <ItemGroup>
+    <Compile Remove="Program.cs" />
+    <Compile Remove="HeadlessNavigator.cs" />
+  </ItemGroup>
+
 </Project>

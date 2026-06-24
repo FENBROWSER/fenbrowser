@@ -9,7 +9,6 @@ using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Logging;
-using FenBrowser.FenEngine.Testing;
 using FenBrowser.Tooling.Host;
 using FenBrowser.Host;
 using FenBrowser.Host.Tabs;
@@ -44,7 +43,9 @@ namespace FenBrowser.Tooling
                     RunJsTime(args);
                     return;
                 case "acid2":
-                    await RunAcid2Async().ConfigureAwait(false);
+                case "acid-ref":
+                case "acid-cmp":
+                    Console.WriteLine("[tooling] Acid test runners removed with legacy engine.");
                     return;
                 case "acid2-compare":
                     await RunAcid2CompareAsync().ConfigureAwait(false);
@@ -65,13 +66,19 @@ namespace FenBrowser.Tooling
                     RunCssDebug();
                     return;
                 case "test":
-                    await FenBrowser.FenEngine.Tests.LogicTestRunner.MainTest(args).ConfigureAwait(false);
+                    // await FenBrowser.FenEngine.Tests.LogicTestRunner.MainTest(args).ConfigureAwait(false);
+                    Console.WriteLine("[tooling] Legacy test command removed with legacy engine.");
                     return;
                 case "test262":
-                    await Test262ToolRunner.RunAsync(args).ConfigureAwait(false);
+                    // await Test262ToolRunner.RunAsync(args).ConfigureAwait(false);
+                    Console.WriteLine("[tooling] Use FenBrowser.Js.Test262 runner directly.");
                     return;
                 case "wpt":
                     await WptToolRunner.RunAsync(args).ConfigureAwait(false);
+                    return;
+                case "multitab":
+                    // await MultiTabHeadlessRunner.RunAsync(args.Skip(1).ToArray()).ConfigureAwait(false);
+                    Console.WriteLine("[tooling] Multitab removed with legacy engine.");
                     return;
                 default:
                     PrintUsage();
@@ -296,7 +303,10 @@ namespace FenBrowser.Tooling
 
         private static async Task RunAcid2Async()
         {
-            const int maxRunMs = 35000;
+            Console.WriteLine("[tooling] Acid2 runner removed with legacy engine.");
+            await Task.CompletedTask;
+            return;
+            const int maxRunMs = 35000; // unreachable, kept for compilation
             CssEngineConfig.CurrentEngine = CssEngineType.Custom;
             var windowManager = WindowManager.Instance;
             windowManager.Initialize("about:blank", isHeadless: true);
@@ -355,7 +365,10 @@ namespace FenBrowser.Tooling
 
         private static async Task RunAcid2CompareAsync()
         {
-            const string acid2Url = "http://acid2.acidtests.org/#top";
+            Console.WriteLine("[tooling] Acid compare runner removed with legacy engine.");
+            await Task.CompletedTask;
+            return;
+            const string acid2Url = "http://acid2.acidtests.org/#top"; // unreachable, kept for compilation
             const string acid2ReferenceUrl = "http://acid2.acidtests.org/reference.html";
             const int maxCaptureMs = 45000;
 
@@ -554,7 +567,7 @@ namespace FenBrowser.Tooling
                     {
                         ChromeManager.Instance.Initialize("about:blank");
                         var server = new FenBrowser.WebDriver.WebDriverServer(driverPort);
-                        server.SetDriver(new HostBrowserDriver());
+                        // server.SetDriver(new HostBrowserDriver()); // Legacy removed
                         server.Start();
                     }
                     catch (Exception ex)

@@ -1,30 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- ── WebIDL Binding Generation ─────────────────────────────────────────
-  Runs webidlgen before each build to (re)generate C# binding stubs from
-  the canonical *.idl source files in FenBrowser.Core/WebIDL/Idl/.
-  Generated files land in Bindings/Generated/ and are compiled as normal
-  C# source. The <None> items expose the IDL files to VS tooling.
-  Using optimized build infrastructure with dependency tracking.
-  ───────────────────────────────────────────────────────────────────── -->
-  
-  <!-- Import WebIDL build infrastructure (Option D: Pipeline Improvement) -->
-  <Import Project="$(MSBuildThisFileDirectory)Build\WebIdl.Build.props" />
-  
-  <ItemGroup>
-    <None Include="..\FenBrowser.Core\WebIDL\Idl\*.idl" />
-  </ItemGroup>
-  
-  <!-- Enhanced Project References with proper build ordering -->
+  <!-- WebIDL binding generation disabled — FenJS uses HostObjectTable, not generated stubs -->
+
   <ItemGroup>
     <ProjectReference Include="..\FenBrowser.Core\FenBrowser.Core.csproj" />
     <ProjectReference Include="..\FenBrowser.Js\FenBrowser.Js.csproj" />
-    <ProjectReference Include="..\FenBrowser.WebIdlGen\FenBrowser.WebIdlGen.csproj">
-      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
-      <!-- Ensures build order: WebIdlGen builds before projects that need bindings -->
-      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
-      <BuildReference Condition="'$(DesignTimeBuild)' != 'true'">true</BuildReference>
-    </ProjectReference>
   </ItemGroup>
 
   <ItemGroup>
@@ -33,8 +13,102 @@
     <Compile Remove="Tests\**\*.cs" />
     <Compile Remove="HTML\**\*.cs" />
     <Compile Remove="Testing\**\*.cs" />
+    <!-- Legacy engine files removed — FenJS is the sole JS runtime -->
+    <Compile Remove="Core\Bytecode\**\*.cs" />
+    <Compile Remove="Core\Types\**\*.cs" />
+    <Compile Remove="Core\Interfaces\**\*.cs" />
+    <Compile Remove="Core\FenRuntime.cs" />
+    <Compile Remove="Core\FenObject.cs" />
+    <Compile Remove="Core\FenFunction.cs" />
+    <Compile Remove="Core\FenEnvironment.cs" />
+    <Compile Remove="Core\FenSymbol.cs" />
+    <Compile Remove="Core\PropertyDescriptor.cs" />
+    <Compile Remove="Core\Realm.cs" />
+    <Compile Remove="Core\ExecutionContext.cs" />
+    <Compile Remove="Core\JsThrownValueException.cs" />
+    <Compile Remove="Core\IDomBridge.cs" />
+    <Compile Remove="Core\Ast.cs" />
+    <Compile Remove="Core\Lexer.cs" />
+    <Compile Remove="Core\Parser.cs" />
+    <Compile Remove="Core\ModuleLoader.cs" />
+    <Compile Remove="Core\AnimationFrameScheduler.cs" />
+    <Compile Remove="Core\EngineLoop.cs" />
+    <Compile Remove="Core\EnginePhase.cs" />
+    <Compile Remove="Core\InputQueue.cs" />
+    <Compile Remove="Core\ResourceUrlResolver.cs" />
+    <Compile Remove="Demo\**\*.cs" />
+    <Compile Remove="DOM\DomWrapperFactory.cs" />
+    <Compile Remove="DOM\ElementWrapper.cs" />
+    <Compile Remove="DOM\DocumentWrapper.cs" />
+    <Compile Remove="DOM\NodeWrapper.cs" />
+    <Compile Remove="DOM\NodeListWrapper.cs" />
+    <Compile Remove="DOM\RadioNodeListWrapper.cs" />
+    <Compile Remove="DOM\RangeWrapper.cs" />
+    <Compile Remove="DOM\ShadowRootWrapper.cs" />
+    <Compile Remove="DOM\HTMLCollectionWrapper.cs" />
+    <Compile Remove="DOM\MutationObserverWrapper.cs" />
+    <Compile Remove="DOM\DomEvent.cs" />
+    <Compile Remove="DOM\CustomElementRegistry.cs" />
+    <Compile Remove="DOM\EventTarget.cs" />
+    <Compile Remove="DOM\HighlightApiBindings.cs" />
+    <Compile Remove="DOM\AttrWrapper.cs" />
+    <Compile Remove="DOM\CommentWrapper.cs" />
+    <Compile Remove="DOM\DocumentTypeWrapper.cs" />
+    <Compile Remove="DOM\TextWrapper.cs" />
+    <Compile Remove="DOM\CustomEvent.cs" />
+    <Compile Remove="DOM\EventListenerRegistry.cs" />
+    <Compile Remove="DOM\FontLoadingBindings.cs" />
+    <Compile Remove="DOM\LegacyUiEvents.cs" />
+    <Compile Remove="DOM\NamedNodeMapWrapper.cs" />
+    <Compile Remove="DOM\Observers.cs" />
+    <Compile Remove="DOM\TouchEvent.cs" />
+    <Compile Remove="Jit\**\*.cs" />
+    <Compile Remove="Workers\**\*.cs" />
+    <Compile Remove="Storage\StorageUtils.cs" />
+    <Compile Remove="Interaction\InputManager.cs" />
+    <Compile Remove="Observers\ObserverCoordinator.cs" />
+    <Compile Remove="Scripting\JavaScriptEngine.cs" />
+    <Compile Remove="Scripting\JavaScriptEngine.Dom.cs" />
+    <Compile Remove="Scripting\JavaScriptEngine.Execution.cs" />
+    <Compile Remove="Scripting\JavaScriptEngine.Methods.cs" />
+    <Compile Remove="Scripting\ProxyAPI.cs" />
+    <Compile Remove="Scripting\ReflectAPI.cs" />
+    <Compile Remove="Scripting\JsRuntimeAbstraction.cs" />
+    <Compile Remove="Scripting\CanvasRenderingContext2D.cs" />
+    <Compile Remove="WebAPIs\BinaryDataApi.cs" />
+    <Compile Remove="WebAPIs\Cache.cs" />
+    <Compile Remove="WebAPIs\CacheStorage.cs" />
+    <Compile Remove="WebAPIs\CssTypedOM.cs" />
+    <Compile Remove="WebAPIs\FetchApi.cs" />
+    <Compile Remove="WebAPIs\FetchEvent.cs" />
+    <Compile Remove="WebAPIs\ImageBitmapAPI.cs" />
+    <Compile Remove="WebAPIs\IndexedDBService.cs" />
+    <Compile Remove="WebAPIs\IntersectionObserverAPI.cs" />
+    <Compile Remove="WebAPIs\MediaDevicesAPI.cs" />
+    <Compile Remove="WebAPIs\MediaStream.cs" />
+    <Compile Remove="WebAPIs\NavigationAPI.cs" />
+    <Compile Remove="WebAPIs\NetworkInformationAPI.cs" />
+    <Compile Remove="WebAPIs\Phase4SpecComplianceApis.cs" />
+    <Compile Remove="WebAPIs\ResizeObserverAPI.cs" />
+    <Compile Remove="WebAPIs\SerialAPI.cs" />
+    <Compile Remove="WebAPIs\SerialPort.cs" />
+    <Compile Remove="WebAPIs\StorageApi.cs" />
+    <Compile Remove="WebAPIs\StreamingBody.cs" />
+    <Compile Remove="WebAPIs\ViewTransitionAPI.cs" />
+    <Compile Remove="WebAPIs\WebAPIs.cs" />
+    <Compile Remove="WebAPIs\WebAudioApi.cs" />
+    <Compile Remove="WebAPIs\XMLHttpRequest.cs" />
     <Compile Remove="WebAPIs\TestHarnessAPI.cs" />
     <Compile Remove="WebAPIs\TestConsoleCapture.cs" />
+    <Compile Remove="DevTools\DevToolsCore.cs" />
+    <Compile Remove="Errors\**\*.cs" />
+    <Compile Remove="Bindings\Generated\**\*.cs" />
+    <Compile Remove="Testing\**\*.cs" />
+    <Compile Remove="Diagnostics\**\*.cs" />
+    <Compile Remove="Rendering\DebugOverlay.cs" />
+    <Compile Remove="Core\FenValue.cs" />
+    <Compile Remove="Rendering\BrowserApi.cs" />
+    <Compile Remove="Rendering\CustomHtmlEngine.cs" />
   </ItemGroup>
 
   <ItemGroup>

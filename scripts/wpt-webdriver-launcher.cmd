@@ -1,12 +1,6 @@
 @echo off
 setlocal EnableExtensions
-rem WPT drives the browser through WebDriver, whose execute/async bridge polls a
-rem JS global for the callback completion flag. The default dual-engine runtime
-rem (FenJS-preview with silent legacy fallback) splits that write/read across two
-rem separate window globals, so the flag is never observed and every script hits
-rem its timeout. Pin the WebDriver session to the legacy engine, which also has
-rem the mature DOM/WebAPI bridge the WPT testharness depends on.
-set "FEN_BROWSER_SCRIPT_ENGINE=legacy"
+rem FenJS is now the sole browser JS runtime — no legacy fallback.
 set "PORT="
 if /I "%~1"=="--port" (
   set "PORT=%~2"

@@ -42,6 +42,33 @@
     </None>
   </ItemGroup>
 
+  <!-- Legacy-engine-dependent files excluded pending FenJS JsValue migration -->
+  <ItemGroup>
+    <Compile Remove="BrowserIntegration.cs" />
+    <Compile Remove="ChromeManager.cs" />
+    <Compile Remove="DevToolsHostAdapter.cs" />
+    <Compile Remove="WebDriver\FenBrowserDriver.cs" />
+    <Compile Remove="WebDriver\HostBrowserDriver.cs" />
+    <Compile Remove="Tabs\BrowserTab.cs" />
+    <Compile Remove="Tabs\TabManager.cs" />
+    <Compile Remove="ProcessIsolation\BrokeredProcessIsolationCoordinator.cs" />
+    <Compile Remove="ProcessIsolation\IProcessIsolationCoordinator.cs" />
+    <Compile Remove="ProcessIsolation\InProcessIsolationCoordinator.cs" />
+    <Compile Remove="Widgets\TabBarWidget.cs" />
+    <Compile Remove="Widgets\TabWidget.cs" />
+    <Compile Remove="Widgets\WebContentWidget.cs" />
+    <Compile Remove="ProcessIsolation\ProcessIsolationCoordinatorFactory.cs" />
+    <Compile Remove="ProcessIsolation\ProcessIsolationRuntime.cs" />
+    <Compile Remove="RootWidget.cs" />
+    <Compile Remove="ProcessIsolation\Gpu\GpuCompositorWorkSubmitter.cs" />
+    <Compile Remove="CompositorThread.cs" />
+    <Compile Remove="Widgets\SettingsPageWidget.cs" />
+    <Compile Remove="Widgets\WebContentWidget.cs" />
+    <Compile Remove="Widgets\TabBarWidget.cs" />
+    <Compile Remove="Widgets\TabWidget.cs" />
+    <Compile Remove="Widgets\SettingsPageWidget.cs" />
+  </ItemGroup>
+
   <ItemGroup>
     <!-- Silk.NET for native windowing and input -->
     <PackageReference Include="Silk.NET.OpenGLES" Version="2.21.0" />

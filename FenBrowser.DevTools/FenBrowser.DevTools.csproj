@@ -25,4 +25,11 @@
     <ProjectReference Include="..\FenBrowser.FenEngine\FenBrowser.FenEngine.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Remove="Domains\RuntimeDomain.cs" />
+    <Compile Remove="Core\DevToolsServer.cs" />
+    <Compile Remove="Core\RemoteDebugServer.cs" />
+    <Compile Remove="Instrumentation\DomInstrumenter.cs" />
+  </ItemGroup>
+
 </Project>
