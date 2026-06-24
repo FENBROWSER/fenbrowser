@@ -540,9 +540,7 @@ namespace FenBrowser.Host.ProcessIsolation
                             LogSubsystem.ProcessIsolation,
                             allowUnsandboxedFallback ? LogSeverity.Warn : LogSeverity.Error,
                             $"[ProcessIsolation] Sandbox.SpawnProcess failed for tab {tabId}: {ex.Message}" +
-                            (allowUnsandboxedFallback ? " (retrying unsandboxed)" : string.Empty));
-                        rendererSandbox.Dispose();
-                        rendererSandbox = null;
+                            (allowUnsandboxedFallback ? " (retrying with job-only fallback)" : string.Empty));
                         if (!allowUnsandboxedFallback)
                         {
                             EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error, 
@@ -550,6 +548,20 @@ namespace FenBrowser.Host.ProcessIsolation
                             return null;
                         }
                         process = Process.Start(startInfo);
+                        if (process != null)
+                        {
+                            try
+                            {
+                                rendererSandbox.AttachToProcess(process);
+                            }
+                            catch (Exception attachEx)
+                            {
+                                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn,
+                                    $"[ProcessIsolation] Job-only sandbox fallback attach failed for tab {tabId} pid={process.Id}: {attachEx.Message}");
+                                rendererSandbox.Dispose();
+                                rendererSandbox = null;
+                            }
+                        }
                     }
                 }
                 else

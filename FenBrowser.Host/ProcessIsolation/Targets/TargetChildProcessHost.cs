@@ -114,7 +114,7 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                     {
                         EngineLogBridge.Warn(
                             $"[{_targetKind}Process] Sandbox.SpawnProcess failed: {ex.Message}" +
-                            (allowUnsandboxedFallback ? " (retrying unsandboxed)" : string.Empty),
+                            (allowUnsandboxedFallback ? " (retrying with job-only fallback)" : string.Empty),
                             LogCategory.ProcessIsolation);
 
                         if (!allowUnsandboxedFallback)
@@ -123,6 +123,19 @@ namespace FenBrowser.Host.ProcessIsolation.Targets
                         }
 
                         child = Process.Start(startInfo);
+                        if (child != null && sandbox != null)
+                        {
+                            try
+                            {
+                                sandbox.AttachToProcess(child);
+                            }
+                            catch (Exception attachEx)
+                            {
+                                EngineLogBridge.Warn(
+                                    $"[{_targetKind}Process] Job-only sandbox fallback attach failed for pid={child.Id}: {attachEx.Message}",
+                                    LogCategory.ProcessIsolation);
+                            }
+                        }
                     }
                 }
                 else

@@ -368,13 +368,25 @@ namespace FenBrowser.Host.ProcessIsolation
                         LogSubsystem.ProcessIsolation,
                         allowUnsandboxedFallback ? LogSeverity.Warn : LogSeverity.Error,
                         $"[RendererProcessSlot] Sandbox.SpawnProcess failed for assignment {assignmentKey}: {ex.Message}" +
-                        (allowUnsandboxedFallback ? " (retrying unsandboxed)" : string.Empty));
+                        (allowUnsandboxedFallback ? " (retrying with job-only fallback)" : string.Empty));
                     if (!allowUnsandboxedFallback)
                     {
                         return null;
                     }
 
                     process = Process.Start(startInfo);
+                    if (process != null && sandbox != null)
+                    {
+                        try
+                        {
+                            sandbox.AttachToProcess(process);
+                        }
+                        catch (Exception attachEx)
+                        {
+                            EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn,
+                                $"[RendererProcessSlot] Job-only sandbox fallback attach failed for pid={process.Id}: {attachEx.Message}");
+                        }
+                    }
                 }
             }
             else
