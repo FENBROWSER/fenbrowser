@@ -7,7 +7,7 @@ namespace FenBrowser.Tests.Rendering
     public class ElementStateManagerTests
     {
         [Fact]
-        public void HoverStateChange_DoesNotQueueFullRepaint()
+        public void HoverStateChange_RequestsOneFullRepaint()
         {
             ElementStateManager.Reset();
             var manager = ElementStateManager.Instance;
@@ -15,6 +15,7 @@ namespace FenBrowser.Tests.Rendering
 
             manager.SetHoveredElement(element);
 
+            Assert.True(manager.ConsumeFullRepaintRequest());
             Assert.False(manager.ConsumeFullRepaintRequest());
         }
 

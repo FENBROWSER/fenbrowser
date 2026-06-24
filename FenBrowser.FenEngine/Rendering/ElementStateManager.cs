@@ -124,15 +124,19 @@ namespace FenBrowser.FenEngine.Rendering
                 }
             }
             
-            // Hover state is encoded into paint-tree nodes, so damage diffing can localize
-            // hover repaint without forcing a full-viewport redraw on every mouse move.
+            // Hover often changes paint-only effects such as backgrounds, text color, and
+            // decoration. The damage diff can miss those when the geometry is unchanged, so
+            // request one conservative full repaint for the changed interaction frame.
             foreach (var el in toUpdate)
             {
                 el?.MarkDirty(InvalidationKind.Style);
             }
 
             if (toUpdate.Count > 0)
+            {
+                RequestFullRepaint();
                 OnStateChanged?.Invoke(element);
+            }
         }
         
         /// <summary>
