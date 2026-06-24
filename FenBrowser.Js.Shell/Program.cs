@@ -78,7 +78,9 @@ if (args.Length == 2 && args[0] == "--dump-tokens")
         })
         .ToArray();
 
+#pragma warning disable IL2026, IL3050 // JSON of anonymous types in dev-tool mode
     Console.WriteLine(JsonSerializer.Serialize(tokens, new JsonSerializerOptions { WriteIndented = true }));
+#pragma warning restore IL2026, IL3050
     return 0;
 }
 
@@ -103,7 +105,9 @@ if (args.Length == 2 && args[0] == "--dump-ast")
             ast = DumpProgram(ast),
             diagnostics = diagnostics.Items
         };
+#pragma warning disable IL2026, IL3050 // JSON of anonymous types in dev-tool mode
         Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+#pragma warning restore IL2026, IL3050
         return 0;
     }
     catch (UnsupportedFeatureException ex)
@@ -144,7 +148,9 @@ if (args.Length == 2 && args[0] == "--dump-bytecode")
             variables = function.VariableSlots.OrderBy(kv => kv.Value).Select(kv => new { name = kv.Key, slot = kv.Value }).ToArray(),
             instructions = function.Instructions.Select((ins, ip) => new { ip, op = ins.OpCode.ToString(), ins.A, ins.B, ins.C, ins.D }).ToArray()
         };
+#pragma warning disable IL2026, IL3050 // JSON of anonymous types in dev-tool mode
         Console.WriteLine(JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+#pragma warning restore IL2026, IL3050
         return 0;
     }
     catch (UnsupportedFeatureException ex)
@@ -584,15 +590,15 @@ static string FormatValue(JsValue value)
 
 static void WriteError(string kind, string message, string source)
 {
-    var payload = new
+    var payload = new ShellErrorPayload
     {
-        error = new
+        Error = new ShellErrorInfo
         {
-            kind,
-            message,
-            source
+            Kind = kind,
+            Message = message,
+            Source = source
         }
     };
 
-    Console.Error.WriteLine(JsonSerializer.Serialize(payload));
+    Console.Error.WriteLine(JsonSerializer.Serialize(payload, Test262JsonContext.Default.ShellErrorPayload));
 }
