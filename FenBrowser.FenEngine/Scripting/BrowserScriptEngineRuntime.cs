@@ -13,9 +13,11 @@ using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Network.Handlers;
 using FenBrowser.Core.Parsing;
+using FenBrowser.Js.Builtins;
 using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Host;
 using FenBrowser.Js.Interpreter;
+using FenBrowser.Js.Objects;
 using FenBrowser.Js.Promises;
 using FenBrowser.Js.Runtime;
 using FenBrowser.Js.Source;
@@ -836,6 +838,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         InstallFenJsTimers();
         InstallFenJsBrowserConstructors();
         InstallFenJsNativeBrowserConstructors();
+        InstallFenJsMutationObserver();
+        InstallFenJsRemainingWebApis();
     }
 
     // W3C High Resolution Time / Performance Timeline. SPA frameworks (React, and
@@ -1302,6 +1306,385 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 delete globalThis.__fenNativeDocumentCtor;
             })();
             """);
+    }
+
+    /// <summary>
+    /// Installs the MutationObserver constructor on the JS global scope.
+    /// https://dom.spec.whatwg.org/#interface-mutationobserver
+    /// </summary>
+    private void InstallFenJsMutationObserver()
+    {
+        // Allocate the native constructor. The `construct` delegate is called when
+        // JS does `new MutationObserver(callback)`.
+        var mutationObserverCtor = _interpreter.AllocateNativeConstructor(
+            "MutationObserver",
+            // [[Call]] — not construct; throw TypeError per spec § "MutationObserver()"
+            (_, _) =>
+            {
+                ThrowDomException("TypeError",
+                    "MutationObserver constructor: 'new' is required.");
+                return JsValue.Undefined;
+            },
+            // [[Construct]]
+            args =>
+            {
+                if (args.Count == 0 || !_interpreter.CanCallValue(args[0]))
+                {
+                    ThrowDomException("TypeError",
+                        "Failed to construct 'MutationObserver': 1 argument required, but only 0 present.");
+                    return JsValue.Undefined; // unreachable, ThrowDomException throws
+                }
+
+                var callback = args[0];
+                var host = new FenJsMutationObserverHost(callback, this);
+                return ToHostOrNull(host, HostObjectKind.Other);
+            },
+            length: 1);
+
+        _interpreter.RegisterGlobalValue("MutationObserver", mutationObserverCtor);
+    }
+
+    /// <summary>
+    /// Installs stub implementations of Web APIs that Facebook requires for its
+    /// bootstrap but which are not yet fully implemented in the engine.  Each stub
+    /// provides the minimum API surface needed to prevent ReferenceError crashes
+    /// while returning safe defaults (empty entries, no-ops, passthrough URLs).
+    /// </summary>
+    private void InstallFenJsRemainingWebApis()
+    {
+        EvaluateWithFenJsRaw(
+            """
+            (function () {
+                // ── Blob ── https://w3c.github.io/FileAPI/#blob-section
+                // Facebook uses new Blob([data], {type: ...}) with sendBeacon.
+                // Minimal stub: stores parts+type; size is always 0.
+                globalThis.Blob = function Blob(parts, options) {
+                    this._parts = parts || [];
+                    this._type = (options && options.type) || '';
+                    this.size = 0;
+                    this.type = this._type;
+                };
+                Blob.prototype.slice = function (start, end, contentType) {
+                    return new Blob(this._parts.slice(start || 0, end), { type: contentType || this._type });
+                };
+                Blob.prototype.text = function () {
+                    return Promise.resolve(this._parts.join(''));
+                };
+                Blob.prototype.arrayBuffer = function () {
+                    return Promise.resolve(new ArrayBuffer(0));
+                };
+
+                // ── trustedTypes ── https://w3c.github.io/trusted-types/dist/spec/
+                // Facebook creates a "comet-deferred-scripts" policy to safely
+                // create script URLs for deferred bundle loading.  Without this,
+                // the deferred-script processor silently skips all dynamic script
+                // injection and the React app never mounts.
+                var _trustedPolicies = Object.create(null);
+                globalThis.trustedTypes = {
+                    createPolicy: function (name, rules) {
+                        if (_trustedPolicies[name]) {
+                            throw new TypeError("TrustedTypes policy '" + name + "' already exists.");
+                        }
+                        var policy = { name: name };
+                        if (rules) {
+                            Object.keys(rules).forEach(function (key) {
+                                policy[key] = rules[key];
+                            });
+                        }
+                        _trustedPolicies[name] = policy;
+                        return policy;
+                    },
+                    getPolicyNames: function () {
+                        return Object.keys(_trustedPolicies);
+                    },
+                    getAttributeType: function () { return null; },
+                    getPropertyType: function () { return null; },
+                    isHTML: function () { return false; },
+                    isScript: function () { return false; },
+                    isScriptURL: function () { return false; },
+                    emptyHTML: '',
+                    emptyScript: '',
+                    emptyScriptURL: ''
+                };
+
+                // ── IntersectionObserver ── https://w3c.github.io/IntersectionObserver/
+                // Facebook uses this for lazy-loading images and deferred content.
+                // Stub: accepts observe/unobserve/disconnect but never fires callbacks.
+                globalThis.IntersectionObserver = function IntersectionObserver(callback, options) {
+                    this._callback = callback;
+                    this._targets = [];
+                    this.root = (options && options.root) || null;
+                    this.rootMargin = (options && options.rootMargin) || '0px';
+                    this.thresholds = (options && options.threshold) || [0];
+                    if (!Array.isArray(this.thresholds)) {
+                        this.thresholds = [this.thresholds];
+                    }
+                };
+                IntersectionObserver.prototype.observe = function (target) {
+                    if (this._targets.indexOf(target) < 0) {
+                        this._targets.push(target);
+                    }
+                };
+                IntersectionObserver.prototype.unobserve = function (target) {
+                    var idx = this._targets.indexOf(target);
+                    if (idx >= 0) { this._targets.splice(idx, 1); }
+                };
+                IntersectionObserver.prototype.disconnect = function () {
+                    this._targets.length = 0;
+                };
+                IntersectionObserver.prototype.takeRecords = function () {
+                    return [];
+                };
+
+                // ── ResizeObserver ── https://drafts.csswg.org/resize-observer/
+                // Facebook uses this to track element size changes.
+                // Stub: accepts observe/unobserve/disconnect but never fires callbacks.
+                globalThis.ResizeObserver = function ResizeObserver(callback) {
+                    this._callback = callback;
+                    this._targets = [];
+                };
+                ResizeObserver.prototype.observe = function (target, options) {
+                    if (this._targets.indexOf(target) < 0) {
+                        this._targets.push(target);
+                    }
+                };
+                ResizeObserver.prototype.unobserve = function (target) {
+                    var idx = this._targets.indexOf(target);
+                    if (idx >= 0) { this._targets.splice(idx, 1); }
+                };
+                ResizeObserver.prototype.disconnect = function () {
+                    this._targets.length = 0;
+                };
+            })();
+            """);
+    }
+
+    /// <summary>
+    /// Called by FenJsMutationObserverHost when its backing C# MutationObserver fires.
+    /// Converts MutationRecord objects to JS and invokes the stored JS callback.
+    /// Must run under the interpreter lock — the caller (OnMutations on the mutation
+    /// callback thread) delegates here via RunFenJsWithLargeStack.
+    /// </summary>
+    internal void InvokeMutationObserverCallback(FenJsMutationObserverHost host, IReadOnlyList<MutationRecord> records)
+    {
+        if (records == null || records.Count == 0)
+        {
+            return;
+        }
+
+        if (!_interpreter.CanCallValue(host.Callback))
+        {
+            return;
+        }
+
+        // Convert records to JS objects. Each record is a plain object with the
+        // MutationRecord properties defined by the spec.
+        var jsRecords = new JsValue[records.Count];
+        for (int i = 0; i < records.Count; i++)
+        {
+            jsRecords[i] = CreateMutationRecordJsObject(records[i]);
+        }
+
+        var recordsArray = _interpreter.AllocateArray(jsRecords);
+        var observerValue = ToHostOrNull(host, HostObjectKind.Other);
+
+        InvokeFenJsCallbackSafely(host.Callback, new[] { recordsArray, observerValue }, "MutationObserver");
+    }
+
+    /// <summary>
+    /// Converts a C# MutationRecord into a JS plain object matching the
+    /// MutationRecord interface.
+    /// https://dom.spec.whatwg.org/#mutationrecord
+    /// </summary>
+    private JsValue CreateMutationRecordJsObject(MutationRecord record)
+    {
+        var props = new Dictionary<string, JsValue>(StringComparer.Ordinal)
+        {
+            ["type"] = JsValue.FromString(record.Type switch
+            {
+                MutationRecordType.Attributes => "attributes",
+                MutationRecordType.CharacterData => "characterData",
+                MutationRecordType.ChildList => "childList",
+                _ => "childList"
+            }),
+            ["target"] = ToHostNodeOrNull(record.Target),
+            ["addedNodes"] = CreateNodeArrayLike(record.AddedNodes ?? Array.Empty<Node>()),
+            ["removedNodes"] = CreateNodeArrayLike(record.RemovedNodes ?? Array.Empty<Node>()),
+            ["previousSibling"] = ToHostNodeOrNull(record.PreviousSibling),
+            ["nextSibling"] = ToHostNodeOrNull(record.NextSibling),
+            ["attributeName"] = record.AttributeName != null
+                ? JsValue.FromString(record.AttributeName)
+                : JsValue.Null,
+            ["attributeNamespace"] = record.AttributeNamespace != null
+                ? JsValue.FromString(record.AttributeNamespace)
+                : JsValue.Null,
+            ["oldValue"] = record.OldValue != null
+                ? JsValue.FromString(record.OldValue)
+                : JsValue.Null,
+        };
+
+        return _interpreter.AllocateObject(props);
+    }
+
+    /// <summary>
+    /// Handles property access on MutationObserver host objects.
+    /// </summary>
+    private bool TryGetMutationObserverProperty(FenJsMutationObserverHost host, string property, out JsValue value)
+    {
+        switch (property)
+        {
+            case "observe":
+                value = GetOrCreateHostCallable(
+                    host,
+                    "observe",
+                    (_, args) =>
+                    {
+                        if (args.Count < 2)
+                        {
+                            ThrowDomException("TypeError",
+                                "Failed to execute 'observe' on 'MutationObserver': 2 arguments required.");
+                            return JsValue.Undefined;
+                        }
+
+                        var target = ResolveHostObjectOrNull<Node>(args[0]);
+                        if (target == null)
+                        {
+                            ThrowDomException("TypeError",
+                                "Failed to execute 'observe' on 'MutationObserver': parameter 1 is not of type 'Node'.");
+                            return JsValue.Undefined;
+                        }
+
+                        var options = ParseMutationObserverInit(args[1]);
+                        host.Observe(target, options);
+                        return JsValue.Undefined;
+                    },
+                    length: 2);
+                return true;
+
+            case "disconnect":
+                value = GetOrCreateHostCallable(
+                    host,
+                    "disconnect",
+                    (_, _) =>
+                    {
+                        host.Disconnect();
+                        return JsValue.Undefined;
+                    },
+                    length: 0);
+                return true;
+
+            case "takeRecords":
+                value = GetOrCreateHostCallable(
+                    host,
+                    "takeRecords",
+                    (_, _) =>
+                    {
+                        var records = host.TakeRecords();
+                        var jsRecords = new JsValue[records.Count];
+                        for (int i = 0; i < records.Count; i++)
+                        {
+                            jsRecords[i] = CreateMutationRecordJsObject(records[i]);
+                        }
+
+                        return _interpreter.AllocateArray(jsRecords);
+                    },
+                    length: 0);
+                return true;
+
+            default:
+                value = JsValue.Undefined;
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// Parses a JS options object into a MutationObserverInit struct.
+    /// https://dom.spec.whatwg.org/#dictdef-mutationobserverinit
+    /// </summary>
+    private MutationObserverInit ParseMutationObserverInit(JsValue optionsValue)
+    {
+        var init = new MutationObserverInit();
+
+        if (optionsValue.Tag != JsValueTag.Object)
+        {
+            // If options is not an object, default all to false → observe() will throw.
+            return init;
+        }
+
+        init.ChildList = ReadJsBoolProperty(optionsValue, "childList");
+        init.Attributes = ReadJsBoolProperty(optionsValue, "attributes");
+        init.CharacterData = ReadJsBoolProperty(optionsValue, "characterData");
+        init.Subtree = ReadJsBoolProperty(optionsValue, "subtree");
+        init.AttributeOldValue = ReadJsBoolProperty(optionsValue, "attributeOldValue");
+        init.CharacterDataOldValue = ReadJsBoolProperty(optionsValue, "characterDataOldValue");
+
+        // attributeFilter: optional sequence<DOMString>
+        var filterValue = ReadJsProperty(optionsValue, "attributeFilter");
+        if (filterValue.Tag == JsValueTag.Object)
+        {
+            var filterList = new List<string>();
+            try
+            {
+                var lenValue = ReadJsProperty(filterValue, "length");
+                int len = 0;
+                if (lenValue.Tag == JsValueTag.Int32)
+                    len = lenValue.AsInt32();
+                else if (lenValue.Tag == JsValueTag.Number)
+                    len = (int)lenValue.AsNumber();
+
+                for (int i = 0; i < Math.Min(len, 100); i++)
+                {
+                    var item = ReadJsProperty(filterValue, i.ToString());
+                    if (item.Tag == JsValueTag.String)
+                        filterList.Add(item.AsString());
+                }
+            }
+            catch
+            {
+                // Best-effort; leave filter empty.
+            }
+
+            if (filterList.Count > 0)
+                init.AttributeFilter = filterList.ToArray();
+        }
+
+        return init;
+    }
+
+    /// <summary>
+    /// Reads a boolean property from a JS object, coercing via JS truthiness rules.
+    /// </summary>
+    private bool ReadJsBoolProperty(JsValue obj, string property)
+    {
+        var value = ReadJsProperty(obj, property);
+        return value.Tag switch
+        {
+            JsValueTag.Undefined => false,
+            JsValueTag.Null => false,
+            JsValueTag.Boolean => value.AsBoolean(),
+            JsValueTag.Int32 => value.AsInt32() != 0,
+            JsValueTag.Number => value.AsNumber() != 0,
+            JsValueTag.String => value.AsString().Length > 0,
+            _ => true // objects, symbols etc. are truthy
+        };
+    }
+
+    /// <summary>
+    /// Reads a named property from a JS object via the interpreter's property
+    /// resolution (own + prototype chain). Returns JsValue.Undefined if the
+    /// value is not an object or the property does not exist.
+    /// </summary>
+    private JsValue ReadJsProperty(JsValue obj, string property)
+    {
+        if (obj.Tag != JsValueTag.Object)
+            return JsValue.Undefined;
+
+        var handle = obj.AsObjectHandle();
+        var jsObj = _interpreter.Heap.GetObject(handle);
+        if (((IBuiltinContext)_interpreter).TryGetPropertyValue(jsObj, obj, property, out var value))
+            return value;
+
+        return JsValue.Undefined;
     }
 
     private HostObjectHandle RegisterHostObject(object hostObject, HostObjectKind kind)
@@ -2497,6 +2880,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return TryGetNavigatorProperty(navigator, property, out value);
                 case FenJsLocationHost location:
                     return TryGetLocationProperty(location, property, out value);
+                case FenJsMutationObserverHost mutationObserver:
+                    return _owner.TryGetMutationObserverProperty(mutationObserver, property, out value);
                 default:
                     value = JsValue.Undefined;
                     return false;

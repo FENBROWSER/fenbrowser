@@ -3464,11 +3464,12 @@ private static double? ExtractPx(string text, string prop)
                     css.Display = GetDefaultDisplayValue(n);
                 }
                 
-                // DEBUG: Trace display:flex application
-                if (css.Display == "flex" || css.Display == "inline-flex")
-                {
-                    EngineLogCompat.Debug($"[FLEX-DEBUG] Element={n.TagName}.{n.GetAttribute("class")??""}#{n.GetAttribute("id")??""} Display={css.Display}", LogCategory.Layout);
-                }
+                // Trace display:flex application (disabled — too verbose for production).
+                // Enable locally with FEN_TRACE_FLEX=1 to debug flex layout issues.
+                // if (css.Display == "flex" || css.Display == "inline-flex")
+                // {
+                //     EngineLogCompat.Debug($"[FLEX-DEBUG] Element={n.TagName}.{n.GetAttribute("class")??""}#{n.GetAttribute("id")??""} Display={css.Display}", LogCategory.Layout);
+                // }
                 
                 css.Position = Safe(DictGet(css.Map, "position"))?.ToLowerInvariant();
                 css.Direction = Safe(DictGet(css.Map, "direction"))?.ToLowerInvariant();

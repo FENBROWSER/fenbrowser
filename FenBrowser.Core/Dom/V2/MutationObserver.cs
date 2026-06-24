@@ -27,6 +27,7 @@ namespace FenBrowser.Core.Dom.V2
         private static readonly HashSet<MutationObserver> _pendingObservers = new();
         private static readonly object _staticLock = new();
         private static int _microtaskScheduled; // Use int for Interlocked operations
+        private static int _isProcessing; // re-entrancy guard
 
         /// <summary>
         /// Creates a new MutationObserver with the given callback.
@@ -161,38 +162,60 @@ namespace FenBrowser.Core.Dom.V2
 
         private static void ScheduleMicrotask()
         {
-            // Queue callback on thread pool to simulate microtask timing
-            _ = Task.Run(async () =>
+            // Guard against re-entrant processing: if a mutation observer callback
+            // itself mutates the DOM, the nested EnqueueRecord → ScheduleMicrotask
+            // call will find _isProcessing=1 and simply return, leaving the new
+            // records in _pendingObservers to be picked up by the outer
+            // ProcessPendingObservers loop (which re-checks after each observer).
+            if (Interlocked.Exchange(ref _isProcessing, 1) == 1)
             {
-                // Yield to simulate microtask timing
-                await Task.Yield();
+                return; // already processing; new records will be picked up
+            }
+
+            try
+            {
                 ProcessPendingObservers();
-            });
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _isProcessing, 0);
+            }
         }
 
         private static void ProcessPendingObservers()
         {
-            List<MutationObserver> observers;
-            lock (_staticLock)
+            // Keep processing while there are pending observers, because callbacks
+            // may enqueue new mutations that trigger new observers.  A microtask
+            // checkpoint drains all pending observers.
+            while (true)
             {
-                Interlocked.Exchange(ref _microtaskScheduled, 0);
-                observers = new List<MutationObserver>(_pendingObservers);
-                _pendingObservers.Clear();
-            }
-
-            foreach (var observer in observers)
-            {
-                var records = observer.TakeRecords();
-                if (records.Count > 0)
+                List<MutationObserver> observers;
+                lock (_staticLock)
                 {
-                    try
+                    Interlocked.Exchange(ref _microtaskScheduled, 0);
+                    if (_pendingObservers.Count == 0)
                     {
-                        observer._callback(records, observer);
+                        break;
                     }
-                    catch (Exception ex)
+
+                    observers = new List<MutationObserver>(_pendingObservers);
+                    _pendingObservers.Clear();
+                }
+
+                foreach (var observer in observers)
+                {
+                    var records = observer.TakeRecords();
+                    if (records.Count > 0)
                     {
-                        // Log error but continue processing other observers
-                        System.Diagnostics.Debug.WriteLine($"MutationObserver callback error: {ex}");
+                        try
+                        {
+                            observer._callback(records, observer);
+                        }
+                        catch (Exception ex)
+                        {
+                            // Log error but continue processing other observers
+                            System.Diagnostics.Debug.WriteLine($"MutationObserver callback error: {ex}");
+                        }
                     }
                 }
             }
