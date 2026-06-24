@@ -1246,3 +1246,19 @@ Verification:
 
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~ProcessIsolationCoordinatorFactoryTests|FullyQualifiedName~BrokeredProcessIsolationPolicyTests|FullyQualifiedName~CompositorThreadTests|FullyQualifiedName~IpcEnvelopeValidationTests|FullyQualifiedName~RendererChildLoopIoTests|FullyQualifiedName~SandboxLaunchPolicyTests|FullyQualifiedName~StoragePartitioningTests|FullyQualifiedName~StorageTests" --nologo -v minimal`: pass on `2026-05-10`.
 - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj -c Debug --no-build --filter "FullyQualifiedName~ProcessIsolationCoordinatorFactoryTests|FullyQualifiedName~BrokeredProcessIsolationPolicyTests|FullyQualifiedName~CompositorThreadTests|FullyQualifiedName~IpcEnvelopeValidationTests|FullyQualifiedName~RendererChildLoopIoTests|FullyQualifiedName~SandboxLaunchPolicyTests|FullyQualifiedName~StoragePartitioningTests|FullyQualifiedName~StorageTests" --logger "console;verbosity=minimal"`: pass (`51/51`) on `2026-05-10`.
+
+### 6.57 AppContainer Spawn Fallback Retains Job Guardrails (2026-06-24)
+
+- `BrokeredProcessIsolationCoordinator`, `RendererProcessSlot`, `NetworkChildProcessHost`, and `TargetChildProcessHost` now keep the acquired sandbox object alive when custom AppContainer spawn fails and the policy permits fallback.
+- The fallback path logs `(retrying with job-only fallback)` and attempts to attach the normal `Process.Start(...)` child to the sandbox job object before considering startup complete.
+- If job attachment fails, the launch path emits an explicit warning and disposes the sandbox handle instead of silently describing the child as sandboxed.
+
+Net effect:
+
+- Platforms where custom AppContainer spawn fails no longer degrade to an entirely unguarded child process as the first fallback.
+- Runtime logs distinguish AppContainer spawn failure from the remaining job-object fallback posture.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~RendererProcessPoolTests|FullyQualifiedName~ProcessIsolation"`: pass (`19/19`) on `2026-06-24`.
+- Live GitHub repro logs on `2026-06-24` show network/GPU/utility/renderer child spawn failures reported as `retrying with job-only fallback`.

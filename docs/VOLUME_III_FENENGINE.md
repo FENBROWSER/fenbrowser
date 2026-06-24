@@ -88,6 +88,11 @@ flowchart TD
 
 ### 2.3 Recent Layout Hardening (2026-02-20, L-8 -> L-10)
 
+- GitHub-class layout freeze hardening (2026-06-24):
+  - Renderer-facing layout calls now carry a `FrameDeadline` (`FEN_LAYOUT_DEADLINE_MS`, default `3000`, `0` disables) through `SkiaDomRenderer` into `LayoutEngine` / `FormattingContext`, so pathological layout passes fail bounded instead of pinning the renderer indefinitely.
+  - `GridFormattingContext` caches intrinsic child measurements per layout pass and returns current geometry for re-entrant same-key measurements, avoiding recursive grid/flex measurement storms during dense navigation/menu layout.
+  - `BoxTreeBuilder` per-box decision logging now requires `FEN_LAYOUT_DEBUG_LOG` in addition to debug log level, preventing global debug runs from flooding logs with every constructed box.
+  - `FlexFormattingContext` keeps `position:relative` visual offsets from feeding the sibling-flow anti-overlap guard, and clamps relative flex descendants back inside the shifted item start so the item and subtree move together without changing following-item flow.
 - Flex baseline keyword normalization hardening (2026-05-08):
   - `FlexFormattingContext` and `CssFlexLayout` now treat `baseline`, `first baseline`, and `last baseline` as baseline-alignment values for cross-axis flex item placement.
   - This keeps baseline alignment behavior consistent across both layout paths when authors use explicit baseline-position keywords.
