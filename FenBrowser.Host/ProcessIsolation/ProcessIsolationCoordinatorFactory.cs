@@ -16,8 +16,10 @@ namespace FenBrowser.Host.ProcessIsolation
             var mode = (Environment.GetEnvironmentVariable("FEN_PROCESS_ISOLATION") ?? string.Empty).Trim();
             if (string.IsNullOrWhiteSpace(mode))
             {
-                EngineLogBridge.Info("[ProcessIsolation] Defaulting to brokered mode (per-tab renderer child process model). Set FEN_PROCESS_ISOLATION=in-process to disable.", LogCategory.General);
-                return new BrokeredProcessIsolationCoordinator();
+                // Default to in-process to avoid child-process-launch hangs during
+                // development. Set FEN_PROCESS_ISOLATION=brokered to enable.
+                EngineLogBridge.Info("[ProcessIsolation] Defaulting to in-process mode. Set FEN_PROCESS_ISOLATION=brokered to enable per-tab isolation.", LogCategory.General);
+                return new InProcessIsolationCoordinator();
             }
 
             if (IsInProcessMode(mode))
