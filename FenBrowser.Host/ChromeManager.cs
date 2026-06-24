@@ -53,7 +53,6 @@ namespace FenBrowser.Host
         private FenBrowser.DevTools.Instrumentation.DomInstrumenter _domInstrumenter;
         
         private IProcessIsolationCoordinator _processIsolation;
-        private bool _processIsolationAutoFallbackTriggered;
 
         // Track Active Tab
         private BrowserTab _currentActiveTab;
@@ -78,6 +77,22 @@ namespace FenBrowser.Host
             _processIsolation.Initialize();
             ProcessIsolationRuntime.SetCoordinator(_processIsolation);
             TryWireProcessIsolationAutoFallback();
+
+            // UI thread watchdog: detects stalls >100ms and logs diagnostics.
+            // The heartbeat fires from the Render() path every frame.
+            UiThreadWatchdog.Instance.Initialize(
+                stallThreshold: TimeSpan.FromMilliseconds(100),
+                pollInterval: TimeSpan.FromMilliseconds(50),
+                telemetryProvider: () =>
+                {
+                    var activeTab = TabManager.Instance.ActiveTab;
+                    return (
+                        Status: activeTab?.IsLoading == true ? "loading" : "idle",
+                        ActiveTabId: activeTab?.Id ?? 0,
+                        CompositorFrameSeq: _compositorThread?.LastCommittedFrameSequence ?? 0,
+                        TabCount: TabManager.Instance.Tabs.Count
+                    );
+                });
 
             InitializeWidgets(initialUrl);
             InitializeDevTools();
@@ -124,79 +139,31 @@ namespace FenBrowser.Host
                 return;
             }
 
-            // Enabled by default for usability on hosts where AppContainer child launch is unavailable.
-            // Operators can force strict brokered-only behavior with FEN_PROCESS_ISOLATION_AUTO_FALLBACK=0.
-            var autoFallback = Environment.GetEnvironmentVariable("FEN_PROCESS_ISOLATION_AUTO_FALLBACK");
-            if (string.Equals(autoFallback, "0", StringComparison.OrdinalIgnoreCase))
-            {
-                return;
-            }
-
+            // Listen for renderer crashes to surface them per-tab.  Each crash is
+            // handled independently — we no longer globally fall back to in-process
+            // mode because that would collapse the process boundary for ALL tabs,
+            // reintroducing the freeze vectors we fixed with ReaderWriterLockSlim
+            // and ContentSnapshot.  Instead, a crashed tab shows its crash screen
+            // and the user can retry via reload.
             _processIsolation.RendererCrashed += OnProcessIsolationRendererCrashed;
         }
 
         private void OnProcessIsolationRendererCrashed(int tabId, string reason)
         {
-            if (_processIsolationAutoFallbackTriggered)
+            RunOnUiThread(() =>
             {
-                return;
-            }
-
-            if (!string.Equals(reason, "renderer-startup-failed", StringComparison.Ordinal))
-            {
-                return;
-            }
-
-            _processIsolationAutoFallbackTriggered = true;
-            RunOnUiThread(() => AutoFallbackToInProcess(tabId));
-        }
-
-        private void AutoFallbackToInProcess(int tabId)
-        {
-            if (_processIsolation is not BrokeredProcessIsolationCoordinator)
-            {
-                return;
-            }
-
-            try
-            {
-                _processIsolation.RendererCrashed -= OnProcessIsolationRendererCrashed;
-                _processIsolation.Shutdown();
-
-                _processIsolation = new InProcessIsolationCoordinator();
-                _processIsolation.Initialize();
-                ProcessIsolationRuntime.SetCoordinator(_processIsolation);
-
-                EngineLogBridge.Warn("[ProcessIsolation] Auto-fallback activated: brokered renderer startup failed, switched to in-process mode for this session.", LogCategory.ProcessIsolation);
-
-                var tab = TabManager.Instance.Tabs.FirstOrDefault(t => t.Id == tabId) ?? TabManager.Instance.ActiveTab;
+                var tab = TabManager.Instance.Tabs.FirstOrDefault(t => t.Id == tabId);
                 if (tab != null)
                 {
-                    // Clear a latched crash-screen state from the failed
-                    // brokered startup before issuing the in-process retry.
-                    tab.ClearCrashState();
-
-                    var retryUrl = _toolbar?.AddressBar?.Text;
-                    if (string.IsNullOrWhiteSpace(retryUrl))
-                    {
-                        retryUrl = tab.Url;
-                    }
-
-                    if (string.IsNullOrWhiteSpace(retryUrl))
-                    {
-                        retryUrl = "fen://newtab";
-                    }
-
-                    _ = tab.NavigateProgrammaticAsync(retryUrl);
-                    tab.Browser.RequestRepaint();
+                    // Mark the tab as crashed so it shows the "Aw, Snap!" screen.
+                    // The user can retry via Reload or navigating to a new URL.
+                    tab.NotifyCrashed(reason);
+                    _root?.Invalidate();
+                    EngineLogBridge.Warn(
+                        $"[ProcessIsolation] Renderer for tab {tabId} crashed ({reason}). Tab crash screen shown.",
+                        LogCategory.ProcessIsolation);
                 }
-
-                _root?.Invalidate();
-            }
-            catch (Exception ex)
-            {
-                EngineLogBridge.Error($"[ProcessIsolation] Auto-fallback to in-process failed: {ex.Message}", LogCategory.ProcessIsolation);
-            }
+            });
         }
 
         private void WireWindowEvents()
@@ -461,16 +428,18 @@ namespace FenBrowser.Host
                 _currentActiveTab.Browser.ContextMenuRequested -= OnContextMenuRequested;
                 _currentActiveTab.LoadingChanged -= OnActiveTabLoadingChanged;
                 _currentActiveTab.TitleChanged -= OnActiveTabTitleChanged;
+                _currentActiveTab.NeedsRepaint -= OnActiveTabNeedsRepaint;
             }
-            
+
             _currentActiveTab = tab;
-            
+
             if (tab != null)
             {
                 tab.Browser.UrlChanged += OnBrowserUrlChanged;
                 tab.Browser.ContextMenuRequested += OnContextMenuRequested;
                 tab.LoadingChanged += OnActiveTabLoadingChanged;
                 tab.TitleChanged += OnActiveTabTitleChanged;
+                tab.NeedsRepaint += OnActiveTabNeedsRepaint;
                 var addressBarText = GetAddressBarText(tab);
                 if (!string.IsNullOrEmpty(addressBarText))
                 {
@@ -518,6 +487,9 @@ namespace FenBrowser.Host
 
         private void OnBrowserUrlChanged(string url)
         {
+            // The engine may fire UrlChanged with an empty string during early navigation
+            // (before the first URI commits). Preserve the existing address-bar text in
+            // that case so the user still sees the URL they typed.
             if (string.IsNullOrEmpty(url))
             {
                 return;
@@ -592,7 +564,21 @@ namespace FenBrowser.Host
                 _root?.Invalidate();
             });
         }
-        
+
+        /// <summary>
+        /// Called when the active tab needs repaint (title change, favicon change, loading state, etc.).
+        /// Ensures the root widget tree is invalidated so the tab bar and other chrome redraw.
+        /// </summary>
+        private void OnActiveTabNeedsRepaint(BrowserTab tab)
+        {
+            if (tab == null || tab != _currentActiveTab)
+            {
+                return;
+            }
+
+            RunOnUiThread(() => _root?.Invalidate());
+        }
+
         private void UpdateBookmarkStar(string url)
         {
              _toolbar.AddressBar.IsBookmarked = BrowserSettings.Instance.Bookmarks.Any(b => b.Url.Equals(url, StringComparison.OrdinalIgnoreCase));
@@ -680,6 +666,9 @@ namespace FenBrowser.Host
             DrawTooltip(canvas);
             TryCaptureHostPresentedScreenshotAfterFramePresent();
             ScheduleInitialTabCreationAfterBootstrapFrame();
+
+            // Heartbeat for the UI-thread watchdog: one tick per host frame.
+            UiThreadWatchdog.Instance.Heartbeat();
         }
 
         private void ScheduleInitialTabCreationAfterBootstrapFrame()

@@ -34,8 +34,6 @@ public class BrowserIntegration
     private bool _hasFirstStyledRender = false; // Track first styled render to avoid unstyled initial layout
     private DateTime _lastNavigationTime = DateTime.Now; // Track navigation start time for timeout
     private float _scrollY = 0;
-    private float _compositorPreviewScrollY = 0;
-    private bool _hasCompositorScrollPreview = false;
     private float _contentHeight = 0;
     private float _dpiScale = 1.0f;
     private SKSize _lastViewportSize;
@@ -46,19 +44,28 @@ public class BrowserIntegration
     private readonly Thread _engineThread;
     private readonly AutoResetEvent _wakeEvent = new AutoResetEvent(false);
     private bool _running = true;
-    // Rendering Buffers (Double-Buffered Display List + seed image for reuse).
-    private SKPicture _currentFrame;
+    // ── Content Snapshot (lock-free read path for compositor/UI thread) ──
+    // The engine thread publishes an immutable snapshot after each RecordFrame.
+    // The compositor and UI thread read _latestSnapshot directly — no lock needed.
+    // C# reference reads are atomic, so the compositor always sees a consistent
+    // (though possibly slightly stale) view of the last committed frame.
+    private ContentSnapshot _latestSnapshot;
+
+    // Frame seed image for incremental-damage base-frame reuse.
+    // Only accessed by the engine thread — no lock needed.
     private SKImage _currentFrameSeedImage;
-    private readonly object _frameLock = new object();
-    private readonly SKPictureRecorder _recorder = new SKPictureRecorder();
-    private bool _hasLoggedFrameNull = false; // To reduce warning spam
-    private List<InputOverlayData> _currentOverlays = new();
-    private SKSize _lastCommittedFrameViewport;
-    private float _lastCommittedFrameScrollY;
     private DateTime _currentFrameSeedCreatedUtc = DateTime.MinValue;
     private int _consecutiveBaseFrameReuseCount;
     private const int MaxConsecutiveBaseFrameReuseCount = 120;
     private const double MaxBaseFrameAgeMs = 2000;
+
+    // Compositor scroll preview: written by the UI thread (during wheel/scrollbar drag)
+    // and read by both threads.  A simple lock is sufficient — hold time is nanoseconds.
+    private bool _hasCompositorScrollPreview;
+    private float _compositorPreviewScrollY;
+    private readonly object _compositorScrollLock = new();
+
+    private readonly SKPictureRecorder _recorder = new SKPictureRecorder();
     private RenderFrameInvalidationReason _pendingInvalidationReasons =
         RenderFrameInvalidationReason.Navigation | RenderFrameInvalidationReason.Viewport;
     private string _pendingInvalidationSource = "startup";
@@ -158,13 +165,19 @@ public class BrowserIntegration
             if (element == null || _renderer == null)
                 return null;
 
-            lock (_rendererLock)
+            if (!_rendererLock.TryEnterReadLock(2))
+                return null; // engine is mid-layout; element has no box yet
+            try
             {
                 var box = _renderer.GetElementBox(element);
                 if (box == null)
                     return null;
 
                 return box.BorderBox;
+            }
+            finally
+            {
+                _rendererLock.ExitReadLock();
             }
         });
 
@@ -235,18 +248,13 @@ public class BrowserIntegration
 
                 // Defensive reset: page-driven navigations can bypass NavigateInternal.
                 // Clear committed frame/seed so first frame for the new document cannot reuse stale pixels.
-                lock (_frameLock)
-                {
-                    _currentFrame?.Dispose();
-                    _currentFrame = null;
-                    _currentFrameSeedImage?.Dispose();
-                    _currentFrameSeedImage = null;
-                    _currentOverlays = new List<InputOverlayData>();
-                    _lastCommittedFrameViewport = SKSize.Empty;
-                    _lastCommittedFrameScrollY = 0f;
-                    _currentFrameSeedCreatedUtc = DateTime.MinValue;
-                    _consecutiveBaseFrameReuseCount = 0;
-                }
+                var oldSnapshot = _latestSnapshot;
+                _latestSnapshot = null;
+                oldSnapshot?.Frame?.Dispose();
+                _currentFrameSeedImage?.Dispose();
+                _currentFrameSeedImage = null;
+                _currentFrameSeedCreatedUtc = DateTime.MinValue;
+                _consecutiveBaseFrameReuseCount = 0;
 
                 CssLoader.ClearCaches();
                 EngineLogBridge.Info("[BrowserIntegration] Cleared CSS caches for new navigation", LogCategory.General);
@@ -721,7 +729,19 @@ public class BrowserIntegration
         }
     }
     
-    private readonly object _rendererLock = new object();
+    /// <summary>
+    /// Guards the SkiaDomRenderer across the engine thread (writer — layout/paint/raster, can hold for 100ms+)
+    /// and the UI/compositor thread (reader — hit-testing, element rects, highlights).
+    /// ReaderWriterLockSlim allows concurrent reads (e.g. rapid mouse-move hit-tests) while blocking
+    /// readers only when the writer needs exclusive access.  Readers use TryEnterReadLock with a
+    /// short timeout so the UI thread never blocks waiting for a long layout pass.
+    /// </summary>
+    private readonly ReaderWriterLockSlim _rendererLock = new(LockRecursionPolicy.SupportsRecursion);
+
+    // Hit-test cache: when the UI thread cannot acquire the renderer read lock (engine is mid-layout),
+    // we return the last known result.  This keeps the cursor responsive during page load.
+    private HitTestResult _cachedHitTest = HitTestResult.None;
+    private readonly object _hitTestCacheLock = new();
 
     private void EngineLoop()
     {
@@ -890,10 +910,15 @@ public class BrowserIntegration
             _hasFirstStyledRender = true;
         }
 
-        lock (_rendererLock)
-            {
-                RecordFrame(_lastViewportSize);
-            }
+        _rendererLock.EnterWriteLock();
+        try
+        {
+            RecordFrame(_lastViewportSize);
+        }
+        finally
+        {
+            _rendererLock.ExitWriteLock();
+        }
             return true;
         }
         catch (Exception ex)
@@ -933,18 +958,13 @@ public class BrowserIntegration
         _scrollY = 0f;
         ResetCompositorScrollPreview();
         _contentHeight = 0f;
-        lock (_frameLock)
-        {
-            _currentFrame?.Dispose();
-            _currentFrame = null;
-            _currentFrameSeedImage?.Dispose();
-            _currentFrameSeedImage = null;
-            _currentOverlays = new List<InputOverlayData>();
-            _lastCommittedFrameViewport = SKSize.Empty;
-            _lastCommittedFrameScrollY = 0f;
-            _currentFrameSeedCreatedUtc = DateTime.MinValue;
-            _consecutiveBaseFrameReuseCount = 0;
-        }
+        var oldSnapshot = _latestSnapshot;
+        _latestSnapshot = null;
+        oldSnapshot?.Frame?.Dispose();
+        _currentFrameSeedImage?.Dispose();
+        _currentFrameSeedImage = null;
+        _currentFrameSeedCreatedUtc = DateTime.MinValue;
+        _consecutiveBaseFrameReuseCount = 0;
         ScrollChanged?.Invoke(_scrollY, _contentHeight);
         RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserIntegration.Navigate");
 
@@ -1032,13 +1052,23 @@ public class BrowserIntegration
                 return;
             }
 
-            if (isUserInput)
+            // Navigation timeout: prevent a stuck network request from wedging
+            // the tab indefinitely.  30s matches the default in major browsers.
+            using var navCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try
             {
-                await _browser.NavigateUserInputAsync(url);
+                if (isUserInput)
+                {
+                    await _browser.NavigateUserInputAsync(url).WaitAsync(navCts.Token).ConfigureAwait(false);
+                }
+                else
+                {
+                    await _browser.NavigateAsync(url).WaitAsync(navCts.Token).ConfigureAwait(false);
+                }
             }
-            else
+            catch (OperationCanceledException) when (navCts.IsCancellationRequested)
             {
-                await _browser.NavigateAsync(url);
+                EngineLogBridge.Warn($"[BrowserIntegration] Navigation timed out (30s): {url}", LogCategory.Navigation);
             }
         }
         catch (Exception ex)
@@ -1086,17 +1116,17 @@ public class BrowserIntegration
     /// </summary>
     public async Task GoBackAsync()
     {
-        await _browser.GoBackAsync();
+        await _browser.GoBackAsync().ConfigureAwait(false);
     }
-    
+
     /// <summary>
     /// Navigate forward in history.
     /// </summary>
     public async Task GoForwardAsync()
     {
-        await _browser.GoForwardAsync();
+        await _browser.GoForwardAsync().ConfigureAwait(false);
     }
-    
+
     /// <summary>
     /// Refresh the current page.
     /// </summary>
@@ -1106,7 +1136,8 @@ public class BrowserIntegration
         _hasFirstStyledRender = false;
         RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserIntegration.Refresh");
         StartPostNavigationRepaintPulse();
-        await _browser.RefreshAsync();
+        using var navCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        await _browser.RefreshAsync().WaitAsync(navCts.Token).ConfigureAwait(false);
     }
     
     /// <summary>
@@ -1132,47 +1163,40 @@ public class BrowserIntegration
             return;
         }
 
+        // ── Lock-free read path ──
+        // The snapshot is published atomically by the engine thread.  C# reference
+        // reads are atomic, so we always see a consistent frame (or null).  The
+        // compositor scroll preview is protected by a short-duration lock.
+        var snapshot = _latestSnapshot;
         List<InputOverlayData> overlays = null;
         Element? highlight = _highlightedElement;
-        bool hasFrame = false;
-        float effectiveScrollY = 0f;
 
-        lock (_frameLock)
+        float effectiveScrollY;
+        lock (_compositorScrollLock)
         {
             effectiveScrollY = _hasCompositorScrollPreview ? _compositorPreviewScrollY : _scrollY;
+        }
 
-            if (_currentFrame != null)
+        if (snapshot?.Frame != null)
+        {
+            var scrollDelta = effectiveScrollY - snapshot.CommittedScrollY;
+            if (Math.Abs(scrollDelta) > 0.5f)
             {
-                hasFrame = true;
-                var scrollDelta = effectiveScrollY - _lastCommittedFrameScrollY;
-                if (Math.Abs(scrollDelta) > 0.5f)
-                {
-                    canvas.Save();
-                    canvas.Translate(0, -scrollDelta);
-                    canvas.DrawPicture(_currentFrame);
-                    canvas.Restore();
-                }
-                else
-                {
-                    canvas.DrawPicture(_currentFrame);
-                }
-                if (_currentOverlays.Count > 0)
-                {
-                    overlays = new List<InputOverlayData>(_currentOverlays);
-                }
+                canvas.Save();
+                canvas.Translate(0, -scrollDelta);
+                canvas.DrawPicture(snapshot.Frame);
+                canvas.Restore();
             }
             else
             {
-                 // Log only once per session to avoid spam during startup
-                 if (!_hasLoggedFrameNull)
-                 {
-                     _hasLoggedFrameNull = true;
-                     EngineLogBridge.Debug("[BrowserIntegration] Render: no committed frame yet, drawing placeholder.", LogCategory.Rendering);
-                 }
+                canvas.DrawPicture(snapshot.Frame);
+            }
+            if (snapshot.Overlays.Count > 0)
+            {
+                overlays = snapshot.Overlays;
             }
         }
-
-        if (!hasFrame)
+        else
         {
             DrawPlaceholder(canvas, viewport);
             return;
@@ -1193,11 +1217,15 @@ public class BrowserIntegration
             }
         }
 
-        if (highlight != null)
+        if (highlight != null && _rendererLock.TryEnterReadLock(0))
         {
-            lock (_rendererLock)
+            try
             {
                 DrawHighlight(canvas, highlight);
+            }
+            finally
+            {
+                _rendererLock.ExitReadLock();
             }
         }
         canvas.Restore();
@@ -1295,39 +1323,33 @@ public class BrowserIntegration
             var allowBaseFrameReuse = _hasFirstStyledRender && _styles != null && _styles.Count > 0;
             var nowUtc = DateTime.UtcNow;
 
-            lock (_frameLock)
-            {
-                canReuseBaseFrame = allowBaseFrameReuse && BaseFrameReusePolicy.CanReuseBaseFrame(
-                    _currentFrameSeedImage != null,
-                    _lastCommittedFrameViewport,
-                    viewportSize,
-                    _lastCommittedFrameScrollY,
-                    _scrollY,
-                    invalidationReasons,
-                    _consecutiveBaseFrameReuseCount,
-                    MaxConsecutiveBaseFrameReuseCount,
-                    _currentFrameSeedImage != null
-                        ? Math.Max(0d, (nowUtc - _currentFrameSeedCreatedUtc).TotalMilliseconds)
-                        : double.PositiveInfinity,
-                    MaxBaseFrameAgeMs);
+            // Base-frame reuse is engine-thread-only; the previous snapshot provides
+            // the last committed viewport and scroll for comparison.
+            var previousSnapshot = _latestSnapshot;
+            canReuseBaseFrame = allowBaseFrameReuse && BaseFrameReusePolicy.CanReuseBaseFrame(
+                _currentFrameSeedImage != null,
+                previousSnapshot?.ViewportSize ?? SKSize.Empty,
+                viewportSize,
+                previousSnapshot?.CommittedScrollY ?? 0f,
+                _scrollY,
+                invalidationReasons,
+                _consecutiveBaseFrameReuseCount,
+                MaxConsecutiveBaseFrameReuseCount,
+                _currentFrameSeedImage != null
+                    ? Math.Max(0d, (nowUtc - _currentFrameSeedCreatedUtc).TotalMilliseconds)
+                    : double.PositiveInfinity,
+                MaxBaseFrameAgeMs);
 
-                if (canReuseBaseFrame)
-                {
-                    reusableSeedImage = _currentFrameSeedImage;
-                }
+            if (canReuseBaseFrame)
+            {
+                reusableSeedImage = _currentFrameSeedImage;
             }
 
             // Start recording the next presentable frame on the display-list buffer.
             var canvas = _recorder.BeginRecording(viewport);
             if (canReuseBaseFrame && reusableSeedImage != null)
             {
-                lock (_frameLock)
-                {
-                    if (ReferenceEquals(reusableSeedImage, _currentFrameSeedImage))
-                    {
-                        canvas.DrawImage(reusableSeedImage, 0, 0);
-                    }
-                }
+                canvas.DrawImage(reusableSeedImage, 0, 0);
             }
 
             // Adjust for scroll
@@ -1340,7 +1362,8 @@ public class BrowserIntegration
 
             List<InputOverlayData> frameOverlays = new();
             RenderFrameResult frameResult;
-            lock (_rendererLock)
+            _rendererLock.EnterWriteLock();
+            try
             {
                 _renderer.SetGpuRasterContext(
                     WindowManager.Instance.IsOnMainThread
@@ -1391,24 +1414,39 @@ public class BrowserIntegration
                     canvas.Restore();
                 }
             }
+            finally
+            {
+                _rendererLock.ExitWriteLock();
+            }
 
             // Finish recording and derive the next seed image from the committed picture.
             var newFrame = _recorder.EndRecording();
             var newSeedImage = CreateSeedImageFromFrame(newFrame, viewportSize);
 
-            lock (_frameLock)
+            // Dispose the previous frame picture (no longer needed).
+            var oldSnapshot = _latestSnapshot;
+            oldSnapshot?.Frame?.Dispose();
+
+            // Publish the new content snapshot — atomic reference write, visible
+            // to the compositor thread immediately without any lock.
+            _latestSnapshot = new ContentSnapshot(
+                newFrame,
+                frameOverlays,
+                viewportSize,
+                _scrollY,
+                _contentHeight);
+
+            // Seed-image management is engine-thread-only; no lock needed.
+            _currentFrameSeedImage?.Dispose();
+            _currentFrameSeedImage = newSeedImage;
+            _currentFrameSeedCreatedUtc = newSeedImage != null ? DateTime.UtcNow : DateTime.MinValue;
+            _consecutiveBaseFrameReuseCount = (canReuseBaseFrame && newSeedImage != null)
+                ? _consecutiveBaseFrameReuseCount + 1
+                : 0;
+
+            // Reset compositor scroll preview now that the engine has caught up.
+            lock (_compositorScrollLock)
             {
-                _currentFrame?.Dispose();
-                _currentFrame = newFrame;
-                _currentFrameSeedImage?.Dispose();
-                _currentFrameSeedImage = newSeedImage;
-                _currentFrameSeedCreatedUtc = newSeedImage != null ? DateTime.UtcNow : DateTime.MinValue;
-                _currentOverlays = frameOverlays;
-                _lastCommittedFrameViewport = viewportSize;
-                _lastCommittedFrameScrollY = _scrollY;
-                _consecutiveBaseFrameReuseCount = (canReuseBaseFrame && newSeedImage != null)
-                    ? _consecutiveBaseFrameReuseCount + 1
-                    : 0;
                 _hasCompositorScrollPreview = false;
                 _compositorPreviewScrollY = _scrollY;
             }
@@ -1632,10 +1670,7 @@ public class BrowserIntegration
 
     private bool HasCommittedFrame()
     {
-        lock (_frameLock)
-        {
-            return _currentFrame != null;
-        }
+        return _latestSnapshot?.Frame != null;
     }
 
     /// <summary>
@@ -1670,11 +1705,17 @@ public class BrowserIntegration
     {
         if (element == null) return null;
 
-        lock (_rendererLock)
+        if (!_rendererLock.TryEnterReadLock(2))
+            return null; // engine is mid-layout; element rect unavailable
+        try
         {
             var box = _renderer.GetElementBox(element);
             if (box == null) return null;
             return box.BorderBox;
+        }
+        finally
+        {
+            _rendererLock.ExitReadLock();
         }
     }
 
@@ -1702,7 +1743,11 @@ public class BrowserIntegration
     /// </summary>
     private void ScrollIframeToElement(Element iframeHost, Element target)
     {
-        lock (_rendererLock)
+        // Called from the JS engine thread (scrollIntoView callback), which already
+        // holds the write lock during RecordFrame.  This mutates ScrollManager so it
+        // requires write access; recursion is supported by the lock policy.
+        _rendererLock.EnterWriteLock();
+        try
         {
             var frameBox = _renderer.GetElementBox(iframeHost);
             var targetBox = _renderer.GetElementBox(target);
@@ -1730,6 +1775,10 @@ public class BrowserIntegration
                 Math.Max(0f, frameBox.PaddingBox.Width),
                 viewportH);
             _renderer.ScrollManager.SetScrollPosition(iframeHost, 0, desired);
+        }
+        finally
+        {
+            _rendererLock.ExitWriteLock();
         }
 
         RequestFrame(RenderFrameInvalidationReason.Scroll | RenderFrameInvalidationReason.Overlay,
@@ -1961,7 +2010,7 @@ public class BrowserIntegration
         // which produces the visible "scrollbar moves, content stays" symptom.
         _scrollY = clamped;
         _scrollPhysics.SetPosition(_scrollY);
-        lock (_frameLock)
+        lock (_compositorScrollLock)
         {
             _compositorPreviewScrollY = clamped;
             _hasCompositorScrollPreview = true;
@@ -1993,7 +2042,7 @@ public class BrowserIntegration
 
     private void ApplyCompositorScrollPreview(float deltaY)
     {
-        lock (_frameLock)
+        lock (_compositorScrollLock)
         {
             var currentScroll = _hasCompositorScrollPreview ? _compositorPreviewScrollY : _scrollY;
             _compositorPreviewScrollY = ClampScrollPosition(currentScroll - (deltaY * 40f));
@@ -2009,7 +2058,7 @@ public class BrowserIntegration
 
     private void ResetCompositorScrollPreview()
     {
-        lock (_frameLock)
+        lock (_compositorScrollLock)
         {
             _compositorPreviewScrollY = _scrollY;
             _hasCompositorScrollPreview = false;
@@ -2117,7 +2166,16 @@ public class BrowserIntegration
     /// Use this for paint-time decisions (scrollbar thumb, brokered frame request)
     /// to avoid one-frame lag against fast wheel input.
     /// </summary>
-    public float EffectiveScrollY => _hasCompositorScrollPreview ? _compositorPreviewScrollY : _scrollY;
+    public float EffectiveScrollY
+    {
+        get
+        {
+            lock (_compositorScrollLock)
+            {
+                return _hasCompositorScrollPreview ? _compositorPreviewScrollY : _scrollY;
+            }
+        }
+    }
     
     /// <summary>
     /// Get the content height for scroll calculation.
@@ -2150,18 +2208,13 @@ public class BrowserIntegration
             bool hadBootstrapViewport = previousViewport.Width <= 1 || previousViewport.Height <= 1;
             if (hadBootstrapViewport || !_hasFirstStyledRender)
             {
-                lock (_frameLock)
-                {
-                    _currentFrame?.Dispose();
-                    _currentFrame = null;
-                    _currentFrameSeedImage?.Dispose();
-                    _currentFrameSeedImage = null;
-                    _currentOverlays = new List<InputOverlayData>();
-                    _lastCommittedFrameViewport = SKSize.Empty;
-                    _lastCommittedFrameScrollY = 0f;
-                    _currentFrameSeedCreatedUtc = DateTime.MinValue;
-                    _consecutiveBaseFrameReuseCount = 0;
-                }
+                var oldSnapshot = _latestSnapshot;
+                _latestSnapshot = null;
+                oldSnapshot?.Frame?.Dispose();
+                _currentFrameSeedImage?.Dispose();
+                _currentFrameSeedImage = null;
+                _currentFrameSeedCreatedUtc = DateTime.MinValue;
+                _consecutiveBaseFrameReuseCount = 0;
             }
 
             _lastViewportSize = size;
@@ -2178,6 +2231,22 @@ public class BrowserIntegration
     /// <param name="viewportOffsetX">Content area X offset from window origin</param>
     /// <param name="viewportOffsetY">Content area Y offset from window origin</param>
     /// <returns>Immutable hit test result</returns>
+
+    private HitTestResult GetCachedHitTest()
+    {
+        lock (_hitTestCacheLock)
+        {
+            return _cachedHitTest;
+        }
+    }
+
+    private void SetCachedHitTest(HitTestResult result)
+    {
+        lock (_hitTestCacheLock)
+        {
+            _cachedHitTest = result;
+        }
+    }
     public HitTestResult PerformHitTest(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
     {
         // Window → UI coordinates (subtract viewport offset)
@@ -2192,30 +2261,41 @@ public class BrowserIntegration
         float docX = scaledX;
         float docY = scaledY + _scrollY;
         
-        // Perform hit test in document space
-        lock (_rendererLock)
+        // Perform hit test in document space.
+        // Use TryEnterReadLock(0) — never block the UI thread waiting for the engine
+        // thread's layout pass.  If the renderer lock is held (engine is mid-layout),
+        // fall back to the last cached result so the cursor stays responsive.
+        if (_rendererLock.TryEnterReadLock(0))
         {
-            if (_renderer.HitTest(docX, docY, out var result))
+            try
             {
-                // Update last hit test (for status bar)
-                if (!result.Equals(_lastHitTest))
+                if (_renderer.HitTest(docX, docY, out var result))
                 {
-                    _lastHitTest = result;
-                    HitTestChanged?.Invoke(result);
-                }
+                    // Update last hit test (for status bar) and cache for non-blocking fallback.
+                    if (!result.Equals(_lastHitTest))
+                    {
+                        _lastHitTest = result;
+                        SetCachedHitTest(result);
+                        HitTestChanged?.Invoke(result);
+                    }
 
-                return result;
+                    return result;
+                }
+            }
+            finally
+            {
+                _rendererLock.ExitReadLock();
             }
         }
 
-        // No hit - reset if changed
-        if (_lastHitTest.HasHit)
+        // Renderer is busy (engine mid-layout) — use cached result to keep UI responsive.
+        var cachedHit = GetCachedHitTest();
+        if (!cachedHit.Equals(_lastHitTest))
         {
-            _lastHitTest = HitTestResult.None;
+            _lastHitTest = cachedHit;
             HitTestChanged?.Invoke(_lastHitTest);
         }
-        
-        return HitTestResult.None;
+        return cachedHit;
     }
     
     private (float X, float Y) TranslateWindowToDocument(float windowX, float windowY, float viewportOffsetX, float viewportOffsetY)
@@ -2554,6 +2634,39 @@ public class BrowserIntegration
         canvas.ClipRect(overlay.Bounds);
         canvas.DrawText(text, x, y, paint);
         canvas.Restore();
+    }
+
+    /// <summary>
+    /// Immutable snapshot of the last committed frame produced by the engine thread.
+    /// The compositor and UI thread read this without any lock — the engine thread
+    /// publishes a new instance after each RecordFrame via atomic reference swap.
+    /// </summary>
+    private sealed class ContentSnapshot
+    {
+        /// <summary>Pre-recorded display-list picture. Drawn directly by the compositor.</summary>
+        public readonly SKPicture Frame;
+        /// <summary>Input overlays (text fields, etc.) painted with this frame.</summary>
+        public readonly List<InputOverlayData> Overlays;
+        /// <summary>Viewport size at commit time.</summary>
+        public readonly SKSize ViewportSize;
+        /// <summary>Document scroll Y at commit time.</summary>
+        public readonly float CommittedScrollY;
+        /// <summary>Total document content height.</summary>
+        public readonly float ContentHeight;
+
+        public ContentSnapshot(
+            SKPicture frame,
+            List<InputOverlayData> overlays,
+            SKSize viewportSize,
+            float committedScrollY,
+            float contentHeight)
+        {
+            Frame = frame;
+            Overlays = overlays ?? new List<InputOverlayData>();
+            ViewportSize = viewportSize;
+            CommittedScrollY = committedScrollY;
+            ContentHeight = contentHeight;
+        }
     }
 }
 

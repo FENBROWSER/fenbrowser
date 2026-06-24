@@ -88,11 +88,58 @@ namespace FenBrowser.Host.ProcessIsolation
             _tabStates[tab.Id] = state;
             _isolationRegistry.EnsureTab(tab.Id);
 
-            if (!TryStartSession(state, restartAttempt: 0, restartReason: "tab-created"))
+            // Fire-and-forget: renderer startup involves process launch and IPC
+            // handshake which can take seconds.  Never block the UI thread.
+            _ = StartSessionAsync(state, restartAttempt: 0, restartReason: "tab-created");
+        }
+
+        private async Task StartSessionAsync(TabProcessState state, int restartAttempt, string restartReason)
+        {
+            try
             {
-                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, $"[ProcessIsolation] Initial renderer spawn failed for tab {tab.Id}; will retry on next navigation.");
-                RendererCrashed?.Invoke(tab.Id, "renderer-startup-failed");
-                return;
+                if (!await TryStartSessionAsync(state, restartAttempt, restartReason).ConfigureAwait(false))
+                {
+                    EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn,
+                        $"[ProcessIsolation] Initial renderer spawn failed for tab {state.TabId}; will retry on next navigation.");
+                    RendererCrashed?.Invoke(state.TabId, "renderer-startup-failed");
+                }
+            }
+            catch (Exception ex)
+            {
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error,
+                    $"[ProcessIsolation] Renderer startup threw for tab {state.TabId}: {ex.Message}");
+                RendererCrashed?.Invoke(state.TabId, "renderer-startup-failed");
+            }
+        }
+
+        /// <summary>
+        /// Starts a renderer session and then sends the navigation URL once ready.
+        /// Used by OnNavigationRequested when no session exists for the tab.
+        /// </summary>
+        private async Task StartSessionAndNavigateAsync(TabProcessState state, string url, bool isUserInput)
+        {
+            try
+            {
+                if (!await TryStartSessionAsync(state, restartAttempt: 0, restartReason: "navigation").ConfigureAwait(false))
+                {
+                    RendererCrashed?.Invoke(state.TabId, "renderer-startup-failed");
+                    return;
+                }
+
+                var session = state.Session;
+                if (session != null)
+                {
+                    // Now that the session is ready, send the pending navigation.
+                    var viewportWidth = state.LastViewportWidth > 1f ? state.LastViewportWidth : 1024f;
+                    var viewportHeight = state.LastViewportHeight > 1f ? state.LastViewportHeight : 768f;
+                    session.SendNavigate(url, isUserInput, viewportWidth, viewportHeight);
+                }
+            }
+            catch (Exception ex)
+            {
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error,
+                    $"[ProcessIsolation] StartSessionAndNavigateAsync threw for tab {state.TabId}: {ex.Message}");
+                RendererCrashed?.Invoke(state.TabId, "renderer-startup-failed");
             }
         }
 
@@ -147,12 +194,11 @@ namespace FenBrowser.Host.ProcessIsolation
             var session = state.Session;
             if (session == null)
             {
-                if (!TryStartSession(state, restartAttempt: 0, restartReason: "navigation"))
-                {
-                    RendererCrashed?.Invoke(tab.Id, "renderer-startup-failed");
-                    return;
-                }
-                session = state.Session;
+                // Fire-and-forget: process creation + IPC handshake is slow.
+                // Don't block the caller; the navigation URL is stashed in the
+                // tab state and will be consumed when the session is ready.
+                _ = StartSessionAndNavigateAsync(state, url, isUserInput);
+                return;
             }
 
             var viewport = tab.Browser?.ViewportSize ?? default;
@@ -185,7 +231,7 @@ namespace FenBrowser.Host.ProcessIsolation
             state.ActivePid = 0;
             state.PooledSlot = null;
 
-            _ = TryStartSession(state, restartAttempt: 0, restartReason: "assignment-change");
+            _ = TryStartSessionAsync(state, restartAttempt: 0, restartReason: "assignment-change");
         }
 
         public void OnInputEvent(BrowserTab tab, RendererInputEvent inputEvent)
@@ -266,7 +312,7 @@ namespace FenBrowser.Host.ProcessIsolation
             _rendererProcessPool?.Dispose();
         }
 
-        private bool TryStartSession(TabProcessState state, int restartAttempt, string restartReason)
+        private async Task<bool> TryStartSessionAsync(TabProcessState state, int restartAttempt, string restartReason)
         {
             if (state == null || state.IsClosed)
             {
@@ -276,7 +322,7 @@ namespace FenBrowser.Host.ProcessIsolation
             if (!_isolationRegistry.CanStartSession(state.TabId, out var retryAfterMs, out var denyReason))
             {
                 var retrySuffix = retryAfterMs > 0 ? $" retryAfterMs={retryAfterMs}" : string.Empty;
-                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn, 
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Warn,
                     $"[ProcessIsolation] Start denied for tab {state.TabId} (reason={denyReason}{retrySuffix})");
                 return false;
             }
@@ -289,7 +335,7 @@ namespace FenBrowser.Host.ProcessIsolation
             {
                 try
                 {
-                    var pooledSlot = _rendererProcessPool.AcquireSlotAsync(assignmentForLaunch).GetAwaiter().GetResult();
+                    var pooledSlot = await _rendererProcessPool.AcquireSlotAsync(assignmentForLaunch).ConfigureAwait(false);
                     if (pooledSlot?.Process != null && pooledSlot.Session != null)
                     {
                         var pooledSession = pooledSlot.Session;
@@ -347,10 +393,10 @@ namespace FenBrowser.Host.ProcessIsolation
             process.Exited += (_, __) => HandleChildProcessExit(state.TabId, startedPid);
 
             session.AttachProcess(process);
-            var ready = session.WaitForReadyAsync(_rendererReadyTimeout).GetAwaiter().GetResult();
+            var ready = await session.WaitForReadyAsync(_rendererReadyTimeout).ConfigureAwait(false);
             if (!ready)
             {
-                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error, 
+                EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Error,
                     $"[ProcessIsolation] Renderer child failed startup contract for tab {state.TabId} (pid={startedPid}, readyTimeoutMs={(int)_rendererReadyTimeout.TotalMilliseconds}).");
                 StopSession(session, $"tab {state.TabId} startup contract failure");
                 sandbox?.Dispose();
@@ -361,12 +407,12 @@ namespace FenBrowser.Host.ProcessIsolation
             state.ActivePid = startedPid;
             _isolationRegistry.MarkSessionStarted(state.TabId, startedPid);
 
-            EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info, 
+            EngineLog.Write(LogSubsystem.ProcessIsolation, LogSeverity.Info,
                 $"[ProcessIsolation] Renderer child started for tab {state.TabId} (pid={startedPid}, pipe={pipeName}, assignment={assignmentForLaunch}, reason={restartReason})");
             return true;
         }
 
-        private void HandleChildProcessExit(int tabId, int exitedPid)
+        private async void HandleChildProcessExit(int tabId, int exitedPid)
         {
             if (_isShuttingDown)
             {
@@ -431,7 +477,7 @@ namespace FenBrowser.Host.ProcessIsolation
                 state.ActivePid = 0;
                 state.PooledSlot = null;
 
-                if (!TryStartSession(state, exitDecision.RestartAttempt, "crash-restart"))
+                if (!await TryStartSessionAsync(state, exitDecision.RestartAttempt, "crash-restart").ConfigureAwait(false))
                 {
                     return;
                 }

@@ -188,10 +188,12 @@ namespace FenBrowser.FenEngine.Rendering
         {
             lock (_renderStateLock)
             {
+                // Allow empty styles during incremental parsing — the engine renders
+                // with browser-default styling and progressively improves as CSS arrives.
+                // Requiring Count > 0 blocked every incremental repaint before CSS load.
                 return _hasStableStyles &&
                        !_awaitingPostScriptSnapshot &&
-                       LastComputedStyles != null &&
-                       LastComputedStyles.Count > 0;
+                       LastComputedStyles != null;
             }
         }
 
@@ -2557,6 +2559,17 @@ public void Dispose()
                     html = html.Substring(0, MaxHtmlSize);
                 }
 
+                // Seed an empty-but-stable style snapshot so incremental-parse repaints
+                // (TryEmitIncrementalParseRepaint) fire during RunDomParseAsync instead of
+                // being gated out by HasStableComputedStyleSnapshot.  Without this, the page
+                // stays blank until the entire parse completes — which looks like a freeze
+                // on heavy pages (github.com, etc.).
+                lock (_renderStateLock)
+                {
+                    LastComputedStyles ??= new Dictionary<Node, CssComputed>();
+                    _hasStableStyles = true;
+                }
+
                 // 1. Helper: Parse DOM
                 var parseResult = await RunDomParseAsync(html, baseUri);
                 var dom = parseResult?.Dom;
@@ -2996,7 +3009,8 @@ public void Dispose()
             }
 
             repaintCount++;
-            SetActiveDom(snapshotRoot, markSnapshotUnstable: true);
+            // Keep styles stable so subsequent streaming repaints are not gated out.
+            SetActiveDom(snapshotRoot, markSnapshotUnstable: false);
             // Do NOT null out LastComputedStyles here. The engine loop polls for styles
             // and nulling them causes hundreds of wasted render frames with Styles=NULL
             // before the CSS cascade completes. Keep previous styles visible so layout
@@ -3042,7 +3056,9 @@ public void Dispose()
             }
 
             incrementalRepaintCount++;
-            SetActiveDom(snapshotRoot, markSnapshotUnstable: true);
+            // Keep styles stable so subsequent incremental repaints are not gated out.
+            // The empty-but-stable snapshot is seeded before RunDomParseAsync.
+            SetActiveDom(snapshotRoot, markSnapshotUnstable: false);
             // Do NOT null out LastComputedStyles — see TryEmitStreamingParseRepaint comment.
             OnRepaintReady(snapshotRoot);
         }
