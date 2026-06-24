@@ -106,7 +106,6 @@
     <Compile Remove="Testing\**\*.cs" />
     <Compile Remove="Diagnostics\**\*.cs" />
     <Compile Remove="Rendering\DebugOverlay.cs" />
-    <Compile Remove="Core\FenValue.cs" />
     <Compile Remove="Rendering\BrowserApi.cs" />
     <Compile Remove="Rendering\CustomHtmlEngine.cs" />
   </ItemGroup>

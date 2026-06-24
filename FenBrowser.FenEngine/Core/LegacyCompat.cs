@@ -111,34 +111,11 @@ namespace FenBrowser.FenEngine.Core.Types
         public override string ToString() => Value.ToString();
     }
 
-    // Minimal IValue implementation for compat stubs (FenValue.cs is excluded pending FenJS JsValue migration)
-    internal sealed class StubValue : IValue
-    {
-        public static readonly StubValue Undef = new() { Type = ValueType.Undefined };
-        public static readonly StubValue Error = new() { Type = ValueType.Error };
-        public ValueType Type { get; set; }
-        public bool ToBoolean() => false;
-        public double ToNumber() => 0;
-        public string ToString() => Type == ValueType.Undefined ? "undefined" : Type == ValueType.Null ? "null" : string.Empty;
-        public IObject ToObject() => null;
-        public bool IsUndefined => Type == ValueType.Undefined;
-        public bool IsNull => Type == ValueType.Null;
-        public bool IsBoolean => Type == ValueType.Boolean;
-        public bool IsNumber => Type == ValueType.Number;
-        public bool IsString => Type == ValueType.String;
-        public bool IsObject => Type == ValueType.Object;
-        public bool IsFunction => Type == ValueType.Function;
-        public IObject AsObject() => null;
-        public double AsNumber(IExecutionContext context = null) => 0;
-        public bool AsBoolean() => false;
-        public string AsString(IExecutionContext context = null) => ToString();
-    }
-
     public sealed class FenFunction
     {
         public string Name { get; set; }
-        public IValue Call(IValue thisValue, params IValue[] args) => StubValue.Undef;
-        public IValue Invoke(IValue[] args, object context) => StubValue.Undef;
+        public IValue Call(IValue thisValue, params IValue[] args) => Core.FenValue.Undefined;
+        public IValue Invoke(IValue[] args, object context) => Core.FenValue.Undefined;
     }
 }
 
@@ -148,7 +125,7 @@ namespace FenBrowser.FenEngine.Errors
 
     public static class FenError
     {
-        public static IValue FromException(Exception ex) => Core.Types.StubValue.Error;
+        public static IValue FromException(Exception ex) => Core.FenValue.Undefined;
     }
 }
 
@@ -301,7 +278,7 @@ namespace FenBrowser.FenEngine.Core
     public sealed class FenObject : Interfaces.IObject
     {
         private readonly Dictionary<string, Interfaces.IValue> _props = new(StringComparer.Ordinal);
-        public Interfaces.IValue Get(string key) => _props.TryGetValue(key, out var v) ? v : Types.StubValue.Undef;
+        public Interfaces.IValue Get(string key) => _props.TryGetValue(key, out var v) ? v : Core.FenValue.Undefined;
         public Interfaces.IValue Get(string key, object context) => Get(key);
         public void Set(string key, Interfaces.IValue value) => _props[key] = value;
         public bool Has(string key) => _props.ContainsKey(key);
