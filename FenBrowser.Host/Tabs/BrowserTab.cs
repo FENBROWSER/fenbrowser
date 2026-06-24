@@ -54,6 +54,27 @@ public class BrowserTab
     /// Current URL of this tab.
     /// </summary>
     public string Url => Browser.CurrentUrl;
+
+    /// <summary>
+    /// URL chrome should display, including an initial navigation that has not
+    /// committed yet because the tab is waiting for a viewport.
+    /// </summary>
+    public string DisplayUrl
+    {
+        get
+        {
+            var url = Url;
+            if (!string.IsNullOrEmpty(url))
+            {
+                return url;
+            }
+
+            lock (_initialNavigationLock)
+            {
+                return _pendingInitialNavigationUrl ?? string.Empty;
+            }
+        }
+    }
     
     /// <summary>
     /// Event when tab title changes.

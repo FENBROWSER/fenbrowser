@@ -471,13 +471,25 @@ namespace FenBrowser.Host
                 tab.Browser.ContextMenuRequested += OnContextMenuRequested;
                 tab.LoadingChanged += OnActiveTabLoadingChanged;
                 tab.TitleChanged += OnActiveTabTitleChanged;
-                _toolbar.SetUrl(tab.Url);
-                UpdateBookmarkStar(tab.Url);
+                // BrowserTab.Url remains empty while an initial navigation waits for
+                // the first viewport. DisplayUrl includes that pending target so a new
+                // tab immediately replaces the previous tab's address.
+                var displayUrl = tab.DisplayUrl;
+                if (!string.IsNullOrEmpty(displayUrl))
+                {
+                    _toolbar.SetUrl(displayUrl);
+                    UpdateBookmarkStar(displayUrl);
+                }
+                else
+                {
+                    _toolbar.SetUrl(string.Empty);
+                    UpdateBookmarkStar(string.Empty);
+                }
                 WindowManager.Instance.Window.Title = $"FenBrowser - {tab.Title}";
                 _statusBar.SetLoading(tab.IsLoading);
                 tab.Browser.RequestRepaint();
 
-                if (tab.Url.StartsWith("fen://newtab", StringComparison.OrdinalIgnoreCase))
+                if (displayUrl.StartsWith("fen://newtab", StringComparison.OrdinalIgnoreCase))
                 {
                     InputManager.Instance.RequestFocus(_toolbar.AddressBar);
                     _toolbar.AddressBar.SelectAll();

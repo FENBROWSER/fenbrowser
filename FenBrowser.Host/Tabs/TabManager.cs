@@ -116,6 +116,11 @@ public class TabManager
     public BrowserTab CreateTab(string url = null)
     {
         var tab = new BrowserTab();
+        if (!string.IsNullOrEmpty(url))
+        {
+            tab.StartInitialNavigation(url);
+        }
+
         _tabs.Add(tab);
         
         // Set as active
@@ -123,12 +128,6 @@ public class TabManager
         
         TabAdded?.Invoke(tab);
         ActiveTabChanged?.Invoke(tab);
-        
-        // Navigate if URL provided
-        if (!string.IsNullOrEmpty(url))
-        {
-            tab.StartInitialNavigation(url);
-        }
         
         return tab;
     }
