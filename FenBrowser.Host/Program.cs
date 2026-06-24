@@ -387,6 +387,146 @@ namespace FenBrowser.Host
 
             bool handshakeComplete = false;
             bool running = true;
+            bool hasFrameViewport = false;
+            float lastFrameViewportWidth = 1280f;
+            float lastFrameViewportHeight = 720f;
+            float lastFrameScrollY = 0f;
+            int pendingRendererRepaintFrame = 0;
+
+            void SendFrameReady(float viewportWidth, float viewportHeight, float scrollY, string requestedBy, string correlationId)
+            {
+                viewportWidth = Math.Max(1f, Math.Min(viewportWidth, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxWidth));
+                viewportHeight = Math.Max(1f, Math.Min(viewportHeight, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxHeight));
+                scrollY = Math.Max(0f, scrollY);
+
+                int iWidth = (int)viewportWidth;
+                int iHeight = (int)viewportHeight;
+                float actualWidth = viewportWidth;
+                float actualHeight = viewportHeight;
+                uint seqNum = 0;
+                FenBrowser.FenEngine.Rendering.Core.RenderFrameResult frameResult = null;
+
+                // Lazily create the shared memory writer on first frame publication.
+                if (frameSharedMemory == null)
+                {
+                    frameSharedMemory = FenBrowser.Host.ProcessIsolation.FrameSharedMemory.CreateForWriter(tabId, parentPid);
+                }
+
+                if (frameSharedMemory != null)
+                {
+                    try
+                    {
+                        var domRoot = browser.GetDomRoot();
+                        var styles = browser.ComputedStyles;
+
+                        if (domRoot != null)
+                        {
+                            var imageInfo = new SkiaSharp.SKImageInfo(iWidth, iHeight, SkiaSharp.SKColorType.Bgra8888, SkiaSharp.SKAlphaType.Premul);
+                            using var bitmap = new SkiaSharp.SKBitmap(imageInfo);
+                            using var canvas = new SkiaSharp.SKCanvas(bitmap);
+                            canvas.Clear(SkiaSharp.SKColors.White);
+
+                            // Document-space viewport (top advances with scroll); the canvas is
+                            // translated by -scrollY so the visible band rasterises at (0,0).
+                            var viewport = new SkiaSharp.SKRect(0, scrollY, viewportWidth, scrollY + viewportHeight);
+                            canvas.Save();
+                            if (scrollY > 0f)
+                            {
+                                canvas.Translate(0, -scrollY);
+                            }
+                            var childRenderer = new FenBrowser.FenEngine.Rendering.SkiaDomRenderer();
+                            frameResult = childRenderer.RenderFrame(new FenBrowser.FenEngine.Rendering.Core.RenderFrameRequest
+                            {
+                                Root = domRoot,
+                                Canvas = canvas,
+                                Styles = styles != null
+                                    ? new System.Collections.Generic.Dictionary<FenBrowser.Core.Dom.V2.Node, FenBrowser.Core.Css.CssComputed>(styles)
+                                    : new System.Collections.Generic.Dictionary<FenBrowser.Core.Dom.V2.Node, FenBrowser.Core.Css.CssComputed>(),
+                                Viewport = viewport,
+                                BaseUrl = browser.CurrentUri?.AbsoluteUri,
+                                InvalidationReason = FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.ProcessIsolation,
+                                RequestedBy = requestedBy,
+                                EmitVerificationReport = false
+                            });
+                            canvas.Restore();
+                            canvas.Flush();
+
+                            // GetPixelSpan() is a ref struct; copy to byte[] to avoid
+                            // "ref struct in async method" language restriction.
+                            int byteCount = iWidth * iHeight * 4;
+                            var pixelBytes = new byte[byteCount];
+                            System.Runtime.InteropServices.Marshal.Copy(
+                                bitmap.GetPixels(), pixelBytes, 0, byteCount);
+                            frameSharedMemory.WriteFrame(iWidth, iHeight, pixelBytes);
+                            frameSharedMemory.SignalReady();
+                            seqNum = 1; // Approximate; actual seq tracked inside WriteFrame.
+                            EngineLog.Write(LogSubsystem.Paint, LogSeverity.Debug, $"[RendererChild] Frame written to shared memory: {iWidth}x{iHeight} for tab={tabId} requestedBy={requestedBy}");
+                        }
+                        else
+                        {
+                            EngineLog.Write(LogSubsystem.Paint, LogSeverity.Debug, $"[RendererChild] No DOM root for tab={tabId}; skipping frame write.");
+                        }
+                    }
+                    catch (Exception renderEx)
+                    {
+                        EngineLog.Write(LogSubsystem.Paint, LogSeverity.Warn, $"[RendererChild] Frame render failed for tab={tabId}: {renderEx.Message}");
+                    }
+                }
+
+                var payload = new RendererFrameReadyPayload
+                {
+                    Url = browser.CurrentUri?.AbsoluteUri ?? "about:blank",
+                    FrameTimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                    SurfaceWidth = actualWidth,
+                    SurfaceHeight = actualHeight,
+                    DirtyRegionCount = 1,
+                    HasDamage = true,
+                    FrameSequenceNumber = seqNum,
+                    RequestedBy = frameResult?.RequestedBy ?? requestedBy,
+                    InvalidationReason = frameResult?.InvalidationReason.ToString() ?? FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.ProcessIsolation.ToString(),
+                    RasterMode = frameResult?.RasterMode.ToString() ?? FenBrowser.FenEngine.Rendering.Core.RenderFrameRasterMode.Full.ToString(),
+                    UsedDamageRasterization = frameResult?.UsedDamageRasterization ?? false,
+                    DamageAreaRatio = frameResult?.DamageAreaRatio ?? 0f,
+                    LayoutUpdated = frameResult?.Telemetry?.LayoutUpdated ?? false,
+                    PaintTreeRebuilt = frameResult?.Telemetry?.PaintTreeRebuilt ?? false,
+                    WatchdogTriggered = frameResult?.WatchdogTriggered ?? false,
+                    WatchdogReason = frameResult?.WatchdogReason ?? string.Empty,
+                    TotalDurationMs = frameResult?.Telemetry?.TotalDurationMs ?? 0d,
+                    DomNodeCount = frameResult?.Telemetry?.DomNodeCount ?? 0,
+                    BoxCount = frameResult?.Telemetry?.BoxCount ?? 0,
+                    PaintNodeCount = frameResult?.Telemetry?.PaintNodeCount ?? 0,
+                    ContentHeight = frameResult?.Layout?.ContentHeight ?? 0f
+                };
+
+                SendRendererEnvelope(writer, new RendererIpcEnvelope
+                {
+                    Type = RendererIpcMessageType.FrameReady.ToString(),
+                    TabId = tabId,
+                    CorrelationId = correlationId,
+                    Payload = RendererIpc.SerializePayload(payload)
+                });
+            }
+
+            void DrainPendingRendererRepaintFrame()
+            {
+                if (Interlocked.Exchange(ref pendingRendererRepaintFrame, 0) != 1)
+                {
+                    return;
+                }
+
+                if (!handshakeComplete || !hasFrameViewport)
+                {
+                    return;
+                }
+
+                SendFrameReady(
+                    lastFrameViewportWidth,
+                    lastFrameViewportHeight,
+                    lastFrameScrollY,
+                    "RendererChild.RepaintReady",
+                    Guid.NewGuid().ToString("N"));
+            }
+
             void SendMetadata(string title = null, SkiaSharp.SKBitmap favicon = null, bool faviconChanged = false)
             {
                 if (!handshakeComplete)
@@ -431,12 +571,22 @@ namespace FenBrowser.Host
 
             browser.TitleChanged += (_, title) => SendMetadata(title: title);
             browser.FaviconChanged += (_, favicon) => SendMetadata(favicon: favicon, faviconChanged: true);
+            browser.RepaintReady += (_, __) =>
+            {
+                if (!handshakeComplete || !hasFrameViewport)
+                {
+                    return;
+                }
+
+                Interlocked.Exchange(ref pendingRendererRepaintFrame, 1);
+            };
 
             while (running)
             {
                 if (handshakeComplete)
                 {
                     logForwarder.FlushRenderer(writer, tabId);
+                    DrainPendingRendererRepaintFrame();
                 }
 
                 if (!IsParentAlive(parentPid))
@@ -446,9 +596,14 @@ namespace FenBrowser.Host
 
                 var readResult = await RendererChildLoopIo.ReadLineWithTimeoutAsync(
                     reader,
-                    TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
+                    TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
                 if (!readResult.Completed)
                 {
+                    if (handshakeComplete)
+                    {
+                        DrainPendingRendererRepaintFrame();
+                    }
+
                     continue;
                 }
 
@@ -607,113 +762,12 @@ namespace FenBrowser.Host
                         // Clamp to sane range.
                         vpWidth = Math.Max(1f, Math.Min(vpWidth, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxWidth));
                         vpHeight = Math.Max(1f, Math.Min(vpHeight, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxHeight));
-                        int iWidth = (int)vpWidth;
-                        int iHeight = (int)vpHeight;
+                        lastFrameViewportWidth = vpWidth;
+                        lastFrameViewportHeight = vpHeight;
+                        lastFrameScrollY = scrollY;
+                        hasFrameViewport = true;
 
-                        float actualWidth = vpWidth;
-                        float actualHeight = vpHeight;
-                        uint seqNum = 0;
-                        FenBrowser.FenEngine.Rendering.Core.RenderFrameResult frameResult = null;
-
-                        // Lazily create the shared memory writer on first FrameRequest.
-                        if (frameSharedMemory == null)
-                        {
-                            frameSharedMemory = FenBrowser.Host.ProcessIsolation.FrameSharedMemory.CreateForWriter(tabId, parentPid);
-                        }
-
-                        if (frameSharedMemory != null)
-                        {
-                            try
-                            {
-                                var domRoot = browser.GetDomRoot();
-                                var styles = browser.ComputedStyles;
-
-                                if (domRoot != null)
-                                {
-                                    var imageInfo = new SkiaSharp.SKImageInfo(iWidth, iHeight, SkiaSharp.SKColorType.Bgra8888, SkiaSharp.SKAlphaType.Premul);
-                                    using var bitmap = new SkiaSharp.SKBitmap(imageInfo);
-                                    using var canvas = new SkiaSharp.SKCanvas(bitmap);
-                                    canvas.Clear(SkiaSharp.SKColors.White);
-
-                                    // Document-space viewport (top advances with scroll); the canvas is
-                                    // translated by -scrollY so the visible band rasterises at (0,0).
-                                    var viewport = new SkiaSharp.SKRect(0, scrollY, vpWidth, scrollY + vpHeight);
-                                    canvas.Save();
-                                    if (scrollY > 0f)
-                                    {
-                                        canvas.Translate(0, -scrollY);
-                                    }
-                                    var childRenderer = new FenBrowser.FenEngine.Rendering.SkiaDomRenderer();
-                                    frameResult = childRenderer.RenderFrame(new FenBrowser.FenEngine.Rendering.Core.RenderFrameRequest
-                                    {
-                                        Root = domRoot,
-                                        Canvas = canvas,
-                                        Styles = styles != null
-                                            ? new System.Collections.Generic.Dictionary<FenBrowser.Core.Dom.V2.Node, FenBrowser.Core.Css.CssComputed>(styles)
-                                            : new System.Collections.Generic.Dictionary<FenBrowser.Core.Dom.V2.Node, FenBrowser.Core.Css.CssComputed>(),
-                                        Viewport = viewport,
-                                        BaseUrl = browser.CurrentUri?.AbsoluteUri,
-                                        InvalidationReason = FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.ProcessIsolation,
-                                        RequestedBy = "RendererChild.FrameRequest",
-                                        EmitVerificationReport = false
-                                    });
-                                    canvas.Restore();
-                                    canvas.Flush();
-
-                                    // GetPixelSpan() is a ref struct; copy to byte[] to avoid
-                                    // "ref struct in async method" language restriction.
-                                    int byteCount = iWidth * iHeight * 4;
-                                    var pixelBytes = new byte[byteCount];
-                                    System.Runtime.InteropServices.Marshal.Copy(
-                                        bitmap.GetPixels(), pixelBytes, 0, byteCount);
-                                    frameSharedMemory.WriteFrame(iWidth, iHeight, pixelBytes);
-                                    frameSharedMemory.SignalReady();
-                                    seqNum = 1; // Approximate; actual seq tracked inside WriteFrame.
-                                    EngineLog.Write(LogSubsystem.Paint, LogSeverity.Debug, $"[RendererChild] Frame written to shared memory: {iWidth}x{iHeight} for tab={tabId}");
-                                }
-                                else
-                                {
-                                    EngineLog.Write(LogSubsystem.Paint, LogSeverity.Debug, $"[RendererChild] No DOM root for tab={tabId}; skipping frame write.");
-                                }
-                            }
-                            catch (Exception renderEx)
-                            {
-                                EngineLog.Write(LogSubsystem.Paint, LogSeverity.Warn, $"[RendererChild] Frame render failed for tab={tabId}: {renderEx.Message}");
-                            }
-                        }
-
-                        var payload = new RendererFrameReadyPayload
-                        {
-                            Url = browser.CurrentUri?.AbsoluteUri ?? "about:blank",
-                            FrameTimestampUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                            SurfaceWidth = actualWidth,
-                            SurfaceHeight = actualHeight,
-                            DirtyRegionCount = 1,
-                            HasDamage = true,
-                            FrameSequenceNumber = seqNum,
-                            RequestedBy = frameResult?.RequestedBy ?? "RendererChild.FrameRequest",
-                            InvalidationReason = frameResult?.InvalidationReason.ToString() ?? FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.ProcessIsolation.ToString(),
-                            RasterMode = frameResult?.RasterMode.ToString() ?? FenBrowser.FenEngine.Rendering.Core.RenderFrameRasterMode.Full.ToString(),
-                            UsedDamageRasterization = frameResult?.UsedDamageRasterization ?? false,
-                            DamageAreaRatio = frameResult?.DamageAreaRatio ?? 0f,
-                            LayoutUpdated = frameResult?.Telemetry?.LayoutUpdated ?? false,
-                            PaintTreeRebuilt = frameResult?.Telemetry?.PaintTreeRebuilt ?? false,
-                            WatchdogTriggered = frameResult?.WatchdogTriggered ?? false,
-                            WatchdogReason = frameResult?.WatchdogReason ?? string.Empty,
-                            TotalDurationMs = frameResult?.Telemetry?.TotalDurationMs ?? 0d,
-                            DomNodeCount = frameResult?.Telemetry?.DomNodeCount ?? 0,
-                            BoxCount = frameResult?.Telemetry?.BoxCount ?? 0,
-                            PaintNodeCount = frameResult?.Telemetry?.PaintNodeCount ?? 0,
-                            ContentHeight = frameResult?.Layout?.ContentHeight ?? 0f
-                        };
-
-                        SendRendererEnvelope(writer, new RendererIpcEnvelope
-                        {
-                            Type = RendererIpcMessageType.FrameReady.ToString(),
-                            TabId = tabId,
-                            CorrelationId = envelope.CorrelationId,
-                            Payload = RendererIpc.SerializePayload(payload)
-                        });
+                        SendFrameReady(vpWidth, vpHeight, scrollY, "RendererChild.FrameRequest", envelope.CorrelationId);
                         continue;
                     }
 

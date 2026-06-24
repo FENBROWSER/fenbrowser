@@ -2040,6 +2040,25 @@ public class BrowserIntegration
         NeedsRepaint?.Invoke();
     }
 
+    public void HandleMouseWheel(float windowX, float windowY, float deltaX, float deltaY, float viewportOffsetX = 0, float viewportOffsetY = 0)
+    {
+        var (docX, docY) = TranslateWindowToDocument(windowX, windowY, viewportOffsetX, viewportOffsetY);
+
+        if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true && OwnerTab != null)
+        {
+            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnInputEvent(OwnerTab, new FenBrowser.Host.ProcessIsolation.RendererInputEvent
+            {
+                Type = FenBrowser.Host.ProcessIsolation.RendererInputEventType.MouseWheel,
+                X = docX,
+                Y = docY,
+                DeltaX = deltaX,
+                DeltaY = deltaY
+            });
+        }
+
+        Scroll(deltaY);
+    }
+
     private void ApplyCompositorScrollPreview(float deltaY)
     {
         lock (_compositorScrollLock)
@@ -2382,8 +2401,31 @@ public class BrowserIntegration
     public void HandleRightClick(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
     {
         var (docX, docY) = TranslateWindowToDocument(windowX, windowY, viewportOffsetX, viewportOffsetY);
-        _browser.OnMouseDown(docX, docY, 2);
-        _browser.OnMouseUp(docX, docY, 2);
+        if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+        {
+            if (OwnerTab != null)
+            {
+                FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnInputEvent(OwnerTab, new FenBrowser.Host.ProcessIsolation.RendererInputEvent
+                {
+                    Type = FenBrowser.Host.ProcessIsolation.RendererInputEventType.MouseDown,
+                    X = docX,
+                    Y = docY,
+                    Button = 2
+                });
+                FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnInputEvent(OwnerTab, new FenBrowser.Host.ProcessIsolation.RendererInputEvent
+                {
+                    Type = FenBrowser.Host.ProcessIsolation.RendererInputEventType.MouseUp,
+                    X = docX,
+                    Y = docY,
+                    Button = 2
+                });
+            }
+        }
+        else
+        {
+            _browser.OnMouseDown(docX, docY, 2);
+            _browser.OnMouseUp(docX, docY, 2);
+        }
 
         var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
         ContextMenuRequested?.Invoke(new ContextMenuRequest(windowX, windowY, result));
@@ -2454,9 +2496,22 @@ public class BrowserIntegration
                 FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnInputEvent(OwnerTab, evt);
             }
             
-            if (emitClick && button == 0 && result.IsLink && !string.IsNullOrEmpty(result.Href))
+            if (emitClick && button == 0)
             {
-                LinkClicked?.Invoke(ResolveHrefForUi(result.Href));
+                var activationTarget = ResolveActivationTarget(result, windowX, windowY, viewportOffsetX, viewportOffsetY);
+                if (result.IsLink && !string.IsNullOrEmpty(result.Href))
+                {
+                    LinkClicked?.Invoke(ResolveHrefForUi(result.Href));
+                }
+
+                // The renderer receives the DOM mouse/click sequence above, but
+                // browser-default activation is still mirrored locally so host
+                // navigation state updates for submit buttons and promoted
+                // activation ancestors such as Google's nested search controls.
+                if (activationTarget != null)
+                {
+                    _ = _browser.HandleElementClick(activationTarget);
+                }
             }
             return result;
         }
@@ -2518,7 +2573,37 @@ public class BrowserIntegration
 
     public async Task HandleKeyPress(string key)
     {
+        if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
+        {
+            if (OwnerTab == null || string.IsNullOrWhiteSpace(key))
+            {
+                return;
+            }
+
+            var evt = CreateRendererKeyboardInput(key);
+            FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnInputEvent(OwnerTab, evt);
+            return;
+        }
+
         await _browser.HandleKeyPress(key);
+    }
+
+    private static FenBrowser.Host.ProcessIsolation.RendererInputEvent CreateRendererKeyboardInput(string key)
+    {
+        if (key.Length == 1 && !char.IsControl(key[0]))
+        {
+            return new FenBrowser.Host.ProcessIsolation.RendererInputEvent
+            {
+                Type = FenBrowser.Host.ProcessIsolation.RendererInputEventType.TextInput,
+                Text = key
+            };
+        }
+
+        return new FenBrowser.Host.ProcessIsolation.RendererInputEvent
+        {
+            Type = FenBrowser.Host.ProcessIsolation.RendererInputEventType.KeyDown,
+            Key = key
+        };
     }
     
     public async Task HandleClipboardCommand(string command, string data = null)

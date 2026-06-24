@@ -291,10 +291,11 @@ namespace FenBrowser.FenEngine.Rendering
 
         public void HandlePointerEvent(string eventType, float x, float y)
         {
-            if (_cachedRenderer == null || _activeJs == null) return;
+            var renderer = _externalRenderer ?? _cachedRenderer;
+            if (renderer == null || _activeJs == null) return;
             try
             {
-                if (_cachedRenderer.HitTest(x, y, out var result))
+                if (renderer.HitTest(x, y, out var result))
                 {
                     if (result.NativeElement is Element el)
                     {
@@ -306,6 +307,20 @@ namespace FenBrowser.FenEngine.Rendering
             catch (Exception ex)
             {
                 EngineLogCompat.Error($"[CustomHtmlEngine] HandlePointerEvent error: {ex.Message}", LogCategory.Rendering);
+            }
+        }
+
+        public void DispatchPointerEvent(Element element, string eventType)
+        {
+            if (element == null || _activeJs == null || string.IsNullOrWhiteSpace(eventType)) return;
+
+            try
+            {
+                _activeJs.DispatchEventForElement(element, eventType);
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Error($"[CustomHtmlEngine] DispatchPointerEvent error: {ex.Message}", LogCategory.Rendering);
             }
         }
 

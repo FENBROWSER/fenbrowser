@@ -159,6 +159,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         if (element == null || string.IsNullOrWhiteSpace(eventName))
             return;
 
+        DispatchElementEvent(element, eventName);
+
         // Look up event handler from the FenJS host property store and invoke it.
         var handler = GetStoredHostPropertyOrUndefined(element, "on" + eventName);
         if (_interpreter != null && _interpreter.CanCallValue(handler))
@@ -3380,6 +3382,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return true;
                 case Element element when string.Equals(property, "src", StringComparison.Ordinal):
                     element.SetAttribute("src", CoerceToHostString(value));
+                    return true;
+                case Element element when property.StartsWith("on", StringComparison.OrdinalIgnoreCase):
+                    _owner.SetStoredHostProperty(element, property.ToLowerInvariant(), value);
                     return true;
                 case Element element when string.Equals(property, "innerHTML", StringComparison.Ordinal):
                     element.InnerHTML = CoerceToHostString(value);

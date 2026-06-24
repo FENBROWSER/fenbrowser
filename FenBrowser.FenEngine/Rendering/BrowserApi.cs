@@ -847,7 +847,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Hover/focus/active state changes require re-running the selector cascade so that
             // rules like  a:hover { color: red }  are applied.  We schedule a single re-cascade
             // per state-change burst; ScheduleRecascade() ignores overlapping calls.
-            ElementStateManager.Instance.OnStateChanged += _ => _engine.ScheduleRecascade();
+            ElementStateManager.Instance.OnStateChanged += _ => _engine.ScheduleRecascade(fullRecascade: true);
 
             // Wire DOM attribute mutations (class/id/style changes from JS or DOM manipulation)
             // â†’ CSS re-cascade.  e.g. element.classList.add('active') must reflect in selectors.
@@ -3000,6 +3000,11 @@ pre {{
                 _lastClickDefaultAllowed = inputEvent.Target == null || handled;
             }
 
+            if (inputEvent.Target != null && IsPointerDomEvent(type))
+            {
+                _engine.DispatchPointerEvent(inputEvent.Target, type);
+            }
+
             if (string.Equals(type, "mousemove", StringComparison.OrdinalIgnoreCase))
             {
                 var hovered = NormalizeHoverTarget(inputEvent.Target);
@@ -3023,6 +3028,14 @@ pre {{
             // NOTE: HandleElementClick is NOT called here because BrowserIntegration's
             // HandleMouseUp already calls it with the paint-tree hit-test result. Calling it
             // here too would cause double-navigation for links and double-focus for inputs.
+        }
+
+        private static bool IsPointerDomEvent(string type)
+        {
+            return string.Equals(type, "click", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(type, "mousedown", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(type, "mouseup", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(type, "mousemove", StringComparison.OrdinalIgnoreCase);
         }
 
         private static int BuildButtonMask(int button, string type)

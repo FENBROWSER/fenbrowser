@@ -297,7 +297,23 @@ namespace FenBrowser.FenEngine
     public sealed class InputManager
     {
         public InputManager() { }
-        public bool ProcessEvent(InputEvent evt, object context, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext execCtx) => false;
+        public bool ProcessEvent(InputEvent evt, object context, FenBrowser.FenEngine.Core.Interfaces.IExecutionContext execCtx)
+        {
+            if (evt == null)
+            {
+                return false;
+            }
+
+            if (context is FenBrowser.FenEngine.Rendering.Core.RenderContext renderContext)
+            {
+                evt.Target = FenBrowser.FenEngine.Rendering.Interaction.HitTester.HitTest(
+                    renderContext,
+                    (float)evt.X,
+                    (float)evt.Y);
+            }
+
+            return evt.Target != null;
+        }
     }
 
     public sealed class InputEvent

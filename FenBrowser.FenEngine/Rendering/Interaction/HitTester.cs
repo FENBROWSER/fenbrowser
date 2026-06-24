@@ -31,7 +31,12 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                {
                    return result.NativeElement as Element;
                }
-               return null;
+
+               // Some paint passes omit non-decorative nodes even though layout boxes
+               // are present. Pointer state still needs to resolve those boxes for
+               // hover/click behavior, so fall back to layout hit testing before
+               // reporting a miss.
+               return HitTestNaive(ctx, x, y);
             }
             
             // Fallback: Naive Box Scan
