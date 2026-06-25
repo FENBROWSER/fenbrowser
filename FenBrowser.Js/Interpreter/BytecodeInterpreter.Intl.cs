@@ -3195,6 +3195,15 @@ public sealed partial class BytecodeInterpreter
 
     private List<string> GetListFormatItems(JsValue value)
     {
+        if (value.Tag == JsValueTag.String)
+        {
+            // ECMA-402: string arguments are coerced to an array-like by
+            // splitting into individual characters (via ToObject + iteration).
+            var s = value.AsString();
+            var chars = new List<string>(s.Length);
+            foreach (var c in s) chars.Add(c.ToString());
+            return chars;
+        }
         if (value.Tag != JsValueTag.Object)
         {
             return new List<string>();
@@ -4314,22 +4323,32 @@ public sealed partial class BytecodeInterpreter
             throw new JsThrownException(CreateTypeError("Intl.ListFormat method called on incompatible receiver."));
         }
 
-        var formatFn = new NativeFunctionObject("", (tv, a) =>
+        var formatFn = new NativeFunctionObject("format", (tv, a) =>
         {
             var state = GetLFState(tv);
             var list = GetListFormatItems(a.Count > 0 ? a[0] : JsValue.Undefined);
             var parts = FormatListToParts(list, state);
             return JsValue.FromString(string.Concat(parts.Select(static p => p.Value)));
         }, length: 1);
-        DefineIntlAccessor(ph, proto, "format", formatFn);
+        formatFn.SetPrototype(EnsureFunctionPrototype());
+        var formatHandle = _heap.AllocateObject(formatFn, AllocationSite.Current());
+        _ = proto.DefineOwnProperty(
+            "format",
+            new JsPropertyDescriptor(JsValue.FromObject(formatHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(ph, formatHandle);
 
-        var formatToPartsFn = new NativeFunctionObject("", (tv, a) =>
+        var formatToPartsFn = new NativeFunctionObject("formatToParts", (tv, a) =>
         {
             var state = GetLFState(tv);
             var list = GetListFormatItems(a.Count > 0 ? a[0] : JsValue.Undefined);
             return CreateIntlPartsArray(FormatListToParts(list, state));
         }, length: 1);
-        DefineIntlAccessor(ph, proto, "formatToParts", formatToPartsFn);
+        formatToPartsFn.SetPrototype(EnsureFunctionPrototype());
+        var formatToPartsHandle = _heap.AllocateObject(formatToPartsFn, AllocationSite.Current());
+        _ = proto.DefineOwnProperty(
+            "formatToParts",
+            new JsPropertyDescriptor(JsValue.FromObject(formatToPartsHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(ph, formatToPartsHandle);
 
         var resOptsFn = new NativeFunctionObject("resolvedOptions", (tv, _2) =>
         {
@@ -4340,7 +4359,12 @@ public sealed partial class BytecodeInterpreter
             o.DefineOwnProperty("style", new JsPropertyDescriptor(JsValue.FromString(state.Style), Writable: true, Enumerable: true, Configurable: true));
             return JsValue.FromObject(_heap.AllocateObject(o, AllocationSite.Current()));
         }, length: 0);
-        DefineIntlAccessor(ph, proto, "resolvedOptions", resOptsFn);
+        resOptsFn.SetPrototype(EnsureFunctionPrototype());
+        var resOptsHandle = _heap.AllocateObject(resOptsFn, AllocationSite.Current());
+        _ = proto.DefineOwnProperty(
+            "resolvedOptions",
+            new JsPropertyDescriptor(JsValue.FromObject(resOptsHandle), Writable: true, Enumerable: false, Configurable: true));
+        _heap.WriteBarrier(ph, resOptsHandle);
 
         _listFormatPrototypeHandle = ph;
         return ph;
