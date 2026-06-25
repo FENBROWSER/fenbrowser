@@ -3956,7 +3956,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     document.Title = CoerceToHostString(value);
                     return true;
                 case Document document when string.Equals(property, "cookie", StringComparison.Ordinal):
-                    document.Cookie = CoerceToHostString(value);
+                    var cookieStr = CoerceToHostString(value);
+                    document.Cookie = cookieStr;
+                    // Persist cookies through the host bridge so they survive
+                    // navigations (critical for WAF challenge tokens).
+                    if (_owner.CookieWriteBridge != null && _owner._currentBaseUri != null)
+                    {
+                        _owner.CookieWriteBridge(_owner._currentBaseUri, cookieStr);
+                    }
                     return true;
                 case Element element when string.Equals(property, "className", StringComparison.Ordinal):
                     element.ClassName = CoerceToHostString(value);
@@ -4050,7 +4057,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     value = JsValue.FromString(document.Title ?? string.Empty);
                     return true;
                 case "cookie":
-                    value = JsValue.FromString(document.Cookie ?? string.Empty);
+                    // Merge host-persisted cookies with any DOM-level cookies
+                    // so the WAF challenge can read back cookies it previously set.
+                    var hostCookies = _owner.CookieReadBridge != null && _owner._currentBaseUri != null
+                        ? (_owner.CookieReadBridge(_owner._currentBaseUri) ?? string.Empty)
+                        : string.Empty;
+                    var domCookies = document.Cookie ?? string.Empty;
+                    var merged = string.IsNullOrEmpty(hostCookies) ? domCookies
+                        : string.IsNullOrEmpty(domCookies) ? hostCookies
+                        : hostCookies + "; " + domCookies;
+                    value = JsValue.FromString(merged);
                     return true;
                 case "body":
                     value = _owner.ToHostOrNull(document.Body, HostObjectKind.DomElement);
