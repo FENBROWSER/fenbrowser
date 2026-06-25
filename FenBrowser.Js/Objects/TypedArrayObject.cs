@@ -291,55 +291,108 @@ public abstract class TypedArrayObject : TypedArrayView
 
     public void SetElement(int index, JsValue value)
     {
-        if (IsOutOfBounds() || index < 0 || index >= Length)
-            return;
-        var offset = ByteOffset + index * ElementSize;
-        var raw = Buffer.Data;
+        // ECMA-262 23.2.4.7 IntegerIndexedElementSet: convert the value first
+        // (steps 1-2), THEN check bounds (step 3). Value conversion may trigger
+        // user code (valueOf/toString) that detaches the buffer, so the bounds
+        // check must happen after conversion.
         switch (ElementType)
         {
             case TypedArrayElementType.Int8:
-                raw[offset] = (byte)(sbyte)ConvertToInt32(value);
-                break;
+            {
+                var converted = (byte)(sbyte)ConvertToInt32(value);
+                if (IsOutOfBounds() || index < 0 || index >= Length) return;
+                var offset = ByteOffset + index * ElementSize;
+                Buffer.Data[offset] = converted;
+                return;
+            }
             case TypedArrayElementType.Uint8:
-                raw[offset] = (byte)ConvertToUint32(value);
-                break;
+            {
+                var converted = (byte)ConvertToUint32(value);
+                if (IsOutOfBounds() || index < 0 || index >= Length) return;
+                var offset = ByteOffset + index * ElementSize;
+                Buffer.Data[offset] = converted;
+                return;
+            }
             case TypedArrayElementType.Uint8Clamped:
-                raw[offset] = ClampToUint8(value);
-                break;
+            {
+                var converted = ClampToUint8(value);
+                if (IsOutOfBounds() || index < 0 || index >= Length) return;
+                var offset = ByteOffset + index * ElementSize;
+                Buffer.Data[offset] = converted;
+                return;
+            }
             case TypedArrayElementType.Int16:
-                BitConverter.TryWriteBytes(raw.AsSpan(offset, 2), (short)ConvertToInt32(value));
-                break;
+            {
+                var converted = (short)ConvertToInt32(value);
+                if (IsOutOfBounds() || index < 0 || index >= Length) return;
+                var offset = ByteOffset + index * ElementSize;
+                BitConverter.TryWriteBytes(Buffer.Data.AsSpan(offset, 2), converted);
+                return;
+            }
             case TypedArrayElementType.Uint16:
-                BitConverter.TryWriteBytes(raw.AsSpan(offset, 2), (ushort)ConvertToUint32(value));
-                break;
+            {
+                var converted = (ushort)ConvertToUint32(value);
+                if (IsOutOfBounds() || index < 0 || index >= Length) return;
+                var offset = ByteOffset + index * ElementSize;
+                BitConverter.TryWriteBytes(Buffer.Data.AsSpan(offset, 2), converted);
+                return;
+            }
             case TypedArrayElementType.Int32:
-                BitConverter.TryWriteBytes(raw.AsSpan(offset, 4), ConvertToInt32(value));
-                break;
+            {
+                var converted = ConvertToInt32(value);
+                if (IsOutOfBounds() || index < 0 || index >= Length) return;
+                var offset = ByteOffset + index * ElementSize;
+                BitConverter.TryWriteBytes(Buffer.Data.AsSpan(offset, 4), converted);
+                return;
+            }
             case TypedArrayElementType.Uint32:
-                BitConverter.TryWriteBytes(raw.AsSpan(offset, 4), ConvertToUint32(value));
-                break;
+            {
+                var converted = ConvertToUint32(value);
+                if (IsOutOfBounds() || index < 0 || index >= Length) return;
+                var offset = ByteOffset + index * ElementSize;
+                BitConverter.TryWriteBytes(Buffer.Data.AsSpan(offset, 4), converted);
+                return;
+            }
             case TypedArrayElementType.Float32:
-                BitConverter.TryWriteBytes(raw.AsSpan(offset, 4), (float)value.AsNumber());
-                break;
+            {
+                var converted = (float)value.AsNumber();
+                if (IsOutOfBounds() || index < 0 || index >= Length) return;
+                var offset = ByteOffset + index * ElementSize;
+                BitConverter.TryWriteBytes(Buffer.Data.AsSpan(offset, 4), converted);
+                return;
+            }
             case TypedArrayElementType.Float64:
-                BitConverter.TryWriteBytes(raw.AsSpan(offset, 8), value.AsNumber());
-                break;
+            {
+                var converted = value.AsNumber();
+                if (IsOutOfBounds() || index < 0 || index >= Length) return;
+                var offset = ByteOffset + index * ElementSize;
+                BitConverter.TryWriteBytes(Buffer.Data.AsSpan(offset, 8), converted);
+                return;
+            }
             case TypedArrayElementType.BigInt64:
             {
-                var big = value.Tag == JsValueTag.BigInt ? value.AsBigInt() : new BigInteger((long)value.AsNumber());
+                var big = value.Tag == JsValueTag.BigInt
+                    ? value.AsBigInt()
+                    : new BigInteger((long)value.AsNumber());
+                if (IsOutOfBounds() || index < 0 || index >= Length) return;
+                var offset = ByteOffset + index * ElementSize;
                 var two64 = BigInteger.One << 64;
                 var wrapped = ((big % two64) + two64) % two64;
                 var signed = wrapped >= (BigInteger.One << 63) ? wrapped - two64 : wrapped;
-                BitConverter.TryWriteBytes(raw.AsSpan(offset, 8), (long)signed);
-                break;
+                BitConverter.TryWriteBytes(Buffer.Data.AsSpan(offset, 8), (long)signed);
+                return;
             }
             case TypedArrayElementType.BigUint64:
             {
-                var big = value.Tag == JsValueTag.BigInt ? value.AsBigInt() : new BigInteger((ulong)Math.Max(0, value.AsNumber()));
+                var big = value.Tag == JsValueTag.BigInt
+                    ? value.AsBigInt()
+                    : new BigInteger((ulong)Math.Max(0, value.AsNumber()));
+                if (IsOutOfBounds() || index < 0 || index >= Length) return;
+                var offset = ByteOffset + index * ElementSize;
                 var two64 = BigInteger.One << 64;
                 var wrapped = ((big % two64) + two64) % two64;
-                BitConverter.TryWriteBytes(raw.AsSpan(offset, 8), (ulong)wrapped);
-                break;
+                BitConverter.TryWriteBytes(Buffer.Data.AsSpan(offset, 8), (ulong)wrapped);
+                return;
             }
         }
     }
