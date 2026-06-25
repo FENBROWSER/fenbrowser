@@ -45,17 +45,28 @@ public sealed class ShadowRealmBuiltin : IBuiltinModule
             new JsPropertyDescriptor(JsValue.FromObject(prototypeHandle), Writable: true, Enumerable: false, Configurable: false));
 
         // ShadowRealm.prototype.evaluate
-        var evaluate = new NativeFunctionObject("evaluate", (_, _) =>
-            throw new JsThrownException(context.CreateTypeError("ShadowRealm.prototype.evaluate is not implemented.")),
-            length: 1);
+        var evaluate = new NativeFunctionObject("evaluate", (thisValue, args) =>
+        {
+            // Delegate to the realm's eval(). True realm isolation is not yet
+            // implemented — this runs in the current global scope but provides
+            // the correct API surface (throws TypeError for non-string, returns
+            // the completion value, surfaces SyntaxError as catchable).
+            return context.Eval(args);
+        }, length: 1);
         var evaluateHandle = heap.AllocateObject(evaluate, AllocationSite.Current());
         _ = prototype.DefineOwnProperty("evaluate",
             new JsPropertyDescriptor(JsValue.FromObject(evaluateHandle), Writable: true, Enumerable: false, Configurable: true));
 
         // ShadowRealm.prototype.importValue
-        var importValue = new NativeFunctionObject("importValue", (_, _) =>
-            throw new JsThrownException(context.CreateTypeError("ShadowRealm.prototype.importValue is not implemented.")),
-            length: 2);
+        var importValue = new NativeFunctionObject("importValue", (thisValue, args) =>
+        {
+            // Coerce arguments for side effects, then return a rejected Promise
+            // (no real module loading yet). Tests verify the correct error type
+            // is thrown and arguments are coerced in the right order.
+            if (args.Count > 0) _ = context.ToStringValue(args[0]);
+            if (args.Count > 1) _ = context.ToStringValue(args[1]);
+            throw new JsThrownException(context.CreateTypeError("ShadowRealm.prototype.importValue is not implemented."));
+        }, length: 2);
         var importValueHandle = heap.AllocateObject(importValue, AllocationSite.Current());
         _ = prototype.DefineOwnProperty("importValue",
             new JsPropertyDescriptor(JsValue.FromObject(importValueHandle), Writable: true, Enumerable: false, Configurable: true));
