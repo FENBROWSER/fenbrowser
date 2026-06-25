@@ -1798,6 +1798,7 @@ public sealed class Test262Runner
     private static readonly HashSet<string> _loadableHarnessIncludes = new(StringComparer.Ordinal)
     {
         "assertRelativeDateMs.js",
+        "atomicsHelper.js",
         "dateConstants.js",
         "byteConversionValues.js",
         "compareArray.js",
