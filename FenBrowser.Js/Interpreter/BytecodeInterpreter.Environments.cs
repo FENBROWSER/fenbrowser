@@ -99,7 +99,10 @@ public sealed partial class BytecodeInterpreter
             var create = frame.Environment.CreateMutableBinding(name, deletable: false);
             if (create != BindingOpResult.Ok)
             {
-                ThrowTypeError(frame, $"Cannot declare lexical binding '{name}'.");
+                // Duplicate lexical declarations are early errors (SyntaxError),
+                // not TypeError. This path is hit when eval-introduced var
+                // declarations shadow a body-level let/const.
+                ThrowSyntaxError(frame, $"Cannot declare lexical binding '{name}'.");
                 return;
             }
         }
@@ -109,7 +112,7 @@ public sealed partial class BytecodeInterpreter
             var create = frame.Environment.CreateImmutableBinding(name, strict: true);
             if (create != BindingOpResult.Ok)
             {
-                ThrowTypeError(frame, $"Cannot declare const binding '{name}'.");
+                ThrowSyntaxError(frame, $"Cannot declare const binding '{name}'.");
                 return;
             }
         }

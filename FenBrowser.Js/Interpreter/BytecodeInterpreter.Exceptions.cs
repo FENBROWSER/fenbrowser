@@ -41,6 +41,10 @@ public sealed partial class BytecodeInterpreter
         ThrowOrHandle(frame, CreateTypeError(message));
     }
 
+    private void ThrowSyntaxError(InterpreterFrame frame, string message)
+    {
+        ThrowOrHandle(frame, CreateSyntaxError(message));
+    }
 
     private void ThrowReferenceError(InterpreterFrame frame, string message)
     {
