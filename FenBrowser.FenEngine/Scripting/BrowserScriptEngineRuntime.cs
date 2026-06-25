@@ -94,6 +94,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private Element _currentScriptElement;
     private string _documentReadyState = "loading";
     private int _fenJsEvaluationCount;
+    // Incremented every time ResetFenJsSession destroys the interpreter.
+    // Work lambdas capture the generation at dispatch time; if it changes
+    // before the worker executes, the session was reset (e.g. by a
+    // navigation triggered from a Promise) and the work should abort.
+    private volatile int _fenJsSessionGeneration;
 
     // Direct engine properties (were delegated to legacy adapter).
     private IExecutionContext _globalContext;
@@ -248,18 +253,28 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private JsValue EvaluateWithFenJsRaw(string script)
     {
+        // Snapshot the session generation at dispatch time. If a navigation
+        // resets the session before the worker executes this lambda, the
+        // generation will have changed and we can abort cleanly.
+        var dispatchGeneration = _fenJsSessionGeneration;
+
         try
         {
             return RunFenJsWithLargeStack(() =>
             {
                 lock (_fenJsLock)
                 {
-                    if (_compiler == null || _interpreter == null)
+                    // If the session was reset between dispatch and now, the
+                    // compiler/interpreter are gone — bail cleanly.
+                    if (dispatchGeneration != _fenJsSessionGeneration ||
+                        _compiler == null || _interpreter == null)
                     {
                         throw new InvalidOperationException(
-                            "[FenJsBridge] EvaluateWithFenJsRaw: compiler or interpreter is null — " +
-                            "BindFenJsDomContext/ResetFenJsSession may not have run yet. " +
-                            $"_compiler={_compiler != null} _interpreter={_interpreter != null}");
+                            "[FenJsBridge] JS session was reset during evaluation dispatch " +
+                            $"(dispatchGen={dispatchGeneration} currentGen={_fenJsSessionGeneration} " +
+                            $"_compiler={_compiler != null} _interpreter={_interpreter != null}). " +
+                            "This is expected when a page script triggers a navigation " +
+                            "(e.g. WAF challenge → location.reload).");
                     }
                     _fenJsEvaluationCount++;
                     var function = _compiler.CompileScript(new SourceText(script, "<fenbrowser-fenjs-eval>"));
@@ -267,6 +282,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return _interpreter.Execute(function);
                 }
             });
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Session-reset InvalidOperationException is expected after async
+            // navigation — surface it cleanly without a stack trace.
+            Console.Error.WriteLine($"[FenJsBridge] EvaluateWithFenJsRaw skipped for '{script}': {ex.Message}");
+            return JsValue.Undefined;
         }
         catch (Exception ex) when (ex is not JsThrownException)
         {
@@ -371,6 +393,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var captured = _fenJsWorkException;
         _fenJsWorkException = null;
         captured?.Throw();
+
+        // If the session was reset between dispatch and execution (e.g. an
+        // async navigation triggered by a Promise), the worker may leave the
+        // result null. For value-type T (JsValue etc.) this would NRE on the
+        // unbox below — surface a clear error instead. Reference-type T (e.g.
+        // object from ResetFenJsSession) legitimately returns null.
+        if (_fenJsWorkResult == null && typeof(T).IsValueType)
+        {
+            throw new InvalidOperationException(
+                "[FenJsBridge] JS worker returned null — the JS session was likely " +
+                "reset by a navigation while the evaluation was in flight. " +
+                "(_fenJsSessionGeneration=" + _fenJsSessionGeneration + ")");
+        }
+
         return (T)_fenJsWorkResult;
     }
 
@@ -836,6 +872,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             {
                 InstallFenJsDomGlobals(_currentDomRoot, _currentBaseUri);
             }
+
+            // Bump the generation so any in-flight work lambdas from the
+            // previous session can detect the reset and abort gracefully.
+            Interlocked.Increment(ref _fenJsSessionGeneration);
         }
             return null;
         });
@@ -902,6 +942,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         _interpreter.RegisterGlobalHostObject("document", RegisterHostObject(document, HostObjectKind.DomDocument));
         _interpreter.RegisterGlobalHostObject("navigator", RegisterHostObject(navigator, HostObjectKind.Other));
+        // Stub navigator.sendBeacon so sites (Google, etc.) that call it
+        // directly don't crash. Sites may also set it to their own function;
+        // the TrySetHostProperty case for BrowserSurfaceProfile stores those.
+        EvaluateWithFenJsRaw(
+            "navigator.sendBeacon = function(url, data) { return true; };");
         _interpreter.RegisterGlobalHostObject("location", RegisterHostObject(location, HostObjectKind.Other));
         _interpreter.RegisterGlobalValue("innerWidth", JsValue.FromNumber(WindowWidth));
         _interpreter.RegisterGlobalValue("innerHeight", JsValue.FromNumber(WindowHeight));
@@ -4259,7 +4304,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case FenJsDomStringMapHost domStringMap:
                     return TryGetDomStringMapProperty(domStringMap, property, out value);
                 case BrowserSurfaceProfile navigator:
-                    return TryGetNavigatorProperty(navigator, property, out value);
+                    if (TryGetNavigatorProperty(navigator, property, out value))
+                        return true;
+                    // Fall back to user-assigned properties stored via TrySetHostProperty
+                    // (e.g. Google stubs navigator.sendBeacon).
+                    value = _owner.GetStoredHostPropertyOrUndefined(navigator, property);
+                    return value.Tag != JsValueTag.Undefined;
                 case FenJsLocationHost location:
                     return TryGetLocationProperty(location, property, out value);
                 case FenJsMutationObserverHost mutationObserver:
@@ -4350,6 +4400,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     var hrefStr = CoerceToHostString(value);
                     if (!string.IsNullOrWhiteSpace(hrefStr) && Uri.TryCreate(location.Uri, hrefStr, out var navUri))
                         _owner._host.Navigate(navUri);
+                    return true;
+                case BrowserSurfaceProfile navigator:
+                    // Allow scripts to set arbitrary properties on navigator (e.g.
+                    // Google stubs navigator.sendBeacon). Store for later retrieval.
+                    _owner.SetStoredHostProperty(navigator, property, value);
                     return true;
                 default:
                     return false;
