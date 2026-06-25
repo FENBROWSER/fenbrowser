@@ -20,6 +20,57 @@ public abstract class TypedArrayObject : TypedArrayView
     {
     }
 
+    // ECMA-262 7.1.21 CanonicalNumericIndexString — full implementation that handles
+    // both integer strings (e.g. "0", "42") and non-integer numeric strings (e.g.
+    // "1.1", "1e2"). Returns true and sets `numericValue` when the key is the
+    // canonical String representation of a Number; otherwise false.
+    // IntegerIndexedElementGet then checks IsInteger(numericValue): non-integer
+    // indices return undefined without touching the prototype chain.
+    public static bool TryCanonicalNumericIndexString(string key, out double numericValue)
+    {
+        numericValue = 0;
+        if (string.IsNullOrEmpty(key)) return false;
+
+        // "-0" is the canonical representation of negative zero.
+        if (key == "-0") { numericValue = -0.0; return true; }
+
+        // Fast path: non-negative integer strings (no '.', 'e', '-')
+        if (key[0] >= '0' && key[0] <= '9')
+        {
+            // Leading-zero strings like "00", "01" are not canonical.
+            if (key.Length > 1 && key[0] == '0') goto slowPath;
+            var intResult = 0;
+            foreach (var c in key)
+            {
+                if (c < '0' || c > '9') goto slowPath;
+                if (intResult > (int.MaxValue - (c - '0')) / 10) goto slowPath;
+                intResult = intResult * 10 + (c - '0');
+            }
+            numericValue = intResult;
+            return true;
+        }
+
+    slowPath:
+        // Full canonical check: parse as Number, verify ToString(n) roundtrips.
+        if (!double.TryParse(key,
+                System.Globalization.NumberStyles.AllowLeadingSign |
+                System.Globalization.NumberStyles.AllowDecimalPoint |
+                System.Globalization.NumberStyles.AllowExponent,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var n))
+            return false;
+
+        if (double.IsNaN(n) || double.IsInfinity(n)) return false;
+
+        // Canonical check: Number::toString(n) must equal the original key.
+        // Use the "G" format which produces the shortest round-trippable string.
+        var rt = n.ToString("G", System.Globalization.CultureInfo.InvariantCulture);
+        if (rt != key) return false;
+
+        numericValue = n;
+        return true;
+    }
+
     // ECMA-262 7.1.21 CanonicalNumericIndexString — returns the parsed non-negative
     // integer if `key` is the canonical String representation of an integer index,
     // otherwise -1. Leading zeros, overflow, and non-digit chars all disable the fast

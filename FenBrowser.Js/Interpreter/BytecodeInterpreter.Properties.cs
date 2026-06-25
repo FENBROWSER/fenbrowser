@@ -35,11 +35,14 @@ public sealed partial class BytecodeInterpreter
                 // indices route to the underlying buffer, not the property table.
                 // Uses CanonicalNumericIndexString semantics (including "-0" → index 0,
                 // but IntegerIndexedElementGet returns undefined for index -0).
-                if (obj is TypedArrayObject ta && TypedArrayObject.IsCanonicalNumericIndex(key, out var taIdx))
+                if (obj is TypedArrayObject ta && TypedArrayObject.TryCanonicalNumericIndexString(key, out var taNumIdx))
                 {
-                    // 10.4.5.8 step 6: if index = -0, return undefined (old spec).
-                    if (key == "-0") return JsValue.Undefined;
-                    return ta.GetElement(taIdx);
+                    // IntegerIndexedElementGet: non-integer indices (e.g. "1.1")
+                    // return undefined without consulting the prototype chain
+                    // (ECMA-262 10.4.5.8 step 5).
+                    if (taNumIdx != (int)taNumIdx || double.IsNaN(taNumIdx) || double.IsNegative(taNumIdx) && taNumIdx == 0)
+                        return JsValue.Undefined;
+                    return ta.GetElement((int)taNumIdx);
                 }
                 if (obj is ProxyObject proxyGet)
                     return ProxyGet(proxyGet, receiver, key);
@@ -246,6 +249,22 @@ public sealed partial class BytecodeInterpreter
         if (obj is ProxyObject proxyGet)
         {
             value = ProxyGet(proxyGet, receiver, key);
+            return true;
+        }
+
+        // ECMA-262 10.4.5.4 [[Get]] for Integer-Indexed Exotic Objects (TypedArrays):
+        // numeric-like string keys route through IntegerIndexedElementGet, not
+        // OrdinaryGet. Non-integer indices (e.g. "1.1" → 1.1) return undefined
+        // without consulting the prototype chain.
+        if (obj is TypedArrayObject ta && TypedArrayObject.TryCanonicalNumericIndexString(key, out var taNumIdx))
+        {
+            if (taNumIdx != (int)taNumIdx || double.IsNaN(taNumIdx) ||
+                (double.IsNegative(taNumIdx) && taNumIdx == 0))
+            {
+                value = JsValue.Undefined;
+                return true;
+            }
+            value = ta.GetElement((int)taNumIdx);
             return true;
         }
 
