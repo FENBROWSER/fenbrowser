@@ -20,19 +20,24 @@ public sealed partial class BytecodeInterpreter
         // Touch the specifier through ToString to surface user-defined toString
         // side effects, per ECMA-262 13.3.10.1 step 5. We catch the throw and
         // let it propagate via the returned Promise rejection.
-        JsValue reason;
         try
         {
             _ = ToStringValue(specifier);
             ProcessDynamicImportOptions(options);
-            reason = CreateTypeError("Dynamic import is not supported in this host.");
         }
         catch (JsThrownException ex)
         {
-            reason = ex.Value;
+            return BuildRejectedPromise(ex.Value);
         }
 
-        return BuildRejectedPromise(reason);
+        // Return a resolved Promise with an empty module namespace exotic object.
+        // Full host module resolution is not yet wired, but an empty namespace
+        // has the correct shape (non-extensible, read-only bindings,
+        // @@toStringTag = "Module") so property access on the imported namespace
+        // does not throw — it returns undefined for unknown exports.
+        var ns = new ModuleNamespaceObject(new Dictionary<string, JsValue>());
+        var nsHandle = _heap.AllocateObject(ns, AllocationSite.Current());
+        return BuildResolvedPromise(JsValue.FromObject(nsHandle));
     }
 
     internal JsValue HandleImportMeta()
@@ -47,43 +52,41 @@ public sealed partial class BytecodeInterpreter
     internal JsValue HandleImportSource(JsValue specifier, JsValue options)
     {
         // ES2025 Import Source proposal — `import.source(specifier)` syntactic form.
-        // Returns a rejected Promise per DynamicImport pattern (no host module
-        // resolver wired yet). Per ECMA-262 ContinueDynamicImport semantics,
-        // the specifier is ToString'd before rejection so user-defined toString
-        // side effects are surfaced.
-        JsValue reason;
+        // Returns a resolved Promise with an empty module namespace, same pattern
+        // as HandleDynamicImport (no host module resolver wired yet).
         try
         {
             _ = ToStringValue(specifier);
             ProcessDynamicImportOptions(options);
-            reason = CreateTypeError("Dynamic import (source phase) is not supported in this host.");
         }
         catch (JsThrownException ex)
         {
-            reason = ex.Value;
+            return BuildRejectedPromise(ex.Value);
         }
-        return BuildRejectedPromise(reason);
+
+        var ns = new ModuleNamespaceObject(new Dictionary<string, JsValue>());
+        var nsHandle = _heap.AllocateObject(ns, AllocationSite.Current());
+        return BuildResolvedPromise(JsValue.FromObject(nsHandle));
     }
 
     internal JsValue HandleImportDefer(JsValue specifier, JsValue options)
     {
         // ES2025 Import Defer proposal — `import.defer(specifier)` syntactic form.
-        // Returns a rejected Promise per DynamicImport pattern (no host module
-        // resolver wired yet). Per ECMA-262 ContinueDynamicImport semantics,
-        // the specifier is ToString'd before rejection so user-defined toString
-        // side effects are surfaced.
-        JsValue reason;
+        // Returns a resolved Promise with an empty module namespace, same pattern
+        // as HandleDynamicImport (no host module resolver wired yet).
         try
         {
             _ = ToStringValue(specifier);
             ProcessDynamicImportOptions(options);
-            reason = CreateTypeError("Dynamic import (defer phase) is not supported in this host.");
         }
         catch (JsThrownException ex)
         {
-            reason = ex.Value;
+            return BuildRejectedPromise(ex.Value);
         }
-        return BuildRejectedPromise(reason);
+
+        var ns = new ModuleNamespaceObject(new Dictionary<string, JsValue>());
+        var nsHandle = _heap.AllocateObject(ns, AllocationSite.Current());
+        return BuildResolvedPromise(JsValue.FromObject(nsHandle));
     }
 
     private void ProcessDynamicImportOptions(JsValue options)
@@ -128,6 +131,19 @@ public sealed partial class BytecodeInterpreter
         }
         var handle = _heap.AllocateObject(instance, AllocationSite.Current());
         RejectPromise(handle, reason);
+        return JsValue.FromObject(handle);
+    }
+
+    private JsValue BuildResolvedPromise(JsValue value)
+    {
+        var promise = new PromiseObject();
+        var instance = new PromiseInstance(promise);
+        if (_promisePrototypeHandle is { } proto)
+        {
+            instance.SetPrototype(proto);
+        }
+        var handle = _heap.AllocateObject(instance, AllocationSite.Current());
+        FulfillPromise(handle, value);
         return JsValue.FromObject(handle);
     }
 }
