@@ -163,6 +163,12 @@ public sealed partial class BytecodeInterpreter
             _ = error.DefineOwnProperty("message",
                 new JsPropertyDescriptor(JsValue.FromString(message), Writable: true, Enumerable: false, Configurable: true));
         }
+        var stack = FormatCallStack(name, message);
+        if (!string.IsNullOrEmpty(stack))
+        {
+            _ = error.DefineOwnProperty("stack",
+                new JsPropertyDescriptor(JsValue.FromString(stack), Writable: true, Enumerable: false, Configurable: true));
+        }
         return JsValue.FromObject(_heap.AllocateObject(error, AllocationSite.Current()));
     }
 

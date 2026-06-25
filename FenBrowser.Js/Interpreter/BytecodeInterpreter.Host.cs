@@ -111,6 +111,11 @@ public sealed partial class BytecodeInterpreter
         _hostHooks.EnqueuePromiseJob(job);
     }
 
+    public void EnqueueHostedPromiseJob(PromiseJob job)
+    {
+        _jobQueue.Enqueue(job);
+    }
+
     // Test/host seam: install a host object as a named property on the global so
     // a script can address it directly. The interpreter does not (and should
     // not) materialise host objects spontaneously - real embedders register

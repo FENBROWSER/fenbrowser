@@ -225,13 +225,14 @@ namespace FenBrowser.Tooling
             string[] probes =
             {
                 "typeof window",
-                "document.readyState",
+                "typeof document",
+                "typeof AwsWafIntegration",
                 "typeof window.__SCRIPTS_LOADED__",
                 "Object.keys(window.__SCRIPTS_LOADED__||{}).join(',')",
                 "typeof window.__INITIAL_STATE__",
                 "typeof window.webpackChunk_twitter_responsive_web",
-                "document.querySelectorAll('*').length",
-                "document.getElementById('react-root') ? document.getElementById('react-root').children.length : 'no-react-root'",
+                "typeof document !== 'undefined' ? document.readyState : 'no-document'",
+                "typeof document !== 'undefined' && document.querySelectorAll ? document.querySelectorAll('*').length : 'no-document'",
             };
             Console.WriteLine();
             Console.WriteLine("---- page global probes ----");
@@ -243,8 +244,8 @@ namespace FenBrowser.Tooling
                     var r = await host.ExecuteScriptAsync(p).ConfigureAwait(false);
                     val = r?.ToString() ?? "null";
                 }
-                catch (Exception ex) { val = "<throw> " + ex.Message; }
-                if (val.Length > 200) val = val.Substring(0, 200) + "…";
+                catch (Exception ex) { val = "<throw> " + ex.GetType().Name + ": " + ex.Message + (ex.InnerException != null ? " | inner: " + ex.InnerException.GetType().Name + ": " + ex.InnerException.Message : ""); }
+                if (val.Length > 300) val = val.Substring(0, 300) + "…";
                 Console.WriteLine($"   {p}  =>  {val}");
             }
 

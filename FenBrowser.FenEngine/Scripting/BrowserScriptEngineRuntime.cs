@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
 using System.Threading;
 using System.Text;
 using System.Threading.Tasks;
@@ -98,9 +99,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private IExecutionContext _globalContext;
     private JavaScriptRuntimeProfile _runtimeProfile;
     private IHistoryBridge _historyBridge;
+    private readonly IJsHost _host;
 
     public FenJsBrowserScriptEngine(IJsHost host)
     {
+        _host = host ?? throw new ArgumentNullException(nameof(host));
         _runtimeProfile = JavaScriptRuntimeProfile.Balanced;
         ResetFenJsSession();
     }
@@ -186,9 +189,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     public void SyncDomContext(Node domRoot, Uri baseUri = null)
     {
-        if (domRoot != null)
+        // Lightweight DOM sync for recascades/re-renders — update the cached
+        // DOM root WITHOUT recreating the interpreter, so pending timers,
+        // promises, and async state survive.  The host hooks' document
+        // reference is kept alive by BindFenJsDomContext on initial load.
+        if (domRoot == null) return;
+        lock (_fenJsLock)
         {
-            BindFenJsDomContext(domRoot, baseUri, documentReadyState: "loading");
+            _currentDomRoot = domRoot;
+            if (baseUri != null) _currentBaseUri = baseUri;
         }
     }
 
@@ -243,6 +252,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         {
             lock (_fenJsLock)
             {
+                if (_compiler == null || _interpreter == null)
+                {
+                    throw new InvalidOperationException(
+                        "[FenJsBridge] EvaluateWithFenJsRaw: compiler or interpreter is null — " +
+                        "BindFenJsDomContext/ResetFenJsSession may not have run yet. " +
+                        $"_compiler={_compiler != null} _interpreter={_interpreter != null}");
+                }
                 _fenJsEvaluationCount++;
                 var function = _compiler.CompileScript(new SourceText(script, "<fenbrowser-fenjs-eval>"));
                 new BytecodeVerifier().Verify(function);
@@ -515,6 +531,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 }
             }
             Console.Error.WriteLine($"[FenJsBridge] ExecutePageScriptsWithFenJsAsync DONE, scripts processed={scriptCount}");
+            // LogFenJsPageBootstrapState(); // DEBUG: temporarily disabled
         }
         catch (Exception ex)
         {
@@ -524,6 +541,64 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             }
             Console.Error.WriteLine($"[FenJsBridge] ExecutePageScriptsWithFenJsAsync EXCEPTION: {ex.Message}");
             throw;
+        }
+    }
+
+    private void LogFenJsPageBootstrapState()
+    {
+        try
+        {
+            var state = EvaluateWithFenJsRaw(
+                """
+                (function () {
+                    var waf = globalThis.AwsWafIntegration;
+                    if (!waf) return 'AwsWafIntegration=<missing>';
+                    return 'AwsWafIntegration=' + typeof waf +
+                        ';checkForceRefresh=' + typeof waf.checkForceRefresh +
+                        ';getToken=' + typeof waf.getToken +
+                        ';forceRefreshToken=' + typeof waf.forceRefreshToken +
+                        ';hasToken=' + typeof waf.hasToken;
+                })()
+                """);
+            EvaluateWithFenJsRaw(
+                """
+                (function () {
+                    var waf = globalThis.AwsWafIntegration;
+                    if (!waf ||
+                        typeof waf.hasToken !== 'function' ||
+                        typeof waf.checkForceRefresh !== 'function') return;
+                    try {
+                        globalThis.__fenWafCheckProbe = 'pending';
+                        waf.checkForceRefresh().then(function (value) {
+                            globalThis.__fenWafCheckProbe = 'resolved:' + String(value);
+                        }, function (error) {
+                            globalThis.__fenWafCheckProbe = 'rejected:' + String(error && error.message ? error.message : error);
+                        });
+                        globalThis.__fenWafForceProbe = 'pending';
+                        waf.forceRefreshToken().then(function (value) {
+                            globalThis.__fenWafForceProbe = 'resolved:' + String(value);
+                        }, function (error) {
+                            globalThis.__fenWafForceProbe = 'rejected:' + String(error && error.message ? error.message : error);
+                        });
+                    } catch (error) {
+                        globalThis.__fenWafCheckProbe = 'threw:' + String(error && error.message ? error.message : error);
+                    }
+                })()
+                """);
+            _interpreter.PumpMicrotasks();
+            var checkProbe = EvaluateWithFenJsRaw("String(globalThis.__fenWafCheckProbe)");
+            var forceProbe = EvaluateWithFenJsRaw("String(globalThis.__fenWafForceProbe)");
+            FenBrowser.Core.EngineLogCompat.Info(
+                "[FenJsBridge] Page bootstrap state: " + CoerceToHostString(state) +
+                ";checkProbe=" + CoerceToHostString(checkProbe) +
+                ";forceProbe=" + CoerceToHostString(forceProbe),
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                "[FenJsBridge] Page bootstrap state probe failed: " + ex.Message,
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
         }
     }
 
@@ -724,7 +799,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 // page script (or one our interpreter mis-evaluates into a spin loop)
                 // surfaces as a catchable RangeError instead of freezing the browser
                 // thread forever. Override via FEN_FENJS_SCRIPT_TIMEOUT_MS.
-                WallClockTimeoutMs = ResolveFenJsScriptTimeoutMs()
+                WallClockTimeoutMs = ResolveFenJsScriptTimeoutMs(),
+                MaxCallDepth = 256
             };
 
             // The generational nursery GC (tier-4 scaffold) does not yet root every
@@ -795,19 +871,23 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private void InstallFenJsDomGlobals(Node domRoot, Uri baseUri)
     {
         var document = domRoot as Document ?? domRoot.OwnerDocument;
-        if (document == null)
-        {
-            return;
-        }
-
         var navigator = CreateNavigatorHost();
-        var location = new FenJsLocationHost(baseUri ?? TryCreateUri(document.URL));
+        var location = new FenJsLocationHost(baseUri ?? TryCreateUri(document?.URL));
+        // Always bind the host hooks so _owner is set — even if there's no
+        // document, host-property resolution must not NRE when it looks up
+        // _owner._interpreter.  Without this, a page that triggers a recascade
+        // before the DOM is fully attached leaves the hooks orphaned.
         _hostHooks.Bind(
             this,
             document,
             navigator,
             location,
-            baseUri ?? TryCreateUri(document.URL));
+            baseUri ?? TryCreateUri(document?.URL));
+
+        if (document == null)
+        {
+            return;
+        }
 
         _interpreter.RegisterGlobalHostObject("document", RegisterHostObject(document, HostObjectKind.DomDocument));
         _interpreter.RegisterGlobalHostObject("navigator", RegisterHostObject(navigator, HostObjectKind.Other));
@@ -1000,6 +1080,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var extraArgs = args.Count > 2 ? args.Skip(2).ToArray() : Array.Empty<JsValue>();
 
         var id = Interlocked.Increment(ref _fenJsTimerIdCounter);
+        FenBrowser.Core.EngineLogCompat.Debug(
+            $"[FenJsTimers] Scheduled {(repeat ? "interval" : "timeout")} id={id} delayMs={delayMs} callback={callback.Tag}",
+            FenBrowser.Core.Logging.LogCategory.JavaScript);
         var period = repeat ? Math.Max(4, delayMs) : Timeout.Infinite;
         var timer = new Timer(
             _ =>
@@ -1364,6 +1447,22 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     /// </summary>
     private void InstallFenJsRemainingWebApis()
     {
+        _interpreter.RegisterGlobalValue(
+            "__fenSyncXhr",
+            _interpreter.AllocateNativeFunction(
+                "__fenSyncXhr",
+                (_, args) => ExecuteSynchronousXmlHttpRequest(args)));
+        _interpreter.RegisterGlobalValue(
+            "__fenSyncFetch",
+            _interpreter.AllocateNativeFunction(
+                "__fenSyncFetch",
+                (_, args) => ExecuteSynchronousFetchRequest(args)));
+        _interpreter.RegisterGlobalValue(
+            "__fenRandomByte",
+            _interpreter.AllocateNativeFunction(
+                "__fenRandomByte",
+                (_, _) => JsValue.FromNumber(RandomNumberGenerator.GetInt32(0, 256))));
+
         EvaluateWithFenJsRaw(
             """
             (function () {
@@ -1545,6 +1644,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     this.onloadstart = null;
                     this.onprogress = null;
                     this._requestHeaders = {};
+                    this._listeners = {};
                     this._aborted = false;
                 };
                 XMLHttpRequest.UNSENT = 0;
@@ -1561,19 +1661,56 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 XMLHttpRequest.prototype.setRequestHeader = function (name, value) {
                     this._requestHeaders[name] = value;
                 };
+                XMLHttpRequest.prototype.addEventListener = function (type, callback) {
+                    if (!type || typeof callback !== 'function') return;
+                    type = String(type);
+                    (this._listeners[type] || (this._listeners[type] = [])).push(callback);
+                };
+                XMLHttpRequest.prototype.removeEventListener = function (type, callback) {
+                    type = String(type);
+                    var listeners = this._listeners[type];
+                    if (!listeners) return;
+                    for (var i = listeners.length - 1; i >= 0; i--) {
+                        if (listeners[i] === callback) listeners.splice(i, 1);
+                    }
+                };
+                XMLHttpRequest.prototype._dispatch = function (type) {
+                    var event = new Event(type);
+                    event.target = this;
+                    event.currentTarget = this;
+                    var handler = this['on' + type];
+                    if (typeof handler === 'function') handler.call(this, event);
+                    var listeners = (this._listeners[type] || []).slice();
+                    for (var i = 0; i < listeners.length; i++) {
+                        listeners[i].call(this, event);
+                    }
+                };
                 XMLHttpRequest.prototype.send = function (body) {
                     var self = this;
-                    // Simulate an immediate network failure so callers get onerror.
+                    self._dispatch('loadstart');
+                    if (typeof __fenSyncXhr === 'function') {
+                        var result = __fenSyncXhr(self._method || 'GET', self._url || '', body === undefined ? '' : String(body), self._requestHeaders || {});
+                        self.readyState = XMLHttpRequest.DONE;
+                        self.status = result && typeof result.status === 'number' ? result.status : 0;
+                        self.statusText = result && result.statusText ? String(result.statusText) : '';
+                        self.responseText = result && result.responseText ? String(result.responseText) : '';
+                        self.response = self.responseText;
+                        if (self.onreadystatechange) self.onreadystatechange();
+                        self._dispatch(self.status >= 200 && self.status < 400 ? 'load' : 'error');
+                        self._dispatch('loadend');
+                        return;
+                    }
                     self.readyState = XMLHttpRequest.DONE;
                     self.status = 0;
                     self.statusText = 'Network Error (stub)';
-                    if (self.onerror) self.onerror(new Event('error'));
-                    if (self.onloadend) self.onloadend(new Event('loadend'));
                     if (self.onreadystatechange) self.onreadystatechange();
+                    self._dispatch('error');
+                    self._dispatch('loadend');
                 };
                 XMLHttpRequest.prototype.abort = function () {
                     this._aborted = true;
-                    if (this.onabort) this.onabort(new Event('abort'));
+                    this._dispatch('abort');
+                    this._dispatch('loadend');
                 };
                 XMLHttpRequest.prototype.getResponseHeader = function (name) {
                     return null;
@@ -1627,6 +1764,21 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
                 // ── customElements ── https://html.spec.whatwg.org/#custom-elements
                 // GitHub uses customElements.define() for web components.
+                var cryptoObject = globalThis.crypto || {};
+                cryptoObject.getRandomValues = function (array) {
+                    if (!array || typeof array.length !== 'number') {
+                        throw new TypeError("Failed to execute 'getRandomValues': argument must be an integer typed array.");
+                    }
+                    if (array.length > 65536) {
+                        throw new DOMException("The ArrayBufferView's byte length exceeds the number of bytes of entropy available via this API.", "QuotaExceededError");
+                    }
+                    for (var i = 0; i < array.length; i++) {
+                        array[i] = __fenRandomByte();
+                    }
+                    return array;
+                };
+                globalThis.crypto = cryptoObject;
+
                 globalThis.customElements = {
                     _registry: Object.create(null),
                     define: function (name, constructor, options) {
@@ -1658,8 +1810,156 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
                 // ── fetch ── Minimal stub that rejects with a network error.
                 // GitHub and many sites use fetch() for API calls.
+                function normalizeHeaderName(name) {
+                    return String(name).toLowerCase();
+                }
+
+                globalThis.Headers = function Headers(init) {
+                    this._map = {};
+                    if (init instanceof Headers) {
+                        var source = init._map;
+                        for (var k in source) this._map[k] = source[k];
+                    } else if (Array.isArray(init)) {
+                        for (var i = 0; i < init.length; i++) {
+                            if (init[i] && init[i].length >= 2) this.append(init[i][0], init[i][1]);
+                        }
+                    } else if (init) {
+                        for (var name in init) this.append(name, init[name]);
+                    }
+                };
+                Headers.prototype.append = function (name, value) {
+                    name = normalizeHeaderName(name);
+                    value = String(value);
+                    this._map[name] = this._map[name] ? this._map[name] + ', ' + value : value;
+                };
+                Headers.prototype.set = function (name, value) {
+                    this._map[normalizeHeaderName(name)] = String(value);
+                };
+                Headers.prototype.get = function (name) {
+                    name = normalizeHeaderName(name);
+                    return Object.prototype.hasOwnProperty.call(this._map, name) ? this._map[name] : null;
+                };
+                Headers.prototype.has = function (name) {
+                    return Object.prototype.hasOwnProperty.call(this._map, normalizeHeaderName(name));
+                };
+                Headers.prototype.delete = function (name) {
+                    delete this._map[normalizeHeaderName(name)];
+                };
+                Headers.prototype.forEach = function (callback, thisArg) {
+                    for (var name in this._map) callback.call(thisArg, this._map[name], name, this);
+                };
+
+                function plainHeaders(headers) {
+                    var result = {};
+                    if (!headers) return result;
+                    headers = headers instanceof Headers ? headers : new Headers(headers);
+                    headers.forEach(function (value, name) { result[name] = value; });
+                    return result;
+                }
+
+                globalThis.FormData = function FormData() {
+                    this._entries = [];
+                };
+                FormData.prototype.append = function (name, value, filename) {
+                    this._entries.push([String(name), value == null ? '' : String(value), filename == null ? null : String(filename)]);
+                };
+                FormData.prototype.set = function (name, value, filename) {
+                    this.delete(name);
+                    this.append(name, value, filename);
+                };
+                FormData.prototype.delete = function (name) {
+                    name = String(name);
+                    this._entries = this._entries.filter(function (entry) { return entry[0] !== name; });
+                };
+                FormData.prototype.get = function (name) {
+                    name = String(name);
+                    for (var i = 0; i < this._entries.length; i++) {
+                        if (this._entries[i][0] === name) return this._entries[i][1];
+                    }
+                    return null;
+                };
+
+                function serializeBody(body, headers) {
+                    if (body == null) return { text: '', contentType: '' };
+                    if (body instanceof FormData) {
+                        var boundary = '----FenFormData' + Math.random().toString(36).slice(2);
+                        var text = '';
+                        for (var i = 0; i < body._entries.length; i++) {
+                            var entry = body._entries[i];
+                            text += '--' + boundary + '\r\n';
+                            text += 'Content-Disposition: form-data; name="' + String(entry[0]).replace(/"/g, '%22') + '"\r\n\r\n';
+                            text += String(entry[1]) + '\r\n';
+                        }
+                        text += '--' + boundary + '--\r\n';
+                        return { text: text, contentType: 'multipart/form-data; boundary=' + boundary };
+                    }
+                    if (body instanceof Blob) {
+                        return { text: body._parts.join(''), contentType: body.type || '' };
+                    }
+                    return { text: String(body), contentType: headers.get('content-type') || '' };
+                }
+
+                globalThis.Request = function Request(input, init) {
+                    init = init || {};
+                    if (input instanceof Request) {
+                        this.url = input.url;
+                        this.method = input.method;
+                        this.headers = new Headers(input.headers);
+                        this.body = input.body;
+                    } else {
+                        this.url = String(input);
+                        this.method = 'GET';
+                        this.headers = new Headers();
+                        this.body = null;
+                    }
+                    if (init.method) this.method = String(init.method).toUpperCase();
+                    if (init.headers) this.headers = new Headers(init.headers);
+                    if (init.body !== undefined) this.body = init.body;
+                };
+
+                globalThis.Response = function Response(body, init) {
+                    init = init || {};
+                    this._body = body == null ? '' : String(body);
+                    this.status = init.status === undefined ? 200 : Number(init.status);
+                    this.statusText = init.statusText || '';
+                    this.headers = new Headers(init.headers || {});
+                    this.url = init.url || '';
+                    this.ok = this.status >= 200 && this.status < 300;
+                };
+                Response.prototype.text = function () {
+                    return Promise.resolve(this._body);
+                };
+                Response.prototype.json = function () {
+                    return Promise.resolve(JSON.parse(this._body || 'null'));
+                };
+                Response.prototype.clone = function () {
+                    return new Response(this._body, {
+                        status: this.status,
+                        statusText: this.statusText,
+                        headers: this.headers,
+                        url: this.url
+                    });
+                };
+
                 globalThis.fetch = function (input, init) {
-                    return Promise.reject(new TypeError('Failed to fetch: network is unavailable (stub).'));
+                    init = init || {};
+                    var request = input instanceof Request ? new Request(input, init) : new Request(input, init);
+                    var headers = new Headers(request.headers);
+                    var body = serializeBody(request.body, headers);
+                    if (body.contentType && !headers.has('content-type')) {
+                        headers.set('content-type', body.contentType);
+                    }
+                    try {
+                        var result = __fenSyncFetch(request.method || 'GET', request.url || '', body.text, plainHeaders(headers));
+                        return Promise.resolve(new Response(result && result.responseText ? result.responseText : '', {
+                            status: result && typeof result.status === 'number' ? result.status : 0,
+                            statusText: result && result.statusText ? String(result.statusText) : '',
+                            headers: result && result.headers ? result.headers : {},
+                            url: result && result.url ? String(result.url) : request.url
+                        }));
+                    } catch (error) {
+                        return Promise.reject(error);
+                    }
                 };
             })();
             """);
@@ -1772,6 +2072,249 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             length: 1);
 
         _interpreter.RegisterGlobalValue("getComputedStyle", getComputedStyleFn);
+    }
+
+    private JsValue ExecuteSynchronousXmlHttpRequest(IReadOnlyList<JsValue> args)
+    {
+        var methodText = args.Count > 0 ? CoerceToHostString(args[0]) : "GET";
+        var urlText = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+        var bodyText = args.Count > 2 ? CoerceToHostString(args[2]) : string.Empty;
+
+        if (FetchHandler == null || !TryResolveUri(urlText, _currentBaseUri, out var requestUri))
+        {
+            return CreateXhrResult(0, "Network Error", string.Empty);
+        }
+
+        try
+        {
+            using var request = new HttpRequestMessage(new HttpMethod(string.IsNullOrWhiteSpace(methodText) ? "GET" : methodText.ToUpperInvariant()), requestUri);
+            if (_currentBaseUri != null)
+            {
+                request.Headers.Referrer = _currentBaseUri;
+                if (!CorsHandler.IsSameOrigin(requestUri, _currentBaseUri))
+                {
+                    var origin = CorsHandler.SerializeOrigin(new UriBuilder(
+                        _currentBaseUri.Scheme,
+                        _currentBaseUri.Host,
+                        _currentBaseUri.IsDefaultPort ? -1 : _currentBaseUri.Port).Uri);
+                    if (!string.IsNullOrWhiteSpace(origin))
+                    {
+                        request.Headers.TryAddWithoutValidation("Origin", origin);
+                    }
+                }
+            }
+
+            if (!string.Equals(request.Method.Method, "GET", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(request.Method.Method, "HEAD", StringComparison.OrdinalIgnoreCase))
+            {
+                request.Content = new StringContent(bodyText ?? string.Empty, Encoding.UTF8, "text/plain");
+            }
+
+            if (args.Count > 3 && args[3].Tag == JsValueTag.Object)
+            {
+                ApplyXhrRequestHeaders(request, args[3]);
+            }
+
+            using var response = FetchHandler(request).GetAwaiter().GetResult();
+            var responseText = response.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? string.Empty;
+            return CreateXhrResult((int)response.StatusCode, response.ReasonPhrase ?? string.Empty, responseText);
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] XMLHttpRequest failed for '{requestUri}': {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+            return CreateXhrResult(0, "Network Error", string.Empty);
+        }
+    }
+
+    private JsValue ExecuteSynchronousFetchRequest(IReadOnlyList<JsValue> args)
+    {
+        var methodText = args.Count > 0 ? CoerceToHostString(args[0]) : "GET";
+        var urlText = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+        var bodyText = args.Count > 2 ? CoerceToHostString(args[2]) : string.Empty;
+
+        if (FetchHandler == null || !TryResolveUri(urlText, _currentBaseUri, out var requestUri))
+        {
+            return CreateFetchResult(0, "Network Error", string.Empty, string.Empty, null);
+        }
+
+        try
+        {
+            using var request = new HttpRequestMessage(new HttpMethod(string.IsNullOrWhiteSpace(methodText) ? "GET" : methodText.ToUpperInvariant()), requestUri);
+            request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
+            request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
+            if (_currentBaseUri != null)
+            {
+                request.Headers.Referrer = _currentBaseUri;
+                if (!CorsHandler.IsSameOrigin(requestUri, _currentBaseUri))
+                {
+                    var origin = CorsHandler.SerializeOrigin(new UriBuilder(
+                        _currentBaseUri.Scheme,
+                        _currentBaseUri.Host,
+                        _currentBaseUri.IsDefaultPort ? -1 : _currentBaseUri.Port).Uri);
+                    if (!string.IsNullOrWhiteSpace(origin))
+                    {
+                        request.Headers.TryAddWithoutValidation("Origin", origin);
+                    }
+                }
+            }
+
+            if (!string.Equals(request.Method.Method, "GET", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(request.Method.Method, "HEAD", StringComparison.OrdinalIgnoreCase))
+            {
+                request.Content = new StringContent(bodyText ?? string.Empty, Encoding.UTF8, "text/plain");
+            }
+
+            if (args.Count > 3 && args[3].Tag == JsValueTag.Object)
+            {
+                ApplyXhrRequestHeaders(request, args[3]);
+            }
+
+            using var response = FetchHandler(request).GetAwaiter().GetResult();
+            var responseText = response.Content?.ReadAsStringAsync().GetAwaiter().GetResult() ?? string.Empty;
+            return CreateFetchResult(
+                (int)response.StatusCode,
+                response.ReasonPhrase ?? string.Empty,
+                responseText,
+                response.RequestMessage?.RequestUri?.ToString() ?? requestUri.ToString(),
+                response);
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] fetch failed for '{requestUri}': {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+            return CreateFetchResult(0, "Network Error", string.Empty, requestUri.ToString(), null);
+        }
+    }
+
+    private void ApplyXhrRequestHeaders(HttpRequestMessage request, JsValue headersValue)
+    {
+        if (headersValue.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var headersObject = _interpreter.Heap.GetObject(headersValue.AsObjectHandle());
+        var context = (IBuiltinContext)_interpreter;
+        foreach (var property in headersObject.EnumerateOwnProperties())
+        {
+            var name = property.Key;
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            if (!context.TryGetPropertyValue(headersObject, headersValue, name, out var value) ||
+                value.Tag == JsValueTag.Undefined ||
+                value.Tag == JsValueTag.Null)
+            {
+                continue;
+            }
+
+            var headerValue = CoerceToHostString(value);
+            if (string.Equals(name, "Content-Type", StringComparison.OrdinalIgnoreCase) && request.Content != null)
+            {
+                if (System.Net.Http.Headers.MediaTypeHeaderValue.TryParse(headerValue, out var mediaType))
+                {
+                    request.Content.Headers.ContentType = mediaType;
+                }
+                continue;
+            }
+
+            if (!request.Headers.TryAddWithoutValidation(name, headerValue) && request.Content != null)
+            {
+                request.Content.Headers.TryAddWithoutValidation(name, headerValue);
+            }
+        }
+    }
+
+    private static bool TryResolveUri(string urlText, Uri baseUri, out Uri requestUri)
+    {
+        requestUri = null;
+        if (string.IsNullOrWhiteSpace(urlText))
+        {
+            return false;
+        }
+
+        if (Uri.TryCreate(urlText, UriKind.Absolute, out requestUri))
+        {
+            return true;
+        }
+
+        return baseUri != null && Uri.TryCreate(baseUri, urlText, out requestUri);
+    }
+
+    private JsValue CreateXhrResult(int status, string statusText, string responseText)
+    {
+        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["status"] = JsValue.FromNumber(status),
+            ["statusText"] = JsValue.FromString(statusText ?? string.Empty),
+            ["responseText"] = JsValue.FromString(responseText ?? string.Empty)
+        });
+    }
+
+    private JsValue CreateFetchResult(int status, string statusText, string responseText, string url, HttpResponseMessage response)
+    {
+        var headers = new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase);
+        if (response != null)
+        {
+            foreach (var header in response.Headers)
+            {
+                headers[header.Key.ToLowerInvariant()] = JsValue.FromString(string.Join(", ", header.Value));
+            }
+
+            if (response.Content != null)
+            {
+                foreach (var header in response.Content.Headers)
+                {
+                    headers[header.Key.ToLowerInvariant()] = JsValue.FromString(string.Join(", ", header.Value));
+                }
+            }
+        }
+
+        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["status"] = JsValue.FromNumber(status),
+            ["statusText"] = JsValue.FromString(statusText ?? string.Empty),
+            ["responseText"] = JsValue.FromString(responseText ?? string.Empty),
+            ["url"] = JsValue.FromString(url ?? string.Empty),
+            ["headers"] = _interpreter.AllocateObject(headers)
+        });
+    }
+
+    private string DescribePromiseRejectionReason(JsValue reason)
+    {
+        if (reason.Tag != JsValueTag.Object)
+        {
+            return CoerceToHostString(reason);
+        }
+
+        try
+        {
+            var jsObject = _interpreter.Heap.GetObject(reason.AsObjectHandle());
+            var context = (IBuiltinContext)_interpreter;
+            if (context.TryGetPropertyValue(jsObject, reason, "stack", out var stack) &&
+                stack.Tag != JsValueTag.Undefined &&
+                stack.Tag != JsValueTag.Null)
+            {
+                return CoerceToHostString(stack);
+            }
+
+            if (context.TryGetPropertyValue(jsObject, reason, "message", out var message) &&
+                message.Tag != JsValueTag.Undefined &&
+                message.Tag != JsValueTag.Null)
+            {
+                return CoerceToHostString(message);
+            }
+        }
+        catch
+        {
+        }
+
+        return CoerceToHostString(reason);
     }
 
     /// <summary>
@@ -3307,16 +3850,42 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         public void EnqueuePromiseJob(PromiseJob job)
         {
+            _owner?._interpreter.EnqueueHostedPromiseJob(job);
         }
 
         public void ReportPromiseRejection(JsValue promise, PromiseRejectionOperation operation)
         {
-            _ = promise;
-            _ = operation;
+            if (operation != PromiseRejectionOperation.Reject || _owner == null)
+            {
+                return;
+            }
+
+            var reason = "<unknown>";
+            try
+            {
+                if (promise.Tag == JsValueTag.Object &&
+                    _owner._interpreter.Heap.GetObject(promise.AsObjectHandle()) is PromiseInstance promiseInstance)
+                {
+                    reason = _owner.DescribePromiseRejectionReason(promiseInstance.Promise.GetResultUnchecked());
+                }
+            }
+            catch
+            {
+                reason = "<unavailable>";
+            }
+
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] Unhandled promise rejection: {reason}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
         }
 
         public bool TryGetHostProperty(HostObjectHandle handle, string property, out JsValue value)
         {
+            if (_owner == null || _owner._interpreter == null)
+            {
+                value = JsValue.Undefined;
+                return false;
+            }
             var resolution = _owner._interpreter.HostObjectTable.Resolve(handle, _owner._interpreter.HostResolveContext);
             if (!resolution.IsOk)
             {
@@ -3360,6 +3929,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         public bool TrySetHostProperty(HostObjectHandle handle, string property, JsValue value)
         {
+            if (_owner == null || _owner._interpreter == null)
+            {
+                return false;
+            }
             var resolution = _owner._interpreter.HostObjectTable.Resolve(handle, _owner._interpreter.HostResolveContext);
             if (!resolution.IsOk)
             {
@@ -3422,6 +3995,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return true;
                 case FenJsDomStringMapHost domStringMap:
                     domStringMap.Element.SetAttribute(PropertyNameToDatasetAttribute(property), CoerceToHostString(value));
+                    return true;
+                case FenJsLocationHost location when string.Equals(property, "href", StringComparison.Ordinal):
+                    var hrefStr = CoerceToHostString(value);
+                    if (!string.IsNullOrWhiteSpace(hrefStr) && Uri.TryCreate(location.Uri, hrefStr, out var navUri))
+                        _owner._host.Navigate(navUri);
                     return true;
                 default:
                     return false;
@@ -4973,7 +5551,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             }
         }
 
-        private static bool TryGetLocationProperty(FenJsLocationHost location, string property, out JsValue value)
+        private bool TryGetLocationProperty(FenJsLocationHost location, string property, out JsValue value)
         {
             var uri = location.Uri;
             var absolute = uri?.AbsoluteUri ?? string.Empty;
@@ -5002,6 +5580,34 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return true;
                 case "hash":
                     value = JsValue.FromString(uri?.Fragment ?? string.Empty);
+                    return true;
+                case "reload":
+                    value = _owner.GetOrCreateHostCallable(
+                        location, "reload",
+                        (_, _2) => { _owner._host.Navigate(uri); return JsValue.Undefined; },
+                        length: 1);
+                    return true;
+                case "replace":
+                    value = _owner.GetOrCreateHostCallable(
+                        location, "replace",
+                        (_, args) =>
+                        {
+                            var url = args.Count > 0 ? CoerceToHostString(args[0]) : null;
+                            if (!string.IsNullOrWhiteSpace(url) && Uri.TryCreate(uri, url, out var navUri))
+                                _owner._host.Navigate(navUri);
+                            return JsValue.Undefined;
+                        }, length: 1);
+                    return true;
+                case "assign":
+                    value = _owner.GetOrCreateHostCallable(
+                        location, "assign",
+                        (_, args) =>
+                        {
+                            var url = args.Count > 0 ? CoerceToHostString(args[0]) : null;
+                            if (!string.IsNullOrWhiteSpace(url) && Uri.TryCreate(uri, url, out var navUri))
+                                _owner._host.Navigate(navUri);
+                            return JsValue.Undefined;
+                        }, length: 1);
                     return true;
                 default:
                     value = JsValue.Undefined;

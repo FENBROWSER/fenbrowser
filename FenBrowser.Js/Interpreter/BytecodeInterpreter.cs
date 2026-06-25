@@ -733,8 +733,10 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // runtime, allowing up to 80 JS frames can overflow before the guard triggers.
     // Keep the cap just above the deepest intentional regression depth (35) while
     // reserving stack headroom for unwind/exception paths.
-    private const int MaxCallDepth = 40;
+    private const int DefaultMaxCallDepth = 40;
     private int _callDepth;
+
+    public int MaxCallDepth { get; set; } = DefaultMaxCallDepth;
 
     [MayExecuteJs]
     private JsValue ExecuteInternal(
@@ -12281,7 +12283,26 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
 
     private string FormatCallStack(string errorName, string message)
     {
-        return errorName + ": " + message;
+        var header = string.IsNullOrEmpty(message) ? errorName : errorName + ": " + message;
+        if (_activeFrames.Count == 0)
+        {
+            return header;
+        }
+
+        var frames = _activeFrames
+            .Take(8)
+            .Select(frame =>
+            {
+                var functionName = string.IsNullOrWhiteSpace(frame.Function.Name)
+                    ? "<anonymous>"
+                    : frame.Function.Name;
+                var ip = Math.Clamp(frame.InstructionPointer - 1, 0, Math.Max(0, frame.Function.Instructions.Count - 1));
+                var opcode = frame.Function.Instructions.Count == 0
+                    ? "none"
+                    : frame.Function.Instructions[ip].OpCode.ToString();
+                return $"    at {functionName} [ip={ip}, op={opcode}]";
+            });
+        return header + "\n" + string.Join("\n", frames);
     }
 
     private JsValue CreateFunctionObject(
@@ -21589,9 +21610,19 @@ fallbackArraySpecies:
         {
             throw new JsThrownException(CreateTypeError("Cannot read properties of null."));
         }
+        // HostObject handles use a completely different encoding than ObjectHandle.
+        // Decoding a HostObjectHandle as ObjectHandle produces garbage index+generation
+        // that fails JsHeap.Validate with "Stale heap handle".  Callers that can
+        // receive a HostObject must check the tag and route through the host-property
+        // path instead (see GetReceiverProperty / SetPropByName for the pattern).
+        if (value.Tag == JsValueTag.HostObject)
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Cannot use a host object where a JS object is expected."));
+        }
         // Primitives (String, Number, Boolean, Symbol, BigInt) are auto-boxed
         // when used as objects — same semantics as ECMA-262 ToObject.
-        if (value.Tag != JsValueTag.Object && value.Tag != JsValueTag.HostObject)
+        if (value.Tag != JsValueTag.Object)
         {
             value = CreateObjectFromValue(value);
         }

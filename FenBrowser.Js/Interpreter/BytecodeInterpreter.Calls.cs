@@ -123,6 +123,16 @@ public sealed partial class BytecodeInterpreter
 
     private JsValue CallFunction(JsValue value, IReadOnlyList<JsValue> args, JsValue thisValue)
     {
+        if (value.Tag == JsValueTag.Undefined || value.Tag == JsValueTag.Null)
+        {
+            throw new JsThrownException(CreateTypeError(
+                "Cannot read properties of " +
+                (value.Tag == JsValueTag.Undefined ? "undefined" : "null") +
+                " while resolving call target. this=" + DescribeValueShort(thisValue) +
+                " arg0=" + (args.Count > 0 ? DescribeValueShort(args[0]) : "<none>") +
+                " " + DescribeFrameStack()));
+        }
+
         var obj = ResolveObject(value);
 
         // ECMA-262 9.5.12 Proxy [[Call]].

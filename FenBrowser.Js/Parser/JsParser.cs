@@ -1864,12 +1864,71 @@ public sealed class JsParser
     private static string NormalizeNumericPropertyName(Token token)
     {
         var raw = token.Text.Replace("_", string.Empty);
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+            ulong.TryParse(raw[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hex))
+        {
+            return hex <= long.MaxValue
+                ? ToJsNumberString((long)hex)
+                : ToJsNumberString((double)hex);
+        }
+
+        if (raw.StartsWith("0o", StringComparison.OrdinalIgnoreCase) &&
+            TryParseUnsignedIntegerLiteral(raw[2..], 8, out var octal))
+        {
+            return octal <= long.MaxValue
+                ? ToJsNumberString((long)octal)
+                : ToJsNumberString((double)octal);
+        }
+
+        if (raw.StartsWith("0b", StringComparison.OrdinalIgnoreCase) &&
+            TryParseUnsignedIntegerLiteral(raw[2..], 2, out var binary))
+        {
+            return binary <= long.MaxValue
+                ? ToJsNumberString((long)binary)
+                : ToJsNumberString((double)binary);
+        }
+
         if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
         {
-            return number.ToString("G17", CultureInfo.InvariantCulture);
+            return ToJsNumberString(number);
         }
 
         return token.Text;
+    }
+
+    private static bool TryParseUnsignedIntegerLiteral(string digits, int radix, out ulong value)
+    {
+        value = 0;
+        if (string.IsNullOrEmpty(digits))
+        {
+            return false;
+        }
+
+        foreach (var ch in digits)
+        {
+            var digit = ch switch
+            {
+                >= '0' and <= '9' => ch - '0',
+                >= 'a' and <= 'z' => ch - 'a' + 10,
+                >= 'A' and <= 'Z' => ch - 'A' + 10,
+                _ => -1
+            };
+
+            if (digit < 0 || digit >= radix)
+            {
+                return false;
+            }
+
+            var next = value * (ulong)radix + (ulong)digit;
+            if (next < value)
+            {
+                return false;
+            }
+
+            value = next;
+        }
+
+        return true;
     }
 
     private Token ParseBindingIdentifierOrPattern()
@@ -5158,7 +5217,7 @@ public sealed class JsParser
                 }
                 else if (accessorKeyToken.Kind == TokenKind.Number)
                 {
-                    accessorKey = Advance().Text;
+                    accessorKey = NormalizeNumericPropertyName(Advance());
                 }
                 else
                 {
@@ -5219,7 +5278,7 @@ public sealed class JsParser
                 }
                 else if (methodKeyToken.Kind == TokenKind.Number)
                 {
-                    methodKey = Advance().Text;
+                    methodKey = NormalizeNumericPropertyName(Advance());
                 }
                 else
                 {
@@ -5289,7 +5348,7 @@ public sealed class JsParser
                 }
                 else if (methodKeyToken.Kind == TokenKind.Number)
                 {
-                    methodKey = Advance().Text;
+                    methodKey = NormalizeNumericPropertyName(Advance());
                 }
                 else
                 {
@@ -5354,7 +5413,7 @@ public sealed class JsParser
                 }
                 else if (methodKeyToken.Kind == TokenKind.Number)
                 {
-                    methodKey = Advance().Text;
+                    methodKey = NormalizeNumericPropertyName(Advance());
                 }
                 else
                 {
@@ -5429,7 +5488,7 @@ public sealed class JsParser
             }
             else if (keyToken.Kind == TokenKind.Number)
             {
-                key = Advance().Text;
+                key = NormalizeNumericPropertyName(Advance());
             }
             else
             {

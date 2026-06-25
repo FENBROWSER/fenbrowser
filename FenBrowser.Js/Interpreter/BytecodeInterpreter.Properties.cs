@@ -186,6 +186,10 @@ public sealed partial class BytecodeInterpreter
                     ? GetDescriptorValue(desc, receiver)
                     : JsValue.Undefined;
             }
+            case JsValueTag.HostObject:
+                // Host objects don't carry symbol-keyed properties in the
+                // current DOM bridge — fall through to undefined.
+                return JsValue.Undefined;
             case JsValueTag.Undefined:
                 throw new JsThrownException(CreateTypeError(
                     "Cannot read properties of undefined (reading symbol key)."));
