@@ -5728,6 +5728,20 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // ECMA-262 19.2.1.3 EvalDeclarationInstantiation ( body, varEnv, lexEnv, privateEnv, strict )
     // Validates that the eval body's declarations don't conflict with the calling
     // context's environment. Throws SyntaxError for violations.
+    private static bool ContainsSuperRecursive(BytecodeFunction fn)
+    {
+        foreach (var ins in fn.Instructions)
+        {
+            if (ins.OpCode == OpCode.LoadSuperProperty ||
+                ins.OpCode == OpCode.LoadSuperConstructor ||
+                ins.OpCode == OpCode.LoadSuperElement)
+                return true;
+        }
+        foreach (var nested in fn.NestedFunctions)
+            if (ContainsSuperRecursive(nested)) return true;
+        return false;
+    }
+
     private static bool ContainsArgumentsRecursive(BytecodeFunction fn)
     {
         foreach (var name in fn.PropertyNames)
@@ -5742,13 +5756,18 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         // ECMA-262 19.2.1.3: super references in eval are allowed when the
         // calling context has a super binding (direct eval inside a class
         // method/constructor). Otherwise they are a SyntaxError.
-        foreach (var ins in compiled.Instructions)
+        // ECMA-262: Additional Early Error Rules for Eval Outside Constructor Methods.
+        // If the eval body (or any nested function/arrow) contains SuperCall or
+        // SuperProperty, it is a SyntaxError when the calling context does not have
+        // a valid super binding (i.e., outside a derived constructor/method).
+        // Recursively scan nested functions so that `() => super()` inside eval
+        // is caught even when the arrow is not immediately invoked.
+        var hasSuper = ContainsSuperRecursive(compiled);
+        if (hasSuper)
         {
-            if (ins.OpCode == OpCode.LoadSuperProperty || ins.OpCode == OpCode.LoadSuperConstructor || ins.OpCode == OpCode.LoadSuperElement)
-            {
-                if (callingEnv is not FunctionEnvironmentRecord fenv || !fenv.HasSuperBinding)
-                    throw new JsThrownException(CreateSyntaxError("'super' cannot be used in eval."));
-            }
+            var hasValidSuper = callingEnv is FunctionEnvironmentRecord fenv && fenv.HasSuperBinding;
+            if (!hasValidSuper)
+                throw new JsThrownException(CreateSyntaxError("'super' cannot be used in eval."));
         }
 
         // ECMA-262: Additional Early Error Rules for Eval Inside Initializer.
