@@ -248,23 +248,34 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private JsValue EvaluateWithFenJsRaw(string script)
     {
-        return RunFenJsWithLargeStack(() =>
+        try
         {
-            lock (_fenJsLock)
+            return RunFenJsWithLargeStack(() =>
             {
-                if (_compiler == null || _interpreter == null)
+                lock (_fenJsLock)
                 {
-                    throw new InvalidOperationException(
-                        "[FenJsBridge] EvaluateWithFenJsRaw: compiler or interpreter is null — " +
-                        "BindFenJsDomContext/ResetFenJsSession may not have run yet. " +
-                        $"_compiler={_compiler != null} _interpreter={_interpreter != null}");
+                    if (_compiler == null || _interpreter == null)
+                    {
+                        throw new InvalidOperationException(
+                            "[FenJsBridge] EvaluateWithFenJsRaw: compiler or interpreter is null — " +
+                            "BindFenJsDomContext/ResetFenJsSession may not have run yet. " +
+                            $"_compiler={_compiler != null} _interpreter={_interpreter != null}");
+                    }
+                    _fenJsEvaluationCount++;
+                    var function = _compiler.CompileScript(new SourceText(script, "<fenbrowser-fenjs-eval>"));
+                    new BytecodeVerifier().Verify(function);
+                    return _interpreter.Execute(function);
                 }
-                _fenJsEvaluationCount++;
-                var function = _compiler.CompileScript(new SourceText(script, "<fenbrowser-fenjs-eval>"));
-                new BytecodeVerifier().Verify(function);
-                return _interpreter.Execute(function);
-            }
-        });
+            });
+        }
+        catch (Exception ex) when (ex is not JsThrownException)
+        {
+            var message = $"[FenJsBridge] EvaluateWithFenJsRaw FAILED for script '{script}': {ex.GetType().Name}: {ex.Message}";
+            if (ex.StackTrace is { } st)
+                message += "\n  Stack: " + st.Split('\n').FirstOrDefault()?.Trim();
+            Console.Error.WriteLine(message);
+            throw;
+        }
     }
 
     // The recursive-descent parser, the bytecode compiler, and the interpreter all
@@ -531,7 +542,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 }
             }
             Console.Error.WriteLine($"[FenJsBridge] ExecutePageScriptsWithFenJsAsync DONE, scripts processed={scriptCount}");
-            LogFenJsPageBootstrapState();
+            // LogFenJsPageBootstrapState(); // DEBUG: disabled until NRE is fixed
         }
         catch (Exception ex)
         {
