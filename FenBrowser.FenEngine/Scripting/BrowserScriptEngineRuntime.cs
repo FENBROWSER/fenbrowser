@@ -531,7 +531,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 }
             }
             Console.Error.WriteLine($"[FenJsBridge] ExecutePageScriptsWithFenJsAsync DONE, scripts processed={scriptCount}");
-            // LogFenJsPageBootstrapState(); // DEBUG: temporarily disabled
+            LogFenJsPageBootstrapState();
         }
         catch (Exception ex)
         {
