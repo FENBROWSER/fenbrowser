@@ -572,6 +572,35 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         EvaluateWithFenJsRaw(code);
                     }
                 }
+                catch (JsThrownException jte)
+                {
+                    // Per WHATWG HTML §8.1.3.2, a script error must NOT prevent
+                    // subsequent scripts from executing. Log the error and
+                    // surface it as a console message so developers can see it,
+                    // then continue to the next script.
+                    var desc = jte.Description;
+                    if (string.IsNullOrEmpty(desc))
+                    {
+                        try { desc = _interpreter.DescribeThrownValue(jte.Value); } catch { }
+                    }
+                    var srcAttr = item.ScriptElement?.GetAttribute("src");
+                    var origin = string.IsNullOrEmpty(srcAttr)
+                        ? $"inline script (first {Math.Min(code?.Length ?? 0, 120)} chars)"
+                        : srcAttr;
+                    Console.Error.WriteLine($"[FenJsBridge] Script error in {origin}: {desc ?? jte.Message}");
+                    // Continue to next script — do NOT re-throw.
+                }
+                catch (Exception ex)
+                {
+                    // Non-JS exceptions (e.g. session reset) are surfaced but
+                    // still must not kill the remaining page scripts.
+                    var srcAttr = item.ScriptElement?.GetAttribute("src");
+                    var origin = string.IsNullOrEmpty(srcAttr)
+                        ? $"inline script (first {Math.Min(code?.Length ?? 0, 120)} chars)"
+                        : srcAttr;
+                    Console.Error.WriteLine($"[FenJsBridge] Non-JS error in {origin}: {ex.Message}");
+                    // Continue to next script.
+                }
                 finally
                 {
                     SetCurrentScriptElement(null);
@@ -582,12 +611,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
         catch (Exception ex)
         {
+            // Per-script errors are already caught inside the loop above.
+            // This outer catch only handles infrastructure failures (e.g.
+            // null _interpreter after a session reset). Log and surface but
+            // do NOT re-throw — the page should render even if scripts fail.
             if (ex is JsThrownException jte && string.IsNullOrEmpty(jte.Description))
             {
                 try { jte.Description = _interpreter.DescribeThrownValue(jte.Value); } catch { }
             }
-            Console.Error.WriteLine($"[FenJsBridge] ExecutePageScriptsWithFenJsAsync EXCEPTION: {ex.Message}");
-            throw;
+            Console.Error.WriteLine($"[FenJsBridge] ExecutePageScriptsWithFenJsAsync infrastructure error: {ex.Message}");
         }
     }
 
@@ -947,6 +979,38 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         // the TrySetHostProperty case for BrowserSurfaceProfile stores those.
         EvaluateWithFenJsRaw(
             "navigator.sendBeacon = function(url, data) { return true; };");
+        // Stub document.fonts (FontFaceSet API) so sites that use the CSS Font
+        // Loading API (Google loads 'Google Sans' this way) don't crash.
+        // .load() returns a Promise that resolves to an empty array; .ready is
+        // a pre-resolved promise so await document.fonts.ready doesn't hang.
+        // We use SetStoredHostProperty directly because document is a host
+        // object and EvaluateWithFenJsRaw goes through TrySetHostProperty
+        // which would refuse the write (the fonts case was added above but
+        // this pre-population is cleaner and avoids a round-trip through JS).
+        SetStoredHostProperty(
+            document,
+            "fonts",
+            _interpreter.AllocateObject(new Dictionary<string, JsValue>
+            {
+                ["load"] = _interpreter.AllocateNativeFunction(
+                    "load",
+                    (_, _2) => EvaluateWithFenJsRaw("Promise.resolve([])"),
+                    length: 1),
+                ["ready"] = EvaluateWithFenJsRaw("Promise.resolve()"),
+                ["status"] = JsValue.FromString("loaded"),
+                ["check"] = _interpreter.AllocateNativeFunction(
+                    "check",
+                    (_, _2) => JsValue.FromBoolean(true),
+                    length: 1),
+                ["addEventListener"] = _interpreter.AllocateNativeFunction(
+                    "addEventListener",
+                    (_, _2) => JsValue.Undefined,
+                    length: 2),
+                ["has"] = _interpreter.AllocateNativeFunction(
+                    "has",
+                    (_, _2) => JsValue.FromBoolean(false),
+                    length: 1),
+            }));
         _interpreter.RegisterGlobalHostObject("location", RegisterHostObject(location, HostObjectKind.Other));
         _interpreter.RegisterGlobalValue("innerWidth", JsValue.FromNumber(WindowWidth));
         _interpreter.RegisterGlobalValue("innerHeight", JsValue.FromNumber(WindowHeight));
@@ -4334,6 +4398,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
             switch (resolution.HostObject)
             {
+                case Document document when string.Equals(property, "fonts", StringComparison.Ordinal):
+                    // Allow Google Font Loading API: document.fonts = { ... }.
+                    _owner.SetStoredHostProperty(document, "fonts", value);
+                    return true;
                 case Document document when string.Equals(property, "title", StringComparison.Ordinal):
                     document.Title = CoerceToHostString(value);
                     return true;
@@ -4346,6 +4414,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     {
                         _owner.CookieWriteBridge(_owner._currentBaseUri, cookieStr);
                     }
+                    return true;
+                case Document document:
+                    // Catch-all for arbitrary document properties (e.g. Google
+                    // sets __gwbp, __jsl, and other internal bookkeeping).
+                    _owner.SetStoredHostProperty(document, property, value);
                     return true;
                 case Element element when string.Equals(property, "className", StringComparison.Ordinal):
                     element.ClassName = CoerceToHostString(value);
@@ -4374,6 +4447,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return true;
                 case Element element when string.Equals(property, "onerror", StringComparison.Ordinal):
                     _owner.SetStoredHostProperty(element, "onerror", value);
+                    return true;
+                case Element element:
+                    // Catch-all for arbitrary element properties (e.g. Google sets
+                    // __gwbp, __jsl, and other internal bookkeeping properties on
+                    // DOM elements). Store for later retrieval via TryGetElementProperty.
+                    _owner.SetStoredHostProperty(element, property, value);
                     return true;
                 case Attr attr when string.Equals(property, "value", StringComparison.Ordinal):
                     attr.Value = CoerceToHostString(value);
@@ -4436,6 +4515,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "readyState":
                     value = JsValue.FromString(_owner.GetDocumentReadyState());
                     return true;
+                case "fonts":
+                    // CSS Font Loading API: return the user-assigned fonts object
+                    // (set by Google's inline script: document.fonts = { load: ..., ready: ... }).
+                    value = _owner.GetStoredHostPropertyOrUndefined(document, "fonts");
+                    return value.Tag != JsValueTag.Undefined;
                 case "URL":
                 case "documentURI":
                     value = JsValue.FromString(document.URL ?? string.Empty);
@@ -4701,8 +4785,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         length: 1);
                     return true;
                 default:
-                    value = JsValue.Undefined;
-                    return false;
+                    // Fall back to user-assigned properties (e.g. document.fonts,
+                    // document.__gwbp set by Google scripts).
+                    value = _owner.GetStoredHostPropertyOrUndefined(document, property);
+                    return value.Tag != JsValueTag.Undefined;
             }
         }
 
@@ -5236,8 +5322,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     value = _owner.GetOrCreateStyleObject(element);
                     return true;
                 default:
-                    value = JsValue.Undefined;
-                    return false;
+                    // Fall back to user-assigned properties (e.g. Google sets
+                    // __gwbp, __jsl on elements for internal bookkeeping).
+                    value = _owner.GetStoredHostPropertyOrUndefined(element, property);
+                    return value.Tag != JsValueTag.Undefined;
             }
         }
 
