@@ -5734,7 +5734,8 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             if (ins.OpCode == OpCode.LoadSuperProperty ||
                 ins.OpCode == OpCode.LoadSuperConstructor ||
-                ins.OpCode == OpCode.LoadSuperElement)
+                ins.OpCode == OpCode.LoadSuperElement ||
+                ins.OpCode == OpCode.InitThisBinding)
                 return true;
         }
         foreach (var nested in fn.NestedFunctions)
@@ -5765,9 +5766,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var hasSuper = ContainsSuperRecursive(compiled);
         if (hasSuper)
         {
-            var hasValidSuper = callingEnv is FunctionEnvironmentRecord fenv && fenv.HasSuperBinding;
-            if (!hasValidSuper)
+            var fenv = callingEnv as FunctionEnvironmentRecord;
+            var hasSuperBinding = fenv is not null && fenv.HasSuperBinding;
+            // ECMA-262: super references in eval are only valid inside a derived
+            // constructor body AFTER the super() call. In all other contexts
+            // (methods, field initializers, ordinary functions), reject.
+            if (!hasSuperBinding)
                 throw new JsThrownException(CreateSyntaxError("'super' cannot be used in eval."));
+            // If we have a super binding but the this binding is uninitialized,
+            // we are in a field initializer or before super() in the constructor.
+            if (fenv!.ThisBindingStatus == ThisBindingStatus.Uninitialized)
+                throw new JsThrownException(CreateSyntaxError("'super' cannot be used in eval before super() is called."));
+            // In a method (not a constructor), super() as a call is never valid.
+            var callerFrame = _activeFrames.Count > 0 ? _activeFrames.Peek() : null;
+            if (callerFrame?.Function?.Kind != FunctionKind.Constructor)
+                throw new JsThrownException(CreateSyntaxError("'super' cannot be used in eval inside a method."));
         }
 
         // ECMA-262: Additional Early Error Rules for Eval Inside Initializer.
