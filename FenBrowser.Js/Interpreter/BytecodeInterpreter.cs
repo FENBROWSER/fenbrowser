@@ -12509,6 +12509,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                 "anonymous",
                 kind);
             new BytecodeVerifier().Verify(compiled);
+            // Dynamically-created functions have no meaningful SourceText
+            // (only the body is available, not the full declaration). Clear
+            // it so Function.prototype.toString uses the native-function
+            // format: "function anonymous() { [native code] }".
+            compiled.SourceText = null;
             return CreateFunctionObject(compiled, EnsureGlobalEnvironment());
         }
         catch (Exception ex) when (ex is JsParserException or UnsupportedFeatureException)
