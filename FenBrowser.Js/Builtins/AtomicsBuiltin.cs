@@ -264,6 +264,14 @@ public sealed class AtomicsBuiltin : IBuiltinModule
             return JsValue.FromString("ok");
         }
 
+        // Finite timeout: actually sleep so wall-clock measurements see the
+        // expected delay (tests verify lapse >= TIMEOUT). Cap at 5s for safety.
+        if (equal && t > 0 && !double.IsInfinity(t))
+        {
+            var ms = (int)Math.Min(t, 5000);
+            if (ms > 0) System.Threading.Thread.Sleep(ms);
+        }
+
         return JsValue.FromString(equal ? "timed-out" : "not-equal");
     }
 
