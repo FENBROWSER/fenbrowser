@@ -5768,6 +5768,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         var constNames = new HashSet<string>(compiled.ConstDeclarationNames);
         // Function declarations are hoisted as vars in eval (recorded in VarDeclarationNames).
 
+        // ECMA-262 19.2.1.3: in a non-strict direct eval inside a function
+        // context whose [[ThisMode]] is not lexical, var/function declarations
+        // named `arguments` are a SyntaxError regardless of whether the calling
+        // function already has an `arguments` binding.
+        // Arrow functions are exempt: they do not create a
+        // FunctionEnvironmentRecord (they inherit the enclosing scope's env),
+        // and their [[ThisMode]] is lexical.
+        // Strict eval has its own scope, so this restriction does not apply.
+        if (!strict && callingEnv is FunctionEnvironmentRecord &&
+            varNames.Contains("arguments"))
+        {
+            throw new JsThrownException(CreateSyntaxError(
+                "Cannot declare 'arguments' in a direct eval inside a function."));
+        }
+
         // Step 6-14: for non-strict direct eval, var/function declarations must not
         // conflict with existing lexical bindings in any outer scope.
         if (!strict && callingEnv is not null)
@@ -5786,14 +5801,43 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     // in InstantiateVarDeclarations per step 8).
                     if (env is FunctionEnvironmentRecord)
                     {
-                        if (callingFunction is not null)
+                        foreach (var name in varNames)
                         {
-                            foreach (var name in varNames)
+                            if (declEnv.HasBinding(name))
                             {
-                                if (callingFunction.ParameterNames.Contains(name, StringComparer.Ordinal) &&
+                                bool isParameter = callingFunction is not null &&
+                                    callingFunction.ParameterNames.Contains(name, StringComparer.Ordinal);
+                                if (!isParameter)
+                                {
+                                    // ECMA-262 19.2.1.3 step 8.c.iii: the existing
+                                    // binding is NOT from a FormalParameter.
+                                    // Check whether the calling function explicitly
+                                    // declares this name — a function declaration,
+                                    // var, let, or const in the body all block an
+                                    // eval-introduced var of the same name.
+                                    // We consult the calling function's own
+                                    // declaration lists rather than the env record's
+                                    // deletability flag because the implicit
+                                    // `arguments` object (non-deletable) may already
+                                    // occupy the slot before the body-level
+                                    // declaration is instantiated.
+                                    bool isExplicitBinding = callingFunction is not null &&
+                                        (callingFunction.VarDeclarationNames.Contains(name) ||
+                                         callingFunction.LexicalDeclarationNames.Contains(name) ||
+                                         callingFunction.ConstDeclarationNames.Contains(name));
+                                    if (isExplicitBinding)
+                                    {
+                                        throw new JsThrownException(CreateSyntaxError(
+                                            $"Cannot declare var binding '{name}' — a binding with that name already exists."));
+                                    }
+                                }
+                                else if (callingFunction is not null &&
                                     callingFunction.PrologueEndIp > 0 &&
                                     _activeFrames.Count > 0)
                                 {
+                                    // Step 8.c.iv + 8.e: parameter binding conflict
+                                    // — only illegal when eval is in the parameter
+                                    // scope (before prologue ends).
                                     var callingFrame = _activeFrames.Peek();
                                     if (callingFrame.InstructionPointer <= callingFunction.PrologueEndIp)
                                     {
