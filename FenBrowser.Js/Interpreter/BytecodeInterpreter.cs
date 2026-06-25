@@ -13612,18 +13612,21 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     private bool SetPropertyValue(ObjectHandle ownerHandle, JsObject obj, string key, JsValue value, JsValue receiver)
     {
         // Proxy objects delegate to their [[Set]] internal method which handles
-        // traps and revoked-check (ECMA-262 10.5.9).
+        // traps and revoked-check (ECMA-262 10.5.9). Route through ProxySet so
+        // the receiver is preserved and no-trap fallback forwards to target.[[Set]].
         if (obj is ProxyObject proxySet)
-            return proxySet.SetProperty(key, value);
+            return ProxySet(proxySet, receiver, key, value);
 
         // ECMA-262 10.4.5.5 Integer-Indexed Exotic Object [[Set]]: canonical integer
         // indices route through IntegerIndexedElementSet rather than the ordinary
-        // property path. This is needed for Reflect.set / Proxy set-trap fallthrough
-        // (the bytecode SetProperty opcode already handles TypedArrays before calling
-        // SetPropertyValue, so the duplicate check below is minimal).
+        // property path. This is needed for Reflect.set / Proxy set-trap fallthrough.
+        // Normalize the value through ToBigInt/ToNumber first so SetElement sees the
+        // correctly-typed primitive (avoids BigInt TypedArrays silently accepting
+        // Number values through the wrong conversion path).
         if (obj is TypedArrayObject ta && TypedArrayObject.IsCanonicalNumericIndex(key, out var taIdx))
         {
-            ta.SetElement(taIdx, value);
+            var coerced = NormalizeTypedArrayElementValue(ta.ElementType, value);
+            ta.SetElement(taIdx, coerced);
             return true;
         }
 
