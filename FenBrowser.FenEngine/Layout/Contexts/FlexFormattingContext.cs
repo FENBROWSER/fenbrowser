@@ -132,6 +132,38 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 isRow
                     ? (style?.Width.HasValue == true || style?.WidthPercent.HasValue == true || !string.IsNullOrEmpty(style?.WidthExpression))
                     : (style?.Height.HasValue == true || style?.HeightPercent.HasValue == true || !string.IsNullOrEmpty(style?.HeightExpression));
+            
+            if (!hasExplicitMain)
+            {
+                // Apply min-width / min-height if present in Map for auto sizing
+                if (style?.Map != null)
+                {
+                    string minKey = isRow ? "min-width" : "min-height";
+                    if (style.Map.TryGetValue(minKey, out var rawMin) && !string.IsNullOrWhiteSpace(rawMin))
+                    {
+                        var raw = rawMin.Trim();
+                        float parentSize = isRow ? state.ViewportWidth : state.ViewportHeight;
+                        
+                        if (raw.EndsWith("%", StringComparison.Ordinal) && float.TryParse(raw.TrimEnd('%'), NumberStyles.Float, CultureInfo.InvariantCulture, out var pct))
+                        {
+                            containerMainSize = Math.Max(containerMainSize, (pct / 100f) * parentSize);
+                        }
+                        else if (raw.EndsWith("px", StringComparison.OrdinalIgnoreCase) && float.TryParse(raw.Substring(0, raw.Length - 2), NumberStyles.Float, CultureInfo.InvariantCulture, out var px))
+                        {
+                            containerMainSize = Math.Max(containerMainSize, px);
+                        }
+                        else if (raw.EndsWith("vh", StringComparison.OrdinalIgnoreCase) && float.TryParse(raw.Substring(0, raw.Length - 2), NumberStyles.Float, CultureInfo.InvariantCulture, out var vh))
+                        {
+                            containerMainSize = Math.Max(containerMainSize, (vh / 100f) * state.ViewportHeight);
+                        }
+                        else if (raw.EndsWith("vw", StringComparison.OrdinalIgnoreCase) && float.TryParse(raw.Substring(0, raw.Length - 2), NumberStyles.Float, CultureInfo.InvariantCulture, out var vw))
+                        {
+                            containerMainSize = Math.Max(containerMainSize, (vw / 100f) * state.ViewportWidth);
+                        }
+                    }
+                }
+            }
+
             if (isRow && !hasExplicitMain && state.ViewportWidth > 0)
             {
                 containerMainSize = Math.Min(containerMainSize, state.ViewportWidth);
@@ -348,7 +380,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             if (shrinkToContentMainAxis)
             {
-                if (containerMainSize <= 0 || float.IsNaN(containerMainSize) || float.IsInfinity(containerMainSize))
+                if (containerMainSize <= 0 || float.IsNaN(containerMainSize) || float.IsInfinity(containerMainSize) || (!hasExplicitMain && containerMainSize < totalMainSize))
                 {
                     containerMainSize = totalMainSize;
                 }
@@ -582,7 +614,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
                 }
             }
-             
+
+            // Clamp flex items to their min/max constraints on the main axis.
+            // Per CSS Flexbox §9.8, min/max constraints are applied AFTER flex-grow/shrink
+            // but BEFORE final placement. This prevents items from overflowing or collapsing
+            // beyond their specified constraints.
+            ClampFlexItemMainSizes(items, isRow, containerMainSize, state);
+
             // 6. Placement (Main Axis - Justify Content) with wrap/wrap-reverse
             // Reuse gap values computed before flex calculations
             float gap = gapForFlex;
@@ -592,7 +630,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // If shrink-to-content and no definite main size, use measured total main size
             if (shrinkToContentMainAxis)
             {
-                if (containerMainSize <= 0 || float.IsNaN(containerMainSize) || float.IsInfinity(containerMainSize))
+                if (containerMainSize <= 0 || float.IsNaN(containerMainSize) || float.IsInfinity(containerMainSize) || (!hasExplicitMain && containerMainSize < totalMainSize))
                 {
                     containerMainSize = totalMainSize;
                     if (isRow)
@@ -1296,6 +1334,20 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         if (float.TryParse(raw.Substring(0, raw.Length - 2), NumberStyles.Float, CultureInfo.InvariantCulture, out var px))
                         {
                             minH = px;
+                        }
+                    }
+                    else if (raw.EndsWith("vh", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (float.TryParse(raw.Substring(0, raw.Length - 2), NumberStyles.Float, CultureInfo.InvariantCulture, out var vh))
+                        {
+                            minH = (vh / 100f) * state.ViewportHeight;
+                        }
+                    }
+                    else if (raw.EndsWith("vw", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (float.TryParse(raw.Substring(0, raw.Length - 2), NumberStyles.Float, CultureInfo.InvariantCulture, out var vw))
+                        {
+                            minH = (vw / 100f) * state.ViewportWidth;
                         }
                     }
                     else
@@ -2258,6 +2310,97 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             var parts = flex.Trim().Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
             if (parts.Length < 2) return false;
             return double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out flexShrink);
+        }
+
+        /// <summary>
+        /// Clamp each flex item's main-axis size to its min/max constraints.
+        /// Per CSS Flexbox §9.8, min/max are applied AFTER flex-grow/shrink
+        /// but BEFORE final placement.
+        /// </summary>
+        private static void ClampFlexItemMainSizes(List<LayoutBox> items, bool isRow,
+            float containerMainSize, LayoutState state)
+        {
+            for (int i = 0; i < items.Count; i++)
+            {
+                var item = items[i];
+                var style = item.ComputedStyle;
+                if (style == null) continue;
+
+                float currentMainSize = isRow
+                    ? item.Geometry.ContentBox.Width
+                    : item.Geometry.ContentBox.Height;
+                if (currentMainSize <= 0f) continue;
+
+                // Resolve min constraint for main axis
+                float minMain = 0f;
+                if (isRow)
+                {
+                    if (style.MinWidth.HasValue)
+                        minMain = (float)style.MinWidth.Value;
+                    else if (style.MinWidthPercent.HasValue == true && containerMainSize > 0)
+                        minMain = (float)(style.MinWidthPercent.Value / 100.0 * containerMainSize);
+                }
+                else
+                {
+                    if (style.MinHeight.HasValue)
+                        minMain = (float)style.MinHeight.Value;
+                    else if (style.MinHeightPercent.HasValue == true && containerMainSize > 0)
+                        minMain = (float)(style.MinHeightPercent.Value / 100.0 * containerMainSize);
+                }
+
+                // Resolve max constraint for main axis
+                float maxMain = float.PositiveInfinity;
+                if (isRow)
+                {
+                    if (style.MaxWidth.HasValue)
+                        maxMain = (float)style.MaxWidth.Value;
+                    else if (style.MaxWidthPercent.HasValue == true && containerMainSize > 0)
+                        maxMain = (float)(style.MaxWidthPercent.Value / 100.0 * containerMainSize);
+                }
+                else
+                {
+                    if (style.MaxHeight.HasValue)
+                        maxMain = (float)style.MaxHeight.Value;
+                    else if (style.MaxHeightPercent.HasValue == true && containerMainSize > 0)
+                        maxMain = (float)(style.MaxHeightPercent.Value / 100.0 * containerMainSize);
+                }
+
+                // Clamp and re-layout if needed
+                float clampedSize = currentMainSize;
+                bool needsClamp = false;
+                if (currentMainSize < minMain && minMain > 0f)
+                {
+                    clampedSize = minMain;
+                    needsClamp = true;
+                }
+                if (currentMainSize > maxMain && float.IsFinite(maxMain))
+                {
+                    clampedSize = maxMain;
+                    needsClamp = true;
+                }
+
+                if (needsClamp)
+                {
+                    if (isRow)
+                    {
+                        LayoutBoxOps.ComputeBoxModelFromContent(item, clampedSize, item.Geometry.ContentBox.Height);
+                        var reState = state.Clone();
+                        reState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, item.Geometry.ContentBox.Height);
+                        reState.ContainingBlockWidth = clampedSize;
+                        reState.ContainingBlockHeight = item.Geometry.ContentBox.Height;
+                        LayoutWithForcedWidth(item, reState, clampedSize);
+                    }
+                    else
+                    {
+                        LayoutBoxOps.ComputeBoxModelFromContent(item, item.Geometry.ContentBox.Width, clampedSize);
+                        var reState = state.Clone();
+                        reState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, clampedSize);
+                        reState.ContainingBlockWidth = item.Geometry.ContentBox.Width;
+                        reState.ContainingBlockHeight = clampedSize;
+                        LayoutWithForcedHeight(item, reState, clampedSize);
+                    }
+                }
+            }
         }
     }
     
