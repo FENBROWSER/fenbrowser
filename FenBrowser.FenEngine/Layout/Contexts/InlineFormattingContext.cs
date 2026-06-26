@@ -129,6 +129,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             var currentLine = new LineBox();
             lines.Add(currentLine);
 
+            // Collect out-of-flow children before flattening — they must be
+            // laid out separately (same pattern as BlockFormattingContext).
+            var outOfFlow = new List<LayoutBox>();
+            foreach (var child in box.Children)
+            {
+                if (child.IsOutOfFlow)
+                {
+                    outOfFlow.Add(child);
+                }
+            }
+
             // Flatten inline tree to get all text and atomic inlines
             var flattenedChildren = new List<LayoutBox>();
             FlattenInlineChildren(box, flattenedChildren);
@@ -332,6 +343,20 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     {
                         ResetTextBoxGeometry(textBox);
                     }
+                }
+                else if (child.SourceNode is Element brEl &&
+                         string.Equals(brEl.TagName, "BR", StringComparison.OrdinalIgnoreCase))
+                {
+                    // ECMA/HTML: <br> always forces a line break regardless of
+                    // white-space mode. Use the inherited font metrics so
+                    // consecutive <br><br> produces a visible blank line.
+                    var brInfo = GetStyleFontInfo(child.ComputedStyle ?? box.ComputedStyle);
+                    currentLine.Height = Math.Max(currentLine.Height, brInfo.LineHeight);
+                    currentLine.IncludeMetrics(brInfo.Baseline, brInfo.Descent);
+                    currentLine = new LineBox();
+                    lines.Add(currentLine);
+                    curX = 0;
+                    previousEndedWithSpace = true;
                 }
                 else
                 {
@@ -723,6 +748,49 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
             
             LayoutBoxOps.SyncBoxes(box.Geometry);
+
+            // Layout out-of-flow children (absolute / fixed).
+            // Same three-pass pattern as BlockFormattingContext §OOF:
+            //   Pass 1 – intrinsic measurement (infinite available size)
+            //   Solve   – ResolvePositionedBox computes abs geometry from insets + intrinsic
+            //   Pass 2 – re-layout with resolved box size
+            //   Solve   – re-apply position (child layout may have clobbered geometry)
+            foreach (var oof in outOfFlow)
+            {
+                var oofContext = FormattingContext.Resolve(oof);
+
+                // Pass 1: intrinsic measurement (auto-size shrink-to-fit signal).
+                var intrinsicState = state.Clone();
+                intrinsicState.AvailableSize = new SKSize(float.PositiveInfinity, float.PositiveInfinity);
+                intrinsicState.ContainingBlockWidth = box.Geometry.ContentBox.Width;
+                intrinsicState.ContainingBlockHeight = box.Geometry.ContentBox.Height;
+                oofContext.Layout(oof, intrinsicState);
+
+                // Solve abs/fixed geometry from intrinsic size and insets.
+                LayoutPositioningLogic.ResolvePositionedBox(oof, box, box.Geometry, state);
+
+                // Pass 2: layout contents using resolved box size.
+                var resolvedWidth = Math.Max(0f, oof.Geometry.ContentBox.Width);
+                var resolvedHeight = Math.Max(0f, oof.Geometry.ContentBox.Height);
+                var resolvedOuterWidth = Math.Max(resolvedWidth, oof.Geometry.MarginBox.Width);
+                var resolvedOuterHeight = Math.Max(resolvedHeight, oof.Geometry.MarginBox.Height);
+                var resolvedState = new LayoutState(
+                    new SKSize(resolvedOuterWidth, resolvedOuterHeight),
+                    resolvedOuterWidth,
+                    resolvedOuterHeight,
+                    state.ViewportWidth,
+                    state.ViewportHeight,
+                    state.Deadline);
+                oofContext.Layout(oof, resolvedState);
+
+                // Re-apply final absolute position after child layout potentially touched geometry.
+                LayoutPositioningLogic.ResolvePositionedBox(
+                    oof,
+                    box,
+                    box.Geometry,
+                    state,
+                    collapsePositioningMarginsInFinalGeometry: true);
+            }
         }
 
         private bool TryLayoutReplacedInlineBox(LayoutBox box, LayoutState state)
