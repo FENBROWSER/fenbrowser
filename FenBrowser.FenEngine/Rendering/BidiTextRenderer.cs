@@ -434,14 +434,34 @@ namespace FenBrowser.FenEngine.Rendering
         {
             var dir = new CssTextDirection();
 
-            if (style?.Map != null)
+            // Prefer strongly-typed CssComputed properties (populated by CssLoader);
+            // fall back to the raw style.Map for properties that haven't been
+            // lifted to strongly-typed fields yet.
+            if (style != null)
             {
-                if (style.Map.TryGetValue("direction", out var direction))
+                // direction
+                if (!string.IsNullOrWhiteSpace(style.Direction))
+                {
+                    dir.IsRtl = style.Direction == "rtl";
+                }
+                else if (style.Map != null && style.Map.TryGetValue("direction", out var direction))
                 {
                     dir.IsRtl = direction?.ToLowerInvariant() == "rtl";
                 }
 
-                if (style.Map.TryGetValue("writing-mode", out var writingMode))
+                // writing-mode
+                if (!string.IsNullOrWhiteSpace(style.WritingMode))
+                {
+                    dir.Mode = style.WritingMode.ToLowerInvariant() switch
+                    {
+                        "vertical-rl" => WritingMode.VerticalRl,
+                        "vertical-lr" => WritingMode.VerticalLr,
+                        "sideways-rl" => WritingMode.SidewaysRl,
+                        "sideways-lr" => WritingMode.SidewaysLr,
+                        _ => WritingMode.HorizontalTb
+                    };
+                }
+                else if (style.Map != null && style.Map.TryGetValue("writing-mode", out var writingMode))
                 {
                     dir.Mode = writingMode?.ToLowerInvariant() switch
                     {
@@ -453,7 +473,12 @@ namespace FenBrowser.FenEngine.Rendering
                     };
                 }
 
-                if (style.Map.TryGetValue("unicode-bidi", out var bidi))
+                // unicode-bidi
+                if (!string.IsNullOrWhiteSpace(style.UnicodeBidi))
+                {
+                    dir.UnicodeBidi = style.UnicodeBidi;
+                }
+                else if (style.Map != null && style.Map.TryGetValue("unicode-bidi", out var bidi))
                 {
                     dir.UnicodeBidi = bidi?.ToLowerInvariant() ?? "normal";
                 }

@@ -9,7 +9,7 @@ frame, frameset,
 h1, h2, h3, h4,
 h5, h6, noframes,
 ol, p, ul, center,
-dir, hr, menu, pre { display: block; unicode-bidi: embed }
+dir, hr, menu, pre { display: block; unicode-bidi: isolate }
 
 li              { display: list-item }
 head            { display: none }
@@ -26,16 +26,19 @@ caption         { display: table-caption }
 th              { font-weight: bolder; text-align: center }
 caption         { text-align: center }
 body            { margin: 8px; }
-h1              { font-size: 2em; margin: 1.34em 0; font-weight: bold; }
-h2              { font-size: 1.5em; margin: 1.66em 0; font-weight: bold; }
-h3              { font-size: 1.17em; margin: 1em 0; font-weight: bold; }
-h4, p,
+/* Heading margins per HTML Standard §15.3.1 — logical longhands so margins
+   adapt to writing-mode; em values are relative to each heading's font-size */
+h1              { font-size: 2em; margin-block-start: 0.67em; margin-block-end: 0.67em; font-weight: bold; }
+h2              { font-size: 1.5em; margin-block-start: 0.83em; margin-block-end: 0.83em; font-weight: bold; }
+h3              { font-size: 1.17em; margin-block-start: 1em; margin-block-end: 1em; font-weight: bold; }
+h4              { margin-block-start: 1.33em; margin-block-end: 1.33em; font-weight: bold; }
+h5              { font-size: 0.83em; margin-block-start: 1.67em; margin-block-end: 1.67em; font-weight: bold; }
+h6              { font-size: 0.67em; margin-block-start: 2.33em; margin-block-end: 2.33em; font-weight: bold; }
+p,
 blockquote, ul,
 fieldset, form,
 ol, dl, dir,
-menu            { margin: 1.0em 0 }
-h5              { font-size: 0.83em; margin: 1.67em 0; font-weight: bold; }
-h6              { font-size: 0.67em; margin: 2.33em 0; font-weight: bold; }
+menu            { margin-block-start: 1em; margin-block-end: 1em; }
 h1, h2, h3, h4,
 h5, h6, b,
 strong          { font-weight: bolder }

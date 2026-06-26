@@ -3477,6 +3477,11 @@ private static double? ExtractPx(string text, string prop)
                 {
                     css.Direction = parentCss.Direction;
                 }
+                css.UnicodeBidi = Safe(DictGet(css.Map, "unicode-bidi"))?.ToLowerInvariant();
+                if (string.IsNullOrWhiteSpace(css.UnicodeBidi) && parentCss != null)
+                {
+                    css.UnicodeBidi = parentCss.UnicodeBidi;
+                }
                 css.Visibility = Safe(DictGet(css.Map, "visibility"))?.ToLowerInvariant(); // Add Visibility
                 css.FlexDirection = Safe(DictGet(css.Map, "flex-direction"))?.ToLowerInvariant();
                 css.FlexWrap = Safe(DictGet(css.Map, "flex-wrap"))?.ToLowerInvariant();

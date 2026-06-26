@@ -19,6 +19,10 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             if (string.IsNullOrEmpty(text)) return;
             text = ApplyTextTransform(text, style);
 
+            // Apply bidi reordering per CSS direction + unicode-bidi
+            var bidiInfo = ResolveBidi(text, style);
+            text = bidiInfo.Text;
+
             using var paint = CreateTextPaint(style);
 
             // Get text metrics
@@ -33,17 +37,19 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             float y = box.Top + baseline;
 
             var textAlign = style?.TextAlign;
-            if (textAlign.HasValue)
+            // When direction is RTL and text-align is not explicitly set, default to right-alignment
+            // (CSS 2.1 §9.10: the start edge is the right edge for RTL blocks)
+            bool defaultRtlAlign = bidiInfo.IsRtl && !textAlign.HasValue;
+            if (textAlign.HasValue || defaultRtlAlign)
             {
                 float textWidth = MeasureTextWithSpacing(text, paint, letterSpacing, wordSpacing);
-                switch (textAlign.Value)
+                if (defaultRtlAlign || textAlign == SKTextAlign.Right)
                 {
-                    case SKTextAlign.Center:
-                        x = box.Left + (box.Width - textWidth) / 2;
-                        break;
-                    case SKTextAlign.Right:
-                        x = box.Right - textWidth;
-                        break;
+                    x = box.Right - textWidth;
+                }
+                else if (textAlign == SKTextAlign.Center)
+                {
+                    x = box.Left + (box.Width - textWidth) / 2;
                 }
             }
 
@@ -75,6 +81,12 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             if (string.IsNullOrEmpty(text)) return;
             text = ApplyTextTransform(text, style);
 
+            // Resolve bidi direction but do NOT reorder before word-wrapping —
+            // line-breaking must operate on logical-order text. Each line is
+            // individually reordered right before drawing.
+            var bidiDir = CssTextDirection.Parse(style);
+            bool isRtl = ResolveParagraphRtl(text, bidiDir);
+
             using var paint = CreateTextPaint(style);
 
             var metrics = paint.FontMetrics;
@@ -105,14 +117,17 @@ namespace FenBrowser.FenEngine.Rendering.Painting
 
                 if (testWidth > currentAvailableWidth && !string.IsNullOrEmpty(line))
                 {
-                    // Draw current line
+                    // Apply bidi reordering to this line before drawing
+                    string displayLine = isRtl ? BidiAlgorithm.ReorderForDisplay(line, isRtl) : line;
                     float drawX = x + (isFirstLine ? indentOffset : 0);
-                    
+                    if (isRtl)
+                        drawX = box.Right - MeasureTextWithSpacing(displayLine, paint, letterSpacing, wordSpacing) - (isFirstLine ? indentOffset : 0);
+
                     if (letterSpacing != 0 || wordSpacing != 0)
-                        DrawTextWithSpacing(canvas, line, drawX, y, paint, letterSpacing, wordSpacing);
+                        DrawTextWithSpacing(canvas, displayLine, drawX, y, paint, letterSpacing, wordSpacing);
                     else
-                        canvas.DrawText(line, drawX, y, paint);
-                        
+                        canvas.DrawText(displayLine, drawX, y, paint);
+
                     y += lineHeight;
                     line = word;
                     isFirstLine = false;
@@ -128,12 +143,15 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             // Draw remaining
             if (!string.IsNullOrEmpty(line) && y <= box.Bottom)
             {
+                string displayLine = isRtl ? BidiAlgorithm.ReorderForDisplay(line, isRtl) : line;
                 float drawX = x + (isFirstLine ? indentOffset : 0);
-                
+                if (isRtl)
+                    drawX = box.Right - MeasureTextWithSpacing(displayLine, paint, letterSpacing, wordSpacing) - (isFirstLine ? indentOffset : 0);
+
                 if (letterSpacing != 0 || wordSpacing != 0)
-                    DrawTextWithSpacing(canvas, line, drawX, y, paint, letterSpacing, wordSpacing);
+                    DrawTextWithSpacing(canvas, displayLine, drawX, y, paint, letterSpacing, wordSpacing);
                 else
-                    canvas.DrawText(line, drawX, y, paint);
+                    canvas.DrawText(displayLine, drawX, y, paint);
             }
         }
 
@@ -438,6 +456,56 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 return info;
             }
             catch { return null; }
+        }
+
+        /// <summary>
+        /// Determine the resolved paragraph-level RTL direction from the CSS
+        /// <c>direction</c> and <c>unicode-bidi</c> properties (UAX#9 / CSS Writing Modes §2).
+        /// </summary>
+        private static bool ResolveParagraphRtl(string text, CssTextDirection dir)
+        {
+            return dir.UnicodeBidi switch
+            {
+                "bidi-override" or "isolate-override" => dir.IsRtl,
+                "plaintext" => BidiAlgorithm.DetectBaseRtl(text),
+                _ => dir.IsRtl // normal, embed, isolate
+            };
+        }
+
+        /// <summary>
+        /// Resolved bidi information after applying CSS direction and unicode-bidi.
+        /// </summary>
+        private readonly struct BidiInfo
+        {
+            public readonly string Text;
+            public readonly bool IsRtl;
+
+            public BidiInfo(string text, bool isRtl)
+            {
+                Text = text;
+                IsRtl = isRtl;
+            }
+        }
+
+        /// <summary>
+        /// Apply bidi reordering to the full text string based on the element's
+        /// computed <c>direction</c> and <c>unicode-bidi</c> CSS properties.
+        /// Only safe for single-line text; use per-line reordering for wrapped text.
+        /// </summary>
+        private static BidiInfo ResolveBidi(string text, CssComputed style)
+        {
+            if (string.IsNullOrEmpty(text) || style == null)
+                return new BidiInfo(text, false);
+
+            var dir = CssTextDirection.Parse(style);
+            bool isRtl = ResolveParagraphRtl(text, dir);
+
+            if (isRtl)
+            {
+                text = BidiAlgorithm.ReorderForDisplay(text, isRtl);
+            }
+
+            return new BidiInfo(text, isRtl);
         }
     }
 }
