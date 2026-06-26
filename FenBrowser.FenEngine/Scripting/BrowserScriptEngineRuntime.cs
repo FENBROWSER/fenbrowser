@@ -3845,11 +3845,47 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 // cssText sentinel: replace the entire inline style.
                 if (prop == "__cssText__")
                 {
-                    element.SetAttribute("style", val);
+                    var existing = element.GetAttribute("style") ?? string.Empty;
+                    if (existing != val)
+                        element.SetAttribute("style", val);
                     return JsValue.Undefined;
                 }
-                var existing = element.GetAttribute("style") ?? string.Empty;
-                element.SetAttribute("style", existing + (existing.Length > 0 && !existing.EndsWith(";") ? ";" : "") + prop + ":" + val + ";");
+                // Replace or append the property in the existing style string.
+                // Never append duplicate declarations — deduplicate by property name.
+                var styleAttr = element.GetAttribute("style") ?? string.Empty;
+                bool replaced = false;
+                bool changed = false;
+                var sb = new System.Text.StringBuilder();
+                foreach (var decl in styleAttr.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var trimmed = decl.Trim();
+                    if (trimmed.Length == 0) continue;
+                    var colonIdx = trimmed.IndexOf(':');
+                    if (colonIdx < 0) continue;
+                    var name = trimmed.Substring(0, colonIdx).Trim();
+                    if (string.Equals(name, prop, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Replace the existing declaration with the new value.
+                        var oldVal = trimmed.Substring(colonIdx + 1).Trim();
+                        if (!string.Equals(oldVal, val, StringComparison.OrdinalIgnoreCase))
+                            changed = true;
+                        sb.Append(prop).Append(':').Append(val).Append(';');
+                        replaced = true;
+                    }
+                    else
+                    {
+                        sb.Append(trimmed).Append(';');
+                    }
+                }
+                if (!replaced)
+                {
+                    // New property — always a change.
+                    sb.Append(prop).Append(':').Append(val).Append(';');
+                    changed = true;
+                }
+                var newStyle = sb.ToString();
+                if (changed)
+                    element.SetAttribute("style", newStyle);
                 return JsValue.Undefined;
             },
             length: 2), enumerable: true);
