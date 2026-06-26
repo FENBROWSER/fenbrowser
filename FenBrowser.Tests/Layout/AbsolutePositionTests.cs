@@ -153,6 +153,70 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void Solver_RightSet_WidthSet_LeftAuto_ResolvesLeftFromRight()
+        {
+            // Exact scenario from test.html: .absolute-child { position:absolute; top:20px;
+            // right:20px; width:100px; height:50px } inside .relative-parent { width:300px }
+            var cb = new ContainingBlock { Width = 300, Height = 150 };
+
+            var style = new CssComputed();
+            style.Position = "absolute";
+            style.Top = 20.0;
+            style.Right = 20.0;
+            style.Width = 100.0;
+            style.Height = 50.0;
+            // left is auto (not set)
+
+            var result = AbsolutePositionSolver.Solve(style, cb);
+
+            // width must be honored exactly
+            Assert.Equal(100f, result.Width);
+            Assert.Equal(50f, result.Height);
+            // left = 300 - 0 - 0 - 100 - 0 - 20 = 180
+            Assert.Equal(180f, result.X);
+            Assert.Equal(20f, result.Y);
+        }
+
+        [Fact]
+        public void Solver_LeftSet_WidthSet_RightAuto_ResolvesWidthFromLeft()
+        {
+            // Mirror: left + width set, right auto → width honored, right solved
+            var cb = new ContainingBlock { Width = 300, Height = 150 };
+
+            var style = new CssComputed();
+            style.Position = "absolute";
+            style.Left = 20.0;
+            style.Width = 100.0;
+            style.Top = 20.0;
+            style.Height = 50.0;
+            // right is auto
+
+            var result = AbsolutePositionSolver.Solve(style, cb);
+
+            Assert.Equal(100f, result.Width);
+            Assert.Equal(20f, result.X);
+        }
+
+        [Fact]
+        public void Solver_RightAndWidthSet_ProducesFiniteNonNegativeX()
+        {
+            // Regression: ensure solver never produces NaN/negative X when right + width are set
+            var cb = new ContainingBlock { Width = 800, Height = 600 };
+            var style = new CssComputed
+            {
+                Position = "absolute",
+                Right = 20,
+                Width = 200,
+                Top = 0,
+                Height = 100
+            };
+            var result = AbsolutePositionSolver.Solve(style, cb);
+            Assert.True(float.IsFinite(result.X), "X must be finite");
+            Assert.True(result.X >= 0, $"X must be non-negative, got {result.X}");
+            Assert.Equal(200f, result.Width);
+        }
+
+        [Fact]
         public void ResolvePositionedBox_ShiftsInFlowDescendantsWithAbsoluteParent()
         {
             // Parent, child, and grandChild must share a LayoutBoxStore so that
