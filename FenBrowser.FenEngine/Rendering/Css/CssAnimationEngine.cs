@@ -1201,14 +1201,32 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 var f = ParseTransform(from);
                 var t = ParseTransform(to);
-                
-                double tx = f.Item1 + (t.Item1 - f.Item1) * progress;
-                double ty = f.Item2 + (t.Item2 - f.Item2) * progress;
-                double sx = f.Item3 + (t.Item3 - f.Item3) * progress;
-                double sy = f.Item4 + (t.Item4 - f.Item4) * progress;
-                double r = f.Item5 + (t.Item5 - f.Item5) * progress;
 
-                return $"translate({tx}px, {ty}px) scale({sx}, {sy}) rotate({r}deg)";
+                double tx = f.tx + (t.tx - f.tx) * progress;
+                double ty = f.ty + (t.ty - f.ty) * progress;
+                double sx = f.sx + (t.sx - f.sx) * progress;
+                double sy = f.sy + (t.sy - f.sy) * progress;
+                double r = f.r + (t.r - f.r) * progress;
+
+                // Preserve unit: if both sides use %, keep %; otherwise emit px.
+                // Mixed units (px ↔ %) cannot be meaningfully interpolated without
+                // element geometry — fall back to px with a warning.
+                string txUnit = "px";
+                string tyUnit = "px";
+                if (f.txPercent && t.txPercent)
+                    txUnit = "%";
+                else if (f.txPercent || t.txPercent)
+                    Console.Error.WriteLine($"[CssAnimation] transform translateX mixed units: '{from}' vs '{to}' — using px");
+
+                if (f.tyPercent && t.tyPercent)
+                    tyUnit = "%";
+                else if (f.tyPercent || t.tyPercent)
+                    Console.Error.WriteLine($"[CssAnimation] transform translateY mixed units: '{from}' vs '{to}' — using px");
+
+                string txStr = txUnit == "%" ? $"{tx}%" : $"{tx}px";
+                string tyStr = tyUnit == "%" ? $"{ty}%" : $"{ty}px";
+
+                return $"translate({txStr}, {tyStr}) scale({sx}, {sy}) rotate({r}deg)";
             }
 
             // Handle Numeric values (Opacity, etc)
@@ -1233,25 +1251,38 @@ namespace FenBrowser.FenEngine.Rendering
             return progress < 0.5 ? from : to;
         }
 
-        private (double, double, double, double, double) ParseTransform(string value)
+        private (double tx, double ty, double sx, double sy, double r, bool txPercent, bool tyPercent) ParseTransform(string value)
         {
             double tx = 0, ty = 0, sx = 1, sy = 1, r = 0;
-            if (string.IsNullOrEmpty(value) || value == "none") return (tx, ty, sx, sy, r);
+            bool txPercent = false, tyPercent = false;
+            if (string.IsNullOrEmpty(value) || value == "none") return (tx, ty, sx, sy, r, txPercent, tyPercent);
 
             // Parse translate
             var translateMatch = System.Text.RegularExpressions.Regex.Match(value, @"translate\s*\(\s*([-\d.]+)(px|%)?\s*,?\s*([-\d.]+)?(px|%)?\s*\)");
             if (translateMatch.Success)
             {
                 double.TryParse(translateMatch.Groups[1].Value, out tx);
+                txPercent = translateMatch.Groups[2].Value == "%";
                 if (!string.IsNullOrEmpty(translateMatch.Groups[3].Value))
+                {
                     double.TryParse(translateMatch.Groups[3].Value, out ty);
+                    tyPercent = translateMatch.Groups[4].Value == "%";
+                }
             }
-            
+
             var translateXMatch = System.Text.RegularExpressions.Regex.Match(value, @"translateX\s*\(\s*([-\d.]+)(px|%)?\s*\)");
-            if (translateXMatch.Success) double.TryParse(translateXMatch.Groups[1].Value, out tx);
-            
+            if (translateXMatch.Success)
+            {
+                double.TryParse(translateXMatch.Groups[1].Value, out tx);
+                txPercent = translateXMatch.Groups[2].Value == "%";
+            }
+
             var translateYMatch = System.Text.RegularExpressions.Regex.Match(value, @"translateY\s*\(\s*([-\d.]+)(px|%)?\s*\)");
-            if (translateYMatch.Success) double.TryParse(translateYMatch.Groups[1].Value, out ty);
+            if (translateYMatch.Success)
+            {
+                double.TryParse(translateYMatch.Groups[1].Value, out ty);
+                tyPercent = translateYMatch.Groups[2].Value == "%";
+            }
             
             // Parse scale
             var scaleMatch = System.Text.RegularExpressions.Regex.Match(value, @"scale\s*\(\s*([-\d.]+)\s*,?\s*([-\d.]+)?\s*\)");
@@ -1272,7 +1303,7 @@ namespace FenBrowser.FenEngine.Rendering
                 if (rotateMatch.Groups[2].Value == "rad") r = r * 180 / Math.PI;
             }
             
-            return (tx, ty, sx, sy, r);
+            return (tx, ty, sx, sy, r, txPercent, tyPercent);
         }
         
         #endregion
