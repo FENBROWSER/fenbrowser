@@ -70,6 +70,74 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void ResolveReplacedSize_MaxWidthZero_ClampsWidthAndRatioHeight()
+        {
+            var size = ReplacedElementSizing.ResolveReplacedSize(
+                "IMG",
+                new CssComputed { MaxWidth = 0 },
+                new SKSize(500, 400),
+                intrinsicWidth: 120f,
+                intrinsicHeight: 60f,
+                attributeWidth: 0f,
+                attributeHeight: 0f,
+                constrainAutoToAvailableWidth: false);
+
+            Assert.Equal(0f, size.Width);
+            Assert.Equal(0f, size.Height);
+        }
+
+        [Fact]
+        public void ResolveReplacedSize_MaxWidthPercent_ClampsToAvailableWidthAndPreservesRatio()
+        {
+            var size = ReplacedElementSizing.ResolveReplacedSize(
+                "IMG",
+                new CssComputed { MaxWidthPercent = 100 },
+                new SKSize(200, 400),
+                intrinsicWidth: 400f,
+                intrinsicHeight: 200f,
+                attributeWidth: 0f,
+                attributeHeight: 0f,
+                constrainAutoToAvailableWidth: false);
+
+            Assert.Equal(200f, size.Width);
+            Assert.Equal(100f, size.Height);
+        }
+
+        [Fact]
+        public void ResolveReplacedSize_MaxWidthExpression_ClampsToEvaluatedLengthAndPreservesRatio()
+        {
+            var size = ReplacedElementSizing.ResolveReplacedSize(
+                "IMG",
+                new CssComputed { MaxWidthExpression = "calc(100% - 20px)" },
+                new SKSize(200, 400),
+                intrinsicWidth: 400f,
+                intrinsicHeight: 200f,
+                attributeWidth: 0f,
+                attributeHeight: 0f,
+                constrainAutoToAvailableWidth: false);
+
+            Assert.Equal(180f, size.Width);
+            Assert.Equal(90f, size.Height);
+        }
+
+        [Fact]
+        public void ResolveReplacedSize_MaxHeightZero_ClampsHeightAndRatioWidth()
+        {
+            var size = ReplacedElementSizing.ResolveReplacedSize(
+                "IMG",
+                new CssComputed { MaxHeight = 0 },
+                new SKSize(500, 400),
+                intrinsicWidth: 120f,
+                intrinsicHeight: 60f,
+                attributeWidth: 0f,
+                attributeHeight: 0f,
+                constrainAutoToAvailableWidth: false);
+
+            Assert.Equal(0f, size.Width);
+            Assert.Equal(0f, size.Height);
+        }
+
+        [Fact]
         public void MinimalLayoutComputer_MeasureCanvasWithoutAttrs_UsesSpecDefault()
         {
             var canvas = new Element("CANVAS");

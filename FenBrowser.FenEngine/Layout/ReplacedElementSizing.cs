@@ -444,6 +444,33 @@ namespace FenBrowser.FenEngine.Layout
                 height = Math.Max(0f, height * scale);
             }
 
+            // Apply CSS max-width / max-height constraints. Many sites use
+            // max-width:100% on images to make them responsive; without this
+            // clamping images render at their intrinsic size regardless of
+            // container width.
+            if (style != null && width > 0f)
+            {
+                float? maxW = ResolveMaxDimension(style.MaxWidth, style.MaxWidthPercent,
+                    style.MaxWidthExpression, availableSize.Width);
+                if (maxW.HasValue && width > maxW.Value)
+                {
+                    float scale = maxW.Value / width;
+                    width = maxW.Value;
+                    height = Math.Max(0f, height * scale);
+                }
+            }
+            if (style != null && height > 0f)
+            {
+                float? maxH = ResolveMaxDimension(style.MaxHeight, style.MaxHeightPercent,
+                    style.MaxHeightExpression, availableSize.Height);
+                if (maxH.HasValue && height > maxH.Value)
+                {
+                    float scale = maxH.Value / height;
+                    height = maxH.Value;
+                    width = Math.Max(0f, width * scale);
+                }
+            }
+
             if (!float.IsFinite(width) || width < 0f) width = 0f;
             if (!float.IsFinite(height) || height < 0f) height = 0f;
 
@@ -492,6 +519,43 @@ namespace FenBrowser.FenEngine.Layout
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// Resolves a CSS max-width/max-height value to a concrete pixel value.
+        /// Returns null when no maximum is set.
+        /// </summary>
+        private static float? ResolveMaxDimension(
+            double? maxPx,
+            double? maxPercent,
+            string maxExpression,
+            float availableSize)
+        {
+            if (maxPx.HasValue && float.IsFinite((float)maxPx.Value) && maxPx.Value >= 0)
+            {
+                return (float)maxPx.Value;
+            }
+            if (maxPercent.HasValue && maxPercent.Value >= 0 && float.IsFinite(availableSize) && availableSize >= 0f)
+            {
+                return (float)(maxPercent.Value / 100.0 * availableSize);
+            }
+
+            if (!string.IsNullOrWhiteSpace(maxExpression) && float.IsFinite(availableSize) && availableSize >= 0f)
+            {
+                float viewportWidth = (float)(CssParser.MediaViewportWidth ?? availableSize);
+                float viewportHeight = (float)(CssParser.MediaViewportHeight ?? availableSize);
+                float resolved = LayoutHelper.EvaluateCssExpression(
+                    maxExpression,
+                    availableSize,
+                    viewportWidth,
+                    viewportHeight);
+                if (float.IsFinite(resolved) && resolved >= 0f)
+                {
+                    return resolved;
+                }
+            }
+
+            return null;
         }
 
         private static float ResolveAspectRatio(
