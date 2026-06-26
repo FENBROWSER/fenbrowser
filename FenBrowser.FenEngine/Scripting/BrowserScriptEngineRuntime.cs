@@ -9,10 +9,12 @@ using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Threading;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Logging;
 using FenBrowser.Core.Network.Handlers;
 using FenBrowser.Core.Parsing;
 using FenBrowser.Js.Builtins;
@@ -74,6 +76,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private readonly object _fenJsLock = new();
     private readonly ConcurrentDictionary<long, Timer> _fenJsTimers = new();
     private long _fenJsTimerIdCounter;
+    private long _diagnosticCookieCaptureCounter;
     private JsValue _fenJsGlobalThis = JsValue.Undefined;
     private readonly System.Diagnostics.Stopwatch _fenJsClock = System.Diagnostics.Stopwatch.StartNew();
     private readonly BrowserFenJsHostHooks _hostHooks = new();
@@ -152,8 +155,256 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     public void CaptureNavigationGlobals(Uri documentUri, long navigationId)
     {
-        // Navigation globals (window.location, history, etc.) are installed
-        // via InstallFenJsDomGlobals during BindFenJsDomContext.
+        if (!ShouldCaptureNavigationGlobals() || _interpreter == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var snapshot = new Dictionary<string, object>
+            {
+                ["globals"] = CaptureProbeGlobals(),
+                ["cookies"] = CaptureCookieNames(documentUri),
+            };
+            var envelope = new Dictionary<string, object>
+            {
+                ["schema"] = "fenbrowser.navigation-globals.v1",
+                ["capturedAtUtc"] = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture),
+                ["navigationId"] = navigationId,
+                ["documentUri"] = documentUri?.AbsoluteUri ?? string.Empty,
+                ["snapshot"] = snapshot,
+            };
+
+            var fileName = "nav_globals_" +
+                navigationId.ToString(CultureInfo.InvariantCulture) + "_" +
+                DateTimeOffset.UtcNow.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture) +
+                ".json";
+            var path = Path.Combine(DiagnosticPaths.GetLogsDirectory(), fileName);
+            var json = JsonSerializer.Serialize(envelope, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(path, json, new UTF8Encoding(false));
+        }
+        catch (Exception ex)
+        {
+            EngineLogCompat.Debug(
+                $"[NavigationGlobalsProbe] capture failed: {ex.GetType().Name}: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+    }
+
+    private static bool ShouldCaptureNavigationGlobals()
+    {
+        if (string.Equals(Environment.GetEnvironmentVariable("FEN_NAV_GLOBALS_SNAPSHOT"), "1", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        try
+        {
+            return BrowserSettings.Instance?.Logging?.LogNavigationGlobals == true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private Dictionary<string, object> CaptureProbeGlobals()
+    {
+        var globals = new Dictionary<string, object>(StringComparer.Ordinal);
+        foreach (var (alias, expression) in NavigationGlobalProbeNames)
+        {
+            globals[alias] = DescribeProbeValue(ReadProbeExpression(expression));
+        }
+
+        return globals;
+    }
+
+    private static readonly (string Alias, string Expression)[] NavigationGlobalProbeNames =
+    {
+        ("sgs", "globalThis.sgs"),
+        ("ussv", "globalThis.ussv"),
+        ("sp", "globalThis.sp"),
+        ("prs", "globalThis.prs"),
+        ("st", "globalThis.st"),
+        ("td", "globalThis.td"),
+        ("google", "globalThis.google"),
+        ("challenge_version", "globalThis.challenge_version"),
+        ("cbs", "globalThis.cbs"),
+        ("ce", "globalThis.ce"),
+        ("r", "globalThis.r"),
+        ("ss_cgi", "globalThis.ss_cgi"),
+        ("sclm", "globalThis.sclm"),
+        ("sctm", "globalThis.sctm"),
+        ("eid", "globalThis.eid"),
+        ("fetch", "globalThis.fetch"),
+        ("XMLHttpRequest", "globalThis.XMLHttpRequest"),
+        ("crypto", "globalThis.crypto"),
+        ("navigator", "globalThis.navigator"),
+        ("performance", "globalThis.performance"),
+        ("webdriver", "globalThis.navigator && globalThis.navigator.webdriver"),
+        ("chrome", "globalThis.chrome"),
+        ("React", "globalThis.React"),
+        ("jQuery", "globalThis.jQuery"),
+        ("$", "globalThis.$"),
+        ("reactDevtoolsHook_alias", "globalThis.__REACT_DEVTOOLS_GLOBAL_HOOK__"),
+        ("nextData_alias", "globalThis.__NEXT_DATA__"),
+    };
+
+    private JsValue ReadProbeExpression(string expression)
+    {
+        const string prefix = "globalThis.";
+        try
+        {
+            if (expression.StartsWith(prefix, StringComparison.Ordinal) &&
+                expression.IndexOfAny(new[] { '&', ' ', '(', ')' }) < 0)
+            {
+                var globalName = expression.Substring(prefix.Length);
+                return _interpreter.TryReadGlobalValue(globalName, out var globalValue)
+                    ? globalValue
+                    : JsValue.Undefined;
+            }
+
+            if (string.Equals(expression, "globalThis.navigator && globalThis.navigator.webdriver", StringComparison.Ordinal) &&
+                _interpreter.TryReadGlobalValue("navigator", out var navigator))
+            {
+                return ReadJsProperty(navigator, "webdriver");
+            }
+        }
+        catch
+        {
+        }
+
+        return JsValue.Undefined;
+    }
+
+    private Dictionary<string, object> DescribeProbeValue(JsValue value)
+    {
+        var description = new Dictionary<string, object>(StringComparer.Ordinal)
+        {
+            ["exists"] = value.Tag != JsValueTag.Undefined,
+            ["type"] = GetProbeType(value),
+        };
+
+        try
+        {
+            switch (value.Tag)
+            {
+                case JsValueTag.Boolean:
+                    description["value"] = value.AsBoolean();
+                    break;
+                case JsValueTag.Int32:
+                    description["value"] = value.AsInt32();
+                    break;
+                case JsValueTag.Number:
+                    description["value"] = value.AsNumber();
+                    break;
+                case JsValueTag.String:
+                    description["charCount"] = value.AsString().Length;
+                    break;
+                case JsValueTag.Object:
+                    if (_interpreter.CanCallValue(value))
+                    {
+                        var length = ReadJsProperty(value, "length");
+                        if (TryReadProbeNumber(length, out var arity))
+                        {
+                            description["arity"] = (int)Math.Max(0, arity);
+                        }
+                    }
+
+                    var obj = _interpreter.Heap.GetObject(value.AsObjectHandle());
+                    if (obj != null)
+                    {
+                        description["ownKeys"] = obj.EnumerateOwnProperties()
+                            .Select(p => p.Key)
+                            .Take(80)
+                            .ToArray();
+                    }
+                    break;
+            }
+        }
+        catch
+        {
+            description["probeError"] = true;
+        }
+
+        return description;
+    }
+
+    private string GetProbeType(JsValue value)
+    {
+        if (value.Tag == JsValueTag.Object && _interpreter != null && _interpreter.CanCallValue(value))
+        {
+            return "function";
+        }
+
+        return value.Tag switch
+        {
+            JsValueTag.Undefined => "undefined",
+            JsValueTag.Null => "null",
+            JsValueTag.Boolean => "boolean",
+            JsValueTag.Int32 => "number",
+            JsValueTag.Number => "number",
+            JsValueTag.String => "string",
+            JsValueTag.Symbol => "symbol",
+            JsValueTag.BigInt => "bigint",
+            JsValueTag.Object => "object",
+            JsValueTag.HostObject => "hostobject",
+            _ => "unknown",
+        };
+    }
+
+    private static bool TryReadProbeNumber(JsValue value, out double number)
+    {
+        switch (value.Tag)
+        {
+            case JsValueTag.Int32:
+                number = value.AsInt32();
+                return true;
+            case JsValueTag.Number:
+                number = value.AsNumber();
+                return true;
+            default:
+                number = 0;
+                return false;
+        }
+    }
+
+    private Dictionary<string, object> CaptureCookieNames(Uri documentUri)
+    {
+        var result = new Dictionary<string, object>(StringComparer.Ordinal)
+        {
+            ["names"] = Array.Empty<string>(),
+        };
+
+        if (documentUri == null || CookieReadBridge == null)
+        {
+            return result;
+        }
+
+        try
+        {
+            var cookie = CookieReadBridge(documentUri) ?? string.Empty;
+            var names = cookie.Split(';', StringSplitOptions.RemoveEmptyEntries)
+                .Select(part => part.Trim())
+                .Select(part =>
+                {
+                    var eq = part.IndexOf('=');
+                    return eq > 0 ? part.Substring(0, eq).Trim() : part;
+                })
+                .Where(name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToArray();
+            result["names"] = names;
+            result["count"] = names.Length;
+        }
+        catch
+        {
+            result["probeError"] = true;
+        }
+
+        return result;
     }
 
     public void NotifyPopState(object state)
@@ -222,6 +473,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         BindFenJsDomContext(domRoot, baseUri, documentReadyState: "loading");
         Console.Error.WriteLine($"[FenJsBridge] About to execute page scripts, domRoot tag={((domRoot as Element)?.TagName ?? "null")}, descendantCount={domRoot.Descendants().Count()}");
+        WireInlineEventHandlers(domRoot);
         await ExecutePageScriptsWithFenJsAsync(domRoot, baseUri).ConfigureAwait(false);
         ApplyScriptingEnabledSanitizer(domRoot);
         DispatchStartupLifecycleEvents();
@@ -234,7 +486,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private static long ResolveFenJsScriptTimeoutMs()
     {
-        const long defaultTimeoutMs = 30000;
+        const long defaultTimeoutMs = 300000;
         var raw = Environment.GetEnvironmentVariable("FEN_FENJS_SCRIPT_TIMEOUT_MS");
         if (!string.IsNullOrWhiteSpace(raw) &&
             long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) &&
@@ -452,6 +704,26 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 bool isModule = type == "module";
                 var src = scriptElement.GetAttribute("src");
 
+                // Determine async/defer per WHATWG HTML §4.12.1
+                // - async: execute as soon as available (external only per spec)
+                // - defer: execute after parsing, before DOMContentLoaded (external only per spec)
+                // - Module scripts are deferred by default; async on modules = execute ASAP
+                bool isAsync = false;
+                bool isDefer = false;
+                if (isModule)
+                {
+                    // Modules are deferred by default; async makes them execute ASAP
+                    isDefer = !scriptElement.HasAttribute("async");
+                    isAsync = scriptElement.HasAttribute("async");
+                }
+                else
+                {
+                    // Classic scripts: async/defer only apply to external scripts
+                    bool hasSrc = !string.IsNullOrEmpty(src);
+                    isAsync = scriptElement.HasAttribute("async") && hasSrc;
+                    isDefer = scriptElement.HasAttribute("defer") && hasSrc;
+                }
+
                 if (!string.IsNullOrEmpty(src))
                 {
                     // External script — validate, then kick off fetch concurrently
@@ -496,7 +768,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         fetchTasks[fetchKey] = fetchTask;
                     }
 
-                    items.Add(new ScriptExecutionItem(scriptElement, isModule, fetchKey, fetchTask, scriptUri));
+                    items.Add(new ScriptExecutionItem(scriptElement, isModule, isAsync, isDefer, fetchKey, fetchTask, scriptUri));
                 }
                 else
                 {
@@ -516,102 +788,55 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         continue;
                     }
 
-                    items.Add(new ScriptExecutionItem(scriptElement, isModule, null, null, null, code));
+                    // Inline scripts: async/defer have no effect per spec; treat as blocking
+                    // unless type="module" (modules are deferred by default)
+                    bool inlineIsAsync = isModule && scriptElement.HasAttribute("async");
+                    bool inlineIsDefer = isModule && !scriptElement.HasAttribute("async");
+                    items.Add(new ScriptExecutionItem(scriptElement, isModule, inlineIsAsync, inlineIsDefer, null, null, null, code));
                 }
             }
 
-            // Wait for all external fetches to complete before executing
-            if (fetchTasks.Count > 0)
-            {
-                Console.Error.WriteLine($"[FenJsBridge] Waiting for {fetchTasks.Count} external script fetches to complete...");
-                await Task.WhenAll(fetchTasks.Values).ConfigureAwait(false);
-                Console.Error.WriteLine($"[FenJsBridge] All {fetchTasks.Count} external fetches complete.");
-            }
-
-            // Phase 2: execute scripts in document order
-            Console.Error.WriteLine($"[FenJsBridge] Phase 2: executing {items.Count} scripts in document order");
-            var scriptCount = 0;
+            // Categorize scripts for phased execution per WHATWG HTML §4.12.1
+            var blockingItems = new List<ScriptExecutionItem>();
+            var deferItems = new List<ScriptExecutionItem>();
+            var asyncItems = new List<ScriptExecutionItem>();
             foreach (var item in items)
             {
-                scriptCount++;
-                string code;
-                Uri moduleUri = item.ModuleUri;
-                bool isModule = item.IsModule;
-
-                if (item.FetchKey != null)
-                {
-                    // Get the pre-fetched result
-                    var fetchTask = item.FetchTask;
-                    if (fetchTask.IsFaulted)
-                    {
-                        FenBrowser.Core.EngineLogCompat.Warn(
-                            $"[FenJsBridge] Fetch failed for '{item.FetchKey}': {fetchTask.Exception?.InnerException?.Message}",
-                            FenBrowser.Core.Logging.LogCategory.JavaScript);
-                        continue;
-                    }
-                    code = fetchTask.Result;
-                    if (string.IsNullOrWhiteSpace(code))
-                    {
-                        continue;
-                    }
-                }
+                if (item.IsAsync)
+                    asyncItems.Add(item);
+                else if (item.IsDefer)
+                    deferItems.Add(item);
                 else
-                {
-                    code = item.InlineCode;
-                }
-
-                try
-                {
-                    SetCurrentScriptElement(item.ScriptElement);
-                    if (isModule)
-                    {
-                        EvaluateModuleWithFenJs(code, moduleUri);
-                    }
-                    else
-                    {
-                        EvaluateWithFenJsRaw(code);
-                    }
-                }
-                catch (JsThrownException jte)
-                {
-                    // Per WHATWG HTML §8.1.3.2, a script error must NOT prevent
-                    // subsequent scripts from executing. Log the error and
-                    // surface it as a console message so developers can see it,
-                    // then continue to the next script.
-                    var desc = jte.Description;
-                    if (string.IsNullOrEmpty(desc))
-                    {
-                        try { desc = _interpreter.DescribeThrownValue(jte.Value); } catch { }
-                    }
-                    var srcAttr = item.ScriptElement?.GetAttribute("src");
-                    var origin = string.IsNullOrEmpty(srcAttr)
-                        ? $"inline script (first {Math.Min(code?.Length ?? 0, 120)} chars)"
-                        : srcAttr;
-                    Console.Error.WriteLine($"[FenJsBridge] Script error in {origin}: {desc ?? jte.Message}");
-                    // Continue to next script — do NOT re-throw.
-                }
-                catch (Exception ex)
-                {
-                    // Non-JS exceptions (e.g. session reset) are surfaced but
-                    // still must not kill the remaining page scripts.
-                    var srcAttr = item.ScriptElement?.GetAttribute("src");
-                    var origin = string.IsNullOrEmpty(srcAttr)
-                        ? $"inline script (first {Math.Min(code?.Length ?? 0, 120)} chars)"
-                        : srcAttr;
-                    Console.Error.WriteLine($"[FenJsBridge] Non-JS error in {origin}: {ex.Message}");
-                    // Continue to next script.
-                }
-                finally
-                {
-                    SetCurrentScriptElement(null);
-                }
+                    blockingItems.Add(item);
             }
-            Console.Error.WriteLine($"[FenJsBridge] ExecutePageScriptsWithFenJsAsync DONE, scripts processed={scriptCount}");
+            Console.Error.WriteLine($"[FenJsBridge] Categorized: blocking={blockingItems.Count}, defer={deferItems.Count}, async={asyncItems.Count}");
+
+            // Phase 2a: Execute blocking scripts in document order.
+            // Each blocking script must complete before the next one starts.
+            Console.Error.WriteLine($"[FenJsBridge] Phase 2a: executing {blockingItems.Count} blocking scripts");
+            await ExecuteScriptBatchAsync(blockingItems, baseUri, "blocking").ConfigureAwait(false);
+
+            // Phase 2b: Execute defer scripts in document order after all blocking
+            // scripts have completed. Deferred scripts execute before DOMContentLoaded.
+            Console.Error.WriteLine($"[FenJsBridge] Phase 2b: executing {deferItems.Count} defer scripts");
+            await ExecuteScriptBatchAsync(deferItems, baseUri, "defer").ConfigureAwait(false);
+
+            // Phase 2c: Fire-and-forget async scripts. Per WHATWG HTML §4.12.1,
+            // async scripts execute as soon as they are available and must NOT
+            // block DOMContentLoaded. We launch them as a background continuation
+            // so the caller can fire DOMContentLoaded immediately.
+            if (asyncItems.Count > 0)
+            {
+                Console.Error.WriteLine($"[FenJsBridge] Phase 2c: launching {asyncItems.Count} async scripts (fire-and-forget)");
+                _ = ExecuteScriptBatchAsync(asyncItems, baseUri, "async");
+            }
+
+            Console.Error.WriteLine($"[FenJsBridge] ExecutePageScriptsWithFenJsAsync DONE, scripts processed={blockingItems.Count + deferItems.Count} (+{asyncItems.Count} async pending)");
             // LogFenJsPageBootstrapState(); // DEBUG: disabled until NRE is fixed
         }
         catch (Exception ex)
         {
-            // Per-script errors are already caught inside the loop above.
+            // Per-script errors are already caught inside the execution loop.
             // This outer catch only handles infrastructure failures (e.g.
             // null _interpreter after a session reset). Log and surface but
             // do NOT re-throw — the page should render even if scripts fail.
@@ -681,19 +906,114 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
     }
 
+    /// <summary>
+    /// Execute a batch of scripts (blocking, defer, or async) in document order.
+    /// Each script's external fetch is awaited individually; execution errors are
+    /// logged but never re-thrown (per WHATWG HTML §8.1.3.2).
+    /// </summary>
+    private async Task ExecuteScriptBatchAsync(
+        List<ScriptExecutionItem> batch, Uri baseUri, string batchLabel)
+    {
+        if (batch.Count == 0) return;
+
+        for (int i = 0; i < batch.Count; i++)
+        {
+            var item = batch[i];
+            string code;
+            Uri moduleUri = item.ModuleUri;
+            bool isModule = item.IsModule;
+
+            if (item.FetchKey != null)
+            {
+                // Await this individual fetch — it may already be complete since
+                // all fetches were kicked off concurrently in Phase 1.
+                try
+                {
+                    code = await item.FetchTask.ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    FenBrowser.Core.EngineLogCompat.Warn(
+                        $"[FenJsBridge] Fetch failed for '{item.FetchKey}' ({batchLabel}): {ex.Message}",
+                        FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    continue;
+                }
+                if (string.IsNullOrWhiteSpace(code))
+                {
+                    continue;
+                }
+            }
+            else
+            {
+                code = item.InlineCode;
+            }
+
+            RunFenJsWithLargeStack<object>(() =>
+            {
+                try
+                {
+                    SetCurrentScriptElement(item.ScriptElement);
+                    if (isModule)
+                    {
+                        EvaluateModuleWithFenJs(code, moduleUri);
+                    }
+                    else
+                    {
+                        EvaluateWithFenJsRaw(code);
+                    }
+                }
+                catch (JsThrownException jte)
+                {
+                    var desc = jte.Description;
+                    if (string.IsNullOrEmpty(desc))
+                    {
+                        try { desc = _interpreter.DescribeThrownValue(jte.Value); } catch { }
+                    }
+                    var srcAttr = item.ScriptElement?.GetAttribute("src");
+                    var origin = string.IsNullOrEmpty(srcAttr)
+                        ? $"inline script (first {Math.Min(code?.Length ?? 0, 120)} chars)"
+                        : srcAttr;
+                    Console.Error.WriteLine($"[FenJsBridge] Script error in {origin} ({batchLabel}): {desc ?? jte.Message}");
+                }
+                catch (Exception ex)
+                {
+                    var srcAttr = item.ScriptElement?.GetAttribute("src");
+                    var origin = string.IsNullOrEmpty(srcAttr)
+                        ? $"inline script (first {Math.Min(code?.Length ?? 0, 120)} chars)"
+                        : srcAttr;
+                    Console.Error.WriteLine($"[FenJsBridge] Non-JS error in {origin} ({batchLabel}): {ex.Message}");
+                }
+                finally
+                {
+                    if (ShouldCaptureNavigationGlobals() && baseUri != null)
+                    {
+                        CaptureNavigationGlobals(baseUri, -2000 - i);
+                    }
+                    SetCurrentScriptElement(null);
+                }
+                return null;
+            });
+        }
+    }
+
     private sealed class ScriptExecutionItem
     {
         public readonly Element ScriptElement;
         public readonly bool IsModule;
+        public readonly bool IsAsync;           // async attribute (external scripts only per spec)
+        public readonly bool IsDefer;           // defer attribute (external scripts only per spec)
         public readonly string FetchKey;        // non-null for external scripts
         public readonly Task<string> FetchTask; // non-null for external scripts
         public readonly Uri ModuleUri;          // non-null for external scripts
         public readonly string InlineCode;      // non-null for inline scripts
 
-        public ScriptExecutionItem(Element scriptElement, bool isModule, string fetchKey, Task<string> fetchTask, Uri moduleUri, string inlineCode = null)
+        public ScriptExecutionItem(Element scriptElement, bool isModule, bool isAsync, bool isDefer,
+            string fetchKey, Task<string> fetchTask, Uri moduleUri, string inlineCode = null)
         {
             ScriptElement = scriptElement;
             IsModule = isModule;
+            IsAsync = isAsync;
+            IsDefer = isDefer;
             FetchKey = fetchKey;
             FetchTask = fetchTask;
             ModuleUri = moduleUri;
@@ -974,11 +1294,69 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         _interpreter.RegisterGlobalHostObject("document", RegisterHostObject(document, HostObjectKind.DomDocument));
         _interpreter.RegisterGlobalHostObject("navigator", RegisterHostObject(navigator, HostObjectKind.Other));
+        // Register a native logging hook that console.log/warn/error forward to.
+        // Uses FenLogger so output appears in engine logs and any attached debug console.
+        _interpreter.RegisterGlobalValue(
+            "__fenLog",
+            _interpreter.AllocateNativeFunction(
+                "__fenLog",
+                (_, args) =>
+                {
+                    var level = args.Count > 0 ? args[0].AsString() : "log";
+                    var msg = args.Count > 1 ? args[1].AsString() : "";
+                    FenLogger.Info($"[JS:{level}] {msg}", LogCategory.JavaScript);
+                    return JsValue.Undefined;
+                },
+                length: 2));
+
         // Stub navigator.sendBeacon so sites (Google, etc.) that call it
         // directly don't crash. Sites may also set it to their own function;
         // the TrySetHostProperty case for BrowserSurfaceProfile stores those.
         EvaluateWithFenJsRaw(
-            "navigator.sendBeacon = function(url, data) { return true; };");
+            // ── window.console ── Must come before alert/confirm/prompt stubs
+            // since those call console.log.  Forwards to native __fenLog.
+            "globalThis.console = {" +
+            "  log:   function() { __fenLog('log',   Array.prototype.slice.call(arguments).join(' ')); }," +
+            "  warn:  function() { __fenLog('warn',  Array.prototype.slice.call(arguments).join(' ')); }," +
+            "  error: function() { __fenLog('error', Array.prototype.slice.call(arguments).join(' ')); }," +
+            "  info:  function() { __fenLog('info',  Array.prototype.slice.call(arguments).join(' ')); }," +
+            "  debug: function() { __fenLog('debug', Array.prototype.slice.call(arguments).join(' ')); }," +
+            "  trace: function() { __fenLog('trace', Array.prototype.slice.call(arguments).join(' ')); }," +
+            "  clear: function() {}," +
+            "  dir:   function() { __fenLog('dir',   Array.prototype.slice.call(arguments).join(' ')); }" +
+            "};" +
+            // ── navigator.sendBeacon ──
+            "navigator.sendBeacon = function(url, data) { return true; };" +
+            // Stub navigator.plugins and navigator.mimeTypes — real browsers
+            // always have these (even if empty). Google's bot detection checks
+            // their presence and shape.
+            "navigator.plugins = { length: 0, item: function() { return null; }, namedItem: function() { return null; }, refresh: function() {} };" +
+            "navigator.mimeTypes = { length: 0, item: function() { return null; }, namedItem: function() { return null; } };" +
+            // Stub window.chrome — Chromium-based browsers always expose this.
+            // Google's JS challenge checks for window.chrome.loadTimes() and
+            // window.chrome.csi() as browser-authenticity signals.
+            "globalThis.chrome = {" +
+            "  runtime: { connect: function() {}, sendMessage: function() {}, onConnect: { addListener: function() {} }, onMessage: { addListener: function() {} } }," +
+            "  loadTimes: function() { return { requestTime: Date.now() / 1000, startLoadTime: Date.now() / 1000, commitLoadTime: Date.now() / 1000, finishDocumentLoadTime: Date.now() / 1000, finishLoadTime: Date.now() / 1000, firstPaintTime: Date.now() / 1000, firstPaintAfterLoadTime: Date.now() / 1000, navigationType: 'Other', wasFetchedViaSpdy: false, wasNpnNegotiated: false, npnNegotiatedProtocol: 'unknown', connectionInfo: 'http/1.1', wasAlternateProtocolAvailable: false }; }," +
+            "  csi: function() { return { startE: 0, onloadT: 0, pageT: 0, tran: 0 }; }," +
+            "  app: {}" +
+            "};" +
+            // Stub IAB consent/privacy framework APIs (CCPA, TCF).
+            // Sites expect these globals to exist and call them with commands
+            // like __uspapi('getUSPData', 1, callback). Without these stubs,
+            // code that accesses parent.__uspapiLocator or __tcfapiLocator
+            // on cross-origin frames throws TypeError → browser crash.
+            "globalThis.__uspapiLocator = function() {};" +
+            "globalThis.__uspapi = function(cmd, version, callback) { if (callback) callback({ uspString: '1---' }, true); };" +
+            "globalThis.__tcfapiLocator = function() {};" +
+            "globalThis.__tcfapi = function(cmd, version, callback) { if (callback) callback({ tcString: '', gdprApplies: false }, true); };" +
+            "globalThis.__gppLocator = function() {};" +
+            // Stub window.alert / confirm / prompt — fundamental browser APIs.
+            // alert() logs to console and is a no-op; confirm() returns true;
+            // prompt() returns the default value or null.
+            "globalThis.alert = function(msg) { console.log('[alert] ' + (msg || '')); };" +
+            "globalThis.confirm = function(msg) { console.log('[confirm] ' + (msg || '')); return true; };" +
+            "globalThis.prompt = function(msg, def) { console.log('[prompt] ' + (msg || '') + ' default=' + (def || '')); return def != null ? def : null; };");
         // Stub document.fonts (FontFaceSet API) so sites that use the CSS Font
         // Loading API (Google loads 'Google Sans' this way) don't crash.
         // .load() returns a Promise that resolves to an empty array; .ready is
@@ -1299,28 +1677,37 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     // a repaint so DOM mutations made by the callback become visible.
     private void InvokeFenJsCallbackSafely(JsValue callback, IReadOnlyList<JsValue> args, string origin)
     {
-        RunFenJsWithLargeStack<object>(() =>
+        try
         {
-            lock (_fenJsLock)
+            RunFenJsWithLargeStack<object>(() =>
             {
-                try
+                lock (_fenJsLock)
                 {
-                    if (_interpreter.CanCallValue(callback))
+                    try
                     {
-                        _interpreter.InvokeFunction(callback, args ?? Array.Empty<JsValue>(), _fenJsGlobalThis);
+                        if (_interpreter.CanCallValue(callback))
+                        {
+                            _interpreter.InvokeFunction(callback, args ?? Array.Empty<JsValue>(), _fenJsGlobalThis);
+                        }
+                        _interpreter.PumpMicrotasks();
                     }
-                    _interpreter.PumpMicrotasks();
+                    catch (Exception ex)
+                    {
+                        FenBrowser.Core.EngineLogCompat.Warn(
+                            $"[FenJsTimers] {origin} callback failed: {ex.Message}",
+                            FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    }
                 }
-                catch (Exception ex)
-                {
-                    FenBrowser.Core.EngineLogCompat.Warn(
-                        $"[FenJsTimers] {origin} callback failed: {ex.Message}",
-                        FenBrowser.Core.Logging.LogCategory.JavaScript);
-                }
-            }
 
             return null;
-        });
+            });
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsTimers] {origin} callback crashed: {ex.GetType().Name}: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
 
         try { RequestRender?.Invoke(); }
         catch { /* render request is best-effort */ }
@@ -3447,7 +3834,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         var styleObj = _interpreter.AllocateObject(new Dictionary<string, JsValue>
         {
-            ["cssText"] = JsValue.FromString(element.GetAttribute("style") ?? string.Empty),
+            // cssText getter/setter is wired via Object.defineProperty below.
         });
         _interpreter.SetObjectProperty(styleObj, "setProperty", GetOrCreateHostCallable(
             element, "style.setProperty",
@@ -3455,6 +3842,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             {
                 var prop = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
                 var val = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                // cssText sentinel: replace the entire inline style.
+                if (prop == "__cssText__")
+                {
+                    element.SetAttribute("style", val);
+                    return JsValue.Undefined;
+                }
                 var existing = element.GetAttribute("style") ?? string.Empty;
                 element.SetAttribute("style", existing + (existing.Length > 0 && !existing.EndsWith(";") ? ";" : "") + prop + ":" + val + ";");
                 return JsValue.Undefined;
@@ -3462,12 +3855,111 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             length: 2), enumerable: true);
         _interpreter.SetObjectProperty(styleObj, "getPropertyValue", GetOrCreateHostCallable(
             element, "style.getPropertyValue",
-            (_, _) => JsValue.FromString(string.Empty),
+            (_, args) =>
+            {
+                var prop = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                var styleAttr = element.GetAttribute("style") ?? string.Empty;
+                // cssText sentinel: return the full inline style string.
+                if (prop == "__cssText__")
+                    return JsValue.FromString(styleAttr);
+                if (string.IsNullOrEmpty(styleAttr) || string.IsNullOrEmpty(prop))
+                    return JsValue.FromString(string.Empty);
+                // Parse the inline style to find the requested property value.
+                foreach (var decl in styleAttr.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var colonIdx = decl.IndexOf(':');
+                    if (colonIdx < 0) continue;
+                    var name = decl.Substring(0, colonIdx).Trim();
+                    if (string.Equals(name, prop, StringComparison.OrdinalIgnoreCase))
+                        return JsValue.FromString(decl.Substring(colonIdx + 1).Trim());
+                }
+                return JsValue.FromString(string.Empty);
+            },
             length: 1), enumerable: true);
         _interpreter.SetObjectProperty(styleObj, "removeProperty", GetOrCreateHostCallable(
             element, "style.removeProperty",
-            (_, _) => JsValue.FromString(string.Empty),
+            (_, args) =>
+            {
+                var prop = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                var styleAttr = element.GetAttribute("style") ?? string.Empty;
+                if (string.IsNullOrEmpty(styleAttr) || string.IsNullOrEmpty(prop))
+                    return JsValue.FromString(string.Empty);
+                // Remove the property from the style string and return its old value.
+                string oldValue = string.Empty;
+                var remaining = new System.Text.StringBuilder();
+                foreach (var decl in styleAttr.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var colonIdx = decl.IndexOf(':');
+                    if (colonIdx < 0) { remaining.Append(decl).Append(';'); continue; }
+                    var name = decl.Substring(0, colonIdx).Trim();
+                    if (string.Equals(name, prop, StringComparison.OrdinalIgnoreCase))
+                    {
+                        oldValue = decl.Substring(colonIdx + 1).Trim();
+                    }
+                    else
+                    {
+                        remaining.Append(decl.Trim()).Append(';');
+                    }
+                }
+                element.SetAttribute("style", remaining.ToString());
+                return JsValue.FromString(oldValue);
+            },
             length: 1), enumerable: true);
+
+        // Register the raw style object under a temporary global so the JS
+        // snippet below can wrap it with property forwarding.
+        var tempStyleName = "__fenStyleTmp" + Interlocked.Increment(ref _temporaryFenJsGlobalCounter)
+            .ToString(CultureInfo.InvariantCulture);
+        _interpreter.RegisterGlobalValue(tempStyleName, styleObj);
+        try
+        {
+            // Define getter/setter forwarding for the most common CSS
+            // properties so that `el.style.display = "block"` and
+            // `el.style.opacity` work without going through setProperty().
+            var cssProps = new[]
+            {
+                "display", "opacity", "visibility", "width", "height",
+                "minWidth", "minHeight", "maxWidth", "maxHeight",
+                "color", "backgroundColor", "background", "backgroundImage",
+                "position", "top", "right", "bottom", "left",
+                "margin", "marginTop", "marginRight", "marginBottom", "marginLeft",
+                "padding", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+                "border", "borderTop", "borderRight", "borderBottom", "borderLeft",
+                "borderWidth", "borderColor", "borderRadius",
+                "fontSize", "fontFamily", "fontWeight", "fontStyle",
+                "lineHeight", "textAlign", "textDecoration", "textTransform",
+                "zIndex", "overflow", "overflowX", "overflowY",
+                "transform", "transition", "animation",
+                "cursor", "pointerEvents", "userSelect",
+                "boxShadow", "boxSizing",
+                "flex", "flexDirection", "flexWrap", "justifyContent", "alignItems", "alignContent",
+                "gridTemplateColumns", "gridTemplateRows", "gap", "rowGap", "columnGap",
+                "whiteSpace", "wordBreak", "wordWrap",
+                "verticalAlign", "objectFit", "objectPosition",
+                "outline", "outlineWidth", "outlineColor"
+            };
+            var setPropJs = string.Join("",
+                cssProps.Select(p =>
+                {
+                    var camel = CamelToCssProp(p);
+                    return "Object.defineProperty(globalThis." + tempStyleName + ",'" + p + "',{" +
+                           "get:function(){return this.getPropertyValue('" + camel + "');}," +
+                           "set:function(v){this.setProperty('" + camel + "',''+v);}," +
+                           "enumerable:true,configurable:true});";
+                }));
+            // cssText getter/setter: reading returns the full inline style string,
+            // writing replaces the entire inline style via setAttribute('style', v).
+            setPropJs += "Object.defineProperty(globalThis." + tempStyleName + ",'cssText',{" +
+                         "get:function(){return this.getPropertyValue('__cssText__');}," +
+                         "set:function(v){this.setProperty('__cssText__',''+v);}," +
+                         "enumerable:true,configurable:true});";
+            EvaluateWithFenJsRaw(setPropJs);
+        }
+        finally
+        {
+            _interpreter.RegisterGlobalValue(tempStyleName, JsValue.Undefined);
+        }
+
         store["__fenJsStyle"] = styleObj;
         return styleObj;
     }
@@ -3523,6 +4015,75 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         });
 
         InvokeFenJsInlineWithEvent(onload, eventValue);
+    }
+
+    /// <summary>
+    /// Scans all elements in the DOM for HTML inline event-handler attributes
+    /// (onclick, onchange, onsubmit, etc.) and compiles them into JS functions
+    /// stored in the host property store so DispatchEventForElement can invoke
+    /// them when the corresponding native event fires.
+    /// </summary>
+    private void WireInlineEventHandlers(Node domRoot)
+    {
+        if (domRoot == null)
+        {
+            return;
+        }
+
+        // Event handler attribute names that correspond to DOM events.
+        // Excludes onload (handled separately by InvokeBodyOnloadAttribute).
+        var eventNames = new[]
+        {
+            "click", "dblclick", "contextmenu",
+            "mousedown", "mouseup", "mouseover", "mouseout", "mousemove",
+            "keydown", "keyup", "keypress",
+            "submit", "reset", "change", "input",
+            "focus", "blur", "focusin", "focusout",
+            "scroll", "wheel",
+            "error", "abort",
+            "touchstart", "touchend", "touchmove", "touchcancel"
+        };
+
+        var elements = domRoot.Descendants().OfType<Element>();
+        foreach (var element in elements)
+        {
+            foreach (var eventName in eventNames)
+            {
+                var attrName = "on" + eventName;
+                var attrValue = element.GetAttribute(attrName);
+                if (string.IsNullOrWhiteSpace(attrValue))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    lock (_fenJsLock)
+                    {
+                        // Wrap the attribute value in a function that receives
+                        // `event` as its parameter — matches what real browsers
+                        // do for inline handlers.
+                        var source = new SourceText(
+                            "(function(event){" + attrValue + "\n})",
+                            "<fenbrowser-inline-handler:" + attrName + ">");
+                        var compiled = _compiler.CompileScript(source);
+                        new BytecodeVerifier().Verify(compiled);
+                        var handler = _interpreter.Execute(compiled);
+                        // handler is now a callable function; store it so that
+                        // DispatchEventForElement can find it via
+                        // GetStoredHostPropertyOrUndefined(element, "on" + type).
+                        SetStoredHostProperty(element, attrName, handler);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn(
+                        $"[FenJsBridge] Failed to wire inline {attrName} handler on " +
+                        $"<{element.LocalName}>: {ex.Message}",
+                        LogCategory.JavaScript);
+                }
+            }
+        }
     }
 
     private void DispatchBrowserEvent(List<BrowserEventListener> listeners, string type, JsValue currentTarget)
@@ -3601,6 +4162,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 var function = _compiler.CompileScript(new SourceText(script, "<fenbrowser-fenjs-inline-handler>"));
                 new BytecodeVerifier().Verify(function);
                 _ = _interpreter.Execute(function);
+            }
+            catch (Exception ex)
+            {
+                FenLogger.Warn(
+                    $"[FenJsBridge] Inline JS handler failed: {ex.GetType().Name}: {ex.Message}",
+                    LogCategory.JavaScript);
             }
             finally
             {
@@ -4112,6 +4679,34 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
     }
 
+    /// <summary>
+    /// Converts a JS camelCase property name to a CSS kebab-case property name.
+    /// e.g. "backgroundColor" → "background-color", "zIndex" → "z-index".
+    /// </summary>
+    private static string CamelToCssProp(string camel)
+    {
+        if (string.IsNullOrEmpty(camel))
+        {
+            return camel;
+        }
+
+        var sb = new StringBuilder(camel.Length + 4);
+        for (int i = 0; i < camel.Length; i++)
+        {
+            var ch = camel[i];
+            if (char.IsUpper(ch))
+            {
+                sb.Append('-');
+                sb.Append(char.ToLowerInvariant(ch));
+            }
+            else
+            {
+                sb.Append(ch);
+            }
+        }
+        return sb.ToString();
+    }
+
     private static string CoerceToHostString(JsValue value)
     {
         return value.Tag switch
@@ -4413,6 +5008,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     if (_owner.CookieWriteBridge != null && _owner._currentBaseUri != null)
                     {
                         _owner.CookieWriteBridge(_owner._currentBaseUri, cookieStr);
+                        if (cookieStr.StartsWith("SG_SS=", StringComparison.Ordinal))
+                        {
+                            var captureId = -Interlocked.Increment(ref _owner._diagnosticCookieCaptureCounter);
+                            _owner.CaptureNavigationGlobals(_owner._currentBaseUri, captureId);
+                        }
                     }
                     return true;
                 case Document document:
