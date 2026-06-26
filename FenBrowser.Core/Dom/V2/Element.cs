@@ -215,6 +215,9 @@ namespace FenBrowser.Core.Dom.V2
             var existing = _attributes.GetNamedItem(qualifiedName);
             if (existing != null)
             {
+                // Short-circuit: if the value hasn't changed, skip the full mutation cycle.
+                if (string.Equals(existing.Value, value ?? "", StringComparison.Ordinal))
+                    return;
                 // Update existing attribute
                 existing.Value = value ?? "";
             }

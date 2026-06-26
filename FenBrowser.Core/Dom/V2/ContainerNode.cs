@@ -55,6 +55,13 @@ namespace FenBrowser.Core.Dom.V2
             }
             set
             {
+                // Short-circuit: if the only child is a Text node with the same data,
+                // avoid triggering a full mutation cycle (remove + recreate).
+                if (FirstChild != null && FirstChild == LastChild && FirstChild is Text existingText)
+                {
+                    if (string.Equals(existingText.Data, value ?? string.Empty, StringComparison.Ordinal))
+                        return;
+                }
                 RemoveAllChildren();
                 if (!string.IsNullOrEmpty(value))
                     AppendChild(new Text(value));
