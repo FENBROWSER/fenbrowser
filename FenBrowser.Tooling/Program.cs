@@ -319,11 +319,19 @@ namespace FenBrowser.Tooling
 
             var consoleMessages = new List<string>();
             var navFailures = new List<string>();
+            var lifecycleTransitions = new List<DebugSiteLifecycleTransition>();
             var networkCapture = new DebugSiteNetworkCapture();
 
             using var host = new FenBrowser.FenEngine.Rendering.BrowserHost();
             host.ConsoleMessage += msg => { lock (consoleMessages) consoleMessages.Add(msg); };
             host.NavigationFailed += (_, msg) => { lock (navFailures) navFailures.Add(msg); };
+            host.NavigationLifecycleChanged += (_, transition) =>
+            {
+                lock (lifecycleTransitions)
+                {
+                    lifecycleTransitions.Add(DebugSiteLifecycleTransition.From(transition));
+                }
+            };
             networkCapture.Attach(host.ResourceManager);
 
             Console.WriteLine($"[debug-site] Navigating to {url} (settle {settleMs}ms)...");
@@ -404,9 +412,16 @@ namespace FenBrowser.Tooling
                 screenshot.Telemetry,
                 screenshot.Captured,
                 screenshot.Error);
-            var lifecycle = BuildLifecycleSummary(host.NavigationLifecycleState, probeResults);
             var scriptLoading = host.Engine?.ScriptEngine?.GetScriptLoadingSnapshot() ?? new BrowserScriptLoadingSnapshot();
             var eventLoop = host.Engine?.ScriptEngine?.GetEventLoopSnapshot() ?? new BrowserEventLoopSnapshot();
+            List<DebugSiteLifecycleTransition> lifecycleTimeline;
+            lock (lifecycleTransitions)
+            {
+                lifecycleTimeline = lifecycleTransitions
+                    .Select(static transition => transition.Clone())
+                    .ToList();
+            }
+            var lifecycle = BuildLifecycleSummary(host.NavigationLifecycleState, probeResults, lifecycleTimeline, eventLoop);
 
             return new DebugSiteReport
             {
@@ -547,6 +562,7 @@ namespace FenBrowser.Tooling
             Console.WriteLine($"Screenshot captured    : {report.ScreenshotCaptured}");
             Console.WriteLine($"Navigation phase       : {report.Lifecycle?.Phase ?? "(unknown)"}");
             Console.WriteLine($"Navigation detail      : {report.Lifecycle?.Detail ?? "(none)"}");
+            Console.WriteLine($"Lifecycle transitions  : {report.Lifecycle?.TransitionCount ?? 0}");
             Console.WriteLine($"Scripts discovered     : {report.ScriptLoading?.TotalScripts ?? 0}");
             Console.WriteLine($"Scripts executed       : {report.ScriptLoading?.ExecutionCompleted ?? 0}");
             Console.WriteLine($"Scripts failed         : {report.ScriptLoading?.ExecutionFailed ?? 0}");
@@ -614,7 +630,11 @@ namespace FenBrowser.Tooling
                 new UTF8Encoding(false));
             File.WriteAllText(
                 Path.Combine(bundleDir, "lifecycle.json"),
-                JsonSerializer.Serialize(report.Lifecycle ?? BuildLifecycleSummary(null, report.Probes), jsonOptions),
+                JsonSerializer.Serialize(report.Lifecycle ?? BuildLifecycleSummary(null, report.Probes, null, report.EventLoop), jsonOptions),
+                new UTF8Encoding(false));
+            File.WriteAllText(
+                Path.Combine(bundleDir, "lifecycle_timeline.json"),
+                JsonSerializer.Serialize(report.Lifecycle?.Transitions ?? new List<DebugSiteLifecycleTransition>(), jsonOptions),
                 new UTF8Encoding(false));
             File.WriteAllText(
                 Path.Combine(bundleDir, "script_loading.json"),
@@ -685,6 +705,8 @@ namespace FenBrowser.Tooling
             }
             sb.AppendLine($"Navigation lifecycle phase: {report.Lifecycle?.Phase ?? "(unknown)"}");
             sb.AppendLine($"Navigation lifecycle detail: {report.Lifecycle?.Detail ?? "(none)"}");
+            sb.AppendLine($"Navigation lifecycle transitions: {report.Lifecycle?.TransitionCount ?? 0}");
+            sb.AppendLine($"Navigation lifecycle phases: {FormatLifecyclePhasePath(report.Lifecycle?.TransitionPhases)}");
             sb.AppendLine($"Document readyState probe: {report.Lifecycle?.DocumentReadyState ?? "(not captured)"}");
             sb.AppendLine($"Scripts discovered: {report.ScriptLoading?.TotalScripts ?? 0}");
             sb.AppendLine($"Scripts eligible: {report.ScriptLoading?.EligibleScripts ?? 0}");
@@ -693,7 +715,9 @@ namespace FenBrowser.Tooling
             sb.AppendLine($"Script fetch failures: {report.ScriptLoading?.FetchFailed ?? 0}");
             sb.AppendLine($"Event-loop status: {report.EventLoop?.Status ?? "not-run"}");
             sb.AppendLine($"DOMContentLoaded fired: {report.EventLoop?.DomContentLoadedFired ?? false}");
+            sb.AppendLine($"DOMContentLoaded UTC: {report.EventLoop?.DomContentLoadedUtc ?? string.Empty}");
             sb.AppendLine($"Load fired: {report.EventLoop?.LoadFired ?? false}");
+            sb.AppendLine($"Load UTC: {report.EventLoop?.LoadUtc ?? string.Empty}");
             sb.AppendLine($"Microtask checkpoints: {report.EventLoop?.MicrotaskCheckpoints ?? 0}");
             sb.AppendLine($"Timers scheduled: {report.EventLoop?.TimersScheduled ?? 0}");
             sb.AppendLine($"Animation frames executed: {report.EventLoop?.AnimationFramesExecuted ?? 0}");
@@ -721,6 +745,7 @@ namespace FenBrowser.Tooling
             sb.AppendLine("- `logs.ndjson`: copied from latest structured engine log when present.");
             sb.AppendLine("- `screenshot.png`: copied from `logs/debug_screenshot.png` when present.");
             sb.AppendLine("- `lifecycle.json`: final navigation lifecycle snapshot and document readyState probe.");
+            sb.AppendLine("- `lifecycle_timeline.json`: ordered navigation lifecycle transitions captured from `BrowserHost.NavigationLifecycleChanged`.");
             sb.AppendLine("- `script_loading.json`: script discovery, fetch, execution, failure, and async-pending counts.");
             sb.AppendLine("- `event_loop.json`: DOMContentLoaded/load, microtask, timer, and requestAnimationFrame counters.");
             sb.AppendLine("- `style_layout.json`: style/layout/paint counters, timing, status, and first blocker classification.");
@@ -735,7 +760,9 @@ namespace FenBrowser.Tooling
 
         private static DebugSiteLifecycleSummary BuildLifecycleSummary(
             NavigationLifecycleSnapshot snapshot,
-            IReadOnlyDictionary<string, string> probes)
+            IReadOnlyDictionary<string, string> probes,
+            IReadOnlyList<DebugSiteLifecycleTransition> transitions = null,
+            BrowserEventLoopSnapshot eventLoop = null)
         {
             string readyState = null;
             probes?.TryGetValue("typeof document !== 'undefined' ? document.readyState : 'no-document'", out readyState);
@@ -744,6 +771,7 @@ namespace FenBrowser.Tooling
             var isTerminal = phase == NavigationLifecyclePhase.Complete ||
                              phase == NavigationLifecyclePhase.Failed ||
                              phase == NavigationLifecyclePhase.Cancelled;
+            var normalizedTransitions = NormalizeLifecycleTransitions(transitions);
 
             return new DebugSiteLifecycleSummary
             {
@@ -761,8 +789,66 @@ namespace FenBrowser.Tooling
                 DocumentReadyState = readyState ?? string.Empty,
                 IsTerminalPhase = isTerminal,
                 IsSuccessfulTerminalPhase = phase == NavigationLifecyclePhase.Complete,
-                IsFailureTerminalPhase = phase == NavigationLifecyclePhase.Failed || phase == NavigationLifecyclePhase.Cancelled
+                IsFailureTerminalPhase = phase == NavigationLifecyclePhase.Failed || phase == NavigationLifecyclePhase.Cancelled,
+                TransitionCount = normalizedTransitions.Count,
+                TransitionPhases = normalizedTransitions.Select(static transition => transition.Phase).ToList(),
+                FirstTransitionUtc = normalizedTransitions.FirstOrDefault()?.TimestampUtc ?? string.Empty,
+                TerminalTransitionUtc = normalizedTransitions.LastOrDefault()?.TimestampUtc ?? string.Empty,
+                DomContentLoadedFired = eventLoop?.DomContentLoadedFired ?? false,
+                DomContentLoadedUtc = eventLoop?.DomContentLoadedUtc ?? string.Empty,
+                LoadFired = eventLoop?.LoadFired ?? false,
+                LoadUtc = eventLoop?.LoadUtc ?? string.Empty,
+                Transitions = normalizedTransitions
             };
+        }
+
+        private static List<DebugSiteLifecycleTransition> NormalizeLifecycleTransitions(
+            IReadOnlyList<DebugSiteLifecycleTransition> transitions)
+        {
+            var normalized = new List<DebugSiteLifecycleTransition>();
+            if (transitions == null || transitions.Count == 0)
+            {
+                return normalized;
+            }
+
+            DateTimeOffset? firstTimestamp = null;
+            foreach (var transition in transitions)
+            {
+                if (transition == null)
+                {
+                    continue;
+                }
+
+                var clone = transition.Clone();
+                clone.Sequence = normalized.Count + 1;
+                if (TryParseIsoTimestamp(clone.TimestampUtc, out var timestamp))
+                {
+                    firstTimestamp ??= timestamp;
+                    clone.MillisecondsSinceFirstTransition = Math.Max(
+                        0,
+                        (timestamp - firstTimestamp.Value).TotalMilliseconds);
+                }
+
+                normalized.Add(clone);
+            }
+
+            return normalized;
+        }
+
+        private static bool TryParseIsoTimestamp(string timestamp, out DateTimeOffset value)
+        {
+            return DateTimeOffset.TryParse(
+                timestamp,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out value);
+        }
+
+        private static string FormatLifecyclePhasePath(IReadOnlyList<string> phases)
+        {
+            return phases == null || phases.Count == 0
+                ? "(none captured)"
+                : string.Join(" -> ", phases);
         }
 
         private static DebugSiteStyleLayoutSummary BuildStyleLayoutSummary(
@@ -1388,6 +1474,7 @@ namespace FenBrowser.Tooling
                 "console.log",
                 "network.json",
                 "lifecycle.json",
+                "lifecycle_timeline.json",
                 "script_loading.json",
                 "event_loop.json",
                 "style_layout.json",
@@ -1678,6 +1765,78 @@ namespace FenBrowser.Tooling
             public bool IsTerminalPhase { get; init; }
             public bool IsSuccessfulTerminalPhase { get; init; }
             public bool IsFailureTerminalPhase { get; init; }
+            public int TransitionCount { get; init; }
+            public List<string> TransitionPhases { get; init; } = new();
+            public string FirstTransitionUtc { get; init; }
+            public string TerminalTransitionUtc { get; init; }
+            public bool DomContentLoadedFired { get; init; }
+            public string DomContentLoadedUtc { get; init; }
+            public bool LoadFired { get; init; }
+            public string LoadUtc { get; init; }
+            public List<DebugSiteLifecycleTransition> Transitions { get; init; } = new();
+        }
+
+        private sealed class DebugSiteLifecycleTransition
+        {
+            public int Sequence { get; set; }
+            public long NavigationId { get; set; }
+            public string PreviousPhase { get; set; } = string.Empty;
+            public string Phase { get; set; } = string.Empty;
+            public string RequestedUrl { get; set; } = string.Empty;
+            public string EffectiveUrl { get; set; } = string.Empty;
+            public string ResponseStatus { get; set; } = string.Empty;
+            public string Detail { get; set; } = string.Empty;
+            public bool IsUserInput { get; set; }
+            public bool IsRedirect { get; set; }
+            public int RedirectCount { get; set; }
+            public string CommitSource { get; set; } = string.Empty;
+            public string TimestampUtc { get; set; } = string.Empty;
+            public double MillisecondsSinceFirstTransition { get; set; }
+
+            public static DebugSiteLifecycleTransition From(NavigationLifecycleTransition transition)
+            {
+                if (transition == null)
+                {
+                    return new DebugSiteLifecycleTransition();
+                }
+
+                return new DebugSiteLifecycleTransition
+                {
+                    NavigationId = transition.NavigationId,
+                    PreviousPhase = transition.PreviousPhase.ToString(),
+                    Phase = transition.Phase.ToString(),
+                    RequestedUrl = transition.RequestedUrl ?? string.Empty,
+                    EffectiveUrl = transition.EffectiveUrl ?? string.Empty,
+                    ResponseStatus = transition.ResponseStatus ?? string.Empty,
+                    Detail = transition.Detail ?? string.Empty,
+                    IsUserInput = transition.IsUserInput,
+                    IsRedirect = transition.IsRedirect,
+                    RedirectCount = transition.RedirectCount,
+                    CommitSource = transition.CommitSource ?? string.Empty,
+                    TimestampUtc = transition.TimestampUtc.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)
+                };
+            }
+
+            public DebugSiteLifecycleTransition Clone()
+            {
+                return new DebugSiteLifecycleTransition
+                {
+                    Sequence = Sequence,
+                    NavigationId = NavigationId,
+                    PreviousPhase = PreviousPhase,
+                    Phase = Phase,
+                    RequestedUrl = RequestedUrl,
+                    EffectiveUrl = EffectiveUrl,
+                    ResponseStatus = ResponseStatus,
+                    Detail = Detail,
+                    IsUserInput = IsUserInput,
+                    IsRedirect = IsRedirect,
+                    RedirectCount = RedirectCount,
+                    CommitSource = CommitSource,
+                    TimestampUtc = TimestampUtc,
+                    MillisecondsSinceFirstTransition = MillisecondsSinceFirstTransition
+                };
+            }
         }
 
         private sealed class DebugSiteNetworkCapture

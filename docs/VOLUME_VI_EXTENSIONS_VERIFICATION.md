@@ -2525,6 +2525,7 @@ _End of Volume VI_
   - The command reuses the existing `BrowserHost` navigation path, enables file-only structured logging for the run, probes live page globals, and writes a per-run bundle under `logs/real-site/<site>/<run-id>/`.
   - `debug-site` subscribes to `ResourceManager.NetworkRequestStarting`, `NetworkRequestCompleted`, and `NetworkRequestFailed` for the run and exports correlated request/response/failure records.
   - `debug-site` exports the final `BrowserHost.NavigationLifecycleState` snapshot and document `readyState` probe as a stable bundle DTO.
+  - `debug-site` captures `BrowserHost.NavigationLifecycleChanged` transitions during the run and exports them as ordered lifecycle timeline data.
   - `debug-site` exports the current browser script-loading snapshot as `script_loading.json` and promotes script discovered/eligible/executed/failed counts into `summary.md` and `summary.json`.
   - `debug-site` exports the current browser event-loop snapshot as `event_loop.json` and promotes DOMContentLoaded/load, microtask, timer, and requestAnimationFrame counts into `summary.md` and `summary.json`.
   - The command now renders the settled `BrowserHost` DOM and computed-style map through `SkiaDomRenderer` into a deterministic `1280x800` headless PNG before bundle export, so `screenshot.png` exists without depending on host-window/WebDriver delegates.
@@ -2540,12 +2541,13 @@ _End of Volume VI_
   - Fixed the FenJS large-stack worker dispatch race by holding `_fenJsWorkGate` through the wait/result capture, preventing concurrent timer/rAF callbacks from overwriting `_fenJsPendingWork`.
 
 - Current bundle contract:
-  - `summary.md` and `summary.json`: URL, final URL, navigation result, elapsed time, DOM node count, raw/source text lengths, computed-style count, layout/paint counts, console count, final lifecycle phase/detail, script-loading counts, and first-blocker classifications.
+  - `summary.md` and `summary.json`: URL, final URL, navigation result, elapsed time, DOM node count, raw/source text lengths, computed-style count, layout/paint counts, console count, final lifecycle phase/detail, lifecycle transition count/phase path, script-loading counts, DOMContentLoaded/load timestamps, and first-blocker classifications.
   - `trace.jsonl`: copied from the run's structured trace when present.
   - `logs.ndjson`: copied from the run's structured engine log when present.
   - `console.log`, `navigation_failures.log`, `exceptions.json`, `missing_apis.json`, `probes.json`, `rendered_text.txt`.
   - `network.json`: status, request count, failed request count, navigation failures, and per-request method, URL, request headers, response status, response headers, MIME type, duration, and failure details when present.
-  - `lifecycle.json`: navigation ID, phase, requested/effective URL, response status, detail string, redirect metadata, commit source, last transition UTC, terminal-state flags, and document `readyState` probe.
+  - `lifecycle.json`: navigation ID, phase, requested/effective URL, response status, detail string, redirect metadata, commit source, last transition UTC, terminal-state flags, document `readyState` probe, lifecycle phase path, DOMContentLoaded/load timestamps, and the ordered transition list.
+  - `lifecycle_timeline.json`: flat ordered navigation lifecycle transition records with sequence, previous/current phase, URL/status/detail metadata, timestamp, and elapsed milliseconds since the first transition.
   - `script_loading.json`: script-loading status, DOM/script element counts, inline/external/module counts, blocking/defer/async counts, fetch counts, execution counts, async-pending count, infrastructure error text, and per-script records.
   - `event_loop.json`: event-loop status, DOMContentLoaded/load booleans and timestamps, microtask checkpoint count, timer/rAF schedule and completion counts, pending host timer count, callback failures, and ordered event records with callback IDs.
   - `style_layout.json`: DOM/style counts, layout Box counts, Paint Tree counts, viewport, render timings, raster mode, watchdog status, and first layout/paint blocker classifications.
@@ -2558,21 +2560,22 @@ _End of Volume VI_
   - `artifact_manifest.json` records present/missing status for expected bundle files.
 
 - Known diagnostic-spine gaps after this tranche:
-  - Navigation lifecycle transition timelines, per-script source IDs/line-column attribution, module graph details, IPC, sandbox-denial, and broader performance summaries are not yet auto-classified from trace events.
+  - Per-script source IDs/line-column attribution, module graph details, IPC, sandbox-denial, and broader performance summaries are not yet auto-classified from trace events.
   - `display_list.txt` currently flattens the immutable Paint Tree order; it is not yet a Skia command-stream dump.
+  - The `example.com` lifecycle timeline now exposes that navigation `Complete` can precede event-loop DOMContentLoaded/load timestamps; ordering is visible in artifacts but not corrected in this tranche.
   - Missing API extraction is currently heuristic over console text; runtime WebIDL/DOM missing-API events still need structured emission.
   - Network bodies and initiator stacks are not exported; `network.json` is currently metadata-only.
 
 - First execution matrix for PLAN.MD work:
   - Current engine audit plan: inventory from canonical volumes, current focused build/test evidence, local Test262 dashboard (`docs/test262_results.md`), local WPT roots, and real-site `debug-site` bundles.
-  - Diagnostic spine implementation plan: promote `debug-site` from partial bundle to complete summary classification, then add lifecycle transition timelines, structured missing-API events, per-script attribution, and richer network-body/initiator exporters.
+  - Diagnostic spine implementation plan: promote `debug-site` from partial bundle to complete summary classification, then add structured missing-API events, per-script attribution, lifecycle/event-loop ordering checks, and richer network-body/initiator exporters.
   - Real-site failure classification plan: classify each run into navigation, network, script loading, JavaScript language, WebIDL/binding, DOM API, event loop, CSS/style, layout, paint/compositing, storage/security, and browser-shell/process buckets.
   - Minimal smoke-test matrix: search page, docs/wiki page, GitHub-like app, social/media SPA, video page, ecommerce page, webmail-like app, dashboard SPA, news page, banking/form page, heavy CSS layout page, and heavy JavaScript app.
   - Required trace/log points: Navigation, Network, HTMLParser, ResourceLoader, ScriptLoader, JS, WebIDL, DOM, EventLoop, Microtask, Timer, CSSParser, Selector, Cascade, Style, Layout, Paint, Compositor, Input, Storage, Cookie, Security, IPC, Process, Crash, and Performance.
   - Missing API tracker format: API name, object/prototype, URL/site ID, script URL, source line/column when available, trace ID, exception text, priority, linked WPT/local test, owner, status, and workaround/stub status.
   - Process boundary audit: current `debug-site` runs in process through `BrowserHost`; renderer/network/storage/compositor isolation evidence must come from host process-isolation diagnostics before any process-boundary status can be marked complete.
-  - Current architecture risk register: metadata-only network export, unstructured missing-API detection, event-level lifecycle gaps, script source attribution gaps, Paint Tree proxy rather than Skia command-stream display-list dump, and headless screenshot fidelity needing broader real-site validation beyond the `example.com` smoke.
-  - Dependency-ready next tasks: emit lifecycle transition timelines and DOMContentLoaded/load timestamps, add structured missing-API events, add per-script source/line-column attribution, add network initiator/body policy, add Skia command-stream display-list diagnostics, and suppress remaining non-script-loading direct console writes in other subsystems.
+  - Current architecture risk register: metadata-only network export, unstructured missing-API detection, navigation lifecycle/event-loop ordering gap, script source attribution gaps, Paint Tree proxy rather than Skia command-stream display-list dump, and headless screenshot fidelity needing broader real-site validation beyond the `example.com` smoke.
+  - Dependency-ready next tasks: add structured missing-API events, add per-script source/line-column attribution, align navigation `Complete` with DOMContentLoaded/load semantics, add network initiator/body policy, add Skia command-stream display-list diagnostics, and suppress remaining non-script-loading direct console writes in other subsystems.
 
 - Focused verification:
   - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Debug -v minimal`: pass on `2026-06-27` with existing repo-wide warnings and existing unreachable-code warnings in legacy removed Acid paths.
@@ -2592,6 +2595,13 @@ _End of Volume VI_
     - Artifact manifest confirmed all `21` expected files present, including `style_layout.json`, `style_dump.txt`, `layout_dump.txt`, `paint_dump.txt`, and `display_list.txt`.
     - `style_layout.json` confirmed status `captured`, viewport `1280x800`, layout/paint/raster all ran, raster mode `Full`, first layout blocker `(none captured)`, and first paint blocker `(none captured)`.
     - `style_dump.txt` contained DOM preorder computed-style entries for `html`, `body`, `h1`, `p`, and `a`; `layout_dump.txt` contained Box geometry; `paint_dump.txt` and `display_list.txt` contained Paint Tree nodes and flattened paint order.
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- debug-site https://example.com 2000`: pass on `2026-06-27` after the lifecycle-timeline tranche.
+    - Bundle: `logs/real-site/example.com/20260627T093217Z`.
+    - Evidence: navigation returned `True`, final URL `https://example.com/`, `18` DOM nodes, `12` computed styles, `10` layout boxes, `6` paint nodes, `1` network request, `0` failed network requests, `0` navigation failures, and `0` console messages.
+    - Artifact manifest confirmed all `22` expected files present, including `lifecycle_timeline.json`.
+    - `lifecycle.json` confirmed transition count `6`, phase path `Requested -> Fetching -> ResponseReceived -> Committing -> Interactive -> Complete`, terminal phase `Complete`, response status `Success`, commit source `network-document`, document `readyState` `complete`, DOMContentLoaded `true`, and load `true`.
+    - `lifecycle_timeline.json` confirmed ordered records with sequence numbers, previous/current phase, URL/status/detail metadata, timestamps, and elapsed milliseconds from the first transition.
+    - Diagnostic note: in this run, navigation `Complete` timestamp `2026-06-27T09:32:15.2962678Z` preceded the event-loop DOMContentLoaded/load timestamps (`2026-06-27T09:32:15.5451578+00:00` / `2026-06-27T09:32:15.5465074+00:00`), so ordering correction remains follow-up work.
   - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- debug-site file:///C:/Users/udayk/Videos/fenbrowser-test/logs/debug_site_event_loop_smoke.html 1500`: pass on `2026-06-27`.
     - Bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_debug_site_event_loop_smoke.html/20260627T082709Z`.
     - Evidence: navigation returned `True`, rendered text reached `timer`, `1` script discovered and executed, DOMContentLoaded `true`, load `true`, `2` microtask checkpoints, `0` callback failures, and `0` console messages.
