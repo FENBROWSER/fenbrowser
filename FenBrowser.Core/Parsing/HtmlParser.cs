@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using FenBrowser.Core.Engine;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Parsing
 {
@@ -172,54 +173,144 @@ namespace FenBrowser.Core.Parsing
             var parseInput = html ?? string.Empty;
             var safeBaseUri = options.BaseUri ?? new Uri("about:blank");
             var policy = options.SecurityPolicy?.Clone() ?? ParserSecurityPolicy.Default;
+            EmitHtmlParsingStarted(parseInput, safeBaseUri);
 
-            if (options.Prefetcher != null)
+            try
             {
-                var scanner = new PreloadScanner(parseInput, safeBaseUri, options.Prefetcher);
-                scanner.ScanAsync();
+                if (options.Prefetcher != null)
+                {
+                    var scanner = new PreloadScanner(parseInput, safeBaseUri, options.Prefetcher);
+                    scanner.ScanAsync();
+                }
+
+                var builder = new HtmlTreeBuilder(parseInput)
+                {
+                    MaxTokenizerEmissions = policy.HtmlMaxTokenEmissions,
+                    MaxOpenElementsDepth = policy.HtmlMaxOpenElementsDepth
+                };
+
+                if (options.MaxInputLengthChars.HasValue && options.MaxInputLengthChars.Value > 0)
+                {
+                    builder.MaxInputLengthChars = options.MaxInputLengthChars.Value;
+                }
+
+                if (options.ParseCheckpointTokenInterval.HasValue)
+                {
+                    builder.ParseCheckpointTokenInterval = Math.Max(0, options.ParseCheckpointTokenInterval.Value);
+                }
+
+                if (options.InterleavedTokenBatchSize.HasValue)
+                {
+                    builder.InterleavedTokenBatchSize = Math.Max(0, options.InterleavedTokenBatchSize.Value);
+                }
+
+                if (options.ParseCheckpointCallback != null)
+                {
+                    builder.ParseCheckpointCallback = options.ParseCheckpointCallback;
+                }
+
+                if (options.ParseDocumentCheckpointCallback != null)
+                {
+                    builder.ParseDocumentCheckpointCallback = options.ParseDocumentCheckpointCallback;
+                }
+
+                var document = options.PipelineContext != null
+                    ? builder.BuildWithPipelineStages(options.PipelineContext)
+                    : builder.Build();
+
+                document.URL = safeBaseUri.AbsoluteUri;
+                document.BaseURI = safeBaseUri.AbsoluteUri;
+
+                outcome = CloneOutcome(builder.LastParsingOutcome);
+                metrics = CloneMetrics(builder.LastBuildMetrics);
+                EmitHtmlParsingCompleted(safeBaseUri, outcome, metrics);
+                return document;
             }
-
-            var builder = new HtmlTreeBuilder(parseInput)
+            catch (Exception ex)
             {
-                MaxTokenizerEmissions = policy.HtmlMaxTokenEmissions,
-                MaxOpenElementsDepth = policy.HtmlMaxOpenElementsDepth
-            };
-
-            if (options.MaxInputLengthChars.HasValue && options.MaxInputLengthChars.Value > 0)
-            {
-                builder.MaxInputLengthChars = options.MaxInputLengthChars.Value;
+                EmitHtmlParsingFailed(safeBaseUri, ex);
+                throw;
             }
+        }
 
-            if (options.ParseCheckpointTokenInterval.HasValue)
+        private static void EmitHtmlParsingStarted(string html, Uri baseUri)
+        {
+            try
             {
-                builder.ParseCheckpointTokenInterval = Math.Max(0, options.ParseCheckpointTokenInterval.Value);
+                EngineLog.Write(
+                    LogSubsystem.Html,
+                    LogSeverity.Info,
+                    "HTMLParsingStarted",
+                    LogMarker.None,
+                    new EngineLogContext(
+                        NavigationId: LogContext.CurrentCorrelationId,
+                        Url: baseUri?.AbsoluteUri),
+                    new Dictionary<string, object>
+                    {
+                        ["event"] = "HTMLParsingStarted",
+                        ["url"] = baseUri?.AbsoluteUri,
+                        ["inputLength"] = html?.Length ?? 0
+                    });
             }
-
-            if (options.InterleavedTokenBatchSize.HasValue)
+            catch
             {
-                builder.InterleavedTokenBatchSize = Math.Max(0, options.InterleavedTokenBatchSize.Value);
+                // Parsing must not fail because diagnostics failed.
             }
+        }
 
-            if (options.ParseCheckpointCallback != null)
+        private static void EmitHtmlParsingCompleted(Uri baseUri, HtmlParsingOutcome outcome, HtmlParseBuildMetrics metrics)
+        {
+            try
             {
-                builder.ParseCheckpointCallback = options.ParseCheckpointCallback;
+                EngineLog.Write(
+                    LogSubsystem.Html,
+                    LogSeverity.Info,
+                    "HTMLParsingCompleted",
+                    LogMarker.None,
+                    new EngineLogContext(
+                        NavigationId: LogContext.CurrentCorrelationId,
+                        Url: baseUri?.AbsoluteUri),
+                    new Dictionary<string, object>
+                    {
+                        ["event"] = "HTMLParsingCompleted",
+                        ["url"] = baseUri?.AbsoluteUri,
+                        ["outcomeClass"] = outcome?.OutcomeClass.ToString(),
+                        ["reasonCode"] = outcome?.ReasonCode.ToString(),
+                        ["tokenCount"] = Math.Max(0, metrics?.TokenCount ?? 0),
+                        ["tokenizingMs"] = Math.Max(0, metrics?.TokenizingMs ?? 0),
+                        ["parsingMs"] = Math.Max(0, metrics?.ParsingMs ?? 0),
+                        ["documentReadyToken"] = Math.Max(0, metrics?.DocumentReadyTokenCount ?? 0)
+                    });
             }
-
-            if (options.ParseDocumentCheckpointCallback != null)
+            catch
             {
-                builder.ParseDocumentCheckpointCallback = options.ParseDocumentCheckpointCallback;
+                // Parsing must not fail because diagnostics failed.
             }
+        }
 
-            var document = options.PipelineContext != null
-                ? builder.BuildWithPipelineStages(options.PipelineContext)
-                : builder.Build();
-
-            document.URL = safeBaseUri.AbsoluteUri;
-            document.BaseURI = safeBaseUri.AbsoluteUri;
-
-            outcome = CloneOutcome(builder.LastParsingOutcome);
-            metrics = CloneMetrics(builder.LastBuildMetrics);
-            return document;
+        private static void EmitHtmlParsingFailed(Uri baseUri, Exception exception)
+        {
+            try
+            {
+                EngineLog.Write(
+                    LogSubsystem.Html,
+                    LogSeverity.Error,
+                    "HTMLParsingFailed",
+                    LogMarker.Unexpected,
+                    new EngineLogContext(
+                        NavigationId: LogContext.CurrentCorrelationId,
+                        Url: baseUri?.AbsoluteUri),
+                    new Dictionary<string, object>
+                    {
+                        ["event"] = "HTMLParsingFailed",
+                        ["url"] = baseUri?.AbsoluteUri,
+                        ["exception"] = exception.ToString()
+                    });
+            }
+            catch
+            {
+                // Preserve original parser failure.
+            }
         }
 
         private static HtmlParserOptions CloneOptions(HtmlParserOptions options)

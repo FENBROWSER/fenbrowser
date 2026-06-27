@@ -33,12 +33,15 @@ Status: IMPLEMENTED / REGRESSION_PROTECTED
 - **Remaining follow-up**: T1.3 must add parser-phase trace events for HTML parsing start/complete and stylesheet/script discovery.
 
 ### T1.3 — Instrument HTML parsing with trace events
+Status: PARTIAL / REGRESSION_PROTECTED
+
 - **Area**: Core / HTML Parser
 - **Dependencies**: T1.1
-- **Files**: `FenBrowser.Core/Parsing/StreamingHtmlParser.cs`, `HtmlTokenizer.cs`, `HtmlTreeBuilder.cs`
+- **Files**: `FenBrowser.Core/Parsing/HtmlParser.cs`, `FenBrowser.Tests/Core/Parsing/HtmlParserTraceTests.cs`
 - **Spec**: PLAN.MD § "Diagnostic Spine Requirement" items 4-6
-- **Description**: Add trace events for: parse start, parse complete, stylesheet discovered, script discovered. Track element count, parse time.
-- **Acceptance**: Every parse produces trace events. Stylesheets and scripts found are logged.
+- **Description**: The canonical document parser now emits `HTMLParsingStarted`, `HTMLParsingCompleted`, and `HTMLParsingFailed` diagnostic trace events with navigation correlation, URL, input length, outcome, token count, and parse timing.
+- **Verification**: `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~HtmlParserTraceTests|FullyQualifiedName~CustomHtmlEngineDocumentTraceTests|FullyQualifiedName~NavigationLifecycleTraceTests|FullyQualifiedName~EngineLogSettingsTests" --no-restore -v minimal` passed 5/5.
+- **Remaining follow-up**: Stylesheet and script discovery trace events still need parser/preload-scanner instrumentation.
 
 ### T1.4 — Instrument script loading with per-script lifecycle trace
 - **Area**: FenEngine / Scripting
