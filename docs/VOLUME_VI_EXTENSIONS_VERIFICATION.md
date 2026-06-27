@@ -2517,3 +2517,75 @@ _End of Volume VI_
     - Result: `13 passed / 0 failed / 0 skipped`.
   - `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify_html_inventory_coverage.ps1`
     - Result: `inventory_elements=113`, `inventory_non_event_attributes=144`, `inventory_event_handlers=89`, all missing lists empty.
+
+## 6.82 PLAN.MD Real-Site Diagnostic Spine Start (2026-06-26)
+
+- `FenBrowser.Tooling/Program.cs`
+  - Added `debug-site <url> [settle_ms]` as the first operator-facing real-site diagnostic bundle command.
+  - The command reuses the existing `BrowserHost` navigation path, enables file-only structured logging for the run, probes live page globals, and writes a per-run bundle under `logs/real-site/<site>/<run-id>/`.
+  - `debug-site` subscribes to `ResourceManager.NetworkRequestStarting`, `NetworkRequestCompleted`, and `NetworkRequestFailed` for the run and exports correlated request/response/failure records.
+  - `debug-site` exports the final `BrowserHost.NavigationLifecycleState` snapshot and document `readyState` probe as a stable bundle DTO.
+  - `debug-site` exports the current browser script-loading snapshot as `script_loading.json` and promotes script discovered/eligible/executed/failed counts into `summary.md` and `summary.json`.
+  - `debug-site` exports the current browser event-loop snapshot as `event_loop.json` and promotes DOMContentLoaded/load, microtask, timer, and requestAnimationFrame counts into `summary.md` and `summary.json`.
+  - The command now renders the settled `BrowserHost` DOM and computed-style map through `SkiaDomRenderer` into a deterministic `1280x800` headless PNG before bundle export, so `screenshot.png` exists without depending on host-window/WebDriver delegates.
+  - Runtime artifacts remain under workspace `logs/` per repository policy; no root-level `traces/` folder is created.
+
+- `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`
+  - Added a stable `BrowserScriptLoadingSnapshot` exposed through `IBrowserScriptEngine.GetScriptLoadingSnapshot()`.
+  - Added a stable `BrowserEventLoopSnapshot` exposed through `IBrowserScriptEngine.GetEventLoopSnapshot()`.
+  - Replaced `FenJsBridge` script-loading `Console.Error` diagnostics with structured `EngineLog` events carrying `traceCategory=ScriptLoader` and event names such as `ScriptDiscovered`, `ScriptExecutionCompleted`, and `ScriptLoadingCompleted`.
+  - The snapshot now tracks DOM/script element counts, inline/external/module counts, blocking/defer/async counts, fetch counts, execution counts, async-pending count, infrastructure error text, and per-script records for source type, batch, status, failure reason, and code/text length.
+  - The event-loop snapshot tracks DOMContentLoaded/load dispatch, microtask checkpoints, timer/rAF scheduling, callback completion, pending host timers, and callback failures.
+  - Fixed the FenJS large-stack worker dispatch race by holding `_fenJsWorkGate` through the wait/result capture, preventing concurrent timer/rAF callbacks from overwriting `_fenJsPendingWork`.
+
+- Current bundle contract:
+  - `summary.md` and `summary.json`: URL, final URL, navigation result, elapsed time, DOM node count, raw/source text lengths, computed-style count, console count, final lifecycle phase/detail, script-loading counts, and first-blocker placeholders.
+  - `trace.jsonl`: copied from the run's structured trace when present.
+  - `logs.ndjson`: copied from the run's structured engine log when present.
+  - `console.log`, `navigation_failures.log`, `exceptions.json`, `missing_apis.json`, `probes.json`, `rendered_text.txt`.
+  - `network.json`: status, request count, failed request count, navigation failures, and per-request method, URL, request headers, response status, response headers, MIME type, duration, and failure details when present.
+  - `lifecycle.json`: navigation ID, phase, requested/effective URL, response status, detail string, redirect metadata, commit source, last transition UTC, terminal-state flags, and document `readyState` probe.
+  - `script_loading.json`: script-loading status, DOM/script element counts, inline/external/module counts, blocking/defer/async counts, fetch counts, execution counts, async-pending count, infrastructure error text, and per-script records.
+  - `event_loop.json`: event-loop status, DOMContentLoaded/load booleans and timestamps, microtask checkpoint count, timer/rAF schedule and completion counts, pending host timer count, callback failures, and ordered event records with callback IDs.
+  - `screenshot.png`: generated from the current DOM/styles via offscreen Skia rendering.
+  - `dom_dump.txt`, `raw_source.html`, and `rendered_text_artifact.txt` are copied from existing engine artifacts when present.
+  - `artifact_manifest.json` records present/missing status for expected bundle files.
+
+- Known diagnostic-spine gaps after this tranche:
+  - Navigation lifecycle transition timelines, per-script source IDs/line-column attribution, module graph details, style/layout/paint blocker, IPC, sandbox-denial, and performance summaries are not yet auto-classified from trace events.
+  - Missing API extraction is currently heuristic over console text; runtime WebIDL/DOM missing-API events still need structured emission.
+  - Network bodies and initiator stacks are not exported; `network.json` is currently metadata-only.
+
+- First execution matrix for PLAN.MD work:
+  - Current engine audit plan: inventory from canonical volumes, current focused build/test evidence, local Test262 dashboard (`docs/test262_results.md`), local WPT roots, and real-site `debug-site` bundles.
+  - Diagnostic spine implementation plan: promote `debug-site` from partial bundle to complete summary classification, then add lifecycle, script-loading, missing-API, layout/paint, and richer network-body/initiator exporters.
+  - Real-site failure classification plan: classify each run into navigation, network, script loading, JavaScript language, WebIDL/binding, DOM API, event loop, CSS/style, layout, paint/compositing, storage/security, and browser-shell/process buckets.
+  - Minimal smoke-test matrix: search page, docs/wiki page, GitHub-like app, social/media SPA, video page, ecommerce page, webmail-like app, dashboard SPA, news page, banking/form page, heavy CSS layout page, and heavy JavaScript app.
+  - Required trace/log points: Navigation, Network, HTMLParser, ResourceLoader, ScriptLoader, JS, WebIDL, DOM, EventLoop, Microtask, Timer, CSSParser, Selector, Cascade, Style, Layout, Paint, Compositor, Input, Storage, Cookie, Security, IPC, Process, Crash, and Performance.
+  - Missing API tracker format: API name, object/prototype, URL/site ID, script URL, source line/column when available, trace ID, exception text, priority, linked WPT/local test, owner, status, and workaround/stub status.
+  - Process boundary audit: current `debug-site` runs in process through `BrowserHost`; renderer/network/storage/compositor isolation evidence must come from host process-isolation diagnostics before any process-boundary status can be marked complete.
+  - Current architecture risk register: metadata-only network export, unstructured missing-API detection, event-level lifecycle gaps, script source attribution gaps, and headless screenshot fidelity needing broader real-site validation beyond the `example.com` smoke.
+  - Dependency-ready next tasks: emit lifecycle transition timelines and DOMContentLoaded/load timestamps, add structured missing-API events, export style/layout/paint dumps, add per-script source/line-column attribution, add network initiator/body policy, and suppress remaining non-script-loading direct console writes in other subsystems.
+
+- Focused verification:
+  - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Debug -v minimal`: pass on `2026-06-27` with existing repo-wide warnings and existing unreachable-code warnings in legacy removed Acid paths.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~FenJsXmlHttpRequestTests.TimerAndRafCallbacks_DoNotOverwriteLargeStackWorkerDispatch" --logger "console;verbosity=minimal"`: pass on `2026-06-27`, `1 passed / 0 failed / 0 skipped`.
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- debug-site https://example.com 2000`: pass on `2026-06-27`.
+    - Bundle: `logs/real-site/example.com/20260627T082714Z`.
+    - Evidence: navigation returned `True`, final URL `https://example.com/`, `18` DOM nodes, `12` computed styles, `1` network request, `0` failed network requests, `0` navigation failures, `0` console messages.
+    - Artifact manifest confirmed all `16` expected files present, including `event_loop.json`.
+    - `lifecycle.json` confirmed navigation phase `Complete`, response status `Success`, commit source `network-document`, document `readyState` `complete`, and terminal success flags.
+    - `script_loading.json` confirmed status `completed`, `12` DOM elements inspected, `0` scripts discovered, `0` executions, and `0` failures.
+    - `event_loop.json` confirmed status `completed`, DOMContentLoaded `true`, load `true`, `0` timer/rAF callbacks, `0` callback failures, and ordered lifecycle events.
+    - `network.json` confirmed one captured `GET https://example.com/` request with `200 OK`, `text/html`, request headers, response headers, and metadata duration.
+    - Visual check of `screenshot.png` showed the rendered Example Domain heading, body text, and link in the 1280x800 capture.
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- debug-site file:///C:/Users/udayk/Videos/fenbrowser-test/logs/debug_site_event_loop_smoke.html 1500`: pass on `2026-06-27`.
+    - Bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_debug_site_event_loop_smoke.html/20260627T082709Z`.
+    - Evidence: navigation returned `True`, rendered text reached `timer`, `1` script discovered and executed, DOMContentLoaded `true`, load `true`, `2` microtask checkpoints, `0` callback failures, and `0` console messages.
+    - `event_loop.json` confirmed `TimersScheduled=1`, `TimersExecuted=1`, `AnimationFramesScheduled=1`, `AnimationFramesExecuted=1`, one `CallbackCompleted` record for `setTimeout` with ID `1`, and one for `requestAnimationFrame` with ID `2`.
+    - `logs.ndjson` contained structured `EventLoop` entries for `TimerScheduled`, `AnimationFrameScheduled`, `DOMContentLoadedFired`, `LoadFired`, and callback completion with callback IDs.
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- debug-site file:///C:/Users/udayk/Videos/fenbrowser-test/logs/debug_site_script_smoke.html 1000`: pass on `2026-06-27`.
+    - Bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_debug_site_script_smoke.html/20260627T043849Z`.
+    - Evidence: navigation returned `True`, final rendered text was `loaded`, `1` script discovered, `1` script eligible, `1` script executed, `0` script failures, `0` navigation failures, and `0` console messages.
+    - `script_loading.json` confirmed `InlineScripts=1`, `BlockingScripts=1`, `ExecutionStarted=1`, `ExecutionCompleted=1`, `ExecutionFailed=0`, `AsyncPendingScripts=0`, and one per-script record with `Status=executed`, `Batch=blocking`, `SourceType=inline`, and `CodeLength=81`.
+    - `logs.ndjson` contained `ScriptExecutionCompleted` with caller metadata from `BrowserScriptEngineRuntime.cs` / `ExecuteScriptBatchAsync`.

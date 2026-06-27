@@ -93,6 +93,30 @@ namespace FenBrowser.Tests.Scripting
         }
 
         [Fact]
+        public async Task IndirectEval_CreatesGlobalBindingsInHostedBrowserEngine()
+        {
+            var baseUri = new Uri("https://www.google.com/search?q=test");
+            var document = new HtmlParser(
+                """
+                <html><body><script>
+                (0, eval)("var __fenIndirectEvalVar = 42; function __fenIndirectEvalFn(){ return 'fn-ok'; } globalThis.__fenIndirectEvalThis = this === globalThis;");
+                </script></body></html>
+                """,
+                baseUri).Parse();
+
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            Assert.Equal("42", engine.Evaluate("String(globalThis.__fenIndirectEvalVar)")?.ToString());
+            Assert.Equal("fn-ok", engine.Evaluate("globalThis.__fenIndirectEvalFn()")?.ToString());
+            Assert.Equal(true, engine.Evaluate("globalThis.__fenIndirectEvalThis"));
+        }
+
+        [Fact]
         public async Task ArrowPromiseChain_RunsAmazonWafBodyShape()
         {
             var baseUri = new Uri("https://www.amazon.in/");
@@ -302,6 +326,45 @@ namespace FenBrowser.Tests.Scripting
             Assert.Equal("https://www.amazon.in/_sec/verify?provider=interstitial", capturedRequest.RequestUri?.ToString());
             Assert.Equal("application/json", capturedRequest.Content?.Headers.ContentType?.MediaType);
             Assert.Contains("\"pow\":42", capturedBody);
+        }
+
+        [Fact]
+        public async Task TimerAndRafCallbacks_DoNotOverwriteLargeStackWorkerDispatch()
+        {
+            var baseUri = new Uri("https://example.com/index.html");
+            var document = new HtmlParser(
+                """
+                <html><body><script>
+                setTimeout(function () {
+                    globalThis.__timeoutCount = (globalThis.__timeoutCount || 0) + 1;
+                }, 20);
+                requestAnimationFrame(function () {
+                    globalThis.__rafCount = (globalThis.__rafCount || 0) + 1;
+                });
+                </script></body></html>
+                """,
+                baseUri).Parse();
+
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+            await Task.Delay(150);
+
+            var eventLoop = engine.GetEventLoopSnapshot();
+
+            Assert.Equal("1", engine.Evaluate("String(globalThis.__timeoutCount || 0)")?.ToString());
+            Assert.Equal("1", engine.Evaluate("String(globalThis.__rafCount || 0)")?.ToString());
+            Assert.Equal(1, eventLoop.TimersExecuted);
+            Assert.Equal(1, eventLoop.AnimationFramesExecuted);
+            Assert.Equal(1, eventLoop.Events.Count(e =>
+                e.EventName == "CallbackCompleted" &&
+                e.Detail == "setTimeout"));
+            Assert.Equal(1, eventLoop.Events.Count(e =>
+                e.EventName == "CallbackCompleted" &&
+                e.Detail == "requestAnimationFrame"));
         }
 
         private static JsHostAdapter CreateHost()
