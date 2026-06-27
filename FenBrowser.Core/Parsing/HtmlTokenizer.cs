@@ -15,6 +15,9 @@ namespace FenBrowser.Core.Parsing
     {
         private readonly string _input;
         private int _position;
+        private int _line = 1;
+        private int _column = 1;
+        private bool _previousConsumedWasCarriageReturn;
         private readonly int _length;
         private int _emittedTokenCount;
         private bool _emissionLimitReached;
@@ -384,7 +387,7 @@ namespace FenBrowser.Core.Parsing
                                 if (ch == '<' || ch == '&') break;
                                 p++;
                             }
-                            _position = p;
+                            AdvanceTo(p);
                             return new CharacterToken(_input.Substring(runStart, p - runStart));
                         }
                         break;
@@ -509,6 +512,7 @@ namespace FenBrowser.Core.Parsing
                         else if (char.IsLetter(c))
                         {
                             _currentTag = _pool != null ? _pool.RentStartTag() : new StartTagToken();
+                            SetTokenSourceLocation(_currentTag, Math.Max(0, _position - 1), _line, Math.Max(1, _column - 1));
                             SwitchTo(TokenizerState.TagName);
                              // Don't consume here, TagName state will handle it (reconsume)
                              continue;
@@ -677,7 +681,7 @@ namespace FenBrowser.Core.Parsing
                                 if (ch == '<') break;
                                 p++;
                             }
-                            _position = p;
+                            AdvanceTo(p);
                             return new CharacterToken(_input.Substring(runStart, p - runStart));
                         }
                         break;
@@ -794,7 +798,7 @@ namespace FenBrowser.Core.Parsing
                                 if (ch == '<') break;
                                 p++;
                             }
-                            _position = p;
+                            AdvanceTo(p);
                             // Emit the whole run as a single token. CharacterToken supports
                             // multi-char Data; tree builder handles it via AppendToText.
                             return new CharacterToken(_input.Substring(runStart, p - runStart));
@@ -2185,7 +2189,58 @@ namespace FenBrowser.Core.Parsing
 
         private void Consume(int count = 1)
         {
-            _position += count;
+            AdvanceTo(_position + count);
+        }
+
+        private void AdvanceTo(int newPosition)
+        {
+            if (newPosition <= _position)
+            {
+                _position = Math.Max(0, newPosition);
+                return;
+            }
+
+            var target = Math.Min(newPosition, _length);
+            while (_position < target)
+            {
+                var ch = _input[_position];
+                _position++;
+                if (ch == '\r')
+                {
+                    _line++;
+                    _column = 1;
+                    _previousConsumedWasCarriageReturn = true;
+                }
+                else if (ch == '\n')
+                {
+                    if (!_previousConsumedWasCarriageReturn)
+                    {
+                        _line++;
+                        _column = 1;
+                    }
+
+                    _previousConsumedWasCarriageReturn = false;
+                }
+                else
+                {
+                    _column++;
+                    _previousConsumedWasCarriageReturn = false;
+                }
+            }
+
+            _position = target;
+        }
+
+        private static void SetTokenSourceLocation(HtmlToken token, int offset, int line, int column)
+        {
+            if (token == null)
+            {
+                return;
+            }
+
+            token.SourceOffset = offset;
+            token.SourceLine = line;
+            token.SourceColumn = column;
         }
 
         private bool IsEof() => _position >= _length;
@@ -2302,7 +2357,7 @@ namespace FenBrowser.Core.Parsing
                     }
                 }
 
-                _position = end + (hasSemicolon ? 1 : 0);
+                AdvanceTo(end + (hasSemicolon ? 1 : 0));
                 return true;
             }
 

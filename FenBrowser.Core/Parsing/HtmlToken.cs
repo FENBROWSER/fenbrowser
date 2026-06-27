@@ -29,6 +29,9 @@ namespace FenBrowser.Core.Parsing
     public abstract class HtmlToken
     {
         public HtmlTokenType Type { get; }
+        public int SourceOffset { get; set; } = -1;
+        public int SourceLine { get; set; }
+        public int SourceColumn { get; set; }
 
         protected HtmlToken(HtmlTokenType type)
         {

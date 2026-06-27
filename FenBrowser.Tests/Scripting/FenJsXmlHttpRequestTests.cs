@@ -131,9 +131,7 @@ namespace FenBrowser.Tests.Scripting
         {
             var baseUri = new Uri("https://www.amazon.in/");
             var document = new HtmlParser(
-                """
-                <html><body><script>FenMissingGlobalProbe();</script></body></html>
-                """,
+                "<html>\n<body>\n<script>FenMissingGlobalProbe();</script>\n</body></html>",
                 baseUri).Parse();
 
             EngineCapabilities.Reset();
@@ -151,6 +149,9 @@ namespace FenBrowser.Tests.Scripting
                 var script = Assert.Single(snapshot.Scripts);
                 Assert.Equal("script-1", script.ScriptId);
                 Assert.Equal("inline#1", script.SourceLabel);
+                Assert.Equal(14, script.SourceOffset);
+                Assert.Equal(3, script.SourceLine);
+                Assert.Equal(1, script.SourceColumn);
                 var record = Assert.Single(
                     EngineCapabilities.GetUnsupportedJsSnapshot(),
                     feature => feature.Name == "globalThis.FenMissingGlobalProbe");

@@ -158,6 +158,9 @@ namespace FenBrowser.Core.Parsing
             TagName = null;
             SelfClosing = false;
             Attributes.Clear();
+            SourceOffset = -1;
+            SourceLine = 0;
+            SourceColumn = 0;
         }
     }
 
@@ -169,6 +172,9 @@ namespace FenBrowser.Core.Parsing
             TagName = null;
             SelfClosing = false;
             Attributes.Clear();
+            SourceOffset = -1;
+            SourceLine = 0;
+            SourceColumn = 0;
         }
     }
 
@@ -180,11 +186,17 @@ namespace FenBrowser.Core.Parsing
         public void ResetWith(char c)
         {
             Data = c.ToString();
+            SourceOffset = -1;
+            SourceLine = 0;
+            SourceColumn = 0;
         }
 
         public void ResetWith(string s)
         {
             Data = s;
+            SourceOffset = -1;
+            SourceLine = 0;
+            SourceColumn = 0;
         }
     }
 
@@ -194,6 +206,9 @@ namespace FenBrowser.Core.Parsing
         public void Reset()
         {
             Data = "";
+            SourceOffset = -1;
+            SourceLine = 0;
+            SourceColumn = 0;
         }
     }
 
@@ -206,6 +221,9 @@ namespace FenBrowser.Core.Parsing
             PublicIdentifier = null;
             SystemIdentifier = null;
             ForceQuirks = false;
+            SourceOffset = -1;
+            SourceLine = 0;
+            SourceColumn = 0;
         }
     }
 }

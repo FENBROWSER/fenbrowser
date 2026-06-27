@@ -2249,6 +2249,12 @@ namespace FenBrowser.Core.Parsing
         {
             var namespaceUri = DetermineElementNamespace(token);
             var el = new Element(token.TagName, _document, namespaceUri);
+            if (token.SourceOffset >= 0)
+            {
+                el.SourceOffset = token.SourceOffset;
+                el.SourceLine = token.SourceLine;
+                el.SourceColumn = token.SourceColumn;
+            }
 
             bool isForeignContent = !string.Equals(namespaceUri, Namespaces.Html, StringComparison.Ordinal);
             if (isForeignContent)

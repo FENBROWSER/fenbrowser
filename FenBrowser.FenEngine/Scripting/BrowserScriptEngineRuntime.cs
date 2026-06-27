@@ -100,6 +100,9 @@ public sealed class BrowserScriptLoadingRecord
     public int Ordinal { get; set; }
     public string ScriptId { get; set; } = string.Empty;
     public string SourceLabel { get; set; } = string.Empty;
+    public int SourceOffset { get; set; } = -1;
+    public int SourceLine { get; set; }
+    public int SourceColumn { get; set; }
     public string Kind { get; set; } = string.Empty;
     public string SourceType { get; set; } = string.Empty;
     public string Src { get; set; } = string.Empty;
@@ -123,6 +126,9 @@ public sealed class BrowserScriptLoadingRecord
             Ordinal = Ordinal,
             ScriptId = ScriptId,
             SourceLabel = SourceLabel,
+            SourceOffset = SourceOffset,
+            SourceLine = SourceLine,
+            SourceColumn = SourceColumn,
             Kind = Kind,
             SourceType = SourceType,
             Src = Src,
@@ -949,6 +955,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             Ordinal = ordinal,
             ScriptId = BuildScriptId(ordinal),
             SourceLabel = BuildScriptSourceLabel(scriptElement, ordinal),
+            SourceOffset = scriptElement?.SourceOffset ?? -1,
+            SourceLine = scriptElement?.SourceLine ?? 0,
+            SourceColumn = scriptElement?.SourceColumn ?? 0,
             Kind = isModule ? "module" : "classic",
             SourceType = string.IsNullOrEmpty(src) ? "inline" : "external",
             Src = src,
@@ -1030,6 +1039,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         fields["scriptOrdinal"] = record.Ordinal;
         fields["scriptSourceLabel"] = record.SourceLabel ?? string.Empty;
         fields["scriptSourceType"] = record.SourceType ?? string.Empty;
+        fields["scriptSourceOffset"] = record.SourceOffset;
+        fields["scriptSourceLine"] = record.SourceLine;
+        fields["scriptSourceColumn"] = record.SourceColumn;
         fields["sourceLabel"] = record.SourceLabel ?? string.Empty;
         fields["sourceType"] = record.SourceType ?? string.Empty;
         fields["scriptSrc"] = record.Src ?? string.Empty;
@@ -4573,6 +4585,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             ["ordinal"] = scriptElements,
                             ["sourceLabel"] = BuildScriptSourceLabel(element, scriptElements),
                             ["sourceType"] = string.IsNullOrEmpty(src) ? "inline" : "external",
+                            ["scriptSourceOffset"] = element.SourceOffset,
+                            ["scriptSourceLine"] = element.SourceLine,
+                            ["scriptSourceColumn"] = element.SourceColumn,
                             ["src"] = src,
                             ["type"] = element.GetAttribute("type") ?? string.Empty,
                             ["parentType"] = element.ParentNode?.GetType().Name ?? string.Empty,

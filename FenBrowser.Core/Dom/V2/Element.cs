@@ -49,6 +49,22 @@ namespace FenBrowser.Core.Dom.V2
         /// </summary>
         public string Prefix { get; set; }
 
+        /// <summary>
+        /// Character offset of the source start tag when this element came from HTML parsing.
+        /// Synthetic and script-created elements use -1.
+        /// </summary>
+        public int SourceOffset { get; internal set; } = -1;
+
+        /// <summary>
+        /// 1-based line of the source start tag when available.
+        /// </summary>
+        public int SourceLine { get; internal set; }
+
+        /// <summary>
+        /// 1-based column of the source start tag when available.
+        /// </summary>
+        public int SourceColumn { get; internal set; }
+
         // --- Attributes (Single Source of Truth) ---
 
         private readonly NamedNodeMap _attributes;
