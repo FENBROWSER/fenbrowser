@@ -2515,15 +2515,22 @@ pre {{
                 return;
             }
 
-            var detail = string.IsNullOrWhiteSpace(baseDetail)
-                ? settleDetail
-                : $"{baseDetail};{settleDetail}";
+            var documentLifecycleDetail = await WaitForDocumentLifecycleSettleDetailAsync(navigationId).ConfigureAwait(false);
+            if (!IsLatestNavigation(navigationId))
+            {
+                _navigationSubresources.AbandonNavigation(navigationId);
+                _navigationLifecycle.MarkCancelled(navigationId, "superseded-by-new-navigation");
+                return;
+            }
 
-            // Mark navigation complete BEFORE the diagnostic probe so the UI
-            // (loading spinner, favicon swap, navigation-state observers) is
-            // never gated on diagnostic work. The probe is internally bounded
-            // by a timeout, but ordering this way makes the user-visible
-            // lifecycle insensitive to probe behavior at any cost.
+            var detail = string.IsNullOrWhiteSpace(baseDetail)
+                ? $"{settleDetail};{documentLifecycleDetail}"
+                : $"{baseDetail};{settleDetail};{documentLifecycleDetail}";
+
+            // Mark navigation complete after bounded subresource and document
+            // lifecycle settling so lifecycle diagnostics do not report
+            // Complete before DOMContentLoaded/load for the same document.
+            // Diagnostic probes remain after completion and cannot gate UI.
             _navigationLifecycle.MarkComplete(navigationId, detail);
 
             // Diagnostic probe: capture the shape of well-known challenge / page
@@ -2549,6 +2556,78 @@ pre {{
                     ["unsupportedJs"] = unsupportedJs
                 });
             _navigationSubresources.AbandonNavigation(navigationId);
+        }
+
+        private async Task<string> WaitForDocumentLifecycleSettleDetailAsync(long navigationId)
+        {
+            const int settleTimeoutMs = 1500;
+            const int pollIntervalMs = 25;
+            var startedUtc = DateTimeOffset.UtcNow;
+            var scriptEngine = _engine?.ScriptEngine;
+
+            if (_engine == null || !_engine.EnableJavaScript || scriptEngine == null)
+            {
+                return
+                    "eventLoop=disabled;" +
+                    "eventLoopStatus=not-run;" +
+                    "documentReadyState=unknown;" +
+                    "domContentLoaded=0;" +
+                    "load=0;" +
+                    "pendingHostTimers=0;" +
+                    "eventLoopWaitMs=0;" +
+                    $"eventLoopTimeoutMs={settleTimeoutMs};" +
+                    $"navId={navigationId}";
+            }
+
+            bool IsDocumentLifecycleSettled(FenBrowser.FenEngine.Scripting.BrowserEventLoopSnapshot snapshot)
+            {
+                if (snapshot == null)
+                {
+                    return true;
+                }
+
+                if (string.Equals(snapshot.Status, "completed", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(snapshot.Status, "completed-no-document", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                return snapshot.DomContentLoadedFired &&
+                       snapshot.LoadFired &&
+                       snapshot.PendingHostTimers == 0;
+            }
+
+            FenBrowser.FenEngine.Scripting.BrowserEventLoopSnapshot snapshot =
+                scriptEngine.GetEventLoopSnapshot();
+
+            while (IsLatestNavigation(navigationId) &&
+                   !IsDocumentLifecycleSettled(snapshot) &&
+                   (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds < settleTimeoutMs)
+            {
+                await Task.Delay(pollIntervalMs).ConfigureAwait(false);
+                snapshot = scriptEngine.GetEventLoopSnapshot();
+            }
+
+            snapshot = scriptEngine.GetEventLoopSnapshot() ?? snapshot;
+            var elapsedMs = (int)Math.Min(
+                settleTimeoutMs,
+                Math.Max(0, (DateTimeOffset.UtcNow - startedUtc).TotalMilliseconds));
+            var status = snapshot?.Status ?? "not-run";
+            var readyState = string.IsNullOrWhiteSpace(snapshot?.DocumentReadyState)
+                ? "unknown"
+                : snapshot.DocumentReadyState;
+            var settled = IsDocumentLifecycleSettled(snapshot);
+
+            return
+                $"eventLoop={(settled ? status : "partial")};" +
+                $"eventLoopStatus={status};" +
+                $"documentReadyState={readyState};" +
+                $"domContentLoaded={(snapshot?.DomContentLoadedFired == true ? 1 : 0)};" +
+                $"load={(snapshot?.LoadFired == true ? 1 : 0)};" +
+                $"pendingHostTimers={snapshot?.PendingHostTimers ?? 0};" +
+                $"eventLoopWaitMs={elapsedMs};" +
+                $"eventLoopTimeoutMs={settleTimeoutMs};" +
+                $"navId={navigationId}";
         }
 
         private async Task<string> WaitForSubresourceSettleDetailAsync(long navigationId)

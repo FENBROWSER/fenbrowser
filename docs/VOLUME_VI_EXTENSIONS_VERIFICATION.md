@@ -2540,6 +2540,10 @@ _End of Volume VI_
   - The event-loop snapshot tracks DOMContentLoaded/load dispatch, microtask checkpoints, timer/rAF scheduling, callback completion, pending host timers, and callback failures.
   - Fixed the FenJS large-stack worker dispatch race by holding `_fenJsWorkGate` through the wait/result capture, preventing concurrent timer/rAF callbacks from overwriting `_fenJsPendingWork`.
 
+- `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
+  - Navigation `Complete` now waits for bounded document event-loop settling before the terminal transition, so `debug-site` lifecycle artifacts do not report `Complete` before DOMContentLoaded/load for the same document.
+  - The terminal lifecycle detail records event-loop settle status, readyState, DOMContentLoaded/load flags, pending host timers, wait duration, and timeout budget.
+
 - Current bundle contract:
   - `summary.md` and `summary.json`: URL, final URL, navigation result, elapsed time, DOM node count, raw/source text lengths, computed-style count, layout/paint counts, console count, final lifecycle phase/detail, lifecycle transition count/phase path, script-loading counts, DOMContentLoaded/load timestamps, and first-blocker classifications.
   - `trace.jsonl`: copied from the run's structured trace when present.
@@ -2562,7 +2566,6 @@ _End of Volume VI_
 - Known diagnostic-spine gaps after this tranche:
   - Per-script source IDs/line-column attribution, module graph details, IPC, sandbox-denial, and broader performance summaries are not yet auto-classified from trace events.
   - `display_list.txt` currently flattens the immutable Paint Tree order; it is not yet a Skia command-stream dump.
-  - The `example.com` lifecycle timeline now exposes that navigation `Complete` can precede event-loop DOMContentLoaded/load timestamps; ordering is visible in artifacts but not corrected in this tranche.
   - Missing API extraction is currently heuristic over console text; runtime WebIDL/DOM missing-API events still need structured emission.
   - Network bodies and initiator stacks are not exported; `network.json` is currently metadata-only.
 
@@ -2602,6 +2605,13 @@ _End of Volume VI_
     - `lifecycle.json` confirmed transition count `6`, phase path `Requested -> Fetching -> ResponseReceived -> Committing -> Interactive -> Complete`, terminal phase `Complete`, response status `Success`, commit source `network-document`, document `readyState` `complete`, DOMContentLoaded `true`, and load `true`.
     - `lifecycle_timeline.json` confirmed ordered records with sequence numbers, previous/current phase, URL/status/detail metadata, timestamps, and elapsed milliseconds from the first transition.
     - Diagnostic note: in this run, navigation `Complete` timestamp `2026-06-27T09:32:15.2962678Z` preceded the event-loop DOMContentLoaded/load timestamps (`2026-06-27T09:32:15.5451578+00:00` / `2026-06-27T09:32:15.5465074+00:00`), so ordering correction remains follow-up work.
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- debug-site https://example.com 2000`: pass on `2026-06-27` after the navigation/event-loop ordering correction.
+    - Bundle: `logs/real-site/example.com/20260627T094046Z`.
+    - Evidence: navigation returned `True`, final URL `https://example.com/`, elapsed `2863ms`, `18` DOM nodes, `12` computed styles, `10` layout boxes, `6` paint nodes, `1` network request, `0` failed network requests, `0` navigation failures, and `0` console messages.
+    - Artifact manifest confirmed all `22` expected files present.
+    - `lifecycle.json` confirmed transition count `6`, phase path `Requested -> Fetching -> ResponseReceived -> Committing -> Interactive -> Complete`, terminal phase `Complete`, response status `Success`, commit source `network-document`, document `readyState` `complete`, DOMContentLoaded `true`, and load `true`.
+    - Terminal detail included `eventLoop=completed`, `eventLoopStatus=completed`, `domContentLoaded=1`, `load=1`, `pendingHostTimers=0`, and `eventLoopWaitMs=266`.
+    - Timestamp check confirmed `Complete` at `2026-06-27T09:40:43.9658070Z` occurred after DOMContentLoaded at `2026-06-27T09:40:43.9425956+00:00` and load at `2026-06-27T09:40:43.9438582+00:00`.
   - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- debug-site file:///C:/Users/udayk/Videos/fenbrowser-test/logs/debug_site_event_loop_smoke.html 1500`: pass on `2026-06-27`.
     - Bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_debug_site_event_loop_smoke.html/20260627T082709Z`.
     - Evidence: navigation returned `True`, rendered text reached `timer`, `1` script discovered and executed, DOMContentLoaded `true`, load `true`, `2` microtask checkpoints, `0` callback failures, and `0` console messages.
