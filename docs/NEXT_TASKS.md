@@ -46,10 +46,12 @@ Status: IMPLEMENTED / REGRESSION_PROTECTED
 ### T1.4 — Instrument script loading with per-script lifecycle trace
 - **Area**: FenEngine / Scripting
 - **Dependencies**: T1.1
-- **Files**: `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`
+- **Files**: `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`, `FenBrowser.Tests/Engine/BrowserScriptEngineTraceTests.cs`
+- **Status**: IMPLEMENTED / REGRESSION_PROTECTED
 - **Spec**: PLAN.MD § "Script Loading Trace Requirements"
-- **Description**: Add trace events for: ScriptDiscovered, ScriptFetchStarted, ScriptFetchCompleted, ScriptReady, ScriptExecutionStarted, ScriptExecutionCompleted, ScriptExecutionFailed, DOMContentLoadedBlockedByScript. Per-script fields: script ID, URL, inline/external, classic/module, async, defer, parser-inserted, blocking status, fetch status, MIME type, execution order, exception if failed.
-- **Acceptance**: Every script on a page produces a complete lifecycle trace. Script ordering errors are detectable from trace.
+- **Description**: `FenJsBrowserScriptEngine` now writes diagnostic `ScriptLoader` JSONL events for parser-discovered and dynamically inserted scripts: `ScriptDiscovered`, `ScriptFetchStarted`, `ScriptFetchCompleted`, `ScriptReady`, `ScriptExecutionStarted`, `ScriptExecutionCompleted`, `ScriptExecutionFailed`, and `DOMContentLoadedBlockedByScript` where applicable. Per-script trace data includes script ID, resolved URL/source, inline/external, classic/module, async/defer, parser-inserted status, blocking status, fetch status, MIME type, execution order, and exception data on failures. The events populate top-level diagnostic `nav_id` and `script_id` fields through `EngineLogContext`.
+- **Verification**: `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~BrowserScriptEngineTraceTests|FullyQualifiedName~EngineLogSettingsTests" --no-restore -v minimal` passed 3/3.
+- **Acceptance**: Parser-discovered and dynamically inserted scripts produce lifecycle traces with ordering and blocking data.
 
 ### T1.5 — Instrument event loop with task/microtask/timer/rAF trace
 - **Area**: FenEngine / Event Loop
