@@ -1263,10 +1263,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 if (!resolvedPercentHeight)
                 {
-                    if (box.ComputedStyle?.LineHeight.HasValue == true && box.ComputedStyle.LineHeight.Value > 0)
+                    bool hasInFlowChildren = box.Children.Any(child =>
+                        child != null &&
+                        !child.IsOutOfFlow &&
+                        child.ComputedStyle?.Display?.Contains("none", StringComparison.OrdinalIgnoreCase) != true &&
+                        !IsIgnorableFlexItem(child));
+                    if (!hasInFlowChildren &&
+                        LayoutHelper.TryResolveLineHeight(box.ComputedStyle, out var resolvedLineHeight) &&
+                        resolvedLineHeight > 0f)
                     {
-                        // Many icon wrappers rely on line-height when height is auto.
-                        height = (float)box.ComputedStyle.LineHeight.Value;
+                        // Empty/leaf flex wrappers can still rely on line-height when height is auto.
+                        height = resolvedLineHeight;
                     }
                     else if (!string.IsNullOrEmpty(box.ComputedStyle?.HeightExpression))
                     {
@@ -1889,9 +1896,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             if (fallbackW <= 0f && style?.Width.HasValue == true) fallbackW = (float)style.Width.Value;
             if (fallbackH <= 0f && style?.Height.HasValue == true) fallbackH = (float)style.Height.Value;
-            if (fallbackH <= 0f && style?.LineHeight.HasValue == true && style.LineHeight.Value > 0)
+            if (fallbackH <= 0f &&
+                LayoutHelper.TryResolveLineHeight(style, out var resolvedLineHeight) &&
+                resolvedLineHeight > 0f)
             {
-                fallbackH = (float)style.LineHeight.Value;
+                fallbackH = resolvedLineHeight;
             }
 
             if (item.SourceNode is Element el)

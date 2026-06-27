@@ -257,7 +257,7 @@ namespace FenBrowser.Tests.Layout
                 FlexDirection = "column",
                 Width = 200,
                 FontSize = 16,
-                LineHeight = 24,
+                LineHeight = 1.5,
             };
             groupStyle.Map["height"] = "100%";
 
@@ -266,13 +266,13 @@ namespace FenBrowser.Tests.Layout
                 [root] = new CssComputed { Display = "block", Width = 800 },
                 [nav] = new CssComputed { Display = "block", Width = 0 },
                 [gridList] = new CssComputed { Display = "grid", Width = 0 },
-                [gridItem] = new CssComputed { Display = "list-item", FontSize = 16, LineHeight = 24 },
+                [gridItem] = new CssComputed { Display = "list-item", FontSize = 16, LineHeight = 1.5 },
                 [group] = groupStyle,
-                [title] = new CssComputed { Display = "block", FontSize = 12, LineHeight = 18 },
-                [nestedList] = new CssComputed { Display = "flex", FlexDirection = "column", FontSize = 16, LineHeight = 24 },
-                [nestedItem] = new CssComputed { Display = "list-item", FontSize = 16, LineHeight = 24 },
-                [link] = new CssComputed { Display = "flex", FontSize = 16, LineHeight = 24 },
-                [linkTitle] = new CssComputed { Display = "block", FontSize = 16, LineHeight = 24 },
+                [title] = new CssComputed { Display = "block", FontSize = 12, LineHeight = 1.5 },
+                [nestedList] = new CssComputed { Display = "flex", FlexDirection = "column", FontSize = 16, LineHeight = 1.5 },
+                [nestedItem] = new CssComputed { Display = "list-item", FontSize = 16, LineHeight = 1.5 },
+                [link] = new CssComputed { Display = "flex", FontSize = 16, LineHeight = 1.5 },
+                [linkTitle] = new CssComputed { Display = "block", FontSize = 16, LineHeight = 1.5 },
             };
 
             var rootBox = LayoutRoot(root, styles, 800, 600);
@@ -288,8 +288,8 @@ namespace FenBrowser.Tests.Layout
             Assert.NotNull(gridItemBox);
 
             Assert.True(
-                titleBox!.Geometry.ContentBox.Height > 1f,
-                $"Expected title block to have non-zero height. title={titleBox.Geometry.MarginBox} titleText={titleTextBox?.Geometry.MarginBox} group={groupBox!.Geometry.MarginBox} li={gridItemBox!.Geometry.MarginBox} groupDisplay={groupBox.ComputedStyle?.Display} groupRawHeight={GetRawHeight(groupBox.ComputedStyle)} groupHeightPercent={groupBox.ComputedStyle?.HeightPercent}");
+                titleBox!.Geometry.ContentBox.Height >= 17f,
+                $"Expected unitless line-height to resolve against title font-size. title={titleBox.Geometry.MarginBox} titleText={titleTextBox?.Geometry.MarginBox} group={groupBox!.Geometry.MarginBox} li={gridItemBox!.Geometry.MarginBox} groupDisplay={groupBox.ComputedStyle?.Display} groupRawHeight={GetRawHeight(groupBox.ComputedStyle)} groupHeightPercent={groupBox.ComputedStyle?.HeightPercent}");
             Assert.True(groupBox!.Geometry.ContentBox.Height >= titleBox.Geometry.ContentBox.Height, $"Expected column flex group to include its title height. group={groupBox.Geometry.MarginBox} title={titleBox.Geometry.MarginBox}");
             Assert.True(gridItemBox!.Geometry.ContentBox.Height >= groupBox.Geometry.ContentBox.Height, $"Expected list item to include flex group height. li={gridItemBox.Geometry.MarginBox} group={groupBox.Geometry.MarginBox}");
         }

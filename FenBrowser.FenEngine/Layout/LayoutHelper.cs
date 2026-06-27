@@ -65,6 +65,32 @@ namespace FenBrowser.FenEngine.Layout
             return GetRenderableTextContent(node).Trim();
         }
 
+        public static bool TryResolveLineHeight(CssComputed style, out float lineHeight)
+        {
+            lineHeight = 0f;
+            if (style?.LineHeight.HasValue != true)
+            {
+                return false;
+            }
+
+            float rawLineHeight = (float)style.LineHeight.Value;
+            if (!float.IsFinite(rawLineHeight) || rawLineHeight < 0f)
+            {
+                return false;
+            }
+
+            float fontSize = 16f;
+            if (style.FontSize.HasValue && style.FontSize.Value > 0)
+            {
+                fontSize = (float)style.FontSize.Value;
+            }
+
+            lineHeight = rawLineHeight > 0f && rawLineHeight < 3f
+                ? rawLineHeight * fontSize
+                : rawLineHeight;
+            return true;
+        }
+
         public static SKRect CleanRect(SKRect r)
         {
             float l = r.Left, t = r.Top, ri = r.Right, b = r.Bottom;
