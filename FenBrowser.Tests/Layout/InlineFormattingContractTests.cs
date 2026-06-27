@@ -278,18 +278,28 @@ namespace FenBrowser.Tests.Layout
             var rootBox = LayoutRoot(root, styles, 800, 600);
             var groupBox = FindBox(rootBox, group);
             var titleBox = FindBox(rootBox, title);
+            var gridListBox = FindBox(rootBox, gridList);
             var gridItemBox = FindBox(rootBox, gridItem);
+            var nestedListBox = FindBox(rootBox, nestedList);
             var textBoxes = new List<TextLayoutBox>();
             CollectTextBoxes(rootBox, textBoxes);
             var titleTextBox = FindTextBox(textBoxes, titleText);
 
             Assert.NotNull(groupBox);
             Assert.NotNull(titleBox);
+            Assert.NotNull(gridListBox);
             Assert.NotNull(gridItemBox);
+            Assert.NotNull(nestedListBox);
 
             Assert.True(
                 titleBox!.Geometry.ContentBox.Height >= 17f,
                 $"Expected unitless line-height to resolve against title font-size. title={titleBox.Geometry.MarginBox} titleText={titleTextBox?.Geometry.MarginBox} group={groupBox!.Geometry.MarginBox} li={gridItemBox!.Geometry.MarginBox} groupDisplay={groupBox.ComputedStyle?.Display} groupRawHeight={GetRawHeight(groupBox.ComputedStyle)} groupHeightPercent={groupBox.ComputedStyle?.HeightPercent}");
+            Assert.True(
+                string.IsNullOrEmpty(groupBox!.ComputedStyle?.HeightExpression),
+                $"Expected raw percentage height to stay typed as HeightPercent, not HeightExpression={groupBox.ComputedStyle?.HeightExpression}.");
+            Assert.True(
+                groupBox!.Geometry.ContentBox.Height < 600f,
+                $"Expected unresolved percent-height flex group to size from content, not viewport. grid={gridListBox!.Geometry.MarginBox} li={gridItemBox!.Geometry.MarginBox} group={groupBox.Geometry.MarginBox} title={titleBox.Geometry.MarginBox} nested={nestedListBox!.Geometry.MarginBox} titleText={titleTextBox?.Geometry.MarginBox} groupParent={(groupBox.Parent?.SourceNode as Element)?.TagName}/{groupBox.Parent?.ComputedStyle?.Display} groupRawHeight={GetRawHeight(groupBox.ComputedStyle)} groupHeightPercent={groupBox.ComputedStyle?.HeightPercent} liHeightPercent={gridItemBox.ComputedStyle?.HeightPercent}");
             Assert.True(groupBox!.Geometry.ContentBox.Height >= titleBox.Geometry.ContentBox.Height, $"Expected column flex group to include its title height. group={groupBox.Geometry.MarginBox} title={titleBox.Geometry.MarginBox}");
             Assert.True(gridItemBox!.Geometry.ContentBox.Height >= groupBox.Geometry.ContentBox.Height, $"Expected list item to include flex group height. li={gridItemBox.Geometry.MarginBox} group={groupBox.Geometry.MarginBox}");
         }

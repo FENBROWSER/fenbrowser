@@ -170,15 +170,23 @@ namespace FenBrowser.FenEngine.Layout
                 return;
             }
 
-            if (!percentValue.HasValue && TryParsePercent(rawValue, out var percent))
+            if (TryParsePercent(rawValue, out var percent))
             {
-                setPercentValue(percent);
+                if (!percentValue.HasValue)
+                {
+                    setPercentValue(percent);
+                }
+
                 return;
             }
 
-            if (!absoluteValue.HasValue && TryParseAbsoluteLength(rawValue, out var absolute))
+            if (TryParseAbsoluteLength(rawValue, out var absolute))
             {
-                setAbsoluteValue(absolute);
+                if (!absoluteValue.HasValue)
+                {
+                    setAbsoluteValue(absolute);
+                }
+
                 return;
             }
 
@@ -210,15 +218,23 @@ namespace FenBrowser.FenEngine.Layout
                 return;
             }
 
-            if (!percentValue.HasValue && TryParsePercent(rawValue, out var percent))
+            if (TryParsePercent(rawValue, out var percent))
             {
-                setPercentValue(percent);
+                if (!percentValue.HasValue)
+                {
+                    setPercentValue(percent);
+                }
+
                 return;
             }
 
-            if (!absoluteValue.HasValue && TryParseAbsoluteLength(rawValue, out var absolute))
+            if (TryParseAbsoluteLength(rawValue, out var absolute))
             {
-                setAbsoluteValue(absolute);
+                if (!absoluteValue.HasValue)
+                {
+                    setAbsoluteValue(absolute);
+                }
+
                 return;
             }
 
