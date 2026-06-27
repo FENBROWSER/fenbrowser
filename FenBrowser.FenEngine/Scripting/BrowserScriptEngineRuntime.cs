@@ -98,6 +98,8 @@ public sealed class BrowserScriptLoadingSnapshot
 public sealed class BrowserScriptLoadingRecord
 {
     public int Ordinal { get; set; }
+    public string ScriptId { get; set; } = string.Empty;
+    public string SourceLabel { get; set; } = string.Empty;
     public string Kind { get; set; } = string.Empty;
     public string SourceType { get; set; } = string.Empty;
     public string Src { get; set; } = string.Empty;
@@ -119,6 +121,8 @@ public sealed class BrowserScriptLoadingRecord
         return new BrowserScriptLoadingRecord
         {
             Ordinal = Ordinal,
+            ScriptId = ScriptId,
+            SourceLabel = SourceLabel,
             Kind = Kind,
             SourceType = SourceType,
             Src = Src,
@@ -939,12 +943,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private BrowserScriptLoadingRecord AddScriptLoadingRecord(Element scriptElement, int ordinal, bool isModule, bool isAsync, bool isDefer)
     {
+        var src = scriptElement?.GetAttribute("src") ?? string.Empty;
         var record = new BrowserScriptLoadingRecord
         {
             Ordinal = ordinal,
+            ScriptId = BuildScriptId(ordinal),
+            SourceLabel = BuildScriptSourceLabel(scriptElement, ordinal),
             Kind = isModule ? "module" : "classic",
-            SourceType = string.IsNullOrEmpty(scriptElement?.GetAttribute("src")) ? "inline" : "external",
-            Src = scriptElement?.GetAttribute("src") ?? string.Empty,
+            SourceType = string.IsNullOrEmpty(src) ? "inline" : "external",
+            Src = src,
             Type = scriptElement?.GetAttribute("type") ?? string.Empty,
             IsAsync = isAsync,
             IsDefer = isDefer,
@@ -984,16 +991,56 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             script.CompletedUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
         });
         UpdateScriptLoadingSnapshot(snapshot => snapshot.SkippedScripts++);
+        var fields = CreateScriptRecordFields(record);
+        fields["ordinal"] = record?.Ordinal ?? 0;
+        fields["src"] = record?.Src ?? string.Empty;
+        fields["reason"] = reason ?? string.Empty;
         LogScriptLoading(
             "ScriptSkipped",
             LogSeverity.Debug,
             "[FenJsBridge] Script skipped",
-            new Dictionary<string, object>
-            {
-                ["ordinal"] = record?.Ordinal ?? 0,
-                ["src"] = record?.Src ?? string.Empty,
-                ["reason"] = reason ?? string.Empty
-            });
+            fields);
+    }
+
+    private static string BuildScriptId(int ordinal)
+    {
+        return "script-" + Math.Max(0, ordinal).ToString(CultureInfo.InvariantCulture);
+    }
+
+    private static string BuildScriptSourceLabel(Element scriptElement, int ordinal)
+    {
+        var scriptId = BuildScriptId(ordinal);
+        var src = scriptElement?.GetAttribute("src");
+        if (!string.IsNullOrWhiteSpace(src))
+        {
+            return "external:" + src.Trim();
+        }
+
+        return "inline#" + scriptId.Substring("script-".Length);
+    }
+
+    private static void AddScriptRecordFields(IDictionary<string, object> fields, BrowserScriptLoadingRecord record)
+    {
+        if (fields == null || record == null)
+        {
+            return;
+        }
+
+        fields["scriptId"] = record.ScriptId ?? string.Empty;
+        fields["scriptOrdinal"] = record.Ordinal;
+        fields["scriptSourceLabel"] = record.SourceLabel ?? string.Empty;
+        fields["scriptSourceType"] = record.SourceType ?? string.Empty;
+        fields["sourceLabel"] = record.SourceLabel ?? string.Empty;
+        fields["sourceType"] = record.SourceType ?? string.Empty;
+        fields["scriptSrc"] = record.Src ?? string.Empty;
+        fields["scriptResolvedUrl"] = record.ResolvedUrl ?? string.Empty;
+    }
+
+    private static Dictionary<string, object> CreateScriptRecordFields(BrowserScriptLoadingRecord record)
+    {
+        var fields = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        AddScriptRecordFields(fields, record);
+        return fields;
     }
 
     private static void LogScriptLoading(
@@ -1185,19 +1232,6 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             for (int i = 0; i < allScripts.Count; i++)
             {
                 var scriptElement = allScripts[i];
-                LogScriptLoading(
-                    "ScriptElementSeen",
-                    LogSeverity.Debug,
-                    "[FenJsBridge] Script element seen",
-                    new Dictionary<string, object>
-                    {
-                        ["ordinal"] = i + 1,
-                        ["tag"] = scriptElement.TagName ?? string.Empty,
-                        ["src"] = scriptElement.GetAttribute("src") ?? string.Empty,
-                        ["type"] = scriptElement.GetAttribute("type") ?? string.Empty,
-                        ["textLength"] = scriptElement.TextContent?.Length ?? 0
-                    });
-
                 var type = scriptElement.GetAttribute("type")?.ToLowerInvariant() ?? string.Empty;
                 var src = scriptElement.GetAttribute("src");
                 bool isModule = type == "module";
@@ -1215,6 +1249,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     isDefer = scriptElement.HasAttribute("defer") && hasSrc;
                 }
                 var scriptRecord = AddScriptLoadingRecord(scriptElement, i + 1, isModule, isAsync, isDefer);
+                var seenFields = CreateScriptRecordFields(scriptRecord);
+                seenFields["tag"] = scriptElement.TagName ?? string.Empty;
+                seenFields["src"] = src ?? string.Empty;
+                seenFields["type"] = scriptElement.GetAttribute("type") ?? string.Empty;
+                seenFields["textLength"] = scriptElement.TextContent?.Length ?? 0;
+                LogScriptLoading(
+                    "ScriptElementSeen",
+                    LogSeverity.Debug,
+                    "[FenJsBridge] Script element seen",
+                    seenFields);
+
                 if (!string.IsNullOrEmpty(type) &&
                     type != "text/javascript" &&
                     type != "application/javascript" &&
@@ -1266,17 +1311,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             snapshot.ModuleScripts++;
                         }
                     });
+                    var externalFields = CreateScriptRecordFields(scriptRecord);
+                    externalFields["src"] = src;
+                    externalFields["isModule"] = isModule;
+                    externalFields["isAsync"] = isAsync;
+                    externalFields["isDefer"] = isDefer;
                     LogScriptLoading(
                         "ScriptExternalDiscovered",
                         LogSeverity.Debug,
                         "[FenJsBridge] External script discovered",
-                        new Dictionary<string, object>
-                        {
-                            ["src"] = src,
-                            ["isModule"] = isModule,
-                            ["isAsync"] = isAsync,
-                            ["isDefer"] = isDefer
-                        });
+                        externalFields);
 
                     if (!AllowExternalScripts || !Sandbox.Allows(SandboxFeature.ExternalScripts))
                     {
@@ -1324,11 +1368,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             record.ResolvedUrl = scriptUri.AbsoluteUri;
                             record.Status = "fetch-started";
                         });
+                        var fetchStartedFields = CreateScriptRecordFields(scriptRecord);
+                        fetchStartedFields["url"] = scriptUri.AbsoluteUri;
                         LogScriptLoading(
                             "ScriptFetchStarted",
                             LogSeverity.Debug,
                             "[FenJsBridge] External script fetch started",
-                            new Dictionary<string, object> { ["url"] = scriptUri.AbsoluteUri });
+                            fetchStartedFields);
                     }
 
                     UpdateScriptLoadingRecord(scriptRecord, record => record.ResolvedUrl = scriptUri.AbsoluteUri);
@@ -1576,16 +1622,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         record.CodeLength = code?.Length ?? 0;
                         record.Status = "ready";
                     });
+                    var fetchCompletedFields = CreateScriptRecordFields(item.ScriptRecord);
+                    fetchCompletedFields["url"] = item.FetchKey;
+                    fetchCompletedFields["batch"] = batchLabel;
+                    fetchCompletedFields["codeLength"] = code?.Length ?? 0;
                     LogScriptLoading(
                         "ScriptFetchCompleted",
                         LogSeverity.Debug,
                         "[FenJsBridge] External script fetch completed",
-                        new Dictionary<string, object>
-                        {
-                            ["url"] = item.FetchKey,
-                            ["batch"] = batchLabel,
-                            ["codeLength"] = code?.Length ?? 0
-                        });
+                        fetchCompletedFields);
                 }
                 catch (Exception ex)
                 {
@@ -1599,17 +1644,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     FenBrowser.Core.EngineLogCompat.Warn(
                         $"[FenJsBridge] Fetch failed for '{item.FetchKey}' ({batchLabel}): {ex.Message}",
                         FenBrowser.Core.Logging.LogCategory.JavaScript);
+                    var fetchFailedFields = CreateScriptRecordFields(item.ScriptRecord);
+                    fetchFailedFields["url"] = item.FetchKey;
+                    fetchFailedFields["batch"] = batchLabel;
+                    fetchFailedFields["errorType"] = ex.GetType().Name;
+                    fetchFailedFields["error"] = ex.Message;
                     LogScriptLoading(
                         "ScriptFetchFailed",
                         LogSeverity.Warn,
                         "[FenJsBridge] Fetch failed",
-                        new Dictionary<string, object>
-                        {
-                            ["url"] = item.FetchKey,
-                            ["batch"] = batchLabel,
-                            ["errorType"] = ex.GetType().Name,
-                            ["error"] = ex.Message
-                        });
+                        fetchFailedFields);
                     continue;
                 }
                 if (string.IsNullOrWhiteSpace(code))
@@ -1621,15 +1665,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         record.Failure = "empty-code";
                         record.CompletedUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                     });
+                    var skippedFields = CreateScriptRecordFields(item.ScriptRecord);
+                    skippedFields["url"] = item.FetchKey;
+                    skippedFields["batch"] = batchLabel;
                     LogScriptLoading(
                         "ScriptSkipped",
                         LogSeverity.Debug,
                         "[FenJsBridge] Script skipped because fetched code was empty",
-                        new Dictionary<string, object>
-                        {
-                            ["url"] = item.FetchKey,
-                            ["batch"] = batchLabel
-                        });
+                        skippedFields);
                     continue;
                 }
             }
@@ -1645,17 +1688,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 record.CodeLength = code?.Length ?? record.CodeLength;
                 record.Status = "execution-started";
             });
+            var executionStartedFields = CreateScriptRecordFields(item.ScriptRecord);
+            executionStartedFields["batch"] = batchLabel;
+            executionStartedFields["source"] = item.FetchKey ?? "inline";
+            executionStartedFields["isModule"] = isModule;
+            executionStartedFields["codeLength"] = code?.Length ?? 0;
             LogScriptLoading(
                 "ScriptExecutionStarted",
                 LogSeverity.Debug,
                 "[FenJsBridge] Script execution started",
-                new Dictionary<string, object>
-                {
-                    ["batch"] = batchLabel,
-                    ["source"] = item.FetchKey ?? "inline",
-                    ["isModule"] = isModule,
-                    ["codeLength"] = code?.Length ?? 0
-                });
+                executionStartedFields);
             RunFenJsWithLargeStack<object>(() =>
             {
                 try
@@ -1675,16 +1717,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         record.Status = "executed";
                         record.CompletedUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                     });
+                    var executionCompletedFields = CreateScriptRecordFields(item.ScriptRecord);
+                    executionCompletedFields["batch"] = batchLabel;
+                    executionCompletedFields["source"] = item.FetchKey ?? "inline";
+                    executionCompletedFields["isModule"] = isModule;
                     LogScriptLoading(
                         "ScriptExecutionCompleted",
                         LogSeverity.Debug,
                         "[FenJsBridge] Script execution completed",
-                        new Dictionary<string, object>
-                        {
-                            ["batch"] = batchLabel,
-                            ["source"] = item.FetchKey ?? "inline",
-                            ["isModule"] = isModule
-                        });
+                        executionCompletedFields);
                 }
                 catch (JsThrownException jte)
                 {
@@ -1705,17 +1746,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         record.CompletedUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                     });
                     RecordMissingGlobalReference(desc ?? jte.Message);
+                    var scriptFailedFields = CreateScriptRecordFields(item.ScriptRecord);
+                    scriptFailedFields["batch"] = batchLabel;
+                    scriptFailedFields["origin"] = origin;
+                    scriptFailedFields["errorType"] = "JsThrownException";
+                    scriptFailedFields["error"] = desc ?? jte.Message;
                     LogScriptLoading(
                         "ScriptExecutionFailed",
                         LogSeverity.Error,
                         "[FenJsBridge] Script error",
-                        new Dictionary<string, object>
-                        {
-                            ["batch"] = batchLabel,
-                            ["origin"] = origin,
-                            ["errorType"] = "JsThrownException",
-                            ["error"] = desc ?? jte.Message
-                        },
+                        scriptFailedFields,
                         LogMarker.EngineBug);
                 }
                 catch (Exception ex)
@@ -1731,17 +1771,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         record.Failure = ex.GetType().Name + ": " + ex.Message;
                         record.CompletedUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                     });
+                    var scriptFailedFields = CreateScriptRecordFields(item.ScriptRecord);
+                    scriptFailedFields["batch"] = batchLabel;
+                    scriptFailedFields["origin"] = origin;
+                    scriptFailedFields["errorType"] = ex.GetType().Name;
+                    scriptFailedFields["error"] = ex.Message;
                     LogScriptLoading(
                         "ScriptExecutionFailed",
                         LogSeverity.Error,
                         "[FenJsBridge] Non-JS script error",
-                        new Dictionary<string, object>
-                        {
-                            ["batch"] = batchLabel,
-                            ["origin"] = origin,
-                            ["errorType"] = ex.GetType().Name,
-                            ["error"] = ex.Message
-                        },
+                        scriptFailedFields,
                         LogMarker.EngineBug);
                 }
                 finally
@@ -4523,14 +4562,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 if (string.Equals(element.TagName, "script", StringComparison.OrdinalIgnoreCase))
                 {
                     scriptElements++;
+                    var src = element.GetAttribute("src") ?? string.Empty;
                     LogScriptLoading(
                         "ScriptElementDiscovered",
                         LogSeverity.Debug,
                         "[FenJsBridge] Found SCRIPT element",
                         new Dictionary<string, object>
                         {
+                            ["scriptId"] = BuildScriptId(scriptElements),
                             ["ordinal"] = scriptElements,
-                            ["src"] = element.GetAttribute("src") ?? string.Empty,
+                            ["sourceLabel"] = BuildScriptSourceLabel(element, scriptElements),
+                            ["sourceType"] = string.IsNullOrEmpty(src) ? "inline" : "external",
+                            ["src"] = src,
                             ["type"] = element.GetAttribute("type") ?? string.Empty,
                             ["parentType"] = element.ParentNode?.GetType().Name ?? string.Empty,
                             ["parentTag"] = (element.ParentNode as Element)?.TagName ?? string.Empty

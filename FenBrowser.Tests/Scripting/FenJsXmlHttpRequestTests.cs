@@ -146,7 +146,11 @@ namespace FenBrowser.Tests.Scripting
 
                 await engine.SetDomAsync(document.DocumentElement, baseUri);
 
-                Assert.Equal(1, engine.GetScriptLoadingSnapshot().ExecutionFailed);
+                var snapshot = engine.GetScriptLoadingSnapshot();
+                Assert.Equal(1, snapshot.ExecutionFailed);
+                var script = Assert.Single(snapshot.Scripts);
+                Assert.Equal("script-1", script.ScriptId);
+                Assert.Equal("inline#1", script.SourceLabel);
                 var record = Assert.Single(
                     EngineCapabilities.GetUnsupportedJsSnapshot(),
                     feature => feature.Name == "globalThis.FenMissingGlobalProbe");

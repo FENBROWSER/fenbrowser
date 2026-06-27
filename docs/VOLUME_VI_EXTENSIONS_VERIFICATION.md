@@ -2541,6 +2541,7 @@ _End of Volume VI_
   - Fixed the FenJS large-stack worker dispatch race by holding `_fenJsWorkGate` through the wait/result capture, preventing concurrent timer/rAF callbacks from overwriting `_fenJsPendingWork`.
   - Browser host-object property misses now record deduped unsupported-JS capability entries for DOM/WebIDL-facing objects, excluding common non-API probes such as private/internal names, numeric indexes, `then`, and event handler slots.
   - Page-script `ReferenceError: <identifier> is not defined` failures now record deduped unsupported-JS capability entries as `globalThis.<identifier>` with reason `missing global reference`.
+  - Script-loading records and per-script `ScriptLoader` trace events now carry a stable `ScriptId` (`script-<ordinal>`) and source label (`inline#<ordinal>` or `external:<src>`) so discovery, fetch, execution, and failure events can be correlated.
 
 - `FenBrowser.Core/Logging/EngineCapabilities.cs`
   - Added a stable unsupported-JS snapshot for diagnostic exporters.
@@ -2562,7 +2563,7 @@ _End of Volume VI_
   - `network.json`: status, request count, failed request count, navigation failures, and per-request method, URL, request headers, response status, response headers, MIME type, duration, and failure details when present.
   - `lifecycle.json`: navigation ID, phase, requested/effective URL, response status, detail string, redirect metadata, commit source, last transition UTC, terminal-state flags, document `readyState` probe, lifecycle phase path, DOMContentLoaded/load timestamps, and the ordered transition list.
   - `lifecycle_timeline.json`: flat ordered navigation lifecycle transition records with sequence, previous/current phase, URL/status/detail metadata, timestamp, and elapsed milliseconds since the first transition.
-  - `script_loading.json`: script-loading status, DOM/script element counts, inline/external/module counts, blocking/defer/async counts, fetch counts, execution counts, async-pending count, infrastructure error text, and per-script records.
+  - `script_loading.json`: script-loading status, DOM/script element counts, inline/external/module counts, blocking/defer/async counts, fetch counts, execution counts, async-pending count, infrastructure error text, and per-script records including stable script ID and source label.
   - `event_loop.json`: event-loop status, DOMContentLoaded/load booleans and timestamps, microtask checkpoint count, timer/rAF schedule and completion counts, pending host timer count, callback failures, and ordered event records with callback IDs.
   - `style_layout.json`: DOM/style counts, layout Box counts, Paint Tree counts, viewport, render timings, raster mode, watchdog status, and first layout/paint blocker classifications.
   - `style_dump.txt`: deterministic DOM preorder computed-style snapshot.
@@ -2574,21 +2575,21 @@ _End of Volume VI_
   - `artifact_manifest.json` records present/missing status for expected bundle files.
 
 - Known diagnostic-spine gaps after this tranche:
-  - Per-script source IDs/line-column attribution, module graph details, IPC, sandbox-denial, and broader performance summaries are not yet auto-classified from trace events.
+  - Per-script HTML source line/column attribution, module graph details, IPC, sandbox-denial, and broader performance summaries are not yet auto-classified from trace events.
   - `display_list.txt` currently flattens the immutable Paint Tree order; it is not yet a Skia command-stream dump.
   - Missing global references are structured for simple free-identifier `ReferenceError` failures; dynamic global-property shapes and source line/column attribution are still not classified.
   - Network bodies and initiator stacks are not exported; `network.json` is currently metadata-only.
 
 - First execution matrix for PLAN.MD work:
   - Current engine audit plan: inventory from canonical volumes, current focused build/test evidence, local Test262 dashboard (`docs/test262_results.md`), local WPT roots, and real-site `debug-site` bundles.
-  - Diagnostic spine implementation plan: promote `debug-site` from partial bundle to complete summary classification, then add per-script attribution, lifecycle/event-loop ordering checks, dynamic global-property classification, and richer network-body/initiator exporters.
+  - Diagnostic spine implementation plan: promote `debug-site` from partial bundle to complete summary classification, then add parser-backed script line/column attribution, lifecycle/event-loop ordering checks, dynamic global-property classification, and richer network-body/initiator exporters.
   - Real-site failure classification plan: classify each run into navigation, network, script loading, JavaScript language, WebIDL/binding, DOM API, event loop, CSS/style, layout, paint/compositing, storage/security, and browser-shell/process buckets.
   - Minimal smoke-test matrix: search page, docs/wiki page, GitHub-like app, social/media SPA, video page, ecommerce page, webmail-like app, dashboard SPA, news page, banking/form page, heavy CSS layout page, and heavy JavaScript app.
   - Required trace/log points: Navigation, Network, HTMLParser, ResourceLoader, ScriptLoader, JS, WebIDL, DOM, EventLoop, Microtask, Timer, CSSParser, Selector, Cascade, Style, Layout, Paint, Compositor, Input, Storage, Cookie, Security, IPC, Process, Crash, and Performance.
   - Missing API tracker format: API name, object/prototype, URL/site ID, script URL, source line/column when available, trace ID, exception text, priority, linked WPT/local test, owner, status, and workaround/stub status.
   - Process boundary audit: current `debug-site` runs in process through `BrowserHost`; renderer/network/storage/compositor isolation evidence must come from host process-isolation diagnostics before any process-boundary status can be marked complete.
-  - Current architecture risk register: metadata-only network export, script source attribution gaps, dynamic/global-property missing-API attribution gaps, Paint Tree proxy rather than Skia command-stream display-list dump, and headless screenshot fidelity needing broader real-site validation beyond the `example.com` smoke.
-  - Dependency-ready next tasks: add per-script source/line-column attribution, add dynamic global-property classification, add network initiator/body policy, add Skia command-stream display-list diagnostics, and suppress remaining non-script-loading direct console writes in other subsystems.
+  - Current architecture risk register: metadata-only network export, parser source-position gaps, dynamic/global-property missing-API attribution gaps, Paint Tree proxy rather than Skia command-stream display-list dump, and headless screenshot fidelity needing broader real-site validation beyond the `example.com` smoke.
+  - Dependency-ready next tasks: add parser-backed script line/column attribution, add dynamic global-property classification, add network initiator/body policy, add Skia command-stream display-list diagnostics, and suppress remaining non-script-loading direct console writes in other subsystems.
 
 - Focused verification:
   - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Debug -v minimal`: pass on `2026-06-27` with existing repo-wide warnings and existing unreachable-code warnings in legacy removed Acid paths.
@@ -2649,3 +2650,9 @@ _End of Volume VI_
     - `script_loading.json` recorded one inline blocking script with status `execution-failed` and the original `ReferenceError` text.
     - `summary.md` promoted `First missing API: globalThis.FenMissingGlobalDebugSiteProbe`.
     - `logs.ndjson` contained the same API with structured fields `traceCategory=WebIDL`, `featureCategory=JavaScript`, `api`, `objectName`, `propertyName`, `featureStatus=Unsupported`, and `reason=missing global reference`.
+  - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Debug -v minimal`: pass on `2026-06-27`, `0 errors` with existing warning noise.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~FenJsXmlHttpRequestTests.MissingGlobalReference_RecordsUnsupportedJsCapability" --logger "console;verbosity=minimal"`: pass on `2026-06-27`, `1 passed / 0 failed / 0 skipped`.
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- debug-site file:///C:/Users/udayk/Videos/fenbrowser-test/logs/debug_site_missing_global_smoke.html 1000`: pass on `2026-06-27`.
+    - Bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_debug_site_missing_global_smoke.html/20260627T100635Z`.
+    - `script_loading.json` recorded `ScriptId=script-1`, `SourceLabel=inline#1`, `SourceType=inline`, `Batch=blocking`, and `Status=execution-failed` for the failing inline script.
+    - `logs.ndjson` carried `scriptId=script-1` and `sourceLabel=inline#1` on `ScriptElementDiscovered`, `ScriptElementSeen`, `ScriptExecutionStarted`, and `ScriptExecutionFailed`.
