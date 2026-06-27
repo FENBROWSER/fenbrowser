@@ -1820,8 +1820,14 @@ public sealed class JsParser
             // is the stricter "valid BindingIdentifier" test; a reserved word that is not
             // a valid binding can still be a key, but only in the explicit `key: target`
             // form — never as a shorthand `{default}` that would bind a reserved word.
+            //
+            // TokenKind.Identifier is included because strict-mode reserved words like
+            // `static`, `implements`, `interface`, `package`, `private`, `protected`,
+            // `public` are not Keywords in the lexer but are in
+            // StrictModeReservedIdentifierNames — they are valid PropertyNames but
+            // IsIdentifierLike returns false for them in strict/module mode.
             var keyIsBindingIdentifier = IsIdentifierLike(Current());
-            if (keyIsBindingIdentifier || Current().Kind == TokenKind.Keyword)
+            if (keyIsBindingIdentifier || Current().Kind == TokenKind.Keyword || Current().Kind == TokenKind.Identifier)
             {
                 keyToken = Advance();
                 key = keyToken.Text;
