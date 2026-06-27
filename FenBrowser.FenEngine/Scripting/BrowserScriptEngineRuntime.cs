@@ -1272,9 +1272,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             snapshot.MicrotaskCheckpoints++;
             snapshot.LastMicrotaskCheckpointUtc = timestamp;
         });
-        AddEventLoopRecord("MicrotaskCheckpoint", detail ?? string.Empty);
+        AddEventLoopRecord("MicrotaskCheckpointCompleted", detail ?? string.Empty);
         LogEventLoop(
-            "MicrotaskCheckpoint",
+            "MicrotaskCheckpointCompleted",
             LogSeverity.Debug,
             "[FenJsBridge] Microtask checkpoint completed",
             new Dictionary<string, object>
@@ -1305,19 +1305,55 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var payload = fields != null
             ? new Dictionary<string, object>(fields, StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        payload["event"] = eventName ?? string.Empty;
         payload["eventName"] = eventName ?? string.Empty;
         payload["traceCategory"] = "EventLoop";
+        var taskId = ResolveEventLoopTaskId(payload, eventName);
 
         EngineLog.Write(
             LogSubsystem.Event,
             severity,
             message,
             marker,
-            default,
+            new EngineLogContext(
+                NavigationId: LogContext.CurrentCorrelationId,
+                TaskId: taskId),
             payload,
             sourceFile,
             sourceLine,
             sourceMember);
+    }
+
+    private static string ResolveEventLoopTaskId(IReadOnlyDictionary<string, object> fields, string eventName)
+    {
+        var taskId = GetStringField(fields, "taskId");
+        if (!string.IsNullOrWhiteSpace(taskId))
+        {
+            return taskId;
+        }
+
+        var id = GetStringField(fields, "id");
+        if (string.IsNullOrWhiteSpace(id) || id == "0")
+        {
+            return null;
+        }
+
+        var origin = GetStringField(fields, "origin");
+        if (string.Equals(origin, "requestAnimationFrame", StringComparison.Ordinal) ||
+            (eventName?.IndexOf("AnimationFrame", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0)
+        {
+            return "raf-" + id;
+        }
+
+        if (string.Equals(origin, "setTimeout", StringComparison.Ordinal) ||
+            string.Equals(origin, "setInterval", StringComparison.Ordinal) ||
+            (eventName?.IndexOf("Timer", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0 ||
+            (eventName?.IndexOf("Interval", StringComparison.OrdinalIgnoreCase) ?? -1) >= 0)
+        {
+            return "timer-" + id;
+        }
+
+        return "callback-" + id;
     }
 
     private async Task ExecutePageScriptsWithFenJsAsync(Node domRoot, Uri baseUri)
@@ -2622,9 +2658,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 snapshot.TimersScheduled++;
             }
         });
-        AddEventLoopRecord(repeat ? "IntervalScheduled" : "TimerScheduled", callback.Tag.ToString(), id, delayMs, repeat);
+        AddEventLoopRecord("TimerScheduled", callback.Tag.ToString(), id, delayMs, repeat);
         LogEventLoop(
-            repeat ? "IntervalScheduled" : "TimerScheduled",
+            "TimerScheduled",
             LogSeverity.Debug,
             "[FenJsBridge] Host timer scheduled",
             new Dictionary<string, object>
@@ -2632,6 +2668,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 ["id"] = id,
                 ["delayMs"] = delayMs,
                 ["repeating"] = repeat,
+                ["timerType"] = repeat ? "interval" : "timeout",
                 ["callbackTag"] = callback.Tag.ToString()
             });
         var period = repeat ? Math.Max(4, delayMs) : Timeout.Infinite;
@@ -2646,7 +2683,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     }
                 }
 
-                AddEventLoopRecord(repeat ? "IntervalFired" : "TimerFired", callback.Tag.ToString(), id, delayMs, repeat);
+                AddEventLoopRecord("TimerFired", callback.Tag.ToString(), id, delayMs, repeat);
+                LogEventLoop(
+                    "TimerFired",
+                    LogSeverity.Debug,
+                    "[FenJsBridge] Host timer fired",
+                    new Dictionary<string, object>
+                    {
+                        ["id"] = id,
+                        ["delayMs"] = delayMs,
+                        ["repeating"] = repeat,
+                        ["timerType"] = repeat ? "interval" : "timeout",
+                        ["callbackTag"] = callback.Tag.ToString()
+                    });
                 InvokeFenJsCallbackSafely(callback, extraArgs, repeat ? "setInterval" : "setTimeout", id);
             },
             null,
@@ -2667,9 +2716,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var callback = args[0];
         var id = Interlocked.Increment(ref _fenJsTimerIdCounter);
         UpdateEventLoopSnapshot(snapshot => snapshot.AnimationFramesScheduled++);
-        AddEventLoopRecord("AnimationFrameScheduled", callback.Tag.ToString(), id, 16);
+        AddEventLoopRecord("RequestAnimationFrameScheduled", callback.Tag.ToString(), id, 16);
         LogEventLoop(
-            "AnimationFrameScheduled",
+            "RequestAnimationFrameScheduled",
             LogSeverity.Debug,
             "[FenJsBridge] requestAnimationFrame scheduled",
             new Dictionary<string, object>
@@ -2687,7 +2736,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 }
 
                 var timestamp = JsValue.FromNumber(_fenJsClock.Elapsed.TotalMilliseconds);
-                AddEventLoopRecord("AnimationFrameFired", callback.Tag.ToString(), id, 16);
+                AddEventLoopRecord("RequestAnimationFrameFired", callback.Tag.ToString(), id, 16);
+                LogEventLoop(
+                    "RequestAnimationFrameFired",
+                    LogSeverity.Debug,
+                    "[FenJsBridge] requestAnimationFrame fired",
+                    new Dictionary<string, object>
+                    {
+                        ["id"] = id,
+                        ["delayMs"] = 16,
+                        ["callbackTag"] = callback.Tag.ToString()
+                    });
                 InvokeFenJsCallbackSafely(callback, new[] { timestamp }, "requestAnimationFrame", id);
             },
             null,
@@ -2754,6 +2813,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     try
                     {
                         var invoked = false;
+                        LogEventLoop(
+                            "TaskStarted",
+                            LogSeverity.Debug,
+                            "[FenJsBridge] event-loop callback task started",
+                            new Dictionary<string, object>
+                            {
+                                ["origin"] = origin ?? string.Empty,
+                                ["id"] = callbackId,
+                                ["callbackTag"] = callback.Tag.ToString()
+                            });
                         if (_interpreter.CanCallValue(callback))
                         {
                             _interpreter.InvokeFunction(callback, args ?? Array.Empty<JsValue>(), _fenJsGlobalThis);
@@ -2778,6 +2847,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             });
                             AddEventLoopRecord("CallbackCompleted", origin ?? string.Empty, callbackId);
                             LogEventLoop(
+                                "TaskCompleted",
+                                LogSeverity.Debug,
+                                "[FenJsBridge] event-loop callback task completed",
+                                new Dictionary<string, object>
+                                {
+                                    ["origin"] = origin ?? string.Empty,
+                                    ["id"] = callbackId,
+                                    ["success"] = true
+                                });
+                            LogEventLoop(
                                 "CallbackCompleted",
                                 LogSeverity.Debug,
                                 "[FenJsBridge] event-loop callback completed",
@@ -2790,6 +2869,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         else
                         {
                             AddEventLoopRecord("CallbackSkipped", origin ?? string.Empty, callbackId);
+                            LogEventLoop(
+                                "TaskCompleted",
+                                LogSeverity.Warn,
+                                "[FenJsBridge] event-loop callback task completed without invocation",
+                                new Dictionary<string, object>
+                                {
+                                    ["origin"] = origin ?? string.Empty,
+                                    ["id"] = callbackId,
+                                    ["success"] = false,
+                                    ["reason"] = "callback-not-callable",
+                                    ["callbackTag"] = callback.Tag.ToString()
+                                });
                             LogEventLoop(
                                 "CallbackSkipped",
                                 LogSeverity.Warn,
@@ -2814,6 +2905,30 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             snapshot.LastError = ex.GetType().Name + ": " + ex.Message;
                         });
                         AddEventLoopRecord("CallbackFailed", origin ?? string.Empty, callbackId);
+                        LogEventLoop(
+                            "TaskFailed",
+                            LogSeverity.Warn,
+                            "[FenJsBridge] event-loop callback task failed",
+                            new Dictionary<string, object>
+                            {
+                                ["origin"] = origin ?? string.Empty,
+                                ["id"] = callbackId,
+                                ["errorType"] = ex.GetType().Name,
+                                ["error"] = ex.Message
+                            },
+                            LogMarker.EngineBug);
+                        LogEventLoop(
+                            "TaskCompleted",
+                            LogSeverity.Warn,
+                            "[FenJsBridge] event-loop callback task completed after failure",
+                            new Dictionary<string, object>
+                            {
+                                ["origin"] = origin ?? string.Empty,
+                                ["id"] = callbackId,
+                                ["success"] = false,
+                                ["errorType"] = ex.GetType().Name,
+                                ["error"] = ex.Message
+                            });
                         LogEventLoop(
                             "CallbackFailed",
                             LogSeverity.Warn,
@@ -2843,6 +2958,30 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 snapshot.LastError = ex.GetType().Name + ": " + ex.Message;
             });
             AddEventLoopRecord("CallbackCrashed", origin ?? string.Empty, callbackId);
+            LogEventLoop(
+                "TaskFailed",
+                LogSeverity.Warn,
+                "[FenJsBridge] event-loop callback task crashed",
+                new Dictionary<string, object>
+                {
+                    ["origin"] = origin ?? string.Empty,
+                    ["id"] = callbackId,
+                    ["errorType"] = ex.GetType().Name,
+                    ["error"] = ex.Message
+                },
+                LogMarker.EngineBug);
+            LogEventLoop(
+                "TaskCompleted",
+                LogSeverity.Warn,
+                "[FenJsBridge] event-loop callback task completed after crash",
+                new Dictionary<string, object>
+                {
+                    ["origin"] = origin ?? string.Empty,
+                    ["id"] = callbackId,
+                    ["success"] = false,
+                    ["errorType"] = ex.GetType().Name,
+                    ["error"] = ex.Message
+                });
             LogEventLoop(
                 "CallbackCrashed",
                 LogSeverity.Warn,

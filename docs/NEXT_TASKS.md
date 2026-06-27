@@ -56,10 +56,12 @@ Status: IMPLEMENTED / REGRESSION_PROTECTED
 ### T1.5 — Instrument event loop with task/microtask/timer/rAF trace
 - **Area**: FenEngine / Event Loop
 - **Dependencies**: T1.1
-- **Files**: `FenBrowser.FenEngine/Core/EventLoop/EventLoopCoordinator.cs`, `TaskQueue.cs`, `MicrotaskQueue.cs`
+- **Files**: `FenBrowser.FenEngine/Core/EventLoop/EventLoopCoordinator.cs`, `TaskQueue.cs`, `MicrotaskQueue.cs`, `EventLoopTrace.cs`, `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`, `FenBrowser.Tests/Engine/EventLoopTraceTests.cs`
+- **Status**: IMPLEMENTED / REGRESSION_PROTECTED
 - **Spec**: PLAN.MD § "Event Loop Trace Requirements"
-- **Description**: Add trace events for: TaskQueued, TaskStarted, TaskCompleted, MicrotaskQueued, MicrotaskCheckpointStarted, MicrotaskExecuted, MicrotaskCheckpointCompleted, TimerScheduled, TimerFired, RequestAnimationFrameScheduled, RequestAnimationFrameFired, RenderOpportunityStarted, RenderOpportunityCompleted.
-- **Acceptance**: Event loop trace detects: promises not running, microtasks running at wrong time, DOMContentLoaded firing early, timers not firing, rAF not firing, render loop not scheduled, endless task loops.
+- **Description**: The coordinator and FenJS browser timer bridge now write diagnostic `EventLoop` JSONL events for: `TaskQueued`, `TaskStarted`, `TaskCompleted`, `MicrotaskQueued`, `MicrotaskCheckpointStarted`, `MicrotaskExecuted`, `MicrotaskCheckpointCompleted`, `TimerScheduled`, `TimerFired`, `RequestAnimationFrameScheduled`, `RequestAnimationFrameFired`, `RenderOpportunityStarted`, and `RenderOpportunityCompleted`. Events carry top-level `task_id` correlation plus task source, priority, timer/rAF IDs, checkpoint counts, render-opportunity state, and failure details when applicable.
+- **Verification**: `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~EventLoopTraceTests|FullyQualifiedName~EngineLogSettingsTests" --no-restore -v minimal` passed 3/3.
+- **Acceptance**: Event loop trace now exposes task/microtask/timer/rAF/render opportunity ordering for diagnosing missing promises, early DOMContentLoaded timing, stalled timers, missing rAF, and unscheduled render updates.
 
 ### T1.6 — Implement missing API tracker
 - **Area**: FenEngine / Scripting

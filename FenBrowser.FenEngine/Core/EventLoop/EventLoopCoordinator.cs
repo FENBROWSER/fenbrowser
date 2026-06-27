@@ -35,21 +35,35 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
         private sealed class DelayedTaskEntry
         {
-            public DelayedTaskEntry(ScheduledTask task, long dueTimeMs, long sequence)
+            public DelayedTaskEntry(ScheduledTask task, long dueTimeMs, long sequence, string timerId)
             {
                 Task = task;
                 DueTimeMs = dueTimeMs;
                 Sequence = sequence;
+                TimerId = timerId;
             }
 
             public ScheduledTask Task { get; }
             public long DueTimeMs { get; }
             public long Sequence { get; }
+            public string TimerId { get; }
+        }
+
+        private sealed class AnimationFrameEntry
+        {
+            public AnimationFrameEntry(Action callback)
+            {
+                Callback = callback ?? throw new ArgumentNullException(nameof(callback));
+                TraceId = EventLoopTrace.NextId("raf");
+            }
+
+            public Action Callback { get; }
+            public string TraceId { get; }
         }
 
         private readonly TaskQueue _taskQueue = new();
         private readonly MicrotaskQueue _microtaskQueue = new();
-        private readonly Queue<Action> _animationFrameCallbacks = new();
+        private readonly Queue<AnimationFrameEntry> _animationFrameCallbacks = new();
         private readonly object _animationLock = new();
         private readonly Queue<Action> _mutationObserverCallbacks = new();
         private readonly object _moLock = new object();
@@ -126,13 +140,26 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             var delayedTask = new DelayedTaskEntry(
                 new ScheduledTask(callback, source, description),
                 Environment.TickCount64 + safeDelay,
-                Interlocked.Increment(ref _nextDelayedTaskSequence));
+                Interlocked.Increment(ref _nextDelayedTaskSequence),
+                EventLoopTrace.NextId("timer"));
 
             lock (_delayedTaskLock)
             {
                 _delayedTasks.Add(delayedTask);
             }
 
+            EventLoopTrace.Write(
+                "TimerScheduled",
+                LogSeverity.Debug,
+                "[EventLoop] Timer scheduled",
+                delayedTask.TimerId,
+                new Dictionary<string, object>
+                {
+                    ["delayMs"] = safeDelay,
+                    ["source"] = source.ToString(),
+                    ["description"] = description ?? source.ToString(),
+                    ["taskId"] = delayedTask.Task.TraceId
+                });
             OnWorkEnqueued?.Invoke();
         }
 
@@ -216,10 +243,22 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         public void ScheduleAnimationFrame(Action callback)
         {
             if (callback == null) return;
+            var entry = new AnimationFrameEntry(callback);
+            int pendingCount;
             lock (_animationLock)
             {
-                _animationFrameCallbacks.Enqueue(callback);
+                _animationFrameCallbacks.Enqueue(entry);
+                pendingCount = _animationFrameCallbacks.Count;
             }
+            EventLoopTrace.Write(
+                "RequestAnimationFrameScheduled",
+                LogSeverity.Debug,
+                "[EventLoop] requestAnimationFrame scheduled",
+                entry.TraceId,
+                new Dictionary<string, object>
+                {
+                    ["pendingCount"] = pendingCount
+                });
             OnWorkEnqueued?.Invoke();
         }
 
@@ -272,6 +311,20 @@ var task = _taskQueue.Dequeue(prioritizeInteractive, out var priorityGroup);
             }
 
 EngineContext.Current.BeginPhase(EnginePhase.JSExecution);
+EventLoopTrace.Write(
+    "TaskStarted",
+    LogSeverity.Debug,
+    "[EventLoop] Task started",
+    task.TraceId,
+    new Dictionary<string, object>
+    {
+        ["source"] = task.Source.ToString(),
+        ["priority"] = priorityGroup.ToString(),
+        ["description"] = task.Description ?? string.Empty
+    });
+bool taskFailed = false;
+string taskErrorType = string.Empty;
+string taskError = string.Empty;
 try
 {
 EngineLogCompat.Debug($"[EventLoop] Executing task: {task.Description}", LogCategory.JavaScript);
@@ -280,10 +333,41 @@ task.Callback.Invoke();
 catch (Exception ex)
 {
 EngineLogCompat.Debug($"[EventLoop] Task Exception: {ex.Message}", LogCategory.Errors);
+taskFailed = true;
+taskErrorType = ex.GetType().Name;
+taskError = ex.Message;
+EventLoopTrace.Write(
+    "TaskFailed",
+    LogSeverity.Warn,
+    "[EventLoop] Task failed",
+    task.TraceId,
+    new Dictionary<string, object>
+    {
+        ["source"] = task.Source.ToString(),
+        ["priority"] = priorityGroup.ToString(),
+        ["description"] = task.Description ?? string.Empty,
+        ["errorType"] = taskErrorType,
+        ["error"] = taskError
+    },
+    LogMarker.EngineBug);
 }
 finally
 {
 EngineContext.Current.EndPhase();
+EventLoopTrace.Write(
+    "TaskCompleted",
+    taskFailed ? LogSeverity.Warn : LogSeverity.Debug,
+    "[EventLoop] Task completed",
+    task.TraceId,
+    new Dictionary<string, object>
+    {
+        ["source"] = task.Source.ToString(),
+        ["priority"] = priorityGroup.ToString(),
+        ["description"] = task.Description ?? string.Empty,
+        ["success"] = !taskFailed,
+        ["errorType"] = taskErrorType,
+        ["error"] = taskError
+    });
 }
 
 PerformMicrotaskCheckpoint(deadline);
@@ -296,15 +380,34 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
         {
             EngineContext.Current.AssertNotInPhase(EnginePhase.Microtasks);
 
+            var checkpointId = EventLoopTrace.NextId("microtask-checkpoint");
+            var processedMicrotasks = 0;
+            var deliveredMutationObserverBatches = 0;
+            var passes = 0;
+            var forcedExit = false;
+            EventLoopTrace.Write(
+                "MicrotaskCheckpointStarted",
+                LogSeverity.Debug,
+                "[EventLoop] Microtask checkpoint started",
+                checkpointId,
+                new Dictionary<string, object>
+                {
+                    ["pendingMicrotasks"] = _microtaskQueue.Count,
+                    ["pendingMutationObservers"] = HasQueuedMutationObserverCallbacks
+                });
             EngineContext.Current.BeginPhase(EnginePhase.Microtasks);
             try
             {
-                var passes = 0;
                 while (true)
                 {
                     deadline?.Check();
-                    _microtaskQueue.DrainAll();
+                    processedMicrotasks += _microtaskQueue.DrainAll();
                     var deliveredMutationObservers = DeliverMutationObserverRecords();
+                    if (deliveredMutationObservers)
+                    {
+                        deliveredMutationObserverBatches++;
+                    }
+
                     if (!deliveredMutationObservers &&
                         !_microtaskQueue.HasPendingMicrotasks &&
                         !HasQueuedMutationObserverCallbacks)
@@ -318,6 +421,7 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
                         EngineLogCompat.Warn(
                             $"[EventLoop] Microtask checkpoint pass limit ({MaxMicrotaskCheckpointPasses}) exceeded; forcing checkpoint exit",
                             LogCategory.Errors);
+                        forcedExit = true;
                         break;
                     }
                 }
@@ -325,6 +429,20 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
             finally
             {
                 EngineContext.Current.EndPhase();
+                EventLoopTrace.Write(
+                    "MicrotaskCheckpointCompleted",
+                    forcedExit ? LogSeverity.Warn : LogSeverity.Debug,
+                    "[EventLoop] Microtask checkpoint completed",
+                    checkpointId,
+                    new Dictionary<string, object>
+                    {
+                        ["processedMicrotasks"] = processedMicrotasks,
+                        ["mutationObserverBatches"] = deliveredMutationObserverBatches,
+                        ["passes"] = passes,
+                        ["forcedExit"] = forcedExit,
+                        ["pendingMicrotasks"] = _microtaskQueue.Count,
+                        ["pendingMutationObservers"] = HasQueuedMutationObserverCallbacks
+                    });
             }
         }
 
@@ -341,53 +459,87 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
                 return;
             }
 
-            if (_observerCallback != null)
+            var renderOpportunityId = EventLoopTrace.NextId("render-opportunity");
+            var observerRan = false;
+            var renderRan = false;
+            EventLoopTrace.Write(
+                "RenderOpportunityStarted",
+                LogSeverity.Debug,
+                "[EventLoop] Render opportunity started",
+                renderOpportunityId,
+                new Dictionary<string, object>
+                {
+                    ["layoutDirty"] = Volatile.Read(ref _layoutDirty),
+                    ["hasObserverCallback"] = _observerCallback != null,
+                    ["pendingAnimationFrames"] = PendingAnimationFrameCount,
+                    ["hasRenderCallback"] = _renderCallback != null
+                });
+            try
             {
-                EngineContext.Current.BeginPhase(EnginePhase.Observers);
-                try
+                if (_observerCallback != null)
                 {
-                    _observerCallback.Invoke();
-                }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Debug($"[EventLoop] Observer Exception: {ex.Message}", LogCategory.Errors);
-                }
-                finally
-                {
-                    EngineContext.Current.EndPhase();
+                    EngineContext.Current.BeginPhase(EnginePhase.Observers);
+                    try
+                    {
+                        observerRan = true;
+                        _observerCallback.Invoke();
+                    }
+                    catch (Exception ex)
+                    {
+                        EngineLogCompat.Debug($"[EventLoop] Observer Exception: {ex.Message}", LogCategory.Errors);
+                    }
+                    finally
+                    {
+                        EngineContext.Current.EndPhase();
+                    }
+
+                    PerformMicrotaskCheckpoint(deadline);
                 }
 
-                PerformMicrotaskCheckpoint(deadline);
+                ProcessAnimationFrames(deadline);
+
+                if (_layoutDirty && _renderCallback != null)
+                {
+                    _lastRenderTime = now;
+                    EngineContext.Current.BeginPhase(EnginePhase.Layout);
+                    try
+                    {
+                        EngineLogCompat.Debug("[EventLoop] Rendering update (layout dirty)", LogCategory.Rendering);
+                        renderRan = true;
+                        _renderCallback.Invoke();
+                    }
+                    catch (Exception ex)
+                    {
+                        EngineLogCompat.Debug($"[EventLoop] Render Exception: {ex.Message}", LogCategory.Errors);
+                    }
+                    finally
+                    {
+                        Volatile.Write(ref _layoutDirty, false);
+                        EngineContext.Current.EndPhase();
+                    }
+                }
             }
-
-            ProcessAnimationFrames(deadline);
-
-            if (_layoutDirty && _renderCallback != null)
+            finally
             {
-                _lastRenderTime = now;
-                EngineContext.Current.BeginPhase(EnginePhase.Layout);
-                try
-                {
-                    EngineLogCompat.Debug("[EventLoop] Rendering update (layout dirty)", LogCategory.Rendering);
-                    _renderCallback.Invoke();
-                }
-                catch (Exception ex)
-                {
-                    EngineLogCompat.Debug($"[EventLoop] Render Exception: {ex.Message}", LogCategory.Errors);
-                }
-                finally
-                {
-                    Volatile.Write(ref _layoutDirty, false);
-                    EngineContext.Current.EndPhase();
-                }
+                EventLoopTrace.Write(
+                    "RenderOpportunityCompleted",
+                    LogSeverity.Debug,
+                    "[EventLoop] Render opportunity completed",
+                    renderOpportunityId,
+                    new Dictionary<string, object>
+                    {
+                        ["observerRan"] = observerRan,
+                        ["renderRan"] = renderRan,
+                        ["layoutDirty"] = Volatile.Read(ref _layoutDirty),
+                        ["pendingAnimationFrames"] = PendingAnimationFrameCount
+                    });
+                EnsureIdlePhase();
             }
-
-            EnsureIdlePhase();
         }
 
         private void ProcessAnimationFrames(FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
         {
-            Queue<Action> callbacks;
+            Queue<AnimationFrameEntry> callbacks;
             lock (_animationLock)
             {
                 if (_animationFrameCallbacks.Count == 0)
@@ -395,17 +547,26 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
                     return;
                 }
 
-                callbacks = new Queue<Action>(_animationFrameCallbacks);
+                callbacks = new Queue<AnimationFrameEntry>(_animationFrameCallbacks);
                 _animationFrameCallbacks.Clear();
             }
 
             while (callbacks.Count > 0)
             {
                 var callback = callbacks.Dequeue();
+                EventLoopTrace.Write(
+                    "RequestAnimationFrameFired",
+                    LogSeverity.Debug,
+                    "[EventLoop] requestAnimationFrame fired",
+                    callback.TraceId,
+                    new Dictionary<string, object>
+                    {
+                        ["remainingInBatch"] = callbacks.Count
+                    });
                 EngineContext.Current.BeginPhase(EnginePhase.Animation);
                 try
                 {
-                    callback.Invoke();
+                    callback.Callback.Invoke();
                 }
                 catch (Exception ex)
                 {
@@ -513,6 +674,18 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
                 }
             }
         }
+
+        private int PendingAnimationFrameCount
+        {
+            get
+            {
+                lock (_animationLock)
+                {
+                    return _animationFrameCallbacks.Count;
+                }
+            }
+        }
+
         public int GetSuggestedWaitMilliseconds(int maxWaitMs = 50)
         {
             if (HasPendingTasks || HasPendingMicrotasks || HasPendingAnimationFrames)
@@ -582,6 +755,17 @@ return new TaskProcessingResult(true, task.Source, priorityGroup);
 
             foreach (var delayedTask in dueTasks)
             {
+                EventLoopTrace.Write(
+                    "TimerFired",
+                    LogSeverity.Debug,
+                    "[EventLoop] Timer fired",
+                    delayedTask.TimerId,
+                    new Dictionary<string, object>
+                    {
+                        ["taskId"] = delayedTask.Task.TraceId,
+                        ["source"] = delayedTask.Task.Source.ToString(),
+                        ["description"] = delayedTask.Task.Description ?? string.Empty
+                    });
                 _taskQueue.Enqueue(delayedTask.Task);
             }
         }

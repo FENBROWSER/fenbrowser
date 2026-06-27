@@ -44,6 +44,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         public TaskSource Source { get; }
         public long ScheduledTime { get; }
         public string Description { get; }
+        public string TraceId { get; }
 
         public ScheduledTask(Action callback, TaskSource source, string description = null)
         {
@@ -51,6 +52,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             Source = source;
             ScheduledTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             Description = description ?? source.ToString();
+            TraceId = EventLoopTrace.NextId("task");
         }
     }
 
@@ -70,6 +72,9 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         {
             if (task == null) throw new ArgumentNullException(nameof(task));
 
+            TaskPriorityGroup priority;
+            int sourceCount;
+            int totalCount;
             lock (_lock)
             {
                 if (!_tasksBySource.TryGetValue(task.Source, out var queue))
@@ -80,6 +85,9 @@ namespace FenBrowser.FenEngine.Core.EventLoop
 
                 queue.Enqueue(task);
                 _count++;
+                sourceCount = queue.Count;
+                totalCount = _count;
+                priority = ClassifyPriority(task.Source);
 
                 if (_activeSourceSet.Add(task.Source))
                 {
@@ -87,9 +95,23 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 }
 
                 EngineLogCompat.Debug(
-                    $"[TaskQueue] Enqueued: {task.Description} (Source: {task.Source}, Priority: {ClassifyPriority(task.Source)}, SourceCount: {queue.Count}, TotalCount: {_count})",
+                    $"[TaskQueue] Enqueued: {task.Description} (Source: {task.Source}, Priority: {priority}, SourceCount: {sourceCount}, TotalCount: {totalCount})",
                     LogCategory.JavaScript);
             }
+
+            EventLoopTrace.Write(
+                "TaskQueued",
+                LogSeverity.Debug,
+                "[EventLoop] Task queued",
+                task.TraceId,
+                new Dictionary<string, object>
+                {
+                    ["source"] = task.Source.ToString(),
+                    ["priority"] = priority.ToString(),
+                    ["description"] = task.Description ?? string.Empty,
+                    ["sourceCount"] = sourceCount,
+                    ["totalCount"] = totalCount
+                });
         }
 
         public void Enqueue(Action callback, TaskSource source, string description = null)

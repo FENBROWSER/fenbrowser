@@ -623,6 +623,7 @@ A massive facilitator class that bridges the JS runtime (Jint/V8 abstraction) wi
 
 - **DOM Bindings**: Implements standards like `document.getElementById`, `element.addEventListener`.
 - **Event Loop**: Drives the browser pulse via `RequestAnimationFrame` and `SetTimeout`.
+  - Event-loop diagnostics now emit `EventLoop` JSONL trace rows from both `Core/EventLoop` and the FenJS browser timer bridge: task queue/start/complete, microtask queue/checkpoint/execute, timer schedule/fire, requestAnimationFrame schedule/fire, and render opportunity start/complete, with top-level `task_id` correlation and ordering fields.
 - **Error Handling**: Captures and dispatches `unhandledrejection` and global `error` events through `IExecutionContext` hooks (2026-04-07).
 - **Sandboxing**: Enforces permissions (network, sensors) via `SandboxBlockRecord`.
 

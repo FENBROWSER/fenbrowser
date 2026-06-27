@@ -16,7 +16,19 @@ namespace FenBrowser.FenEngine.Core.EventLoop
     /// </summary>
     public class MicrotaskQueue
     {
-        private readonly Queue<Action> _microtasks = new();
+        private sealed class ScheduledMicrotask
+        {
+            public ScheduledMicrotask(Action callback)
+            {
+                Callback = callback ?? throw new ArgumentNullException(nameof(callback));
+                TraceId = EventLoopTrace.NextId("microtask");
+            }
+
+            public Action Callback { get; }
+            public string TraceId { get; }
+        }
+
+        private readonly Queue<ScheduledMicrotask> _microtasks = new();
         private readonly object _lock = new();
         private bool _isDraining = false;
         private int _drainDepth = 0;
@@ -29,11 +41,24 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         {
             if (microtask  == null) throw new ArgumentNullException(nameof(microtask));
 
+            var entry = new ScheduledMicrotask(microtask);
+            int pendingCount;
             lock (_lock)
             {
-                _microtasks.Enqueue(microtask);
-                EngineLogCompat.Debug($"[MicrotaskQueue] Enqueued microtask (Count: {_microtasks.Count})", LogCategory.JavaScript);
+                _microtasks.Enqueue(entry);
+                pendingCount = _microtasks.Count;
+                EngineLogCompat.Debug($"[MicrotaskQueue] Enqueued microtask (Count: {pendingCount})", LogCategory.JavaScript);
             }
+
+            EventLoopTrace.Write(
+                "MicrotaskQueued",
+                LogSeverity.Debug,
+                "[EventLoop] Microtask queued",
+                entry.TraceId,
+                new Dictionary<string, object>
+                {
+                    ["pendingCount"] = pendingCount
+                });
         }
 
         /// <summary>
@@ -42,7 +67,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
         /// Re-entrant calls (e.g. from within a microtask callback) return immediately;
         /// the outer drain loop will pick up any newly-enqueued items on its next iteration.
         /// </summary>
-        public void DrainAll()
+        public int DrainAll()
         {
             // Guard check and set are atomic within the same lock acquisition so no
             // other thread can slip between them.
@@ -51,7 +76,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                 if (_isDraining)
                 {
                     EngineLogCompat.Debug("[MicrotaskQueue] Already draining, skipping", LogCategory.JavaScript);
-                    return;
+                    return 0;
                 }
                 _isDraining = true;
                 _drainDepth = 0;
@@ -62,7 +87,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             {
                 while (true)
                 {
-                    Action microtask;
+                    ScheduledMicrotask microtask;
                     lock (_lock)
                     {
                         if (_microtasks.Count == 0)
@@ -82,11 +107,32 @@ namespace FenBrowser.FenEngine.Core.EventLoop
                     processed++;
                     try
                     {
-                        microtask();
+                        microtask.Callback();
+                        EventLoopTrace.Write(
+                            "MicrotaskExecuted",
+                            LogSeverity.Debug,
+                            "[EventLoop] Microtask executed",
+                            microtask.TraceId,
+                            new Dictionary<string, object>
+                            {
+                                ["drainIndex"] = processed
+                            });
                     }
                     catch (Exception ex)
                     {
                         EngineLogCompat.Debug($"[MicrotaskQueue] Microtask error: {ex.Message}", LogCategory.Errors);
+                        EventLoopTrace.Write(
+                            "MicrotaskFailed",
+                            LogSeverity.Warn,
+                            "[EventLoop] Microtask failed",
+                            microtask.TraceId,
+                            new Dictionary<string, object>
+                            {
+                                ["drainIndex"] = processed,
+                                ["errorType"] = ex.GetType().Name,
+                                ["error"] = ex.Message
+                            },
+                            LogMarker.EngineBug);
                     }
                 }
             }
@@ -103,6 +149,7 @@ namespace FenBrowser.FenEngine.Core.EventLoop
             }
 
             EngineLogCompat.Debug($"[MicrotaskQueue] Drain complete (processed: {processed})", LogCategory.JavaScript);
+            return processed;
         }
 
         /// <summary>
