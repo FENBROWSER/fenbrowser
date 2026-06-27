@@ -272,6 +272,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
     // up at frame setup and clears it. Stays Undefined for ordinary calls.
     private JsValue _pendingNewTarget = JsValue.Undefined;
 
+    private bool _tailCallRequested;
+    private JsValue _tailCallee;
+    private IReadOnlyList<JsValue>? _tailArgs;
+    private JsValue _tailThis;
+
     // Cached binding resolution for PreResolveVar / StoreResolvedVar. The
     // PreResolveVar opcode captures the owning EnvironmentRecord and binding
     // name so StoreResolvedVar writes through that same resolution even if
@@ -759,28 +764,38 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
         {
             while (true)
             {
-                try
+                var result = ExecuteInternalCore(function, args, thisValue, outerEnvironment, frameEnvironment, callee, ownerGenerator, asyncContext);
+
+                if (_tailCallRequested)
                 {
-                    return ExecuteInternalCore(function, args, thisValue, outerEnvironment, frameEnvironment, callee, ownerGenerator, asyncContext);
-                }
-                catch (TailCallRequest tailCall)
-                {
-                    var target = ResolveObject(tailCall.Callee);
+                    _tailCallRequested = false;
+                    var tailCallee = _tailCallee;
+                    var tailArgs = _tailArgs!;
+                    var tailThis = _tailThis;
+
+                    _tailCallee = default;
+                    _tailArgs = null;
+                    _tailThis = default;
+
+                    var target = ResolveObject(tailCallee);
                     if (target is not JsFunctionObject targetFunction ||
                         targetFunction.Kind is FunctionKind.Constructor or FunctionKind.Async or FunctionKind.Generator or FunctionKind.AsyncGenerator)
                     {
-                        return CallFunction(tailCall.Callee, tailCall.Arguments, tailCall.ThisValue);
+                        return CallFunction(tailCallee, tailArgs, tailThis);
                     }
 
                     function = targetFunction.Function;
-                    args = tailCall.Arguments;
-                    thisValue = tailCall.ThisValue;
+                    args = tailArgs;
+                    thisValue = tailThis;
                     outerEnvironment = targetFunction.OuterEnvironment;
                     frameEnvironment = null;
                     callee = targetFunction;
                     ownerGenerator = null;
                     asyncContext = null;
+                    continue;
                 }
+
+                return result;
             }
         }
         finally
@@ -2341,9 +2356,17 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     break;
                 }
                 case OpCode.TailCall0:
-                    throw new TailCallRequest(frame.Registers[ins.B], Array.Empty<JsValue>(), JsValue.Undefined);
+                    _tailCallRequested = true;
+                    _tailCallee = frame.Registers[ins.B];
+                    _tailArgs = Array.Empty<JsValue>();
+                    _tailThis = JsValue.Undefined;
+                    return JsValue.Undefined;
                 case OpCode.TailCall1:
-                    throw new TailCallRequest(frame.Registers[ins.B], new[] { frame.Registers[ins.C] }, JsValue.Undefined);
+                    _tailCallRequested = true;
+                    _tailCallee = frame.Registers[ins.B];
+                    _tailArgs = new[] { frame.Registers[ins.C] };
+                    _tailThis = JsValue.Undefined;
+                    return JsValue.Undefined;
                 case OpCode.TailCallN:
                 {
                     var tailArgs = new JsValue[ins.D];
@@ -2351,7 +2374,11 @@ public sealed partial class BytecodeInterpreter : IBuiltinContext, IHeapRootSour
                     {
                         tailArgs[i] = frame.Registers[ins.C + i];
                     }
-                    throw new TailCallRequest(frame.Registers[ins.B], tailArgs, JsValue.Undefined);
+                    _tailCallRequested = true;
+                    _tailCallee = frame.Registers[ins.B];
+                    _tailArgs = tailArgs;
+                    _tailThis = JsValue.Undefined;
+                    return JsValue.Undefined;
                 }
                 case OpCode.CallSpread:
                 {

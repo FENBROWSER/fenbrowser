@@ -1,4 +1,4 @@
-﻿using FenBrowser.Js.Bytecode;
+using FenBrowser.Js.Bytecode;
 using FenBrowser.Js.Heap;
 using FenBrowser.Js.Objects;
 using FenBrowser.Js.Runtime;
@@ -10,20 +10,6 @@ namespace FenBrowser.Js.Interpreter;
 // audit section 2 slice 3. Pure file move, no semantic change.
 public sealed partial class BytecodeInterpreter
 {
-    private sealed class TailCallRequest : Exception
-    {
-        public TailCallRequest(JsValue callee, IReadOnlyList<JsValue> arguments, JsValue thisValue)
-        {
-            Callee = callee;
-            Arguments = arguments;
-            ThisValue = thisValue;
-        }
-
-        public JsValue Callee { get; }
-        public IReadOnlyList<JsValue> Arguments { get; }
-        public JsValue ThisValue { get; }
-    }
-
     // Tier 4 #24: JIT helpers for the call/construct opcode family.
     // Each builds the args array on the heap (matching how the
     // interpreter does it) and dispatches through StoreCallResult /

@@ -98,7 +98,9 @@ public class JsObject : ITraceable
     // ECMA-262 9.1.6 [[DefineOwnProperty]].
     public virtual bool DefineOwnProperty(string key, JsPropertyDescriptor descriptor)
     {
-        if (_shape.TryGetSlot(key, out var existingSlot) && _properties[existingSlot] is { } current)
+        if (_shape.TryGetSlot(key, out var existingSlot) &&
+            existingSlot < _properties.Length &&
+            _properties[existingSlot] is { } current)
         {
             // ECMA-262 10.1.11.2 ValidateAndApplyPropertyDescriptor
             // Step 4: current.[[Configurable]] is false
@@ -152,6 +154,7 @@ public class JsObject : ITraceable
         // Re-adding a previously deleted property (slot exists but value is null)
         if (_shape.TryGetSlot(key, out var deletedSlot))
         {
+            EnsurePropertyStorage(deletedSlot);
             _insertionSeq[deletedSlot] = _nextSeq++;
             _properties[deletedSlot] = descriptor;
             BarrierIfObject(descriptor.Value);
@@ -170,16 +173,7 @@ public class JsObject : ITraceable
         // New property: transition shape and grow array.
         _shape = _shape.TransitionTo(key);
         var slot = _shape.PropertyCount - 1;
-        if (slot >= _properties.Length)
-        {
-            var newLen = Math.Max(_properties.Length * 2, slot + 1);
-            var bigger = new JsPropertyDescriptor?[newLen];
-            Array.Copy(_properties, bigger, _properties.Length);
-            _properties = bigger;
-            var biggerSeq = new int[newLen];
-            Array.Copy(_insertionSeq, biggerSeq, _insertionSeq.Length);
-            _insertionSeq = biggerSeq;
-        }
+        EnsurePropertyStorage(slot);
         _properties[slot] = descriptor;
         _insertionSeq[slot] = _nextSeq++;
         BarrierIfObject(descriptor.Value);
@@ -191,12 +185,30 @@ public class JsObject : ITraceable
         return true;
     }
 
+    private void EnsurePropertyStorage(int slot)
+    {
+        if (slot < _properties.Length)
+        {
+            return;
+        }
+
+        var newLen = Math.Max(_properties.Length * 2, slot + 1);
+        var bigger = new JsPropertyDescriptor?[newLen];
+        Array.Copy(_properties, bigger, _properties.Length);
+        _properties = bigger;
+        var biggerSeq = new int[newLen];
+        Array.Copy(_insertionSeq, biggerSeq, _insertionSeq.Length);
+        _insertionSeq = biggerSeq;
+    }
+
     // Own property lookup via Shape → slot → array. Null slot = deleted.
     // Virtual so exotic objects (String) can synthesise computed properties
     // (indexed character access) on demand.
     public virtual bool TryGetOwnProperty(string key, out JsPropertyDescriptor descriptor)
     {
-        if (_shape.TryGetSlot(key, out var slot) && _properties[slot] is { } desc)
+        if (_shape.TryGetSlot(key, out var slot) &&
+            slot < _properties.Length &&
+            _properties[slot] is { } desc)
         {
             descriptor = desc;
             return true;
