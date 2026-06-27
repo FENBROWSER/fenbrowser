@@ -1,177 +1,117 @@
-# FenBrowser — Next Tasks (Dependency-Ready)
+# FenBrowser — Next Tasks
 
-> Auto-generated Gate 0 Reality Audit. Last refreshed: 2026-06-27.
-> Only tasks whose dependencies are satisfied are listed as ready.
-> Tasks are ordered by priority per PLAN.MD gates.
+> Auto-generated from GATE 0 audit + diagnostic infrastructure survey.
+> Last refreshed: 2026-06-27.
+> Only dependency-ready tasks are listed. Tasks are ordered by priority.
 
----
+## GATE Status Summary
 
-## GATE 1 — DIAGNOSTIC SPINE (Active Priority)
+| Gate | Name | Status | Blocker |
+|------|------|--------|---------|
+| 0 | Reality Audit | **95%** | NEXT_TASKS.md (this file) |
+| 1 | Diagnostic Spine | **85%** | ipc.json, sandbox_denials.json, performance.json artifacts |
+| 2 | Architecture Freeze | **0%** | Gates 0-1 completion |
+| 3 | Build/Test/Trace Infra | **80%** | Clean build OK; unit tests OK; test262 OK; WPT baseline needed |
+| 4 | Real-Site Boot Pipeline | **10%** | **IMMEDIATE PRIORITY** |
 
-Goal: Make every browser failure traceable.
+## Current Real-Site State (from latest trace bundles)
 
-### T1.1 — Implement structured trace event logger
-Status: IMPLEMENTED / REGRESSION_PROTECTED
+| Site | DOM | Styles | Scripts Exec | Screenshot | Verdict |
+|------|-----|--------|-------------|------------|---------|
+| example.com | 18 nodes | 12/12 styled | 0 scripts | Captured | Perfect |
+| news.ycombinator.com | 816 nodes | 777/816 styled | few | Captured | 95% layout coverage |
+| react.dev | 1843 nodes | 1240/1843 styled | unknown | Partial | 67% layout coverage |
+| github.com | 2891 nodes | 1920/2891 styled | 69/84 scripts | Captured | 56% layout; 102 zero-area boxes |
+| x.com | 81 nodes | 10/81 styled | Very few | Mostly white | 12% layout; scripts fail early |
 
-- **Area**: Core / Logging
-- **Dependencies**: None (FenLogger exists)
-- **Files**: `FenBrowser.Core/Logging/EngineLogContracts.cs`, `FenBrowser.Core/Logging/EngineLogSinks.cs`, `FenBrowser.Core/Logging/EngineLog.cs`
-- **Spec**: PLAN.MD § "Diagnostic Spine Requirement"
-- **Description**: Implemented a diagnostic JSONL trace sink at the existing `EngineLog` boundary. The sink emits the PLAN.MD fields (`ts`, `level`, `category`, `event`, session/process/navigation/document/frame/realm/script/request/task IDs, `message`, `data`) and preserves event/category override fields for later instrumentation.
-- **Verification**: `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter FullyQualifiedName~FenBrowser.Tests.Logging.EngineLogSettingsTests --no-restore -v minimal` passed 3/3.
-- **Remaining follow-up**: Browser sessions still need subsystem instrumentation (T1.2-T1.8) to populate complete lifecycle events and write full per-site trace bundles.
+## Priority 1 — Real-Site Blocker Diagnosis
 
-### T1.2 — Instrument navigation lifecycle with trace events
-Status: IMPLEMENTED / REGRESSION_PROTECTED
+### Task T4.1 — Fresh GitHub trace with latest debug-site
 
-- **Area**: Core / Navigation
-- **Dependencies**: T1.1
-- **Files**: `FenBrowser.Core/Engine/NavigationLifecycle.cs`, `FenBrowser.FenEngine/Rendering/BrowserApi.cs`, `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`, `FenBrowser.Tests/Core/NavigationLifecycleTraceTests.cs`, `FenBrowser.Tests/Engine/CustomHtmlEngineDocumentTraceTests.cs`
-- **Spec**: PLAN.MD § "Diagnostic Spine Requirement" items 1-4
-- **Description**: Navigation lifecycle transitions now emit diagnostic trace events for request, fetch start, response received, redirect, commit, interactive, load, failed, and cancelled states. The render path carries the active navigation ID into the parser, and `CustomHtmlEngine` emits `DocumentCreated` with a document ID after the real DOM `Document` is created.
-- **Verification**: `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~CustomHtmlEngineDocumentTraceTests|FullyQualifiedName~NavigationLifecycleTraceTests|FullyQualifiedName~EngineLogSettingsTests" --no-restore -v minimal` passed 4/4.
-- **Remaining follow-up**: T1.3 must add parser-phase trace events for HTML parsing start/complete and stylesheet/script discovery.
+- **Task ID**: T4.1
+- **Title**: Run debug-site on GitHub with latest tooling
+- **Area**: Diagnostic spine + real-site
+- **Status**: NOT_STARTED
+- **Priority**: 1
+- **Risk Level**: Low
+- **Dependencies**: None (debug-site command exists and builds)
+- **Reproduction**: Run FenBrowser.Tooling debug-site https://github.com 20000
+- **Expected**: Fresh trace with full artifact bundle; identify first fatal JS exception, first missing API, DCL/load status, layout blocker detail
+- **Evidence required**: Full trace bundle in logs/real-site/github.com/
 
-### T1.3 — Instrument HTML parsing with trace events
-Status: IMPLEMENTED / REGRESSION_PROTECTED
+### Task T4.2 — Fix GitHub zero-area layout boxes
 
-- **Area**: Core / HTML Parser
-- **Dependencies**: T1.1
-- **Files**: `FenBrowser.Core/Parsing/HtmlParser.cs`, `FenBrowser.Core/Parsing/PreloadScanner.cs`, `FenBrowser.Tests/Core/Parsing/HtmlParserTraceTests.cs`
-- **Spec**: PLAN.MD § "Diagnostic Spine Requirement" items 4-6
-- **Description**: The canonical document parser now emits `HTMLParsingStarted`, `HTMLParsingCompleted`, and `HTMLParsingFailed` diagnostic trace events with navigation correlation, URL, input length, outcome, token count, and parse timing. The preload scanner emits `StylesheetDiscovered` and `ScriptDiscovered` trace events even when no prefetcher is configured.
-- **Verification**: `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~HtmlParserTraceTests|FullyQualifiedName~CustomHtmlEngineDocumentTraceTests|FullyQualifiedName~NavigationLifecycleTraceTests|FullyQualifiedName~EngineLogSettingsTests" --no-restore -v minimal` passed 5/5.
-- **Remaining follow-up**: T1.4 owns detailed script fetch/ready/execution lifecycle after discovery.
+- **Task ID**: T4.2
+- **Title**: Fix inline/flex child zero-height layout for GitHub
+- **Area**: Layout engine (FenBrowser.FenEngine)
+- **Status**: NOT_STARTED
+- **Priority**: 1
+- **Risk Level**: Medium
+- **Dependencies**: T4.1 (fresh diagnosis)
+- **Files**: FenBrowser.FenEngine/Layout/InlineFormattingContext.cs, FlexFormattingContext.cs
+- **Current**: GitHub sidebar nav spans 200px wide x 0px tall; 102 elements with text content get zero height
+- **Expected**: Inline/inline-flex children with text content have non-zero height from font metrics and line height
+- **Tests required**: Layout unit tests; WPT css-flexbox tests
+- **Evidence**: Before/after layout dumps showing non-zero heights
 
-### T1.4 — Instrument script loading with per-script lifecycle trace
-- **Area**: FenEngine / Scripting
-- **Dependencies**: T1.1
-- **Files**: `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`, `FenBrowser.Tests/Engine/BrowserScriptEngineTraceTests.cs`
-- **Status**: IMPLEMENTED / REGRESSION_PROTECTED
-- **Spec**: PLAN.MD § "Script Loading Trace Requirements"
-- **Description**: `FenJsBrowserScriptEngine` now writes diagnostic `ScriptLoader` JSONL events for parser-discovered and dynamically inserted scripts: `ScriptDiscovered`, `ScriptFetchStarted`, `ScriptFetchCompleted`, `ScriptReady`, `ScriptExecutionStarted`, `ScriptExecutionCompleted`, `ScriptExecutionFailed`, and `DOMContentLoadedBlockedByScript` where applicable. Per-script trace data includes script ID, resolved URL/source, inline/external, classic/module, async/defer, parser-inserted status, blocking status, fetch status, MIME type, execution order, and exception data on failures. The events populate top-level diagnostic `nav_id` and `script_id` fields through `EngineLogContext`.
-- **Verification**: `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~BrowserScriptEngineTraceTests|FullyQualifiedName~EngineLogSettingsTests" --no-restore -v minimal` passed 3/3.
-- **Acceptance**: Parser-discovered and dynamically inserted scripts produce lifecycle traces with ordering and blocking data.
+### Task T4.3 — Fix GitHub script execution failures
 
-### T1.5 — Instrument event loop with task/microtask/timer/rAF trace
-- **Area**: FenEngine / Event Loop
-- **Dependencies**: T1.1
-- **Files**: `FenBrowser.FenEngine/Core/EventLoop/EventLoopCoordinator.cs`, `TaskQueue.cs`, `MicrotaskQueue.cs`, `EventLoopTrace.cs`, `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`, `FenBrowser.Tests/Engine/EventLoopTraceTests.cs`
-- **Status**: IMPLEMENTED / REGRESSION_PROTECTED
-- **Spec**: PLAN.MD § "Event Loop Trace Requirements"
-- **Description**: The coordinator and FenJS browser timer bridge now write diagnostic `EventLoop` JSONL events for: `TaskQueued`, `TaskStarted`, `TaskCompleted`, `MicrotaskQueued`, `MicrotaskCheckpointStarted`, `MicrotaskExecuted`, `MicrotaskCheckpointCompleted`, `TimerScheduled`, `TimerFired`, `RequestAnimationFrameScheduled`, `RequestAnimationFrameFired`, `RenderOpportunityStarted`, and `RenderOpportunityCompleted`. Events carry top-level `task_id` correlation plus task source, priority, timer/rAF IDs, checkpoint counts, render-opportunity state, and failure details when applicable.
-- **Verification**: `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~EventLoopTraceTests|FullyQualifiedName~EngineLogSettingsTests" --no-restore -v minimal` passed 3/3.
-- **Acceptance**: Event loop trace now exposes task/microtask/timer/rAF/render opportunity ordering for diagnosing missing promises, early DOMContentLoaded timing, stalled timers, missing rAF, and unscheduled render updates.
+- **Task ID**: T4.3
+- **Title**: Diagnose and fix failed scripts on GitHub (7 of 84)
+- **Area**: Script loading / JS engine integration
+- **Status**: NOT_STARTED
+- **Priority**: 1
+- **Risk Level**: Medium
+- **Dependencies**: T4.1 (fresh diagnosis)
+- **Files**: FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs
+- **Current**: 69/84 scripts execute; 7 fail for unknown reasons
+- **Root cause hypothesis**: Missing Web APIs, module gaps, or CORS/network issues
+- **Evidence**: script_loading.json with per-script failure details; missing_apis.json
 
-### T1.6 — Implement missing API tracker
-- **Area**: FenEngine / Scripting
-- **Dependencies**: T1.1
-- **Files**: `FenBrowser.FenEngine/Scripting/MissingApiTracker.cs`, `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`, `FenBrowser.Tests/Scripting/MissingApiTrackerTests.cs`
-- **Spec**: PLAN.MD § "Missing API Tracker"
-- **Description**: `MissingApiTracker` now records missing browser APIs from FenJS `IHostHooks.TryGetHostProperty(...)` misses and page-script `ReferenceError: <name> is not defined` boot failures. Records include API name, object/prototype, site URL, script URL when available, source line/column when available, script ID, navigation ID, first-seen trace ID, encounter count, reason, and exception text.
-- **Verification**: `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~MissingApiTrackerTests|FullyQualifiedName~FenJsXmlHttpRequestTests" --no-restore -v minimal` passed 14/14.
-- **Acceptance**: Per-site `logs/missing_apis/<site>/missing_apis.json` output and `MissingAPI` diagnostic trace events now identify missing host APIs and common framework boot failures.
+### Task T4.4 — Fix DCL/load event timing on GitHub
 
-### T1.7 — Implement debug-site command with trace bundle output
-- **Area**: Host / Tooling
-- **Dependencies**: T1.1-T1.6
-- **Files**: `FenBrowser.Tooling/Program.cs`, `FenBrowser.Host/BrowserIntegration.cs`
-- **Spec**: PLAN.MD § "Style/Layout/Paint Debugging" + "Diagnostic Spine Requirement"
-- **Description**: Add `fenbrowser --debug-site <url> --trace all --output <folder>` command that produces a complete trace bundle: summary.md, trace.jsonl, console.log, network.json, exceptions.json, missing_apis.json, script_loading.json, event_loop.json, style_layout.json, dom_dump.html, style_dump.txt, layout_dump.txt, paint_dump.txt, display_list.txt, screenshot.png.
-- **Acceptance**: A single command produces a complete trace bundle for any URL. Agents can debug from artifacts without guessing.
+- **Task ID**: T4.4
+- **Title**: Ensure DOMContentLoaded fires correctly on GitHub
+- **Area**: Event loop / document lifecycle
+- **Status**: NOT_STARTED
+- **Priority**: 1
+- **Risk Level**: Medium
+- **Dependencies**: T4.1, T4.3 (script failures may block DCL)
+- **Files**: EventLoopCoordinator.cs, BrowserScriptEngineRuntime.cs
+- **Current**: document.readyState probe returned "loading" in prior trace
+- **Expected**: DCL fires after parser-inserted scripts execute and parsing completes
+- **Evidence**: event_loop.json with DCL/load timestamps
 
-### T1.8 — Implement element inspection debug commands
-- **Area**: FenEngine / Rendering
-- **Dependencies**: T1.1
-- **Files**: `FenBrowser.Tooling/Program.cs`, `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
-- **Spec**: PLAN.MD § "Style/Layout/Paint Debugging"
-- **Description**: Add commands: `--dump-dom <url>`, `--dump-style <url>`, `--dump-layout <url>`, `--dump-paint <url>`, `--dump-display-list <url>`, `--screenshot <url>`, `--inspect-selector <url> "<selector>"`. Element inspection must show: name, id/classes, computed display/position, width/height, margin/padding/border, matched rules, winning rule per property, layout dirty reason, paint status, why-not-visible if hidden/zero-size/clipped.
-- **Acceptance**: Debug commands produce actionable output. Element inspection explains why an element is not visible.
+## Priority 2 — Diagnostic Spine Completion
 
----
+### Task T1.7 — Add ipc.json to trace bundle
 
-## GATE 2 — ARCHITECTURE FREEZE
+- **Status**: NOT_STARTED | **Priority**: 2 | **Dependencies**: None
+- Hook into IPC layer to capture message metadata; serialize to bundle
 
-All architecture documents are DESIGN_INTENT. Implementation is subsequent gates.
+### Task T1.9 — Add performance.json to trace bundle
 
-### T2.1 — Write ARCHITECTURE.md
-- **Area**: Docs
-- **Dependencies**: ENGINE_STATE.md
-- **Files**: `docs/ARCHITECTURE.md` (new/update)
-- **Description**: Document every major subsystem boundary, owner, contract. Based on ENGINE_STATE.md inventory.
+- **Status**: NOT_STARTED | **Priority**: 2 | **Dependencies**: None
+- Export frame timing and allocation data from RenderFrameTelemetry
 
-### T2.2 — Write PROCESS_MODEL.md
-- **Area**: Docs
-- **Dependencies**: ENGINE_STATE.md
-- **Files**: `docs/PROCESS_MODEL.md` (new)
-- **Description**: UI/renderer/broker/worker/compositor process design.
+## Priority 2 — Real-Site Expansion
 
-### T2.3 — Write IPC_MODEL.md
-- **Area**: Docs
-- **Dependencies**: PROCESS_MODEL.md
-- **Files**: `docs/IPC_MODEL.md` (new)
-- **Description**: IPC messages, schemas, validation, sync/async policy.
+### Task T4.5 — Run debug-site on react.dev
 
-### T2.4 — Write SECURITY_MODEL.md
-- **Area**: Docs
-- **Dependencies**: PROCESS_MODEL.md
-- **Files**: `docs/SECURITY_MODEL.md` (new)
-- **Description**: Sandboxing, origin isolation, privileges, brokered access.
+- **Status**: NOT_STARTED | **Priority**: 2 | **Dependencies**: T4.1 pattern
+- Identify why 497/1843 elements (27%) lack layout rects
 
-### T2.5 — Write MEMORY_MODEL.md
-- **Area**: Docs
-- **Dependencies**: None
-- **Files**: `docs/MEMORY_MODEL.md` (new)
-- **Description**: C# GC, JS runtime, DOM lifetimes, native handles, wrapper identity, weak references, object ownership. Required before expanding JS/DOM bindings.
+### Task T4.6 — Run debug-site on x.com
 
----
+- **Status**: NOT_STARTED | **Priority**: 2 | **Dependencies**: Network fixes may be needed
+- Identify first fatal script/network/API failure; only 10/81 elements get layout rects
 
-## GATE 4 — REAL-SITE BOOT PIPELINE
+## Immediate Next Action
 
-### T4.1 — Fix first fatal x.com blocker
-- **Area**: Scripting / Network
-- **Dependencies**: T1.4 (script loading trace)
-- **Description**: Diagnose why x.com only produces 10 layout rects from 81 elements. Likely: external script bundles from abs.twimg.com not fetched/executed. Use script loading trace to identify exact failure point.
-- **Acceptance**: x.com loads more than 50 elements with layout rects.
-
-### T4.2 — Fix inline/flex zero-height element issue
-- **Area**: Layout
-- **Dependencies**: T1.8 (element inspection)
-- **Description**: GitHub sidebar shows 200px-wide spans with 0px height despite containing text. Diagnose with inline inspection. Likely: inline formatting context height calculation, or flex child measure pass.
-- **Acceptance**: GitHub sidebar nav items get non-zero heights.
-
-### T4.3 — Fix GitHub missing layout rects (588 elements)
-- **Area**: Layout / Rendering
-- **Dependencies**: T1.8, T4.2
-- **Description**: 588/1959 elements on GitHub have no layout rect. Classify: display:none (281 legit), offscreen (691), vs genuinely broken (remainder). Fix the genuinely broken category.
-- **Acceptance**: GitHub layout rect coverage improves to >80%.
-
----
-
-## QUICK WINS (Low risk, immediate impact)
-
-These have no dependencies and can be done in any order:
-
-### QW1 — Clean up obsolete API usage in tests
-- **Area**: Tests
-- **Files**: `FenBrowser.Tests/Core/Parsing/TableParsingTests.cs`, `GoogleSnapshotDiagnosticsTests.cs`, `LayoutStabilityTests.cs`, `FlexDistributionTests.cs`
-- **Description**: Replace deprecated `Node.Text`→`TextContent`, `Node.ComputedStyle`→`GetComputedStyle()`, `Element.Attr`→`GetAttribute()`. Removes 13 build warnings.
-- **Acceptance**: Zero CS0618 warnings in test build.
-
-### QW2 — Fix xUnit analyzer warnings in tests
-- **Area**: Tests
-- **Files**: `FenBrowser.Tests/Core/Parsing/StreamingHtmlParserTests.cs`, `AfterHeadParsingTests.cs`
-- **Description**: Replace `Assert.False(collection.Contains(x))` → `Assert.DoesNotContain()`, `collection.Where().Single()` → `Assert.Single(filter)`.
-- **Acceptance**: Zero xUnit2012/xUnit2031 warnings.
-
-### QW3 — Run WPT dom/ category baseline
-- **Area**: Conformance
-- **Dependencies**: WebDriver server running
-- **Description**: Run full WPT dom/ category via wptrunner to establish DOM baseline beyond the known dom/lists = 95.2%.
-- **Acceptance**: WPT dom/ pass rate documented in TEST_BASELINE.md.
-
-### QW4 — Run html5lib conformance baseline
-- **Area**: Conformance
-- **Dependencies**: None (test data in tree at html5lib-tests/)
-- **Description**: Run the html5lib test suite against the HTML parser.
-- **Acceptance**: html5lib pass rate documented in TEST_BASELINE.md.
+**Run T4.1**: Fresh debug-site on GitHub with the latest tooling, then triage:
+1. script_loading.json — what causes the 7 script failures?
+2. missing_apis.json — what APIs does GitHub JS depend on that are missing?
+3. event_loop.json — does DCL/load fire?
+4. style_layout.json — zero-area box details
+5. exceptions.json — first fatal JS errors
+6. Classify first fatal blocker per PLAN.MD bucket system
