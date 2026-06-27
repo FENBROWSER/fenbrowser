@@ -95,6 +95,7 @@ flowchart TD
   - `GridFormattingContext` caches intrinsic child measurements per layout pass and returns current geometry for re-entrant same-key measurements, avoiding recursive grid/flex measurement storms during dense navigation/menu layout.
   - `BoxTreeBuilder` per-box decision logging now requires `FEN_LAYOUT_DEBUG_LOG` in addition to debug log level, preventing global debug runs from flooding logs with every constructed box.
   - `FlexFormattingContext` keeps `position:relative` visual offsets from feeding the sibling-flow anti-overlap guard, and clamps relative flex descendants back inside the shifted item start so the item and subtree move together without changing following-item flow.
+  - `FlexFormattingContext` now treats percentage heights without a definite containing-block height as auto for flex main-size decisions, and `ResolveContainerDimensions(...)` falls through to auto/line-height sizing when `height:%` cannot resolve. This reduces GitHub navigation zero-area boxes from 193 to 148 in the 2026-06-27 `debug-site https://github.com` trace while leaving compressed non-zero flex rows as the next T4.2 gap.
 - Flex baseline keyword normalization hardening (2026-05-08):
   - `FlexFormattingContext` and `CssFlexLayout` now treat `baseline`, `first baseline`, and `last baseline` as baseline-alignment values for cross-axis flex item placement.
   - This keeps baseline alignment behavior consistent across both layout paths when authors use explicit baseline-position keywords.

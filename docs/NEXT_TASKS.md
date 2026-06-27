@@ -21,7 +21,7 @@
 | example.com | 18 nodes | 12/12 styled | 0 scripts | Captured | Perfect |
 | news.ycombinator.com | 816 nodes | 777/816 styled | few | Captured | 95% layout coverage |
 | react.dev | 1843 nodes | 1240/1843 styled | unknown | Partial | 67% layout coverage |
-| github.com | 2891 nodes | 1920/2891 styled | 69/84 scripts | Captured | 1415 layout boxes; 193 zero-area boxes |
+| github.com | 2891 nodes | 1920/2891 styled | 69/84 scripts | Captured | 1415 layout boxes; 148 zero-area boxes; sparse header remains |
 | x.com | 81 nodes | 10/81 styled | Very few | Mostly white | 12% layout; scripts fail early |
 
 ## Priority 1 — Real-Site Blocker Diagnosis
@@ -45,15 +45,15 @@
 - **Task ID**: T4.2
 - **Title**: Fix inline/flex child zero-height layout for GitHub
 - **Area**: Layout engine (FenBrowser.FenEngine)
-- **Status**: NOT_STARTED
+- **Status**: IN_PROGRESS
 - **Priority**: 1
 - **Risk Level**: Medium
 - **Dependencies**: T4.1 (fresh diagnosis)
 - **Files**: FenBrowser.FenEngine/Layout/InlineFormattingContext.cs, FlexFormattingContext.cs
-- **Current**: GitHub captures layout but still has 193 zero-area boxes; screenshot is sparse after the deadline error frame was removed.
+- **Current**: GitHub captures layout but still has 148 zero-area boxes after unresolved `height:100%` flex containers stopped collapsing to zero. The first `NavGroup` text-bearing subtree now has non-zero geometry, but it is compressed to ~1.5px height and the screenshot is still sparse.
 - **Expected**: Inline/inline-flex children with text content have non-zero height from font metrics and line height
 - **Tests required**: Layout unit tests; WPT css-flexbox tests
-- **Evidence**: Before/after layout dumps showing non-zero heights
+- **Evidence**: Before/after layout dumps showing first `NavGroup` height moved from 0 to non-zero; latest bundle `logs/real-site/github.com/20260627T170110Z/`.
 
 ### Task T4.3 — Fix GitHub script execution failures
 
@@ -109,8 +109,8 @@
 
 ## Immediate Next Action
 
-**Run T4.2**: Fix the GitHub zero-area layout boxes using the fresh bundle:
-1. `style_layout.json` - 193 zero-area boxes, no captured layout blocker
-2. `layout_dump.txt` - identify the first text-bearing zero-height inline/flex subtree
+**Continue T4.2**: Fix the remaining GitHub compressed/zero-area layout boxes using the latest bundle:
+1. `style_layout.json` - 148 zero-area boxes, no captured layout blocker
+2. `layout_dump.txt` - first `NavGroup` flex subtree is non-zero but compressed to ~1.5px height
 3. `screenshot.png` - sparse GitHub header remains the visual acceptance signal
-4. Add a focused layout regression before changing the formatting context
+4. Add or extend focused layout regressions before changing the formatting context

@@ -58,17 +58,31 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 justifyContent = rawJustify?.ToLowerInvariant();
             }
             justifyContent ??= "flex-start";
+            bool heightPercentHasDefiniteBasis =
+                style?.HeightPercent.HasValue == true &&
+                HasDefinitePercentageHeightBasis(container, state);
+            bool rawHeightIsPercentage =
+                style?.Map != null &&
+                style.Map.TryGetValue("height", out var rawHeight) &&
+                IsPercentageHeight(rawHeight);
+            bool hasHeightMapExplicit =
+                style?.Map != null &&
+                style.Map.ContainsKey("height") &&
+                !rawHeightIsPercentage &&
+                (style.HeightPercent.HasValue != true || heightPercentHasDefiniteBasis);
+            bool hasExplicitHeightForFlexSizing =
+                style?.Height.HasValue == true ||
+                heightPercentHasDefiniteBasis ||
+                !string.IsNullOrEmpty(style?.HeightExpression) ||
+                hasHeightMapExplicit;
             bool mainAxisUnconstrained = isRow
                 ? (float.IsInfinity(state.AvailableSize.Width) || float.IsNaN(state.AvailableSize.Width))
                 : (float.IsInfinity(state.AvailableSize.Height) || float.IsNaN(state.AvailableSize.Height));
             bool hasExplicitMainSize = isRow
                 ? (style?.Width.HasValue == true || style?.WidthPercent.HasValue == true || !string.IsNullOrEmpty(style?.WidthExpression))
-                : (style?.Height.HasValue == true || style?.HeightPercent.HasValue == true || !string.IsNullOrEmpty(style?.HeightExpression));
+                : hasExplicitHeightForFlexSizing;
             bool hasExplicitCrossSize = isRow
-                ? (style?.Height.HasValue == true ||
-                   style?.HeightPercent.HasValue == true ||
-                   !string.IsNullOrEmpty(style?.HeightExpression) ||
-                   (style?.Map != null && style.Map.ContainsKey("height")))
+                ? hasExplicitHeightForFlexSizing
                 : (style?.Width.HasValue == true ||
                    style?.WidthPercent.HasValue == true ||
                    !string.IsNullOrEmpty(style?.WidthExpression) ||
@@ -131,7 +145,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             bool hasExplicitMain =
                 isRow
                     ? (style?.Width.HasValue == true || style?.WidthPercent.HasValue == true || !string.IsNullOrEmpty(style?.WidthExpression))
-                    : (style?.Height.HasValue == true || style?.HeightPercent.HasValue == true || !string.IsNullOrEmpty(style?.HeightExpression));
+                    : hasExplicitHeightForFlexSizing;
             
             if (!hasExplicitMain)
             {
@@ -1234,27 +1248,38 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     height = Math.Max(0f, height - verticalChrome);
                 }
             }
-            else if (box.ComputedStyle?.HeightPercent.HasValue == true)
+            else
             {
-                float parentHeight = ResolveDefinitePercentageHeightBasis(box, state);
-                if (!float.IsInfinity(parentHeight) && parentHeight > 0)
-                    height = (float)(box.ComputedStyle.HeightPercent.Value / 100.0 * parentHeight);
-            }
-            else if (box.ComputedStyle?.LineHeight.HasValue == true && box.ComputedStyle.LineHeight.Value > 0)
-            {
-                // Many icon wrappers rely on line-height when height is auto.
-                height = (float)box.ComputedStyle.LineHeight.Value;
-            }
-            else if (!string.IsNullOrEmpty(box.ComputedStyle?.HeightExpression))
-            {
-                float parentHeight = state.AvailableSize.Height;
-                if (float.IsInfinity(parentHeight) || parentHeight <= 0)
-                    parentHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
-                height = LayoutHelper.EvaluateCssExpression(
-                    box.ComputedStyle.HeightExpression,
-                    parentHeight,
-                    state.ViewportWidth,
-                    state.ViewportHeight);
+                bool resolvedPercentHeight = false;
+                if (box.ComputedStyle?.HeightPercent.HasValue == true)
+                {
+                    float parentHeight = ResolveDefinitePercentageHeightBasis(box, state);
+                    if (!float.IsInfinity(parentHeight) && parentHeight > 0)
+                    {
+                        height = (float)(box.ComputedStyle.HeightPercent.Value / 100.0 * parentHeight);
+                        resolvedPercentHeight = true;
+                    }
+                }
+
+                if (!resolvedPercentHeight)
+                {
+                    if (box.ComputedStyle?.LineHeight.HasValue == true && box.ComputedStyle.LineHeight.Value > 0)
+                    {
+                        // Many icon wrappers rely on line-height when height is auto.
+                        height = (float)box.ComputedStyle.LineHeight.Value;
+                    }
+                    else if (!string.IsNullOrEmpty(box.ComputedStyle?.HeightExpression))
+                    {
+                        float parentHeight = state.AvailableSize.Height;
+                        if (float.IsInfinity(parentHeight) || parentHeight <= 0)
+                            parentHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
+                        height = LayoutHelper.EvaluateCssExpression(
+                            box.ComputedStyle.HeightExpression,
+                            parentHeight,
+                            state.ViewportWidth,
+                            state.ViewportHeight);
+                    }
+                }
             }
 
             // Apply min/max constraints (including % and expression forms)
@@ -1713,6 +1738,18 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             return parentHeight;
+        }
+
+        private static bool HasDefinitePercentageHeightBasis(LayoutBox box, LayoutState state)
+        {
+            float basis = ResolveDefinitePercentageHeightBasis(box, state);
+            return float.IsFinite(basis) && basis > 0f;
+        }
+
+        private static bool IsPercentageHeight(string rawHeight)
+        {
+            return !string.IsNullOrWhiteSpace(rawHeight) &&
+                   rawHeight.Trim().EndsWith("%", StringComparison.Ordinal);
         }
 
         private static bool HasDefiniteContainingBlockHeight(LayoutBox box)

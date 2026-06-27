@@ -223,6 +223,77 @@ namespace FenBrowser.Tests.Layout
             Assert.True(liH > 1f, $"Expected li to have non-zero height, got ContentBox.Height={liH:F2}. MarginBox={liBox.Geometry.MarginBox}");
         }
 
+        [Fact]
+        public void ColumnFlexGroup_WithBlockTitleAndNestedFlexList_DerivesNonZeroHeight()
+        {
+            var root = new Element("div");
+            var nav = new Element("nav");
+            var gridList = new Element("ul");
+            var gridItem = new Element("li");
+            var group = new Element("div");
+            var title = new Element("span");
+            var nestedList = new Element("ul");
+            var nestedItem = new Element("li");
+            var link = new Element("a");
+            var linkTitle = new Element("span");
+
+            var titleText = new Text("AI CODE CREATION");
+            var linkText = new Text("GitHub Copilot");
+            title.AppendChild(titleText);
+            linkTitle.AppendChild(linkText);
+            link.AppendChild(linkTitle);
+            nestedItem.AppendChild(link);
+            nestedList.AppendChild(nestedItem);
+            group.AppendChild(title);
+            group.AppendChild(nestedList);
+            gridItem.AppendChild(group);
+            gridList.AppendChild(gridItem);
+            nav.AppendChild(gridList);
+            root.AppendChild(nav);
+
+            var groupStyle = new CssComputed
+            {
+                Display = "flex",
+                FlexDirection = "column",
+                Width = 200,
+                FontSize = 16,
+                LineHeight = 24,
+            };
+            groupStyle.Map["height"] = "100%";
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 800 },
+                [nav] = new CssComputed { Display = "block", Width = 0 },
+                [gridList] = new CssComputed { Display = "grid", Width = 0 },
+                [gridItem] = new CssComputed { Display = "list-item", FontSize = 16, LineHeight = 24 },
+                [group] = groupStyle,
+                [title] = new CssComputed { Display = "block", FontSize = 12, LineHeight = 18 },
+                [nestedList] = new CssComputed { Display = "flex", FlexDirection = "column", FontSize = 16, LineHeight = 24 },
+                [nestedItem] = new CssComputed { Display = "list-item", FontSize = 16, LineHeight = 24 },
+                [link] = new CssComputed { Display = "flex", FontSize = 16, LineHeight = 24 },
+                [linkTitle] = new CssComputed { Display = "block", FontSize = 16, LineHeight = 24 },
+            };
+
+            var rootBox = LayoutRoot(root, styles, 800, 600);
+            var groupBox = FindBox(rootBox, group);
+            var titleBox = FindBox(rootBox, title);
+            var gridItemBox = FindBox(rootBox, gridItem);
+            var textBoxes = new List<TextLayoutBox>();
+            CollectTextBoxes(rootBox, textBoxes);
+            var titleTextBox = FindTextBox(textBoxes, titleText);
+
+            Assert.NotNull(groupBox);
+            Assert.NotNull(titleBox);
+            Assert.NotNull(gridItemBox);
+
+            Assert.True(
+                titleBox!.Geometry.ContentBox.Height > 1f,
+                $"Expected title block to have non-zero height. title={titleBox.Geometry.MarginBox} titleText={titleTextBox?.Geometry.MarginBox} group={groupBox!.Geometry.MarginBox} li={gridItemBox!.Geometry.MarginBox} groupDisplay={groupBox.ComputedStyle?.Display} groupRawHeight={GetRawHeight(groupBox.ComputedStyle)} groupHeightPercent={groupBox.ComputedStyle?.HeightPercent}");
+            Assert.True(groupBox!.Geometry.ContentBox.Height >= titleBox.Geometry.ContentBox.Height, $"Expected column flex group to include its title height. group={groupBox.Geometry.MarginBox} title={titleBox.Geometry.MarginBox}");
+            Assert.True(gridItemBox!.Geometry.ContentBox.Height >= groupBox.Geometry.ContentBox.Height, $"Expected list item to include flex group height. li={gridItemBox.Geometry.MarginBox} group={groupBox.Geometry.MarginBox}");
+        }
+
         private static LayoutBox LayoutRoot(Element root, Dictionary<Node, CssComputed> styles, float width, float height)
         {
             var builder = new BoxTreeBuilder(styles);
@@ -262,6 +333,13 @@ namespace FenBrowser.Tests.Layout
             }
 
             return null;
+        }
+
+        private static string GetRawHeight(CssComputed style)
+        {
+            return style?.Map != null && style.Map.TryGetValue("height", out var value)
+                ? value
+                : null;
         }
 
         private static void CollectTextBoxes(LayoutBox box, List<TextLayoutBox> result)
