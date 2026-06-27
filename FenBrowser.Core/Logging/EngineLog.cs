@@ -332,7 +332,7 @@ public static class EngineLog
 
         if (options.EnableTraceSink && !string.IsNullOrWhiteSpace(options.TraceFilePath))
         {
-            sinks.Add(new ChromiumTraceEngineLogSink(options.TraceFilePath));
+            sinks.Add(new DiagnosticTraceEngineLogSink(options.TraceFilePath));
         }
 
         var dispatcher = new EngineLogDispatcher(options.DispatcherQueueCapacity, sinks);
