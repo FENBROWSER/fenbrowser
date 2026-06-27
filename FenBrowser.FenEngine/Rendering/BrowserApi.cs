@@ -1192,6 +1192,11 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         var viewportHint = GetRenderViewportHint();
                         using (EnterImageLoaderContext())
+                        using (EngineLogCompat.BeginCorrelationScope(navigationId.ToString(), "BrowserHost.Render", new Dictionary<string, object>
+                        {
+                            ["navigationId"] = navigationId.ToString(),
+                            ["url"] = _current.AbsoluteUri
+                        }))
                         {
                             elem = await _engine.RenderAsync(sb.ToString(), _current, trackedCssFetcher, trackedImageFetcher, u => { _ = NavigateAsync(u.AbsoluteUri); }, viewportHint.Width, viewportHint.Height);
                         }
@@ -1470,6 +1475,11 @@ pre {{
                 {
                     var viewportHint = GetRenderViewportHint();
                     using (EnterImageLoaderContext())
+                    using (EngineLogCompat.BeginCorrelationScope(navigationId.ToString(), "BrowserHost.Render", new Dictionary<string, object>
+                    {
+                        ["navigationId"] = navigationId.ToString(),
+                        ["url"] = uri.AbsoluteUri
+                    }))
                     {
                         elem = await _engine.RenderAsync(htmlToRender, uri, trackedCssFetcher, trackedImageFetcher, u => { _ = NavigateAsync(u.AbsoluteUri); }, viewportHint.Width, viewportHint.Height);
                     }

@@ -1876,6 +1876,8 @@ public void Dispose()
                     parsedDocument.BaseURI = absoluteBase;
                 }
 
+                EmitDocumentCreatedTrace(parsedDocument, baseUri, parseResult?.Outcome, parseResult?.Metrics);
+
                 Node parsedRoot = (Node)parsedDocument.DocumentElement ?? parsedDocument;
                 
                 // DEBUG: Dump DOM
@@ -1911,6 +1913,47 @@ public void Dispose()
             {
                 EngineLogCompat.Error($"[RenderAsync] Parse error: {ex.Message}", LogCategory.Rendering);
                 return null;
+            }
+        }
+
+        private static void EmitDocumentCreatedTrace(
+            Document document,
+            Uri baseUri,
+            HtmlParsingOutcome outcome,
+            HtmlParseBuildMetrics metrics)
+        {
+            try
+            {
+                var navigationId = LogContext.CurrentCorrelationId;
+                var documentId = !string.IsNullOrWhiteSpace(navigationId)
+                    ? $"doc-{navigationId}"
+                    : $"doc-{System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(document):x}";
+                var url = baseUri?.AbsoluteUri ?? document?.URL;
+
+                EngineLog.Write(
+                    LogSubsystem.Dom,
+                    LogSeverity.Info,
+                    "DocumentCreated",
+                    LogMarker.None,
+                    new EngineLogContext(
+                        NavigationId: navigationId,
+                        DocumentId: documentId,
+                        Url: url),
+                    new Dictionary<string, object>
+                    {
+                        ["event"] = "DocumentCreated",
+                        ["traceCategory"] = "Navigation",
+                        ["url"] = url,
+                        ["contentType"] = document?.ContentType,
+                        ["outcomeClass"] = outcome?.OutcomeClass.ToString(),
+                        ["reasonCode"] = outcome?.ReasonCode.ToString(),
+                        ["tokenCount"] = Math.Max(0, metrics?.TokenCount ?? 0),
+                        ["documentReadyToken"] = Math.Max(0, metrics?.DocumentReadyTokenCount ?? 0)
+                    });
+            }
+            catch
+            {
+                // Document creation must not fail because diagnostics failed.
             }
         }
 

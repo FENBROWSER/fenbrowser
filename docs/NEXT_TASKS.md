@@ -22,15 +22,15 @@ Status: IMPLEMENTED / REGRESSION_PROTECTED
 - **Remaining follow-up**: Browser sessions still need subsystem instrumentation (T1.2-T1.8) to populate complete lifecycle events and write full per-site trace bundles.
 
 ### T1.2 — Instrument navigation lifecycle with trace events
-Status: PARTIAL / REGRESSION_PROTECTED
+Status: IMPLEMENTED / REGRESSION_PROTECTED
 
 - **Area**: Core / Navigation
 - **Dependencies**: T1.1
-- **Files**: `FenBrowser.Core/Engine/NavigationLifecycle.cs`, `FenBrowser.Tests/Core/NavigationLifecycleTraceTests.cs`
+- **Files**: `FenBrowser.Core/Engine/NavigationLifecycle.cs`, `FenBrowser.FenEngine/Rendering/BrowserApi.cs`, `FenBrowser.FenEngine/Rendering/CustomHtmlEngine.cs`, `FenBrowser.Tests/Core/NavigationLifecycleTraceTests.cs`, `FenBrowser.Tests/Engine/CustomHtmlEngineDocumentTraceTests.cs`
 - **Spec**: PLAN.MD § "Diagnostic Spine Requirement" items 1-4
-- **Description**: Navigation lifecycle transitions now emit diagnostic trace events for request, fetch start, response received, redirect, commit, interactive, load, failed, and cancelled states. Each emitted event carries the navigation ID and URL context.
-- **Verification**: `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~FenBrowser.Tests.Core.NavigationLifecycleTraceTests|FullyQualifiedName~FenBrowser.Tests.Logging.EngineLogSettingsTests" --no-restore -v minimal` passed 4/4.
-- **Remaining follow-up**: Document IDs are not yet populated at the parser/document-creation boundary. A dedicated `DocumentCreated` event still needs to be emitted when the DOM document object is actually created.
+- **Description**: Navigation lifecycle transitions now emit diagnostic trace events for request, fetch start, response received, redirect, commit, interactive, load, failed, and cancelled states. The render path carries the active navigation ID into the parser, and `CustomHtmlEngine` emits `DocumentCreated` with a document ID after the real DOM `Document` is created.
+- **Verification**: `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~CustomHtmlEngineDocumentTraceTests|FullyQualifiedName~NavigationLifecycleTraceTests|FullyQualifiedName~EngineLogSettingsTests" --no-restore -v minimal` passed 4/4.
+- **Remaining follow-up**: T1.3 must add parser-phase trace events for HTML parsing start/complete and stylesheet/script discovery.
 
 ### T1.3 — Instrument HTML parsing with trace events
 - **Area**: Core / HTML Parser
