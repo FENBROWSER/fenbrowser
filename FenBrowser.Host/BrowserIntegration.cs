@@ -37,6 +37,7 @@ public class BrowserIntegration
     private float _contentHeight = 0;
     private float _dpiScale = 1.0f;
     private SKSize _lastViewportSize;
+    private System.Diagnostics.Stopwatch _frameStopwatch = System.Diagnostics.Stopwatch.StartNew();
     private bool _hasReceivedViewportSize = false;
     
     // Threading & Event Queue
@@ -1142,12 +1143,50 @@ public class BrowserIntegration
     /// </summary>
     public async Task RefreshAsync()
     {
+        var refreshStartTime = DateTime.Now;
+        EngineLogBridge.Info("[BrowserIntegration] RefreshAsync: Starting refresh operation", LogCategory.Navigation);
+
         _lastNavigationTime = DateTime.Now;
         _hasFirstStyledRender = false;
         RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserIntegration.Refresh");
         StartPostNavigationRepaintPulse();
+
         using var navCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-        await _browser.RefreshAsync().WaitAsync(navCts.Token).ConfigureAwait(false);
+        try
+        {
+            EngineLogBridge.Info($"[BrowserIntegration] RefreshAsync: Calling _browser.RefreshAsync() at {refreshStartTime:O}", LogCategory.Navigation);
+
+            await _browser.RefreshAsync().WaitAsync(navCts.Token).ConfigureAwait(false);
+
+            var refreshDuration = DateTime.Now - refreshStartTime;
+            EngineLogBridge.Info($"[BrowserIntegration] RefreshAsync: Completed successfully in {refreshDuration.TotalSeconds:F2}s", LogCategory.Navigation);
+        }
+        catch (OperationCanceledException) when (navCts.IsCancellationRequested)
+        {
+            var timeoutDuration = DateTime.Now - refreshStartTime;
+            EngineLogBridge.Error(
+                $"[BrowserIntegration] RefreshAsync: TIMEOUT after {timeoutDuration.TotalSeconds:F2}s (30s limit). " +
+                $"CurrentUrl={CurrentUrl}, IsLoading={IsLoading}", 
+                LogCategory.Navigation);
+            throw;
+        }
+        catch (TaskCanceledException ex)
+        {
+            var timeoutDuration = DateTime.Now - refreshStartTime;
+            EngineLogBridge.Error(
+                $"[BrowserIntegration] RefreshAsync: Task CANCELLED after {timeoutDuration.TotalSeconds:F2}s. " +
+                $"Message: {ex.Message}", 
+                LogCategory.Navigation);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            var duration = DateTime.Now - refreshStartTime;
+            EngineLogBridge.Error(
+                $"[BrowserIntegration] RefreshAsync: ERROR after {duration.TotalSeconds:F2}s - {ex.GetType().Name}: {ex.Message}", 
+                LogCategory.Navigation);
+            throw;
+        }
     }
     
     /// <summary>
@@ -1299,7 +1338,7 @@ public class BrowserIntegration
                 EngineLogBridge.Debug("[BrowserIntegration] RecordFrame: rendering with default styles (CSS pending)", LogCategory.Rendering);
             }
         }
-        
+
         // Guard: Ensure we have a valid HTML element
         string rootTag = _root?.TagName?.ToUpperInvariant() ?? "";
         if (_root != null && rootTag != "HTML")

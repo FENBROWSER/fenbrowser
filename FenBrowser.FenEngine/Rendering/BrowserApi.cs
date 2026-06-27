@@ -1384,29 +1384,50 @@ pre {{
 
                 if (result.Status != FetchStatus.Success)
                 {
-                    // Render error page
-                    switch (result.Status)
+                    // When the server returned a 4xx HTTP error but included an HTML
+                    // body (e.g. Google's 429 CAPTCHA challenge, 403 access-denied
+                    // pages), render the server's response body instead of a generic
+                    // browser error page.  This matches Chrome/Firefox behavior.
+                    bool hasRenderableErrorBody =
+                        result.FailureReason == FetchFailureReasonCode.HttpError &&
+                        result.StatusCode >= 400 && result.StatusCode < 500 &&
+                        !string.IsNullOrWhiteSpace(result.Content) &&
+                        IsHtmlContentType(result.ContentType);
+
+                    if (hasRenderableErrorBody)
                     {
-                        case FetchStatus.ConnectionFailed:
-                            htmlToRender = ErrorPageRenderer.RenderConnectionFailed(url, result.ErrorDetail);
-                            SecurityState = SecurityState.NotSecure;
-                            break;
-                        case FetchStatus.SslError:
-                            htmlToRender = ErrorPageRenderer.RenderSslError(url, result.ErrorDetail, result.Certificate);
-                            SecurityState = SecurityState.Warning;
-                            break;
-                        case FetchStatus.Timeout:
-                            htmlToRender = ErrorPageRenderer.RenderGenericError(url, "Connection Timed Out", "The server took too long to respond.", result.ErrorDetail);
-                            SecurityState = SecurityState.NotSecure;
-                            break;
-                        case FetchStatus.NotFound:
-                            htmlToRender = ErrorPageRenderer.RenderGenericError(url, "404 Not Found", "The page you requested could not be found.", result.ErrorDetail);
-                            SecurityState = SecurityState.NotSecure;
-                            break;
-                        default:
-                             htmlToRender = ErrorPageRenderer.RenderGenericError(url, "Error", "Something went wrong.", result.ErrorDetail);
-                             SecurityState = SecurityState.NotSecure;
-                             break;
+                        // Use the server's error body as-is (CAPTCHA, challenge, etc.)
+                        htmlToRender = result.Content;
+                        SecurityState = uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase)
+                            ? SecurityState.Secure
+                            : SecurityState.NotSecure;
+                    }
+                    else
+                    {
+                        // Render browser error page
+                        switch (result.Status)
+                        {
+                            case FetchStatus.ConnectionFailed:
+                                htmlToRender = ErrorPageRenderer.RenderConnectionFailed(url, result.ErrorDetail);
+                                SecurityState = SecurityState.NotSecure;
+                                break;
+                            case FetchStatus.SslError:
+                                htmlToRender = ErrorPageRenderer.RenderSslError(url, result.ErrorDetail, result.Certificate);
+                                SecurityState = SecurityState.Warning;
+                                break;
+                            case FetchStatus.Timeout:
+                                htmlToRender = ErrorPageRenderer.RenderGenericError(url, "Connection Timed Out", "The server took too long to respond.", result.ErrorDetail);
+                                SecurityState = SecurityState.NotSecure;
+                                break;
+                            case FetchStatus.NotFound:
+                                htmlToRender = ErrorPageRenderer.RenderGenericError(url, "404 Not Found", "The page you requested could not be found.", result.ErrorDetail);
+                                SecurityState = SecurityState.NotSecure;
+                                break;
+                            default:
+                                 htmlToRender = ErrorPageRenderer.RenderGenericError(url, "Error", "Something went wrong.", result.ErrorDetail);
+                                 SecurityState = SecurityState.NotSecure;
+                                 break;
+                        }
                     }
                 }
                 else
@@ -2984,6 +3005,14 @@ pre {{
 
             recoveryUri = candidate;
             return true;
+        }
+
+        private static bool IsHtmlContentType(string contentType)
+        {
+            if (string.IsNullOrWhiteSpace(contentType)) return false;
+            var ct = contentType.Trim();
+            return ct.StartsWith("text/html", StringComparison.OrdinalIgnoreCase) ||
+                   ct.StartsWith("application/xhtml+xml", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsGoogleSearchUri(Uri uri)

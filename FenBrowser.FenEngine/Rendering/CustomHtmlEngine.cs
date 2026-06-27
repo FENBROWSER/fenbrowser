@@ -2649,14 +2649,17 @@ public void Dispose()
                     $"[PERF] DOM Parse: total={elapsed}ms tokenizing={tokenizingMs}ms parsing={parsingMs}ms tokens={parseTokenCount} docReadyToken={documentReadyTokenCount} parseRepaints={incrementalParseRepaintCount} streaming(ms={streamingPreparseMs},cp={streamingPreparseCheckpointCount},rp={streamingPreparseRepaintCount}) interleaved(used={(interleavedParseUsed ? 1 : 0)},batch={interleavedTokenBatchSize},chunks={interleavedBatchCount},fallback={(interleavedFallbackUsed ? 1 : 0)}) checkpoints(t={tokenizingCheckpointCount},p={parsingCheckpointCount},dom={parsingDocumentCheckpointCount})",
                     LogCategory.Rendering);
 
-                var googleChallengeSanitized = ForceGoogleChallengeBannerVisible(dom, baseUri, removeUnhideScript: true);
+                bool allowJs = EnableJavaScript;
+                if (forceJavascript.HasValue) allowJs = forceJavascript.Value;
+
+                var isGoogleSearchChallenge = IsGoogleSearchChallengeDocument(dom, baseUri);
+                var googleChallengeSanitized = allowJs
+                    ? 0
+                    : ForceGoogleChallengeBannerVisible(dom, baseUri, removeUnhideScript: true);
                 if (googleChallengeSanitized > 0)
                 {
                     EngineLogCompat.Info($"[CustomHtmlEngine] GoogleChallengeSanitizeApplied changes={googleChallengeSanitized}", LogCategory.Rendering);
                 }
-
-                bool allowJs = EnableJavaScript;
-                if (forceJavascript.HasValue) allowJs = forceJavascript.Value;
 
                 bool deferStableSnapshotUntilPostScript = allowJs;
                 if (deferStableSnapshotUntilPostScript)
@@ -2790,6 +2793,18 @@ public void Dispose()
                                 EngineLogCompat.Debug($"[CustomHtmlEngine] Removing harmful <style> from <noscript>", LogCategory.Rendering);
                                 style.Remove();
                                 fallbackDomMutated = true;
+                            }
+                        }
+
+                        if (isGoogleSearchChallenge)
+                        {
+                            var removedGoogleBootstrap = RemoveEncodedNoscriptBootstrapFallbacks(noscriptElements);
+                            if (removedGoogleBootstrap > 0)
+                            {
+                                fallbackDomMutated = true;
+                                EngineLogCompat.Debug(
+                                    $"[CustomHtmlEngine] Removed {removedGoogleBootstrap} encoded Google Search challenge bootstrap <noscript> block(s)",
+                                    LogCategory.Rendering);
                             }
                         }
 

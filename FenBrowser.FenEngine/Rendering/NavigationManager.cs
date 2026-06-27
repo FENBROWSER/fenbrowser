@@ -23,15 +23,18 @@ namespace FenBrowser.FenEngine.Rendering
 
         public Task<FetchResult> NavigateUserInputAsync(string url)
         {
-            return NavigateAsync(url, NavigationRequestKind.UserInput);
+            return NavigateAsync(url, NavigationRequestKind.UserInput, referer: null);
         }
 
         public Task<FetchResult> NavigateAsync(string url)
         {
-            return NavigateAsync(url, NavigationRequestKind.Programmatic);
+            return NavigateAsync(url, NavigationRequestKind.Programmatic, referer: null);
         }
 
-        public async Task<FetchResult> NavigateAsync(string url, NavigationRequestKind requestKind)
+        public async Task<FetchResult> NavigateAsync(
+            string url,
+            NavigationRequestKind requestKind,
+            Uri referer = null)
         {
             // 1. Normalize URL
             if (string.IsNullOrWhiteSpace(url)) 
@@ -125,9 +128,10 @@ namespace FenBrowser.FenEngine.Rendering
             // see navigation semantics instead of subresource-style headers.
             return await _resourceManager.FetchTextDetailedAsync(
                 uri,
-                referer: null,
+                referer: requestKind == NavigationRequestKind.UserInput ? null : referer,
                 accept: null,
-                secFetchDest: "document");
+                secFetchDest: "document",
+                isUserInitiatedNavigation: requestKind == NavigationRequestKind.UserInput);
         }
 
         private static string NormalizeInternalFenUrl(string url)

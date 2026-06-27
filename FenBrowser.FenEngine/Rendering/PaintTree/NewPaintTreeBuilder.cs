@@ -705,7 +705,12 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         var existingWidth = existingBox.ContentBox.Width;
                         var existingHeight = existingBox.ContentBox.Height;
+                        // Only synthesize if the iframe was NOT intentionally hidden.
+                        // Iframes with width=0/height=0 attributes or CSS sizing to 0
+                        // are intentionally invisible (analytics, tracking, preloads).
+                        // Respect the layout result instead of forcing 300×150.
                         if ((existingWidth <= 1f || existingHeight <= 1f) &&
+                            !IsIframeIntentionallyHidden(element, style) &&
                             TrySynthesizeIframePaintBox(element, style, out var synthesizedIframeBox))
                         {
                             box = synthesizedIframeBox;
@@ -718,6 +723,7 @@ namespace FenBrowser.FenEngine.Rendering
                 }
 
                 if (string.Equals(tag, "IFRAME", StringComparison.Ordinal) &&
+                    !IsIframeIntentionallyHidden(element, style) &&
                     TrySynthesizeIframePaintBox(element, style, out var iframeBox))
                 {
                     box = iframeBox;
@@ -875,6 +881,41 @@ namespace FenBrowser.FenEngine.Rendering
 
             box = Layout.BoxModel.FromContentBox(left, top, width, height);
             return true;
+        }
+
+        /// <summary>
+        /// Returns true when the iframe element is intentionally hidden — either
+        /// via CSS (display:none / visibility:hidden / zero dimensions) or via
+        /// HTML attributes (width="0" / height="0"). Such iframes must NOT be
+        /// inflated to 300×150 placeholder boxes.
+        /// </summary>
+        private static bool IsIframeIntentionallyHidden(Element element, CssComputed style)
+        {
+            if (element == null) return false;
+
+            // CSS display:none or visibility:hidden
+            if (style != null)
+            {
+                if (string.Equals(style.Display, "none", StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (string.Equals(style.Visibility, "hidden", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            // HTML attributes width="0" or height="0"
+            var w = element.GetAttribute("width");
+            var h = element.GetAttribute("height");
+            if (w != null && int.TryParse(w, out var wv) && wv <= 0) return true;
+            if (h != null && int.TryParse(h, out var hv) && hv <= 0) return true;
+
+            // CSS explicit zero dimensions
+            if (style != null)
+            {
+                if (style.Width.HasValue && style.Width.Value <= 0) return true;
+                if (style.Height.HasValue && style.Height.Value <= 0) return true;
+            }
+
+            return false;
         }
 
         private bool TrySynthesizeIframePaintBox(Element element, CssComputed style, out Layout.BoxModel box)
@@ -4159,6 +4200,13 @@ namespace FenBrowser.FenEngine.Rendering
             {
                 return false;
             }
+
+            // Don't render placeholder for intentionally hidden iframes
+            // (zero-size analytics/tracking iframes, display:none, etc.)
+            var w = iframeElement.GetAttribute("width");
+            var h = iframeElement.GetAttribute("height");
+            if (w != null && int.TryParse(w, out var wv) && wv <= 0) return false;
+            if (h != null && int.TryParse(h, out var hv) && hv <= 0) return false;
 
             var children = iframeElement.ChildNodes;
             if (children != null)

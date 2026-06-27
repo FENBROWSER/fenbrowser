@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using FenBrowser.Core;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Layout.Contexts;
@@ -46,6 +48,181 @@ namespace FenBrowser.Tests.Layout
                 $"Expected wrapped inline to restart near line start. first={firstBox.Geometry.MarginBox} second={secondBox.Geometry.MarginBox}");
         }
 
+        [Fact]
+        public void FlexItem_WithNestedInlineSpans_KeepsInlineRunHorizontal()
+        {
+            var header = new Element("div");
+            var logo = new Element("span");
+            var firstO = new Element("span");
+            var secondO = new Element("span");
+            var l = new Element("span");
+            var sorry = new Element("span");
+
+            var gText = new Text("G");
+            var firstOText = new Text("o");
+            var secondOText = new Text("o");
+            var middleText = new Text("g");
+            var lText = new Text("l");
+            var eText = new Text("e");
+
+            firstO.AppendChild(firstOText);
+            secondO.AppendChild(secondOText);
+            l.AppendChild(lText);
+
+            logo.AppendChild(gText);
+            logo.AppendChild(firstO);
+            logo.AppendChild(secondO);
+            logo.AppendChild(middleText);
+            logo.AppendChild(l);
+            logo.AppendChild(eText);
+
+            sorry.AppendChild(new Text(" - Sorry"));
+            header.AppendChild(logo);
+            header.AppendChild(sorry);
+
+            var logoStyle = new CssComputed
+            {
+                Display = "inline",
+                FontSize = 22,
+                LineHeight = 28,
+                FontFamilyName = "Arial"
+            };
+            var nestedStyle = new CssComputed
+            {
+                Display = "inline",
+                FontSize = 22,
+                LineHeight = 28,
+                FontFamilyName = "Arial"
+            };
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [header] = new CssComputed
+                {
+                    Display = "flex",
+                    FlexDirection = "row",
+                    AlignItems = "center",
+                    Width = 400,
+                    Height = 64
+                },
+                [logo] = logoStyle,
+                [firstO] = nestedStyle,
+                [secondO] = nestedStyle,
+                [l] = nestedStyle,
+                [sorry] = new CssComputed
+                {
+                    Display = "inline",
+                    FontSize = 12,
+                    LineHeight = 16,
+                    FontFamilyName = "Arial"
+                }
+            };
+
+            var rootBox = LayoutRoot(header, styles, 400, 64);
+            var textBoxes = new List<TextLayoutBox>();
+            CollectTextBoxes(rootBox, textBoxes);
+
+            var logoTextBoxes = new[]
+            {
+                FindTextBox(textBoxes, gText),
+                FindTextBox(textBoxes, firstOText),
+                FindTextBox(textBoxes, secondOText),
+                FindTextBox(textBoxes, middleText),
+                FindTextBox(textBoxes, lText),
+                FindTextBox(textBoxes, eText),
+            };
+
+            Assert.All(logoTextBoxes, Assert.NotNull);
+
+            var top = logoTextBoxes[0].Geometry.MarginBox.Top;
+            for (var i = 1; i < logoTextBoxes.Length; i++)
+            {
+                Assert.True(
+                    Math.Abs(logoTextBoxes[i].Geometry.MarginBox.Top - top) <= 1.5f,
+                    $"Expected logo text to share one line. first={logoTextBoxes[0].Geometry.MarginBox} current={logoTextBoxes[i].Geometry.MarginBox}");
+                Assert.True(
+                    logoTextBoxes[i].Geometry.MarginBox.Left > logoTextBoxes[i - 1].Geometry.MarginBox.Left,
+                    $"Expected logo text to advance horizontally. previous={logoTextBoxes[i - 1].Geometry.MarginBox} current={logoTextBoxes[i].Geometry.MarginBox}");
+            }
+        }
+
+        [Fact]
+        public void InlineBr_ForcesNextTextRunOntoNewLine()
+        {
+            var root = new Element("div");
+            var paragraph = new Element("p");
+            var before = new Text("before");
+            var br = new Element("br");
+            var after = new Text("after");
+
+            paragraph.AppendChild(before);
+            paragraph.AppendChild(br);
+            paragraph.AppendChild(after);
+            root.AppendChild(paragraph);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 400, Height = 200 },
+                [paragraph] = new CssComputed { Display = "block", Width = 400, FontSize = 16, LineHeight = 20 },
+                [br] = new CssComputed { Display = "inline", FontSize = 16, LineHeight = 20 },
+            };
+
+            var rootBox = LayoutRoot(root, styles, 400, 200);
+            var textBoxes = new List<TextLayoutBox>();
+            CollectTextBoxes(rootBox, textBoxes);
+
+            var beforeBox = FindTextBox(textBoxes, before);
+            var afterBox = FindTextBox(textBoxes, after);
+
+            Assert.NotNull(beforeBox);
+            Assert.NotNull(afterBox);
+            Assert.True(
+                afterBox.Geometry.MarginBox.Top > beforeBox.Geometry.MarginBox.Top + 1f,
+                $"Expected <br> to force the following text onto a new line. before={beforeBox.Geometry.MarginBox} after={afterBox.Geometry.MarginBox}");
+            Assert.True(
+                afterBox.Geometry.MarginBox.Left <= beforeBox.Geometry.MarginBox.Left + 1f,
+                $"Expected text after <br> to restart near line start. before={beforeBox.Geometry.MarginBox} after={afterBox.Geometry.MarginBox}");
+        }
+
+        [Fact]
+        public void BlockSpan_WithText_InFlexContainer_GetsNonZeroHeight()
+        {
+            // Reproduction of GitHub sidebar: flex container → li → span(display:block) with text
+            var nav = new Element("nav");
+            var ul = new Element("ul");
+            var li = new Element("li");
+            var span = new Element("span");
+            span.AppendChild(new Text("Repositories"));
+
+            li.AppendChild(span);
+            ul.AppendChild(li);
+            nav.AppendChild(ul);
+
+            var root = new Element("div");
+            root.AppendChild(nav);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 300 },
+                [nav] = new CssComputed { Display = "flex", FlexDirection = "column", Width = 256 },
+                [ul] = new CssComputed { Display = "block" },
+                [li] = new CssComputed { Display = "list-item", FontSize = 14, LineHeight = 20 },
+                [span] = new CssComputed { Display = "block", FontSize = 14, LineHeight = 20 },
+            };
+
+            var rootBox = LayoutRoot(root, styles, 400, 800);
+            var spanBox = FindBox(rootBox, span);
+            var liBox = FindBox(rootBox, li);
+
+            Assert.NotNull(spanBox);
+            Assert.NotNull(liBox);
+
+            float spanH = spanBox!.Geometry.ContentBox.Height;
+            float liH = liBox!.Geometry.ContentBox.Height;
+            Assert.True(spanH > 1f, $"Expected span to have non-zero height, got ContentBox.Height={spanH:F2}. MarginBox={spanBox.Geometry.MarginBox}");
+            Assert.True(liH > 1f, $"Expected li to have non-zero height, got ContentBox.Height={liH:F2}. MarginBox={liBox.Geometry.MarginBox}");
+        }
+
         private static LayoutBox LayoutRoot(Element root, Dictionary<Node, CssComputed> styles, float width, float height)
         {
             var builder = new BoxTreeBuilder(styles);
@@ -81,6 +258,37 @@ namespace FenBrowser.Tests.Layout
                 if (found != null)
                 {
                     return found;
+                }
+            }
+
+            return null;
+        }
+
+        private static void CollectTextBoxes(LayoutBox box, List<TextLayoutBox> result)
+        {
+            if (box == null)
+            {
+                return;
+            }
+
+            if (box is TextLayoutBox textBox)
+            {
+                result.Add(textBox);
+            }
+
+            foreach (var child in box.Children)
+            {
+                CollectTextBoxes(child, result);
+            }
+        }
+
+        private static TextLayoutBox FindTextBox(IEnumerable<TextLayoutBox> textBoxes, Text text)
+        {
+            foreach (var box in textBoxes)
+            {
+                if (ReferenceEquals(box.SourceNode, text))
+                {
+                    return box;
                 }
             }
 

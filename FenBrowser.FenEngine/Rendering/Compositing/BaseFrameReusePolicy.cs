@@ -82,7 +82,20 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
-            if (Math.Abs(previousScrollY - currentScrollY) > scrollEpsilon)
+            // Allow scroll-only frames to reuse the base frame even when scrollY
+            // changed — that's the whole point of damage rasterisation: translate
+            // the base image and only re-render the exposed band.
+            bool isScrollOnly = (invalidationReasons & ~RenderFrameInvalidationReason.Scroll) == 0;
+            if (!isScrollOnly &&
+                Math.Abs(previousScrollY - currentScrollY) > scrollEpsilon)
+            {
+                return false;
+            }
+
+            // But don't allow unlimited reuse under scroll — force a fresh frame
+            // periodically so newly exposed content actually gets rendered instead
+            // of showing as white.
+            if (isScrollOnly && consecutiveReuseCount >= 3)
             {
                 return false;
             }

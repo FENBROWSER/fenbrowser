@@ -310,15 +310,24 @@ private readonly Dictionary<Node, CssComputed> _styleCache = new Dictionary<Node
 
 public Dictionary<string, CssDeclaration> ComputeCascadedValues(Element element, string pseudoElement = null, FenBrowser.Core.Deadlines.FrameDeadline deadline = null)
 {
-// PERF: Check style cache first to avoid recomputation
-if (element != null && _styleCache.TryGetValue(element, out var cachedStyle))
-{
-if (pseudoElement == null)
-{
-return ConvertComputedMapToDeclarations(cachedStyle.Map);
-}
-// For pseudo-elements, still need to recompute
-}
+	// PERF: Check style cache first to avoid recomputation.
+	// Skip cache if the element has a pending Style dirty-flag (e.g. :hover state
+	// changed via ElementStateManager). Without this, :hover/:focus/:active rules
+	// never contribute because the stale non-hover result keeps being returned.
+	if (element != null && !element.StyleDirty && _styleCache.TryGetValue(element, out var cachedStyle))
+	{
+	if (pseudoElement == null)
+	{
+	return ConvertComputedMapToDeclarations(cachedStyle.Map);
+	}
+	// For pseudo-elements, still need to recompute
+	}
+	// If the element is StyleDirty, discard any stale cache entry so the
+	// recomputed result replaces it below.
+	if (element != null && element.StyleDirty && _styleCache.ContainsKey(element))
+	{
+	_styleCache.Remove(element);
+	}
 
 EnsureIndex();
 var results = new List<MatchedDeclaration>();
