@@ -29,6 +29,9 @@ namespace FenBrowser.FenEngine.Rendering
     public class SkiaDomRenderer : IRenderFramePipeline, Core.ILayoutEngine
     {
         private const double DefaultLayoutDeadlineMs = 3000d;
+        private const int AdaptiveLayoutDeadlineNodeThreshold = 1000;
+        private const double AdaptiveLayoutDeadlinePerNodeMs = 12d;
+        private const double MaxAdaptiveLayoutDeadlineMs = 25000d;
 
         private readonly SkiaRenderer _renderer = new SkiaRenderer();
         private readonly Dictionary<Node, BoxModel> _boxes = new Dictionary<Node, BoxModel>();
@@ -204,7 +207,10 @@ namespace FenBrowser.FenEngine.Rendering
                 0,
                 _viewportWidth,
                 availableHeight: _viewportHeight,
-                deadline: CreateLayoutDeadline("EnsureLayout"));
+                deadline: CreateLayoutDeadline(
+                    "EnsureLayout",
+                    CountNodes(root),
+                    fullDocumentLayout: true));
             _boxes.Clear();
             foreach (var box in layoutEngine.AllBoxes)
             {
@@ -525,7 +531,10 @@ namespace FenBrowser.FenEngine.Rendering
                                 0,
                                 _viewportWidth,
                                 availableHeight: _viewportHeight,
-                                deadline: CreateLayoutDeadline("RenderFrame.Layout"));
+                                deadline: CreateLayoutDeadline(
+                                    "RenderFrame.Layout",
+                                    _lastDomNodeCount,
+                                    incrementalPlan.FullLayoutRequired || forceLayout));
                             _boxes.Clear();
                             foreach (var box in layoutEngine.AllBoxes)
                             {
@@ -973,9 +982,8 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        private static FenBrowser.Core.Deadlines.FrameDeadline CreateLayoutDeadline(string contextName)
+        internal static double ResolveLayoutDeadlineBudgetMs(int domNodeCount, bool fullDocumentLayout)
         {
-            double budgetMs = DefaultLayoutDeadlineMs;
             var rawBudget = Environment.GetEnvironmentVariable("FEN_LAYOUT_DEADLINE_MS");
             if (!string.IsNullOrWhiteSpace(rawBudget) &&
                 double.TryParse(rawBudget, out var parsedBudget) &&
@@ -983,9 +991,25 @@ namespace FenBrowser.FenEngine.Rendering
                 !double.IsInfinity(parsedBudget) &&
                 parsedBudget >= 0d)
             {
-                budgetMs = parsedBudget;
+                return parsedBudget;
             }
 
+            if (fullDocumentLayout && domNodeCount > AdaptiveLayoutDeadlineNodeThreshold)
+            {
+                var adaptiveBudget = DefaultLayoutDeadlineMs +
+                    ((domNodeCount - AdaptiveLayoutDeadlineNodeThreshold) * AdaptiveLayoutDeadlinePerNodeMs);
+                return Math.Min(MaxAdaptiveLayoutDeadlineMs, adaptiveBudget);
+            }
+
+            return DefaultLayoutDeadlineMs;
+        }
+
+        private static FenBrowser.Core.Deadlines.FrameDeadline CreateLayoutDeadline(
+            string contextName,
+            int domNodeCount = 0,
+            bool fullDocumentLayout = false)
+        {
+            var budgetMs = ResolveLayoutDeadlineBudgetMs(domNodeCount, fullDocumentLayout);
             if (budgetMs <= 0d)
             {
                 return null;

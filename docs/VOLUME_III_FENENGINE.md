@@ -91,7 +91,7 @@ flowchart TD
 ### 2.3 Recent Layout Hardening (2026-02-20, L-8 -> L-10)
 
 - GitHub-class layout freeze hardening (2026-06-24):
-  - Renderer-facing layout calls now carry a `FrameDeadline` (`FEN_LAYOUT_DEADLINE_MS`, default `3000`, `0` disables) through `SkiaDomRenderer` into `LayoutEngine` / `FormattingContext`, so pathological layout passes fail bounded instead of pinning the renderer indefinitely.
+  - Renderer-facing layout calls now carry a `FrameDeadline` through `SkiaDomRenderer` into `LayoutEngine` / `FormattingContext`; `FEN_LAYOUT_DEADLINE_MS` still overrides the budget explicitly (`0` disables), while large full-document layout passes get an adaptive DOM-node budget capped at `25000ms` so slow but finite first renders do not become diagnostic error frames.
   - `GridFormattingContext` caches intrinsic child measurements per layout pass and returns current geometry for re-entrant same-key measurements, avoiding recursive grid/flex measurement storms during dense navigation/menu layout.
   - `BoxTreeBuilder` per-box decision logging now requires `FEN_LAYOUT_DEBUG_LOG` in addition to debug log level, preventing global debug runs from flooding logs with every constructed box.
   - `FlexFormattingContext` keeps `position:relative` visual offsets from feeding the sibling-flow anti-overlap guard, and clamps relative flex descendants back inside the shifted item start so the item and subtree move together without changing following-item flow.

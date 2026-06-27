@@ -21,7 +21,7 @@
 | example.com | 18 nodes | 12/12 styled | 0 scripts | Captured | Perfect |
 | news.ycombinator.com | 816 nodes | 777/816 styled | few | Captured | 95% layout coverage |
 | react.dev | 1843 nodes | 1240/1843 styled | unknown | Partial | 67% layout coverage |
-| github.com | 2891 nodes | 1920/2891 styled | 69/84 scripts | Captured | 56% layout; 102 zero-area boxes |
+| github.com | 2891 nodes | 1920/2891 styled | 69/84 scripts | Captured | 1415 layout boxes; 193 zero-area boxes |
 | x.com | 81 nodes | 10/81 styled | Very few | Mostly white | 12% layout; scripts fail early |
 
 ## Priority 1 — Real-Site Blocker Diagnosis
@@ -31,13 +31,14 @@
 - **Task ID**: T4.1
 - **Title**: Run debug-site on GitHub with latest tooling
 - **Area**: Diagnostic spine + real-site
-- **Status**: NOT_STARTED
+- **Status**: COMPLETED
 - **Priority**: 1
 - **Risk Level**: Low
 - **Dependencies**: None (debug-site command exists and builds)
 - **Reproduction**: Run FenBrowser.Tooling debug-site https://github.com 20000
 - **Expected**: Fresh trace with full artifact bundle; identify first fatal JS exception, first missing API, DCL/load status, layout blocker detail
-- **Evidence required**: Full trace bundle in logs/real-site/github.com/
+- **Evidence**: `logs/real-site/github.com/20260627T163931Z/`
+- **Result**: Default-deadline run captures style/layout/paint/raster: 1415 layout boxes, 733 paint nodes, 193 zero-area boxes, DCL/load counters true, first missing API `Document.tagName`, 7 script execution failures.
 
 ### Task T4.2 — Fix GitHub zero-area layout boxes
 
@@ -49,7 +50,7 @@
 - **Risk Level**: Medium
 - **Dependencies**: T4.1 (fresh diagnosis)
 - **Files**: FenBrowser.FenEngine/Layout/InlineFormattingContext.cs, FlexFormattingContext.cs
-- **Current**: GitHub sidebar nav spans 200px wide x 0px tall; 102 elements with text content get zero height
+- **Current**: GitHub captures layout but still has 193 zero-area boxes; screenshot is sparse after the deadline error frame was removed.
 - **Expected**: Inline/inline-flex children with text content have non-zero height from font metrics and line height
 - **Tests required**: Layout unit tests; WPT css-flexbox tests
 - **Evidence**: Before/after layout dumps showing non-zero heights
@@ -64,22 +65,22 @@
 - **Risk Level**: Medium
 - **Dependencies**: T4.1 (fresh diagnosis)
 - **Files**: FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs
-- **Current**: 69/84 scripts execute; 7 fail for unknown reasons
-- **Root cause hypothesis**: Missing Web APIs, module gaps, or CORS/network issues
+- **Current**: 69/84 scripts execute; 7 fail. Failures include undefined `.replace`, missing `document.head.prepend(...)`, null `.readyState`, and parser `Unexpected token '/'` cases.
+- **Root cause hypothesis**: Missing Web APIs, document/head host-object gaps, module parser gaps, or lifecycle object mismatch.
 - **Evidence**: script_loading.json with per-script failure details; missing_apis.json
 
-### Task T4.4 — Fix DCL/load event timing on GitHub
+### Task T4.4 — Fix GitHub lifecycle/readyState consistency
 
 - **Task ID**: T4.4
-- **Title**: Ensure DOMContentLoaded fires correctly on GitHub
+- **Title**: Fix GitHub lifecycle/readyState consistency
 - **Area**: Event loop / document lifecycle
 - **Status**: NOT_STARTED
 - **Priority**: 1
 - **Risk Level**: Medium
 - **Dependencies**: T4.1, T4.3 (script failures may block DCL)
 - **Files**: EventLoopCoordinator.cs, BrowserScriptEngineRuntime.cs
-- **Current**: document.readyState probe returned "loading" in prior trace
-- **Expected**: DCL fires after parser-inserted scripts execute and parsing completes
+- **Current**: DCL/load counters are true in `event_loop.json`, but the navigation detail and readyState probe still report loading-state fields.
+- **Expected**: `event_loop.json`, navigation detail, and `document.readyState` probes agree after parser-inserted scripts execute and parsing completes
 - **Evidence**: event_loop.json with DCL/load timestamps
 
 ## Priority 2 — Diagnostic Spine Completion
@@ -108,10 +109,8 @@
 
 ## Immediate Next Action
 
-**Run T4.1**: Fresh debug-site on GitHub with the latest tooling, then triage:
-1. script_loading.json — what causes the 7 script failures?
-2. missing_apis.json — what APIs does GitHub JS depend on that are missing?
-3. event_loop.json — does DCL/load fire?
-4. style_layout.json — zero-area box details
-5. exceptions.json — first fatal JS errors
-6. Classify first fatal blocker per PLAN.MD bucket system
+**Run T4.2**: Fix the GitHub zero-area layout boxes using the fresh bundle:
+1. `style_layout.json` - 193 zero-area boxes, no captured layout blocker
+2. `layout_dump.txt` - identify the first text-bearing zero-height inline/flex subtree
+3. `screenshot.png` - sparse GitHub header remains the visual acceptance signal
+4. Add a focused layout regression before changing the formatting context
