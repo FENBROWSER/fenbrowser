@@ -235,7 +235,7 @@ namespace FenBrowser.Core
             }
         }
 
-        public UserAgentType SelectedUserAgent { get; set; } = UserAgentType.Edge;
+        public UserAgentType SelectedUserAgent { get; set; } = UserAgentType.FenBrowser;
         public ThemePreference Theme { get; set; } = ThemePreference.System;
 
         private bool _showFavoritesBar = true;
@@ -276,7 +276,7 @@ namespace FenBrowser.Core
         public bool OpenDownloadFolderOnStart { get; set; } = false;
 
         // Privacy Settings
-        public bool SendDoNotTrack { get; set; } = true;
+        public bool SendDoNotTrack { get; set; } = false;
         public bool ClearCookiesOnExit { get; set; } = false;
         public bool BlockThirdPartyCookies { get; set; } = false;
         public bool UseSecureDNS { get; set; } = false;
@@ -419,6 +419,12 @@ namespace FenBrowser.Core
             TryAddRequestHeader(request, "Sec-CH-UA", hints);
             TryAddRequestHeader(request, "Sec-CH-UA-Mobile", useMobile ? "?1" : "?0");
             TryAddRequestHeader(request, "Sec-CH-UA-Platform", QuoteClientHintValue(surface.UserAgentData.Platform));
+
+            if (!Instance.ImproveBrowser)
+            {
+                return;
+            }
+
             TryAddRequestHeader(request, "Sec-CH-UA-Platform-Version", QuoteClientHintValue(surface.UserAgentData.PlatformVersion));
             TryAddRequestHeader(request, "Sec-CH-UA-Full-Version", QuoteClientHintValue(GetPrimaryBrowserFullVersion(surface.UserAgentData)));
             TryAddRequestHeader(request, "Sec-CH-UA-Full-Version-List", surface.UserAgentData.ToSecChUaHeader(surface.UserAgentData.FullVersionList));
@@ -474,7 +480,7 @@ namespace FenBrowser.Core
             Resilience.Normalize();
 
             if (!Enum.IsDefined(typeof(UserAgentType), SelectedUserAgent))
-                SelectedUserAgent = UserAgentType.Edge;
+                SelectedUserAgent = UserAgentType.FenBrowser;
 
             if (!Enum.IsDefined(typeof(ThemePreference), Theme))
                 Theme = ThemePreference.System;

@@ -644,14 +644,21 @@ namespace FenBrowser.Core
             return normalized == "document";
         }
 
-        private static void ApplyNavigationRequestHeaders(HttpRequestMessage req, string secFetchDest)
+        private static void ApplyNavigationRequestHeaders(
+            HttpRequestMessage req,
+            string secFetchDest,
+            bool isUserInitiatedNavigation = true)
         {
             if (req == null || !IsTopLevelDocumentRequest(secFetchDest))
             {
                 return;
             }
 
-            AddHeaderSafe(req, "Sec-Fetch-User", "?1");
+            if (isUserInitiatedNavigation)
+            {
+                AddHeaderSafe(req, "Sec-Fetch-User", "?1");
+            }
+
             AddHeaderSafe(req, "Upgrade-Insecure-Requests", "1");
         }
 
@@ -967,7 +974,8 @@ namespace FenBrowser.Core
                     BrowserSettings.ApplyBrowserRequestHeaders(req, useMobile: false);
                     
                     AddHeaderSafe(req, "Accept-Language", "en-US,en;q=0.9");
-                    
+                    AddHeaderSafe(req, "Accept-Encoding", "gzip, deflate, br");
+
                     var effectiveReferer = refererOriginal ?? previousRequest;
                     AddHeaderSafe(req, "Sec-Fetch-Dest", string.IsNullOrWhiteSpace(secFetchDest) ? "empty" : secFetchDest);
                     var fetchMode = DetermineFetchMode(secFetchDest);
@@ -1128,7 +1136,12 @@ namespace FenBrowser.Core
             }
         }
 
-        public async Task<FetchResult> FetchTextDetailedAsync(Uri url, Uri referer = null, string accept = null, string secFetchDest = null)
+        public async Task<FetchResult> FetchTextDetailedAsync(
+            Uri url,
+            Uri referer = null,
+            string accept = null,
+            string secFetchDest = null,
+            bool isUserInitiatedNavigation = true)
         {
             if (url == null) return new FetchResult { Status = FetchStatus.UnknownError, ErrorDetail = "URL is null" };
             if (!IsSupportedFetchScheme(url))
@@ -1261,7 +1274,8 @@ namespace FenBrowser.Core
                     BrowserSettings.ApplyBrowserRequestHeaders(req, useMobile: false);
 
                     AddHeaderSafe(req, "Accept-Language", "en-US,en;q=0.9");
-                    
+                    AddHeaderSafe(req, "Accept-Encoding", "gzip, deflate, br");
+
                     var effectiveReferer = refererOriginal ?? previousRequest;
                     AddHeaderSafe(req, "Sec-Fetch-Dest", string.IsNullOrWhiteSpace(secFetchDest) ? "empty" : secFetchDest);
                     var fetchMode = DetermineFetchMode(secFetchDest);
@@ -1269,7 +1283,7 @@ namespace FenBrowser.Core
                     ApplyRefererHeader(req, effectiveReferer, current, ActiveReferrerPolicy);
                     var computedReferer = ComputeReferrerHeader(effectiveReferer, current, ActiveReferrerPolicy);
                     AddHeaderSafe(req, "Sec-Fetch-Site", DetermineSecFetchSite(computedReferer, current));
-                    ApplyNavigationRequestHeaders(req, secFetchDest);
+                    ApplyNavigationRequestHeaders(req, secFetchDest, isUserInitiatedNavigation);
                     AttachCookies(req, refererOriginal ?? current, secFetchDest);
                     
                     var cts = new System.Threading.CancellationTokenSource();

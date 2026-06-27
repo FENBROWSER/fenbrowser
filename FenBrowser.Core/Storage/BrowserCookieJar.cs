@@ -401,6 +401,7 @@ namespace FenBrowser.Core.Storage
                 Value = value,
                 Domain = domain,
                 Path = string.IsNullOrWhiteSpace(path) ? "/" : path,
+                HostOnly = !domainAttributeSpecified,
                 Secure = secure,
                 HttpOnly = httpOnly,
                 SameSite = sameSite,

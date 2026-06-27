@@ -104,6 +104,19 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public void BrowserSurface_FenBrowserIdentity_UsesChromiumCompatibleRequestShape()
+        {
+            var surface = BrowserSettings.GetBrowserSurface(UserAgentType.FenBrowser);
+
+            Assert.Contains("AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36 FenBrowser/1.0", surface.UserAgent);
+            Assert.Contains(surface.UserAgentData.Brands, brand => brand.Brand == "FenBrowser" && brand.Version == "1");
+            Assert.Contains(surface.UserAgentData.Brands, brand => brand.Brand == "Chromium" && brand.Version == "146");
+            Assert.Contains(surface.UserAgentData.FullVersionList, brand => brand.Brand == "FenBrowser" && brand.Version == "1.0.0.0");
+            Assert.Contains(surface.UserAgentData.FullVersionList, brand => brand.Brand == "Chromium" && brand.Version == "146.0.7800.12");
+            Assert.Contains(surface.UserAgentData.FullVersionList, brand => brand.Brand == " Not;A Brand" && brand.Version == "99.0.0.0");
+        }
+
+        [Fact]
         public void BrowserSurface_UsesConfiguredThemeForPreferredColorScheme()
         {
             var previousTheme = BrowserSettings.Instance.Theme;

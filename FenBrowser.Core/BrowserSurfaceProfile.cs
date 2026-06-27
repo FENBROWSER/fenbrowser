@@ -489,11 +489,11 @@ namespace FenBrowser.Core
             bool sendDoNotTrack)
         {
             var userAgent = useMobile
-                ? $"Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{ChromiumFullVersion} Mobile Safari/537.36 FenBrowser/1.0"
-                : $"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{ChromiumFullVersion} Safari/537.36 FenBrowser/1.0";
+                ? $"Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{ChromiumVersion}.0.0.0 Mobile Safari/537.36 FenBrowser/1.0"
+                : $"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{ChromiumVersion}.0.0.0 Safari/537.36 FenBrowser/1.0";
 
-            var brands = BuildChromiumBrands("FenBrowser", "1");
-            var fullVersionList = BuildChromiumBrands("FenBrowser", "1.0.0.0", GreaseFullVersion);
+            var brands = BuildChromiumBrandsWithChromiumVersion("FenBrowser", "1", ChromiumVersion, GreaseMajorVersion);
+            var fullVersionList = BuildChromiumBrandsWithChromiumVersion("FenBrowser", "1.0.0.0", ChromiumFullVersion, GreaseFullVersion);
 
             return CreateChromiumProfile(
                 userAgent,
@@ -608,10 +608,19 @@ namespace FenBrowser.Core
             string browserVersion,
             string greaseVersion = GreaseMajorVersion)
         {
+            return BuildChromiumBrandsWithChromiumVersion(browserBrand, browserVersion, browserVersion, greaseVersion);
+        }
+
+        private static BrowserClientHintBrand[] BuildChromiumBrandsWithChromiumVersion(
+            string browserBrand,
+            string browserVersion,
+            string chromiumVersion,
+            string greaseVersion)
+        {
             return new[]
             {
                 new BrowserClientHintBrand(GreaseBrand, greaseVersion),
-                new BrowserClientHintBrand("Chromium", browserVersion),
+                new BrowserClientHintBrand("Chromium", chromiumVersion),
                 new BrowserClientHintBrand(browserBrand, browserVersion)
             };
         }

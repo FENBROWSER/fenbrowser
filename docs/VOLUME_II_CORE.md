@@ -499,7 +499,7 @@ _End of Volume II_
 
 - `ResourceManager.cs`
   - Added `SafeBrowsingHandler` into the active network handler pipeline.
-  - `ImproveBrowser` now controls emission of client-hints request headers (`Sec-CH-UA*`) at runtime.
+  - `ImproveBrowser` now controls high-entropy client-hints request headers at runtime; low-entropy `Sec-CH-UA`, `Sec-CH-UA-Mobile`, and `Sec-CH-UA-Platform` remain part of the normal browser request surface.
   - Policy diagnostics now report `UseSecureDNS` as pending while enforced toggles include `SafeBrowsing`/`ImproveBrowser`/`BlockPopups`.
 
 ### 6.10 Remaining Findings Tranche - CSP/Navigation Policy (2026-02-19)
@@ -1100,6 +1100,19 @@ _End of Volume II_
     - `Sec-CH-UA: " Not;A Brand";v="99", "Chromium";v="146", "Microsoft Edge";v="146"`
     - `Sec-CH-UA-Full-Version: "146.0.7800.12"`
     - `Sec-CH-UA-Full-Version-List: " Not;A Brand";v="99.0.0.0", "Chromium";v="146.0.7800.12", "Microsoft Edge";v="146.0.7800.12"`
+
+### 1.50.1 FenBrowser Request Identity And Client-Hint Privacy Split (2026-06-26)
+- `FenBrowser.Core/BrowserSettings.cs`
+- `FenBrowser.Core/BrowserSurfaceProfile.cs`
+- `FenBrowser.Tests/Core/BrowserSettingsTests.cs`
+- `FenBrowser.Tests/Core/NavigationManagerRequestHeadersTests.cs`
+  - The default FenBrowser profile keeps a Chromium-compatible `User-Agent` grammar and appends `FenBrowser/1.0` after the Safari token instead of inserting it before `AppleWebKit`.
+  - FenBrowser client hints now separate the browser brand version from the embedded Chromium engine version:
+    - low-entropy brands expose `"FenBrowser";v="1"` and `"Chromium";v="146"`.
+    - full-version brands expose `"FenBrowser";v="1.0.0.0"` and `"Chromium";v="146.0.7800.12"`.
+  - Default navigation sends only low-entropy client hints; `ImproveBrowser=true` opts into high-entropy values such as full version, platform version, architecture, bitness, and model.
+- Verification:
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~NavigationManagerRequestHeadersTests|FullyQualifiedName~BrowserSettingsTests"`: pass on `2026-06-26`.
 
 ### 1.51 Rendered-Text Artifact Normalization (2026-04-04)
 - `FenBrowser.Core/Logging/StructuredLogger.cs`

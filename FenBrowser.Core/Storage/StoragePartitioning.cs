@@ -113,6 +113,7 @@ namespace FenBrowser.Core.Storage
         public string Value { get; init; }
         public string Domain { get; init; }
         public string Path { get; init; } = "/";
+        public bool HostOnly { get; init; } = true;
         public bool Secure { get; init; }
         public bool HttpOnly { get; init; }
         public CookieSameSite SameSite { get; init; } = CookieSameSite.Lax;
@@ -164,7 +165,7 @@ namespace FenBrowser.Core.Storage
                 if (cookie.IsExpired) continue;
                 if (cookie.Secure && !isSecure) continue;
                 if (cookie.HttpOnly && !includeHttpOnly) continue;
-                if (!DomainMatches(host, cookie.Domain)) continue;
+                if (!DomainMatches(host, cookie.Domain, cookie.HostOnly)) continue;
                 if (!PathMatches(path, cookie.Path)) continue;
 
                 // Partition key check
@@ -220,15 +221,23 @@ namespace FenBrowser.Core.Storage
         private static string MakeKey(StoragePartitionKey? pk, string domain, string name, string path) =>
             $"pk:{pk?.ToStorageKey() ?? "unpartitioned"}:{domain}:{name}:{path}";
 
-        private static bool DomainMatches(string host, string cookieDomain)
+        private static bool DomainMatches(string host, string cookieDomain, bool hostOnly)
         {
             if (string.IsNullOrEmpty(cookieDomain)) return false;
-            if (cookieDomain.StartsWith("."))
+
+            if (hostOnly)
             {
-                var suffix = cookieDomain.TrimStart('.');
-                return host == suffix || host.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase);
+                return string.Equals(host, cookieDomain, StringComparison.OrdinalIgnoreCase);
             }
-            return string.Equals(host, cookieDomain, StringComparison.OrdinalIgnoreCase);
+
+            var suffix = cookieDomain.TrimStart('.');
+            if (string.IsNullOrEmpty(suffix))
+            {
+                return false;
+            }
+
+            return string.Equals(host, suffix, StringComparison.OrdinalIgnoreCase) ||
+                   host.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool PathMatches(string requestPath, string cookiePath)

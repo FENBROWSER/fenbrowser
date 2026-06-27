@@ -87,5 +87,51 @@ namespace FenBrowser.Tests.Core
             Assert.Null(service.HttpCache.Get(partitionA, "https://app.example/data"));
             Assert.NotNull(service.HttpCache.Get(partitionB, "https://app.example/data"));
         }
+
+        [Fact]
+        public void CookieStore_DomainCookie_MatchesSubdomain()
+        {
+            var service = new StorageService();
+            service.Cookies.Set(new Cookie
+            {
+                Name = "sid",
+                Value = "domain",
+                Domain = "example.test",
+                Path = "/",
+                HostOnly = false
+            });
+
+            var cookies = service.Cookies.GetForUrl(
+                "https://www.example.test/search",
+                StoragePartitionKey.FirstParty("https://www.example.test"));
+
+            var cookie = Assert.Single(cookies);
+            Assert.Equal("sid", cookie.Name);
+            Assert.Equal("domain", cookie.Value);
+        }
+
+        [Fact]
+        public void CookieStore_HostOnlyCookie_DoesNotMatchSubdomain()
+        {
+            var service = new StorageService();
+            service.Cookies.Set(new Cookie
+            {
+                Name = "sid",
+                Value = "host",
+                Domain = "example.test",
+                Path = "/",
+                HostOnly = true
+            });
+
+            Assert.Empty(service.Cookies.GetForUrl(
+                "https://www.example.test/search",
+                StoragePartitionKey.FirstParty("https://www.example.test")));
+
+            var sameHostCookies = service.Cookies.GetForUrl(
+                "https://example.test/search",
+                StoragePartitionKey.FirstParty("https://example.test"));
+
+            Assert.Single(sameHostCookies);
+        }
     }
 }
