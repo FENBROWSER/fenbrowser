@@ -129,7 +129,23 @@ namespace FenBrowser.Core.Logging
         public static void LogUnsupportedJs(string api, string method = null, string reason = null)
         {
             string key = string.IsNullOrEmpty(method) ? api : $"{api}.{method}";
-            LogFeature(_jsFeatures, key, FeatureStatus.Unsupported, reason, null, LogCategory.JsExecution);
+            LogFeature(
+                _jsFeatures,
+                key,
+                FeatureStatus.Unsupported,
+                reason,
+                null,
+                LogCategory.JsExecution,
+                new Dictionary<string, object>
+                {
+                    ["traceCategory"] = "WebIDL",
+                    ["featureCategory"] = "JavaScript",
+                    ["api"] = key ?? string.Empty,
+                    ["objectName"] = api ?? string.Empty,
+                    ["propertyName"] = method ?? string.Empty,
+                    ["featureStatus"] = FeatureStatus.Unsupported.ToString(),
+                    ["reason"] = reason ?? string.Empty
+                });
         }
 
         /// <summary>
@@ -206,6 +222,27 @@ namespace FenBrowser.Core.Logging
         }
 
         /// <summary>
+        /// Get a stable snapshot of unsupported JavaScript/WebIDL feature encounters.
+        /// </summary>
+        public static IReadOnlyList<FeatureInfo> GetUnsupportedJsSnapshot()
+        {
+            return _jsFeatures.Values
+                .Where(f => f.Status == FeatureStatus.Unsupported)
+                .OrderByDescending(f => f.EncounterCount)
+                .ThenBy(f => f.Name, StringComparer.Ordinal)
+                .Select(f => new FeatureInfo
+                {
+                    Name = f.Name,
+                    Status = f.Status,
+                    Reason = f.Reason,
+                    Suggestion = f.Suggestion,
+                    EncounterCount = f.EncounterCount,
+                    LastEncountered = f.LastEncountered
+                })
+                .ToList();
+        }
+
+        /// <summary>
         /// Clear all tracked features. Useful for testing or resetting between pages.
         /// </summary>
         public static void Reset()
@@ -219,8 +256,14 @@ namespace FenBrowser.Core.Logging
 
         #region Internal
 
-        private static void LogFeature(ConcurrentDictionary<string, FeatureInfo> dict, string key, 
-            FeatureStatus status, string reason, string suggestion, LogCategory category)
+        private static void LogFeature(
+            ConcurrentDictionary<string, FeatureInfo> dict,
+            string key,
+            FeatureStatus status,
+            string reason,
+            string suggestion,
+            LogCategory category,
+            IReadOnlyDictionary<string, object> fields = null)
         {
             bool isNewFeature = false;
             
@@ -273,7 +316,8 @@ namespace FenBrowser.Core.Logging
                     EngineLogCompatibility.FromLegacyCategory(category),
                     LogSeverity.Warn,
                     message,
-                    marker);
+                    marker,
+                    fields: fields);
             }
         }
 

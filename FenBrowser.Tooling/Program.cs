@@ -315,6 +315,7 @@ namespace FenBrowser.Tooling
         private static async Task<DebugSiteReport> CollectDebugSiteDiagnosticsAsync(string url, int settleMs)
         {
             CssEngineConfig.CurrentEngine = CssEngineType.Custom;
+            EngineCapabilities.Reset();
             ConfigureDebugSiteFileLogging();
 
             var consoleMessages = new List<string>();
@@ -414,6 +415,7 @@ namespace FenBrowser.Tooling
                 screenshot.Error);
             var scriptLoading = host.Engine?.ScriptEngine?.GetScriptLoadingSnapshot() ?? new BrowserScriptLoadingSnapshot();
             var eventLoop = host.Engine?.ScriptEngine?.GetEventLoopSnapshot() ?? new BrowserEventLoopSnapshot();
+            var missingApis = ExtractMissingApiRecords(consoleMessages, EngineCapabilities.GetUnsupportedJsSnapshot());
             List<DebugSiteLifecycleTransition> lifecycleTimeline;
             lock (lifecycleTransitions)
             {
@@ -441,6 +443,7 @@ namespace FenBrowser.Tooling
                 ScriptLoading = scriptLoading,
                 EventLoop = eventLoop,
                 StyleLayout = styleLayout,
+                MissingApis = missingApis,
                 StyleDump = BuildStyleDump(root, styles),
                 LayoutDump = BuildLayoutDump(root, screenshot.RenderContext),
                 PaintDump = BuildPaintDump(screenshot.RenderContext),
@@ -622,7 +625,7 @@ namespace FenBrowser.Tooling
                 new UTF8Encoding(false));
             File.WriteAllText(
                 Path.Combine(bundleDir, "missing_apis.json"),
-                JsonSerializer.Serialize(ExtractMissingApiRecords(report.ConsoleMessages), jsonOptions),
+                JsonSerializer.Serialize(report.MissingApis ?? ExtractMissingApiRecords(report.ConsoleMessages), jsonOptions),
                 new UTF8Encoding(false));
             File.WriteAllText(
                 Path.Combine(bundleDir, "network.json"),
@@ -673,7 +676,7 @@ namespace FenBrowser.Tooling
         {
             var firstConsoleError = report.ConsoleMessages.FirstOrDefault(IsLikelyErrorMessage) ?? "(none captured)";
             var firstNavFailure = report.NavigationFailures.FirstOrDefault() ?? "(none captured)";
-            var firstMissingApi = ExtractMissingApiRecords(report.ConsoleMessages).FirstOrDefault()?.Api ?? "(none captured)";
+            var firstMissingApi = report.MissingApis?.FirstOrDefault()?.Api ?? "(none captured)";
             var firstLayoutBlocker = report.StyleLayout?.FirstLayoutBlocker ?? "(not captured)";
             var firstPaintBlocker = report.StyleLayout?.FirstPaintBlocker ?? "(not captured)";
             var failedNetworkRequests = report.NetworkRequests.Count(request => request.Failed || (request.StatusCode.HasValue && request.StatusCode.Value >= 400));
@@ -1526,20 +1529,80 @@ namespace FenBrowser.Tooling
             return records;
         }
 
-        private static List<MissingApiRecord> ExtractMissingApiRecords(IEnumerable<string> consoleMessages)
+        private static List<MissingApiRecord> ExtractMissingApiRecords(
+            IEnumerable<string> consoleMessages,
+            IEnumerable<FeatureInfo> unsupportedJsFeatures = null)
         {
             var records = new List<MissingApiRecord>();
+            foreach (var feature in unsupportedJsFeatures ?? Enumerable.Empty<FeatureInfo>())
+            {
+                if (string.IsNullOrWhiteSpace(feature?.Name))
+                {
+                    continue;
+                }
+
+                var (objectName, propertyName) = SplitApiName(feature.Name);
+                AddMissingApiRecord(
+                    records,
+                    feature.Name,
+                    objectName,
+                    propertyName,
+                    "EngineCapabilities",
+                    feature.Reason,
+                    Math.Max(1, feature.EncounterCount));
+            }
+
             foreach (var message in consoleMessages ?? Enumerable.Empty<string>())
             {
                 var api = TryExtractMissingApiName(message);
-                if (!string.IsNullOrWhiteSpace(api) &&
-                    records.All(existing => !string.Equals(existing.Api, api, StringComparison.OrdinalIgnoreCase)))
+                if (!string.IsNullOrWhiteSpace(api))
                 {
-                    records.Add(new MissingApiRecord(api, message));
+                    var (objectName, propertyName) = SplitApiName(api);
+                    AddMissingApiRecord(records, api, objectName, propertyName, "Console", message, 1);
                 }
             }
 
             return records;
+        }
+
+        private static void AddMissingApiRecord(
+            List<MissingApiRecord> records,
+            string api,
+            string objectName,
+            string propertyName,
+            string source,
+            string evidence,
+            int encounterCount)
+        {
+            if (string.IsNullOrWhiteSpace(api) ||
+                records.Any(existing => string.Equals(existing.Api, api, StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            records.Add(new MissingApiRecord(
+                api,
+                objectName ?? string.Empty,
+                propertyName ?? string.Empty,
+                source ?? string.Empty,
+                evidence ?? string.Empty,
+                Math.Max(1, encounterCount)));
+        }
+
+        private static (string ObjectName, string PropertyName) SplitApiName(string api)
+        {
+            if (string.IsNullOrWhiteSpace(api))
+            {
+                return (string.Empty, string.Empty);
+            }
+
+            var separator = api.LastIndexOf('.');
+            if (separator <= 0 || separator >= api.Length - 1)
+            {
+                return (string.Empty, api);
+            }
+
+            return (api.Substring(0, separator), api.Substring(separator + 1));
         }
 
         private static bool IsLikelyErrorMessage(string message)
@@ -1683,6 +1746,7 @@ namespace FenBrowser.Tooling
             public BrowserScriptLoadingSnapshot ScriptLoading { get; init; } = new();
             public BrowserEventLoopSnapshot EventLoop { get; init; } = new();
             public DebugSiteStyleLayoutSummary StyleLayout { get; init; } = new();
+            public List<MissingApiRecord> MissingApis { get; init; } = new();
             public List<DebugSiteNetworkRecord> NetworkRequests { get; init; } = new();
             public Dictionary<string, string> Probes { get; init; } = new(StringComparer.Ordinal);
             public string RenderedTextSample { get; init; }
@@ -1703,7 +1767,13 @@ namespace FenBrowser.Tooling
 
         private sealed record ExceptionRecord(string Source, string Type, string Message);
 
-        private sealed record MissingApiRecord(string Api, string Evidence);
+        private sealed record MissingApiRecord(
+            string Api,
+            string ObjectName,
+            string PropertyName,
+            string Source,
+            string Evidence,
+            int EncounterCount);
 
         private sealed record DebugSiteScreenshotResult(
             bool Captured,

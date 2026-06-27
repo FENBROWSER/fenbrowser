@@ -6047,43 +6047,121 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 return false;
             }
 
+            var hostObject = resolution.HostObject;
+            var ownerName = GetHostApiOwnerName(hostObject);
+            bool found;
             switch (resolution.HostObject)
             {
                 case Document document:
-                    return TryGetDocumentProperty(document, property, out value);
+                    found = TryGetDocumentProperty(document, property, out value);
+                    break;
                 case Element element:
-                    return TryGetElementProperty(element, property, out value);
+                    found = TryGetElementProperty(element, property, out value);
+                    break;
                 case FenJsDomImplementationHost implementation:
-                    return TryGetDomImplementationProperty(implementation, property, out value);
+                    found = TryGetDomImplementationProperty(implementation, property, out value);
+                    break;
                 case Attr attr:
-                    return TryGetAttrProperty(attr, property, out value);
+                    found = TryGetAttrProperty(attr, property, out value);
+                    break;
                 case NamedNodeMap namedNodeMap:
-                    return TryGetNamedNodeMapProperty(namedNodeMap, property, out value);
+                    found = TryGetNamedNodeMapProperty(namedNodeMap, property, out value);
+                    break;
                 case DOMTokenList tokenList:
-                    return TryGetDomTokenListProperty(tokenList, property, out value);
+                    found = TryGetDomTokenListProperty(tokenList, property, out value);
+                    break;
                 case CharacterData characterData:
-                    return TryGetCharacterDataProperty(characterData, property, out value);
+                    found = TryGetCharacterDataProperty(characterData, property, out value);
+                    break;
                 case DocumentFragment fragment:
-                    return TryGetDocumentFragmentProperty(fragment, property, out value);
+                    found = TryGetDocumentFragmentProperty(fragment, property, out value);
+                    break;
                 case FenJsHtmlCollectionHost htmlCollection:
-                    return TryGetHtmlCollectionProperty(htmlCollection, property, out value);
+                    found = TryGetHtmlCollectionProperty(htmlCollection, property, out value);
+                    break;
                 case FenJsDomStringMapHost domStringMap:
-                    return TryGetDomStringMapProperty(domStringMap, property, out value);
+                    found = TryGetDomStringMapProperty(domStringMap, property, out value);
+                    break;
                 case BrowserSurfaceProfile navigator:
                     if (TryGetNavigatorProperty(navigator, property, out value))
+                    {
                         return true;
+                    }
                     // Fall back to user-assigned properties stored via TrySetHostProperty
                     // (e.g. Google stubs navigator.sendBeacon).
                     value = _owner.GetStoredHostPropertyOrUndefined(navigator, property);
-                    return value.Tag != JsValueTag.Undefined;
+                    found = value.Tag != JsValueTag.Undefined;
+                    break;
                 case FenJsLocationHost location:
-                    return TryGetLocationProperty(location, property, out value);
+                    found = TryGetLocationProperty(location, property, out value);
+                    break;
                 case FenJsMutationObserverHost mutationObserver:
-                    return _owner.TryGetMutationObserverProperty(mutationObserver, property, out value);
+                    found = _owner.TryGetMutationObserverProperty(mutationObserver, property, out value);
+                    break;
                 default:
                     value = JsValue.Undefined;
-                    return false;
+                    found = false;
+                    break;
             }
+
+            if (!found)
+            {
+                RecordMissingHostApi(ownerName, property);
+            }
+
+            return found;
+        }
+
+        private static string GetHostApiOwnerName(object hostObject)
+        {
+            return hostObject switch
+            {
+                Document => "Document",
+                Element => "Element",
+                FenJsDomImplementationHost => "DOMImplementation",
+                Attr => "Attr",
+                NamedNodeMap => "NamedNodeMap",
+                DOMTokenList => "DOMTokenList",
+                CharacterData => "CharacterData",
+                DocumentFragment => "DocumentFragment",
+                FenJsHtmlCollectionHost => "HTMLCollection",
+                FenJsDomStringMapHost => "DOMStringMap",
+                BrowserSurfaceProfile => "Navigator",
+                FenJsLocationHost => "Location",
+                FenJsMutationObserverHost => "MutationObserver",
+                _ => hostObject?.GetType().Name ?? "HostObject"
+            };
+        }
+
+        private static void RecordMissingHostApi(string ownerName, string property)
+        {
+            if (!ShouldRecordMissingHostApi(ownerName, property))
+            {
+                return;
+            }
+
+            EngineCapabilities.LogUnsupportedJs(ownerName, property, "missing host property");
+        }
+
+        private static bool ShouldRecordMissingHostApi(string ownerName, string property)
+        {
+            if (string.IsNullOrWhiteSpace(ownerName) || string.IsNullOrWhiteSpace(property))
+            {
+                return false;
+            }
+
+            if (property == "then" ||
+                property == "constructor" ||
+                property == "prototype" ||
+                property == "__proto__" ||
+                property.StartsWith("__", StringComparison.Ordinal) ||
+                property.StartsWith("_", StringComparison.Ordinal) ||
+                property.StartsWith("on", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return !property.All(char.IsDigit);
         }
 
         public bool TrySetHostProperty(HostObjectHandle handle, string property, JsValue value)

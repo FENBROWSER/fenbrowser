@@ -4,6 +4,7 @@ using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
 using FenBrowser.Core;
+using FenBrowser.Core.Logging;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Scripting;
 using Xunit;
@@ -90,6 +91,39 @@ namespace FenBrowser.Tests.Scripting
 
             Assert.Equal(true, engine.Evaluate("globalThis.__constructorThenRan"));
             Assert.Equal("false", engine.Evaluate("String(globalThis.__constructorThenValue)")?.ToString());
+        }
+
+        [Fact]
+        public async Task MissingHostProperty_RecordsUnsupportedJsCapability()
+        {
+            var baseUri = new Uri("https://www.amazon.in/");
+            var document = new HtmlParser(
+                """
+                <html><body><div id="app">ok</div></body></html>
+                """,
+                baseUri).Parse();
+
+            EngineCapabilities.Reset();
+            try
+            {
+                var engine = new FenJsBrowserScriptEngine(CreateHost())
+                {
+                    Sandbox = SandboxPolicy.AllowAll
+                };
+
+                await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+                Assert.Equal("undefined", engine.Evaluate("typeof document.fenMissingApiProbe")?.ToString());
+                var record = Assert.Single(
+                    EngineCapabilities.GetUnsupportedJsSnapshot(),
+                    feature => feature.Name == "Document.fenMissingApiProbe");
+                Assert.Equal("missing host property", record.Reason);
+                Assert.Equal(1, record.EncounterCount);
+            }
+            finally
+            {
+                EngineCapabilities.Reset();
+            }
         }
 
         [Fact]

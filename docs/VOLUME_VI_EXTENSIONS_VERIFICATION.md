@@ -2539,16 +2539,25 @@ _End of Volume VI_
   - The snapshot now tracks DOM/script element counts, inline/external/module counts, blocking/defer/async counts, fetch counts, execution counts, async-pending count, infrastructure error text, and per-script records for source type, batch, status, failure reason, and code/text length.
   - The event-loop snapshot tracks DOMContentLoaded/load dispatch, microtask checkpoints, timer/rAF scheduling, callback completion, pending host timers, and callback failures.
   - Fixed the FenJS large-stack worker dispatch race by holding `_fenJsWorkGate` through the wait/result capture, preventing concurrent timer/rAF callbacks from overwriting `_fenJsPendingWork`.
+  - Browser host-object property misses now record deduped unsupported-JS capability entries for DOM/WebIDL-facing objects, excluding common non-API probes such as private/internal names, numeric indexes, `then`, and event handler slots.
+
+- `FenBrowser.Core/Logging/EngineCapabilities.cs`
+  - Added a stable unsupported-JS snapshot for diagnostic exporters.
+  - Unsupported-JS logs now carry structured fields including `traceCategory=WebIDL`, `api`, `objectName`, `propertyName`, `featureStatus`, and `reason`.
 
 - `FenBrowser.FenEngine/Rendering/BrowserApi.cs`
   - Navigation `Complete` now waits for bounded document event-loop settling before the terminal transition, so `debug-site` lifecycle artifacts do not report `Complete` before DOMContentLoaded/load for the same document.
   - The terminal lifecycle detail records event-loop settle status, readyState, DOMContentLoaded/load flags, pending host timers, wait duration, and timeout budget.
+
+- `FenBrowser.Tooling/Program.cs`
+  - `debug-site` resets feature-capability state per run and exports `missing_apis.json` from structured unsupported-JS capability records, with console-message extraction retained only as a fallback source.
 
 - Current bundle contract:
   - `summary.md` and `summary.json`: URL, final URL, navigation result, elapsed time, DOM node count, raw/source text lengths, computed-style count, layout/paint counts, console count, final lifecycle phase/detail, lifecycle transition count/phase path, script-loading counts, DOMContentLoaded/load timestamps, and first-blocker classifications.
   - `trace.jsonl`: copied from the run's structured trace when present.
   - `logs.ndjson`: copied from the run's structured engine log when present.
   - `console.log`, `navigation_failures.log`, `exceptions.json`, `missing_apis.json`, `probes.json`, `rendered_text.txt`.
+  - `missing_apis.json` records API name, object name, property name, source, evidence, and encounter count. Structured `EngineCapabilities` records are preferred over console heuristics.
   - `network.json`: status, request count, failed request count, navigation failures, and per-request method, URL, request headers, response status, response headers, MIME type, duration, and failure details when present.
   - `lifecycle.json`: navigation ID, phase, requested/effective URL, response status, detail string, redirect metadata, commit source, last transition UTC, terminal-state flags, document `readyState` probe, lifecycle phase path, DOMContentLoaded/load timestamps, and the ordered transition list.
   - `lifecycle_timeline.json`: flat ordered navigation lifecycle transition records with sequence, previous/current phase, URL/status/detail metadata, timestamp, and elapsed milliseconds since the first transition.
@@ -2566,19 +2575,19 @@ _End of Volume VI_
 - Known diagnostic-spine gaps after this tranche:
   - Per-script source IDs/line-column attribution, module graph details, IPC, sandbox-denial, and broader performance summaries are not yet auto-classified from trace events.
   - `display_list.txt` currently flattens the immutable Paint Tree order; it is not yet a Skia command-stream dump.
-  - Missing API extraction is currently heuristic over console text; runtime WebIDL/DOM missing-API events still need structured emission.
+  - Global constructor/free-identifier missing API extraction still relies on console `ReferenceError` heuristics; DOM/WebIDL host-object property misses now emit structured capability records.
   - Network bodies and initiator stacks are not exported; `network.json` is currently metadata-only.
 
 - First execution matrix for PLAN.MD work:
   - Current engine audit plan: inventory from canonical volumes, current focused build/test evidence, local Test262 dashboard (`docs/test262_results.md`), local WPT roots, and real-site `debug-site` bundles.
-  - Diagnostic spine implementation plan: promote `debug-site` from partial bundle to complete summary classification, then add structured missing-API events, per-script attribution, lifecycle/event-loop ordering checks, and richer network-body/initiator exporters.
+  - Diagnostic spine implementation plan: promote `debug-site` from partial bundle to complete summary classification, then add global missing-API attribution, per-script attribution, lifecycle/event-loop ordering checks, and richer network-body/initiator exporters.
   - Real-site failure classification plan: classify each run into navigation, network, script loading, JavaScript language, WebIDL/binding, DOM API, event loop, CSS/style, layout, paint/compositing, storage/security, and browser-shell/process buckets.
   - Minimal smoke-test matrix: search page, docs/wiki page, GitHub-like app, social/media SPA, video page, ecommerce page, webmail-like app, dashboard SPA, news page, banking/form page, heavy CSS layout page, and heavy JavaScript app.
   - Required trace/log points: Navigation, Network, HTMLParser, ResourceLoader, ScriptLoader, JS, WebIDL, DOM, EventLoop, Microtask, Timer, CSSParser, Selector, Cascade, Style, Layout, Paint, Compositor, Input, Storage, Cookie, Security, IPC, Process, Crash, and Performance.
   - Missing API tracker format: API name, object/prototype, URL/site ID, script URL, source line/column when available, trace ID, exception text, priority, linked WPT/local test, owner, status, and workaround/stub status.
   - Process boundary audit: current `debug-site` runs in process through `BrowserHost`; renderer/network/storage/compositor isolation evidence must come from host process-isolation diagnostics before any process-boundary status can be marked complete.
-  - Current architecture risk register: metadata-only network export, unstructured missing-API detection, navigation lifecycle/event-loop ordering gap, script source attribution gaps, Paint Tree proxy rather than Skia command-stream display-list dump, and headless screenshot fidelity needing broader real-site validation beyond the `example.com` smoke.
-  - Dependency-ready next tasks: add structured missing-API events, add per-script source/line-column attribution, align navigation `Complete` with DOMContentLoaded/load semantics, add network initiator/body policy, add Skia command-stream display-list diagnostics, and suppress remaining non-script-loading direct console writes in other subsystems.
+  - Current architecture risk register: metadata-only network export, global missing-API attribution still heuristic, script source attribution gaps, Paint Tree proxy rather than Skia command-stream display-list dump, and headless screenshot fidelity needing broader real-site validation beyond the `example.com` smoke.
+  - Dependency-ready next tasks: add per-script source/line-column attribution, add global missing-API attribution, add network initiator/body policy, add Skia command-stream display-list diagnostics, and suppress remaining non-script-loading direct console writes in other subsystems.
 
 - Focused verification:
   - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Debug -v minimal`: pass on `2026-06-27` with existing repo-wide warnings and existing unreachable-code warnings in legacy removed Acid paths.
@@ -2622,3 +2631,11 @@ _End of Volume VI_
     - Evidence: navigation returned `True`, final rendered text was `loaded`, `1` script discovered, `1` script eligible, `1` script executed, `0` script failures, `0` navigation failures, and `0` console messages.
     - `script_loading.json` confirmed `InlineScripts=1`, `BlockingScripts=1`, `ExecutionStarted=1`, `ExecutionCompleted=1`, `ExecutionFailed=0`, `AsyncPendingScripts=0`, and one per-script record with `Status=executed`, `Batch=blocking`, `SourceType=inline`, and `CodeLength=81`.
     - `logs.ndjson` contained `ScriptExecutionCompleted` with caller metadata from `BrowserScriptEngineRuntime.cs` / `ExecuteScriptBatchAsync`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~FenJsXmlHttpRequestTests.MissingHostProperty_RecordsUnsupportedJsCapability" --logger "console;verbosity=minimal"`: pass on `2026-06-27`, `1 passed / 0 failed / 0 skipped`.
+    - Evidence: `typeof document.fenMissingApiProbe` evaluated to `undefined` and `EngineCapabilities.GetUnsupportedJsSnapshot()` contained one `Document.fenMissingApiProbe` record with reason `missing host property`.
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- debug-site file:///C:/Users/udayk/Videos/fenbrowser-test/logs/debug_site_missing_api_smoke.html 1000`: pass on `2026-06-27`.
+    - Bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_debug_site_missing_api_smoke.html/20260627T094805Z`.
+    - Evidence: navigation returned `True`, rendered text was `missing api smoke`, `1` script discovered, `1` script executed, `0` script failures, `0` network requests, `0` navigation failures, and `0` console messages.
+    - `missing_apis.json` contained `Document.fenMissingDebugSiteProbe` with `ObjectName=Document`, `PropertyName=fenMissingDebugSiteProbe`, `Source=EngineCapabilities`, `Evidence=missing host property`, and `EncounterCount=1`.
+    - `summary.md` promoted `First missing API: Document.fenMissingDebugSiteProbe`.
+    - `logs.ndjson` contained the same API with structured fields `traceCategory=WebIDL`, `featureCategory=JavaScript`, `api`, `objectName`, `propertyName`, `featureStatus=Unsupported`, and `reason=missing host property`.
