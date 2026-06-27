@@ -3,6 +3,7 @@ using System.Text.Json;
 
 namespace FenBrowser.Tests.Logging;
 
+[Collection(EngineLogTestCollection.Name)]
 public class EngineLogSettingsTests
 {
     [Fact]

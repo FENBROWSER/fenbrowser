@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using FenBrowser.Core.Logging;
 
 namespace FenBrowser.Core.Engine
 {
@@ -92,7 +94,7 @@ namespace FenBrowser.Core.Engine
                 transition = CreateTransition(_snapshot, previous);
             }
 
-            Transitioned?.Invoke(transition);
+            PublishTransition(transition);
             return transition.NavigationId;
         }
 
@@ -233,8 +235,84 @@ namespace FenBrowser.Core.Engine
                 transition = CreateTransition(_snapshot, previous);
             }
 
-            Transitioned?.Invoke(transition);
+            PublishTransition(transition);
             return true;
+        }
+
+        private void PublishTransition(NavigationLifecycleTransition transition)
+        {
+            try
+            {
+                Transitioned?.Invoke(transition);
+            }
+            finally
+            {
+                EmitTrace(transition);
+            }
+        }
+
+        private static void EmitTrace(NavigationLifecycleTransition transition)
+        {
+            try
+            {
+                var url = !string.IsNullOrWhiteSpace(transition.EffectiveUrl)
+                    ? transition.EffectiveUrl
+                    : transition.RequestedUrl;
+
+                EngineLog.Write(
+                    LogSubsystem.Nav,
+                    SeverityForPhase(transition.Phase),
+                    EventForPhase(transition),
+                    LogMarker.None,
+                    new EngineLogContext(
+                        NavigationId: transition.NavigationId.ToString(),
+                        Url: url),
+                    new Dictionary<string, object>
+                    {
+                        ["event"] = EventForPhase(transition),
+                        ["phase"] = transition.Phase.ToString(),
+                        ["previousPhase"] = transition.PreviousPhase.ToString(),
+                        ["requestedUrl"] = transition.RequestedUrl,
+                        ["effectiveUrl"] = transition.EffectiveUrl,
+                        ["responseStatus"] = transition.ResponseStatus,
+                        ["detail"] = transition.Detail,
+                        ["isUserInput"] = transition.IsUserInput,
+                        ["isRedirect"] = transition.IsRedirect,
+                        ["redirectCount"] = transition.RedirectCount,
+                        ["commitSource"] = transition.CommitSource
+                    });
+            }
+            catch
+            {
+                // Lifecycle transitions must not fail navigation because tracing failed.
+            }
+        }
+
+        private static LogSeverity SeverityForPhase(NavigationLifecyclePhase phase)
+        {
+            return phase switch
+            {
+                NavigationLifecyclePhase.Failed => LogSeverity.Error,
+                NavigationLifecyclePhase.Cancelled => LogSeverity.Warn,
+                _ => LogSeverity.Info
+            };
+        }
+
+        private static string EventForPhase(NavigationLifecycleTransition transition)
+        {
+            return transition.Phase switch
+            {
+                NavigationLifecyclePhase.Requested => "NavigationRequested",
+                NavigationLifecyclePhase.Fetching => "NavigationFetchStarted",
+                NavigationLifecyclePhase.ResponseReceived when transition.IsRedirect => "NavigationRedirected",
+                NavigationLifecyclePhase.ResponseReceived => "NavigationResponseReceived",
+                NavigationLifecyclePhase.Committing => "NavigationCommitted",
+                NavigationLifecyclePhase.Interactive => "NavigationInteractive",
+                NavigationLifecyclePhase.Complete => "LoadFired",
+                NavigationLifecyclePhase.Failed => "NavigationFailed",
+                NavigationLifecyclePhase.Cancelled => "NavigationCancelled",
+                _ => "NavigationLifecycleTransition"
+            };
         }
 
         private static bool IsTransitionAllowed(NavigationLifecyclePhase previous, NavigationLifecyclePhase next)

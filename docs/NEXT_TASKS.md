@@ -22,12 +22,15 @@ Status: IMPLEMENTED / REGRESSION_PROTECTED
 - **Remaining follow-up**: Browser sessions still need subsystem instrumentation (T1.2-T1.8) to populate complete lifecycle events and write full per-site trace bundles.
 
 ### T1.2 — Instrument navigation lifecycle with trace events
+Status: PARTIAL / REGRESSION_PROTECTED
+
 - **Area**: Core / Navigation
 - **Dependencies**: T1.1
-- **Files**: `FenBrowser.FenEngine/Rendering/NavigationManager.cs`, related navigation code
+- **Files**: `FenBrowser.Core/Engine/NavigationLifecycle.cs`, `FenBrowser.Tests/Core/NavigationLifecycleTraceTests.cs`
 - **Spec**: PLAN.MD § "Diagnostic Spine Requirement" items 1-4
-- **Description**: Add trace events for: navigation start, redirect, commit, document creation. Each event must carry the navigation ID and document ID.
-- **Acceptance**: Every navigation produces trace events. Failed navigations are visible in trace.
+- **Description**: Navigation lifecycle transitions now emit diagnostic trace events for request, fetch start, response received, redirect, commit, interactive, load, failed, and cancelled states. Each emitted event carries the navigation ID and URL context.
+- **Verification**: `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~FenBrowser.Tests.Core.NavigationLifecycleTraceTests|FullyQualifiedName~FenBrowser.Tests.Logging.EngineLogSettingsTests" --no-restore -v minimal` passed 4/4.
+- **Remaining follow-up**: Document IDs are not yet populated at the parser/document-creation boundary. A dedicated `DocumentCreated` event still needs to be emitted when the DOM document object is actually created.
 
 ### T1.3 — Instrument HTML parsing with trace events
 - **Area**: Core / HTML Parser
