@@ -1704,6 +1704,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         record.Failure = desc ?? jte.Message ?? string.Empty;
                         record.CompletedUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                     });
+                    RecordMissingGlobalReference(desc ?? jte.Message);
                     LogScriptLoading(
                         "ScriptExecutionFailed",
                         LogSeverity.Error,
@@ -1759,6 +1760,73 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         {
             UpdateScriptLoadingSnapshot(snapshot => snapshot.AsyncPendingScripts = Math.Max(0, snapshot.AsyncPendingScripts - batch.Count));
         }
+    }
+
+    private static void RecordMissingGlobalReference(string errorDescription)
+    {
+        if (!TryExtractMissingGlobalReference(errorDescription, out var apiName))
+        {
+            return;
+        }
+
+        EngineCapabilities.LogUnsupportedJs("globalThis", apiName, "missing global reference");
+    }
+
+    private static bool TryExtractMissingGlobalReference(string errorDescription, out string apiName)
+    {
+        apiName = null;
+        if (string.IsNullOrWhiteSpace(errorDescription))
+        {
+            return false;
+        }
+
+        var referencePrefix = "ReferenceError:";
+        var prefixIndex = errorDescription.IndexOf(referencePrefix, StringComparison.OrdinalIgnoreCase);
+        if (prefixIndex < 0)
+        {
+            return false;
+        }
+
+        var nameStart = prefixIndex + referencePrefix.Length;
+        var suffixIndex = errorDescription.IndexOf(" is not defined", nameStart, StringComparison.OrdinalIgnoreCase);
+        if (suffixIndex <= nameStart)
+        {
+            return false;
+        }
+
+        var candidate = errorDescription.Substring(nameStart, suffixIndex - nameStart).Trim();
+        if (!IsMissingGlobalReferenceName(candidate))
+        {
+            return false;
+        }
+
+        apiName = candidate;
+        return true;
+    }
+
+    private static bool IsMissingGlobalReferenceName(string candidate)
+    {
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            return false;
+        }
+
+        var first = candidate[0];
+        if (!(char.IsLetter(first) || first == '_' || first == '$'))
+        {
+            return false;
+        }
+
+        for (var i = 1; i < candidate.Length; i++)
+        {
+            var ch = candidate[i];
+            if (!(char.IsLetterOrDigit(ch) || ch == '_' || ch == '$'))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private sealed class ScriptExecutionItem

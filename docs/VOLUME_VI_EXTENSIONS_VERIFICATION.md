@@ -2540,6 +2540,7 @@ _End of Volume VI_
   - The event-loop snapshot tracks DOMContentLoaded/load dispatch, microtask checkpoints, timer/rAF scheduling, callback completion, pending host timers, and callback failures.
   - Fixed the FenJS large-stack worker dispatch race by holding `_fenJsWorkGate` through the wait/result capture, preventing concurrent timer/rAF callbacks from overwriting `_fenJsPendingWork`.
   - Browser host-object property misses now record deduped unsupported-JS capability entries for DOM/WebIDL-facing objects, excluding common non-API probes such as private/internal names, numeric indexes, `then`, and event handler slots.
+  - Page-script `ReferenceError: <identifier> is not defined` failures now record deduped unsupported-JS capability entries as `globalThis.<identifier>` with reason `missing global reference`.
 
 - `FenBrowser.Core/Logging/EngineCapabilities.cs`
   - Added a stable unsupported-JS snapshot for diagnostic exporters.
@@ -2575,19 +2576,19 @@ _End of Volume VI_
 - Known diagnostic-spine gaps after this tranche:
   - Per-script source IDs/line-column attribution, module graph details, IPC, sandbox-denial, and broader performance summaries are not yet auto-classified from trace events.
   - `display_list.txt` currently flattens the immutable Paint Tree order; it is not yet a Skia command-stream dump.
-  - Global constructor/free-identifier missing API extraction still relies on console `ReferenceError` heuristics; DOM/WebIDL host-object property misses now emit structured capability records.
+  - Missing global references are structured for simple free-identifier `ReferenceError` failures; dynamic global-property shapes and source line/column attribution are still not classified.
   - Network bodies and initiator stacks are not exported; `network.json` is currently metadata-only.
 
 - First execution matrix for PLAN.MD work:
   - Current engine audit plan: inventory from canonical volumes, current focused build/test evidence, local Test262 dashboard (`docs/test262_results.md`), local WPT roots, and real-site `debug-site` bundles.
-  - Diagnostic spine implementation plan: promote `debug-site` from partial bundle to complete summary classification, then add global missing-API attribution, per-script attribution, lifecycle/event-loop ordering checks, and richer network-body/initiator exporters.
+  - Diagnostic spine implementation plan: promote `debug-site` from partial bundle to complete summary classification, then add per-script attribution, lifecycle/event-loop ordering checks, dynamic global-property classification, and richer network-body/initiator exporters.
   - Real-site failure classification plan: classify each run into navigation, network, script loading, JavaScript language, WebIDL/binding, DOM API, event loop, CSS/style, layout, paint/compositing, storage/security, and browser-shell/process buckets.
   - Minimal smoke-test matrix: search page, docs/wiki page, GitHub-like app, social/media SPA, video page, ecommerce page, webmail-like app, dashboard SPA, news page, banking/form page, heavy CSS layout page, and heavy JavaScript app.
   - Required trace/log points: Navigation, Network, HTMLParser, ResourceLoader, ScriptLoader, JS, WebIDL, DOM, EventLoop, Microtask, Timer, CSSParser, Selector, Cascade, Style, Layout, Paint, Compositor, Input, Storage, Cookie, Security, IPC, Process, Crash, and Performance.
   - Missing API tracker format: API name, object/prototype, URL/site ID, script URL, source line/column when available, trace ID, exception text, priority, linked WPT/local test, owner, status, and workaround/stub status.
   - Process boundary audit: current `debug-site` runs in process through `BrowserHost`; renderer/network/storage/compositor isolation evidence must come from host process-isolation diagnostics before any process-boundary status can be marked complete.
-  - Current architecture risk register: metadata-only network export, global missing-API attribution still heuristic, script source attribution gaps, Paint Tree proxy rather than Skia command-stream display-list dump, and headless screenshot fidelity needing broader real-site validation beyond the `example.com` smoke.
-  - Dependency-ready next tasks: add per-script source/line-column attribution, add global missing-API attribution, add network initiator/body policy, add Skia command-stream display-list diagnostics, and suppress remaining non-script-loading direct console writes in other subsystems.
+  - Current architecture risk register: metadata-only network export, script source attribution gaps, dynamic/global-property missing-API attribution gaps, Paint Tree proxy rather than Skia command-stream display-list dump, and headless screenshot fidelity needing broader real-site validation beyond the `example.com` smoke.
+  - Dependency-ready next tasks: add per-script source/line-column attribution, add dynamic global-property classification, add network initiator/body policy, add Skia command-stream display-list diagnostics, and suppress remaining non-script-loading direct console writes in other subsystems.
 
 - Focused verification:
   - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Debug -v minimal`: pass on `2026-06-27` with existing repo-wide warnings and existing unreachable-code warnings in legacy removed Acid paths.
@@ -2639,3 +2640,12 @@ _End of Volume VI_
     - `missing_apis.json` contained `Document.fenMissingDebugSiteProbe` with `ObjectName=Document`, `PropertyName=fenMissingDebugSiteProbe`, `Source=EngineCapabilities`, `Evidence=missing host property`, and `EncounterCount=1`.
     - `summary.md` promoted `First missing API: Document.fenMissingDebugSiteProbe`.
     - `logs.ndjson` contained the same API with structured fields `traceCategory=WebIDL`, `featureCategory=JavaScript`, `api`, `objectName`, `propertyName`, `featureStatus=Unsupported`, and `reason=missing host property`.
+  - `dotnet build FenBrowser.Tooling/FenBrowser.Tooling.csproj -c Debug -v minimal`: pass on `2026-06-27`, `0 warnings / 0 errors`.
+  - `dotnet test FenBrowser.Tests/FenBrowser.Tests.csproj --filter "FullyQualifiedName~FenJsXmlHttpRequestTests.MissingHostProperty_RecordsUnsupportedJsCapability|FullyQualifiedName~FenJsXmlHttpRequestTests.MissingGlobalReference_RecordsUnsupportedJsCapability" --logger "console;verbosity=minimal"`: pass on `2026-06-27`, `2 passed / 0 failed / 0 skipped`.
+  - `dotnet run --project FenBrowser.Tooling/FenBrowser.Tooling.csproj -- debug-site file:///C:/Users/udayk/Videos/fenbrowser-test/logs/debug_site_missing_global_smoke.html 1000`: pass on `2026-06-27`.
+    - Bundle: `logs/real-site/file_c_users_udayk_videos_fenbrowser-test_logs_debug_site_missing_global_smoke.html/20260627T100014Z`.
+    - Evidence: navigation returned `True`, rendered text was `missing global smoke`, `1` script discovered, `1` script execution started, `1` script failed, `0` network requests, `0` navigation failures, and `0` console messages.
+    - `missing_apis.json` contained `globalThis.FenMissingGlobalDebugSiteProbe` with `ObjectName=globalThis`, `PropertyName=FenMissingGlobalDebugSiteProbe`, `Source=EngineCapabilities`, `Evidence=missing global reference`, and `EncounterCount=1`.
+    - `script_loading.json` recorded one inline blocking script with status `execution-failed` and the original `ReferenceError` text.
+    - `summary.md` promoted `First missing API: globalThis.FenMissingGlobalDebugSiteProbe`.
+    - `logs.ndjson` contained the same API with structured fields `traceCategory=WebIDL`, `featureCategory=JavaScript`, `api`, `objectName`, `propertyName`, `featureStatus=Unsupported`, and `reason=missing global reference`.

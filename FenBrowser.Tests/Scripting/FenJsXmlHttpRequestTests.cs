@@ -127,6 +127,39 @@ namespace FenBrowser.Tests.Scripting
         }
 
         [Fact]
+        public async Task MissingGlobalReference_RecordsUnsupportedJsCapability()
+        {
+            var baseUri = new Uri("https://www.amazon.in/");
+            var document = new HtmlParser(
+                """
+                <html><body><script>FenMissingGlobalProbe();</script></body></html>
+                """,
+                baseUri).Parse();
+
+            EngineCapabilities.Reset();
+            try
+            {
+                var engine = new FenJsBrowserScriptEngine(CreateHost())
+                {
+                    Sandbox = SandboxPolicy.AllowAll
+                };
+
+                await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+                Assert.Equal(1, engine.GetScriptLoadingSnapshot().ExecutionFailed);
+                var record = Assert.Single(
+                    EngineCapabilities.GetUnsupportedJsSnapshot(),
+                    feature => feature.Name == "globalThis.FenMissingGlobalProbe");
+                Assert.Equal("missing global reference", record.Reason);
+                Assert.Equal(1, record.EncounterCount);
+            }
+            finally
+            {
+                EngineCapabilities.Reset();
+            }
+        }
+
+        [Fact]
         public async Task IndirectEval_CreatesGlobalBindingsInHostedBrowserEngine()
         {
             var baseUri = new Uri("https://www.google.com/search?q=test");
