@@ -297,6 +297,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private Node _currentDomRoot;
     private Uri _currentBaseUri;
     private Element _currentScriptElement;
+    private BrowserScriptLoadingRecord _currentScriptRecord;
+    private string _currentNavigationId;
     private string _documentReadyState = "loading";
     private int _fenJsEvaluationCount;
     private int _dynamicScriptTraceCounter;
@@ -924,6 +926,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private void BeginScriptLoadingSnapshot(Node domRoot, Uri baseUri)
     {
+        _currentNavigationId = LogContext.CurrentCorrelationId;
         lock (_scriptLoadingLock)
         {
             _lastScriptLoadingSnapshot = new BrowserScriptLoadingSnapshot
@@ -1892,7 +1895,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             {
                 try
                 {
-                    SetCurrentScriptElement(item.ScriptElement);
+                    SetCurrentScriptElement(item.ScriptElement, item.ScriptRecord);
                     if (isModule)
                     {
                         EvaluateModuleWithFenJs(code, moduleUri);
@@ -1935,7 +1938,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         record.Failure = desc ?? jte.Message ?? string.Empty;
                         record.CompletedUtc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
                     });
-                    RecordMissingGlobalReference(desc ?? jte.Message);
+                    RecordMissingGlobalReference(desc ?? jte.Message, item.ScriptRecord, baseUri);
                     var scriptFailedFields = CreateScriptRecordFields(item.ScriptRecord);
                     scriptFailedFields["batch"] = batchLabel;
                     scriptFailedFields["origin"] = origin;
@@ -1991,7 +1994,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
     }
 
-    private static void RecordMissingGlobalReference(string errorDescription)
+    private void RecordMissingGlobalReference(
+        string errorDescription,
+        BrowserScriptLoadingRecord scriptRecord = null,
+        Uri baseUri = null)
     {
         if (!TryExtractMissingGlobalReference(errorDescription, out var apiName))
         {
@@ -1999,6 +2005,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
 
         EngineCapabilities.LogUnsupportedJs("globalThis", apiName, "missing global reference");
+        RecordMissingBrowserApi(
+            "globalThis",
+            apiName,
+            "missing global reference",
+            errorDescription,
+            scriptRecord,
+            baseUri);
     }
 
     private static bool TryExtractMissingGlobalReference(string errorDescription, out string apiName)
@@ -2056,6 +2069,86 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
 
         return true;
+    }
+
+    private void RecordMissingHostProperty(string ownerName, string property, Uri baseUri)
+    {
+        EngineCapabilities.LogUnsupportedJs(ownerName, property, "missing host property");
+        RecordMissingBrowserApi(
+            ownerName,
+            property,
+            "missing host property",
+            string.Empty,
+            GetCurrentScriptRecord(),
+            baseUri ?? _currentBaseUri);
+    }
+
+    private void RecordMissingBrowserApi(
+        string objectOrPrototype,
+        string propertyName,
+        string reason,
+        string exceptionText,
+        BrowserScriptLoadingRecord scriptRecord,
+        Uri baseUri)
+    {
+        if (string.IsNullOrWhiteSpace(objectOrPrototype) || string.IsNullOrWhiteSpace(propertyName))
+        {
+            return;
+        }
+
+        scriptRecord ??= GetCurrentScriptRecord();
+        var currentScriptElement = scriptRecord == null ? GetCurrentScriptElement() : null;
+        var siteUri = baseUri ?? _currentBaseUri;
+        var scriptUrl = ResolveMissingApiScriptUrl(scriptRecord, currentScriptElement, siteUri);
+        var line = NormalizeSourcePosition(scriptRecord?.SourceLine ?? currentScriptElement?.SourceLine ?? 0);
+        var column = NormalizeSourcePosition(scriptRecord?.SourceColumn ?? currentScriptElement?.SourceColumn ?? 0);
+        var ownerName = objectOrPrototype.Trim();
+        var property = propertyName.Trim();
+
+        MissingApiTracker.Record(new MissingApiObservation
+        {
+            ApiName = ownerName + "." + property,
+            ObjectOrPrototype = ownerName,
+            PropertyName = property,
+            SiteUrl = siteUri?.AbsoluteUri ?? string.Empty,
+            ScriptUrl = scriptUrl,
+            ScriptId = scriptRecord?.ScriptId ?? string.Empty,
+            NavigationId = _currentNavigationId ?? LogContext.CurrentCorrelationId ?? string.Empty,
+            Line = line,
+            Column = column,
+            Reason = reason ?? string.Empty,
+            ExceptionText = exceptionText ?? string.Empty
+        });
+    }
+
+    private static int? NormalizeSourcePosition(int value)
+        => value > 0 ? value : null;
+
+    private static string ResolveMissingApiScriptUrl(
+        BrowserScriptLoadingRecord scriptRecord,
+        Element scriptElement,
+        Uri baseUri)
+    {
+        if (!string.IsNullOrWhiteSpace(scriptRecord?.ResolvedUrl))
+        {
+            return scriptRecord.ResolvedUrl;
+        }
+
+        var src = !string.IsNullOrWhiteSpace(scriptRecord?.Src)
+            ? scriptRecord.Src
+            : scriptElement?.GetAttribute("src");
+        if (!string.IsNullOrWhiteSpace(src) &&
+            TryResolveUri(src, baseUri, out var scriptUri))
+        {
+            return scriptUri.AbsoluteUri;
+        }
+
+        if (Uri.TryCreate(src, UriKind.Absolute, out var absoluteScriptUri))
+        {
+            return absoluteScriptUri.AbsoluteUri;
+        }
+
+        return string.Empty;
     }
 
     private sealed class ScriptExecutionItem
@@ -5006,11 +5099,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
     }
 
-    private void SetCurrentScriptElement(Element scriptElement)
+    private BrowserScriptLoadingRecord GetCurrentScriptRecord()
+    {
+        lock (_fenJsLock)
+        {
+            return _currentScriptRecord;
+        }
+    }
+
+    private void SetCurrentScriptElement(Element scriptElement, BrowserScriptLoadingRecord scriptRecord = null)
     {
         lock (_fenJsLock)
         {
             _currentScriptElement = scriptElement;
+            _currentScriptRecord = scriptElement == null ? null : scriptRecord;
         }
     }
 
@@ -5923,7 +6025,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             "[FenJsBridge] Dynamic script execution started",
             executionStartedFields);
 
-        SetCurrentScriptElement(scriptElement);
+        SetCurrentScriptElement(scriptElement, scriptRecord);
         try
         {
             if (string.Equals(scriptRecord?.Kind, "module", StringComparison.OrdinalIgnoreCase))
@@ -5961,7 +6063,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             }
 
             TraceDynamicScriptExecutionFailure(scriptRecord, batchLabel, "JsThrownException", desc ?? jte.Message);
-            RecordMissingGlobalReference(desc ?? jte.Message);
+            RecordMissingGlobalReference(desc ?? jte.Message, scriptRecord, _currentBaseUri);
             return false;
         }
         catch (Exception ex)
@@ -6711,14 +6813,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             };
         }
 
-        private static void RecordMissingHostApi(string ownerName, string property)
+        private void RecordMissingHostApi(string ownerName, string property)
         {
             if (!ShouldRecordMissingHostApi(ownerName, property))
             {
                 return;
             }
 
-            EngineCapabilities.LogUnsupportedJs(ownerName, property, "missing host property");
+            _owner?.RecordMissingHostProperty(ownerName, property, _baseUri);
         }
 
         private static bool ShouldRecordMissingHostApi(string ownerName, string property)

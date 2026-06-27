@@ -66,10 +66,11 @@ Status: IMPLEMENTED / REGRESSION_PROTECTED
 ### T1.6 — Implement missing API tracker
 - **Area**: FenEngine / Scripting
 - **Dependencies**: T1.1
-- **Files**: `FenBrowser.FenEngine/Scripting/MissingApiTracker.cs` (new), `BrowserFenJsHostHooks`
+- **Files**: `FenBrowser.FenEngine/Scripting/MissingApiTracker.cs`, `FenBrowser.FenEngine/Scripting/BrowserScriptEngineRuntime.cs`, `FenBrowser.Tests/Scripting/MissingApiTrackerTests.cs`
 - **Spec**: PLAN.MD § "Missing API Tracker"
-- **Description**: When JavaScript accesses an unimplemented browser API via IHostHooks, log: API name, object/prototype, site URL, script URL, line/column if available, first-seen trace ID, exception text. Deduplicate by API name. Output `missing_apis.json` per site.
-- **Acceptance**: Missing API tracker output. Common framework boot failures traceable to specific missing APIs.
+- **Description**: `MissingApiTracker` now records missing browser APIs from FenJS `IHostHooks.TryGetHostProperty(...)` misses and page-script `ReferenceError: <name> is not defined` boot failures. Records include API name, object/prototype, site URL, script URL when available, source line/column when available, script ID, navigation ID, first-seen trace ID, encounter count, reason, and exception text.
+- **Verification**: `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~MissingApiTrackerTests|FullyQualifiedName~FenJsXmlHttpRequestTests" --no-restore -v minimal` passed 14/14.
+- **Acceptance**: Per-site `logs/missing_apis/<site>/missing_apis.json` output and `MissingAPI` diagnostic trace events now identify missing host APIs and common framework boot failures.
 
 ### T1.7 — Implement debug-site command with trace bundle output
 - **Area**: Host / Tooling
