@@ -5,14 +5,19 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Globalization;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using FenBrowser.Core;
 using FenBrowser.Core.Css;
+using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Engine;
 using FenBrowser.Core.Logging;
+using FenBrowser.FenEngine.Rendering;
+using FenBrowser.FenEngine.Rendering.Core;
+using FenBrowser.FenEngine.Rendering.Paint;
 using FenBrowser.FenEngine.Scripting;
 using FenBrowser.Tooling.Host;
 using FenBrowser.Host;
@@ -392,6 +397,13 @@ namespace FenBrowser.Tooling
             string text = SafeCall(() => host.GetTextContent()) ?? string.Empty;
             var styles = SafeCall(() => host.ComputedStyles);
             var screenshot = CaptureDebugSiteScreenshot(root, styles, host.CurrentUri?.AbsoluteUri ?? url);
+            var styleLayout = BuildStyleLayoutSummary(
+                root,
+                styles,
+                screenshot.RenderContext,
+                screenshot.Telemetry,
+                screenshot.Captured,
+                screenshot.Error);
             var lifecycle = BuildLifecycleSummary(host.NavigationLifecycleState, probeResults);
             var scriptLoading = host.Engine?.ScriptEngine?.GetScriptLoadingSnapshot() ?? new BrowserScriptLoadingSnapshot();
             var eventLoop = host.Engine?.ScriptEngine?.GetEventLoopSnapshot() ?? new BrowserEventLoopSnapshot();
@@ -413,6 +425,11 @@ namespace FenBrowser.Tooling
                 Lifecycle = lifecycle,
                 ScriptLoading = scriptLoading,
                 EventLoop = eventLoop,
+                StyleLayout = styleLayout,
+                StyleDump = BuildStyleDump(root, styles),
+                LayoutDump = BuildLayoutDump(root, screenshot.RenderContext),
+                PaintDump = BuildPaintDump(screenshot.RenderContext),
+                DisplayListDump = BuildDisplayListDump(screenshot.RenderContext),
                 NetworkRequests = networkCapture.Snapshot(),
                 Probes = probeResults,
                 RenderedTextSample = text.Length > 800 ? text.Substring(0, 800) : text,
@@ -456,12 +473,12 @@ namespace FenBrowser.Tooling
 
             if (root == null)
             {
-                return new DebugSiteScreenshotResult(false, screenshotPath, width, height, "DOM root was not available.");
+                return new DebugSiteScreenshotResult(false, screenshotPath, width, height, "DOM root was not available.", null, null);
             }
 
             if (styles == null || styles.Count == 0)
             {
-                return new DebugSiteScreenshotResult(false, screenshotPath, width, height, "Computed styles were not available.");
+                return new DebugSiteScreenshotResult(false, screenshotPath, width, height, "Computed styles were not available.", null, null);
             }
 
             try
@@ -484,12 +501,14 @@ namespace FenBrowser.Tooling
                     baseUrl,
                     emitVerificationReport: false);
                 canvas.Flush();
+                var renderContext = renderer.CreateRenderContext();
+                var telemetry = renderer.LastFrameTelemetry;
 
                 using var image = SKImage.FromBitmap(bitmap);
                 using var data = image.Encode(SKEncodedImageFormat.Png, 100);
                 if (data == null)
                 {
-                    return new DebugSiteScreenshotResult(false, screenshotPath, width, height, "PNG encoding returned null.");
+                    return new DebugSiteScreenshotResult(false, screenshotPath, width, height, "PNG encoding returned null.", renderContext, telemetry);
                 }
 
                 using (var stream = File.Open(screenshotPath, FileMode.Create, FileAccess.Write, FileShare.Read))
@@ -497,11 +516,11 @@ namespace FenBrowser.Tooling
                     data.SaveTo(stream);
                 }
 
-                return new DebugSiteScreenshotResult(true, screenshotPath, width, height, null);
+                return new DebugSiteScreenshotResult(true, screenshotPath, width, height, null, renderContext, telemetry);
             }
             catch (Exception ex)
             {
-                return new DebugSiteScreenshotResult(false, screenshotPath, width, height, ex.GetType().Name + ": " + ex.Message);
+                return new DebugSiteScreenshotResult(false, screenshotPath, width, height, ex.GetType().Name + ": " + ex.Message, null, null);
             }
         }
 
@@ -523,6 +542,8 @@ namespace FenBrowser.Tooling
             Console.WriteLine($"Raw HTML length        : {report.RawHtmlLength}");
             Console.WriteLine($"Rendered text length   : {report.RenderedTextLength}");
             Console.WriteLine($"Computed styles count  : {report.ComputedStylesCount}");
+            Console.WriteLine($"Layout boxes           : {report.StyleLayout?.BoxCount ?? 0}");
+            Console.WriteLine($"Paint nodes            : {report.StyleLayout?.PaintNodeCount ?? 0}");
             Console.WriteLine($"Screenshot captured    : {report.ScreenshotCaptured}");
             Console.WriteLine($"Navigation phase       : {report.Lifecycle?.Phase ?? "(unknown)"}");
             Console.WriteLine($"Navigation detail      : {report.Lifecycle?.Detail ?? "(none)"}");
@@ -603,6 +624,14 @@ namespace FenBrowser.Tooling
                 Path.Combine(bundleDir, "event_loop.json"),
                 JsonSerializer.Serialize(report.EventLoop ?? new BrowserEventLoopSnapshot(), jsonOptions),
                 new UTF8Encoding(false));
+            File.WriteAllText(
+                Path.Combine(bundleDir, "style_layout.json"),
+                JsonSerializer.Serialize(report.StyleLayout ?? new DebugSiteStyleLayoutSummary(), jsonOptions),
+                new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(bundleDir, "style_dump.txt"), report.StyleDump ?? string.Empty, new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(bundleDir, "layout_dump.txt"), report.LayoutDump ?? string.Empty, new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(bundleDir, "paint_dump.txt"), report.PaintDump ?? string.Empty, new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(bundleDir, "display_list.txt"), report.DisplayListDump ?? string.Empty, new UTF8Encoding(false));
 
             TryCopyLogArtifact("debug_screenshot.png", Path.Combine(bundleDir, "screenshot.png"));
             TryCopyLogArtifact("dom_dump.txt", Path.Combine(bundleDir, "dom_dump.txt"));
@@ -625,6 +654,8 @@ namespace FenBrowser.Tooling
             var firstConsoleError = report.ConsoleMessages.FirstOrDefault(IsLikelyErrorMessage) ?? "(none captured)";
             var firstNavFailure = report.NavigationFailures.FirstOrDefault() ?? "(none captured)";
             var firstMissingApi = ExtractMissingApiRecords(report.ConsoleMessages).FirstOrDefault()?.Api ?? "(none captured)";
+            var firstLayoutBlocker = report.StyleLayout?.FirstLayoutBlocker ?? "(not captured)";
+            var firstPaintBlocker = report.StyleLayout?.FirstPaintBlocker ?? "(not captured)";
             var failedNetworkRequests = report.NetworkRequests.Count(request => request.Failed || (request.StatusCode.HasValue && request.StatusCode.Value >= 400));
 
             var sb = new StringBuilder();
@@ -639,6 +670,14 @@ namespace FenBrowser.Tooling
             sb.AppendLine($"Raw HTML length: {report.RawHtmlLength}");
             sb.AppendLine($"Rendered text length: {report.RenderedTextLength}");
             sb.AppendLine($"Computed styles: {report.ComputedStylesCount}");
+            sb.AppendLine($"Style/layout status: {report.StyleLayout?.Status ?? "not-captured"}");
+            sb.AppendLine($"Styled DOM nodes: {report.StyleLayout?.StyledNodeCount ?? 0}");
+            sb.AppendLine($"Unstyled elements: {report.StyleLayout?.UnstyledElementCount ?? 0}");
+            sb.AppendLine($"Layout boxes: {report.StyleLayout?.BoxCount ?? 0}");
+            sb.AppendLine($"Zero-area boxes: {report.StyleLayout?.ZeroAreaBoxCount ?? 0}");
+            sb.AppendLine($"Paint roots: {report.StyleLayout?.PaintRootCount ?? 0}");
+            sb.AppendLine($"Paint nodes: {report.StyleLayout?.PaintNodeCount ?? 0}");
+            sb.AppendLine($"Raster mode: {report.StyleLayout?.RasterMode ?? "none"}");
             sb.AppendLine($"Screenshot captured: {report.ScreenshotCaptured}");
             if (!report.ScreenshotCaptured && !string.IsNullOrWhiteSpace(report.ScreenshotError))
             {
@@ -670,7 +709,8 @@ namespace FenBrowser.Tooling
             sb.AppendLine($"First missing API: {firstMissingApi}");
             sb.AppendLine($"Navigation lifecycle terminal: {report.Lifecycle?.IsTerminalPhase ?? false}");
             sb.AppendLine($"Script loading status: {report.ScriptLoading?.Status ?? "not-run"}");
-            sb.AppendLine("First layout blocker: (not automatically classified yet)");
+            sb.AppendLine($"First layout blocker: {firstLayoutBlocker}");
+            sb.AppendLine($"First paint blocker: {firstPaintBlocker}");
             sb.AppendLine($"DOMContentLoaded fired: {report.EventLoop?.DomContentLoadedFired ?? false}");
             sb.AppendLine($"Load fired: {report.EventLoop?.LoadFired ?? false}");
             sb.AppendLine();
@@ -683,6 +723,11 @@ namespace FenBrowser.Tooling
             sb.AppendLine("- `lifecycle.json`: final navigation lifecycle snapshot and document readyState probe.");
             sb.AppendLine("- `script_loading.json`: script discovery, fetch, execution, failure, and async-pending counts.");
             sb.AppendLine("- `event_loop.json`: DOMContentLoaded/load, microtask, timer, and requestAnimationFrame counters.");
+            sb.AppendLine("- `style_layout.json`: style/layout/paint counters, timing, status, and first blocker classification.");
+            sb.AppendLine("- `style_dump.txt`: DOM preorder computed-style snapshot.");
+            sb.AppendLine("- `layout_dump.txt`: layout Box tree snapshot with geometry.");
+            sb.AppendLine("- `paint_dump.txt`: Paint Tree snapshot with node bounds and paint-specific fields.");
+            sb.AppendLine("- `display_list.txt`: flattened Paint Tree order used as the current display-list proxy.");
             sb.AppendLine("- `dom_dump.txt`: copied from `logs/dom_dump.txt` when present.");
             sb.AppendLine("- `artifact_manifest.json`: present/missing artifact status.");
             return sb.ToString();
@@ -720,6 +765,600 @@ namespace FenBrowser.Tooling
             };
         }
 
+        private static DebugSiteStyleLayoutSummary BuildStyleLayoutSummary(
+            Node root,
+            IReadOnlyDictionary<Node, CssComputed> styles,
+            RenderContext renderContext,
+            RenderFrameTelemetry telemetry,
+            bool screenshotCaptured,
+            string screenshotError)
+        {
+            var effectiveStyles = styles ?? renderContext?.Styles;
+            var domNodes = CollectDomTraversal(root);
+            var elementCount = domNodes.Count(item => item.Node is Element);
+            var styledNodeCount = effectiveStyles?.Count ?? 0;
+            var styledElementCount = effectiveStyles?.Keys.Count(node => node is Element) ?? 0;
+            var unstyledElementCount = effectiveStyles == null
+                ? elementCount
+                : domNodes.Count(item => item.Node is Element && !effectiveStyles.ContainsKey(item.Node));
+            var boxCount = renderContext?.Boxes?.Count ?? 0;
+            var zeroAreaBoxCount = renderContext?.Boxes?.Values.Count(IsZeroAreaBox) ?? 0;
+            var paintRootCount = renderContext?.PaintTreeRoots?.Count ?? 0;
+            var paintNodeCount = CountPaintNodes(renderContext?.PaintTreeRoots);
+            var layoutBlocker = ClassifyFirstLayoutBlocker(root, effectiveStyles, renderContext, boxCount, zeroAreaBoxCount);
+            var paintBlocker = ClassifyFirstPaintBlocker(layoutBlocker, renderContext, paintNodeCount, screenshotCaptured, screenshotError);
+            var status = ClassifyStyleLayoutStatus(root, effectiveStyles, renderContext, boxCount, paintNodeCount, screenshotCaptured);
+
+            return new DebugSiteStyleLayoutSummary
+            {
+                Status = status,
+                DomRootPresent = root != null,
+                DomNodeCount = domNodes.Count,
+                ElementCount = elementCount,
+                ComputedStyleCount = styledNodeCount,
+                StyledNodeCount = styledNodeCount,
+                StyledElementCount = styledElementCount,
+                UnstyledElementCount = unstyledElementCount,
+                RenderContextAvailable = renderContext != null,
+                BoxCount = boxCount,
+                ZeroAreaBoxCount = zeroAreaBoxCount,
+                PaintRootCount = paintRootCount,
+                PaintNodeCount = paintNodeCount,
+                DisplayListNodeCount = paintNodeCount,
+                DisplayListSource = "paint-tree-flattened",
+                ViewportWidth = renderContext?.ViewportWidth ?? 0,
+                ViewportHeight = renderContext?.ViewportHeight ?? 0,
+                LayoutRan = boxCount > 0,
+                PaintRan = paintNodeCount > 0,
+                RasterRan = screenshotCaptured,
+                ScreenshotCaptured = screenshotCaptured,
+                RasterMode = telemetry?.RasterMode.ToString() ?? "none",
+                LayoutDurationMs = telemetry?.LayoutDurationMs ?? 0,
+                PaintDurationMs = telemetry?.PaintDurationMs ?? 0,
+                RasterDurationMs = telemetry?.RasterDurationMs ?? 0,
+                TotalRenderDurationMs = telemetry?.TotalDurationMs ?? 0,
+                WatchdogTriggered = telemetry?.WatchdogTriggered ?? false,
+                WatchdogReason = telemetry?.WatchdogReason ?? string.Empty,
+                FirstLayoutBlocker = layoutBlocker,
+                FirstPaintBlocker = paintBlocker
+            };
+        }
+
+        private static string BuildStyleDump(Node root, IReadOnlyDictionary<Node, CssComputed> styles)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("# FenBrowser Computed Style Dump");
+            sb.AppendLine();
+
+            if (root == null)
+            {
+                sb.AppendLine("DOM root: unavailable");
+                return sb.ToString();
+            }
+
+            if (styles == null || styles.Count == 0)
+            {
+                sb.AppendLine("Computed styles: unavailable");
+                return sb.ToString();
+            }
+
+            foreach (var item in CollectDomTraversal(root))
+            {
+                var indent = new string(' ', item.Depth * 2);
+                sb.Append(indent);
+                sb.Append(item.Path);
+                sb.Append(" ");
+                sb.Append(FormatNodeLabel(item.Node));
+
+                if (styles.TryGetValue(item.Node, out var style) && style != null)
+                {
+                    sb.Append(" ");
+                    sb.Append(FormatStyleProperties(style));
+                }
+                else
+                {
+                    sb.Append(" style=(none)");
+                }
+
+                sb.AppendLine();
+            }
+
+            return sb.ToString();
+        }
+
+        private static string BuildLayoutDump(Node root, RenderContext renderContext)
+        {
+            if (root == null)
+            {
+                return "layout dump unavailable: DOM root was not available." + Environment.NewLine;
+            }
+
+            if (renderContext == null)
+            {
+                return "layout dump unavailable: render context was not available after diagnostic render." + Environment.NewLine;
+            }
+
+            if (renderContext.Boxes == null || renderContext.Boxes.Count == 0)
+            {
+                return "layout dump unavailable: diagnostic render produced no layout boxes." + Environment.NewLine;
+            }
+
+            if (root is not Element rootElement)
+            {
+                return "layout dump unavailable: DOM root was not an Element." + Environment.NewLine;
+            }
+
+            try
+            {
+                return LayoutTreeDumper.DumpTree(
+                    rootElement,
+                    renderContext.Boxes,
+                    renderContext.Styles,
+                    LayoutTreeDumper.OutputFormat.IndentedText);
+            }
+            catch (Exception ex)
+            {
+                return $"layout dump failed: {ex.GetType().Name}: {ex.Message}{Environment.NewLine}";
+            }
+        }
+
+        private static string BuildPaintDump(RenderContext renderContext)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("# FenBrowser Paint Tree Dump");
+            sb.AppendLine();
+
+            var roots = renderContext?.PaintTreeRoots;
+            if (roots == null || roots.Count == 0)
+            {
+                sb.AppendLine("paint tree: unavailable");
+                return sb.ToString();
+            }
+
+            foreach (var root in roots)
+            {
+                AppendPaintNodeDump(sb, root, 0);
+            }
+
+            return sb.ToString();
+        }
+
+        private static string BuildDisplayListDump(RenderContext renderContext)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("# FenBrowser Display List Dump");
+            sb.AppendLine("source: flattened immutable Paint Tree order");
+            sb.AppendLine();
+
+            var roots = renderContext?.PaintTreeRoots;
+            if (roots == null || roots.Count == 0)
+            {
+                sb.AppendLine("display list: unavailable");
+                return sb.ToString();
+            }
+
+            var sequence = 0;
+            foreach (var root in roots)
+            {
+                AppendDisplayListNode(sb, root, ref sequence);
+            }
+
+            return sb.ToString();
+        }
+
+        private static void AppendPaintNodeDump(StringBuilder sb, PaintNodeBase node, int depth)
+        {
+            if (node == null)
+            {
+                return;
+            }
+
+            var indent = new string(' ', depth * 2);
+            sb.Append(indent);
+            sb.Append(node.GetType().Name);
+            sb.Append(" bounds=");
+            sb.Append(FormatRect(node.Bounds));
+            sb.Append(" opacity=");
+            sb.Append(node.Opacity.ToString("0.###", CultureInfo.InvariantCulture));
+            sb.Append(" source=");
+            sb.Append(FormatNodeLabel(node.SourceNode));
+            if (node.ClipRect.HasValue)
+            {
+                sb.Append(" clip=");
+                sb.Append(FormatRect(node.ClipRect.Value));
+            }
+            AppendPaintNodeSpecificFields(sb, node);
+            sb.AppendLine();
+
+            var children = node.Children;
+            if (children == null)
+            {
+                return;
+            }
+
+            foreach (var child in children)
+            {
+                AppendPaintNodeDump(sb, child, depth + 1);
+            }
+        }
+
+        private static void AppendDisplayListNode(StringBuilder sb, PaintNodeBase node, ref int sequence)
+        {
+            if (node == null)
+            {
+                return;
+            }
+
+            sequence++;
+            sb.Append(sequence.ToString("D5", CultureInfo.InvariantCulture));
+            sb.Append(" ");
+            sb.Append(node.GetType().Name);
+            sb.Append(" bounds=");
+            sb.Append(FormatRect(node.Bounds));
+            sb.Append(" source=");
+            sb.Append(FormatNodeLabel(node.SourceNode));
+            AppendPaintNodeSpecificFields(sb, node);
+            sb.AppendLine();
+
+            var children = node.Children;
+            if (children == null)
+            {
+                return;
+            }
+
+            foreach (var child in children)
+            {
+                AppendDisplayListNode(sb, child, ref sequence);
+            }
+        }
+
+        private static void AppendPaintNodeSpecificFields(StringBuilder sb, PaintNodeBase node)
+        {
+            switch (node)
+            {
+                case BackgroundPaintNode background:
+                    sb.Append(" color=");
+                    sb.Append(FormatColor(background.Color));
+                    sb.Append(" gradient=");
+                    sb.Append(background.Gradient != null);
+                    break;
+                case BorderPaintNode border:
+                    sb.Append(" widths=");
+                    sb.Append(FormatFloatArray(border.Widths));
+                    sb.Append(" styles=");
+                    sb.Append(border.Styles == null ? "(none)" : string.Join(",", border.Styles));
+                    break;
+                case TextPaintNode text:
+                    sb.Append(" text=\"");
+                    sb.Append(TrimText(text.FallbackText, 80));
+                    sb.Append("\" glyphs=");
+                    sb.Append(text.Glyphs?.Count ?? 0);
+                    sb.Append(" fontSize=");
+                    sb.Append(text.FontSize.ToString("0.###", CultureInfo.InvariantCulture));
+                    break;
+                case ImagePaintNode image:
+                    sb.Append(" objectFit=");
+                    sb.Append(image.ObjectFit ?? string.Empty);
+                    sb.Append(" background=");
+                    sb.Append(image.IsBackgroundImage);
+                    sb.Append(" bitmap=");
+                    sb.Append(image.Bitmap == null ? "(none)" : $"{image.Bitmap.Width}x{image.Bitmap.Height}");
+                    break;
+                case StackingContextPaintNode stacking:
+                    sb.Append(" zIndex=");
+                    sb.Append(stacking.ZIndex);
+                    if (!string.IsNullOrWhiteSpace(stacking.Filter))
+                    {
+                        sb.Append(" filter=");
+                        sb.Append(stacking.Filter);
+                    }
+                    break;
+                case ClipPaintNode clip:
+                    sb.Append(" clipPath=");
+                    sb.Append(clip.ClipPath != null);
+                    break;
+                case ScrollPaintNode scroll:
+                    sb.Append(" scroll=");
+                    sb.Append(scroll.ScrollX.ToString("0.###", CultureInfo.InvariantCulture));
+                    sb.Append(",");
+                    sb.Append(scroll.ScrollY.ToString("0.###", CultureInfo.InvariantCulture));
+                    break;
+                case StickyPaintNode sticky:
+                    sb.Append(" stickyOffset=");
+                    sb.Append(FormatPoint(sticky.StickyOffset));
+                    break;
+            }
+        }
+
+        private static string ClassifyStyleLayoutStatus(
+            Node root,
+            IReadOnlyDictionary<Node, CssComputed> styles,
+            RenderContext renderContext,
+            int boxCount,
+            int paintNodeCount,
+            bool screenshotCaptured)
+        {
+            if (root == null) return "dom-missing";
+            if (styles == null || styles.Count == 0) return "style-missing";
+            if (renderContext == null) return "render-context-missing";
+            if (boxCount == 0) return "layout-missing";
+            if (paintNodeCount == 0) return "paint-missing";
+            if (!screenshotCaptured) return "raster-missing";
+            return "captured";
+        }
+
+        private static string ClassifyFirstLayoutBlocker(
+            Node root,
+            IReadOnlyDictionary<Node, CssComputed> styles,
+            RenderContext renderContext,
+            int boxCount,
+            int zeroAreaBoxCount)
+        {
+            if (root == null) return "DOM root was not available.";
+            if (styles == null || styles.Count == 0) return "Computed styles were not available.";
+            if (renderContext == null) return "Render context was not available after diagnostic render.";
+            if (boxCount == 0) return "Diagnostic render produced no layout boxes.";
+            if (zeroAreaBoxCount == boxCount) return "All layout boxes were zero-area.";
+            return "(none captured)";
+        }
+
+        private static string ClassifyFirstPaintBlocker(
+            string firstLayoutBlocker,
+            RenderContext renderContext,
+            int paintNodeCount,
+            bool screenshotCaptured,
+            string screenshotError)
+        {
+            if (!string.IsNullOrWhiteSpace(firstLayoutBlocker) &&
+                !string.Equals(firstLayoutBlocker, "(none captured)", StringComparison.Ordinal))
+            {
+                return "Paint blocked by layout: " + firstLayoutBlocker;
+            }
+
+            if (renderContext?.PaintTreeRoots == null || paintNodeCount == 0)
+            {
+                return "Diagnostic render produced no paint tree nodes.";
+            }
+
+            if (!screenshotCaptured)
+            {
+                return string.IsNullOrWhiteSpace(screenshotError)
+                    ? "Diagnostic raster did not produce a screenshot."
+                    : screenshotError;
+            }
+
+            return "(none captured)";
+        }
+
+        private static List<(Node Node, int Depth, string Path)> CollectDomTraversal(Node root)
+        {
+            var result = new List<(Node Node, int Depth, string Path)>();
+            if (root == null)
+            {
+                return result;
+            }
+
+            var stack = new Stack<(Node Node, int Depth, string Path)>();
+            stack.Push((root, 0, "/" + FormatNodePathSegment(root, 1)));
+            while (stack.Count > 0)
+            {
+                var item = stack.Pop();
+                result.Add(item);
+
+                var children = new List<Node>();
+                for (var child = item.Node.FirstChild; child != null; child = child.NextSibling)
+                {
+                    children.Add(child);
+                }
+
+                for (var i = children.Count - 1; i >= 0; i--)
+                {
+                    var child = children[i];
+                    stack.Push((child, item.Depth + 1, item.Path + "/" + FormatNodePathSegment(child, i + 1)));
+                }
+            }
+
+            return result;
+        }
+
+        private static int CountPaintNodes(IReadOnlyList<PaintNodeBase> roots)
+        {
+            if (roots == null || roots.Count == 0)
+            {
+                return 0;
+            }
+
+            var count = 0;
+            var stack = new Stack<PaintNodeBase>();
+            for (var i = roots.Count - 1; i >= 0; i--)
+            {
+                if (roots[i] != null)
+                {
+                    stack.Push(roots[i]);
+                }
+            }
+
+            while (stack.Count > 0)
+            {
+                var node = stack.Pop();
+                count++;
+                var children = node.Children;
+                if (children == null)
+                {
+                    continue;
+                }
+
+                for (var i = children.Count - 1; i >= 0; i--)
+                {
+                    if (children[i] != null)
+                    {
+                        stack.Push(children[i]);
+                    }
+                }
+            }
+
+            return count;
+        }
+
+        private static bool IsZeroAreaBox(FenBrowser.FenEngine.Layout.BoxModel box)
+        {
+            if (box == null)
+            {
+                return true;
+            }
+
+            var rect = box.BorderBox;
+            return rect.Width <= 0 || rect.Height <= 0;
+        }
+
+        private static string FormatStyleProperties(CssComputed style)
+        {
+            if (style == null)
+            {
+                return "style=(null)";
+            }
+
+            return string.Join(" ", new[]
+            {
+                "display=" + FormatCssValue(style.Display),
+                "position=" + FormatCssValue(style.Position),
+                "visibility=" + FormatCssValue(style.Visibility),
+                "overflow=" + FormatCssValue(style.Overflow),
+                "width=" + FormatCssNumber(style.Width, style.WidthPercent, style.WidthExpression),
+                "height=" + FormatCssNumber(style.Height, style.HeightPercent, style.HeightExpression),
+                "margin=" + (style.Margin.ToString() ?? string.Empty),
+                "padding=" + (style.Padding.ToString() ?? string.Empty),
+                "color=" + FormatColor(style.ForegroundColor),
+                "background=" + FormatColor(style.BackgroundColor),
+                "fontSize=" + FormatCssValue(style.FontSize?.ToString()),
+                "lineHeight=" + FormatCssValue(style.LineHeight?.ToString())
+            });
+        }
+
+        private static string FormatCssNumber(double? absolute, double? percent, string expression)
+        {
+            if (!string.IsNullOrWhiteSpace(expression))
+            {
+                return expression;
+            }
+
+            if (absolute.HasValue)
+            {
+                return absolute.Value.ToString("0.###", CultureInfo.InvariantCulture) + "px";
+            }
+
+            if (percent.HasValue)
+            {
+                return percent.Value.ToString("0.###", CultureInfo.InvariantCulture) + "%";
+            }
+
+            return "(auto)";
+        }
+
+        private static string FormatCssValue(string value)
+        {
+            return string.IsNullOrWhiteSpace(value) ? "(unset)" : value.Trim();
+        }
+
+        private static string FormatColor(SKColor? color)
+        {
+            if (!color.HasValue)
+            {
+                return "(none)";
+            }
+
+            var value = color.Value;
+            return value.Alpha == 255
+                ? $"#{value.Red:X2}{value.Green:X2}{value.Blue:X2}"
+                : $"#{value.Alpha:X2}{value.Red:X2}{value.Green:X2}{value.Blue:X2}";
+        }
+
+        private static string FormatFloatArray(IReadOnlyList<float> values)
+        {
+            if (values == null || values.Count == 0)
+            {
+                return "(none)";
+            }
+
+            return string.Join(",", values.Select(value => value.ToString("0.###", CultureInfo.InvariantCulture)));
+        }
+
+        private static string FormatRect(SKRect rect)
+        {
+            return string.Create(
+                CultureInfo.InvariantCulture,
+                $"[{rect.Left:0.###},{rect.Top:0.###},{rect.Right:0.###},{rect.Bottom:0.###} {rect.Width:0.###}x{rect.Height:0.###}]");
+        }
+
+        private static string FormatPoint(SKPoint point)
+        {
+            return string.Create(CultureInfo.InvariantCulture, $"[{point.X:0.###},{point.Y:0.###}]");
+        }
+
+        private static string FormatNodePathSegment(Node node, int index)
+        {
+            if (node is Element element)
+            {
+                var tag = string.IsNullOrWhiteSpace(element.LocalName)
+                    ? element.TagName
+                    : element.LocalName;
+                return $"{(tag ?? "element").ToLowerInvariant()}[{index}]";
+            }
+
+            return $"{(node?.NodeName ?? "node").ToLowerInvariant()}[{index}]";
+        }
+
+        private static string FormatNodeLabel(Node node)
+        {
+            if (node == null)
+            {
+                return "(null)";
+            }
+
+            if (node is Element element)
+            {
+                var tag = string.IsNullOrWhiteSpace(element.LocalName)
+                    ? element.TagName
+                    : element.LocalName;
+                var sb = new StringBuilder((tag ?? "element").ToLowerInvariant());
+                var id = element.GetAttribute("id");
+                if (!string.IsNullOrWhiteSpace(id))
+                {
+                    sb.Append("#");
+                    sb.Append(id.Trim());
+                }
+
+                var classes = element.GetAttribute("class");
+                if (!string.IsNullOrWhiteSpace(classes))
+                {
+                    sb.Append(".");
+                    sb.Append(Regex.Replace(classes.Trim(), @"\s+", "."));
+                }
+
+                return sb.ToString();
+            }
+
+            if (node.NodeType == NodeType.Text)
+            {
+                return "#text \"" + TrimText(node.TextContent, 60) + "\"";
+            }
+
+            return node.NodeName ?? node.GetType().Name;
+        }
+
+        private static string TrimText(string text, int maxLength)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return string.Empty;
+            }
+
+            var singleLine = Regex.Replace(text.Trim(), @"\s+", " ");
+            return singleLine.Length <= maxLength
+                ? singleLine
+                : singleLine.Substring(0, maxLength) + "...";
+        }
+
         private static object BuildNetworkSummary(DebugSiteReport report)
         {
             var requests = report.NetworkRequests ?? new List<DebugSiteNetworkRecord>();
@@ -751,9 +1390,14 @@ namespace FenBrowser.Tooling
                 "lifecycle.json",
                 "script_loading.json",
                 "event_loop.json",
+                "style_layout.json",
                 "exceptions.json",
                 "missing_apis.json",
                 "probes.json",
+                "style_dump.txt",
+                "layout_dump.txt",
+                "paint_dump.txt",
+                "display_list.txt",
                 "dom_dump.txt",
                 "raw_source.html",
                 "rendered_text.txt",
@@ -951,9 +1595,18 @@ namespace FenBrowser.Tooling
             public DebugSiteLifecycleSummary Lifecycle { get; init; } = new();
             public BrowserScriptLoadingSnapshot ScriptLoading { get; init; } = new();
             public BrowserEventLoopSnapshot EventLoop { get; init; } = new();
+            public DebugSiteStyleLayoutSummary StyleLayout { get; init; } = new();
             public List<DebugSiteNetworkRecord> NetworkRequests { get; init; } = new();
             public Dictionary<string, string> Probes { get; init; } = new(StringComparer.Ordinal);
             public string RenderedTextSample { get; init; }
+            [JsonIgnore]
+            public string StyleDump { get; init; }
+            [JsonIgnore]
+            public string LayoutDump { get; init; }
+            [JsonIgnore]
+            public string PaintDump { get; init; }
+            [JsonIgnore]
+            public string DisplayListDump { get; init; }
             public bool ScreenshotCaptured { get; init; }
             public string ScreenshotPath { get; init; }
             public int ScreenshotWidth { get; init; }
@@ -970,7 +1623,43 @@ namespace FenBrowser.Tooling
             string Path,
             int Width,
             int Height,
-            string Error);
+            string Error,
+            RenderContext RenderContext,
+            RenderFrameTelemetry Telemetry);
+
+        private sealed class DebugSiteStyleLayoutSummary
+        {
+            public string Status { get; init; } = "not-captured";
+            public bool DomRootPresent { get; init; }
+            public int DomNodeCount { get; init; }
+            public int ElementCount { get; init; }
+            public int ComputedStyleCount { get; init; }
+            public int StyledNodeCount { get; init; }
+            public int StyledElementCount { get; init; }
+            public int UnstyledElementCount { get; init; }
+            public bool RenderContextAvailable { get; init; }
+            public int BoxCount { get; init; }
+            public int ZeroAreaBoxCount { get; init; }
+            public int PaintRootCount { get; init; }
+            public int PaintNodeCount { get; init; }
+            public int DisplayListNodeCount { get; init; }
+            public string DisplayListSource { get; init; } = string.Empty;
+            public float ViewportWidth { get; init; }
+            public float ViewportHeight { get; init; }
+            public bool LayoutRan { get; init; }
+            public bool PaintRan { get; init; }
+            public bool RasterRan { get; init; }
+            public bool ScreenshotCaptured { get; init; }
+            public string RasterMode { get; init; } = "none";
+            public double LayoutDurationMs { get; init; }
+            public double PaintDurationMs { get; init; }
+            public double RasterDurationMs { get; init; }
+            public double TotalRenderDurationMs { get; init; }
+            public bool WatchdogTriggered { get; init; }
+            public string WatchdogReason { get; init; } = string.Empty;
+            public string FirstLayoutBlocker { get; init; } = "(not captured)";
+            public string FirstPaintBlocker { get; init; } = "(not captured)";
+        }
 
         private sealed class DebugSiteLifecycleSummary
         {
