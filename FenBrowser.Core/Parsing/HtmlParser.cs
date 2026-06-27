@@ -177,11 +177,8 @@ namespace FenBrowser.Core.Parsing
 
             try
             {
-                if (options.Prefetcher != null)
-                {
-                    var scanner = new PreloadScanner(parseInput, safeBaseUri, options.Prefetcher);
-                    scanner.ScanAsync();
-                }
+                var scanner = new PreloadScanner(parseInput, safeBaseUri, options.Prefetcher);
+                scanner.ScanAsync();
 
                 var builder = new HtmlTreeBuilder(parseInput)
                 {

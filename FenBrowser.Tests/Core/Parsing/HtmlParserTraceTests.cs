@@ -36,7 +36,7 @@ public class HtmlParserTraceTests
             }))
             {
                 HtmlParser.ParseDocumentDetailed(
-                    "<!doctype html><html><head><title>trace</title></head><body><p>ok</p></body></html>",
+                    "<!doctype html><html><head><title>trace</title><link rel=\"stylesheet\" href=\"/site.css\"><script src=\"/app.js\"></script></head><body><p>ok</p></body></html>",
                     new HtmlParserOptions
                     {
                         BaseUri = new Uri("https://example.test/")
@@ -55,23 +55,36 @@ public class HtmlParserTraceTests
 
             var sawStarted = false;
             var sawCompleted = false;
+            var sawStylesheet = false;
+            var sawScript = false;
             foreach (var line in File.ReadAllLines(tracePath))
             {
                 using var parsed = JsonDocument.Parse(line);
                 var root = parsed.RootElement;
-                if (root.GetProperty("category").GetString() != "HTMLParser" ||
-                    root.GetProperty("nav_id").GetString() != navigationId)
+                if (root.GetProperty("nav_id").GetString() != navigationId)
                 {
                     continue;
                 }
 
-                sawStarted |= root.GetProperty("event").GetString() == "HTMLParsingStarted";
-                sawCompleted |= root.GetProperty("event").GetString() == "HTMLParsingCompleted" &&
+                var category = root.GetProperty("category").GetString();
+                var eventName = root.GetProperty("event").GetString();
+
+                sawStarted |= category == "HTMLParser" && eventName == "HTMLParsingStarted";
+                sawCompleted |= category == "HTMLParser" &&
+                                eventName == "HTMLParsingCompleted" &&
                                 root.GetProperty("data").GetProperty("tokenCount").GetInt32() > 0;
+                sawStylesheet |= category == "ResourceLoader" &&
+                                 eventName == "StylesheetDiscovered" &&
+                                 root.GetProperty("data").GetProperty("resourceUrl").GetString() == "https://example.test/site.css";
+                sawScript |= category == "ResourceLoader" &&
+                             eventName == "ScriptDiscovered" &&
+                             root.GetProperty("data").GetProperty("resourceUrl").GetString() == "https://example.test/app.js";
             }
 
             Assert.True(sawStarted);
             Assert.True(sawCompleted);
+            Assert.True(sawStylesheet);
+            Assert.True(sawScript);
         }
         finally
         {

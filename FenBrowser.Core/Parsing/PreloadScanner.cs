@@ -27,30 +27,27 @@ namespace FenBrowser.Core.Parsing
 
         public Task ScanAsync()
         {
-            return Task.Run(async () =>
+            if (string.IsNullOrEmpty(_html))
             {
-                if (string.IsNullOrEmpty(_html) || _prefetcher == null) return;
+                return Task.CompletedTask;
+            }
 
-                // Simple regex-based scanning for speed. 
-                // A full tokenizer would be more accurate but slower.
-                // We scan for <link>, <script>, <img> tags.
+            // Simple regex-based scanning for speed.
+            // A full tokenizer would be more accurate but slower.
+            // We scan for <link>, <script>, <img> tags.
 
-                var tasks = new List<Task>();
+            var tasks = new List<Task>();
 
-                // Matches <link ... href="..." ... >
-                ScanLinks(tasks);
+            // Matches <link ... href="..." ... >
+            ScanLinks(tasks);
 
-                // Matches <script ... src="..." ... >
-                ScanScripts(tasks);
+            // Matches <script ... src="..." ... >
+            ScanScripts(tasks);
 
-                // Matches <img ... src="..." ... >
-                ScanImages(tasks);
+            // Matches <img ... src="..." ... >
+            ScanImages(tasks);
 
-                if (tasks.Count > 0)
-                {
-                    await Task.WhenAll(tasks).ConfigureAwait(false);
-                }
-            });
+            return tasks.Count > 0 ? Task.WhenAll(tasks) : Task.CompletedTask;
         }
 
         private void ScanLinks(List<Task> tasks)
@@ -81,6 +78,7 @@ namespace FenBrowser.Core.Parsing
                                 if (relTokens.Contains("stylesheet")) 
                                 {
                                     asType = PreloadAs.Style; 
+                                    EmitResourceDiscovered("StylesheetDiscovered", url, fullTag, "stylesheet");
                                 }
 
                                 if (relTokens.Contains("preload"))
@@ -94,6 +92,15 @@ namespace FenBrowser.Core.Parsing
                                         if (asStr == "style") asType = PreloadAs.Style;
                                         else if (asStr == "script") asType = PreloadAs.Script;
                                         else if (asStr == "image") asType = PreloadAs.Image;
+                                    }
+
+                                    if (asType == PreloadAs.Style)
+                                    {
+                                        EmitResourceDiscovered("StylesheetDiscovered", url, fullTag, "preload-style");
+                                    }
+                                    else if (asType == PreloadAs.Script)
+                                    {
+                                        EmitResourceDiscovered("ScriptDiscovered", url, fullTag, "preload-script");
                                     }
                                 }
 
@@ -109,7 +116,10 @@ namespace FenBrowser.Core.Parsing
                                 continue;
                             }
 
-                            tasks.Add(_prefetcher.QueueHintAsync(url, hint, asType));
+                            if (_prefetcher != null)
+                            {
+                                tasks.Add(_prefetcher.QueueHintAsync(url, hint, asType));
+                            }
                         }
                     }
                 }
@@ -132,7 +142,11 @@ namespace FenBrowser.Core.Parsing
                         var urlStr = match.Groups[1].Value;
                         if (Uri.TryCreate(_baseUri, urlStr, out var url))
                         {
-                            tasks.Add(_prefetcher.QueueHintAsync(url, ResourceHint.Preload, PreloadAs.Script));
+                            EmitResourceDiscovered("ScriptDiscovered", url, match.Value, "script-src");
+                            if (_prefetcher != null)
+                            {
+                                tasks.Add(_prefetcher.QueueHintAsync(url, ResourceHint.Preload, PreloadAs.Script));
+                            }
                         }
                     }
                 }
@@ -155,7 +169,10 @@ namespace FenBrowser.Core.Parsing
                         var urlStr = match.Groups[1].Value;
                         if (Uri.TryCreate(_baseUri, urlStr, out var url))
                         {
-                            tasks.Add(_prefetcher.QueueHintAsync(url, ResourceHint.Preload, PreloadAs.Image));
+                            if (_prefetcher != null)
+                            {
+                                tasks.Add(_prefetcher.QueueHintAsync(url, ResourceHint.Preload, PreloadAs.Image));
+                            }
                         }
                     }
                 }
@@ -177,6 +194,43 @@ namespace FenBrowser.Core.Parsing
                 .Select(static t => t.Trim())
                 .Where(static t => t.Length > 0)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static void EmitResourceDiscovered(string eventName, Uri url, string tagSource, string discoveryType)
+        {
+            try
+            {
+                EngineLog.Write(
+                    LogSubsystem.Fetch,
+                    LogSeverity.Info,
+                    eventName,
+                    LogMarker.None,
+                    new EngineLogContext(
+                        NavigationId: LogContext.CurrentCorrelationId,
+                        ResourceUrl: url?.AbsoluteUri),
+                    new Dictionary<string, object>
+                    {
+                        ["event"] = eventName,
+                        ["traceCategory"] = "ResourceLoader",
+                        ["resourceUrl"] = url?.AbsoluteUri,
+                        ["discoveryType"] = discoveryType,
+                        ["tagSample"] = Truncate(tagSource, 240)
+                    });
+            }
+            catch
+            {
+                // Discovery tracing must not affect parsing or prefetching.
+            }
+        }
+
+        private static string Truncate(string value, int maxLength)
+        {
+            if (string.IsNullOrEmpty(value) || value.Length <= maxLength)
+            {
+                return value;
+            }
+
+            return value.Substring(0, maxLength);
         }
     }
 }
