@@ -80,6 +80,8 @@ public class BrowserIntegration
     private string _pendingInvalidationSource = "startup";
     // Remote frame bitmap delivered from a brokered renderer child via shared memory.
     private SKBitmap _remoteFrameBitmap;
+    private float _remoteFrameScrollY;
+    private uint _remoteFrameSequenceNumber;
     private readonly object _remoteFrameLock = new object();
     
     // Last hit test result (for status bar display)
@@ -252,6 +254,7 @@ public class BrowserIntegration
                 _deferredScrollTarget = null;
                 _scrollY = 0f;
                 ResetCompositorScrollPreview();
+                ClearRemoteFrame();
                 _contentHeight = 0f;
                 ScrollChanged?.Invoke(_scrollY, _contentHeight);
 
@@ -266,6 +269,10 @@ public class BrowserIntegration
                 _currentFrameSeedImage = null;
                 _currentFrameSeedCreatedUtc = DateTime.MinValue;
                 _consecutiveBaseFrameReuseCount = 0;
+
+                // Abort any pending JS modal dialog (alert/confirm/prompt)
+                // so the blocked JS worker thread can unwind during navigation.
+                FenBrowser.FenEngine.Scripting.JsDialogBridge.AbortPending?.Invoke();
 
                 CssLoader.ClearCaches();
                 EngineLogBridge.Info("[BrowserIntegration] Cleared CSS caches for new navigation", LogCategory.General);
@@ -592,13 +599,38 @@ public class BrowserIntegration
                         handle.Free();
                     }
 
+                    bool acceptedRemoteFrame = false;
                     lock (_remoteFrameLock)
                     {
-                        _remoteFrameBitmap?.Dispose();
-                        _remoteFrameBitmap = newBitmap;
+                        if (_remoteFrameBitmap != null &&
+                            payload.FrameSequenceNumber != 0 &&
+                            payload.FrameSequenceNumber <= _remoteFrameSequenceNumber)
+                        {
+                            newBitmap.Dispose();
+                            EngineLogBridge.Debug($"[BrowserIntegration] Ignored out-of-order remote frame: seq={payload.FrameSequenceNumber} lastSeq={_remoteFrameSequenceNumber} tab={tabId}", LogCategory.Rendering);
+                        }
+                        else
+                        {
+                            _remoteFrameBitmap?.Dispose();
+                            _remoteFrameBitmap = newBitmap;
+                            _remoteFrameScrollY = Math.Max(0f, payload.ScrollY);
+                            if (payload.FrameSequenceNumber != 0)
+                            {
+                                _remoteFrameSequenceNumber = payload.FrameSequenceNumber;
+                            }
+
+                            acceptedRemoteFrame = true;
+                        }
                     }
 
-                    EngineLogBridge.Debug($"[BrowserIntegration] Remote frame decoded: {w}x{h} seq={payload.FrameSequenceNumber} for tab={tabId}", LogCategory.Rendering);
+                    if (acceptedRemoteFrame)
+                    {
+                        EngineLogBridge.Debug($"[BrowserIntegration] Remote frame decoded: {w}x{h} seq={payload.FrameSequenceNumber} scrollY={payload.ScrollY:F1} for tab={tabId}", LogCategory.Rendering);
+                        if (Math.Abs(payload.ScrollY - _scrollY) <= 0.5f)
+                        {
+                            ResetCompositorScrollPreview();
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -620,6 +652,7 @@ public class BrowserIntegration
                 {
                     ["url"] = payload.Url ?? "about:blank",
                     ["frameSequence"] = payload.FrameSequenceNumber,
+                    ["scrollY"] = payload.ScrollY,
                     ["requestedBy"] = payload.RequestedBy ?? "RendererChild.FrameRequest",
                     ["invalidationReason"] = payload.InvalidationReason ?? RenderFrameInvalidationReason.ProcessIsolation.ToString(),
                     ["rasterMode"] = payload.RasterMode ?? RenderFrameRasterMode.Full.ToString(),
@@ -968,6 +1001,7 @@ public class BrowserIntegration
         // on short documents (e.g., Acid2 reference page).
         _scrollY = 0f;
         ResetCompositorScrollPreview();
+        ClearRemoteFrame();
         _contentHeight = 0f;
         var oldSnapshot = _latestSnapshot;
         _latestSnapshot = null;
@@ -1398,7 +1432,16 @@ public class BrowserIntegration
             var canvas = _recorder.BeginRecording(viewport);
             if (canReuseBaseFrame && reusableSeedImage != null)
             {
-                canvas.DrawImage(reusableSeedImage, 0, 0);
+                // Shift the seed image by the scroll delta so that content which
+                // overlaps between the old and new viewport appears at the correct
+                // screen position.  Without this, the seed (recorded at the previous
+                // scroll offset) is drawn at (0,0) and the overlapping region shows
+                // stale document positions — every scroll step drifts further from
+                // the true content, eventually showing a white viewport.
+                // The compositor applies the identical transform in its lock-free
+                // read path (see the scrollDelta / Translate block above).
+                float scrollDelta = _scrollY - (previousSnapshot?.CommittedScrollY ?? 0f);
+                canvas.DrawImage(reusableSeedImage, 0, -scrollDelta);
             }
 
             // Adjust for scroll
@@ -2142,6 +2185,17 @@ public class BrowserIntegration
         }
     }
 
+    private void ClearRemoteFrame()
+    {
+        lock (_remoteFrameLock)
+        {
+            _remoteFrameBitmap?.Dispose();
+            _remoteFrameBitmap = null;
+            _remoteFrameScrollY = 0f;
+            _remoteFrameSequenceNumber = 0;
+        }
+    }
+
     
     /// <summary>
     /// Handle mouse click at the given position.
@@ -2408,6 +2462,12 @@ public class BrowserIntegration
     /// </summary>
     private bool _isMouseMovePending = false;
     private (float X, float Y, float VX, float VY) _pendingMouseMove;
+    private const long DoubleClickThresholdMs = 500;
+    private const float DoubleClickDistance = 6f;
+    private long _lastClickTickMs = -1;
+    private float _lastClickWindowX;
+    private float _lastClickWindowY;
+    private int _lastClickButton = -1;
 
     /// <summary>
     /// Handle mouse move for cursor updates and status bar.
@@ -2461,6 +2521,7 @@ public class BrowserIntegration
     public void HandleRightClick(float windowX, float windowY, float viewportOffsetX = 0, float viewportOffsetY = 0)
     {
         var (docX, docY) = TranslateWindowToDocument(windowX, windowY, viewportOffsetX, viewportOffsetY);
+        var defaultAllowed = true;
         if (FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true)
         {
             if (OwnerTab != null)
@@ -2479,16 +2540,29 @@ public class BrowserIntegration
                     Y = docY,
                     Button = 2
                 });
+                FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnInputEvent(OwnerTab, new FenBrowser.Host.ProcessIsolation.RendererInputEvent
+                {
+                    Type = FenBrowser.Host.ProcessIsolation.RendererInputEventType.ContextMenu,
+                    X = docX,
+                    Y = docY,
+                    Button = 2
+                });
             }
+
+            defaultAllowed = false;
         }
         else
         {
             _browser.OnMouseDown(docX, docY, 2);
             _browser.OnMouseUp(docX, docY, 2);
+            defaultAllowed = _browser.OnContextMenu(docX, docY, 2);
         }
 
         var result = PerformHitTest(windowX, windowY, viewportOffsetX, viewportOffsetY);
-        ContextMenuRequested?.Invoke(new ContextMenuRequest(windowX, windowY, result));
+        if (defaultAllowed)
+        {
+            ContextMenuRequested?.Invoke(new ContextMenuRequest(windowX, windowY, result));
+        }
     }
 
     public event Action<ContextMenuRequest> ContextMenuRequested;
@@ -2554,6 +2628,17 @@ public class BrowserIntegration
                     EmitClick = emitClick 
                 };
                 FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnInputEvent(OwnerTab, evt);
+
+                if (emitClick && button == 0 && ShouldEmitDoubleClick(windowX, windowY, button))
+                {
+                    FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current.OnInputEvent(OwnerTab, new FenBrowser.Host.ProcessIsolation.RendererInputEvent
+                    {
+                        Type = FenBrowser.Host.ProcessIsolation.RendererInputEventType.DblClick,
+                        X = docX,
+                        Y = docY,
+                        Button = button
+                    });
+                }
             }
             
             if (emitClick && button == 0)
@@ -2592,6 +2677,10 @@ public class BrowserIntegration
             }
 
             _browser.OnClick(docX, docY, button);
+            if (ShouldEmitDoubleClick(windowX, windowY, button))
+            {
+                _browser.OnDoubleClick(docX, docY, button);
+            }
 
             // Fallback: when low-level event processing lags, execute direct activation/focus
             // using already resolved hit-test element from this same pointer release.
@@ -2610,6 +2699,23 @@ public class BrowserIntegration
 
         EngineLogBridge.Info($"[Debug] Click at {windowX},{windowY} hit: {result.TagName ?? "None"} (ID: {result.ElementId ?? "None"}) Link: {result.IsLink}", LogCategory.General);
         return Task.FromResult(result.IsLink && !string.IsNullOrEmpty(result.Href));
+    }
+
+    private bool ShouldEmitDoubleClick(float windowX, float windowY, int button)
+    {
+        var now = Environment.TickCount64;
+        var withinTime = _lastClickTickMs >= 0 && now - _lastClickTickMs <= DoubleClickThresholdMs;
+        var withinDistance =
+            Math.Abs(windowX - _lastClickWindowX) <= DoubleClickDistance &&
+            Math.Abs(windowY - _lastClickWindowY) <= DoubleClickDistance;
+        var sameButton = button == _lastClickButton;
+
+        _lastClickTickMs = now;
+        _lastClickWindowX = windowX;
+        _lastClickWindowY = windowY;
+        _lastClickButton = button;
+
+        return withinTime && withinDistance && sameButton;
     }
 
     private string ResolveHrefForUi(string href)

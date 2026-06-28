@@ -697,7 +697,25 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                     else
                     {
-                        _lastDamageRegions = Array.Empty<SKRect>();
+                        // Paint tree is clean, but the viewport may have scrolled.
+                        // Compute scroll-induced damage strips so that the newly
+                        // exposed edge band gets repainted on top of the (now
+                        // correctly-shifted) seed image.  Without this, a
+                        // scroll-only frame preserves the base frame in-place,
+                        // leaving the exposed strip blank/white.
+                        float currentScrollY = GetDocumentScrollY(root);
+                        var currentViewport = new SKRect(0, 0, _viewportWidth, _viewportHeight);
+                        var scrollDamage = _scrollDamageComputer.ComputeScrollDamage(
+                            _lastScrollY,
+                            currentScrollY,
+                            new SKSize(_lastViewportWidth, _lastViewportHeight),
+                            currentViewport);
+                        _lastScrollY = currentScrollY;
+                        _lastDamageRegions = scrollDamage.Count > 0
+                            ? _damageNormalizationPolicy.Normalize(
+                                new System.Collections.Generic.List<SKRect>(scrollDamage),
+                                currentViewport)
+                            : Array.Empty<SKRect>();
                     }
                     _paintStabilityController.ObserveFrame(paintInvalidationSignal, rebuiltPaintTree);
                     pipelineContext.SetPaintSnapshot(_lastPaintTree);
@@ -1863,8 +1881,7 @@ namespace FenBrowser.FenEngine.Rendering
 
         private static bool IsCurrentColorSentinel(SKColor color)
         {
-            // CssParser.ParseColor("currentColor") sentinel (ARGB 1,255,0,255).
-            return color.Red == 255 && color.Green == 0 && color.Blue == 255 && color.Alpha == 1;
+            return CssParser.IsCurrentColorSentinel(color);
         }
 
         /// <summary>
