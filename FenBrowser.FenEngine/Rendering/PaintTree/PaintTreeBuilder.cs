@@ -156,8 +156,8 @@ paintNode.TextContent = (node as Text)?.Data;
 paintNode.ZIndex = style?.ZIndex ?? 0;
 paintNode.Opacity = (float)(style?.Opacity ?? 1.0);
 paintNode.IsVisible = true; // We already checked ShouldHide
-paintNode.BackgroundColor = style?.BackgroundColor;
-paintNode.BorderColor = style?.BorderBrushColor;
+paintNode.BackgroundColor = style?.BackgroundColor.HasValue == true ? CssParser.ResolveCurrentColor(style.BackgroundColor.Value, style.ForegroundColor) : null;
+paintNode.BorderColor = style?.BorderBrushColor.HasValue == true ? CssParser.ResolveCurrentColor(style.BorderBrushColor.Value, style.ForegroundColor) : null;
 paintNode.BorderRadius = ParseBorderRadius(style);
 paintNode.Transform = ParseTransform(style?.Transform);
 paintNode.BoxShadows = !string.IsNullOrEmpty(style?.BoxShadow) ? BoxShadowParsed.Parse(style.BoxShadow) : null;

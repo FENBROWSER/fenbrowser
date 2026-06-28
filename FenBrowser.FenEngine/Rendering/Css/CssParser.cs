@@ -14,6 +14,47 @@ namespace FenBrowser.FenEngine.Rendering
     /// </summary>
     public static class CssParser
     {
+        /// <summary>
+        /// Sentinel value returned by ParseColor for the CSS "currentColor" keyword.
+        /// Callers MUST resolve this via <see cref="ResolveCurrentColor"/> before painting.
+        /// </summary>
+        public static readonly SKColor CurrentColorSentinel = new SKColor(255, 0, 255, 1);
+
+        /// <summary>
+        /// Returns true if <paramref name="color"/> is the currentColor sentinel.
+        /// </summary>
+        public static bool IsCurrentColorSentinel(SKColor color)
+        {
+            return color.Red == 255 && color.Green == 0 && color.Blue == 255 && color.Alpha == 1;
+        }
+
+        /// <summary>
+        /// Resolves a color value, replacing the currentColor sentinel with
+        /// <paramref name="computedForegroundColor"/> (the element's computed 'color' property).
+        /// If that too is the sentinel, falls back to black.
+        /// </summary>
+        public static SKColor ResolveCurrentColor(SKColor color, SKColor? computedForegroundColor)
+        {
+            if (IsCurrentColorSentinel(color))
+            {
+                if (computedForegroundColor.HasValue && !IsCurrentColorSentinel(computedForegroundColor.Value))
+                    return computedForegroundColor.Value;
+                return SKColors.Black;
+            }
+            return color;
+        }
+
+        /// <summary>
+        /// Resolves a nullable color, replacing the currentColor sentinel.
+        /// Returns null if the input is null.
+        /// </summary>
+        public static SKColor? ResolveCurrentColor(SKColor? color, SKColor? computedForegroundColor)
+        {
+            if (color.HasValue)
+                return ResolveCurrentColor(color.Value, computedForegroundColor);
+            return null;
+        }
+
         // Media query environment hints (set externally before parsing/cascade)
         // Reference: https://www.w3.org/TR/mediaqueries-5/
 
@@ -335,14 +376,12 @@ namespace FenBrowser.FenEngine.Rendering
             if (string.IsNullOrWhiteSpace(s)) return null;
             s = s.Trim();
             
-            // currentColor keyword - returns a sentinel value for later resolution
-            // CssLoader will detect this and use the element's computed 'color' property
+            // currentColor keyword - returns a sentinel value for later resolution.
+            // Callers MUST resolve the sentinel via ResolveCurrentColor() before painting.
             if (string.Equals(s, "currentcolor", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(s, "currentColor", StringComparison.Ordinal))
             {
-                // Return a special sentinel color (unique ARGB) that CssLoader can detect
-                // Using ARGB 1, 255, 0, 255 as sentinel (nearly transparent magenta)
-                return new SKColor(255, 0, 255, 1);
+                return CurrentColorSentinel;
             }
 
             // transparent keyword

@@ -199,7 +199,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             // Color
             if (style?.ForegroundColor.HasValue == true)
             {
-                var c = style.ForegroundColor.Value;
+                var c = CssParser.ResolveCurrentColor(style.ForegroundColor.Value, style.ForegroundColor);
                 paint.Color = new SKColor(c.Red, c.Green, c.Blue, c.Alpha);
             }
             else

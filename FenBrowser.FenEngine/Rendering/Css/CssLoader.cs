@@ -905,6 +905,24 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 foreach (var rule in rules)
                 {
+                    if (rule is NewCss.CssPropertyRule propertyRule)
+                    {
+                        string name = propertyRule.Name?.Trim();
+                        if (!string.IsNullOrEmpty(name) && name.StartsWith("--", StringComparison.Ordinal))
+                        {
+                            var initialValue = propertyRule.Declarations
+                                .LastOrDefault(d => string.Equals(d.Property, "initial-value", StringComparison.OrdinalIgnoreCase))
+                                ?.Value
+                                ?.Trim();
+                            if (!string.IsNullOrWhiteSpace(initialValue))
+                            {
+                                _customProperties[name] = initialValue;
+                            }
+                        }
+
+                        continue;
+                    }
+
                     if (!(rule is NewCss.CssStyleRule styleRule)) continue;
 
                     bool isRootRule = false;
@@ -3731,6 +3749,49 @@ private static double? ExtractPx(string text, string prop)
                 css.Left = insetInlineStart;
                 css.Right = insetInlineEnd;
             }
+            bool insetInlineStartIsRight = string.Equals(css.Direction, "rtl", StringComparison.OrdinalIgnoreCase);
+            void ApplyInsetSide(string side, string rawValue)
+            {
+                if (string.IsNullOrWhiteSpace(rawValue) ||
+                    string.Equals(rawValue.Trim(), "auto", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                double parsedInset;
+                switch (side)
+                {
+                    case "left":
+                        css.Left = null;
+                        css.LeftPercent = null;
+                        if (TryPx(rawValue, out parsedInset, currentEmBase)) css.Left = parsedInset;
+                        else if (TryPercent(rawValue, out parsedInset)) css.LeftPercent = parsedInset;
+                        break;
+                    case "right":
+                        css.Right = null;
+                        css.RightPercent = null;
+                        if (TryPx(rawValue, out parsedInset, currentEmBase)) css.Right = parsedInset;
+                        else if (TryPercent(rawValue, out parsedInset)) css.RightPercent = parsedInset;
+                        break;
+                    case "top":
+                        css.Top = null;
+                        css.TopPercent = null;
+                        if (TryPx(rawValue, out parsedInset, currentEmBase)) css.Top = parsedInset;
+                        else if (TryPercent(rawValue, out parsedInset)) css.TopPercent = parsedInset;
+                        break;
+                    case "bottom":
+                        css.Bottom = null;
+                        css.BottomPercent = null;
+                        if (TryPx(rawValue, out parsedInset, currentEmBase)) css.Bottom = parsedInset;
+                        else if (TryPercent(rawValue, out parsedInset)) css.BottomPercent = parsedInset;
+                        break;
+                }
+            }
+
+            ApplyInsetSide("top", DictGet(css.Map, "inset-block-start"));
+            ApplyInsetSide("bottom", DictGet(css.Map, "inset-block-end"));
+            ApplyInsetSide(insetInlineStartIsRight ? "right" : "left", DictGet(css.Map, "inset-inline-start"));
+            ApplyInsetSide(insetInlineStartIsRight ? "left" : "right", DictGet(css.Map, "inset-inline-end"));
 
             double sizeVal;
             
@@ -3863,8 +3924,16 @@ private static double? ExtractPx(string text, string prop)
             }
 
             var fgColor = TryColor(DictGet(css.Map, "color"));
-            if (fgColor.HasValue) 
+            if (fgColor.HasValue && !CssParser.IsCurrentColorSentinel(fgColor.Value))
+            {
                 css.ForegroundColor = fgColor;
+            }
+            else if (fgColor.HasValue && CssParser.IsCurrentColorSentinel(fgColor.Value))
+            {
+                // currentColor on the 'color' property acts as 'inherit'
+                css.ForegroundColor = (parentCss?.ForegroundColor is SKColor pc && !CssParser.IsCurrentColorSentinel(pc))
+                    ? pc : SKColors.Black;
+            }
             else if (parentCss != null && parentCss.ForegroundColor.HasValue)
                 css.ForegroundColor = parentCss.ForegroundColor; // Inherit color from parent
 
@@ -3878,7 +3947,7 @@ private static double? ExtractPx(string text, string prop)
             }
             if (explicitBgColor.HasValue)
             {
-                css.BackgroundColor = explicitBgColor;
+                css.BackgroundColor = CssParser.ResolveCurrentColor(explicitBgColor.Value, css.ForegroundColor);
             }
             else
             {
@@ -4157,6 +4226,12 @@ private static double? ExtractPx(string text, string prop)
             string marginRightRaw = DictGet(css.Map, "margin-right")?.Trim().ToLowerInvariant() ?? "";
             string marginTopRaw = DictGet(css.Map, "margin-top")?.Trim().ToLowerInvariant() ?? "";
             string marginBottomRaw = DictGet(css.Map, "margin-bottom")?.Trim().ToLowerInvariant() ?? "";
+            string marginInlineRaw = DictGet(css.Map, "margin-inline")?.Trim().ToLowerInvariant() ?? "";
+            string marginInlineStartRaw = DictGet(css.Map, "margin-inline-start")?.Trim().ToLowerInvariant() ?? "";
+            string marginInlineEndRaw = DictGet(css.Map, "margin-inline-end")?.Trim().ToLowerInvariant() ?? "";
+            string marginBlockRaw = DictGet(css.Map, "margin-block")?.Trim().ToLowerInvariant() ?? "";
+            string marginBlockStartRaw = DictGet(css.Map, "margin-block-start")?.Trim().ToLowerInvariant() ?? "";
+            string marginBlockEndRaw = DictGet(css.Map, "margin-block-end")?.Trim().ToLowerInvariant() ?? "";
             
             // Parse margin shorthand for auto: "auto", "0 auto", "0 auto 0 auto", etc.
             if (!string.IsNullOrEmpty(marginRaw))
@@ -4199,6 +4274,31 @@ private static double? ExtractPx(string text, string prop)
             if (marginTopRaw == "auto") css.MarginTopAuto = true;
             if (marginBottomRaw == "auto") css.MarginBottomAuto = true;
 
+            bool marginInlineStartIsRight = string.Equals(css.Direction, "rtl", StringComparison.OrdinalIgnoreCase);
+            void MarkInlineMarginAuto(string logicalValue, bool isStart)
+            {
+                if (!IsCssAuto(logicalValue)) return;
+                bool mapsToRight = isStart ? marginInlineStartIsRight : !marginInlineStartIsRight;
+                if (mapsToRight) css.MarginRightAuto = true;
+                else css.MarginLeftAuto = true;
+            }
+
+            if (TrySplitLogicalAxisPairRaw(marginInlineRaw, out var marginInlineStartToken, out var marginInlineEndToken))
+            {
+                MarkInlineMarginAuto(marginInlineStartToken, isStart: true);
+                MarkInlineMarginAuto(marginInlineEndToken, isStart: false);
+            }
+            MarkInlineMarginAuto(marginInlineStartRaw, isStart: true);
+            MarkInlineMarginAuto(marginInlineEndRaw, isStart: false);
+
+            if (TrySplitLogicalAxisPairRaw(marginBlockRaw, out var marginBlockStartToken, out var marginBlockEndToken))
+            {
+                if (IsCssAuto(marginBlockStartToken)) css.MarginTopAuto = true;
+                if (IsCssAuto(marginBlockEndToken)) css.MarginBottomAuto = true;
+            }
+            if (IsCssAuto(marginBlockStartRaw)) css.MarginTopAuto = true;
+            if (IsCssAuto(marginBlockEndRaw)) css.MarginBottomAuto = true;
+
             if (css.MarginLeftAuto || css.MarginRightAuto)
             {
                 EngineLogCompat.Info($"[CSS-MARGIN] <{tag}#{n.Id}> margin-auto detected. L={css.MarginLeftAuto} R={css.MarginRightAuto} Raw='{marginRaw}' LRaw='{marginLeftRaw}' RRaw='{marginRightRaw}'", LogCategory.CSS);
@@ -4213,6 +4313,36 @@ private static double? ExtractPx(string text, string prop)
             double mVal;
             var m = css.Margin;
             double mLeft = m.Left, mTop = m.Top, mRight = m.Right, mBottom = m.Bottom;
+
+            void ApplyMarginSide(string side, string rawValue)
+            {
+                if (string.IsNullOrWhiteSpace(rawValue) || IsCssAuto(rawValue))
+                {
+                    return;
+                }
+
+                if (!TryPx(rawValue, out var parsedMargin, currentEmBase))
+                {
+                    return;
+                }
+
+                switch (side)
+                {
+                    case "left":
+                        if (!css.MarginLeftAuto) mLeft = parsedMargin;
+                        break;
+                    case "right":
+                        if (!css.MarginRightAuto) mRight = parsedMargin;
+                        break;
+                    case "top":
+                        if (!css.MarginTopAuto) mTop = parsedMargin;
+                        break;
+                    case "bottom":
+                        if (!css.MarginBottomAuto) mBottom = parsedMargin;
+                        break;
+                }
+            }
+
             if (!css.MarginLeftAuto && TryPx(DictGet(css.Map, "margin-left"), out mVal, currentEmBase)) mLeft = mVal;
             if (TryPx(DictGet(css.Map, "margin-top"), out mVal, currentEmBase)) mTop = mVal;
             if (!css.MarginRightAuto && TryPx(DictGet(css.Map, "margin-right"), out mVal, currentEmBase)) mRight = mVal;
@@ -4221,20 +4351,20 @@ private static double? ExtractPx(string text, string prop)
             // Logical Properties: margin-block/margin-inline (horizontal-tb writing mode)
             // margin-block-start -> top, margin-block-end -> bottom
             // margin-inline-start -> left, margin-inline-end -> right
-            if (TryParseLogicalAxisPair(DictGet(css.Map, "margin-block"), currentEmBase, out var marginBlockStart, out var marginBlockEnd))
+            if (TrySplitLogicalAxisPairRaw(marginBlockRaw, out marginBlockStartToken, out marginBlockEndToken))
             {
-                mTop = marginBlockStart;
-                mBottom = marginBlockEnd;
+                ApplyMarginSide("top", marginBlockStartToken);
+                ApplyMarginSide("bottom", marginBlockEndToken);
             }
-            if (TryPx(DictGet(css.Map, "margin-block-start"), out mVal, currentEmBase)) mTop = mVal;
-            if (TryPx(DictGet(css.Map, "margin-block-end"), out mVal, currentEmBase)) mBottom = mVal;
-            if (TryParseLogicalAxisPair(DictGet(css.Map, "margin-inline"), currentEmBase, out var marginInlineStart, out var marginInlineEnd))
+            ApplyMarginSide("top", marginBlockStartRaw);
+            ApplyMarginSide("bottom", marginBlockEndRaw);
+            if (TrySplitLogicalAxisPairRaw(marginInlineRaw, out marginInlineStartToken, out marginInlineEndToken))
             {
-                mLeft = marginInlineStart;
-                mRight = marginInlineEnd;
+                ApplyMarginSide(marginInlineStartIsRight ? "right" : "left", marginInlineStartToken);
+                ApplyMarginSide(marginInlineStartIsRight ? "left" : "right", marginInlineEndToken);
             }
-            if (TryPx(DictGet(css.Map, "margin-inline-start"), out mVal, currentEmBase)) mLeft = mVal;
-            if (TryPx(DictGet(css.Map, "margin-inline-end"), out mVal, currentEmBase)) mRight = mVal;
+            ApplyMarginSide(marginInlineStartIsRight ? "right" : "left", marginInlineStartRaw);
+            ApplyMarginSide(marginInlineStartIsRight ? "left" : "right", marginInlineEndRaw);
             
             css.Margin = new Thickness(mLeft, mTop, mRight, mBottom);
             
@@ -4280,7 +4410,7 @@ private static double? ExtractPx(string text, string prop)
             );
             
             var borderColor = TryColor(ExtractBorderColor(css.Map));
-            if (borderColor.HasValue) css.BorderBrushColor = borderColor;
+            if (borderColor.HasValue) css.BorderBrushColor = CssParser.ResolveCurrentColor(borderColor.Value, css.ForegroundColor);
 
             if (TryThickness(ExtractBorderThickness(css.Map), out th, currentEmBase)) css.BorderThickness = th;
             CssCornerRadius cr;
@@ -4668,7 +4798,7 @@ private static double? ExtractPx(string text, string prop)
 
             css.BorderThickness = new Thickness(bLeft, bTop, bRight, bBottom);
             if (borderSideColor.HasValue && (!css.BorderBrushColor.HasValue || css.BorderBrushColor.Value == default))
-                css.BorderBrushColor = borderSideColor;
+                css.BorderBrushColor = CssParser.ResolveCurrentColor(borderSideColor.Value, css.ForegroundColor);
 
             css.Display = Safe(DictGet(css.Map, "display"))?.ToLowerInvariant();
             if (string.IsNullOrWhiteSpace(css.Display))
@@ -8875,6 +9005,16 @@ private static double? ExtractPx(string text, string prop)
         start = tokens[0];
         end = tokens.Count > 1 ? tokens[1] : tokens[0];
         return true;
+    }
+
+    private static bool TrySplitLogicalAxisPairRaw(string raw, out string start, out string end)
+    {
+        return TryParseLogicalAxisPair(raw, out start, out end);
+    }
+
+    private static bool IsCssAuto(string raw)
+    {
+        return string.Equals(raw?.Trim(), "auto", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool TryExpandPhysicalBoxShorthand(string raw, out string top, out string right, out string bottom, out string left)

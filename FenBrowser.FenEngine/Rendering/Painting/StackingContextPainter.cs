@@ -166,7 +166,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         {
             if (!_styles.TryGetValue(node, out var style)) return;
 
-            var bgColor = style.BackgroundColor ?? SKColors.Transparent;
+            var bgColor = CssParser.ResolveCurrentColor(style.BackgroundColor ?? SKColors.Transparent, style.ForegroundColor);
             if (bgColor.Alpha > 0)
             {
                 _displayList.Add(new DisplayCommand(

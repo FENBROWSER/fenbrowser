@@ -64,6 +64,12 @@ namespace FenBrowser.FenEngine.Rendering.Css
         public List<CssDeclaration> Declarations { get; } = new List<CssDeclaration>();
     }
 
+    public class CssPropertyRule : CssRule
+    {
+        public string Name { get; set; }
+        public List<CssDeclaration> Declarations { get; } = new List<CssDeclaration>();
+    }
+
     public class CssDeclaration
     {
         public string Property { get; set; } // Normalized to lowercase

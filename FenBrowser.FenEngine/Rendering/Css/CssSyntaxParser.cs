@@ -195,6 +195,36 @@ namespace FenBrowser.FenEngine.Rendering.Css
                 return null;
             }
 
+            if (name.Equals("property", StringComparison.OrdinalIgnoreCase))
+            {
+                var nameTokens = new List<CssToken>();
+                while (_currentToken.Type != CssTokenType.LeftBrace &&
+                       _currentToken.Type != CssTokenType.Semicolon &&
+                       _currentToken.Type != CssTokenType.EOF)
+                {
+                    nameTokens.Add(_currentToken);
+                    ConsumeToken();
+                }
+
+                var propertyRule = new CssPropertyRule
+                {
+                    Name = string.Join("", nameTokens.Select(t => t.ToStringValue())).Trim()
+                };
+
+                if (_currentToken.Type == CssTokenType.LeftBrace)
+                {
+                    propertyRule.Declarations.AddRange(ConsumeDeclarationBlock());
+                    return propertyRule;
+                }
+
+                if (_currentToken.Type == CssTokenType.Semicolon)
+                {
+                    ConsumeToken();
+                }
+
+                return null;
+            }
+
             // Unknown @rule, consume until semicolon or block
             while (_currentToken.Type != CssTokenType.Semicolon && _currentToken.Type != CssTokenType.LeftBrace && _currentToken.Type != CssTokenType.EOF)
             {

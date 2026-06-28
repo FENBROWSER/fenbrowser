@@ -120,15 +120,22 @@ namespace FenBrowser.FenEngine.Rendering.Css
                     break;
                 
                 case "background-color":
-                    style.BackgroundColor = CssLoader.TryColor(value);
+                    style.BackgroundColor = CssParser.ResolveCurrentColor(CssLoader.TryColor(value), style.ForegroundColor);
                     break;
-                    
+
                 case "color":
-                    style.ForegroundColor = CssLoader.TryColor(value);
+                    {
+                        var parsedFg = CssLoader.TryColor(value);
+                        if (parsedFg.HasValue && !CssParser.IsCurrentColorSentinel(parsedFg.Value))
+                            style.ForegroundColor = parsedFg;
+                        else if (parsedFg.HasValue)
+                            // currentColor on 'color' acts as inherit — keep existing inherited value
+                            { }
+                    }
                     break;
 
                 case "border-color":
-                    style.BorderBrushColor = CssLoader.TryColor(value) ?? SKColors.Black;
+                    style.BorderBrushColor = CssParser.ResolveCurrentColor(CssLoader.TryColor(value), style.ForegroundColor) ?? SKColors.Black;
                     break;
                     
                 case "border-width":
