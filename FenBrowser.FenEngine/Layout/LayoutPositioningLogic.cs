@@ -437,8 +437,8 @@ namespace FenBrowser.FenEngine.Layout
             float fontSize = style.FontSize.HasValue && style.FontSize.Value > 0
                 ? (float)style.FontSize.Value
                 : 16f;
-            float lineHeight = style.LineHeight.HasValue && style.LineHeight.Value > 0
-                ? (float)style.LineHeight.Value
+            float lineHeight = LayoutHelper.TryResolveLineHeight(style, out var resolvedLineHeight)
+                ? resolvedLineHeight
                 : fontSize * 1.2f;
             float contentWidthEstimate = Math.Max(fontSize * 0.6f, text.Length * fontSize * 0.55f);
             float contentHeightEstimate = Math.Max(lineHeight, fontSize);
@@ -457,7 +457,7 @@ namespace FenBrowser.FenEngine.Layout
             {
                 float cbHeight = Math.Max(0f, containingBlockRect.Height);
                 bool looksLikeBlockStretch = intrinsicHeight > 0f && (intrinsicHeight >= cbHeight * 0.70f || intrinsicHeight >= contentHeightEstimate * 2f);
-                if (looksLikeBlockStretch || intrinsicHeight <= 0f)
+                if (looksLikeBlockStretch || intrinsicHeight <= 0f || intrinsicHeight < contentHeightEstimate - 0.5f)
                 {
                     intrinsicHeight = contentHeightEstimate;
                 }

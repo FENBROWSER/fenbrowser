@@ -339,7 +339,7 @@ namespace FenBrowser.FenEngine.Layout
                     // Supports: 100% - 20px, 50vh - 10px
                     // Does NOT support complex nesting yet
                     
-                    var parts = inner.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    var parts = TokenizeCalcExpression(inner);
                     
                     // Simple accumulation
                     // ex: 100% - 20px
@@ -351,7 +351,7 @@ namespace FenBrowser.FenEngine.Layout
                     
                     bool first = true;
                     
-                    for (int i=0; i<parts.Length; i++)
+                    for (int i=0; i<parts.Count; i++)
                     {
                         string p = parts[i].Trim();
                         if (p == "+" || p == "-" || p == "*" || p == "/")
@@ -405,6 +405,61 @@ namespace FenBrowser.FenEngine.Layout
              if (float.TryParse(expression, NumberStyles.Float, CultureInfo.InvariantCulture, out float val)) return val;
 
             return -1;
+        }
+
+        private static List<string> TokenizeCalcExpression(string expression)
+        {
+            var tokens = new List<string>();
+            if (string.IsNullOrWhiteSpace(expression))
+            {
+                return tokens;
+            }
+
+            var current = new StringBuilder();
+            bool previousWasOperator = true;
+            for (int i = 0; i < expression.Length; i++)
+            {
+                char ch = expression[i];
+                if (char.IsWhiteSpace(ch))
+                {
+                    if (current.Length > 0)
+                    {
+                        tokens.Add(current.ToString());
+                        current.Clear();
+                        previousWasOperator = false;
+                    }
+                    continue;
+                }
+
+                bool isOperator = ch == '+' || ch == '-' || ch == '*' || ch == '/';
+                bool isSignedNumber = (ch == '+' || ch == '-') &&
+                    previousWasOperator &&
+                    i + 1 < expression.Length &&
+                    (char.IsDigit(expression[i + 1]) || expression[i + 1] == '.');
+
+                if (isOperator && !isSignedNumber)
+                {
+                    if (current.Length > 0)
+                    {
+                        tokens.Add(current.ToString());
+                        current.Clear();
+                    }
+
+                    tokens.Add(ch.ToString());
+                    previousWasOperator = true;
+                    continue;
+                }
+
+                current.Append(ch);
+                previousWasOperator = false;
+            }
+
+            if (current.Length > 0)
+            {
+                tokens.Add(current.ToString());
+            }
+
+            return tokens;
         }
     }
 }

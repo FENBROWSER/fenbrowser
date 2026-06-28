@@ -872,7 +872,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             reState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, newContentCross);
                             reState.ContainingBlockWidth = preservedWidth;
                             reState.ContainingBlockHeight = newContentCross;
-                            FormattingContext.Resolve(item).Layout(item, reState);
+                            LayoutWithForcedHeight(item, reState, newContentCross);
                             // Re-layout above may shrink the box back to its intrinsic content
                             // height when the item has no explicit height. Re-apply the
                             // stretched cross-axis size so align-items:stretch is honored.
@@ -889,7 +889,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             reState.AvailableSize = new SKSize(item.Geometry.MarginBox.Width, preservedHeight);
                             reState.ContainingBlockWidth = newContentCross;
                             reState.ContainingBlockHeight = preservedHeight;
-                            FormattingContext.Resolve(item).Layout(item, reState);
+                            LayoutWithForcedWidth(item, reState, newContentCross);
                             if (item.Geometry.ContentBox.Width < newContentCross - 0.5f)
                             {
                                 LayoutBoxOps.ComputeBoxModelFromContent(item, newContentCross, item.Geometry.ContentBox.Height);
@@ -1056,6 +1056,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         lineMainPos += colMain + gap + itemStepExtra + autoAfter;
                     }
 
+                    float placementX = container.Geometry.ContentBox.Left + x;
+                    float placementY = container.Geometry.ContentBox.Top + y;
+
                     if (isRow &&
                         previousItem != null &&
                         !HasNegativeInlineMargins(previousItem) &&
@@ -1072,13 +1075,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             // into the Sign in pill even when icon paint slightly overhangs.
                             minLeft += 8f;
                         }
-                        if (x < minLeft - 0.5f)
+                        if (placementX < minLeft - 0.5f)
                         {
-                            x = minLeft;
+                            placementX = minLeft;
                         }
                     }
 
-                    LayoutBoxOps.PositionSubtree(item, x, y, state);
+                    LayoutBoxOps.PositionSubtree(item, placementX, placementY, state);
                     if (IsRelativelyPositioned(item))
                     {
                         ClampRelativeDescendantsToItemStart(item);
@@ -1130,6 +1133,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             if (isReverse)
             {
                 float mainSize = isRow ? container.Geometry.ContentBox.Width : container.Geometry.ContentBox.Height;
+                float mainOrigin = isRow ? container.Geometry.ContentBox.Left : container.Geometry.ContentBox.Top;
                 foreach (var lineItems in lines)
                 {
                     foreach (var item in lineItems)
@@ -1137,13 +1141,15 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         if (isRow)
                         {
                             float oldX = item.Geometry.MarginBox.Left;
-                            float newX = mainSize - oldX - item.Geometry.MarginBox.Width;
+                            float oldLocalX = oldX - mainOrigin;
+                            float newX = mainOrigin + mainSize - oldLocalX - item.Geometry.MarginBox.Width;
                             LayoutBoxOps.PositionSubtree(item, newX, item.Geometry.MarginBox.Top, state);
                         }
                         else
                         {
                             float oldY = item.Geometry.MarginBox.Top;
-                            float newY = mainSize - oldY - GetColumnMainSize(item);
+                            float oldLocalY = oldY - mainOrigin;
+                            float newY = mainOrigin + mainSize - oldLocalY - GetColumnMainSize(item);
                             LayoutBoxOps.PositionSubtree(item, item.Geometry.MarginBox.Left, newY, state);
                         }
                     }
@@ -1459,7 +1465,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     if (tag == "INPUT")
                     {
                         string type = (el.GetAttribute("type") ?? string.Empty).Trim().ToLowerInvariant();
-                        if (type == "submit" || type == "button" || type == "reset")
+                        if (type == "checkbox" || type == "radio")
+                        {
+                            width = ReplacedElementSizing.NativeCheckboxRadioSize;
+                        }
+                        else if (type == "submit" || type == "button" || type == "reset")
                         {
                             string label = el.GetAttribute("value");
                             if (string.IsNullOrWhiteSpace(label)) label = "Button";
@@ -1497,7 +1507,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         // @property-dependent rules), this fallback keeps inputs
                         // usable instead of collapsing to 0.
                         string type = (el.GetAttribute("type") ?? string.Empty).Trim().ToLowerInvariant();
-                        height = (type == "checkbox" || type == "radio") ? 20f : 40f;
+                        height = (type == "checkbox" || type == "radio") ? ReplacedElementSizing.NativeCheckboxRadioSize : 40f;
                     }
                     else if (tag == "BUTTON")
                     {
@@ -2394,6 +2404,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         minMain = (float)(style.MinHeightPercent.Value / 100.0 * containerMainSize);
                 }
 
+                if (minMain > 0f && string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+                {
+                    var chrome = isRow
+                        ? item.Geometry.Padding.Left + item.Geometry.Padding.Right + item.Geometry.Border.Left + item.Geometry.Border.Right
+                        : item.Geometry.Padding.Top + item.Geometry.Padding.Bottom + item.Geometry.Border.Top + item.Geometry.Border.Bottom;
+                    minMain = Math.Max(0f, minMain - (float)chrome);
+                }
+
                 // Resolve max constraint for main axis
                 float maxMain = float.PositiveInfinity;
                 if (isRow)
@@ -2409,6 +2427,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         maxMain = (float)style.MaxHeight.Value;
                     else if (style.MaxHeightPercent.HasValue == true && containerMainSize > 0)
                         maxMain = (float)(style.MaxHeightPercent.Value / 100.0 * containerMainSize);
+                }
+
+                if (float.IsFinite(maxMain) && string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+                {
+                    var chrome = isRow
+                        ? item.Geometry.Padding.Left + item.Geometry.Padding.Right + item.Geometry.Border.Left + item.Geometry.Border.Right
+                        : item.Geometry.Padding.Top + item.Geometry.Padding.Bottom + item.Geometry.Border.Top + item.Geometry.Border.Bottom;
+                    maxMain = Math.Max(0f, maxMain - (float)chrome);
                 }
 
                 // Clamp and re-layout if needed

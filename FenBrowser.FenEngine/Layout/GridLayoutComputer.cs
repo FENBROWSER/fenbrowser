@@ -692,12 +692,15 @@ namespace FenBrowser.FenEngine.Layout
             MeasureTracksIntrinsic(columnTracks, items, positions, styles, true, depth, measureNode);
             MeasureTracksIntrinsic(rowTracks, items, positions, styles, false, depth, measureNode);
 
+            // Resolve column flex tracks BEFORE measuring row heights so items are
+            // measured at their correct column widths (matching the Measure pass).
+            ResolveFlexibleTracks(columnTracks, bounds.Width, columnGap);
+
             // Ensure arrange pass uses the same content-derived auto-row sizing
             // as measure pass before flex/stretch resolution.
             MeasureAutoRowHeights(rowTracks, columnTracks, items, positions, styles, columnGap, depth, measureNode);
 
-            // Resolve Track Sizes
-            ResolveFlexibleTracks(columnTracks, bounds.Width, columnGap);
+            // Resolve row Track Sizes (only when block size is definite)
             if (HasDefiniteBlockSize(style, bounds.Height))
             {
                 ResolveFlexibleTracks(rowTracks, bounds.Height, rowGap);

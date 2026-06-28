@@ -13,6 +13,21 @@ namespace FenBrowser.FenEngine.Layout
     /// </summary>
     public static class ReplacedElementSizing
     {
+        public const float NativeCheckboxRadioSize = 16f;
+
+        public static bool IsNativeCheckboxOrRadio(Element element)
+        {
+            if (element == null ||
+                !string.Equals(element.TagName, "INPUT", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            string type = (element.GetAttribute("type") ?? string.Empty).Trim();
+            return string.Equals(type, "checkbox", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(type, "radio", StringComparison.OrdinalIgnoreCase);
+        }
+
         public static bool ShouldTreatAsAtomicReplacedElement(Element element)
         {
             if (element == null)
@@ -101,6 +116,14 @@ namespace FenBrowser.FenEngine.Layout
             if (string.IsNullOrWhiteSpace(raw)) return false;
 
             raw = raw.Trim();
+            string lower = raw.ToLowerInvariant();
+            if (lower.EndsWith("em", StringComparison.Ordinal) ||
+                lower.EndsWith("rem", StringComparison.Ordinal) ||
+                lower.EndsWith("%", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
             int numericChars = 0;
             while (numericChars < raw.Length)
             {

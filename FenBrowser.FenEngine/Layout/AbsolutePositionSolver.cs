@@ -273,7 +273,7 @@ namespace FenBrowser.FenEngine.Layout
                 float availableWidth = Math.Max(0, cbWidth - fixedSpace - ml - mr - r);
                 w = intrinsicWidth > 0
                     ? (preserveIntrinsicAutoSize ? intrinsicWidth : Math.Min(intrinsicWidth, availableWidth))
-                    : availableWidth;
+                    : 0f;
                 l = cbWidth - ml - fixedSpace - w - mr - r;
                 result.WidthWasAuto = true;
             }
@@ -282,7 +282,7 @@ namespace FenBrowser.FenEngine.Layout
                 float availableWidth = Math.Max(0, cbWidth - fixedSpace - l - ml - mr);
                 w = intrinsicWidth > 0
                     ? (preserveIntrinsicAutoSize ? intrinsicWidth : Math.Min(intrinsicWidth, availableWidth))
-                    : availableWidth;
+                    : 0f;
                 r = cbWidth - l - ml - fixedSpace - w - mr;
                 result.WidthWasAuto = true;
             }

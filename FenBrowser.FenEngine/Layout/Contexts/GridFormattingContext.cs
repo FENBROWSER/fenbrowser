@@ -134,7 +134,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 float width = Math.Max(0f, rect.Width);
                 float height = Math.Max(0f, rect.Height);
 
-                LayoutBoxOps.ComputeBoxModelFromContent(childBox, width, height);
+                // Set content width; height will be resolved by the child's layout pass
+                // then clamped to the grid row height so all items in a row are equal.
+                LayoutBoxOps.ComputeBoxModelFromContent(childBox, width, Math.Max(0f, childBox.Geometry.ContentBox.Height));
 
                 float absoluteLeft = container.Geometry.ContentBox.Left + rect.Left;
                 float absoluteTop = container.Geometry.ContentBox.Top + rect.Top;
@@ -149,6 +151,26 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 LayoutBoxOps.PositionSubtree(childBox, absoluteLeft, absoluteTop, childState);
                 FormattingContext.Resolve(childBox).Layout(childBox, childState);
+
+                // CSS Grid spec §12.4: all items in the same row share the row height
+                // (the maximum of the row's track size).  The child's re-layout above
+                // computes its natural content height; clamp to the grid-assigned cell
+                // height so every item in the row fills the same vertical space.
+                // rect.Height is the track size which corresponds to margin-box height;
+                // subtract padding+border+margin to derive the required content height.
+                if (height > 0f)
+                {
+                    float naturalContentHeight = childBox.Geometry.ContentBox.Height;
+                    float verticalChrome =
+                        (float)(childBox.Geometry.Padding.Top + childBox.Geometry.Padding.Bottom) +
+                        (float)(childBox.Geometry.Border.Top + childBox.Geometry.Border.Bottom) +
+                        (float)(childBox.Geometry.Margin.Top + childBox.Geometry.Margin.Bottom);
+                    float requiredContentHeight = Math.Max(0f, height - verticalChrome);
+                    if (naturalContentHeight < requiredContentHeight)
+                    {
+                        LayoutBoxOps.ComputeBoxModelFromContent(childBox, childBox.Geometry.ContentBox.Width, requiredContentHeight);
+                    }
+                }
 
                 // Child layout may have recomputed local geometry; keep final grid placement.
                 LayoutBoxOps.PositionSubtree(childBox, absoluteLeft, absoluteTop, childState);
