@@ -49,7 +49,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             // Background color
             if (style.BackgroundColor.HasValue)
             {
-                var color = style.BackgroundColor.Value;
+                var color = CssParser.ResolveCurrentColor(style.BackgroundColor.Value, style.ForegroundColor);
                 using var paint = new SKPaint
                 {
                     Color = new SKColor(color.Red, color.Green, color.Blue, (byte)(color.Alpha * opacity / 255)),
@@ -344,7 +344,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             SKColor borderColor = SKColors.Black;
             if (style.BorderBrushColor.HasValue)
             {
-                var c = style.BorderBrushColor.Value;
+                var c = CssParser.ResolveCurrentColor(style.BorderBrushColor.Value, style.ForegroundColor);
                 borderColor = new SKColor(c.Red, c.Green, c.Blue, (byte)(c.Alpha * opacity / 255));
             }
 
@@ -540,7 +540,14 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 float rbr = (float)radius.BottomRight.Value;
                 float rbl = (float)radius.BottomLeft.Value;
 
-                // Use SKRoundRect with per-corner radii for accurate rendering
+                // CSS Backgrounds & Borders §5.3: when adjacent border radii
+                // would overlap, all corner radii must be proportionally
+                // reduced together.  Skia's SetRectRadii independently clamps
+                // X and Y, which creates elliptical corners (football shape)
+                // instead of circular pill ends on elements like status badges.
+                NormalizeCornerRadii(ref rtl, ref rtr, ref rbr, ref rbl,
+                    rect.Width, rect.Height);
+
                 using var rrect = new SKRoundRect();
                 rrect.SetRectRadii(rect, new[]
                 {
@@ -554,6 +561,41 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             else
             {
                 canvas.DrawRect(rect, paint);
+            }
+        }
+
+        /// <summary>
+        /// CSS Backgrounds &amp; Borders §5.3 Corner Overlap:
+        /// When the sum of adjacent border radii exceeds the length of the
+        /// corresponding edge, all radii must be proportionally reduced until
+        /// they no longer overlap.  Skia's SetRectRadii does independent
+        /// per-axis clamping which violates the spec (creates elliptical
+        /// corners).  This method applies the correct proportional reduction.
+        /// </summary>
+        internal static void NormalizeCornerRadii(
+            ref float topLeft, ref float topRight,
+            ref float bottomRight, ref float bottomLeft,
+            float boxWidth, float boxHeight)
+        {
+            if (boxWidth <= 0f || boxHeight <= 0f) return;
+
+            float f = 1.0f;
+            float topSum = topLeft + topRight;
+            float rightSum = topRight + bottomRight;
+            float bottomSum = bottomLeft + bottomRight;
+            float leftSum = topLeft + bottomLeft;
+
+            if (topSum > 0f) f = Math.Min(f, boxWidth / topSum);
+            if (rightSum > 0f) f = Math.Min(f, boxHeight / rightSum);
+            if (bottomSum > 0f) f = Math.Min(f, boxWidth / bottomSum);
+            if (leftSum > 0f) f = Math.Min(f, boxHeight / leftSum);
+
+            if (f < 1.0f)
+            {
+                topLeft *= f;
+                topRight *= f;
+                bottomRight *= f;
+                bottomLeft *= f;
             }
         }
 

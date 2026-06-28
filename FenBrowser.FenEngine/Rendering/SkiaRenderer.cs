@@ -1517,15 +1517,54 @@ namespace FenBrowser.FenEngine.Rendering
                 return new[] { SKPoint.Empty, SKPoint.Empty, SKPoint.Empty, SKPoint.Empty };
             }
 
-            var normalized = new SKPoint[4];
+            // Step 1: ensure radii are non-negative.  Do NOT clamp to the box
+            //         width/height here — the CSS proportional reduction in
+            //         step 2 must see the original specified values, otherwise
+            //         a large uniform radius like 999px gets squashed to the
+            //         box dimensions before the scale factor is computed,
+            //         producing the "NFL ball" elliptical corners.
+            var work = new SKPoint[4];
             for (int i = 0; i < 4; i++)
             {
                 float rx = Math.Max(0f, radius[i].X);
                 float ry = Math.Max(0f, radius[i].Y);
-                normalized[i] = new SKPoint(Math.Min(rx, width * 0.5f), Math.Min(ry, height * 0.5f));
+                work[i] = new SKPoint(rx, ry);
             }
 
-            return normalized;
+            // Step 2: CSS Backgrounds & Borders §5.3 Corner Overlap.
+            // When the sum of adjacent border radii exceeds the edge length, ALL
+            // corner radii must be proportionally reduced together so there is no
+            // overlap.
+            float topSumX = work[0].X + work[1].X;
+            float rightSumY = work[1].Y + work[2].Y;
+            float bottomSumX = work[2].X + work[3].X;
+            float leftSumY = work[0].Y + work[3].Y;
+
+            float f = 1.0f;
+            if (topSumX > 0f) f = Math.Min(f, width / topSumX);
+            if (rightSumY > 0f) f = Math.Min(f, height / rightSumY);
+            if (bottomSumX > 0f) f = Math.Min(f, width / bottomSumX);
+            if (leftSumY > 0f) f = Math.Min(f, height / leftSumY);
+
+            if (f < 1.0f)
+            {
+                for (int i = 0; i < 4; i++)
+                {
+                    work[i] = new SKPoint(work[i].X * f, work[i].Y * f);
+                }
+            }
+
+            // Step 3: final safety clamp — ensure no radius exceeds half the
+            //         box dimension (Skia requirement).
+            float maxR = Math.Min(width * 0.5f, height * 0.5f);
+            for (int i = 0; i < 4; i++)
+            {
+                work[i] = new SKPoint(
+                    Math.Min(work[i].X, maxR),
+                    Math.Min(work[i].Y, maxR));
+            }
+
+            return work;
         }
 
         private static void LogRenderSummary(SKRect viewport, int nodeCount, RenderPassStats stats, string phase)

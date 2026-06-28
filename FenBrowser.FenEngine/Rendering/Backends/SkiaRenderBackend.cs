@@ -73,7 +73,9 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             {
                 Shader = shader,
                 Style = SKPaintStyle.Fill,
-                IsAntialias = true
+                IsAntialias = true,
+                Color = SKColors.White,
+                BlendMode = SKBlendMode.SrcOver
             };
             if (opacity < 1f)
             {
@@ -88,7 +90,9 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             {
                 Shader = shader,
                 Style = SKPaintStyle.Fill,
-                IsAntialias = true
+                IsAntialias = true,
+                Color = SKColors.White,
+                BlendMode = SKBlendMode.SrcOver
             };
             if (opacity < 1f)
             {
@@ -103,7 +107,9 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             {
                 Shader = shader,
                 Style = SKPaintStyle.Fill,
-                IsAntialias = true
+                IsAntialias = true,
+                Color = SKColors.White,
+                BlendMode = SKBlendMode.SrcOver
             };
             if (opacity < 1f)
             {
@@ -144,9 +150,16 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                              border.BottomRightRadius.X > 0 || border.BottomRightRadius.Y > 0 ||
                              border.BottomLeftRadius.X > 0 || border.BottomLeftRadius.Y > 0;
 
-            if (isUniformColor && isUniformWidth && isUniformStyle && paintTop && paintRight && paintBottom && paintLeft)
+            if (isUniformColor &&
+                isUniformWidth &&
+                isUniformStyle &&
+                !IsDoubleBorderStyle(border.TopStyle) &&
+                paintTop &&
+                paintRight &&
+                paintBottom &&
+                paintLeft)
             {
-                using var paint = CreateBorderPaint(border.TopColor, border.TopWidth);
+                using var paint = CreateBorderPaint(border.TopColor, border.TopWidth, border.TopStyle);
                 float inset = border.TopWidth / 2.0f;
                 var drawRect = rect;
                 drawRect.Inflate(-inset, -inset);
@@ -182,10 +195,10 @@ namespace FenBrowser.FenEngine.Rendering.Backends
 
             try
             {
-                DrawBorderSlice(new SKRect(rect.Left, rect.Top, rect.Right, rect.Top + border.TopWidth), border.TopColor, paintTop);
-                DrawBorderSlice(new SKRect(rect.Right - border.RightWidth, rect.Top, rect.Right, rect.Bottom), border.RightColor, paintRight);
-                DrawBorderSlice(new SKRect(rect.Left, rect.Bottom - border.BottomWidth, rect.Right, rect.Bottom), border.BottomColor, paintBottom);
-                DrawBorderSlice(new SKRect(rect.Left, rect.Top, rect.Left + border.LeftWidth, rect.Bottom), border.LeftColor, paintLeft);
+                DrawBorderSide(rect, BorderSide.Top, border.TopColor, border.TopWidth, border.TopStyle, paintTop);
+                DrawBorderSide(rect, BorderSide.Right, border.RightColor, border.RightWidth, border.RightStyle, paintRight);
+                DrawBorderSide(rect, BorderSide.Bottom, border.BottomColor, border.BottomWidth, border.BottomStyle, paintBottom);
+                DrawBorderSide(rect, BorderSide.Left, border.LeftColor, border.LeftWidth, border.LeftStyle, paintLeft);
             }
             finally
             {
@@ -196,20 +209,60 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             }
         }
 
-        private void DrawBorderSlice(SKRect rect, SKColor color, bool enabled)
+        private void DrawBorderSide(SKRect rect, BorderSide side, SKColor color, float width, string style, bool enabled)
         {
-            if (!enabled || rect.Width <= 0 || rect.Height <= 0 || color.Alpha == 0)
+            if (!enabled || width <= 0 || rect.Width <= 0 || rect.Height <= 0 || color.Alpha == 0)
             {
                 return;
             }
 
-            using var paint = new SKPaint
+            if (IsDoubleBorderStyle(style))
             {
-                Color = color,
-                Style = SKPaintStyle.Fill,
-                IsAntialias = true
-            };
-            _canvas.DrawRect(rect, paint);
+                DrawDoubleBorderSide(rect, side, color, width);
+                return;
+            }
+
+            using var paint = CreateBorderPaint(color, width, style);
+            using var path = new SKPath();
+            AddBorderSideLine(path, rect, side, width / 2f);
+            _canvas.DrawPath(path, paint);
+        }
+
+        private void DrawDoubleBorderSide(SKRect rect, BorderSide side, SKColor color, float width)
+        {
+            float strokeWidth = Math.Max(1f, width / 3f);
+            using var paint = CreateBorderPaint(color, strokeWidth, "solid");
+
+            using var outerPath = new SKPath();
+            AddBorderSideLine(outerPath, rect, side, strokeWidth / 2f);
+            _canvas.DrawPath(outerPath, paint);
+
+            using var innerPath = new SKPath();
+            AddBorderSideLine(innerPath, rect, side, width - strokeWidth / 2f);
+            _canvas.DrawPath(innerPath, paint);
+        }
+
+        private static void AddBorderSideLine(SKPath path, SKRect rect, BorderSide side, float offset)
+        {
+            switch (side)
+            {
+                case BorderSide.Top:
+                    path.MoveTo(rect.Left, rect.Top + offset);
+                    path.LineTo(rect.Right, rect.Top + offset);
+                    break;
+                case BorderSide.Right:
+                    path.MoveTo(rect.Right - offset, rect.Top);
+                    path.LineTo(rect.Right - offset, rect.Bottom);
+                    break;
+                case BorderSide.Bottom:
+                    path.MoveTo(rect.Left, rect.Bottom - offset);
+                    path.LineTo(rect.Right, rect.Bottom - offset);
+                    break;
+                case BorderSide.Left:
+                    path.MoveTo(rect.Left + offset, rect.Top);
+                    path.LineTo(rect.Left + offset, rect.Bottom);
+                    break;
+            }
         }
 
         private static bool IsPaintableBorderStyle(string style)
@@ -219,8 +272,32 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                    !string.Equals(style, "hidden", StringComparison.OrdinalIgnoreCase);
         }
 
+        private static bool IsDoubleBorderStyle(string style)
+        {
+            return string.Equals(style, "double", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static SKPath CreateRoundedRectPath(SKRect bounds, SKPoint[] radius)
         {
+            // CSS §5.3: proportionally reduce corner radii to prevent overlap.
+            if (radius != null && radius.Length >= 4 && bounds.Width > 0 && bounds.Height > 0)
+            {
+                float topSumX = radius[0].X + radius[1].X;
+                float rightSumY = radius[1].Y + radius[2].Y;
+                float bottomSumX = radius[2].X + radius[3].X;
+                float leftSumY = radius[0].Y + radius[3].Y;
+                float f = 1.0f;
+                if (topSumX > 0) f = Math.Min(f, bounds.Width / topSumX);
+                if (rightSumY > 0) f = Math.Min(f, bounds.Height / rightSumY);
+                if (bottomSumX > 0) f = Math.Min(f, bounds.Width / bottomSumX);
+                if (leftSumY > 0) f = Math.Min(f, bounds.Height / leftSumY);
+                if (f < 1.0f)
+                {
+                    for (int i = 0; i < 4; i++)
+                        radius[i] = new SKPoint(radius[i].X * f, radius[i].Y * f);
+                }
+            }
+
             var path = new SKPath();
             var rrect = new SKRoundRect();
             rrect.SetRectRadii(bounds, radius);
@@ -228,15 +305,37 @@ namespace FenBrowser.FenEngine.Rendering.Backends
             return path;
         }
 
-        private static SKPaint CreateBorderPaint(SKColor color, float width)
+        private static SKPaint CreateBorderPaint(SKColor color, float width, string style)
         {
-            return new SKPaint
+            var paint = new SKPaint
             {
                 Color = color,
                 Style = SKPaintStyle.Stroke,
                 StrokeWidth = width,
                 IsAntialias = true
             };
+
+            var normalized = style?.Trim().ToLowerInvariant();
+            if (normalized == "dashed")
+            {
+                paint.PathEffect = SKPathEffect.CreateDash(new[] { Math.Max(1f, width * 3f), Math.Max(1f, width * 2f) }, 0);
+                paint.StrokeCap = SKStrokeCap.Butt;
+            }
+            else if (normalized == "dotted")
+            {
+                paint.PathEffect = SKPathEffect.CreateDash(new[] { 0.1f, Math.Max(1f, width * 2f) }, 0);
+                paint.StrokeCap = SKStrokeCap.Round;
+            }
+
+            return paint;
+        }
+
+        private enum BorderSide
+        {
+            Top,
+            Right,
+            Bottom,
+            Left
         }
 
         #endregion
