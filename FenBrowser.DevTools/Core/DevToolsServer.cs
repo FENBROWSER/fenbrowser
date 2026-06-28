@@ -24,6 +24,8 @@ public class DevToolsServer
     private DebuggerDomain? _debuggerDomain;
     private CSSDomain? _cssDomain;
     private LogDomain? _logDomain;
+    private PageDomain? _pageDomain;
+    private OverlayDomain? _overlayDomain;
     
     public NodeRegistry Registry => _registry;
     public MessageRouter Router => _router;
@@ -75,6 +77,14 @@ public class DevToolsServer
     {
         _logDomain = new LogDomain(BroadcastEvent);
         _router.RegisterHandler(_logDomain);
+    }
+
+    public void InitializeBrowserFrontendCompatibility(IDevToolsHost host)
+    {
+        _pageDomain = new PageDomain(host);
+        _overlayDomain = new OverlayDomain();
+        _router.RegisterHandler(_pageDomain);
+        _router.RegisterHandler(_overlayDomain);
     }
     
     public void InitializeCss(
@@ -177,5 +187,7 @@ public class DevToolsServer
         _debuggerDomain = null;
         _cssDomain = null;
         _logDomain = null;
+        _pageDomain = null;
+        _overlayDomain = null;
     }
 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
@@ -41,6 +42,7 @@ public class RemoteDebugServer : IDisposable
     public long MessagesSent { get; private set; }
     public long MessagesReceived { get; private set; }
     public string AuthToken => _authToken;
+    public int Port => _listener.LocalEndpoint is IPEndPoint endpoint ? endpoint.Port : _port;
 
     public RemoteDebugServer(
         DevToolsServer devToolsServer,
@@ -345,11 +347,11 @@ public class RemoteDebugServer : IDisposable
 
     private string BuildTokenQuery() => "?token=" + Uri.EscapeDataString(_authToken);
 
-    private string BuildWebSocketDebuggerUrl() => $"ws://{_advertisedHost}:{_port}/devtools/page/1{BuildTokenQuery()}";
+    private string BuildWebSocketDebuggerUrl() => $"ws://{_advertisedHost}:{Port}/devtools/page/1{BuildTokenQuery()}";
 
     private string BuildDevToolsFrontendUrl(string tokenQuery)
     {
-        string wsTarget = $"{_advertisedHost}:{_port}/devtools/page/1{tokenQuery}";
+        string wsTarget = $"{_advertisedHost}:{Port}/devtools/page/1{tokenQuery}";
         return $"/devtools/inspector.html?ws={Uri.EscapeDataString(wsTarget)}";
     }
 
@@ -448,108 +450,32 @@ public class RemoteDebugServer : IDisposable
 
     private async Task ReceiveWebSocketLoop(NetworkStream stream, Socket client)
     {
-        // Increased buffer for larger DevTools frames (DOM snapshots can be large)
-        byte[] buffer = new byte[1024 * 512]; // 512 KB
-        
         try
         {
             while (client.Connected)
             {
-                // Note: This simple parser assumes 1 Read = 1 Frame (or part of it). 
-                // In a robust implementation, we must buffer bytes until we have a full frame.
-                // For now, increasing buffer size helps, but isn't a perfect fix for stream fragmentation.
-                
-                int bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-                if (bytesRead == 0) 
+                var frame = await ReadWebSocketFrameAsync(stream);
+                if (frame == null)
                 {
                     EngineLogCompat.Info("[RemoteDebug] Client sent FIN (0 bytes)", LogCategory.General);
                     break;
                 }
-                
-                // Decode Frame Header
-                bool fin = (buffer[0] & 0x80) != 0;
-                int opcode = buffer[0] & 0x0F;
-                bool masked = (buffer[1] & 0x80) != 0;
-                long payloadLen = buffer[1] & 0x7F;
-                
-                int offset = 2;
-                if (payloadLen == 126)
-                {
-                    payloadLen = BitConverter.ToUInt16(new byte[] { buffer[3], buffer[2] }, 0);
-                    offset = 4;
-                }
-                else if (payloadLen == 127)
-                {
-                    // --- 10/10: Full 64-bit frame length support ---
-                    byte[] lenBytes = new byte[8];
-                    Array.Copy(buffer, 2, lenBytes, 0, 8);
-                    if (BitConverter.IsLittleEndian) Array.Reverse(lenBytes);
-                    payloadLen = (long)BitConverter.ToUInt64(lenBytes, 0);
-                    offset = 10;
-                    
-                    // Safety check: don't accept frames larger than 10MB
-                    if (payloadLen > 10 * 1024 * 1024)
-                    {
-                        EngineLogCompat.Warn($"[RemoteDebug] Frame too large: {payloadLen} bytes, dropping", LogCategory.General);
-                        continue;
-                    }
-                }
-                
-                // Check if we have the full payload in this read (Basic fragmentation handling)
-                if (bytesRead < offset + payloadLen)
-                {
-                    // If we read less than the frame size, we are in trouble with this simple parser.
-                    // Ideally we should loop and read more.
-                    EngineLogCompat.Warn($"[RemoteDebug] Partial Frame Read: {bytesRead} < {offset + payloadLen}. This might cause disconnection.", LogCategory.General);
-                    
-                    // Attempt to read the rest
-                    int targetTotal = offset + (int)payloadLen;
-                    int currentTotal = bytesRead;
-                    while (currentTotal < targetTotal)
-                    {
-                        int needed = targetTotal - currentTotal;
-                        int r = await stream.ReadAsync(buffer, currentTotal, needed);
-                        if (r == 0) break;
-                        currentTotal += r;
-                    }
-                }
-                
-                if (opcode == 8) // Close
+
+                if (frame.Opcode == 8) // Close
                 {
                     EngineLogCompat.Info("[RemoteDebug] Client requested Close (Opcode 8)", LogCategory.General);
                     break;
                 }
-                else if (opcode == 9) // Ping
+                else if (frame.Opcode == 9) // Ping
                 {
-                    // Respond with Pong (Opcode 10)
-                    // Echo payload back
-                    byte[] pongFrame = new byte[bytesRead];
-                    Array.Copy(buffer, pongFrame, bytesRead);
-                    pongFrame[0] = (byte)(0x80 | 10); // FIN + Opcode 10
-                    // Remove Mask bit from response if present (Server -> Client is not masked)
-                    // But actually we just constructing a new frame is safer
-                     
-                    // Construct minimal Pong
-                    stream.Write(new byte[] { 0x8A, 0x00 }, 0, 2); // FIN+Pong, len 0
+                    var pong = EncodeFrame(10, frame.Payload);
+                    stream.Write(pong, 0, pong.Length);
                     continue;
                 }
                 
-                if (opcode == 1) // Text
+                if (frame.Opcode == 1) // Text
                 {
-                     byte[] masks = new byte[4];
-                     if (masked)
-                     {
-                         Array.Copy(buffer, offset, masks, 0, 4);
-                         offset += 4;
-                     }
-                     
-                     byte[] content = new byte[payloadLen];
-                     for (int i = 0; i < payloadLen; i++)
-                     {
-                         content[i] = (byte)(buffer[offset + i] ^ masks[i % 4]);
-                     }
-                     
-                     string json = Encoding.UTF8.GetString(content);
+                     string json = Encoding.UTF8.GetString(frame.Payload);
                      
                      // Process
                      var response = await _devToolsServer.ProcessRequestAsync(json);
@@ -564,6 +490,68 @@ public class RemoteDebugServer : IDisposable
         {
             EngineLogCompat.Error($"[RemoteDebug] WS Cycle Error: {ex}", LogCategory.General);
         }
+    }
+
+    private sealed record WebSocketFrame(int Opcode, byte[] Payload);
+
+    private static async Task<WebSocketFrame?> ReadWebSocketFrameAsync(NetworkStream stream)
+    {
+        var header = await ReadExactAsync(stream, 2);
+        if (header == null) return null;
+
+        int opcode = header[0] & 0x0F;
+        bool masked = (header[1] & 0x80) != 0;
+        ulong payloadLen = (ulong)(header[1] & 0x7F);
+
+        if (payloadLen == 126)
+        {
+            var lengthBytes = await ReadExactAsync(stream, 2);
+            if (lengthBytes == null) return null;
+            payloadLen = ((ulong)lengthBytes[0] << 8) | lengthBytes[1];
+        }
+        else if (payloadLen == 127)
+        {
+            var lengthBytes = await ReadExactAsync(stream, 8);
+            if (lengthBytes == null) return null;
+            payloadLen = 0;
+            for (int i = 0; i < 8; i++)
+                payloadLen = (payloadLen << 8) | lengthBytes[i];
+        }
+
+        if (payloadLen > 10 * 1024 * 1024)
+            throw new InvalidDataException($"Remote debug frame too large: {payloadLen} bytes.");
+
+        byte[]? mask = null;
+        if (masked)
+        {
+            mask = await ReadExactAsync(stream, 4);
+            if (mask == null) return null;
+        }
+
+        var payload = payloadLen == 0 ? Array.Empty<byte>() : await ReadExactAsync(stream, checked((int)payloadLen));
+        if (payload == null) return null;
+
+        if (mask != null)
+        {
+            for (int i = 0; i < payload.Length; i++)
+                payload[i] = (byte)(payload[i] ^ mask[i % 4]);
+        }
+
+        return new WebSocketFrame(opcode, payload);
+    }
+
+    private static async Task<byte[]?> ReadExactAsync(NetworkStream stream, int length)
+    {
+        var buffer = new byte[length];
+        int offset = 0;
+        while (offset < length)
+        {
+            int read = await stream.ReadAsync(buffer, offset, length - offset);
+            if (read == 0) return null;
+            offset += read;
+        }
+
+        return buffer;
     }
     
     // Broadcast must be thread safe
@@ -610,10 +598,14 @@ public class RemoteDebugServer : IDisposable
     
     private byte[] EncodeFrame(string message)
     {
-        byte[] payload = Encoding.UTF8.GetBytes(message);
+        return EncodeFrame(1, Encoding.UTF8.GetBytes(message));
+    }
+
+    private static byte[] EncodeFrame(int opcode, byte[] payload)
+    {
         List<byte> frame = new List<byte>();
         
-        frame.Add(0x81); // Fin + Text
+        frame.Add((byte)(0x80 | opcode)); // FIN + opcode
         
         if (payload.Length < 126)
         {

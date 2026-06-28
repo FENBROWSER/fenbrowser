@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using System.Text.Json;
 
 namespace FenBrowser.DevTools.Domains.DTOs;
 
@@ -41,6 +42,7 @@ public record DomNodeDto
     /// Element attributes (name -> value).
     /// </summary>
     [JsonPropertyName("attributes")]
+    [JsonConverter(typeof(CdpAttributesConverter))]
     public Dictionary<string, string>? Attributes { get; init; }
     
     /// <summary>
@@ -206,4 +208,63 @@ public record CharacterDataModifiedEvent
     
     [JsonPropertyName("characterData")]
     public required string CharacterData { get; init; }
+}
+
+internal sealed class CdpAttributesConverter : JsonConverter<Dictionary<string, string>>
+{
+    public override Dictionary<string, string>? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        var attributes = new Dictionary<string, string>();
+
+        if (reader.TokenType == JsonTokenType.StartObject)
+        {
+            while (reader.Read())
+            {
+                if (reader.TokenType == JsonTokenType.EndObject)
+                    return attributes;
+
+                if (reader.TokenType != JsonTokenType.PropertyName)
+                    throw new JsonException("Expected DOM attribute property name.");
+
+                var name = reader.GetString() ?? string.Empty;
+                reader.Read();
+                attributes[name] = reader.TokenType == JsonTokenType.String
+                    ? reader.GetString() ?? string.Empty
+                    : JsonSerializer.Deserialize<JsonElement>(ref reader, options).ToString();
+            }
+        }
+        else if (reader.TokenType == JsonTokenType.StartArray)
+        {
+            while (reader.Read())
+            {
+                if (reader.TokenType == JsonTokenType.EndArray)
+                    return attributes;
+
+                if (reader.TokenType != JsonTokenType.String)
+                    throw new JsonException("Expected DOM attribute name.");
+
+                var name = reader.GetString() ?? string.Empty;
+                if (!reader.Read() || reader.TokenType == JsonTokenType.EndArray)
+                    throw new JsonException("Expected DOM attribute value.");
+
+                attributes[name] = reader.TokenType == JsonTokenType.String
+                    ? reader.GetString() ?? string.Empty
+                    : JsonSerializer.Deserialize<JsonElement>(ref reader, options).ToString();
+            }
+        }
+
+        throw new JsonException("Expected DOM attributes object or array.");
+    }
+
+    public override void Write(Utf8JsonWriter writer, Dictionary<string, string> value, JsonSerializerOptions options)
+    {
+        writer.WriteStartArray();
+        foreach (var attribute in value)
+        {
+            writer.WriteStringValue(attribute.Key);
+            writer.WriteStringValue(attribute.Value);
+        }
+
+        writer.WriteEndArray();
+    }
 }

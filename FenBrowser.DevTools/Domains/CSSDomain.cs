@@ -48,8 +48,14 @@ public class CSSDomain : IProtocolHandler
         {
             "getComputedStyleForNode" => GetComputedStyleForNode(request),
             "getMatchedStylesForNode" => GetMatchedStylesForNode(request),
+            "getInlineStylesForNode" => GetInlineStylesForNode(request),
+            "getBackgroundColors" => GetBackgroundColors(request),
+            "getPlatformFontsForNode" => GetPlatformFontsForNode(request),
             "setStyleTexts" => SetStyleTexts(request),
             "enable" => Task.FromResult(ProtocolResponse.Success(request.Id, new { })),
+            "disable" => Task.FromResult(ProtocolResponse.Success(request.Id, new { })),
+            "trackComputedStyleUpdates" => Task.FromResult(ProtocolResponse.Success(request.Id, new { })),
+            "takeComputedStyleUpdates" => Task.FromResult(ProtocolResponse.Success(request.Id, new { nodeIds = Array.Empty<int>() })),
             _ => Task.FromResult(ProtocolResponse.Failure(request.Id, $"Method {method} not found in domain {Domain}"))
         };
     }
@@ -163,6 +169,108 @@ public class CSSDomain : IProtocolHandler
             return Task.FromResult(ProtocolResponse.Failure(request.Id, ex.Message));
         }
     }
+
+    private Task<ProtocolResponse> GetInlineStylesForNode(ProtocolRequest request)
+    {
+        if (request.Params == null) return Task.FromResult(ProtocolResponse.Failure(request.Id, "Params required"));
+
+        try
+        {
+            var nodeId = request.Params.Value.GetProperty("nodeId").GetInt32();
+            return DispatchAsync(() =>
+            {
+                var node = _registry.GetNode(nodeId);
+                if (node == null)
+                {
+                    return ProtocolResponse.Failure(request.Id, "Node not found");
+                }
+
+                return ProtocolResponse.Success(request.Id, new
+                {
+                    inlineStyle = BuildInlineStyle(node),
+                    attributesStyle = (CssStyleDto?)null
+                });
+            });
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(ProtocolResponse.Failure(request.Id, ex.Message));
+        }
+    }
+
+    private Task<ProtocolResponse> GetBackgroundColors(ProtocolRequest request)
+    {
+        if (request.Params == null) return Task.FromResult(ProtocolResponse.Failure(request.Id, "Params required"));
+
+        try
+        {
+            var nodeId = request.Params.Value.GetProperty("nodeId").GetInt32();
+            return DispatchAsync(() =>
+            {
+                var node = _registry.GetNode(nodeId);
+                if (node == null)
+                {
+                    return ProtocolResponse.Failure(request.Id, "Node not found");
+                }
+
+                var styles = _getComputedStyle(node);
+                var colors = styles?.BackgroundColor != null
+                    ? new[] { styles.BackgroundColor.ToString() }
+                    : Array.Empty<string>();
+
+                return ProtocolResponse.Success(request.Id, new
+                {
+                    backgroundColors = colors,
+                    computedFontSize = styles?.FontSize.HasValue == true ? styles.FontSize.Value.ToString() + "px" : null,
+                    computedFontWeight = styles?.Map != null && styles.Map.TryGetValue("font-weight", out var weight) ? weight : null
+                });
+            });
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(ProtocolResponse.Failure(request.Id, ex.Message));
+        }
+    }
+
+    private Task<ProtocolResponse> GetPlatformFontsForNode(ProtocolRequest request)
+    {
+        if (request.Params == null) return Task.FromResult(ProtocolResponse.Failure(request.Id, "Params required"));
+
+        try
+        {
+            var nodeId = request.Params.Value.GetProperty("nodeId").GetInt32();
+            return DispatchAsync(() =>
+            {
+                var node = _registry.GetNode(nodeId);
+                if (node == null)
+                {
+                    return ProtocolResponse.Failure(request.Id, "Node not found");
+                }
+
+                var styles = _getComputedStyle(node);
+                var family = string.IsNullOrWhiteSpace(styles?.FontFamilyName)
+                    ? "default"
+                    : styles.FontFamilyName;
+
+                return ProtocolResponse.Success(request.Id, new
+                {
+                    fonts = new[]
+                    {
+                        new
+                        {
+                            familyName = family,
+                            isCustomFont = false,
+                            glyphCount = 0
+                        }
+                    }
+                });
+            });
+        }
+        catch (Exception ex)
+        {
+            return Task.FromResult(ProtocolResponse.Failure(request.Id, ex.Message));
+        }
+    }
     
     private Task<ProtocolResponse> GetMatchedStylesForNode(ProtocolRequest request)
     {
@@ -179,27 +287,7 @@ public class CSSDomain : IProtocolHandler
                     return ProtocolResponse.Failure(request.Id, "Node not found");
                 }
 
-                CssStyleDto? inlineStyle = null;
-            if (node is Element element && (element.GetAttribute("style") is string styleStr))
-            {
-                var cssProperties = new List<CssPropertyDto>();
-                var parts = styleStr.Split(';', StringSplitOptions.RemoveEmptyEntries);
-                foreach (var part in parts)
-                {
-                    var kv = part.Split(':', 2);
-                    if (kv.Length == 2)
-                    {
-                        cssProperties.Add(new CssPropertyDto { Name = kv[0].Trim(), Value = kv[1].Trim() });
-                    }
-                }
-                
-                inlineStyle = new CssStyleDto {
-                    StyleId = new CssStyleIdDto { StyleSheetId = "inline", Ordinal = 0 },
-                    CssProperties = cssProperties,
-                    ShorthandEntries = new List<ShorthandEntryDto>(),
-                    CssText = styleStr
-                };
-            }
+                CssStyleDto? inlineStyle = BuildInlineStyle(node);
             
             // Matched Rules with deduplication
             var matchedRules = new List<MatchedRuleDto>();
@@ -317,6 +405,33 @@ public class CSSDomain : IProtocolHandler
     private Task<ProtocolResponse> DispatchAsync(Func<ProtocolResponse> operation)
     {
         return _dispatchAsync(operation);
+    }
+
+    private static CssStyleDto? BuildInlineStyle(Node node)
+    {
+        if (node is not Element element || element.GetAttribute("style") is not string styleStr)
+        {
+            return null;
+        }
+
+        var cssProperties = new List<CssPropertyDto>();
+        var parts = styleStr.Split(';', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var part in parts)
+        {
+            var kv = part.Split(':', 2);
+            if (kv.Length == 2)
+            {
+                cssProperties.Add(new CssPropertyDto { Name = kv[0].Trim(), Value = kv[1].Trim() });
+            }
+        }
+
+        return new CssStyleDto
+        {
+            StyleId = new CssStyleIdDto { StyleSheetId = "inline", Ordinal = 0 },
+            CssProperties = cssProperties,
+            ShorthandEntries = new List<ShorthandEntryDto>(),
+            CssText = styleStr
+        };
     }
 
     // Removed ReconstructSelector as we utilize Raw selector string for now

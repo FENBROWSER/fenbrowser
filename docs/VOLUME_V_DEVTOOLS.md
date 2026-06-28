@@ -129,6 +129,9 @@ Contains the generated CDP domain classes and DTOs.
   - Remote debug transport now supports explicit bind address and optional authentication token.
   - Unauthorized requests are rejected with HTTP `401`.
   - Discovery endpoints now emit host/port from runtime configuration.
+  - WebSocket input now reads exact RFC 6455 frame headers, mask keys, extended lengths, and payload bytes before dispatching CDP JSON so browser clients do not disconnect on fragmented masked frames.
+  - DOM node attributes now serialize to the CDP name/value array shape for external browser frontends while still deserializing into the internal dictionary model used by native DevTools panels.
+  - Browser frontend compatibility now includes lightweight `Page` and `Overlay` handlers plus additional CSS side-panel methods (`getInlineStylesForNode`, `getBackgroundColors`, `getPlatformFontsForNode`, computed-style tracking no-ops) so Edge DevTools can hydrate more Elements-panel data instead of dropping unknown-method responses.
 
 - `FenBrowser.Host/ChromeManager.cs`
   - Remote debugging is now **disabled by default**.
