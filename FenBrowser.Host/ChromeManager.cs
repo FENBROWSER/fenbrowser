@@ -96,6 +96,10 @@ namespace FenBrowser.Host
 
             InitializeWidgets(initialUrl);
             InitializeDevTools();
+
+            // Wire up the JS modal dialog bridge so alert/confirm/prompt
+            // native functions call back into the Host UI layer.
+            HostDialogCoordinator.Install();
             
             // Create Root and Compositor
             _root = new RootWidget(_tabBar, _toolbar, _statusBar, new DevToolsWidget(_devTools));
@@ -975,6 +979,38 @@ namespace FenBrowser.Host
              _processIsolation?.Shutdown();
              ProcessIsolationRuntime.SetCoordinator(null);
              _remoteDebugServer?.Dispose();
+        }
+
+        /// <summary>
+        /// Display a JavaScript modal dialog (alert, confirm, prompt) as a full-window
+        /// overlay. Thread-safe: acquires the widget-tree write lock internally via
+        /// SetOverlay, so it can be called from any thread.
+        /// </summary>
+        public void ShowJavascriptDialog(
+            Widgets.JsDialogType type,
+            string message,
+            string defaultValue,
+            Action<object> onComplete)
+        {
+            var dialog = new Widgets.JavascriptDialogWidget(type, message, defaultValue);
+            dialog.Completed += result =>
+            {
+                _root.SetOverlay(null);
+                _root.Invalidate();
+                onComplete?.Invoke(result);
+            };
+            _root.SetOverlay(dialog);
+            _root.Invalidate();
+        }
+
+        /// <summary>
+        /// Force-dismiss any currently displayed JS dialog overlay. Safe to call
+        /// from any thread. Used during navigation teardown and timeout recovery.
+        /// </summary>
+        public void DismissCurrentDialog()
+        {
+            _root.SetOverlay(null);
+            _root.Invalidate();
         }
 
         /// <summary>
