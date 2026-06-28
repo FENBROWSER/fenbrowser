@@ -341,7 +341,7 @@ namespace FenBrowser.FenEngine
     public enum InputEventType
     {
         KeyDown, KeyUp, KeyPress,
-        MouseDown, MouseUp, MouseMove, Click, DblClick,
+        MouseDown, MouseUp, MouseMove, Click, DblClick, ContextMenu,
         TouchStart, TouchEnd, TouchMove, TouchCancel,
         Wheel, PointerDown, PointerUp, PointerMove, PointerCancel
     }

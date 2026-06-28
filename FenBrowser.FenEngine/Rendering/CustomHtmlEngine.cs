@@ -310,17 +310,18 @@ namespace FenBrowser.FenEngine.Rendering
             }
         }
 
-        public void DispatchPointerEvent(Element element, string eventType)
+        public bool DispatchPointerEvent(Element element, string eventType, BrowserDomEventInit eventInit = null)
         {
-            if (element == null || _activeJs == null || string.IsNullOrWhiteSpace(eventType)) return;
+            if (element == null || _activeJs == null || string.IsNullOrWhiteSpace(eventType)) return true;
 
             try
             {
-                _activeJs.DispatchEventForElement(element, eventType);
+                return _activeJs.DispatchEventForElement(element, eventType, eventInit);
             }
             catch (Exception ex)
             {
                 EngineLogCompat.Error($"[CustomHtmlEngine] DispatchPointerEvent error: {ex.Message}", LogCategory.Rendering);
+                return true;
             }
         }
 

@@ -2938,16 +2938,20 @@ pre {{
                 return;
             }
 
-            // Throttle to ~60 fps (16 ms) to avoid flooding the input queue on high-frequency devices
-            long now = System.Diagnostics.Stopwatch.GetTimestamp();
-            long ticksPer16ms = System.Diagnostics.Stopwatch.Frequency / 60;
-            if (now - _lastMouseMoveTick < ticksPer16ms)
-                return;
-            _lastMouseMoveTick = now;
             _lastMouseMoveX = x;
             _lastMouseMoveY = y;
             _hasLastMouseMovePosition = true;
             QueueInputTask("mousemove", x, y, 0);
+        }
+
+        public void OnDoubleClick(float x, float y, int button)
+        {
+            QueueInputTask("dblclick", x, y, button);
+        }
+
+        public bool OnContextMenu(float x, float y, int button)
+        {
+            return QueueInputTask("contextmenu", x, y, button);
         }
 
         private static bool ShouldRetryTopLevelNavigation(FetchResult result, string url, int attempt, int maxAttempts)
@@ -3063,16 +3067,17 @@ pre {{
              QueueInputTask("click", x, y, button);
         }
 
-        private void QueueInputTask(string type, float x, float y, int button)
+        private bool QueueInputTask(string type, float x, float y, int button)
         {
              // Input must feel immediate; dispatch directly to avoid coordinator latency
              // or dropped interaction when event-loop pumping is delayed.
-             DispatchInputEvent(type, x, y, button);
+             return DispatchInputEvent(type, x, y, button);
         }
 
-        private void DispatchInputEvent(string type, float x, float y, int button)
+        private bool DispatchInputEvent(string type, float x, float y, int button)
         {
             var eventType = MapToInputEventType(type);
+            var buttonMask = BuildButtonMask(button, type);
             // Prefer the active renderer (injected by BrowserIntegration) which has the actual
             // paint tree. Fall back to engine's cached renderer only if no active renderer set.
             var renderContext = _activeRenderer?.CreateRenderContext() ?? _engine.BuildRenderContext();
@@ -3083,10 +3088,10 @@ pre {{
                 X = x,
                 Y = y,
                 Button = button,
-                Buttons = BuildButtonMask(button, type),
+                Buttons = buttonMask,
                 PointerId = 1,
                 PointerType = "mouse",
-                Pressure = button == 0 ? 0.5f : 0.8f,
+                Pressure = buttonMask != 0 ? 0.5f : 0f,
                 IsPrimary = true,
                 PageX = x,
                 PageY = y,
@@ -3110,6 +3115,25 @@ pre {{
                 TryInvokeConsoleMessage($"[FenBrowser] Unhandled page error during '{type}' input: {ex.Message}");
             }
 
+            var eventInit = new FenBrowser.FenEngine.Scripting.BrowserDomEventInit
+            {
+                ClientX = x,
+                ClientY = y,
+                PageX = x,
+                PageY = y,
+                ScreenX = x,
+                ScreenY = y,
+                Button = button,
+                Buttons = buttonMask,
+                PointerId = 1,
+                PointerType = "mouse",
+                Pressure = buttonMask != 0 ? 0.5f : 0f,
+                IsPrimary = true,
+                Bubbles = true,
+                Cancelable = true
+            };
+            var defaultAllowed = true;
+
             if (string.Equals(type, "click", StringComparison.OrdinalIgnoreCase))
             {
                 _lastClickHadTarget = inputEvent.Target != null;
@@ -3118,9 +3142,14 @@ pre {{
                 _lastClickDefaultAllowed = inputEvent.Target == null || handled;
             }
 
-            if (inputEvent.Target != null && IsPointerDomEvent(type))
+            if (inputEvent.Target != null && IsScriptDomInputEvent(type))
             {
-                _engine.DispatchPointerEvent(inputEvent.Target, type);
+                defaultAllowed = _engine.DispatchPointerEvent(inputEvent.Target, type, eventInit);
+                var pointerAlias = MapMouseInputToPointerAlias(type);
+                if (!string.IsNullOrEmpty(pointerAlias))
+                {
+                    defaultAllowed = _engine.DispatchPointerEvent(inputEvent.Target, pointerAlias, eventInit) && defaultAllowed;
+                }
             }
 
             if (string.Equals(type, "mousemove", StringComparison.OrdinalIgnoreCase))
@@ -3146,19 +3175,33 @@ pre {{
             // NOTE: HandleElementClick is NOT called here because BrowserIntegration's
             // HandleMouseUp already calls it with the paint-tree hit-test result. Calling it
             // here too would cause double-navigation for links and double-focus for inputs.
+            return defaultAllowed;
         }
 
-        private static bool IsPointerDomEvent(string type)
+        private static bool IsScriptDomInputEvent(string type)
         {
             return string.Equals(type, "click", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(type, "dblclick", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(type, "contextmenu", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(type, "mousedown", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(type, "mouseup", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(type, "mousemove", StringComparison.OrdinalIgnoreCase);
         }
 
+        private static string MapMouseInputToPointerAlias(string type)
+        {
+            return type?.ToLowerInvariant() switch
+            {
+                "mousedown" => "pointerdown",
+                "mouseup" => "pointerup",
+                "mousemove" => "pointermove",
+                _ => null
+            };
+        }
+
         private static int BuildButtonMask(int button, string type)
         {
-            if (string.Equals(type, "mouseup", StringComparison.OrdinalIgnoreCase)) return 0;
+            if (!string.Equals(type, "mousedown", StringComparison.OrdinalIgnoreCase)) return 0;
             if (button < 0) return 0;
             return 1 << Math.Min(button, 3);
         }
@@ -3171,6 +3214,8 @@ pre {{
                 case "mouseup": return InputEventType.MouseUp;
                 case "mousemove": return InputEventType.MouseMove;
                 case "click": return InputEventType.Click;
+                case "dblclick": return InputEventType.DblClick;
+                case "contextmenu": return InputEventType.ContextMenu;
                 case "keydown": return InputEventType.KeyDown;
                 case "keyup": return InputEventType.KeyUp;
                 case "touchstart": return InputEventType.TouchStart;
@@ -6385,7 +6430,6 @@ pre {{
         }
 
         // Mousemove throttle: skip events closer than 16 ms (~60 fps)
-        private long _lastMouseMoveTick = 0;
         private float _lastMouseMoveX;
         private float _lastMouseMoveY;
         private bool _hasLastMouseMovePosition;
