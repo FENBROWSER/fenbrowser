@@ -96,6 +96,10 @@ namespace FenBrowser.Host.ProcessIsolation
         public int BoxCount { get; set; }
         public int PaintNodeCount { get; set; }
         /// <summary>
+        /// Outer document scroll offset used to rasterize this viewport-sized frame.
+        /// </summary>
+        public float ScrollY { get; set; }
+        /// <summary>
         /// Total document content height in CSS pixels (from LayoutResult). Allows the host
         /// to size the viewport scrollbar without re-running layout.
         /// </summary>

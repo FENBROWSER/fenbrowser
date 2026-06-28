@@ -253,6 +253,16 @@ namespace FenBrowser.FenEngine.Adapters
             // Previous approach had two bugs:
             //  1) Early-returned if ANY element had fill=, skipping elements that didn't
             //  2) Only matched "<shape " with trailing space, missing newlines/self-closing
+            string inheritedFill = ResolveSvgRootFill(svgContent);
+            if (string.Equals(inheritedFill, "none", StringComparison.OrdinalIgnoreCase))
+            {
+                return svgContent;
+            }
+
+            string fallbackFill = string.IsNullOrWhiteSpace(inheritedFill) ||
+                string.Equals(inheritedFill, "currentColor", StringComparison.OrdinalIgnoreCase)
+                    ? "black"
+                    : inheritedFill;
             var shapes = new[] { "path", "circle", "rect", "ellipse", "polygon", "polyline", "line" };
 
             foreach (var shape in shapes)
@@ -263,7 +273,7 @@ namespace FenBrowser.FenEngine.Adapters
                     svgContent = Regex.Replace(
                         svgContent,
                         $@"<{shape}(?=[\s/>])((?:(?!fill\s*=)[^>])*?)(/?>)",
-                        $@"<{shape} fill=""black""$1$2",
+                        $@"<{shape} fill=""{fallbackFill}""$1$2",
                         RegexOptions.IgnoreCase | RegexOptions.Singleline,
                         TimeSpan.FromMilliseconds(500));
                 }
@@ -274,6 +284,59 @@ namespace FenBrowser.FenEngine.Adapters
                 }
             }
             return svgContent;
+        }
+
+        private static string ResolveSvgRootFill(string svgContent)
+        {
+            if (string.IsNullOrWhiteSpace(svgContent))
+            {
+                return null;
+            }
+
+            var svgTagMatch = Regex.Match(
+                svgContent,
+                @"<svg\b(?<attrs>[^>]*)>",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline,
+                TimeSpan.FromMilliseconds(500));
+
+            if (!svgTagMatch.Success)
+            {
+                return null;
+            }
+
+            string attrs = svgTagMatch.Groups["attrs"].Value;
+            var fillMatch = Regex.Match(
+                attrs,
+                @"\bfill\s*=\s*([""'])(?<value>.*?)\1",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline,
+                TimeSpan.FromMilliseconds(100));
+
+            if (fillMatch.Success)
+            {
+                return fillMatch.Groups["value"].Value.Trim();
+            }
+
+            var styleMatch = Regex.Match(
+                attrs,
+                @"\bstyle\s*=\s*([""'])(?<value>.*?)\1",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline,
+                TimeSpan.FromMilliseconds(100));
+
+            if (styleMatch.Success)
+            {
+                var styleFillMatch = Regex.Match(
+                    styleMatch.Groups["value"].Value,
+                    @"(?:^|;)\s*fill\s*:\s*(?<value>[^;]+)",
+                    RegexOptions.IgnoreCase,
+                    TimeSpan.FromMilliseconds(100));
+
+                if (styleFillMatch.Success)
+                {
+                    return styleFillMatch.Groups["value"].Value.Trim();
+                }
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -294,12 +357,10 @@ namespace FenBrowser.FenEngine.Adapters
             }
 
             string attrs = svgTagMatch.Groups["attrs"].Value;
-            bool hasWidth = Regex.IsMatch(attrs, @"\bwidth\s*=", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
-            bool hasHeight = Regex.IsMatch(attrs, @"\bheight\s*=", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
-            if (hasWidth && hasHeight)
-            {
-                return svgContent;
-            }
+            string widthValue = GetSvgRootAttribute(attrs, "width");
+            string heightValue = GetSvgRootAttribute(attrs, "height");
+            bool hasConcreteWidth = IsConcreteViewportLength(widthValue);
+            bool hasConcreteHeight = IsConcreteViewportLength(heightValue);
 
             var viewBoxMatch = Regex.Match(attrs,
                 @"\bviewBox\s*=\s*[""']\s*(?<minx>[-+]?\d*\.?\d+)\s*[, ]\s*(?<miny>[-+]?\d*\.?\d+)\s*[, ]\s*(?<w>[-+]?\d*\.?\d+)\s*[, ]\s*(?<h>[-+]?\d*\.?\d+)\s*[""']",
@@ -314,19 +375,80 @@ namespace FenBrowser.FenEngine.Adapters
             string width = viewBoxMatch.Groups["w"].Value;
             string height = viewBoxMatch.Groups["h"].Value;
 
-            if (!hasWidth)
+            if (!hasConcreteWidth)
             {
-                attrs += $@" width=""{width}""";
+                attrs = SetSvgRootAttribute(attrs, "width", width);
             }
 
-            if (!hasHeight)
+            if (!hasConcreteHeight)
             {
-                attrs += $@" height=""{height}""";
+                attrs = SetSvgRootAttribute(attrs, "height", height);
             }
 
             string normalizedSvgTag = "<svg" + attrs + ">";
             return svgContent.Remove(svgTagMatch.Index, svgTagMatch.Length)
                              .Insert(svgTagMatch.Index, normalizedSvgTag);
+        }
+
+        private static string GetSvgRootAttribute(string attrs, string name)
+        {
+            if (string.IsNullOrWhiteSpace(attrs) || string.IsNullOrWhiteSpace(name))
+            {
+                return null;
+            }
+
+            var match = Regex.Match(
+                attrs,
+                $@"\b{Regex.Escape(name)}\s*=\s*([""'])(?<value>.*?)\1",
+                RegexOptions.IgnoreCase | RegexOptions.Singleline,
+                TimeSpan.FromMilliseconds(100));
+
+            return match.Success ? match.Groups["value"].Value.Trim() : null;
+        }
+
+        private static bool IsConcreteViewportLength(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return false;
+            }
+
+            string trimmed = value.Trim();
+            if (trimmed.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+            {
+                trimmed = trimmed.Substring(0, trimmed.Length - 2).Trim();
+            }
+            else if (trimmed.EndsWith("em", StringComparison.OrdinalIgnoreCase) ||
+                     trimmed.EndsWith("rem", StringComparison.OrdinalIgnoreCase) ||
+                     trimmed.EndsWith("%", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return float.TryParse(trimmed, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsed) &&
+                   parsed > 0f;
+        }
+
+        private static string SetSvgRootAttribute(string attrs, string name, string value)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                return attrs;
+            }
+
+            string replacement = $@"{name}=""{value}""";
+            string pattern = $@"\b{Regex.Escape(name)}\s*=\s*([""']).*?\1";
+            if (Regex.IsMatch(attrs ?? string.Empty, pattern, RegexOptions.IgnoreCase | RegexOptions.Singleline, TimeSpan.FromMilliseconds(100)))
+            {
+                return Regex.Replace(
+                    attrs,
+                    pattern,
+                    replacement,
+                    RegexOptions.IgnoreCase | RegexOptions.Singleline,
+                    TimeSpan.FromMilliseconds(100));
+            }
+
+            return (attrs ?? string.Empty) + " " + replacement;
         }
         /// <summary>
         /// Deduplicate attributes within SVG tags. 

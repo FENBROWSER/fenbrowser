@@ -7,6 +7,8 @@ namespace FenBrowser.Host.ProcessIsolation
         MouseDown,
         MouseUp,
         MouseMove,
+        DblClick,
+        ContextMenu,
         MouseWheel,
         KeyDown,
         TextInput
@@ -74,6 +76,8 @@ namespace FenBrowser.Host.ProcessIsolation
             Type == RendererInputEventType.MouseDown ||
             Type == RendererInputEventType.MouseUp ||
             Type == RendererInputEventType.MouseMove ||
+            Type == RendererInputEventType.DblClick ||
+            Type == RendererInputEventType.ContextMenu ||
             Type == RendererInputEventType.MouseWheel;
 
         public bool IsKeyboardEvent =>

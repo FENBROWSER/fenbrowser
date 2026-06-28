@@ -435,6 +435,16 @@ namespace FenBrowser.Host
                                 canvas.Translate(0, -scrollY);
                             }
                             var childRenderer = new FenBrowser.FenEngine.Rendering.SkiaDomRenderer();
+                            var contentHeightHint = Math.Max(
+                                browser.Engine?.LastLayout?.ContentHeight ?? 0f,
+                                scrollY + viewportHeight);
+                            childRenderer.ScrollManager.SetScrollBounds(
+                                null,
+                                viewportWidth,
+                                Math.Max(contentHeightHint, viewportHeight),
+                                viewportWidth,
+                                viewportHeight);
+                            childRenderer.ScrollManager.SetScrollPosition(null, 0, scrollY);
                             frameResult = childRenderer.RenderFrame(new FenBrowser.FenEngine.Rendering.Core.RenderFrameRequest
                             {
                                 Root = domRoot,
@@ -444,6 +454,7 @@ namespace FenBrowser.Host
                                     : new System.Collections.Generic.Dictionary<FenBrowser.Core.Dom.V2.Node, FenBrowser.Core.Css.CssComputed>(),
                                 Viewport = viewport,
                                 BaseUrl = browser.CurrentUri?.AbsoluteUri,
+                                SeparateLayoutViewport = new SkiaSharp.SKSize(viewportWidth, viewportHeight),
                                 InvalidationReason = FenBrowser.FenEngine.Rendering.Core.RenderFrameInvalidationReason.ProcessIsolation,
                                 RequestedBy = requestedBy,
                                 EmitVerificationReport = false
@@ -495,6 +506,7 @@ namespace FenBrowser.Host
                     DomNodeCount = frameResult?.Telemetry?.DomNodeCount ?? 0,
                     BoxCount = frameResult?.Telemetry?.BoxCount ?? 0,
                     PaintNodeCount = frameResult?.Telemetry?.PaintNodeCount ?? 0,
+                    ScrollY = scrollY,
                     ContentHeight = frameResult?.Layout?.ContentHeight ?? 0f
                 };
 
@@ -724,6 +736,12 @@ namespace FenBrowser.Host
                                     break;
                                 case RendererInputEventType.MouseMove:
                                     browser.OnMouseMove(input.X, input.Y);
+                                    break;
+                                case RendererInputEventType.DblClick:
+                                    browser.OnDoubleClick(input.X, input.Y, input.Button);
+                                    break;
+                                case RendererInputEventType.ContextMenu:
+                                    browser.OnContextMenu(input.X, input.Y, input.Button);
                                     break;
                                 case RendererInputEventType.KeyDown:
                                     if (!string.IsNullOrWhiteSpace(input.Key))
