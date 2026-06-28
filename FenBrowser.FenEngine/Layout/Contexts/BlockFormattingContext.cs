@@ -63,6 +63,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float contentWidth = blockBox.Geometry.ContentBox.Width;
             bool shrinkToFitPass = blockAutoWidth && float.IsInfinity(state.AvailableSize.Width);
             float childFlowWidth = shrinkToFitPass ? float.PositiveInfinity : contentWidth;
+            float definiteContentHeightForChildren = ResolveDefiniteContentHeightForChildren(blockBox, state);
 
             // 3. Iterate Children
             var outOfFlow = new List<LayoutBox>();
@@ -155,7 +156,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                          string.IsNullOrEmpty(child.ComputedStyle.WidthExpression));
 
                     float floatChildConstraint = floatAutoWidth ? float.PositiveInfinity : childFlowWidth;
-                    var childState = CreateChildState(floatChildConstraint, state);
+                    var childState = CreateChildState(floatChildConstraint, state, definiteContentHeightForChildren);
                     FormattingContext.Resolve(child).Layout(child, childState);
 
                     float floatWidth = GetFloatOuterWidth(child);
@@ -189,7 +190,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             availableBand > 0f &&
                             availableBand + floatEpsilon < floatWidth)
                         {
-                            var narrowedState = CreateChildState(availableBand, state);
+                            var narrowedState = CreateChildState(availableBand, state, definiteContentHeightForChildren);
                             FormattingContext.Resolve(child).Layout(child, narrowedState);
                             floatWidth = GetFloatOuterWidth(child);
                             floatHeight = GetFloatOuterHeight(child);
@@ -254,7 +255,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 else
                 {
                     // Normal Flow Block
-                    var childState = CreateChildState(childFlowWidth, state);
+                    var childState = CreateChildState(childFlowWidth, state, definiteContentHeightForChildren);
                     FormattingContext.Resolve(child).Layout(child, childState);
 
                     string breakBefore = NormalizeBreakDirective(child.ComputedStyle?.PageBreakBefore);
@@ -354,7 +355,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             float availableBand = Math.Max(0f, finalSpace.AvailableWidth);
                             if (availableBand > 0f && availableBand + floatEpsilon < contentWidth)
                             {
-                                var narrowedState = CreateChildState(availableBand, state);
+                                var narrowedState = CreateChildState(availableBand, state, definiteContentHeightForChildren);
                                 FormattingContext.Resolve(child).Layout(child, narrowedState);
                                 childState = narrowedState;
 
@@ -389,6 +390,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             if (parentPreventsBottomCollapse)
             {
                 currentY += lastMarginBottom;
+                maxBottom = Math.Max(maxBottom, currentY);
             }
             // Handle intrinsic height for empty replaced elements (IMG, SVG, etc.)
             if (blockBox.Children.Count == 0)
@@ -428,9 +430,20 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         if (h <= 0 && !hasExplicitHeight) h = resolved.Height;
                     }
 
+                    bool nativeCheckboxOrRadio =
+                        blockBox.SourceNode is FenBrowser.Core.Dom.V2.Element inputElement &&
+                        ReplacedElementSizing.IsNativeCheckboxOrRadio(inputElement);
+
+                    if (nativeCheckboxOrRadio)
+                    {
+                        blockBox.Geometry.Padding = new Thickness();
+                        blockBox.Geometry.Border = new Thickness();
+                    }
+
                     if (w <= 0 && !hasExplicitWidth)
                     {
-                        if (t == "INPUT") w = 150f;
+                        if (nativeCheckboxOrRadio) w = ReplacedElementSizing.NativeCheckboxRadioSize;
+                        else if (t == "INPUT") w = 150f;
                         else if (t == "TEXTAREA") w = 200f;
                         else if (t == "BUTTON") w = 100f;
                         else if (t == "SELECT") w = 120f;
@@ -445,7 +458,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                     if (h <= 0 && !hasExplicitHeight)
                     {
-                        if (t == "INPUT" || t == "SELECT") h = 24f;
+                        if (nativeCheckboxOrRadio) h = ReplacedElementSizing.NativeCheckboxRadioSize;
+                        else if (t == "INPUT" || t == "SELECT") h = 24f;
                         else if (t == "TEXTAREA") h = 48f;
                         else if (t == "BUTTON") h = 28f;
                         else h = 150f;
@@ -463,9 +477,18 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             // SHRINK-TO-FIT: auto-width floats need this even under a finite available band
             // so nested preferred widths can re-expand after an overly aggressive probe pass.
-            if (blockAutoWidth && (float.IsInfinity(state.AvailableSize.Width) || isFloatingBox))
+            // Shrink-to-fit: always for infinite width probes and floats;
+            // also for inline-block / inline-flex / inline-grid inner contexts
+            // whose AvailableSize.Width was set to the probe result (finite) at
+            // InlineFormattingContext line ~624, causing the first-pass child
+            // layout to stretch rather than shrink-wrap.  Without this the status
+            // pill widens to the parent block instead of wrapping text.
+            bool isInlineAtomicInner = blockAutoWidth &&
+                blockBox is FenBrowser.FenEngine.Layout.Tree.InlineBox;
+            if (blockAutoWidth && (float.IsInfinity(state.AvailableSize.Width) || isFloatingBox || isInlineAtomicInner))
             {
                 float previousWidth = blockBox.Geometry.ContentBox.Width;
+                float previousBottom = blockBox.Geometry.ContentBox.Bottom;
                 float maxWidth = 0;
                 float contentLeft = blockBox.Geometry.ContentBox.Left;
                 foreach (var child in blockBox.Children)
@@ -502,20 +525,38 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         maxWidth = Math.Max(0f, borderBoxMinWidth - horizontalChrome);
                     }
                 }
-                 
-                // Update ContentBox width
+
+                // Measure actual content height from children so inline-block
+                // inner contexts don't keep a stale (overly short) bottom from
+                // the infinite-width probe pass.
+                float maxChildBottom = blockBox.Geometry.ContentBox.Top;
+                foreach (var child in blockBox.Children)
+                {
+                    if (child == null || child.IsOutOfFlow) continue;
+                    float bottom = child.Geometry.MarginBox.Bottom;
+                    if (!float.IsFinite(bottom)) bottom = child.Geometry.BorderBox.Bottom;
+                    if (!float.IsFinite(bottom)) bottom = child.Geometry.ContentBox.Bottom;
+                    if (float.IsFinite(bottom)) maxChildBottom = Math.Max(maxChildBottom, bottom);
+                }
+
+                // Update ContentBox width AND height.
                 blockBox.Geometry.ContentBox = new SKRect(
                     blockBox.Geometry.ContentBox.Left,
                     blockBox.Geometry.ContentBox.Top,
                     blockBox.Geometry.ContentBox.Left + maxWidth,
-                    blockBox.Geometry.ContentBox.Bottom
+                    maxChildBottom
                 );
-                
+
                 LayoutBoxOps.SyncBoxes(blockBox.Geometry);
 
+                // Trigger relayout when width or height changed significantly,
+                // or always for inline-block inner contexts (the first pass used
+                // infinite width which can produce wrong height for short labels).
+                bool heightChanged = isInlineAtomicInner &&
+                    Math.Abs(previousBottom - maxChildBottom) > 0.5f;
                 if (maxWidth > 0f &&
                     float.IsFinite(previousWidth) &&
-                    Math.Abs(previousWidth - maxWidth) > 0.5f &&
+                    (Math.Abs(previousWidth - maxWidth) > 0.5f || heightChanged) &&
                     blockBox.Children.Count > 0)
                 {
                     // Guard: only allow one shrink-to-fit reflow per call chain.
@@ -998,6 +1039,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 {
                     width = (float)(style.WidthPercent.Value / 100.0 * available);
                 }
+                else if (!string.IsNullOrEmpty(style.WidthExpression))
+                {
+                    width = LayoutHelper.EvaluateCssExpression(
+                        style.WidthExpression,
+                        available,
+                        state.ViewportWidth,
+                        state.ViewportHeight);
+                }
 
                 if (width.HasValue && isBorderBox)
                 {
@@ -1017,6 +1066,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 {
                     maxWidth = (float)(style.MaxWidthPercent.Value / 100.0 * available);
                 }
+                else if (!string.IsNullOrEmpty(style.MaxWidthExpression))
+                {
+                    maxWidth = LayoutHelper.EvaluateCssExpression(
+                        style.MaxWidthExpression,
+                        available,
+                        state.ViewportWidth,
+                        state.ViewportHeight);
+                }
 
                 if (maxWidth.HasValue && isBorderBox)
                 {
@@ -1034,6 +1091,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 else if (style.MinWidthPercent.HasValue)
                 {
                     minWidth = (float)(style.MinWidthPercent.Value / 100.0 * available);
+                }
+                else if (!string.IsNullOrEmpty(style.MinWidthExpression))
+                {
+                    minWidth = LayoutHelper.EvaluateCssExpression(
+                        style.MinWidthExpression,
+                        available,
+                        state.ViewportWidth,
+                        state.ViewportHeight);
                 }
 
                 if (isBorderBox)
@@ -1136,9 +1201,58 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             geometry.MarginBox.Offset(dx, dy);
         }
 
-        private LayoutState CreateChildState(float contentWidth, LayoutState state)
+        private static float ResolveDefiniteContentHeightForChildren(LayoutBox box, LayoutState state)
         {
-             float childAvailableHeight = state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
+            var style = box?.ComputedStyle;
+            if (style == null)
+            {
+                return float.NaN;
+            }
+
+            float? height = null;
+            if (style.Height.HasValue)
+            {
+                height = (float)style.Height.Value;
+            }
+            else if (style.HeightPercent.HasValue)
+            {
+                float parentHeight = ResolvePercentageHeightContainingBlock(box, state);
+                if (float.IsFinite(parentHeight) && parentHeight > 0f)
+                {
+                    height = (float)(style.HeightPercent.Value / 100.0 * parentHeight);
+                }
+            }
+            else if (!string.IsNullOrEmpty(style.HeightExpression))
+            {
+                float parentHeight = ResolveExpressionContainingBlockHeight(box, state);
+                height = LayoutHelper.EvaluateCssExpression(
+                    style.HeightExpression,
+                    parentHeight,
+                    state.ViewportWidth,
+                    state.ViewportHeight);
+            }
+
+            if (!height.HasValue || !float.IsFinite(height.Value) || height.Value <= 0f)
+            {
+                return float.NaN;
+            }
+
+            if (string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+            {
+                var padding = style.Padding;
+                var border = style.BorderThickness;
+                height = Math.Max(0f, height.Value -
+                    (float)(padding.Top + padding.Bottom + border.Top + border.Bottom));
+            }
+
+            return height.Value;
+        }
+
+        private LayoutState CreateChildState(float contentWidth, LayoutState state, float definiteContentHeight = float.NaN)
+        {
+             float childAvailableHeight = float.IsFinite(definiteContentHeight) && definiteContentHeight > 0f
+                ? definiteContentHeight
+                : state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
              return new LayoutState(
                 new SKSize(contentWidth, childAvailableHeight),
                 contentWidth,

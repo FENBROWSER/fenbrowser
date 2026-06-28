@@ -90,7 +90,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // carry the parent's padding/border/margin — they are purely grouping wrappers
             // per CSS 2.1 §9.2.1.1. Inheriting e.g. a parent's 14px padding + 6px border
             // would add ~20px of spurious space around every text run.
-            if (box is AnonymousBlockBox)
+            bool isAnonymousBlock = box is AnonymousBlockBox;
+            if (isAnonymousBlock)
             {
                 box.Geometry.Padding = new Thickness();
                 box.Geometry.Border = new Thickness();
@@ -295,9 +296,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                     while (startIdx < fullText.Length)
                     {
-                        // Find next word break
-                        int nextSpace = fullText.IndexOf(' ', startIdx);
-                        int endIdx = (nextSpace == -1) ? fullText.Length : nextSpace + 1;
+                        // Find next soft wrap boundary. Browsers allow a normal
+                        // line break after hyphens, e.g. "background-color".
+                        int endIdx = FindNextSoftWrapEnd(fullText, startIdx);
                         string word = fullText.Substring(startIdx, endIdx - startIdx);
                         float wordWidth = MeasureString(word, textBox.ComputedStyle).Width;
 
@@ -746,12 +747,21 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 }
             }
 
-            if (TryResolveExplicitContentHeight(box.ComputedStyle, state, out float explicitContentHeight))
+            if (!isAnonymousBlock &&
+                TryResolveExplicitContentHeight(box.ComputedStyle, state, out float explicitContentHeight))
             {
                 finalContentHeight = explicitContentHeight;
             }
 
-            ApplyMinMaxConstraints(box.ComputedStyle, state, ref finalContentWidth, ref finalContentHeight);
+            if (isAnonymousBlock)
+            {
+                finalContentWidth = Math.Max(0f, finalContentWidth);
+                finalContentHeight = Math.Max(0f, finalContentHeight);
+            }
+            else
+            {
+                ApplyMinMaxConstraints(box.ComputedStyle, state, ref finalContentWidth, ref finalContentHeight);
+            }
 
             box.Geometry.ContentBox = new SKRect(
                 box.Geometry.ContentBox.Left,
@@ -843,6 +853,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 box.Geometry = new BoxModel();
             }
 
+            bool nativeCheckboxOrRadio = ReplacedElementSizing.IsNativeCheckboxOrRadio(element);
             float contentWidth = intrinsic.Width;
             float contentHeight = intrinsic.Height;
             ApplyMinMaxConstraints(box.ComputedStyle, state, ref contentWidth, ref contentHeight);
@@ -850,11 +861,33 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float left = box.Geometry.ContentBox.Left;
             float top = box.Geometry.ContentBox.Top;
             box.Geometry.ContentBox = new SKRect(left, top, left + contentWidth, top + contentHeight);
-            box.Geometry.Padding = box.ComputedStyle?.Padding ?? new Thickness();
-            box.Geometry.Border = box.ComputedStyle?.BorderThickness ?? new Thickness();
+            box.Geometry.Padding = nativeCheckboxOrRadio ? new Thickness() : (box.ComputedStyle?.Padding ?? new Thickness());
+            box.Geometry.Border = nativeCheckboxOrRadio ? new Thickness() : (box.ComputedStyle?.BorderThickness ?? new Thickness());
             box.Geometry.Margin = box.ComputedStyle?.Margin ?? new Thickness();
             LayoutBoxOps.SyncBoxes(box.Geometry);
             return true;
+        }
+
+        private static int FindNextSoftWrapEnd(string text, int startIdx)
+        {
+            int nextSpace = text.IndexOf(' ', startIdx);
+            int nextHyphen = text.IndexOf('-', startIdx);
+
+            // Prefer normal whitespace boundaries. A hyphen is only a fallback
+            // break when there is no later space in the token; otherwise labels
+            // such as "background-color:" split as "background-" / "color:" even
+            // when the whole hyphenated token fits on the next line.
+            if (nextSpace >= 0)
+            {
+                return nextSpace + 1;
+            }
+
+            if (nextHyphen >= 0)
+            {
+                nextHyphen += 1;
+            }
+
+            return nextHyphen > startIdx ? nextHyphen : text.Length;
         }
 
         private void LayoutLeafTextBox(TextLayoutBox textBox, LayoutState state)
@@ -974,9 +1007,37 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         float probedHeight = inlineBox.Geometry.MarginBox.Height;
                         float nonContentWidth = GetNonContentWidth(inlineBox.ComputedStyle);
                         bool hasRenderableLabel = TryMeasureInlineLabelContent(inlineBox, out _, out _);
+                        // Ensure the height is at least one line-height for
+                        // inline-block elements that contain text (status pills,
+                        // buttons, etc.).  The infinite-width probe can collapse
+                        // the content height when children re-flow narrower than
+                        // their natural single-line width.
+                        float minLineHeight = 0f;
+                        if (hasRenderableLabel)
+                        {
+                            minLineHeight = GetStyleFontInfo(inlineBox.ComputedStyle).LineHeight;
+                            minLineHeight += (float)(inlineBox.ComputedStyle?.Padding.Top ?? 0)
+                                          + (float)(inlineBox.ComputedStyle?.Padding.Bottom ?? 0)
+                                          + (float)(inlineBox.ComputedStyle?.BorderThickness.Top ?? 0)
+                                          + (float)(inlineBox.ComputedStyle?.BorderThickness.Bottom ?? 0);
+                            probedHeight = Math.Max(probedHeight, Math.Max(1f, minLineHeight));
+                        }
                         bool collapsedToChromeOnly = hasRenderableLabel && probedWidth <= nonContentWidth + 0.5f;
                         if (probedWidth > 0 && probedHeight > 0 && !collapsedToChromeOnly)
                         {
+                            // Second probe with finite width to get correct height.
+                            float fitWidth = probedWidth;
+                            float contentW = fitWidth - nonContentWidth;
+                            if (contentW > 0.5f)
+                            {
+                                var fitState = state.Clone();
+                                fitState.AvailableSize = new SKSize(fitWidth, Math.Max(probedHeight, minLineHeight * 2f));
+                                fitState.ContainingBlockWidth = fitWidth;
+                                ResetInlineProbeOrigin(inlineBox);
+                                FormattingContext.Resolve(inlineBox).Layout(inlineBox, fitState);
+                                float fitHeight = inlineBox.Geometry.MarginBox.Height;
+                                if (fitHeight > 0f) probedHeight = Math.Max(probedHeight, fitHeight);
+                            }
                             return new SKSize(probedWidth, Math.Max(probedHeight, 0f));
                         }
                     }
@@ -986,7 +1047,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         float fallbackWidth = labelContentWidth;
                         float fallbackHeight = labelContentHeight;
                         ApplyMinMaxConstraints(inlineBox.ComputedStyle, state, ref fallbackWidth, ref fallbackHeight);
-                        return AddNonContentSpacing(new SKSize(Math.Max(0f, fallbackWidth), Math.Max(0f, fallbackHeight)), inlineBox.ComputedStyle);
+                        return AddNonContentSpacing(new SKSize(Math.Max(0f, fallbackWidth), Math.Max(0f, fallbackHeight)), inlineBox);
                     }
 
                     float cw = (float)(inlineBox.ComputedStyle?.Width ?? 0);
@@ -999,11 +1060,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                     if (cw > 0 || ch > 0)
                     {
-                        return AddNonContentSpacing(new SKSize(Math.Max(0f, cw), Math.Max(0f, ch)), inlineBox.ComputedStyle);
+                        return AddNonContentSpacing(new SKSize(Math.Max(0f, cw), Math.Max(0f, ch)), inlineBox);
                     }
 
                     // Empty atomic inlines should size from their own chrome only.
-                    return AddNonContentSpacing(SKSize.Empty, inlineBox.ComputedStyle);
+                    return AddNonContentSpacing(SKSize.Empty, inlineBox);
                 }
 
                 // Normal inline (span) - aggregate children
@@ -1027,7 +1088,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     h = GetStyleFontInfo(inlineBox.ComputedStyle).LineHeight;
                 }
 
-                return AddNonContentSpacing(new SKSize(Math.Max(0f, w), h), inlineBox.ComputedStyle);
+                return AddNonContentSpacing(new SKSize(Math.Max(0f, w), h), inlineBox);
             }
 
             // Handle IMG, INPUT, SVG or other elements that result in generic LayoutBox
@@ -1081,7 +1142,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         else h = 20;
                     }
                     ApplyMinMaxConstraints(child.ComputedStyle, state, ref w, ref h);
-                    return AddNonContentSpacing(new SKSize(w, h), child.ComputedStyle);
+                    return AddNonContentSpacing(new SKSize(w, h), child);
                 }
             }
 
@@ -1112,7 +1173,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float height = intrinsic.Height;
             ApplyMinMaxConstraints(child.ComputedStyle, state, ref width, ref height);
 
-            size = AddNonContentSpacing(new SKSize(Math.Max(0f, width), Math.Max(0f, height)), child.ComputedStyle);
+            size = AddNonContentSpacing(new SKSize(Math.Max(0f, width), Math.Max(0f, height)), child);
             return size.Width > 0f && size.Height >= 0f;
         }
 
@@ -1390,6 +1451,19 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             return new SKSize(Math.Max(0f, totalW), Math.Max(0f, totalH));
         }
 
+        private static SKSize AddNonContentSpacing(SKSize content, LayoutBox box)
+        {
+            if (box?.SourceNode is Element element && ReplacedElementSizing.IsNativeCheckboxOrRadio(element))
+            {
+                var m = box.ComputedStyle?.Margin ?? new Thickness();
+                float totalW = content.Width + (float)(m.Left + m.Right);
+                float totalH = content.Height + (float)(m.Top + m.Bottom);
+                return new SKSize(Math.Max(0f, totalW), Math.Max(0f, totalH));
+            }
+
+            return AddNonContentSpacing(content, box?.ComputedStyle);
+        }
+
         private string ResolveDisplay(LayoutBox box)
         {
             if (box.SourceNode is Element element)
@@ -1464,7 +1538,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     return true;
                 }
 
-                if (type == "submit" || type == "button" || type == "reset")
+                if (type == "checkbox" || type == "radio")
+                {
+                    if (w <= 0) w = ReplacedElementSizing.NativeCheckboxRadioSize;
+                    if (h <= 0) h = ReplacedElementSizing.NativeCheckboxRadioSize;
+                }
+                else if (type == "submit" || type == "button" || type == "reset")
                 {
                     string label = el.GetAttribute("value");
                     if (string.IsNullOrWhiteSpace(label)) label = "Button";
@@ -1965,18 +2044,19 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             float finalW = available;
             
-            var p = box.ComputedStyle?.Padding ?? new Thickness();
-            var b = box.ComputedStyle?.BorderThickness ?? new Thickness();
-            var m = box.ComputedStyle?.Margin ?? new Thickness();
+            bool isAnonymousBlock = box is AnonymousBlockBox;
+            var p = isAnonymousBlock ? new Thickness() : box.ComputedStyle?.Padding ?? new Thickness();
+            var b = isAnonymousBlock ? new Thickness() : box.ComputedStyle?.BorderThickness ?? new Thickness();
+            var m = isAnonymousBlock ? new Thickness() : box.ComputedStyle?.Margin ?? new Thickness();
 
             float used = (float)(p.Left + p.Right + b.Left + b.Right + m.Left + m.Right);
             finalW = widthUnconstrained ? Math.Max(0f, available - used) : Math.Max(0f, rawAvailable - used);
 
-            if (box.ComputedStyle != null && box.ComputedStyle.Width.HasValue)
+            if (!isAnonymousBlock && box.ComputedStyle != null && box.ComputedStyle.Width.HasValue)
             {
                 finalW = (float)box.ComputedStyle.Width.Value;
             }
-            else if (box.ComputedStyle != null && box.ComputedStyle.WidthPercent.HasValue)
+            else if (!isAnonymousBlock && box.ComputedStyle != null && box.ComputedStyle.WidthPercent.HasValue)
             {
                 float cbWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
                 if (cbWidth > 0f)
@@ -1984,7 +2064,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     finalW = (float)(box.ComputedStyle.WidthPercent.Value / 100.0 * cbWidth);
                 }
             }
-            else if (box.ComputedStyle != null && !string.IsNullOrEmpty(box.ComputedStyle.WidthExpression))
+            else if (!isAnonymousBlock && box.ComputedStyle != null && !string.IsNullOrEmpty(box.ComputedStyle.WidthExpression))
             {
                 float cbWidth = state.ContainingBlockWidth > 0 ? state.ContainingBlockWidth : state.ViewportWidth;
                 finalW = LayoutHelper.EvaluateCssExpression(
@@ -1996,7 +2076,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             // box-sizing: border-box — the specified width includes padding+border,
             // so subtract them to get the content width.
-            if (box.ComputedStyle != null &&
+            if (!isAnonymousBlock &&
+                box.ComputedStyle != null &&
                 string.Equals(box.ComputedStyle.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase) &&
                 (box.ComputedStyle.Width.HasValue || box.ComputedStyle.WidthPercent.HasValue ||
                  !string.IsNullOrEmpty(box.ComputedStyle.WidthExpression)))
