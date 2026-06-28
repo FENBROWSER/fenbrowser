@@ -942,6 +942,9 @@ namespace FenBrowser.FenEngine.Rendering
         {
             SKColor c;
             if (_namedColors.TryGetValue(name, out c)) return c;
+            // Fall back to CssValueParser.NamedColors which has the full CSS named-color table
+            // (e.g. rebeccapurple, which is not in SkiaSharp 2.x's SKColors).
+            if (Css.CssValueParser.NamedColors.TryGetValue(name, out c)) return c;
             return null;
         }
         
