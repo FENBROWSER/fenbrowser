@@ -86,9 +86,22 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 box.Geometry = new BoxModel();
             }
 
-            box.Geometry.Padding = box.ComputedStyle?.Padding ?? new Thickness();
-            box.Geometry.Border = box.ComputedStyle?.BorderThickness ?? new Thickness();
-            box.Geometry.Margin = box.ComputedStyle?.Margin ?? new Thickness();
+            // Anonymous blocks wrap inline runs inside block containers and must not
+            // carry the parent's padding/border/margin — they are purely grouping wrappers
+            // per CSS 2.1 §9.2.1.1. Inheriting e.g. a parent's 14px padding + 6px border
+            // would add ~20px of spurious space around every text run.
+            if (box is AnonymousBlockBox)
+            {
+                box.Geometry.Padding = new Thickness();
+                box.Geometry.Border = new Thickness();
+                box.Geometry.Margin = new Thickness();
+            }
+            else
+            {
+                box.Geometry.Padding = box.ComputedStyle?.Padding ?? new Thickness();
+                box.Geometry.Border = box.ComputedStyle?.BorderThickness ?? new Thickness();
+                box.Geometry.Margin = box.ComputedStyle?.Margin ?? new Thickness();
+            }
 
             // Formatting contexts should always compute local geometry from a clean origin.
             // Repeated relayout passes otherwise preserve stale subtree offsets and can
@@ -667,12 +680,29 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             // vertical-align, can extend below the synthesized line stack. Clamp the
             // content height to the actual laid out descendant bottoms so following block
             // flow sees the full consumed height.
+            float actualContentRight = 0f;
             float actualContentBottom = 0f;
             foreach (var child in flattenedChildren)
             {
                 if (child?.Geometry == null)
                 {
                     continue;
+                }
+
+                float right = child.Geometry.MarginBox.Right;
+                if (!float.IsFinite(right))
+                {
+                    right = child.Geometry.BorderBox.Right;
+                }
+
+                if (!float.IsFinite(right))
+                {
+                    right = child.Geometry.ContentBox.Right;
+                }
+
+                if (float.IsFinite(right))
+                {
+                    actualContentRight = Math.Max(actualContentRight, right);
                 }
 
                 float bottom = child.Geometry.MarginBox.Bottom;
@@ -712,22 +742,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                                       display == "inline-grid" || display == "inline-table";
                 if (float.IsInfinity(state.AvailableSize.Width) || isInlineAtomic)
                 {
-                    finalContentWidth = maxLineWidth;
+                    finalContentWidth = Math.Max(maxLineWidth, actualContentRight);
                 }
             }
 
-            if (box.ComputedStyle != null && box.ComputedStyle.Height.HasValue)
+            if (TryResolveExplicitContentHeight(box.ComputedStyle, state, out float explicitContentHeight))
             {
-                finalContentHeight = (float)box.ComputedStyle.Height.Value;
-                if (string.Equals(box.ComputedStyle.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
-                {
-                    float verticalExtras =
-                        (float)box.Geometry.Padding.Top +
-                        (float)box.Geometry.Padding.Bottom +
-                        (float)box.Geometry.Border.Top +
-                        (float)box.Geometry.Border.Bottom;
-                    finalContentHeight = Math.Max(0f, finalContentHeight - verticalExtras);
-                }
+                finalContentHeight = explicitContentHeight;
             }
 
             ApplyMinMaxConstraints(box.ComputedStyle, state, ref finalContentWidth, ref finalContentHeight);
@@ -1567,6 +1588,66 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             width = Math.Max(minW, Math.Min(width, maxW));
             height = Math.Max(minH, Math.Min(height, maxH));
+        }
+
+        private static bool TryResolveExplicitContentHeight(CssComputed style, LayoutState state, out float height)
+        {
+            height = 0f;
+            if (style == null)
+            {
+                return false;
+            }
+
+            if (style.Height.HasValue)
+            {
+                height = (float)style.Height.Value;
+            }
+            else if (style.HeightPercent.HasValue)
+            {
+                float basis = ResolveDefiniteContainingBlockHeight(state);
+                if (!float.IsFinite(basis) || basis <= 0f)
+                {
+                    return false;
+                }
+
+                height = (float)(style.HeightPercent.Value / 100.0 * basis);
+            }
+            else if (!string.IsNullOrEmpty(style.HeightExpression))
+            {
+                float basis = ResolveDefiniteContainingBlockHeight(state);
+                if (!float.IsFinite(basis) || basis <= 0f)
+                {
+                    basis = state.ViewportHeight;
+                }
+
+                height = LayoutHelper.EvaluateCssExpression(
+                    style.HeightExpression,
+                    basis,
+                    state.ViewportWidth,
+                    state.ViewportHeight);
+            }
+            else
+            {
+                return false;
+            }
+
+            if (!float.IsFinite(height))
+            {
+                return false;
+            }
+
+            if (string.Equals(style.BoxSizing, "border-box", StringComparison.OrdinalIgnoreCase))
+            {
+                height = Math.Max(0f, height - GetPaddingBorderHeight(style));
+            }
+
+            return true;
+        }
+
+        private static float ResolveDefiniteContainingBlockHeight(LayoutState state)
+        {
+            float basis = state.ContainingBlockHeight;
+            return float.IsFinite(basis) && basis > 0f ? basis : float.NaN;
         }
 
         private static float GetPaddingBorderWidth(CssComputed style)
