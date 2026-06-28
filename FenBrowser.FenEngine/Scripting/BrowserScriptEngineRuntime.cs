@@ -28,6 +28,7 @@ using FenBrowser.Js.Source;
 using FenBrowser.Js.Parser;
 using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Security;
 
 namespace FenBrowser.FenEngine.Scripting;
@@ -263,10 +264,28 @@ public interface IBrowserScriptEngine
     BrowserEventLoopSnapshot GetEventLoopSnapshot();
     void SetHistoryBridge(IHistoryBridge bridge);
     void NotifyPopState(object state);
-    void DispatchEventForElement(Element element, string eventName);
+    bool DispatchEventForElement(Element element, string eventName, BrowserDomEventInit eventInit = null);
     object Evaluate(string script);
     void SyncDomContext(Node domRoot, Uri baseUri = null);
     Task SetDomAsync(Node domRoot, Uri baseUri = null);
+}
+
+public sealed class BrowserDomEventInit
+{
+    public double ClientX { get; init; }
+    public double ClientY { get; init; }
+    public double PageX { get; init; }
+    public double PageY { get; init; }
+    public double ScreenX { get; init; }
+    public double ScreenY { get; init; }
+    public int Button { get; init; }
+    public int Buttons { get; init; }
+    public int PointerId { get; init; } = 1;
+    public string PointerType { get; init; } = "mouse";
+    public double Pressure { get; init; }
+    public bool IsPrimary { get; init; } = true;
+    public bool Bubbles { get; init; } = true;
+    public bool Cancelable { get; init; } = true;
 }
 
 /// <summary>
@@ -643,25 +662,22 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         // when the history bridge fires.
     }
 
-    public void DispatchEventForElement(Element element, string eventName)
+    public bool DispatchEventForElement(Element element, string eventName, BrowserDomEventInit eventInit = null)
     {
         if (element == null || string.IsNullOrWhiteSpace(eventName))
-            return;
+            return true;
 
-        DispatchElementEvent(element, eventName);
+        var eventValue = CreateBrowserDomEventValue(element, eventName, eventInit, out var dispatchState);
+        DispatchElementEvent(element, eventName, eventValue, dispatchState);
 
         // Look up event handler from the FenJS host property store and invoke it.
         var handler = GetStoredHostPropertyOrUndefined(element, "on" + eventName);
         if (_interpreter != null && _interpreter.CanCallValue(handler))
         {
-            var eventObj = _interpreter.AllocateObject(new Dictionary<string, JsValue>
-            {
-                ["type"] = JsValue.FromString(eventName),
-                ["target"] = ToHostOrNull(element, HostObjectKind.DomElement),
-                ["currentTarget"] = ToHostOrNull(element, HostObjectKind.DomElement)
-            });
-            InvokeFenJsCallback(handler, ToHostOrNull(element, HostObjectKind.DomElement), eventObj);
+            InvokeFenJsCallback(handler, ToHostOrNull(element, HostObjectKind.DomElement), eventValue);
         }
+
+        return !dispatchState.DefaultPrevented;
     }
 
     public object Evaluate(string script)
@@ -2508,13 +2524,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             "globalThis.__uspapi = function(cmd, version, callback) { if (callback) callback({ uspString: '1---' }, true); };" +
             "globalThis.__tcfapiLocator = function() {};" +
             "globalThis.__tcfapi = function(cmd, version, callback) { if (callback) callback({ tcString: '', gdprApplies: false }, true); };" +
-            "globalThis.__gppLocator = function() {};" +
-            // Stub window.alert / confirm / prompt — fundamental browser APIs.
-            // alert() logs to console and is a no-op; confirm() returns true;
-            // prompt() returns the default value or null.
-            "globalThis.alert = function(msg) { console.log('[alert] ' + (msg || '')); };" +
-            "globalThis.confirm = function(msg) { console.log('[confirm] ' + (msg || '')); return true; };" +
-            "globalThis.prompt = function(msg, def) { console.log('[prompt] ' + (msg || '') + ' default=' + (def || '')); return def != null ? def : null; };");
+            "globalThis.__gppLocator = function() {};");
         // Stub document.fonts (FontFaceSet API) so sites that use the CSS Font
         // Loading API (Google loads 'Google Sans' this way) don't crash.
         // .load() returns a Promise that resolves to an empty array; .ready is
@@ -2547,6 +2557,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     (_, _2) => JsValue.FromBoolean(false),
                     length: 1),
             }));
+        SetStoredHostProperty(navigator, "userAgentData", CreateNavigatorUserAgentDataObject(navigator.UserAgentData));
         _interpreter.RegisterGlobalHostObject("location", RegisterHostObject(location, HostObjectKind.Other));
         _interpreter.RegisterGlobalValue("innerWidth", JsValue.FromNumber(WindowWidth));
         _interpreter.RegisterGlobalValue("innerHeight", JsValue.FromNumber(WindowHeight));
@@ -2580,13 +2591,178 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 },
                 length: 2));
 
+        // ── window.alert / confirm / prompt — fire-and-forget dialog display
+        // with immediate return of safe defaults.
+        //
+        // Synchronously blocking the JS worker for a modal dialog would require
+        // the main thread's game loop to process the dialog creation action
+        // (posted via WindowManager.RunOnMainThread).  If the engine loop is
+        // parked (waiting for JS to finish on the large-stack worker), the
+        // game loop's ProcessMainThreadQueue may not drain in time, causing the
+        // browser to appear hung.
+        //
+        // Instead we post the dialog to the UI thread asynchronously and return
+        // a safe default immediately.  The dialog still appears visually; the
+        // return value is the optimistic / pre-filled answer.  A proper nested-
+        // event-loop implementation (where the interpreter yields, the engine
+        // loop shows the dialog, and execution resumes on dismiss) is deferred.
+        _interpreter.RegisterGlobalValue(
+            "alert",
+            _interpreter.AllocateNativeFunction(
+                "alert",
+                (_, args) =>
+                {
+                    var msg = args.Count > 0 ? args[0].ToString() : "";
+                    PostDialogAsync("alert", msg, "");
+                    return JsValue.Undefined;
+                },
+                length: 1));
+        _interpreter.RegisterGlobalValue(
+            "confirm",
+            _interpreter.AllocateNativeFunction(
+                "confirm",
+                (_, args) =>
+                {
+                    var msg = args.Count > 0 ? args[0].ToString() : "";
+                    PostDialogAsync("confirm", msg, "");
+                    return JsValue.FromBoolean(true);
+                },
+                length: 1));
+        _interpreter.RegisterGlobalValue(
+            "prompt",
+            _interpreter.AllocateNativeFunction(
+                "prompt",
+                (_, args) =>
+                {
+                    var msg = args.Count > 0 ? args[0].ToString() : "";
+                    var def = args.Count > 1 && args[1].Tag != FenBrowser.Js.Runtime.JsValueTag.Undefined ? args[1].ToString() : "";
+                    PostDialogAsync("prompt", msg, def);
+                    return string.IsNullOrEmpty(def) ? JsValue.Null : JsValue.FromString(def);
+                },
+                length: 2));
+
+        // ── window.open — calls into Host to create a new tab and returns a
+        // host object representing the popup window with document.write/close etc.
+        _interpreter.RegisterGlobalValue(
+            "open",
+            _interpreter.AllocateNativeFunction(
+                "open",
+                (_, args) =>
+                {
+                    var url = args.Count > 0 ? args[0].ToString() : "";
+                    var name = args.Count > 1 ? args[1].ToString() : "";
+                    var features = args.Count > 2 ? args[2].ToString() : "";
+
+                    var bridge = JsDialogBridge.OpenWindow;
+                    if (bridge == null)
+                    {
+                        FenLogger.Warn("[open] JsDialogBridge not installed — returning null", LogCategory.JavaScript);
+                        return JsValue.Null;
+                    }
+
+                    var handle = bridge(url, name, features);
+                    if (handle == null) return JsValue.Null;
+
+                    return CreatePopupWindowHostObject(handle, name, url);
+                },
+                length: 3));
+
         InstallFenJsPerformance();
         InstallFenJsTimers();
         InstallFenJsBrowserConstructors();
         InstallFenJsNativeBrowserConstructors();
         InstallFenJsMutationObserver();
         InstallFenJsEventTarget();
+        InstallFenJsBrowserUiApis(baseUri);
         InstallFenJsRemainingWebApis();
+    }
+
+    private void InstallFenJsBrowserUiApis(Uri baseUri)
+    {
+        var secureContextLiteral = IsPotentiallyTrustworthyOrigin(baseUri) ? "true" : "false";
+        EvaluateWithFenJsRaw(
+            """
+            (function () {
+                var notificationPermission = 'granted';
+
+                function scheduleNotificationEvent(notification, eventName) {
+                    setTimeout(function () {
+                        var handler = notification && notification['on' + eventName];
+                        if (typeof handler === 'function') {
+                            try {
+                                handler.call(notification, new Event(eventName));
+                            } catch (_) {
+                            }
+                        }
+                    }, 0);
+                }
+
+                function Notification(title, options) {
+                    if (!(this instanceof Notification)) {
+                        return new Notification(title, options);
+                    }
+
+                    if (notificationPermission === 'denied') {
+                        throw new TypeError('Notification permission denied');
+                    }
+
+                    options = options || {};
+                    this.title = String(title || '');
+                    this.body = options.body ? String(options.body) : '';
+                    this.tag = options.tag ? String(options.tag) : '';
+                    this.closed = false;
+                    this.onclick = null;
+                    this.onshow = null;
+                    this.onerror = null;
+                    this.onclose = null;
+                    this.close = function () {
+                        if (this.closed) return;
+                        this.closed = true;
+                        scheduleNotificationEvent(this, 'close');
+                    };
+                    scheduleNotificationEvent(this, 'show');
+                }
+
+                Object.defineProperty(Notification, 'permission', {
+                    get: function () { return notificationPermission; },
+                    configurable: true
+                });
+                Notification.requestPermission = function (callback) {
+                    notificationPermission = 'granted';
+                    if (typeof callback === 'function') {
+                        try { callback(notificationPermission); } catch (_) {}
+                    }
+                    return Promise.resolve(notificationPermission);
+                };
+
+                globalThis.Notification = Notification;
+            })();
+            """ +
+            "globalThis.isSecureContext = " + secureContextLiteral + ";" +
+            "globalThis.window.isSecureContext = globalThis.isSecureContext;");
+    }
+
+    private static bool IsPotentiallyTrustworthyOrigin(Uri uri)
+    {
+        if (uri == null)
+        {
+            return false;
+        }
+
+        if (string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(uri.Scheme, Uri.UriSchemeFile, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return string.Equals(uri.Host, "localhost", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(uri.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(uri.Host, "::1", StringComparison.OrdinalIgnoreCase);
     }
 
     // W3C High Resolution Time / Performance Timeline. SPA frameworks (React, and
@@ -3878,6 +4054,139 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 DOMException.prototype = Object.create(Error.prototype);
                 DOMException.prototype.constructor = DOMException;
 
+                // Minimal queued ReadableStream/reader implementation for site
+                // bootstrap code that constructs streams or checks the global.
+                function ReadableStreamDefaultController(stream) {
+                    this._stream = stream;
+                }
+                ReadableStreamDefaultController.prototype.enqueue = function (chunk) {
+                    var stream = this._stream;
+                    if (stream._closed) {
+                        throw new TypeError('Cannot enqueue into a closed ReadableStream.');
+                    }
+                    if (stream._pendingReads.length) {
+                        stream._pendingReads.shift().resolve({ value: chunk, done: false });
+                    } else {
+                        stream._queue.push(chunk);
+                    }
+                };
+                ReadableStreamDefaultController.prototype.close = function () {
+                    var stream = this._stream;
+                    if (stream._closed) return;
+                    stream._closed = true;
+                    while (stream._pendingReads.length) {
+                        stream._pendingReads.shift().resolve({ value: undefined, done: true });
+                    }
+                };
+                ReadableStreamDefaultController.prototype.error = function (reason) {
+                    var stream = this._stream;
+                    stream._error = reason || new TypeError('ReadableStream error');
+                    stream._closed = true;
+                    while (stream._pendingReads.length) {
+                        stream._pendingReads.shift().reject(stream._error);
+                    }
+                };
+
+                function ReadableStreamDefaultReader(stream) {
+                    if (!(stream instanceof ReadableStream)) {
+                        throw new TypeError('ReadableStream reader requires a stream.');
+                    }
+                    if (stream._reader) {
+                        throw new TypeError('ReadableStream is already locked.');
+                    }
+                    this._stream = stream;
+                    stream._reader = this;
+                }
+                ReadableStreamDefaultReader.prototype.read = function () {
+                    var stream = this._stream;
+                    if (!stream) {
+                        return Promise.reject(new TypeError('ReadableStream reader lock has been released.'));
+                    }
+                    stream._disturbed = true;
+                    if (stream._error) {
+                        return Promise.reject(stream._error);
+                    }
+                    if (stream._queue.length) {
+                        return Promise.resolve({ value: stream._queue.shift(), done: false });
+                    }
+                    if (stream._closed || stream._cancelled) {
+                        return Promise.resolve({ value: undefined, done: true });
+                    }
+                    return new Promise(function (resolve, reject) {
+                        stream._pendingReads.push({ resolve: resolve, reject: reject });
+                    });
+                };
+                ReadableStreamDefaultReader.prototype.cancel = function (reason) {
+                    var stream = this._stream;
+                    if (!stream) return Promise.resolve(undefined);
+                    return stream.cancel(reason);
+                };
+                ReadableStreamDefaultReader.prototype.releaseLock = function () {
+                    if (this._stream && this._stream._reader === this) {
+                        this._stream._reader = null;
+                    }
+                    this._stream = null;
+                };
+
+                globalThis.ReadableStream = function ReadableStream(underlyingSource, strategy) {
+                    this._queue = [];
+                    this._pendingReads = [];
+                    this._reader = null;
+                    this._closed = false;
+                    this._cancelled = false;
+                    this._disturbed = false;
+                    this._error = null;
+                    var controller = new ReadableStreamDefaultController(this);
+                    if (underlyingSource && typeof underlyingSource.start === 'function') {
+                        var startResult = underlyingSource.start(controller);
+                        if (startResult && typeof startResult.then === 'function') {
+                            startResult.catch(controller.error.bind(controller));
+                        }
+                    }
+                };
+                Object.defineProperty(ReadableStream.prototype, 'locked', {
+                    get: function () { return !!this._reader; }
+                });
+                ReadableStream.prototype.getReader = function (options) {
+                    return new ReadableStreamDefaultReader(this);
+                };
+                ReadableStream.prototype.cancel = function (reason) {
+                    this._cancelled = true;
+                    this._closed = true;
+                    this._queue.length = 0;
+                    while (this._pendingReads.length) {
+                        this._pendingReads.shift().resolve({ value: undefined, done: true });
+                    }
+                    return Promise.resolve(undefined);
+                };
+                ReadableStream.prototype.tee = function () {
+                    var source = this;
+                    var snapshot = source._queue.slice();
+                    return [
+                        new ReadableStream({ start: function (controller) { snapshot.forEach(function (chunk) { controller.enqueue(chunk); }); if (source._closed) controller.close(); } }),
+                        new ReadableStream({ start: function (controller) { snapshot.forEach(function (chunk) { controller.enqueue(chunk); }); if (source._closed) controller.close(); } })
+                    ];
+                };
+                ReadableStream.prototype.pipeTo = function (destination) {
+                    var reader = this.getReader();
+                    function pump() {
+                        return reader.read().then(function (record) {
+                            if (record.done) return undefined;
+                            if (destination && typeof destination.write === 'function') {
+                                destination.write(record.value);
+                            }
+                            return pump();
+                        });
+                    }
+                    return pump();
+                };
+                ReadableStream.prototype.pipeThrough = function (transform) {
+                    if (transform && transform.readable) return transform.readable;
+                    return this;
+                };
+                globalThis.ReadableStreamDefaultReader = ReadableStreamDefaultReader;
+                globalThis.ReadableStreamDefaultController = ReadableStreamDefaultController;
+
                 // ── fetch ── Minimal stub that rejects with a network error.
                 // GitHub and many sites use fetch() for API calls.
                 function normalizeHeaderName(name) {
@@ -4159,8 +4468,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 if (cs.MaxWidth.HasValue) props["maxWidth"] = JsValue.FromString(cs.MaxWidth.Value + "px");
                 if (cs.MaxHeight.HasValue) props["maxHeight"] = JsValue.FromString(cs.MaxHeight.Value + "px");
                 if (cs.FontSize.HasValue) props["fontSize"] = JsValue.FromString(cs.FontSize.Value + "px");
-                if (cs.ForegroundColor.HasValue) props["color"] = JsValue.FromString(cs.ForegroundColor.Value.ToString());
-                if (cs.BackgroundColor.HasValue) props["backgroundColor"] = JsValue.FromString(cs.BackgroundColor.Value.ToString());
+                if (cs.ForegroundColor.HasValue) props["color"] = JsValue.FromString(CssParser.ResolveCurrentColor(cs.ForegroundColor.Value, cs.ForegroundColor).ToString());
+                if (cs.BackgroundColor.HasValue) props["backgroundColor"] = JsValue.FromString(CssParser.ResolveCurrentColor(cs.BackgroundColor.Value, cs.ForegroundColor).ToString());
                 if (cs.Opacity.HasValue) props["opacity"] = JsValue.FromString(cs.Opacity.Value.ToString(CultureInfo.InvariantCulture));
                 if (cs.Visibility != null) props["visibility"] = JsValue.FromString(cs.Visibility);
                 if (cs.Overflow != null) props["overflow"] = JsValue.FromString(cs.Overflow);
@@ -4909,6 +5218,147 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return BrowserSettings.GetBrowserSurface(BrowserSettings.Instance.SelectedUserAgent);
     }
 
+    private JsValue CreateNavigatorUserAgentDataObject(BrowserUserAgentDataProfile userAgentData)
+    {
+        userAgentData ??= new BrowserUserAgentDataProfile();
+
+        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["brands"] = CreateClientHintBrandArray(userAgentData.Brands),
+            ["mobile"] = JsValue.FromBoolean(userAgentData.Mobile),
+            ["platform"] = JsValue.FromString(userAgentData.Platform ?? string.Empty),
+            ["toJSON"] = _interpreter.AllocateNativeFunction(
+                "toJSON",
+                (_, _) => _interpreter.AllocateObject(new Dictionary<string, JsValue>
+                {
+                    ["brands"] = CreateClientHintBrandArray(userAgentData.Brands),
+                    ["mobile"] = JsValue.FromBoolean(userAgentData.Mobile),
+                    ["platform"] = JsValue.FromString(userAgentData.Platform ?? string.Empty)
+                }),
+                length: 0),
+            ["getHighEntropyValues"] = _interpreter.AllocateNativeFunction(
+                "getHighEntropyValues",
+                (_, args) =>
+                {
+                    var snapshot = CreateUserAgentHighEntropySnapshot(
+                        userAgentData,
+                        args.Count > 0 ? args[0] : JsValue.Undefined);
+                    var (promise, resolve, _) = ((IBuiltinContext)_interpreter).CreatePromiseCapability();
+                    _ = _interpreter.InvokeFunction(resolve, new[] { snapshot }, JsValue.Undefined);
+                    return promise;
+                },
+                length: 1)
+        });
+    }
+
+    private JsValue CreateUserAgentHighEntropySnapshot(BrowserUserAgentDataProfile userAgentData, JsValue hintsValue)
+    {
+        var requested = ExtractStringArrayLike(hintsValue);
+        var properties = new Dictionary<string, JsValue>();
+
+        foreach (var hint in requested)
+        {
+            switch (hint)
+            {
+                case "architecture":
+                    properties["architecture"] = JsValue.FromString(userAgentData.Architecture ?? string.Empty);
+                    break;
+                case "bitness":
+                    properties["bitness"] = JsValue.FromString(userAgentData.Bitness ?? string.Empty);
+                    break;
+                case "brands":
+                    properties["brands"] = CreateClientHintBrandArray(userAgentData.Brands);
+                    break;
+                case "fullVersionList":
+                    properties["fullVersionList"] = CreateClientHintBrandArray(userAgentData.FullVersionList);
+                    break;
+                case "mobile":
+                    properties["mobile"] = JsValue.FromBoolean(userAgentData.Mobile);
+                    break;
+                case "model":
+                    properties["model"] = JsValue.FromString(userAgentData.Model ?? string.Empty);
+                    break;
+                case "platform":
+                    properties["platform"] = JsValue.FromString(userAgentData.Platform ?? string.Empty);
+                    break;
+                case "platformVersion":
+                    properties["platformVersion"] = JsValue.FromString(userAgentData.PlatformVersion ?? string.Empty);
+                    break;
+                case "uaFullVersion":
+                    properties["uaFullVersion"] = JsValue.FromString(GetPrimaryUserAgentFullVersion(userAgentData));
+                    break;
+                case "wow64":
+                    properties["wow64"] = JsValue.FromBoolean(userAgentData.Wow64);
+                    break;
+            }
+        }
+
+        return _interpreter.AllocateObject(properties);
+    }
+
+    private JsValue CreateClientHintBrandArray(IReadOnlyList<BrowserClientHintBrand> brands)
+    {
+        var values = (brands ?? Array.Empty<BrowserClientHintBrand>())
+            .Select(brand => _interpreter.AllocateObject(new Dictionary<string, JsValue>
+            {
+                ["brand"] = JsValue.FromString(brand?.Brand ?? string.Empty),
+                ["version"] = JsValue.FromString(brand?.Version ?? string.Empty)
+            }))
+            .ToArray();
+        return _interpreter.AllocateArray(values);
+    }
+
+    private IReadOnlyList<string> ExtractStringArrayLike(JsValue value)
+    {
+        if (value.Tag != JsValueTag.Object)
+        {
+            return Array.Empty<string>();
+        }
+
+        var obj = _interpreter.Heap.GetObject(value.AsObjectHandle());
+        var context = (IBuiltinContext)_interpreter;
+        if (!context.TryGetPropertyValue(obj, value, "length", out var lengthValue))
+        {
+            return Array.Empty<string>();
+        }
+
+        var length = Math.Max(0, (int)Math.Min(128, lengthValue.AsNumber()));
+        var items = new List<string>(length);
+        for (var i = 0; i < length; i++)
+        {
+            if (context.TryGetPropertyValue(obj, value, i.ToString(CultureInfo.InvariantCulture), out var itemValue))
+            {
+                items.Add(CoerceToHostString(itemValue));
+            }
+        }
+
+        return items;
+    }
+
+    private static string GetPrimaryUserAgentFullVersion(BrowserUserAgentDataProfile userAgentData)
+    {
+        if (userAgentData?.FullVersionList == null || userAgentData.FullVersionList.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var preferredBrand = userAgentData.FullVersionList.FirstOrDefault(brand =>
+            !IsGreaseBrand(brand?.Brand) &&
+            !string.Equals(brand?.Brand, "Chromium", StringComparison.OrdinalIgnoreCase));
+        if (preferredBrand != null)
+        {
+            return preferredBrand.Version ?? string.Empty;
+        }
+
+        var nonGreaseBrand = userAgentData.FullVersionList.FirstOrDefault(brand => !IsGreaseBrand(brand?.Brand));
+        return nonGreaseBrand?.Version ?? string.Empty;
+    }
+
+    private static bool IsGreaseBrand(string brand)
+    {
+        return string.Equals(brand, " Not;A Brand", StringComparison.Ordinal);
+    }
+
     private JsValue ToHostOrNull(object hostObject, HostObjectKind kind)
     {
         if (hostObject == null)
@@ -5177,13 +5627,22 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return _elementEventListeners.GetOrCreateValue(element);
     }
 
-    private void DispatchElementEvent(Element element, string type)
+    private void DispatchElementEvent(
+        Element element,
+        string type,
+        JsValue eventValue = default,
+        BrowserDomEventDispatchState dispatchState = null)
     {
         if (element != null &&
             _elementEventListeners.TryGetValue(element, out var listeners) &&
             listeners != null)
         {
-            DispatchBrowserEvent(listeners, type, ToHostOrNull(element, HostObjectKind.DomElement));
+            DispatchBrowserEvent(
+                listeners,
+                type,
+                ToHostOrNull(element, HostObjectKind.DomElement),
+                eventValue,
+                dispatchState);
         }
     }
 
@@ -5702,7 +6161,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
     }
 
-    private void DispatchBrowserEvent(List<BrowserEventListener> listeners, string type, JsValue currentTarget)
+    private void DispatchBrowserEvent(
+        List<BrowserEventListener> listeners,
+        string type,
+        JsValue currentTarget,
+        JsValue eventValue = default,
+        BrowserDomEventDispatchState dispatchState = null)
     {
         if (listeners.Count == 0)
         {
@@ -5724,12 +6188,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             return;
         }
 
-        var eventValue = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        var createdEventValue = false;
+        if (eventValue.Tag == JsValueTag.Undefined)
         {
-            ["type"] = JsValue.FromString(type),
-            ["target"] = currentTarget,
-            ["currentTarget"] = currentTarget
-        });
+            eventValue = CreateBrowserDomEventValue(null, type, null, out dispatchState);
+            createdEventValue = true;
+        }
+
+        if (createdEventValue)
+        {
+            _interpreter.SetObjectProperty(eventValue, "target", currentTarget);
+            _interpreter.SetObjectProperty(eventValue, "srcElement", currentTarget);
+        }
+        _interpreter.SetObjectProperty(eventValue, "currentTarget", currentTarget);
 
         foreach (var listener in callbacks)
         {
@@ -5742,6 +6213,67 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     existing.Callback.Equals(listener.Callback));
             }
         }
+    }
+
+    private JsValue CreateBrowserDomEventValue(
+        Element element,
+        string type,
+        BrowserDomEventInit eventInit,
+        out BrowserDomEventDispatchState dispatchState)
+    {
+        eventInit ??= new BrowserDomEventInit();
+        var state = new BrowserDomEventDispatchState();
+        var target = element == null ? JsValue.Null : ToHostOrNull(element, HostObjectKind.DomElement);
+        var eventValue = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["type"] = JsValue.FromString(type ?? string.Empty),
+            ["target"] = target,
+            ["currentTarget"] = target,
+            ["srcElement"] = target,
+            ["bubbles"] = JsValue.FromBoolean(eventInit.Bubbles),
+            ["cancelable"] = JsValue.FromBoolean(eventInit.Cancelable),
+            ["defaultPrevented"] = JsValue.FromBoolean(false),
+            ["clientX"] = JsValue.FromNumber(eventInit.ClientX),
+            ["clientY"] = JsValue.FromNumber(eventInit.ClientY),
+            ["pageX"] = JsValue.FromNumber(eventInit.PageX),
+            ["pageY"] = JsValue.FromNumber(eventInit.PageY),
+            ["screenX"] = JsValue.FromNumber(eventInit.ScreenX),
+            ["screenY"] = JsValue.FromNumber(eventInit.ScreenY),
+            ["x"] = JsValue.FromNumber(eventInit.ClientX),
+            ["y"] = JsValue.FromNumber(eventInit.ClientY),
+            ["button"] = JsValue.FromInt32(eventInit.Button),
+            ["buttons"] = JsValue.FromInt32(eventInit.Buttons),
+            ["pointerId"] = JsValue.FromInt32(eventInit.PointerId),
+            ["pointerType"] = JsValue.FromString(string.IsNullOrWhiteSpace(eventInit.PointerType) ? "mouse" : eventInit.PointerType),
+            ["pressure"] = JsValue.FromNumber(eventInit.Pressure),
+            ["isPrimary"] = JsValue.FromBoolean(eventInit.IsPrimary),
+            ["timeStamp"] = JsValue.FromNumber(_fenJsClock.Elapsed.TotalMilliseconds)
+        });
+
+        _interpreter.SetObjectProperty(eventValue, "preventDefault", _interpreter.AllocateNativeFunction(
+            "preventDefault",
+            (_, _) =>
+            {
+                if (eventInit.Cancelable)
+                {
+                    state.DefaultPrevented = true;
+                    _interpreter.SetObjectProperty(eventValue, "defaultPrevented", JsValue.FromBoolean(true));
+                }
+
+                return JsValue.Undefined;
+            },
+            length: 0));
+        _interpreter.SetObjectProperty(eventValue, "stopPropagation", _interpreter.AllocateNativeFunction(
+            "stopPropagation",
+            (_, _) => JsValue.Undefined,
+            length: 0));
+        _interpreter.SetObjectProperty(eventValue, "stopImmediatePropagation", _interpreter.AllocateNativeFunction(
+            "stopImmediatePropagation",
+            (_, _) => JsValue.Undefined,
+            length: 0));
+
+        dispatchState = state;
+        return eventValue;
     }
 
     private void InvokeFenJsCallback(JsValue callback, JsValue thisValue, JsValue eventValue)
@@ -6639,7 +7171,156 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         public Document OwnerDocument { get; }
     }
 
+    /// <summary>
+    /// Creates a JS host object representing a popup window created by window.open().
+    /// The handle is an opaque object provided by the Host's OpenWindow delegate.
+    /// </summary>
+    /// <summary>
+    /// Mark an element as style, layout, and paint dirty.  MarkDirty
+    /// automatically propagates Child*Dirty flags up to the root and notifies
+    /// the document, so the next SkiaDomRenderer.Render() call recomputes
+    /// style, re-lays out, and rebuilds the paint tree.
+    /// Required after DOM mutations that affect rendering but don't go through
+    /// the normal dirty-flag path (e.g. dialog.showModal/close).
+    /// </summary>
+    private static void InvalidatePaintForElement(Element element)
+    {
+        if (element == null) return;
+
+        // Mark the element dirty so the renderer's dirty-flag checks trigger a
+        // paint-tree rebuild.
+        element.MarkDirty(
+            FenBrowser.Core.Dom.V2.InvalidationKind.Style |
+            FenBrowser.Core.Dom.V2.InvalidationKind.Layout |
+            FenBrowser.Core.Dom.V2.InvalidationKind.Paint);
+
+        // Notify the CSS engine that this element's state changed so it
+        // re-evaluates computed styles.  The dialog's display changes from
+        // "none" to "block" based on the [open] attribute checked by
+        // UAStyleProvider.  Without a recascade, LastComputedStyles retains
+        // the old "display: none" and the layout engine never creates a box.
+        FenBrowser.FenEngine.Rendering.ElementStateManager.Instance.NotifyStateChanged(element);
+    }
+
+    /// <summary>
+    /// Fire-and-forget post of a modal dialog to the UI thread.
+    /// The dialog appears visually but JS execution continues without waiting
+    /// for the user to dismiss it.  This avoids thread-deadlock between the
+    /// FenJS worker, the engine loop, and the Silk.NET game loop.
+    /// </summary>
+    private static void PostDialogAsync(string type, string message, string defaultValue)
+    {
+        var bridge = JsDialogBridge.ShowDialog;
+        if (bridge == null)
+        {
+            FenLogger.Warn($"[{type}] JsDialogBridge not installed — dialog suppressed", LogCategory.JavaScript);
+            return;
+        }
+
+        // Fire the bridge on a thread-pool thread so the caller (the JS worker)
+        // returns immediately.  The bridge itself will post the dialog widget
+        // creation to the main thread and block the pool thread, not the JS worker.
+        System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try { bridge(type, message, defaultValue); }
+            catch (Exception ex)
+            {
+                FenLogger.Error($"[PostDialogAsync] {type} dialog failed: {ex.Message}", LogCategory.JavaScript);
+            }
+        });
+    }
+
+    private JsValue CreatePopupWindowHostObject(object handle, string name, string url)
+    {
+        var obj = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+
+        // closed — read-only getter
+        _interpreter.SetObjectProperty(obj, "closed",
+            _interpreter.AllocateNativeFunction("get closed", (_, _2) =>
+            {
+                var check = JsDialogBridge.IsPopupWindowClosed;
+                return JsValue.FromBoolean(check != null && check(handle));
+            }, length: 0));
+
+        // name
+        _interpreter.SetObjectProperty(obj, "name", JsValue.FromString(name ?? ""));
+
+        // location.href
+        var location = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+        _interpreter.SetObjectProperty(location, "href", JsValue.FromString(url ?? "about:blank"));
+        _interpreter.SetObjectProperty(obj, "location", location);
+
+        // focus()
+        _interpreter.SetObjectProperty(obj, "focus",
+            _interpreter.AllocateNativeFunction("focus", (_, _2) => JsValue.Undefined, length: 0));
+
+        // close()
+        _interpreter.SetObjectProperty(obj, "close",
+            _interpreter.AllocateNativeFunction("close", (_, _2) =>
+            {
+                var closer = JsDialogBridge.ClosePopupWindow;
+                closer?.Invoke(handle);
+                return JsValue.Undefined;
+            }, length: 0));
+
+        // document — popup document with open/write/writeln/close
+        var document = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+        var htmlBuffer = new System.Text.StringBuilder();
+
+        _interpreter.SetObjectProperty(document, "readyState",
+            JsValue.FromString("complete"));
+
+        _interpreter.SetObjectProperty(document, "open",
+            _interpreter.AllocateNativeFunction("open", (_, _2) =>
+            {
+                htmlBuffer.Clear();
+                return document;
+            }, length: 0));
+
+        _interpreter.SetObjectProperty(document, "write",
+            _interpreter.AllocateNativeFunction("write", (_, args) =>
+            {
+                if (args.Count > 0)
+                    htmlBuffer.Append(args[0].ToString());
+                return JsValue.Undefined;
+            }, length: 1));
+
+        _interpreter.SetObjectProperty(document, "writeln",
+            _interpreter.AllocateNativeFunction("writeln", (_, args) =>
+            {
+                if (args.Count > 0)
+                    htmlBuffer.Append(args[0].ToString());
+                htmlBuffer.Append('\n');
+                return JsValue.Undefined;
+            }, length: 1));
+
+        _interpreter.SetObjectProperty(document, "close",
+            _interpreter.AllocateNativeFunction("close", (_, _2) =>
+            {
+                var finalizer = JsDialogBridge.FinalizePopupDocument;
+                if (finalizer != null && htmlBuffer.Length > 0)
+                {
+                    finalizer(handle, htmlBuffer.ToString());
+                    htmlBuffer.Clear();
+                }
+                return JsValue.Undefined;
+            }, length: 0));
+
+        _interpreter.SetObjectProperty(obj, "document", document);
+
+        // self / window circular references
+        _interpreter.SetObjectProperty(obj, "window", obj);
+        _interpreter.SetObjectProperty(obj, "self", obj);
+
+        return obj;
+    }
+
     private sealed record BrowserEventListener(string Type, JsValue Callback, bool Capture, bool Once);
+
+    private sealed class BrowserDomEventDispatchState
+    {
+        public bool DefaultPrevented { get; set; }
+    }
 
     private sealed class FenJsLocationHost
     {
@@ -6989,6 +7670,15 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "documentURI":
                     value = JsValue.FromString(document.URL ?? string.Empty);
                     return true;
+                case "contentType":
+                    value = JsValue.FromString(document.ContentType ?? "text/html");
+                    return true;
+                case "visibilityState":
+                    value = JsValue.FromString(document.Hidden ? "hidden" : "visible");
+                    return true;
+                case "hidden":
+                    value = JsValue.FromBoolean(document.Hidden);
+                    return true;
                 case "title":
                     value = JsValue.FromString(document.Title ?? string.Empty);
                     return true;
@@ -7273,6 +7963,78 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return true;
                 case "src":
                     value = JsValue.FromString(ResolveElementUrlProperty(element, "src"));
+                    return true;
+                case "complete" when IsImageElement(element):
+                    value = JsValue.FromBoolean(true);
+                    return true;
+                case "open" when IsDialogElement(element):
+                    value = JsValue.FromBoolean(element.HasAttribute("open"));
+                    return true;
+                case "showModal" when IsDialogElement(element):
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "showModal",
+                        (_, _) =>
+                        {
+                            element.SetAttribute("open", "");
+                            element.SetAttribute("data-top-layer", "modal");
+                            // OwnerDocument walks up _parentNode to find the Document.
+                            // If the element was obtained via getElementById in a FenJS
+                            // host-object context, the CLR parent chain is intact and
+                            // OwnerDocument is non-null.  If it is null (e.g. detached
+                            // element), skip the TopLayer path — the dialog will still
+                            // render as a normal positioned element via CSS.
+                            var doc = element.OwnerDocument;
+                            if (doc != null)
+                            {
+                                if (!doc.TopLayer.Contains(element))
+                                    doc.TopLayer.Add(element);
+                            }
+                            // Mark style/layout/paint dirty so the renderer rebuilds
+                            // the paint tree and picks up the TopLayer change.
+                            FenJsBrowserScriptEngine.InvalidatePaintForElement(element);
+                            return JsValue.Undefined;
+                        },
+                        length: 0);
+                    return true;
+                case "show" when IsDialogElement(element):
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "show",
+                        (_, _) =>
+                        {
+                            element.SetAttribute("open", "");
+                            FenJsBrowserScriptEngine.InvalidatePaintForElement(element);
+                            return JsValue.Undefined;
+                        },
+                        length: 0);
+                    return true;
+                case "close" when IsDialogElement(element):
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "close",
+                        (_, args) =>
+                        {
+                            element.RemoveAttribute("open");
+                            element.RemoveAttribute("data-top-layer");
+                            element.OwnerDocument?.TopLayer.Remove(element);
+                            if (args.Count > 0)
+                            {
+                                _owner.SetStoredHostProperty(element, "returnValue", args[0]);
+                            }
+
+                            _owner.DispatchEventForElement(element, "close");
+                            FenJsBrowserScriptEngine.InvalidatePaintForElement(element);
+                            return JsValue.Undefined;
+                        },
+                        length: 1);
+                    return true;
+                case "returnValue" when IsDialogElement(element):
+                    value = _owner.GetStoredHostPropertyOrUndefined(element, "returnValue");
+                    if (value.Tag == JsValueTag.Undefined)
+                    {
+                        value = JsValue.FromString(string.Empty);
+                    }
                     return true;
                 case "textContent":
                     value = JsValue.FromString(element.TextContent ?? string.Empty);
@@ -8608,6 +9370,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             }
 
             return raw;
+        }
+
+        private static bool IsImageElement(Element element)
+        {
+            return string.Equals(element?.TagName, "img", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(element?.TagName, "image", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsDialogElement(Element element)
+        {
+            return string.Equals(element?.TagName, "dialog", StringComparison.OrdinalIgnoreCase);
         }
     }
 }

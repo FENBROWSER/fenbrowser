@@ -77,7 +77,7 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                      if (style.BorderBrushColor == null) style.BorderBrushColor = SKColors.Black;
                      if (style.ForegroundColor == null) style.ForegroundColor = SKColors.Black;
                      
-                     if (node.Attr.ContainsKey("modal"))
+                     if (node.Attr.ContainsKey("data-top-layer") && string.Equals(node.Attr["data-top-layer"], "modal", StringComparison.OrdinalIgnoreCase))
                      {
                          if (string.IsNullOrEmpty(style.Position)) style.Position = "fixed";
                          
@@ -164,7 +164,16 @@ namespace FenBrowser.FenEngine.Rendering.UserAgent
                 if (!style.FontWeight.HasValue) 
                     style.FontWeight = 700;
                 
-                if (style.Margin.Left == 0 && style.Margin.Top == 0)
+                // Only apply UA default margins when the author has not explicitly
+                // set any margin longhand or shorthand.  Checking Margin.Top == 0
+                // would incorrectly override author CSS like "margin-top: 0".
+                bool authorSetMargin = style.Map != null &&
+                    (style.Map.ContainsKey("margin") ||
+                     style.Map.ContainsKey("margin-top") ||
+                     style.Map.ContainsKey("margin-right") ||
+                     style.Map.ContainsKey("margin-bottom") ||
+                     style.Map.ContainsKey("margin-left"));
+                if (!authorSetMargin && style.Margin.Left == 0 && style.Margin.Top == 0)
                 {
                     double marginEm = (tag == "H1" || tag == "H2") ? 0.67 : 1.0;
                     float m = (float)(style.FontSize.Value * marginEm);

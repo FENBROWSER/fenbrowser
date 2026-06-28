@@ -80,6 +80,17 @@ namespace FenBrowser.FenEngine.Rendering
         // Callback for when styles need to be recomputed
         public event Action<Element> OnStateChanged;
 
+        /// <summary>
+        /// Notify that an element's state has changed and its computed styles need
+        /// re-evaluation.  Fires OnStateChanged, which is wired to
+        /// CustomHtmlEngine.ScheduleRecascade in BrowserApi.cs.
+        /// Safe to call from any thread.
+        /// </summary>
+        public void NotifyStateChanged(Element element)
+        {
+            OnStateChanged?.Invoke(element);
+        }
+
         // Interactive pseudo-class changes can restyle large regions without changing geometry.
         // Damage-raster reuse is unsafe for that class of update, so request one conservative
         // full repaint the next time the renderer consumes interaction-state changes.

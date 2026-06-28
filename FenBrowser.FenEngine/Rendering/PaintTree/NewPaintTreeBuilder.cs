@@ -117,8 +117,10 @@ namespace FenBrowser.FenEngine.Rendering
             var builder = new NewPaintTreeBuilder(boxes, styles, viewportWidth, viewportHeight, scrollManager, baseUri);
             builder._frameId = frameId;
             
-            // Populate Top Layer set
-            Document doc = root as Document;
+            // Populate Top Layer set.
+            // The render root is typically the <html> Element, not the Document
+            // itself, so try the direct cast first and fall back to OwnerDocument.
+            Document doc = root as Document ?? (root as Element)?.OwnerDocument;
             if (doc != null)
             {
                 foreach (var el in doc.TopLayer)
@@ -141,22 +143,53 @@ namespace FenBrowser.FenEngine.Rendering
                     // Verify if it has a box (rendered)
                     if (boxes.ContainsKey(modal))
                     {
-                        // Add Backdrop
-                        // Grey semi-transparent overlay
+                        // The paint tree lives in document coordinates (the
+                        // canvas is translated by -scrollY before rendering).
+                        // We must offset the backdrop and dialog so they stay
+                        // fixed in the viewport regardless of scroll.
+                        var scrollOffset = builder._scrollManager?.GetScrollOffset(null) ?? (0f, 0f);
+                        float scrollY = scrollOffset.y;
+
+                        // Add Backdrop — covers the viewport in document space.
                         rootNodes.Add(new CustomPaintNode
                         {
-                            Bounds = new SKRect(0, 0, viewportWidth, viewportHeight),
+                            Bounds = new SKRect(0, scrollY, viewportWidth, scrollY + viewportHeight),
                             PaintAction = (canvas, bounds) =>
                             {
-                                using var p = new SKPaint { Color = new SKColor(0, 0, 0, 30), IsAntialias = false }; // ~12% opacity
+                                using var p = new SKPaint { Color = new SKColor(0, 0, 0, 128), IsAntialias = false };
                                 canvas.DrawRect(bounds, p);
                             }
                         });
-                        
-                        // Render Modal
-                        // We use a fresh stacking context for the modal tree
+
+                        // Compute the centering translation so the dialog
+                        // appears at the viewport centre in document space.
+                        // We shift the modal's layout box AND all descendant
+                        // boxes so that every paint node's Bounds passes the
+                        // viewport-intersect culling check in SkiaRenderer.
+                        var modalBox = boxes[modal];
+                        float cx = (viewportWidth - modalBox.BorderBox.Width) / 2f;
+                        float cy = (viewportHeight - modalBox.BorderBox.Height) / 2f;
+                        float dx = cx - modalBox.BorderBox.Left;
+                        float dy = (cy + scrollY) - modalBox.BorderBox.Top;
+
+                        // Build the modal's paint subtree.  If the dialog is
+                        // not already at the computed centre, replace its box
+                        // (and all descendant boxes) with translated copies so
+                        // children pass culling at the new position.
+                        IReadOnlyDictionary<Node, Layout.BoxModel> modalBoxes = boxes;
+                        if (Math.Abs(dx) > 0.5f || Math.Abs(dy) > 0.5f)
+                        {
+                            var shiftedBoxes = new Dictionary<Node, Layout.BoxModel>(boxes);
+                            TranslateBoxTree(modal, dx, dy, shiftedBoxes);
+                            modalBoxes = shiftedBoxes;
+                        }
+
+                        var modalBuilder = new NewPaintTreeBuilder(
+                            modalBoxes, styles, viewportWidth, viewportHeight,
+                            scrollManager, baseUri);
+                        modalBuilder._renderingTopLayer = true;
                         var modalContext = new BuilderStackingContext(modal);
-                        builder.BuildRecursive(modal, modalContext, 0, null, false);
+                        modalBuilder.BuildRecursive(modal, modalContext, 0, null, false);
                         var modalNodes = modalContext.Flatten();
                         rootNodes.AddRange(modalNodes);
                     }
@@ -180,7 +213,43 @@ namespace FenBrowser.FenEngine.Rendering
 
             return new ImmutablePaintTree(rootNodes, frameId);
         }
-        
+
+        /// <summary>
+        /// Translate the BoxModel entries for <paramref name="root"/> and all
+        /// its descendants by (dx, dy) in the boxes dictionary.  Used to
+        /// reposition top-layer dialogs so their paint-node bounds intersect
+        /// the scrolled viewport and are not culled by SkiaRenderer.
+        /// </summary>
+        private static void TranslateBoxTree(
+            Node root, float dx, float dy,
+            Dictionary<Node, Layout.BoxModel> boxes)
+        {
+            if (root == null || boxes == null) return;
+            var stack = new System.Collections.Generic.Stack<Node>();
+            stack.Push(root);
+            while (stack.Count > 0)
+            {
+                var node = stack.Pop();
+                if (node == null) continue;
+                if (boxes.TryGetValue(node, out var box))
+                {
+                    box.MarginBox = Translate(box.MarginBox, dx, dy);
+                    box.BorderBox = Translate(box.BorderBox, dx, dy);
+                    box.PaddingBox = Translate(box.PaddingBox, dx, dy);
+                    box.ContentBox = Translate(box.ContentBox, dx, dy);
+                }
+                var children = node.ChildNodes;
+                if (children != null)
+                {
+                    for (int i = children.Length - 1; i >= 0; i--)
+                        stack.Push(children[i]);
+                }
+            }
+        }
+
+        private static SKRect Translate(SKRect r, float dx, float dy) =>
+            new(r.Left + dx, r.Top + dy, r.Right + dx, r.Bottom + dy);
+
         /// <summary>
         /// Recursively builds paint nodes for an element and its children.
         /// </summary>
@@ -218,11 +287,11 @@ namespace FenBrowser.FenEngine.Rendering
             CssComputed style = null;
             if (node.NodeType == NodeType.Text && node.ParentNode != null)
             {
-                _styles.TryGetValue(node.ParentNode, out style);
+                style = ResolveComputedStyle(node.ParentNode);
             }
             else
             {
-                _styles.TryGetValue(node, out style);
+                style = ResolveComputedStyle(node);
             }
 
             // Get box model. Some inline SVG elements fail to receive a direct layout box even though
@@ -615,7 +684,24 @@ namespace FenBrowser.FenEngine.Rendering
                          radii[1] = new SKPoint(Math.Max(0, radius[1].X - rightW), Math.Max(0, radius[1].Y - topW));
                          radii[2] = new SKPoint(Math.Max(0, radius[2].X - rightW), Math.Max(0, radius[2].Y - botW));
                          radii[3] = new SKPoint(Math.Max(0, radius[3].X - leftW), Math.Max(0, radius[3].Y - botW));
-                         
+
+                         // CSS §5.3 Corner Overlap: single scale factor f
+                         // proportionally reduces all radii together.
+                         float sumTop = radii[0].X + radii[1].X;
+                         float sumRight = radii[1].Y + radii[2].Y;
+                         float sumBottom = radii[2].X + radii[3].X;
+                         float sumLeft = radii[0].Y + radii[3].Y;
+                         float f = 1f;
+                         if (sumTop > 0) f = Math.Min(f, paddingBox.Width / sumTop);
+                         if (sumRight > 0) f = Math.Min(f, paddingBox.Height / sumRight);
+                         if (sumBottom > 0) f = Math.Min(f, paddingBox.Width / sumBottom);
+                         if (sumLeft > 0) f = Math.Min(f, paddingBox.Height / sumLeft);
+                         if (f < 1f)
+                         {
+                             for (int i = 0; i < 4; i++)
+                                 radii[i] = new SKPoint(radii[i].X * f, radii[i].Y * f);
+                         }
+
                          var rrect = new SKRoundRect();
                          rrect.SetRectRadii(paddingBox, radii);
                          clipPath = new SKPath();
@@ -736,9 +822,11 @@ namespace FenBrowser.FenEngine.Rendering
 
             bool hasExplicitWidth = style?.Width.HasValue == true && style.Width.Value > 0;
             bool hasExplicitHeight = style?.Height.HasValue == true && style.Height.Value > 0;
-            bool hasExplicitAttrWidth = TryParseSvgLengthAttribute(element, "width", out var attrW);
-            bool hasExplicitAttrHeight = TryParseSvgLengthAttribute(element, "height", out var attrH);
+            bool hasExplicitAttrWidth = TryParseSvgLengthAttribute(element, "width", style, out var attrW);
+            bool hasExplicitAttrHeight = TryParseSvgLengthAttribute(element, "height", style, out var attrH);
             bool hasExplicitSize = hasExplicitWidth || hasExplicitHeight || hasExplicitAttrWidth || hasExplicitAttrHeight;
+            float explicitTargetWidth = hasExplicitWidth ? (float)style.Width.Value : (hasExplicitAttrWidth ? attrW : 0f);
+            float explicitTargetHeight = hasExplicitHeight ? (float)style.Height.Value : (hasExplicitAttrHeight ? attrH : 0f);
 
             // Keep normal layout boxes when they look sane.
             if (hasExisting)
@@ -747,7 +835,10 @@ namespace FenBrowser.FenEngine.Rendering
                 float bh = existingBox.ContentBox.Height;
                 bool hasUsableSize = bw > 2f && bh > 2f;
                 bool explicitNonZero = hasExplicitSize && bw > 0f && bh > 0f;
-                if (hasUsableSize || explicitNonZero)
+                bool staleTinyExplicitSize =
+                    (explicitTargetWidth > 2f && bw < explicitTargetWidth * 0.5f) ||
+                    (explicitTargetHeight > 2f && bh < explicitTargetHeight * 0.5f);
+                if (hasUsableSize || (explicitNonZero && !staleTinyExplicitSize))
                 {
                     box = existingBox;
                     return true;
@@ -1073,7 +1164,7 @@ namespace FenBrowser.FenEngine.Rendering
             return renderableGlyphCount > 0 ? glyphs : null;
         }
 
-        private static bool TryParseSvgLengthAttribute(Element element, string attributeName, out float value)
+        private static bool TryParseSvgLengthAttribute(Element element, string attributeName, CssComputed style, out float value)
         {
             value = 0f;
             string raw = element.GetAttribute(attributeName);
@@ -1083,33 +1174,68 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             raw = raw.Trim();
-            int count = 0;
-            while (count < raw.Length)
-            {
-                char ch = raw[count];
-                if ((ch >= '0' && ch <= '9') || ch == '.' || ch == '-')
-                {
-                    count++;
-                    continue;
-                }
-
-                break;
-            }
-
-            if (count == 0)
+            string lower = raw.ToLowerInvariant();
+            if (string.Equals(lower, "auto", StringComparison.Ordinal))
             {
                 return false;
             }
 
-            string numeric = raw.Substring(0, count);
-            if (!float.TryParse(numeric, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value))
+            if (lower.EndsWith("%", StringComparison.Ordinal))
             {
-                value = 0f;
                 return false;
             }
 
-            value = Math.Max(0f, value);
-            return true;
+            if (TryParseSvgLengthNumberWithUnit(lower, "rem", out var rem))
+            {
+                value = Math.Max(0f, rem * 16f);
+                return true;
+            }
+
+            if (TryParseSvgLengthNumberWithUnit(lower, "em", out var em))
+            {
+                value = Math.Max(0f, em * ResolveSvgEmBase(style));
+                return true;
+            }
+
+            if (TryParseSvgLengthNumberWithUnit(lower, "px", out var px))
+            {
+                value = Math.Max(0f, px);
+                return true;
+            }
+
+            if (float.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value))
+            {
+                value = Math.Max(0f, value);
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryParseSvgLengthNumberWithUnit(string rawLower, string unit, out float value)
+        {
+            value = 0f;
+            if (string.IsNullOrWhiteSpace(rawLower) || !rawLower.EndsWith(unit, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            string numeric = rawLower.Substring(0, rawLower.Length - unit.Length).Trim();
+            return float.TryParse(
+                numeric,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out value);
+        }
+
+        private static float ResolveSvgEmBase(CssComputed style)
+        {
+            if (style?.FontSize.HasValue == true && style.FontSize.Value > 0)
+            {
+                return (float)style.FontSize.Value;
+            }
+
+            return 16f;
         }
 
         private static bool TryParseSvgViewBoxSize(Element element, out float width, out float height)
@@ -1238,7 +1364,7 @@ namespace FenBrowser.FenEngine.Rendering
                 return;
 
             CssComputed style = null;
-            if (node is Element el) _styles.TryGetValue(el, out style);
+            if (node is Element el) style = ResolveComputedStyle(el);
 
             // 1. ::before
             if (style?.Before?.PseudoElementInstance != null)
@@ -1301,6 +1427,7 @@ namespace FenBrowser.FenEngine.Rendering
             // Replaced/atomic inline elements (IMG/OBJECT/INPUT/VIDEO/...) must keep box-scoped background-image
             // painting and should not route through the inline-fragment background builder.
             bool isAtomicInlineElement = elemNode != null && IsAtomicInlinePaintElement(elemNode);
+            bool usesNativeInputChrome = elemNode != null && ReplacedElementSizing.IsNativeCheckboxOrRadio(elemNode);
             bool isInlineGroup = elemNode != null &&
                                  string.Equals(style?.Display, "inline", StringComparison.OrdinalIgnoreCase) &&
                                  !(node is Text) &&
@@ -1318,15 +1445,18 @@ namespace FenBrowser.FenEngine.Rendering
             if (node is Element || node is PseudoElement)
             {
                 // 1. Background
-                var bgNode = BuildBackgroundNode(node, box, style, isFocused, isHovered);
-                if (bgNode != null) nodes.Add(bgNode);
+                if (!usesNativeInputChrome)
+                {
+                    var bgNode = BuildBackgroundNode(node, box, style, isFocused, isHovered);
+                    if (bgNode != null) nodes.Add(bgNode);
 
-                var bgImgNode = BuildBackgroundImageNode(node, box, style);
-                if (bgImgNode != null) nodes.Add(bgImgNode);
+                    var bgImgNode = BuildBackgroundImageNode(node, box, style);
+                    if (bgImgNode != null) nodes.Add(bgImgNode);
                 
-                // 2. Border
-                var borderNode = BuildBorderNode(node, box, style, isFocused, isHovered);
-                if (borderNode != null) nodes.Add(borderNode);
+                    // 2. Border
+                    var borderNode = BuildBorderNode(node, box, style, isFocused, isHovered);
+                    if (borderNode != null) nodes.Add(borderNode);
+                }
             }
             }
             
@@ -1418,7 +1548,9 @@ namespace FenBrowser.FenEngine.Rendering
             if (node is Element pseudoParent && style != null)
             {
                 // ::before pseudo-element
-                if (style.Before != null && !string.IsNullOrEmpty(style.Before.Content))
+                if (style.Before != null &&
+                    !string.IsNullOrEmpty(style.Before.Content) &&
+                    !HasLaidOutPseudoElement(style.Before))
                 {
                     var beforeNodes = BuildPseudoElementNodes(pseudoParent, box, style.Before, "before");
                     if (beforeNodes != null && beforeNodes.Count > 0)
@@ -1428,7 +1560,9 @@ namespace FenBrowser.FenEngine.Rendering
                 }
                 
                 // ::after pseudo-element
-                if (style.After != null && !string.IsNullOrEmpty(style.After.Content))
+                if (style.After != null &&
+                    !string.IsNullOrEmpty(style.After.Content) &&
+                    !HasLaidOutPseudoElement(style.After))
                 {
                     var afterNodes = BuildPseudoElementNodes(pseudoParent, box, style.After, "after");
                     if (afterNodes != null && afterNodes.Count > 0)
@@ -1451,6 +1585,59 @@ namespace FenBrowser.FenEngine.Rendering
             }
             
             return nodes;
+        }
+
+        private bool HasLaidOutPseudoElement(CssComputed pseudoStyle)
+        {
+            var pseudoNode = pseudoStyle?.PseudoElementInstance;
+            return pseudoNode != null &&
+                   _boxes != null &&
+                   _boxes.TryGetValue(pseudoNode, out var pseudoBox) &&
+                   pseudoBox != null;
+        }
+
+        private CssComputed ResolveComputedStyle(Node node)
+        {
+            if (node == null)
+            {
+                return null;
+            }
+
+            if (_styles != null && _styles.TryGetValue(node, out var style))
+            {
+                return style;
+            }
+
+            if (node is PseudoElement pseudo)
+            {
+                return ResolvePseudoComputedStyle(pseudo);
+            }
+
+            return null;
+        }
+
+        private CssComputed ResolvePseudoComputedStyle(PseudoElement pseudo)
+        {
+            if (pseudo == null)
+            {
+                return null;
+            }
+
+            var owner = pseudo.OriginatingElement;
+            if (owner != null && _styles != null && _styles.TryGetValue(owner, out var ownerStyle))
+            {
+                if (string.Equals(pseudo.PseudoType, "before", StringComparison.OrdinalIgnoreCase))
+                {
+                    return ownerStyle.Before ?? pseudo.ComputedStyle;
+                }
+
+                if (string.Equals(pseudo.PseudoType, "after", StringComparison.OrdinalIgnoreCase))
+                {
+                    return ownerStyle.After ?? pseudo.ComputedStyle;
+                }
+            }
+
+            return pseudo.ComputedStyle;
         }
         
         /// <summary>
@@ -1897,7 +2084,7 @@ namespace FenBrowser.FenEngine.Rendering
                         Bounds = finalRect,
                         SourceNode = node,
                         Widths = new float[] { (float)bt.Top, rightW, (float)bt.Bottom, leftW },
-                        Colors = new SKColor[] { style.BorderBrushColor ?? SKColors.Black, style.BorderBrushColor ?? SKColors.Black, style.BorderBrushColor ?? SKColors.Black, style.BorderBrushColor ?? SKColors.Black },
+                        Colors = new SKColor[] { CssParser.ResolveCurrentColor(style.BorderBrushColor ?? SKColors.Black, style.ForegroundColor), CssParser.ResolveCurrentColor(style.BorderBrushColor ?? SKColors.Black, style.ForegroundColor), CssParser.ResolveCurrentColor(style.BorderBrushColor ?? SKColors.Black, style.ForegroundColor), CssParser.ResolveCurrentColor(style.BorderBrushColor ?? SKColors.Black, style.ForegroundColor) },
                         Styles = new string[] { style.BorderStyleTop, style.BorderStyleRight, style.BorderStyleBottom, style.BorderStyleLeft }, 
                         BorderRadius = sliceRadius,
                         IsFocused = isFocused,
@@ -1985,6 +2172,13 @@ namespace FenBrowser.FenEngine.Rendering
             bool cssSpecifiedBackground = style?.Map != null &&
                                           (style.Map.ContainsKey("background") || style.Map.ContainsKey("background-color"));
             bool hasAuthoredBackground = cssSpecifiedBackground || !string.IsNullOrWhiteSpace(style?.BackgroundImage);
+
+            if ((bgColor == null || bgColor.Value.Alpha == 0) &&
+                style?.Map != null &&
+                TryResolveAuthoredBackgroundColor(style.Map, out var authoredBackgroundColor))
+            {
+                bgColor = authoredBackgroundColor;
+            }
 
             if ((bgColor == null || bgColor.Value.Alpha == 0) &&
                 !string.IsNullOrWhiteSpace(style?.BackgroundImage) &&
@@ -2090,6 +2284,69 @@ namespace FenBrowser.FenEngine.Rendering
             };
         }
 
+        private static bool TryResolveAuthoredBackgroundColor(
+            IReadOnlyDictionary<string, string> declarations,
+            out SKColor color)
+        {
+            color = default;
+            if (declarations == null) return false;
+
+            if (declarations.TryGetValue("background-color", out var backgroundColor) &&
+                TryResolveColorToken(backgroundColor, out color))
+            {
+                return true;
+            }
+
+            if (declarations.TryGetValue("background", out var background) &&
+                TryResolveColorToken(background, out color))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryResolveColorToken(string value, out SKColor color)
+        {
+            color = default;
+            if (string.IsNullOrWhiteSpace(value)) return false;
+
+            var direct = CssLoader.TryColor(value);
+            if (direct.HasValue)
+            {
+                color = direct.Value;
+                return true;
+            }
+
+            int varIndex = value.IndexOf("var(", StringComparison.OrdinalIgnoreCase);
+            if (varIndex >= 0)
+            {
+                int fallbackStart = value.IndexOf(',', varIndex);
+                int fallbackEnd = value.LastIndexOf(')');
+                if (fallbackStart >= 0 && fallbackEnd > fallbackStart)
+                {
+                    string fallback = value.Substring(fallbackStart + 1, fallbackEnd - fallbackStart - 1).Trim();
+                    if (TryResolveColorToken(fallback, out color))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            var tokens = value.Split(new[] { ' ', '\t', '\r', '\n', '/' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var token in tokens)
+            {
+                var parsed = CssLoader.TryColor(token.Trim());
+                if (parsed.HasValue)
+                {
+                    color = parsed.Value;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private SKShader TryCreateGradient(string cssValue, SKRect bounds)
         {
             if (string.IsNullOrEmpty(cssValue)) return null;
@@ -2166,7 +2423,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
 
-                if (SKColor.TryParse(colorPart, out var color))
+                if (TryParseGradientColor(colorPart, out var color))
                 {
                     colors.Add(color);
                     if (pos.HasValue) positions.Add(pos.Value);
@@ -2178,7 +2435,12 @@ namespace FenBrowser.FenEngine.Rendering
 
             double rad = angleDeg * Math.PI / 180.0;
             var dir = new SKPoint((float)Math.Sin(rad), -(float)Math.Cos(rad)); // CSS 0deg = to top
-            float half = (float)Math.Max(bounds.Width, bounds.Height);
+            float gradientLength = Math.Abs(bounds.Width * dir.X) + Math.Abs(bounds.Height * dir.Y);
+            if (gradientLength <= 0f)
+            {
+                gradientLength = Math.Max(bounds.Width, bounds.Height);
+            }
+            float half = gradientLength / 2f;
             var center = new SKPoint(bounds.MidX, bounds.MidY);
             var startPt = new SKPoint(center.X - dir.X * half, center.Y - dir.Y * half);
             var endPt = new SKPoint(center.X + dir.X * half, center.Y + dir.Y * half);
@@ -2220,7 +2482,7 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
 
-                if (SKColor.TryParse(colorPart, out var color))
+                if (TryParseGradientColor(colorPart, out var color))
                 {
                     colors.Add(color);
                     if (pos.HasValue) positions.Add(pos.Value);
@@ -2289,7 +2551,7 @@ namespace FenBrowser.FenEngine.Rendering
                         pos = Math.Clamp(degPos / 360f, 0f, 1f);
                 }
 
-                if (SKColor.TryParse(colorPart, out var color))
+                if (TryParseGradientColor(colorPart, out var color))
                 {
                     colors.Add(color);
                     if (pos.HasValue) positions.Add(pos.Value);
@@ -2302,6 +2564,19 @@ namespace FenBrowser.FenEngine.Rendering
             // SKShader.CreateSweepGradient sweeps from startAngle to startAngle+360 around center.
             return SKShader.CreateSweepGradient(center, colors.ToArray(), posArr,
                 SKShaderTileMode.Repeat, startAngleDeg, startAngleDeg + 360f);
+        }
+
+        private static bool TryParseGradientColor(string value, out SKColor color)
+        {
+            color = default;
+            var parsed = CssLoader.TryColor(value);
+            if (parsed.HasValue)
+            {
+                color = parsed.Value;
+                return true;
+            }
+
+            return SKColor.TryParse(value, out color);
         }
 
         private static double DirectionToAngle(string dir)
@@ -2392,6 +2667,12 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             string url = ExtractFirstBackgroundImageUrl(style.BackgroundImage);
+            if (string.IsNullOrWhiteSpace(url) &&
+                style.BackgroundImage.Contains("gradient", StringComparison.OrdinalIgnoreCase))
+            {
+                return BuildGradientBackgroundImageNode(node, box, style);
+            }
+
             if (string.IsNullOrWhiteSpace(url))
             {
                 if (node is Element debugElemNoUrl)
@@ -2516,6 +2797,240 @@ namespace FenBrowser.FenEngine.Rendering
             };
         }
 
+        private ImagePaintNode BuildGradientBackgroundImageNode(Node node, Layout.BoxModel box, CssComputed style)
+        {
+            if (box == null || string.IsNullOrWhiteSpace(style?.BackgroundImage))
+            {
+                return null;
+            }
+
+            var layers = SplitTopLevelComma(style.BackgroundImage)
+                .Select(l => l.Trim())
+                .Where(IsGradientBackgroundLayer)
+                .ToList();
+            if (layers.Count == 0)
+            {
+                return null;
+            }
+
+            var clipBounds = ResolveBackgroundPaintBounds(box, style);
+            if (clipBounds.Width <= 0 || clipBounds.Height <= 0)
+            {
+                return null;
+            }
+
+            ResolveGradientBackgroundTileSize(style.BackgroundSize, clipBounds, out var tileWidth, out var tileHeight);
+            int bitmapWidth = Math.Max(1, (int)Math.Ceiling(tileWidth));
+            int bitmapHeight = Math.Max(1, (int)Math.Ceiling(tileHeight));
+            tileWidth = bitmapWidth;
+            tileHeight = bitmapHeight;
+
+            var bitmap = new SKBitmap(new SKImageInfo(
+                bitmapWidth,
+                bitmapHeight,
+                SKColorType.Bgra8888,
+                SKAlphaType.Premul));
+            using (var canvas = new SKCanvas(bitmap))
+            {
+                canvas.Clear(SKColors.Transparent);
+                var positions = SplitTopLevelComma(style.BackgroundPosition ?? string.Empty)
+                    .Select(p => p.Trim())
+                    .ToList();
+
+                for (int i = layers.Count - 1; i >= 0; i--)
+                {
+                    var layerPosition = ResolveGradientLayerPosition(positions, i, tileWidth, tileHeight);
+                    DrawGradientLayerTile(canvas, layers[i], tileWidth, tileHeight, layerPosition);
+                }
+            }
+
+            var origin = ResolveBackgroundOriginPoint(box, style);
+            var (tileModeX, tileModeY) = ResolveBackgroundTileModes(style.BackgroundRepeat);
+            float fixedOriginX = 0;
+            float fixedOriginY = 0;
+            if (string.Equals(style.BackgroundAttachment, "fixed", StringComparison.OrdinalIgnoreCase))
+            {
+                var viewportScroll = _scrollManager?.GetScrollOffset(null) ?? (0f, 0f);
+                fixedOriginX = viewportScroll.x;
+                fixedOriginY = viewportScroll.y;
+            }
+
+            return new ImagePaintNode
+            {
+                Bounds = clipBounds,
+                SourceNode = node,
+                Bitmap = bitmap,
+                ObjectFit = "none",
+                IsBackgroundImage = true,
+                TileModeX = tileModeX,
+                TileModeY = tileModeY,
+                BackgroundOrigin = origin,
+                BackgroundPosition = SKPoint.Empty,
+                BackgroundAttachmentFixed = string.Equals(style.BackgroundAttachment, "fixed", StringComparison.OrdinalIgnoreCase),
+                FixedViewportOrigin = new SKPoint(fixedOriginX, fixedOriginY)
+            };
+        }
+
+        private void DrawGradientLayerTile(SKCanvas canvas, string css, float tileWidth, float tileHeight, SKPoint position)
+        {
+            if (canvas == null || string.IsNullOrWhiteSpace(css) || tileWidth <= 0 || tileHeight <= 0)
+            {
+                return;
+            }
+
+            float originX = PositiveModulo(position.X, tileWidth);
+            float originY = PositiveModulo(position.Y, tileHeight);
+
+            for (float y = originY - tileHeight; y < tileHeight; y += tileHeight)
+            {
+                for (float x = originX - tileWidth; x < tileWidth; x += tileWidth)
+                {
+                    var tileRect = new SKRect(x, y, x + tileWidth, y + tileHeight);
+                    using var shader = TryCreateGradient(css, tileRect);
+                    if (shader == null)
+                    {
+                        continue;
+                    }
+
+                    using var paint = new SKPaint
+                    {
+                        Shader = shader,
+                        IsAntialias = false
+                    };
+                    canvas.DrawRect(tileRect, paint);
+                }
+            }
+        }
+
+        private static bool IsGradientBackgroundLayer(string layer)
+        {
+            if (string.IsNullOrWhiteSpace(layer))
+            {
+                return false;
+            }
+
+            var trimmed = layer.Trim();
+            return trimmed.StartsWith("linear-gradient", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("repeating-linear-gradient", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("radial-gradient", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("repeating-radial-gradient", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("conic-gradient", StringComparison.OrdinalIgnoreCase) ||
+                   trimmed.StartsWith("repeating-conic-gradient", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void ResolveGradientBackgroundTileSize(string value, SKRect bounds, out float width, out float height)
+        {
+            width = Math.Max(1f, bounds.Width);
+            height = Math.Max(1f, bounds.Height);
+
+            var firstLayer = SplitTopLevelComma(value ?? string.Empty).FirstOrDefault()?.Trim();
+            if (string.IsNullOrWhiteSpace(firstLayer))
+            {
+                return;
+            }
+
+            var parts = firstLayer.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0)
+            {
+                return;
+            }
+
+            if (TryResolveBackgroundSizeComponent(parts[0], bounds.Width, out var parsedWidth))
+            {
+                width = parsedWidth;
+            }
+
+            if (parts.Length > 1 && TryResolveBackgroundSizeComponent(parts[1], bounds.Height, out var parsedHeight))
+            {
+                height = parsedHeight;
+            }
+            else if (parts.Length == 1)
+            {
+                height = width;
+            }
+        }
+
+        private static bool TryResolveBackgroundSizeComponent(string token, float containerSize, out float value)
+        {
+            value = 0;
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return false;
+            }
+
+            token = token.Trim().ToLowerInvariant();
+            if (token == "auto" || token == "cover" || token == "contain")
+            {
+                return false;
+            }
+
+            if (token.EndsWith("px", StringComparison.Ordinal) &&
+                float.TryParse(token.AsSpan(0, token.Length - 2), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var px))
+            {
+                value = Math.Max(1f, px);
+                return true;
+            }
+
+            if (token.EndsWith("%", StringComparison.Ordinal) &&
+                float.TryParse(token.AsSpan(0, token.Length - 1), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var pct))
+            {
+                value = Math.Max(1f, containerSize * pct / 100f);
+                return true;
+            }
+
+            if (float.TryParse(token, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var raw))
+            {
+                value = Math.Max(1f, raw);
+                return true;
+            }
+
+            return false;
+        }
+
+        private static SKPoint ResolveGradientLayerPosition(IReadOnlyList<string> positions, int layerIndex, float tileWidth, float tileHeight)
+        {
+            if (positions == null || positions.Count == 0)
+            {
+                return SKPoint.Empty;
+            }
+
+            var raw = layerIndex < positions.Count ? positions[layerIndex] : positions[positions.Count - 1];
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return SKPoint.Empty;
+            }
+
+            var parts = raw.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0)
+            {
+                return SKPoint.Empty;
+            }
+
+            float x = 0;
+            float y = 0;
+            bool hasX = TryResolveBackgroundPositionComponent(parts[0], tileWidth, tileWidth, true, out x);
+            bool hasY = parts.Length > 1 &&
+                        TryResolveBackgroundPositionComponent(parts[1], tileHeight, tileHeight, false, out y);
+
+            if (!hasY && parts.Length == 1)
+            {
+                TryResolveBackgroundPositionComponent(parts[0], tileHeight, tileHeight, false, out y);
+            }
+
+            return hasX || hasY ? new SKPoint(x, y) : SKPoint.Empty;
+        }
+
+        private static float PositiveModulo(float value, float divisor)
+        {
+            if (divisor <= 0)
+            {
+                return 0;
+            }
+
+            float result = value % divisor;
+            return result < 0 ? result + divisor : result;
+        }
+
         private static string ExtractFirstBackgroundImageUrl(string backgroundImage)
         {
             if (string.IsNullOrWhiteSpace(backgroundImage))
@@ -2591,7 +3106,7 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (widths == null || widths.All(w => w <= 0)) return null;
             
-            SKColor borderColor = (style?.BorderBrushColor) ?? SKColors.Black;
+            SKColor borderColor = CssParser.ResolveCurrentColor((style?.BorderBrushColor) ?? SKColors.Black, style?.ForegroundColor);
             var colors = ResolveBorderColors(style, borderColor);
             
             string[] styles = new string[4]
@@ -2972,6 +3487,26 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         var parentContent = directParentBox.ContentBox;
                         float parentWidth = Math.Max(0f, parentContent.Width);
+                        bool shouldCenterSingleLineInParent =
+                            box.Lines.Count == 1 &&
+                            parentContent.Height > line.Height + 1f &&
+                            parentStyle?.TextAlign == SKTextAlign.Center;
+                        bool shouldCenterLineXInParent =
+                            box.Lines.Count == 1 &&
+                            parentWidth > 0f &&
+                            resolvedLineWidth <= parentWidth + 0.5f &&
+                            parentStyle?.TextAlign == SKTextAlign.Center;
+
+                        if (shouldCenterSingleLineInParent)
+                        {
+                            absY = parentContent.Top + (parentContent.Height - line.Height) * 0.5f;
+                        }
+
+                        if (shouldCenterLineXInParent)
+                        {
+                            absX = parentContent.Left + (parentWidth - resolvedLineWidth) * 0.5f;
+                        }
+
                         if (parentWidth > 0f &&
                             resolvedLineWidth <= parentWidth + 0.5f &&
                             (absX < parentContent.Left - 0.5f || absX + resolvedLineWidth > parentContent.Right + 0.5f))
@@ -3683,6 +4218,7 @@ namespace FenBrowser.FenEngine.Rendering
                     return new CustomPaintNode
                     {
                         Bounds = box.ContentBox,
+                        SourceNode = elem,
                         PaintAction = (canvas, bounds) =>
                         {
                             // Draw checkbox box
@@ -3709,6 +4245,7 @@ namespace FenBrowser.FenEngine.Rendering
                     return new CustomPaintNode
                     {
                         Bounds = box.ContentBox,
+                        SourceNode = elem,
                         PaintAction = (canvas, bounds) =>
                         {
                             // Draw radio circle
@@ -4604,7 +5141,7 @@ namespace FenBrowser.FenEngine.Rendering
                 var parsed = CssLoader.TryColor(raw);
                 if (parsed.HasValue)
                 {
-                    return parsed.Value;
+                    return CssParser.ResolveCurrentColor(parsed.Value, style.ForegroundColor);
                 }
             }
 
@@ -4618,6 +5155,7 @@ namespace FenBrowser.FenEngine.Rendering
             SKColor bottom = ResolveBorderSideColor(style, "border-bottom-color", fallback);
             SKColor left = ResolveBorderSideColor(style, "border-left-color", fallback);
 
+            SKColor? fg = style?.ForegroundColor;
             if (style?.Map != null &&
                 style.Map.TryGetValue("border-color", out var shorthand) &&
                 !string.IsNullOrWhiteSpace(shorthand))
@@ -4630,25 +5168,25 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (tokens.Length == 1 && c1.HasValue)
                 {
-                    top = right = bottom = left = c1.Value;
+                    top = right = bottom = left = CssParser.ResolveCurrentColor(c1.Value, fg);
                 }
                 else if (tokens.Length == 2 && c1.HasValue && c2.HasValue)
                 {
-                    top = bottom = c1.Value;
-                    right = left = c2.Value;
+                    top = bottom = CssParser.ResolveCurrentColor(c1.Value, fg);
+                    right = left = CssParser.ResolveCurrentColor(c2.Value, fg);
                 }
                 else if (tokens.Length == 3 && c1.HasValue && c2.HasValue && c3.HasValue)
                 {
-                    top = c1.Value;
-                    right = left = c2.Value;
-                    bottom = c3.Value;
+                    top = CssParser.ResolveCurrentColor(c1.Value, fg);
+                    right = left = CssParser.ResolveCurrentColor(c2.Value, fg);
+                    bottom = CssParser.ResolveCurrentColor(c3.Value, fg);
                 }
                 else if (tokens.Length >= 4 && c1.HasValue && c2.HasValue && c3.HasValue && c4.HasValue)
                 {
-                    top = c1.Value;
-                    right = c2.Value;
-                    bottom = c3.Value;
-                    left = c4.Value;
+                    top = CssParser.ResolveCurrentColor(c1.Value, fg);
+                    right = CssParser.ResolveCurrentColor(c2.Value, fg);
+                    bottom = CssParser.ResolveCurrentColor(c3.Value, fg);
+                    left = CssParser.ResolveCurrentColor(c4.Value, fg);
                 }
             }
 
@@ -4750,6 +5288,12 @@ namespace FenBrowser.FenEngine.Rendering
             if (token.EndsWith("px", StringComparison.Ordinal))
             {
                 return float.TryParse(token.AsSpan(0, token.Length - 2), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value);
+            }
+
+            if (float.TryParse(token, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var rawNumber))
+            {
+                value = rawNumber;
+                return true;
             }
 
             if (token.EndsWith("%", StringComparison.Ordinal) &&

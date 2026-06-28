@@ -26,19 +26,20 @@ caption         { display: table-caption }
 th              { font-weight: bolder; text-align: center }
 caption         { text-align: center }
 body            { margin: 8px; }
-/* Heading margins per HTML Standard §15.3.1 — logical longhands so margins
-   adapt to writing-mode; em values are relative to each heading's font-size */
-h1              { font-size: 2em; margin-block-start: 0.67em; margin-block-end: 0.67em; font-weight: bold; }
-h2              { font-size: 1.5em; margin-block-start: 0.83em; margin-block-end: 0.83em; font-weight: bold; }
-h3              { font-size: 1.17em; margin-block-start: 1em; margin-block-end: 1em; font-weight: bold; }
-h4              { margin-block-start: 1.33em; margin-block-end: 1.33em; font-weight: bold; }
-h5              { font-size: 0.83em; margin-block-start: 1.67em; margin-block-end: 1.67em; font-weight: bold; }
-h6              { font-size: 0.67em; margin-block-start: 2.33em; margin-block-end: 2.33em; font-weight: bold; }
+/* Heading margins per HTML Standard §15.3.1 — physical longhands so the
+   cascade can correctly resolve Author (physical) vs UA (physical) origins.
+   Logical properties would bypass cascade-origin comparison. */
+h1              { font-size: 2em; margin-top: 0.67em; margin-bottom: 0.67em; font-weight: bold; }
+h2              { font-size: 1.5em; margin-top: 0.83em; margin-bottom: 0.83em; font-weight: bold; }
+h3              { font-size: 1.17em; margin-top: 1em; margin-bottom: 1em; font-weight: bold; }
+h4              { margin-top: 1.33em; margin-bottom: 1.33em; font-weight: bold; }
+h5              { font-size: 0.83em; margin-top: 1.67em; margin-bottom: 1.67em; font-weight: bold; }
+h6              { font-size: 0.67em; margin-top: 2.33em; margin-bottom: 2.33em; font-weight: bold; }
 p,
 blockquote, ul,
 fieldset, form,
 ol, dl, dir,
-menu            { margin-block-start: 1em; margin-block-end: 1em; }
+menu            { margin-top: 1em; margin-bottom: 1em; }
 h1, h2, h3, h4,
 h5, h6, b,
 strong          { font-weight: bolder }
@@ -93,11 +94,13 @@ template { display: none; }
 dialog:not([open]) { display: none; }
 dialog[open] { display: block; background: white; border: solid; padding: 1em; }
 dialog[open][data-top-layer="modal"] {
+    /* Centering is handled by UAStyleProvider.cs (left:50%; top:50%;
+       transform:translate(-50%,-50%)) because the layout engine does
+       not yet support inset:0 + margin:auto centering for fixed elements. */
     position: fixed;
-    inset: 0;
-    width: fit-content;
-    height: fit-content;
-    margin: auto;
+    max-width: 90vw;
+    max-height: 90vh;
+    overflow: auto;
     z-index: 2147483647;
 }
 
