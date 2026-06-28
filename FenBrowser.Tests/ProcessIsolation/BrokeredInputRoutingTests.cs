@@ -1,10 +1,13 @@
 using System.Collections.Generic;
 using System.Reflection;
+using System;
+using System.Linq;
 using System.Threading.Tasks;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Interaction;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Rendering.Core;
+using FenBrowser.FenEngine.Rendering.Css;
 using FenBrowser.Host.ProcessIsolation;
 using FenBrowser.Host.Tabs;
 using SkiaSharp;
@@ -138,6 +141,65 @@ public sealed class BrokeredInputRoutingTests
     }
 
     [Fact]
+    public void BrowserIntegration_HandleRightClick_RoutesContextMenuToRendererInBrokeredMode()
+    {
+        var previousAutoStart = System.Environment.GetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES");
+        System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", "0");
+
+        var coordinator = new RecordingCoordinator();
+        ProcessIsolationRuntime.SetCoordinator(coordinator);
+
+        try
+        {
+            var tab = new BrowserTab();
+
+            tab.Browser.HandleRightClick(12, 34);
+
+            Assert.Contains(coordinator.Inputs, inputEvent =>
+                inputEvent.Type == RendererInputEventType.MouseDown &&
+                inputEvent.Button == 2);
+            Assert.Contains(coordinator.Inputs, inputEvent =>
+                inputEvent.Type == RendererInputEventType.MouseUp &&
+                inputEvent.Button == 2);
+            Assert.Contains(coordinator.Inputs, inputEvent =>
+                inputEvent.Type == RendererInputEventType.ContextMenu &&
+                inputEvent.Button == 2);
+        }
+        finally
+        {
+            ProcessIsolationRuntime.SetCoordinator(null);
+            System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", previousAutoStart);
+        }
+    }
+
+    [Fact]
+    public void BrowserIntegration_HandleMouseUp_SecondClickRoutesDblClickInBrokeredMode()
+    {
+        var previousAutoStart = System.Environment.GetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES");
+        System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", "0");
+
+        var coordinator = new RecordingCoordinator();
+        ProcessIsolationRuntime.SetCoordinator(coordinator);
+
+        try
+        {
+            var tab = new BrowserTab();
+
+            tab.Browser.HandleMouseUp(18, 22, button: 0, emitClick: true);
+            tab.Browser.HandleMouseUp(18, 22, button: 0, emitClick: true);
+
+            Assert.Contains(coordinator.Inputs, inputEvent =>
+                inputEvent.Type == RendererInputEventType.DblClick &&
+                inputEvent.Button == 0);
+        }
+        finally
+        {
+            ProcessIsolationRuntime.SetCoordinator(null);
+            System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", previousAutoStart);
+        }
+    }
+
+    [Fact]
     public void BrowserIntegration_HandleMouseWheel_RoutesThroughIntegrationAndScrollsOnceInBrokeredMode()
     {
         var previousAutoStart = System.Environment.GetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES");
@@ -173,6 +235,102 @@ public sealed class BrokeredInputRoutingTests
             ProcessIsolationRuntime.SetCoordinator(null);
             System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", previousAutoStart);
         }
+    }
+
+    [Fact]
+    public void BrowserIntegration_RemoteFrameReadyWithMatchingScroll_ResetsCompositorPreview()
+    {
+        var tab = new BrowserTab();
+        var receiveMethod = typeof(FenBrowser.Host.BrowserIntegration).GetMethod("OnFrameReceivedFromRenderer", BindingFlags.Instance | BindingFlags.NonPublic);
+        var liveScrollField = typeof(FenBrowser.Host.BrowserIntegration).GetField("_scrollY", BindingFlags.Instance | BindingFlags.NonPublic);
+        var previewScrollField = typeof(FenBrowser.Host.BrowserIntegration).GetField("_compositorPreviewScrollY", BindingFlags.Instance | BindingFlags.NonPublic);
+        var hasPreviewField = typeof(FenBrowser.Host.BrowserIntegration).GetField("_hasCompositorScrollPreview", BindingFlags.Instance | BindingFlags.NonPublic);
+        var remoteScrollField = typeof(FenBrowser.Host.BrowserIntegration).GetField("_remoteFrameScrollY", BindingFlags.Instance | BindingFlags.NonPublic);
+        var remoteSequenceField = typeof(FenBrowser.Host.BrowserIntegration).GetField("_remoteFrameSequenceNumber", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        Assert.NotNull(receiveMethod);
+        Assert.NotNull(liveScrollField);
+        Assert.NotNull(previewScrollField);
+        Assert.NotNull(hasPreviewField);
+        Assert.NotNull(remoteScrollField);
+        Assert.NotNull(remoteSequenceField);
+
+        liveScrollField!.SetValue(tab.Browser, 120f);
+        previewScrollField!.SetValue(tab.Browser, 120f);
+        hasPreviewField!.SetValue(tab.Browser, true);
+
+        var payload = new RendererFrameReadyPayload
+        {
+            SurfaceWidth = 2,
+            SurfaceHeight = 2,
+            PixelData = CreateSolidBgraPixels(2, 2, SKColors.Red),
+            FrameSequenceNumber = 7,
+            ScrollY = 120f,
+            ContentHeight = 800f
+        };
+
+        receiveMethod!.Invoke(tab.Browser, new object[] { tab.Id, payload });
+
+        Assert.False((bool)hasPreviewField.GetValue(tab.Browser)!);
+        Assert.Equal(120f, (float)remoteScrollField!.GetValue(tab.Browser)!, 0.5f);
+        Assert.Equal((uint)7, (uint)remoteSequenceField!.GetValue(tab.Browser)!);
+    }
+
+    [Fact]
+    public async Task RendererChildFramePattern_RasterizesScrolledDocumentBand()
+    {
+        const int viewportWidth = 120;
+        const int viewportHeight = 80;
+        const float scrollY = 220f;
+
+        const string html = """
+<!doctype html>
+<html>
+<body style="margin:0;background:#fff">
+  <div style="height:200px;background:#dc2626"></div>
+  <div id="visible-band" style="height:180px;background:#16a34a"></div>
+</body>
+</html>
+""";
+
+        var parser = new FenBrowser.Core.Parsing.HtmlParser(html, new Uri("https://fen.test/scroll"));
+        var document = parser.Parse();
+        var root = document.Children.OfType<Element>().First(e => string.Equals(e.TagName, "HTML", StringComparison.OrdinalIgnoreCase));
+        var styles = await CssLoader.ComputeAsync(root, new Uri("https://fen.test/scroll"), null, viewportWidth, viewportHeight);
+
+        var renderer = new SkiaDomRenderer();
+        renderer.ScrollManager.SetScrollBounds(null, viewportWidth, 380f, viewportWidth, viewportHeight);
+        renderer.ScrollManager.SetScrollPosition(null, 0, scrollY);
+
+        using var bitmap = new SKBitmap(viewportWidth, viewportHeight);
+        using var canvas = new SKCanvas(bitmap);
+        canvas.Clear(SKColors.White);
+        canvas.Save();
+        canvas.Translate(0, -scrollY);
+        try
+        {
+            renderer.RenderFrame(new RenderFrameRequest
+            {
+                Root = root,
+                Canvas = canvas,
+                Styles = styles,
+                Viewport = new SKRect(0, scrollY, viewportWidth, scrollY + viewportHeight),
+                SeparateLayoutViewport = new SKSize(viewportWidth, viewportHeight),
+                BaseUrl = "https://fen.test/scroll",
+                InvalidationReason = RenderFrameInvalidationReason.ProcessIsolation,
+                RequestedBy = "BrokeredInputRoutingTests.RendererChildFramePattern",
+                EmitVerificationReport = false
+            });
+        }
+        finally
+        {
+            canvas.Restore();
+        }
+        canvas.Flush();
+
+        var pixel = bitmap.GetPixel(24, 24);
+        Assert.InRange(pixel.Green, 120, 190);
+        Assert.True(pixel.Red < 60 && pixel.Blue < 100, $"Expected scrolled band to rasterize green, got {pixel}.");
     }
 
     private static BrowserHost GetBrowserHost(BrowserTab tab)
@@ -229,6 +387,20 @@ public sealed class BrokeredInputRoutingTests
         }
 
         Assert.True(predicate(), failureMessage);
+    }
+
+    private static byte[] CreateSolidBgraPixels(int width, int height, SKColor color)
+    {
+        var pixels = new byte[width * height * 4];
+        for (var i = 0; i < pixels.Length; i += 4)
+        {
+            pixels[i] = color.Blue;
+            pixels[i + 1] = color.Green;
+            pixels[i + 2] = color.Red;
+            pixels[i + 3] = color.Alpha;
+        }
+
+        return pixels;
     }
 
     private sealed class RecordingCoordinator : IProcessIsolationCoordinator

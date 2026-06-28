@@ -217,6 +217,24 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void Solver_RightOnlyAutoWidthWithoutIntrinsic_DoesNotFillContainingBlock()
+        {
+            var cb = new ContainingBlock { Width = 800, Height = 600 };
+            var style = new CssComputed
+            {
+                Position = "fixed",
+                Right = 40,
+                Top = 20,
+                Height = 48
+            };
+
+            var result = AbsolutePositionSolver.Solve(style, cb, intrinsicWidth: 0, intrinsicHeight: 48);
+
+            Assert.Equal(0f, result.Width);
+            Assert.Equal(760f, result.X);
+        }
+
+        [Fact]
         public void ResolvePositionedBox_ShiftsInFlowDescendantsWithAbsoluteParent()
         {
             // Parent, child, and grandChild must share a LayoutBoxStore so that

@@ -401,6 +401,162 @@ namespace FenBrowser.Tests.Scripting
         }
 
         [Fact]
+        public async Task ReadableStream_GlobalProvidesQueuedDefaultReader()
+        {
+            var baseUri = new Uri("https://x.com/");
+            var document = new HtmlParser(
+                """
+                <html><body><script>
+                try {
+                    globalThis.__streamType = typeof ReadableStream;
+                    var stream = new ReadableStream({
+                        start: function (controller) {
+                            controller.enqueue('chunk');
+                            controller.close();
+                        }
+                    });
+                    globalThis.__streamCtor = stream instanceof ReadableStream;
+                    globalThis.__streamLockedBefore = stream.locked;
+                    var reader = stream.getReader();
+                    globalThis.__streamLockedDuring = stream.locked;
+                    reader.read()
+                        .then(function (first) {
+                            globalThis.__streamFirst = String(first.value) + ':' + String(first.done);
+                            return reader.read();
+                        })
+                        .then(function (second) {
+                            globalThis.__streamSecond = String(second.value) + ':' + String(second.done);
+                            reader.releaseLock();
+                            globalThis.__streamLockedAfter = stream.locked;
+                        })
+                        .catch(function (error) {
+                            globalThis.__streamError = String(error && error.message ? error.message : error);
+                        });
+                } catch (error) {
+                    globalThis.__streamError = String(error && error.message ? error.message : error);
+                }
+                </script></body></html>
+                """,
+                baseUri).Parse();
+
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            for (var i = 0; i < 50 && string.IsNullOrEmpty(engine.Evaluate("String(globalThis.__streamSecond || '')")?.ToString()); i++)
+            {
+                await Task.Delay(10);
+            }
+
+            Assert.Equal("function", engine.Evaluate("globalThis.__streamType")?.ToString());
+            Assert.Equal(true, engine.Evaluate("globalThis.__streamCtor"));
+            Assert.Equal(false, engine.Evaluate("globalThis.__streamLockedBefore"));
+            Assert.Equal(true, engine.Evaluate("globalThis.__streamLockedDuring"));
+            Assert.Equal("chunk:false", engine.Evaluate("globalThis.__streamFirst")?.ToString());
+            Assert.Equal("undefined:true", engine.Evaluate("globalThis.__streamSecond")?.ToString());
+            Assert.Equal(false, engine.Evaluate("globalThis.__streamLockedAfter"));
+            Assert.Equal(string.Empty, engine.Evaluate("String(globalThis.__streamError || '')")?.ToString());
+        }
+
+        [Fact]
+        public async Task BrowserSurfaceCompatibility_ExposesGoogleUsedDocumentImageAndUserAgentData()
+        {
+            var baseUri = new Uri("https://www.google.com/");
+            var expectedSurface = BrowserSettings.GetBrowserSurface(BrowserSettings.Instance.SelectedUserAgent);
+            var expectedUa = expectedSurface.UserAgentData;
+            var document = new HtmlParser(
+                """
+                <html><body>
+                <img id="logo" src="/logo.png">
+                <script>
+                globalThis.__docVisibility = document.visibilityState;
+                globalThis.__docHidden = document.hidden;
+                globalThis.__docContentType = document.contentType;
+                globalThis.__imageComplete = document.getElementById('logo').complete;
+                globalThis.__uaType = typeof navigator.userAgentData;
+                globalThis.__uaPlatform = navigator.userAgentData.platform;
+                globalThis.__uaMobile = navigator.userAgentData.mobile;
+                globalThis.__uaBrandsLength = navigator.userAgentData.brands.length;
+                globalThis.__uaJsonPlatformVersionType = typeof navigator.userAgentData.toJSON().platformVersion;
+                navigator.userAgentData
+                    .getHighEntropyValues(['architecture','bitness','platformVersion','uaFullVersion','fullVersionList','wow64'])
+                    .then(function (values) {
+                        globalThis.__uaArchitecture = values.architecture;
+                        globalThis.__uaBitness = values.bitness;
+                        globalThis.__uaPlatformVersion = values.platformVersion;
+                        globalThis.__uaFullVersion = values.uaFullVersion;
+                        globalThis.__uaFullVersionListLength = values.fullVersionList.length;
+                        globalThis.__uaWow64 = values.wow64;
+                    });
+                </script>
+                </body></html>
+                """,
+                baseUri).Parse();
+
+            EngineCapabilities.Reset();
+            try
+            {
+                var engine = new FenJsBrowserScriptEngine(CreateHost())
+                {
+                    Sandbox = SandboxPolicy.AllowAll
+                };
+
+                await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+                for (var i = 0; i < 50 && string.IsNullOrEmpty(engine.Evaluate("String(globalThis.__uaFullVersion || '')")?.ToString()); i++)
+                {
+                    await Task.Delay(10);
+                }
+
+                Assert.Equal("visible", engine.Evaluate("globalThis.__docVisibility")?.ToString());
+                Assert.Equal(false, engine.Evaluate("globalThis.__docHidden"));
+                Assert.Equal("text/html", engine.Evaluate("globalThis.__docContentType")?.ToString());
+                Assert.Equal(true, engine.Evaluate("globalThis.__imageComplete"));
+                Assert.Equal("object", engine.Evaluate("globalThis.__uaType")?.ToString());
+                Assert.Equal(expectedUa.Platform, engine.Evaluate("globalThis.__uaPlatform")?.ToString());
+                Assert.Equal(expectedUa.Mobile, engine.Evaluate("globalThis.__uaMobile"));
+                Assert.Equal(expectedUa.Brands.Count.ToString(), engine.Evaluate("String(globalThis.__uaBrandsLength)")?.ToString());
+                Assert.Equal("undefined", engine.Evaluate("globalThis.__uaJsonPlatformVersionType")?.ToString());
+                Assert.Equal(expectedUa.Architecture, engine.Evaluate("globalThis.__uaArchitecture")?.ToString());
+                Assert.Equal(expectedUa.Bitness, engine.Evaluate("globalThis.__uaBitness")?.ToString());
+                Assert.Equal(expectedUa.PlatformVersion, engine.Evaluate("globalThis.__uaPlatformVersion")?.ToString());
+                Assert.Equal(GetExpectedPrimaryUserAgentFullVersion(expectedUa), engine.Evaluate("globalThis.__uaFullVersion")?.ToString());
+                Assert.Equal(expectedUa.FullVersionList.Count.ToString(), engine.Evaluate("String(globalThis.__uaFullVersionListLength)")?.ToString());
+                Assert.Equal(expectedUa.Wow64, engine.Evaluate("globalThis.__uaWow64"));
+                Assert.DoesNotContain(
+                    EngineCapabilities.GetUnsupportedJsSnapshot(),
+                    feature => feature.Name is
+                        "Document.visibilityState" or
+                        "Document.hidden" or
+                        "Document.contentType" or
+                        "Element.complete" or
+                        "Navigator.userAgentData");
+            }
+            finally
+            {
+                EngineCapabilities.Reset();
+            }
+        }
+
+        private static string GetExpectedPrimaryUserAgentFullVersion(BrowserUserAgentDataProfile userAgentData)
+        {
+            var preferredBrand = userAgentData.FullVersionList.FirstOrDefault(brand =>
+                !string.Equals(brand?.Brand, " Not;A Brand", StringComparison.Ordinal) &&
+                !string.Equals(brand?.Brand, "Chromium", StringComparison.OrdinalIgnoreCase));
+            if (preferredBrand != null)
+            {
+                return preferredBrand.Version ?? string.Empty;
+            }
+
+            var nonGreaseBrand = userAgentData.FullVersionList.FirstOrDefault(
+                brand => !string.Equals(brand?.Brand, " Not;A Brand", StringComparison.Ordinal));
+            return nonGreaseBrand?.Version ?? string.Empty;
+        }
+
+        [Fact]
         public async Task TimerAndRafCallbacks_DoNotOverwriteLargeStackWorkerDispatch()
         {
             var baseUri = new Uri("https://example.com/index.html");

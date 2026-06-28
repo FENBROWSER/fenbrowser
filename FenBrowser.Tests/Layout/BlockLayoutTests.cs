@@ -75,6 +75,37 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void AutoHeight_PaddedBorderedParent_IncludesLastChildBottomMargin()
+        {
+            var container = new Element("div");
+            var child = new Element("p");
+            container.AppendChild(child);
+
+            var styles = LayoutTestHelper.CreateStyles(container, new CssComputed
+            {
+                Display = "block",
+                Width = 200,
+                Padding = new Thickness(10),
+                BorderThickness = new Thickness(5)
+            });
+            styles[child] = new CssComputed
+            {
+                Display = "block",
+                Height = 20,
+                Margin = new Thickness(0, 0, 0, 16)
+            };
+
+            var computer = LayoutTestHelper.CreateComputer(container, styles, 240, 200);
+            computer.Measure(container, new SKSize(240, 200));
+            computer.Arrange(container, new SKRect(0, 0, 240, 200));
+
+            var parentBox = computer.GetBox(container);
+
+            Assert.InRange(parentBox.ContentBox.Height, 35.5f, 36.5f);
+            Assert.InRange(parentBox.MarginBox.Height, 65.5f, 66.5f);
+        }
+
+        [Fact]
         public void AutoWidth_BlockTakesAvailableWidth()
         {
             var container = new Element("div");

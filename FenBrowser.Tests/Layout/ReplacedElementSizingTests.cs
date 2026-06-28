@@ -200,6 +200,21 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void TryResolveIntrinsicSizeFromElement_SvgEmAttributes_UsesViewBoxInsteadOfNumericPrefix()
+        {
+            var svg = new Element("SVG");
+            svg.SetAttribute("width", "1em");
+            svg.SetAttribute("height", "1em");
+            svg.SetAttribute("viewBox", "0 0 24 24");
+
+            bool ok = ReplacedElementSizing.TryResolveIntrinsicSizeFromElement("SVG", svg, out float width, out float height);
+
+            Assert.True(ok);
+            Assert.Equal(24f, width);
+            Assert.Equal(24f, height);
+        }
+
+        [Fact]
         public void MinimalLayoutComputer_ArrangeFlexWithSvgViewBox_DoesNotFallbackTo300x150()
         {
             var container = new Element("DIV");

@@ -49,6 +49,40 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void InlineText_PrefersWhitespaceBreakBeforeHyphenatedWord()
+        {
+            var root = new Element("div");
+            var paragraph = new Element("p");
+            var text = new Text("color: white; background-color: rebeccapurple;");
+
+            paragraph.AppendChild(text);
+            root.AppendChild(paragraph);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 170, Height = 120 },
+                [paragraph] = new CssComputed
+                {
+                    Display = "block",
+                    Width = 170,
+                    FontSize = 13.28,
+                    LineHeight = 19.25,
+                    FontFamilyName = "Arial"
+                }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 170, 120);
+            var textBoxes = new List<TextLayoutBox>();
+            CollectTextBoxes(rootBox, textBoxes);
+            var textBox = FindTextBox(textBoxes, text);
+
+            Assert.NotNull(textBox);
+            Assert.True(textBox!.Geometry.Lines.Count >= 2, $"Expected wrapped lines, got {textBox.Geometry.Lines.Count}.");
+            Assert.DoesNotContain("background-", textBox.Geometry.Lines[0].Text);
+            Assert.StartsWith("background-color:", textBox.Geometry.Lines[1].Text);
+        }
+
+        [Fact]
         public void FlexItem_WithNestedInlineSpans_KeepsInlineRunHorizontal()
         {
             var header = new Element("div");
@@ -185,6 +219,97 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void CenteredInlineText_WithInlineAnchors_WrapsWithoutVerticalOverlap()
+        {
+            var root = new Element("div");
+            var paragraph = new Element("p");
+            var tos = new Element("a");
+            var privacy = new Element("a");
+            var cookie = new Element("a");
+
+            var before = new Text("By continuing, you agree to our ");
+            var tosText = new Text("Terms of Service");
+            var separator = new Text(", ");
+            var privacyText = new Text("Privacy Policy");
+            var and = new Text(" and ");
+            var cookieText = new Text("Cookie Use.");
+
+            tos.AppendChild(tosText);
+            privacy.AppendChild(privacyText);
+            cookie.AppendChild(cookieText);
+
+            paragraph.AppendChild(before);
+            paragraph.AppendChild(tos);
+            paragraph.AppendChild(separator);
+            paragraph.AppendChild(privacy);
+            paragraph.AppendChild(and);
+            paragraph.AppendChild(cookie);
+            root.AppendChild(paragraph);
+
+            var smallText = new CssComputed
+            {
+                Display = "inline",
+                FontSize = 12,
+                LineHeight = 18,
+                FontFamilyName = "Arial"
+            };
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 180, Height = 200 },
+                [paragraph] = new CssComputed
+                {
+                    Display = "block",
+                    Width = 180,
+                    FontSize = 12,
+                    LineHeight = 18,
+                    FontFamilyName = "Arial",
+                    TextAlign = SKTextAlign.Center
+                },
+                [tos] = smallText,
+                [privacy] = smallText,
+                [cookie] = smallText
+            };
+
+            var rootBox = LayoutRoot(root, styles, 180, 200);
+            var textBoxes = new List<TextLayoutBox>();
+            CollectTextBoxes(rootBox, textBoxes);
+
+            var boxes = new[]
+            {
+                FindTextBox(textBoxes, before),
+                FindTextBox(textBoxes, tosText),
+                FindTextBox(textBoxes, separator),
+                FindTextBox(textBoxes, privacyText),
+                FindTextBox(textBoxes, and),
+                FindTextBox(textBoxes, cookieText)
+            };
+
+            Assert.All(boxes, Assert.NotNull);
+
+            var wrappedTextBoxCount = 0;
+            foreach (var textBox in boxes)
+            {
+                if (textBox!.Geometry.Lines == null || textBox.Geometry.Lines.Count <= 1)
+                {
+                    continue;
+                }
+
+                wrappedTextBoxCount++;
+                for (var i = 1; i < textBox.Geometry.Lines.Count; i++)
+                {
+                    var previous = textBox.Geometry.Lines[i - 1];
+                    var current = textBox.Geometry.Lines[i];
+                    Assert.True(
+                        current.Origin.Y >= previous.Origin.Y + previous.Height - 1.5f,
+                        $"Expected wrapped text lines to advance vertically. box={textBox.Geometry.MarginBox} previous={previous.Origin}/{previous.Height} current={current.Origin}/{current.Height}");
+                }
+            }
+
+            Assert.True(wrappedTextBoxCount > 0, "Expected the x.com legal-copy pattern to wrap in the constrained paragraph.");
+        }
+
+        [Fact]
         public void BlockSpan_WithText_InFlexContainer_GetsNonZeroHeight()
         {
             // Reproduction of GitHub sidebar: flex container → li → span(display:block) with text
@@ -221,6 +346,56 @@ namespace FenBrowser.Tests.Layout
             float liH = liBox!.Geometry.ContentBox.Height;
             Assert.True(spanH > 1f, $"Expected span to have non-zero height, got ContentBox.Height={spanH:F2}. MarginBox={spanBox.Geometry.MarginBox}");
             Assert.True(liH > 1f, $"Expected li to have non-zero height, got ContentBox.Height={liH:F2}. MarginBox={liBox.Geometry.MarginBox}");
+        }
+
+        [Fact]
+        public void NativeCheckboxInFlexLabel_IgnoresBroadInputPaddingForLayout()
+        {
+            var root = new Element("div");
+            var label = new Element("label");
+            var input = new Element("input");
+            input.SetAttribute("type", "checkbox");
+            var labelText = new Text("Checkbox input");
+
+            label.AppendChild(input);
+            label.AppendChild(labelText);
+            root.AppendChild(label);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed { Display = "block", Width = 240 },
+                [label] = new CssComputed
+                {
+                    Display = "flex",
+                    FlexDirection = "row",
+                    AlignItems = "center",
+                    Gap = 8,
+                    FontSize = 16,
+                    LineHeight = 20
+                },
+                [input] = new CssComputed
+                {
+                    Display = "inline-block",
+                    Padding = new Thickness(10),
+                    BorderThickness = new Thickness(2),
+                    FontSize = 16,
+                    LineHeight = 20
+                }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 240, 80);
+            var inputBox = FindBox(rootBox, input);
+            var textBoxes = new List<TextLayoutBox>();
+            CollectTextBoxes(rootBox, textBoxes);
+            var textBox = FindTextBox(textBoxes, labelText);
+
+            Assert.NotNull(inputBox);
+            Assert.NotNull(textBox);
+            Assert.InRange(inputBox!.Geometry.MarginBox.Width, 14f, 18f);
+            Assert.InRange(inputBox.Geometry.MarginBox.Height, 14f, 18f);
+
+            float gap = textBox!.Geometry.MarginBox.Left - inputBox.Geometry.MarginBox.Right;
+            Assert.InRange(gap, 6f, 10f);
         }
 
         [Fact]

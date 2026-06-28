@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
+using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Layout;
 using SkiaSharp;
 using Xunit;
@@ -118,6 +119,53 @@ namespace FenBrowser.Tests.Layout
             Assert.Equal(200, child0.ContentBox.Left);
             Assert.Equal(300, computer.GetBox(container.Children[1]).ContentBox.Left);
             Assert.Equal(400, computer.GetBox(container.Children[2]).ContentBox.Left);
+        }
+
+        [Fact]
+        public void FlexEnd_BorderBoxMinWidthPill_DoesNotOverlapAdjacentIcon()
+        {
+            var container = new Element("div");
+            var icon = new Element("a");
+            var signIn = new Element("a");
+            container.AppendChild(icon);
+            container.AppendChild(signIn);
+
+            var styles = CreateStyles(container, new CssComputed
+            {
+                Display = "flex",
+                FlexDirection = "row",
+                JustifyContent = "flex-end",
+                AlignItems = "center",
+                Width = 180,
+                Height = 48
+            });
+            styles[icon] = new CssComputed
+            {
+                Display = "inline-block",
+                Width = 40,
+                Height = 40,
+                BoxSizing = "border-box",
+                Padding = new FenBrowser.Core.Thickness(4, 4, 4, 4)
+            };
+            styles[signIn] = new CssComputed
+            {
+                Display = "inline-block",
+                MinWidth = 85,
+                Height = 40,
+                BoxSizing = "border-box",
+                Padding = new FenBrowser.Core.Thickness(10, 12, 10, 12),
+                FlexShrink = 1
+            };
+
+            var computer = CreateComputer(container, styles);
+            computer.Measure(container, new SKSize(180, 48));
+            computer.Arrange(container, new SKRect(0, 0, 180, 48));
+
+            var iconBox = computer.GetBox(icon);
+            var signInBox = computer.GetBox(signIn);
+
+            Assert.True(iconBox.MarginBox.Right <= signInBox.MarginBox.Left + 0.5f);
+            Assert.True(signInBox.MarginBox.Width >= 85f);
         }
 
         [Fact]
@@ -475,6 +523,131 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public async System.Threading.Tasks.Task ColumnMinHeightDvh_AllowsFlexOneHeroToCenterContent()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+  <style>
+    body { margin: 0; }
+    #shell { display: flex; flex-direction: column; min-height: 100dvh; }
+    #hero { display: flex; flex: 1; align-items: center; }
+    #card { width: 100px; height: 100px; }
+    #footer { height: 40px; }
+  </style>
+</head>
+<body>
+  <div id='shell'>
+    <div id='hero'><div id='card'></div></div>
+    <footer id='footer'></footer>
+  </div>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var styles = await FenBrowser.FenEngine.Rendering.CssLoader.ComputeAsync(
+                root,
+                new System.Uri("https://x.test/"),
+                null,
+                viewportWidth: 800,
+                viewportHeight: 600);
+
+            var computer = new LayoutEngineComputer(styles, 800, 600);
+            computer.Measure(doc, new SKSize(800, 600));
+            computer.Arrange(doc, new SKRect(0, 0, 800, 600));
+
+            var hero = doc.GetElementById("hero");
+            var card = doc.GetElementById("card");
+            var heroBox = computer.GetBox(hero);
+            var cardBox = computer.GetBox(card);
+
+            Assert.True(heroBox.ContentBox.Height >= 550, $"Expected flex:1 hero to fill viewport remainder, got {heroBox.ContentBox.Height}.");
+            Assert.InRange(cardBox.ContentBox.Top, 220f, 240f);
+        }
+
+        [Fact]
+        public async System.Threading.Tasks.Task AlignItemsCenter_WithPaddedRow_DoesNotStretchAutoHeightBlockChild()
+        {
+            const string html = @"
+<!doctype html>
+<html>
+<head>
+  <style>
+    body { margin: 0; }
+    #container { display: flex; align-items: center; width: 800px; height: 852px; padding-top: 40px; padding-bottom: 40px; box-sizing: border-box; }
+    #child { width: 400px; }
+    #content { height: 200px; }
+  </style>
+</head>
+<body>
+  <div id='container'><div id='child'><div id='content'></div></div></div>
+</body>
+</html>";
+
+            var parser = new HtmlParser(html);
+            var doc = parser.Parse();
+            var root = doc.Children.OfType<Element>().First(e => e.TagName == "HTML");
+            var styles = await FenBrowser.FenEngine.Rendering.CssLoader.ComputeAsync(
+                root,
+                new System.Uri("https://x.test/"),
+                null,
+                viewportWidth: 800,
+                viewportHeight: 900);
+
+            var computer = new LayoutEngineComputer(styles, 800, 900);
+            computer.Measure(doc, new SKSize(800, 900));
+            computer.Arrange(doc, new SKRect(0, 0, 800, 900));
+
+            var child = doc.GetElementById("child");
+            var childBox = computer.GetBox(child);
+
+            Assert.InRange(childBox.ContentBox.Height, 199f, 201f);
+            Assert.InRange(childBox.ContentBox.Top, 325f, 327f);
+        }
+
+        [Fact]
+        public void StretchedFlexItem_ReflowsDescendantsWithForcedCrossSize()
+        {
+            var outer = new Element("div");
+            var panel = new Element("div");
+            var child = new Element("div");
+            panel.AppendChild(child);
+            outer.AppendChild(panel);
+
+            var styles = CreateStyles(outer, new CssComputed
+            {
+                Display = "flex",
+                FlexDirection = "row",
+                AlignItems = "stretch",
+                Width = 800,
+                Height = 852
+            });
+
+            styles[panel] = new CssComputed
+            {
+                Display = "flex",
+                FlexDirection = "row",
+                AlignItems = "center",
+                FlexGrow = 1,
+                Padding = new FenBrowser.Core.Thickness(40, 0, 40, 0)
+            };
+            styles[child] = new CssComputed { Display = "block", Width = 400, Height = 200 };
+
+            var computer = CreateComputer(outer, styles);
+            computer.Measure(outer, new SKSize(800, 900));
+            computer.Arrange(outer, new SKRect(0, 0, 800, 900));
+
+            var panelBox = computer.GetBox(panel);
+            var childBox = computer.GetBox(child);
+
+            Assert.InRange(panelBox.MarginBox.Height, 851.5f, 852.5f);
+            Assert.InRange(childBox.ContentBox.Top, 325f, 327f);
+        }
+
+        [Fact]
         public void FlexRow_AutoWidthBlockItem_DoesNotKeepInfiniteProbeWidth()
         {
             var container = new Element("div");
@@ -516,6 +689,48 @@ namespace FenBrowser.Tests.Layout
             Assert.True(
                 headlineBox.ContentBox.Left < 5000f,
                 $"Expected headline geometry to remain finite; got left={headlineBox.ContentBox.Left}");
+        }
+
+        [Fact]
+        public void FlexColumn_MaxWidthAutoInlineMargins_CentersCrossAxisContent()
+        {
+            var container = new Element("div");
+            var item = new Element("div");
+            var child = new Element("div");
+            item.AppendChild(child);
+            container.AppendChild(item);
+
+            var styles = CreateStyles(container, new CssComputed
+            {
+                Display = "flex",
+                FlexDirection = "column",
+                Width = 1920,
+                Height = 899
+            });
+
+            styles[item] = new CssComputed
+            {
+                Display = "flex",
+                FlexDirection = "row",
+                WidthPercent = 100,
+                MaxWidth = 1280,
+                MarginLeftAuto = true,
+                MarginRightAuto = true,
+                Height = 400
+            };
+            styles[item].Map["margin-inline"] = "auto";
+            styles[child] = new CssComputed { Display = "block", Width = 100, Height = 100 };
+
+            var computer = new LayoutEngineComputer(styles, 1920, 899);
+            computer.Measure(container, new SKSize(1920, 899));
+            computer.Arrange(container, new SKRect(0, 0, 1920, 899));
+
+            var itemBox = computer.GetBox(item);
+            var childBox = computer.GetBox(child);
+
+            Assert.InRange(itemBox.ContentBox.Width, 1279.5f, 1280.5f);
+            Assert.InRange(itemBox.ContentBox.Left, 319.5f, 320.5f);
+            Assert.InRange(childBox.ContentBox.Left, 319.5f, 320.5f);
         }
     }
 }

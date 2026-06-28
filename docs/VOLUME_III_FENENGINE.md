@@ -78,6 +78,7 @@ flowchart TD
     - `InlineFormattingContext`: Horizontal flow with line breaking.
     - `Grid/Flex`: Advanced 2D layouts.
 3.  **Measure & Arrange**:
+    - Flex item main-axis min/max clamping converts `box-sizing:border-box` constraints to content-box sizes before relayout. This keeps padded pill controls, such as Google header sign-in buttons, from shrinking or being placed inconsistently next to adjacent icon controls.
     - **Measure Pass**: Calculates desired sizes (Intrinsic/Extrinsic).
     - **Arrange Pass**: Assigns final X/Y coordinates relative to the parent.
 4.  **Absolute Logic**: The `LayoutEngine` post-processes the tree to calculate absolute screen coordinates for the renderer.
@@ -567,6 +568,7 @@ sequenceDiagram
 Unlike the Layout Tree (which is about geometry), the Paint Tree is about **Z-Order** and **Stacking Contexts**.
 
 - **NewPaintTreeBuilder**: Converts layout boxes into a flat list of draw commands, sorted by CSS `z-index` and painting order rules (background -> border -> content -> outline).
+- Background paint-node creation recovers authored color tokens from `background` / `background-color` declarations, including `var(..., fallback)` values, when the typed computed background color is transparent. Single-line text in a `text-align:center` parent is centered against the parent content box during paint placement, matching pill-style controls whose line box was produced separately from the element box.
 
 ### 3.3 Render/Perf P1 Closure (2026-03-30)
 

@@ -201,5 +201,117 @@ namespace FenBrowser.Tests.Layout
             Assert.Equal(heroGeometry.Y, startFrameGeometry.Y, 0.5f);
         }
 
+        [Fact]
+        public void FixedPosition_RightInsetAutoWidth_ShrinksToChildContent()
+        {
+            var document = new Document();
+            var html = new Element("HTML");
+            var body = new Element("BODY");
+            var prompt = new Element("DIV");
+            var label = new Element("SPAN");
+            var qr = new Element("DIV");
+            var qrInner = new Element("DIV");
+
+            document.AppendChild(html);
+            html.AppendChild(body);
+            body.AppendChild(prompt);
+            label.AppendChild(new Text("Scan to get the app"));
+            prompt.AppendChild(label);
+            prompt.AppendChild(qr);
+            qr.AppendChild(qrInner);
+
+            var styles = new Dictionary<Node, CssComputed>();
+            styles[html] = new CssComputed { Display = "block", Width = 1920, Height = 899 };
+            styles[body] = new CssComputed { Display = "block", Width = 1920, Height = 899 };
+            styles[prompt] = new CssComputed
+            {
+                Display = "flex",
+                FlexDirection = "column",
+                AlignItems = "center",
+                Position = "fixed",
+                Right = 58,
+                Bottom = 58,
+                Gap = 8,
+                Padding = new Thickness(16)
+            };
+            styles[label] = new CssComputed
+            {
+                Display = "block",
+                MaxWidthExpression = "clamp(80px,10vw,160px)",
+                Height = 16
+            };
+            styles[label.ChildNodes[0]] = new CssComputed { Display = "inline" };
+            styles[qr] = new CssComputed
+            {
+                Display = "block",
+                WidthExpression = "clamp(80px,10vw,160px)",
+                HeightExpression = "clamp(80px,10vw,160px)"
+            };
+            styles[qrInner] = new CssComputed
+            {
+                Display = "block",
+                WidthPercent = 100,
+                HeightPercent = 100
+            };
+
+            var engine = new LayoutEngine(styles, 1920, 899);
+            var result = engine.ComputeLayout(document, 0, 0, 1920, availableHeight: 899);
+
+            Assert.NotNull(result);
+            Assert.True(result.ElementRects.TryGetValue(prompt, out var promptGeometry));
+            Assert.True(result.ElementRects.TryGetValue(qr, out var qrGeometry));
+            Assert.True(result.ElementRects.TryGetValue(qrInner, out var qrInnerGeometry));
+            Assert.InRange(qrGeometry.Width, 159.5f, 160.5f);
+            Assert.InRange(qrInnerGeometry.Height, 159.5f, 160.5f);
+            Assert.True(promptGeometry.Width <= 192.5f, $"Expected fixed prompt border box to shrink around clamped child and padding; got {promptGeometry.Width}");
+            Assert.True(promptGeometry.X > 1660f, $"Expected fixed prompt to stay anchored near the right edge; got x={promptGeometry.X}");
+        }
+
+        [Fact]
+        public void FixedPosition_BottomInsetAutoHeight_UsesTextLineHeight()
+        {
+            var document = new Document();
+            var html = new Element("HTML");
+            var body = new Element("BODY");
+            var toast = new Element("DIV");
+            var message = new Text("Fallback toast notification shown inside the page.");
+
+            document.AppendChild(html);
+            html.AppendChild(body);
+            body.AppendChild(toast);
+            toast.AppendChild(message);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [html] = new CssComputed { Display = "block", Width = 1200, Height = 800 },
+                [body] = new CssComputed { Display = "block", Width = 1200, Height = 800 },
+                [toast] = new CssComputed
+                {
+                    Display = "block",
+                    Position = "fixed",
+                    Right = 18,
+                    Bottom = 18,
+                    Padding = new Thickness(14),
+                    BorderThickness = new Thickness(3),
+                    FontSize = 16,
+                    LineHeight = 1.45
+                },
+                [message] = new CssComputed
+                {
+                    Display = "inline",
+                    FontSize = 16,
+                    LineHeight = 1.45
+                }
+            };
+
+            var engine = new LayoutEngine(styles, 1200, 800);
+            var result = engine.ComputeLayout(document, 0, 0, 1200, availableHeight: 800);
+
+            Assert.NotNull(result);
+            Assert.True(result.ElementRects.TryGetValue(toast, out var toastGeometry));
+            Assert.InRange(toastGeometry.Height, 56.5f, 58.0f);
+            Assert.Equal(800f - 18f, toastGeometry.Y + toastGeometry.Height, 0.5f);
+        }
+
     }
 }

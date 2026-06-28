@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using FenBrowser.Core;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Layout.Contexts;
@@ -152,6 +153,55 @@ namespace FenBrowser.Tests.Layout
                 imageBox.Geometry.MarginBox.Top >= rootBox.Geometry.MarginBox.Top - 1f &&
                 imageBox.Geometry.MarginBox.Bottom <= rootBox.Geometry.MarginBox.Bottom + 1f,
                 $"Expected percentage-height grid item descendants to stay inside the auto-sized grid container. root={rootBox.Geometry.MarginBox} item={itemBox.Geometry.MarginBox} image={imageBox.Geometry.MarginBox}");
+        }
+
+        [Fact]
+        public void GridFormattingContext_AnonymousInlineRun_DoesNotInheritItemMinHeight()
+        {
+            var root = new Element("div");
+            var item = new Element("div");
+            var small = new Element("small");
+
+            item.AppendChild(new Text("Named colors"));
+            small.AppendChild(new Text("short note"));
+            item.AppendChild(small);
+            root.AppendChild(item);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed
+                {
+                    Display = "grid",
+                    Width = 220,
+                    GridTemplateColumns = "repeat(auto-fit, minmax(180px, 1fr))",
+                    GridAutoRows = "auto"
+                },
+                [item] = new CssComputed
+                {
+                    Display = "block",
+                    MinHeight = 100,
+                    BoxSizing = "border-box",
+                    Padding = new Thickness(14, 14, 14, 14),
+                    BorderThickness = new Thickness(6, 6, 6, 6),
+                    GridColumnStart = "auto",
+                    GridRowStart = "auto"
+                },
+                [small] = new CssComputed
+                {
+                    Display = "block",
+                    Margin = new Thickness(0, 8, 0, 0)
+                }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 220, 400);
+            var itemBox = FindBox(rootBox, item);
+            var smallBox = FindBox(rootBox, small);
+
+            Assert.NotNull(itemBox);
+            Assert.NotNull(smallBox);
+
+            Assert.InRange(itemBox.Geometry.MarginBox.Height, 99f, 105f);
+            Assert.InRange(smallBox.Geometry.BorderBox.Top - itemBox.Geometry.ContentBox.Top, 25f, 40f);
         }
 
         private static LayoutBox LayoutRoot(Element root, Dictionary<Node, CssComputed> styles, float width, float height)
