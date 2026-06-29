@@ -8617,3 +8617,20 @@ Net effect:
 Verification:
 
 - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~HeightResolutionTests.FixedViewportChild_DoesNotContributeToInFlowBlockHeight|FullyQualifiedName~HeightResolutionTests.GoogleRootHeightChain_DoesNotCreateSecondViewport" --logger "console;verbosity=minimal"`: pass (`2/2`) on `2026-06-24`.
+
+## 2.316 Viewport Scroll Damage Uses Host-Owned Scroll State (2026-06-29)
+
+- `FenBrowser.FenEngine/Rendering/SkiaDomRenderer.cs`
+  - Document-level scroll damage now reads the viewport/null `ScrollManager` state before falling back to the document element state.
+  - This matches the host and renderer-child contract: `BrowserIntegration` and brokered frame requests publish outer document scroll through the viewport scroll slot before rendering.
+
+Net effect:
+
+- Scroll-only frames no longer see a false `0 -> 0` scroll delta after wheel or scrollbar movement.
+- Damage rasterization repaints the newly exposed document band instead of preserving a shifted base frame that can leave white content while scrolling.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~BrokeredInputRoutingTests" -v minimal`: pass (`9/9`) on `2026-06-29`.
+- `dotnet build FenBrowser.FenEngine\FenBrowser.FenEngine.csproj -c Debug -v minimal`: pass on `2026-06-29`.
+- `dotnet build FenBrowser.Host\FenBrowser.Host.csproj -c Debug -v minimal`: pass on `2026-06-29`.

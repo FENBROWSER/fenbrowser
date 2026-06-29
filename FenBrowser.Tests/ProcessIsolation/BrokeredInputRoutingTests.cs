@@ -333,6 +333,102 @@ public sealed class BrokeredInputRoutingTests
         Assert.True(pixel.Red < 60 && pixel.Blue < 100, $"Expected scrolled band to rasterize green, got {pixel}.");
     }
 
+    [Fact]
+    public async Task ScrollOnlyDamage_RasterizesNewlyExposedDocumentBand()
+    {
+        const int viewportWidth = 120;
+        const int viewportHeight = 120;
+        const float scrollY = 10f;
+
+        const string html = """
+<!doctype html>
+<html>
+<body style="margin:0;background:#fff">
+  <div style="height:120px;background:#dc2626"></div>
+  <div id="new-band" style="height:120px;background:#16a34a"></div>
+</body>
+</html>
+""";
+
+        var parser = new FenBrowser.Core.Parsing.HtmlParser(html, new Uri("https://fen.test/scroll-damage"));
+        var document = parser.Parse();
+        var root = document.Children.OfType<Element>().First(e => string.Equals(e.TagName, "HTML", StringComparison.OrdinalIgnoreCase));
+        var styles = await CssLoader.ComputeAsync(root, new Uri("https://fen.test/scroll-damage"), null, viewportWidth, viewportHeight);
+
+        using var retainedRasterizer = new RetainedTileRasterizer(maxVisibleTiles: 1);
+        var renderer = new SkiaDomRenderer(retainedRasterizer)
+        {
+            SafetyPolicy = new RendererSafetyPolicy
+            {
+                EnableWatchdog = false,
+                SkipRasterWhenOverBudget = false
+            }
+        };
+
+        renderer.ScrollManager.SetScrollBounds(null, viewportWidth, 240f, viewportWidth, viewportHeight);
+        renderer.ScrollManager.SetScrollPosition(null, 0, 0);
+
+        using var firstBitmap = new SKBitmap(viewportWidth, viewportHeight);
+        using (var firstCanvas = new SKCanvas(firstBitmap))
+        {
+            firstCanvas.Clear(SKColors.White);
+            renderer.RenderFrame(new RenderFrameRequest
+            {
+                Root = root,
+                Canvas = firstCanvas,
+                Styles = styles,
+                Viewport = new SKRect(0, 0, viewportWidth, viewportHeight),
+                SeparateLayoutViewport = new SKSize(viewportWidth, viewportHeight),
+                BaseUrl = "https://fen.test/scroll-damage",
+                InvalidationReason = RenderFrameInvalidationReason.Navigation,
+                RequestedBy = "BrokeredInputRoutingTests.ScrollDamage.First",
+                EmitVerificationReport = false
+            });
+            firstCanvas.Flush();
+        }
+
+        renderer.ScrollManager.SetScrollPosition(null, 0, scrollY);
+
+        using var secondBitmap = new SKBitmap(viewportWidth, viewportHeight);
+        using var secondCanvas = new SKCanvas(secondBitmap);
+        secondCanvas.Clear(SKColors.White);
+        secondCanvas.DrawBitmap(firstBitmap, 0, -scrollY);
+        secondCanvas.Save();
+        secondCanvas.Translate(0, -scrollY);
+        RenderFrameResult secondFrame;
+        try
+        {
+            secondFrame = renderer.RenderFrame(new RenderFrameRequest
+            {
+                Root = root,
+                Canvas = secondCanvas,
+                Styles = styles,
+                Viewport = new SKRect(0, scrollY, viewportWidth, scrollY + viewportHeight),
+                SeparateLayoutViewport = new SKSize(viewportWidth, viewportHeight),
+                BaseUrl = "https://fen.test/scroll-damage",
+                HasBaseFrame = true,
+                InvalidationReason = RenderFrameInvalidationReason.Scroll,
+                RequestedBy = "BrokeredInputRoutingTests.ScrollDamage.Second",
+                EmitVerificationReport = false
+            });
+        }
+        finally
+        {
+            secondCanvas.Restore();
+        }
+        secondCanvas.Flush();
+
+        Assert.True(
+            renderer.LastFrameUsedDamageRasterization,
+            $"Expected the second frame to exercise damage rasterization. mode={secondFrame?.RasterMode} damage={renderer.LastDamageRegions.Count} tileEnabled={renderer.LastRetainedTileRasterization.Enabled} tileVisible={renderer.LastRetainedTileRasterization.VisibleTileCount}");
+
+        var exposedPixel = secondBitmap.GetPixel(24, viewportHeight - 5);
+        Assert.InRange(exposedPixel.Green, 120, 190);
+        Assert.True(
+            exposedPixel.Red < 80 && exposedPixel.Blue < 100,
+            $"Expected newly exposed scrolled band to rasterize green, got {exposedPixel}.");
+    }
+
     private static BrowserHost GetBrowserHost(BrowserTab tab)
     {
         var field = typeof(FenBrowser.Host.BrowserIntegration).GetField("_browser", BindingFlags.Instance | BindingFlags.NonPublic);

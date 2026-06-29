@@ -2052,6 +2052,12 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         private float GetDocumentScrollY(Node root)
         {
+            var viewportState = _scrollManager.GetScrollState(null);
+            if (viewportState != null && (viewportState.MaxScrollY > 0f || Math.Abs(viewportState.ScrollY) > 0.5f))
+            {
+                return viewportState.ScrollY;
+            }
+
             Element scrollable = (root as Document)?.DocumentElement ?? root as Element;
             if (scrollable == null) return 0f;
             var state = _scrollManager.GetScrollState(scrollable);
