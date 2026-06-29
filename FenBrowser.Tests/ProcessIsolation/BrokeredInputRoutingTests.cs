@@ -292,6 +292,67 @@ public sealed class BrokeredInputRoutingTests
     }
 
     [Fact]
+    public void BrowserIntegration_RenderBrokeredFrame_AppliesCompositorScrollDelta()
+    {
+        var previousAutoStart = System.Environment.GetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES");
+        System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", "0");
+
+        var coordinator = new RecordingCoordinator();
+        ProcessIsolationRuntime.SetCoordinator(coordinator);
+
+        try
+        {
+            var tab = new BrowserTab();
+            var receiveMethod = typeof(FenBrowser.Host.BrowserIntegration).GetMethod("OnFrameReceivedFromRenderer", BindingFlags.Instance | BindingFlags.NonPublic);
+            var liveScrollField = typeof(FenBrowser.Host.BrowserIntegration).GetField("_scrollY", BindingFlags.Instance | BindingFlags.NonPublic);
+            var previewScrollField = typeof(FenBrowser.Host.BrowserIntegration).GetField("_compositorPreviewScrollY", BindingFlags.Instance | BindingFlags.NonPublic);
+            var hasPreviewField = typeof(FenBrowser.Host.BrowserIntegration).GetField("_hasCompositorScrollPreview", BindingFlags.Instance | BindingFlags.NonPublic);
+
+            Assert.NotNull(receiveMethod);
+            Assert.NotNull(liveScrollField);
+            Assert.NotNull(previewScrollField);
+            Assert.NotNull(hasPreviewField);
+
+            liveScrollField!.SetValue(tab.Browser, 10f);
+            previewScrollField!.SetValue(tab.Browser, 10f);
+            hasPreviewField!.SetValue(tab.Browser, false);
+
+            var payload = new RendererFrameReadyPayload
+            {
+                SurfaceWidth = 4,
+                SurfaceHeight = 4,
+                PixelData = CreateRowBgraPixels(4, new[] { SKColors.Red, SKColors.Green, SKColors.Blue, SKColors.Yellow }),
+                FrameSequenceNumber = 11,
+                ScrollY = 10f,
+                ContentHeight = 100f
+            };
+
+            receiveMethod!.Invoke(tab.Browser, new object[] { tab.Id, payload });
+
+            liveScrollField.SetValue(tab.Browser, 12f);
+            previewScrollField.SetValue(tab.Browser, 12f);
+            hasPreviewField.SetValue(tab.Browser, true);
+
+            using var bitmap = new SKBitmap(4, 4);
+            using var canvas = new SKCanvas(bitmap);
+            canvas.Clear(SKColors.Magenta);
+
+            tab.Browser.Render(canvas, new SKRect(0, 0, 4, 4));
+            canvas.Flush();
+
+            var topPixel = bitmap.GetPixel(1, 0);
+            Assert.True(
+                topPixel.Blue > 180 && topPixel.Red < 80 && topPixel.Green < 120,
+                $"Expected brokered compositor preview to shift the committed frame by the live scroll delta; top pixel was {topPixel}.");
+        }
+        finally
+        {
+            ProcessIsolationRuntime.SetCoordinator(null);
+            System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", previousAutoStart);
+        }
+    }
+
+    [Fact]
     public async Task RendererChildFramePattern_RasterizesScrolledDocumentBand()
     {
         const int viewportWidth = 120;
@@ -509,6 +570,24 @@ public sealed class BrokeredInputRoutingTests
             pixels[i + 1] = color.Green;
             pixels[i + 2] = color.Red;
             pixels[i + 3] = color.Alpha;
+        }
+
+        return pixels;
+    }
+
+    private static byte[] CreateRowBgraPixels(int width, IReadOnlyList<SKColor> rowColors)
+    {
+        var pixels = new byte[width * rowColors.Count * 4];
+        var offset = 0;
+        foreach (var color in rowColors)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                pixels[offset++] = color.Blue;
+                pixels[offset++] = color.Green;
+                pixels[offset++] = color.Red;
+                pixels[offset++] = color.Alpha;
+            }
         }
 
         return pixels;

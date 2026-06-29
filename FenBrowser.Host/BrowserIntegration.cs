@@ -1242,7 +1242,25 @@ public class BrowserIntegration
             {
                 if (_remoteFrameBitmap != null)
                 {
-                    canvas.DrawBitmap(_remoteFrameBitmap, 0, 0);
+                    float effectiveRemoteScrollY;
+                    lock (_compositorScrollLock)
+                    {
+                        effectiveRemoteScrollY = _hasCompositorScrollPreview ? _compositorPreviewScrollY : _scrollY;
+                    }
+
+                    var scrollDelta = effectiveRemoteScrollY - _remoteFrameScrollY;
+                    if (Math.Abs(scrollDelta) > 0.5f)
+                    {
+                        canvas.Save();
+                        canvas.Translate(0, -scrollDelta);
+                        canvas.DrawBitmap(_remoteFrameBitmap, 0, 0);
+                        canvas.Restore();
+                    }
+                    else
+                    {
+                        canvas.DrawBitmap(_remoteFrameBitmap, 0, 0);
+                    }
+
                     return;
                 }
             }

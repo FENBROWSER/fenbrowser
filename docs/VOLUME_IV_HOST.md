@@ -1329,3 +1329,21 @@ Verification:
 
 - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~BrokeredInputRoutingTests" -v minimal`: pass (`9/9`) on `2026-06-29`.
 - `dotnet build FenBrowser.Host\FenBrowser.Host.csproj -c Debug -v minimal`: pass on `2026-06-29`.
+
+### 6.62 Brokered Scroll Compositor Preview (2026-06-29)
+
+- `FenBrowser.Host/BrowserIntegration.cs`
+  - Brokered remote-frame presentation now applies the live compositor scroll delta (`effectiveScrollY - remoteFrameScrollY`) before drawing the last renderer-child bitmap.
+  - This mirrors the in-process snapshot path: input can move already-committed content immediately while the renderer child produces the matching scrolled frame.
+- `FenBrowser.Tests/ProcessIsolation/BrokeredInputRoutingTests.cs`
+  - Added a brokered render regression that commits a remote frame at one scroll offset, advances the host preview scroll, and verifies the presented pixels shift by the scroll delta.
+
+Net effect:
+
+- Brokered wheel scrolling no longer advances host scroll state while leaving visible page content stuck at the previous child frame.
+- The host now follows the browser-compositor model used by modern browsers: compositor presentation tracks the live scroll offset, and renderer commits catch up asynchronously.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~BrokeredInputRoutingTests" -v minimal`: pass (`10/10`) on `2026-06-29`.
+- `dotnet build FenBrowser.Host\FenBrowser.Host.csproj -c Debug -v minimal`: pass on `2026-06-29`.
