@@ -129,7 +129,7 @@ public class BrowserIntegration
     // --- Scroll Physics ---
     private readonly ScrollPhysics _scrollPhysics = new();
     private const float WheelScrollStepPixels = 40f;
-    private const float SmoothWheelScrollResponse = 18f;
+    private const float SmoothWheelScrollResponse = 9f;
     private const float SmoothWheelScrollSnapPixels = 0.5f;
     private bool _smoothWheelScrollActive;
     private float _smoothWheelScrollTargetY;
@@ -2144,7 +2144,7 @@ public class BrowserIntegration
         float start = _smoothWheelScrollActive ? _smoothWheelScrollTargetY : _scrollY;
         _smoothWheelScrollTargetY = ClampScrollPosition(start + deltaPixels);
         _smoothWheelScrollActive = Math.Abs(_smoothWheelScrollTargetY - _scrollY) > SmoothWheelScrollSnapPixels;
-        AdvanceSmoothWheelScroll(1d / 120d);
+        AdvanceSmoothWheelScroll(1d / 240d);
 
         RequestFrame(RenderFrameInvalidationReason.Scroll, "BrowserIntegration.Scroll");
 

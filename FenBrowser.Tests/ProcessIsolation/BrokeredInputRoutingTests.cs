@@ -226,6 +226,9 @@ public sealed class BrokeredInputRoutingTests
 
             var firstStep = tab.Browser.EffectiveScrollY;
             Assert.InRange(firstStep, before + 0.1f, expectedTarget - 0.1f);
+            Assert.True(
+                firstStep <= before + 20f,
+                $"Expected smooth wheel scroll to start with a small first step, got {firstStep - before:F1}px of an {expectedTarget - before:F1}px target.");
 
             tab.Browser.UpdateScrollPhysics(1d / 60d);
             Assert.InRange(tab.Browser.EffectiveScrollY, firstStep + 0.1f, expectedTarget);
