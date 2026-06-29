@@ -1365,3 +1365,22 @@ Verification:
 
 - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~BrokeredInputRoutingTests" -v minimal`: pass (`11/11`) on `2026-06-29`.
 - `dotnet build FenBrowser.Host\FenBrowser.Host.csproj -c Debug -v minimal`: pass on `2026-06-29`.
+
+### 6.64 Brokered Scroll Bottom Overdraw (2026-06-29)
+
+- `FenBrowser.Host/Program.cs`
+  - Renderer-child frame production now rasterizes a bottom overdraw margin for brokered scroll frames while keeping the visible layout viewport height unchanged.
+  - The overdraw margin is bounded by shared-memory limits and gives compositor-scroll preview real pixels for the newly exposed bottom band during downward scroll.
+- `FenBrowser.Host/ProcessIsolation/RendererIpc.cs`
+  - The frame-ready scroll offset comment now describes the top of the rasterized frame rather than a strictly viewport-sized frame.
+- `FenBrowser.Tests/ProcessIsolation/BrokeredInputRoutingTests.cs`
+  - Added coverage for the brokered raster-height calculation and for host presentation consuming overdraw rows after compositor translation.
+
+Net effect:
+
+- Downward brokered smooth scrolling no longer exposes a white bottom band while waiting for the next renderer-child commit.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~BrokeredInputRoutingTests" -v minimal`: pass (`12/12`) on `2026-06-29`.
+- `dotnet build FenBrowser.Host\FenBrowser.Host.csproj -c Debug -v minimal`: pass on `2026-06-29`.

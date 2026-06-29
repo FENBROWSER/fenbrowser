@@ -96,7 +96,8 @@ namespace FenBrowser.Host.ProcessIsolation
         public int BoxCount { get; set; }
         public int PaintNodeCount { get; set; }
         /// <summary>
-        /// Outer document scroll offset used to rasterize this viewport-sized frame.
+        /// Outer document scroll offset used as the top of this rasterized frame.
+        /// The surface can be taller than the visible viewport to provide scroll overdraw.
         /// </summary>
         public float ScrollY { get; set; }
         /// <summary>

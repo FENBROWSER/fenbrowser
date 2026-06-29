@@ -320,8 +320,8 @@ public sealed class BrokeredInputRoutingTests
             var payload = new RendererFrameReadyPayload
             {
                 SurfaceWidth = 4,
-                SurfaceHeight = 4,
-                PixelData = CreateRowBgraPixels(4, new[] { SKColors.Red, SKColors.Green, SKColors.Blue, SKColors.Yellow }),
+                SurfaceHeight = 6,
+                PixelData = CreateRowBgraPixels(4, new[] { SKColors.Red, SKColors.Green, SKColors.Blue, SKColors.Yellow, SKColors.Cyan, SKColors.Lime }),
                 FrameSequenceNumber = 11,
                 ScrollY = 10f,
                 ContentHeight = 100f
@@ -344,12 +344,25 @@ public sealed class BrokeredInputRoutingTests
             Assert.True(
                 topPixel.Blue > 180 && topPixel.Red < 80 && topPixel.Green < 120,
                 $"Expected brokered compositor preview to shift the committed frame by the live scroll delta; top pixel was {topPixel}.");
+
+            var bottomPixel = bitmap.GetPixel(1, 3);
+            Assert.True(
+                bottomPixel.Green > 180 && bottomPixel.Red < 80 && bottomPixel.Blue < 80,
+                $"Expected brokered compositor preview to use overdraw rows for the newly exposed bottom band; bottom pixel was {bottomPixel}.");
         }
         finally
         {
             ProcessIsolationRuntime.SetCoordinator(null);
             System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", previousAutoStart);
         }
+    }
+
+    [Fact]
+    public void Program_ComputeBrokeredFrameRasterHeight_AddsBottomScrollOverdraw()
+    {
+        Assert.Equal(328f, FenBrowser.Host.Program.ComputeBrokeredFrameRasterHeight(200f), precision: 0);
+        Assert.Equal(1200f, FenBrowser.Host.Program.ComputeBrokeredFrameRasterHeight(800f), precision: 0);
+        Assert.Equal(FrameSharedMemory.MaxHeight, FenBrowser.Host.Program.ComputeBrokeredFrameRasterHeight(FrameSharedMemory.MaxHeight), precision: 0);
     }
 
     [Fact]

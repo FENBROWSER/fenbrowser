@@ -71,6 +71,27 @@ namespace FenBrowser.Host
         // already gave us a fat-enough stack.
         private const string LargeStackEnvVar = "FENBROWSER_LARGE_STACK_HOSTED";
         private const int LargeStackBytes = 16 * 1024 * 1024;
+        internal const float BrokeredFrameScrollOverdrawFraction = 0.5f;
+        internal const float BrokeredFrameScrollOverdrawMinPixels = 128f;
+        internal const float BrokeredFrameScrollOverdrawMaxPixels = 512f;
+
+        internal static float ComputeBrokeredFrameRasterHeight(float viewportHeight)
+        {
+            if (!float.IsFinite(viewportHeight) || viewportHeight <= 1f)
+            {
+                return 1f;
+            }
+
+            float visibleHeight = Math.Min(viewportHeight, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxHeight);
+            float overdrawHeight = Math.Clamp(
+                visibleHeight * BrokeredFrameScrollOverdrawFraction,
+                BrokeredFrameScrollOverdrawMinPixels,
+                BrokeredFrameScrollOverdrawMaxPixels);
+
+            return Math.Min(
+                FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxHeight,
+                visibleHeight + overdrawHeight);
+        }
 
         public static async Task Main(string[] args)
         {
@@ -398,11 +419,12 @@ namespace FenBrowser.Host
                 viewportWidth = Math.Max(1f, Math.Min(viewportWidth, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxWidth));
                 viewportHeight = Math.Max(1f, Math.Min(viewportHeight, FenBrowser.Host.ProcessIsolation.FrameSharedMemory.MaxHeight));
                 scrollY = Math.Max(0f, scrollY);
+                float rasterHeight = ComputeBrokeredFrameRasterHeight(viewportHeight);
 
                 int iWidth = (int)viewportWidth;
-                int iHeight = (int)viewportHeight;
+                int iHeight = (int)rasterHeight;
                 float actualWidth = viewportWidth;
-                float actualHeight = viewportHeight;
+                float actualHeight = iHeight;
                 uint seqNum = 0;
                 FenBrowser.FenEngine.Rendering.Core.RenderFrameResult frameResult = null;
 
@@ -426,9 +448,11 @@ namespace FenBrowser.Host
                             using var canvas = new SkiaSharp.SKCanvas(bitmap);
                             canvas.Clear(SkiaSharp.SKColors.White);
 
-                            // Document-space viewport (top advances with scroll); the canvas is
-                            // translated by -scrollY so the visible band rasterises at (0,0).
-                            var viewport = new SkiaSharp.SKRect(0, scrollY, viewportWidth, scrollY + viewportHeight);
+                            // Document-space raster viewport (top advances with scroll); the canvas
+                            // is translated by -scrollY so the visible band rasterises at (0,0).
+                            // The raster surface is taller than the visible viewport so compositor
+                            // scroll preview has real pixels for the newly exposed bottom band.
+                            var viewport = new SkiaSharp.SKRect(0, scrollY, viewportWidth, scrollY + actualHeight);
                             canvas.Save();
                             if (scrollY > 0f)
                             {
@@ -437,7 +461,7 @@ namespace FenBrowser.Host
                             var childRenderer = new FenBrowser.FenEngine.Rendering.SkiaDomRenderer();
                             var contentHeightHint = Math.Max(
                                 browser.Engine?.LastLayout?.ContentHeight ?? 0f,
-                                scrollY + viewportHeight);
+                                scrollY + actualHeight);
                             childRenderer.ScrollManager.SetScrollBounds(
                                 null,
                                 viewportWidth,
