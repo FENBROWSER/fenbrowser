@@ -1310,3 +1310,22 @@ Net effect:
 Verification:
 
 - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj --filter "FullyQualifiedName~RendererIpcViewportTests|FullyQualifiedName~BrowserIntegrationViewportHintTests|FullyQualifiedName~BrowserTabStartupNavigationTests" --logger "console;verbosity=minimal"`: pass (`5/5`) on `2026-06-24`.
+
+### 6.61 Smooth Wheel Scroll Ticking (2026-06-29)
+
+- `FenBrowser.Host/BrowserIntegration.cs`
+  - Wheel scroll now accumulates a clamped target offset and eases toward it over frame ticks instead of jumping by the full wheel delta in one input event.
+  - The compositor-scroll preview is updated on each smooth step so already-committed content can move immediately while the engine records the matching scrolled frame.
+  - Direct scroll operations such as scrollbar dragging, fragment navigation, and `ScrollToElement(...)` remain exact and cancel any active wheel easing.
+- `FenBrowser.Host/ChromeManager.cs`
+  - The host render loop now forwards frame `deltaTime` into the active tab's scroll physics tick before presenting the widget tree.
+
+Net effect:
+
+- Wheel scrolling keeps the white-screen fix from section 2.316 while removing the harsh per-wheel content jump.
+- Brokered wheel input is still sent to the renderer process, but host visual scroll progresses smoothly toward the intended target.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~BrokeredInputRoutingTests" -v minimal`: pass (`9/9`) on `2026-06-29`.
+- `dotnet build FenBrowser.Host\FenBrowser.Host.csproj -c Debug -v minimal`: pass on `2026-06-29`.

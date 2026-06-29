@@ -180,7 +180,7 @@ namespace FenBrowser.Host
                 _compositorThread?.RequestFrame();
             };
             
-            wm.OnRender += dt => Render(wm.Canvas);
+            wm.OnRender += dt => Render(wm.Canvas, dt);
             
             // Input Wiring
             wm.OnKeyDown += OnKeyDown;
@@ -646,9 +646,10 @@ namespace FenBrowser.Host
              _contextMenu.Show(x, y, wm.LogicalWidth, wm.LogicalHeight);
         }
 
-        private void Render(SKCanvas canvas)
+        private void Render(SKCanvas canvas, double deltaTime)
         {
             if (_compositor == null) return;
+            TabManager.Instance.ActiveTab?.Browser.UpdateScrollPhysics(deltaTime);
             var logicalSize = new SKSize(WindowManager.Instance.LogicalWidth, WindowManager.Instance.LogicalHeight);
 
             // Always clear the host surface before compositing.

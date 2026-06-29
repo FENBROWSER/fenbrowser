@@ -200,7 +200,7 @@ public sealed class BrokeredInputRoutingTests
     }
 
     [Fact]
-    public void BrowserIntegration_HandleMouseWheel_RoutesThroughIntegrationAndScrollsOnceInBrokeredMode()
+    public void BrowserIntegration_HandleMouseWheel_RoutesThroughIntegrationAndStartsSmoothScrollInBrokeredMode()
     {
         var previousAutoStart = System.Environment.GetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES");
         System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", "0");
@@ -213,6 +213,7 @@ public sealed class BrokeredInputRoutingTests
             var tab = new BrowserTab();
             SetScrollableContent(tab, viewportHeight: 200, contentHeight: 1000);
             var before = tab.Browser.EffectiveScrollY;
+            var expectedTarget = before + 80f;
 
             tab.Browser.HandleMouseWheel(20, 30, deltaX: 1, deltaY: -2, viewportOffsetX: 5, viewportOffsetY: 7);
 
@@ -223,7 +224,18 @@ public sealed class BrokeredInputRoutingTests
                 inputEvent.DeltaX == 1 &&
                 inputEvent.DeltaY == -2);
 
-            Assert.Equal(before + 80, tab.Browser.EffectiveScrollY);
+            var firstStep = tab.Browser.EffectiveScrollY;
+            Assert.InRange(firstStep, before + 0.1f, expectedTarget - 0.1f);
+
+            tab.Browser.UpdateScrollPhysics(1d / 60d);
+            Assert.InRange(tab.Browser.EffectiveScrollY, firstStep + 0.1f, expectedTarget);
+
+            for (int i = 0; i < 90; i++)
+            {
+                tab.Browser.UpdateScrollPhysics(1d / 60d);
+            }
+
+            Assert.Equal(expectedTarget, tab.Browser.EffectiveScrollY, precision: 0);
 
             var pendingReasons = GetPendingInvalidationReasons(tab);
             Assert.True(

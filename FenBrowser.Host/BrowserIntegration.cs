@@ -128,6 +128,11 @@ public class BrowserIntegration
     
     // --- Scroll Physics ---
     private readonly ScrollPhysics _scrollPhysics = new();
+    private const float WheelScrollStepPixels = 40f;
+    private const float SmoothWheelScrollResponse = 18f;
+    private const float SmoothWheelScrollSnapPixels = 0.5f;
+    private bool _smoothWheelScrollActive;
+    private float _smoothWheelScrollTargetY;
 
     private readonly record struct EventLoopSliceTelemetry(
         int ProcessedTaskCount,
@@ -1762,6 +1767,7 @@ public class BrowserIntegration
 
         _scrollY = targetScroll;
         ResetCompositorScrollPreview();
+        CancelSmoothWheelScroll();
         _scrollPhysics.SetPosition(_scrollY);
         ScrollChanged?.Invoke(_scrollY, _contentHeight);
         EngineLogBridge.Info($"[FragmentNav] Applied '#{target.Id}' -> scrollY={_scrollY:F1}", LogCategory.Navigation);
@@ -1997,6 +2003,7 @@ public class BrowserIntegration
 
         _scrollY = nextScroll;
         ResetCompositorScrollPreview();
+        CancelSmoothWheelScroll();
         _scrollPhysics.SetPosition(_scrollY);
         ScrollChanged?.Invoke(_scrollY, _contentHeight);
 
@@ -2104,6 +2111,7 @@ public class BrowserIntegration
     public void ScrollToY(float targetScrollY)
     {
         float clamped = ClampScrollPosition(targetScrollY);
+        CancelSmoothWheelScroll();
 
         // Apply immediately so EffectiveScrollY and downstream frame requests pick
         // up the new offset on the next paint. Posting through the engine loop
@@ -2127,17 +2135,19 @@ public class BrowserIntegration
     /// </summary>
     public void Scroll(float deltaY)
     {
-        ApplyCompositorScrollPreview(deltaY);
+        float deltaPixels = -(deltaY * WheelScrollStepPixels);
+        if (Math.Abs(deltaPixels) <= 0.01f)
+        {
+            return;
+        }
 
-        // Apply scroll synchronously on the calling thread. Posting through the
-        // engine loop left _scrollY stale long enough for paints to alternate
-        // between the new and old scroll positions (visible as the content not
-        // following the scrollbar). _scrollY is a single float read; we accept
-        // the relaxed ordering rather than queue the mutation.
-        _scrollY = ClampScrollPosition(_scrollY - (deltaY * 40f));
+        float start = _smoothWheelScrollActive ? _smoothWheelScrollTargetY : _scrollY;
+        _smoothWheelScrollTargetY = ClampScrollPosition(start + deltaPixels);
+        _smoothWheelScrollActive = Math.Abs(_smoothWheelScrollTargetY - _scrollY) > SmoothWheelScrollSnapPixels;
+        AdvanceSmoothWheelScroll(1d / 120d);
+
         RequestFrame(RenderFrameInvalidationReason.Scroll, "BrowserIntegration.Scroll");
 
-        // Immediate UI feedback (optional, we wait for engine to re-record)
         NeedsRepaint?.Invoke();
     }
 
@@ -2160,14 +2170,62 @@ public class BrowserIntegration
         Scroll(deltaY);
     }
 
-    private void ApplyCompositorScrollPreview(float deltaY)
+    private bool AdvanceSmoothWheelScroll(double deltaTime)
     {
+        if (!_smoothWheelScrollActive)
+        {
+            return false;
+        }
+
+        _smoothWheelScrollTargetY = ClampScrollPosition(_smoothWheelScrollTargetY);
+        float distance = _smoothWheelScrollTargetY - _scrollY;
+        if (Math.Abs(distance) <= SmoothWheelScrollSnapPixels)
+        {
+            _smoothWheelScrollActive = false;
+            return SetAnimatedScrollPosition(_smoothWheelScrollTargetY);
+        }
+
+        float dt = (float)Math.Clamp(deltaTime, 1d / 240d, 1d / 15d);
+        float fraction = 1f - MathF.Exp(-SmoothWheelScrollResponse * dt);
+        float nextScrollY = _scrollY + distance * fraction;
+
+        if (Math.Abs(_smoothWheelScrollTargetY - nextScrollY) <= SmoothWheelScrollSnapPixels)
+        {
+            nextScrollY = _smoothWheelScrollTargetY;
+            _smoothWheelScrollActive = false;
+        }
+
+        return SetAnimatedScrollPosition(nextScrollY);
+    }
+
+    private bool SetAnimatedScrollPosition(float scrollY, bool syncPhysics = true)
+    {
+        float clamped = ClampScrollPosition(scrollY);
+        if (Math.Abs(clamped - _scrollY) <= 0.01f)
+        {
+            return false;
+        }
+
+        _scrollY = clamped;
+        if (syncPhysics)
+        {
+            _scrollPhysics.SetPosition(_scrollY);
+        }
+
         lock (_compositorScrollLock)
         {
-            var currentScroll = _hasCompositorScrollPreview ? _compositorPreviewScrollY : _scrollY;
-            _compositorPreviewScrollY = ClampScrollPosition(currentScroll - (deltaY * 40f));
+            _compositorPreviewScrollY = _scrollY;
             _hasCompositorScrollPreview = true;
         }
+
+        ScrollChanged?.Invoke(_scrollY, _contentHeight);
+        return true;
+    }
+
+    private void CancelSmoothWheelScroll()
+    {
+        _smoothWheelScrollActive = false;
+        _smoothWheelScrollTargetY = _scrollY;
     }
 
     private float ClampScrollPosition(float value)
@@ -2807,6 +2865,8 @@ public class BrowserIntegration
     /// </summary>
     public void UpdateScrollPhysics(double deltaTime)
     {
+        bool changed = AdvanceSmoothWheelScroll(deltaTime);
+
         if (_scrollPhysics.IsAnimating)
         {
             _scrollPhysics.Update((float)deltaTime);
@@ -2818,11 +2878,14 @@ public class BrowserIntegration
             
             if (Math.Abs(newScrollY - _scrollY) > 0.5f)
             {
-                _scrollY = newScrollY;
-                ResetCompositorScrollPreview();
-                RequestFrame(RenderFrameInvalidationReason.Scroll | RenderFrameInvalidationReason.Animation, "BrowserIntegration.UpdateScrollPhysics");
-                ScrollChanged?.Invoke(_scrollY, _contentHeight);
+                changed |= SetAnimatedScrollPosition(newScrollY, syncPhysics: false);
             }
+        }
+
+        if (changed || _smoothWheelScrollActive || _scrollPhysics.IsAnimating)
+        {
+            RequestFrame(RenderFrameInvalidationReason.Scroll | RenderFrameInvalidationReason.Animation, "BrowserIntegration.UpdateScrollPhysics");
+            NeedsRepaint?.Invoke();
         }
     }
     
@@ -2831,6 +2894,7 @@ public class BrowserIntegration
     /// </summary>
     public void StartMomentumScroll(float velocity)
     {
+        _smoothWheelScrollActive = false;
         _scrollPhysics.StartMomentum(_scrollY, velocity);
     }
     
@@ -2839,6 +2903,7 @@ public class BrowserIntegration
     /// </summary>
     public void StopMomentumScroll()
     {
+        _smoothWheelScrollActive = false;
         _scrollPhysics.Stop();
     }
     
