@@ -353,6 +353,77 @@ public sealed class BrokeredInputRoutingTests
     }
 
     [Fact]
+    public void BrowserIntegration_RemoteFrameAheadOfLiveScroll_DoesNotReplaceCommittedBitmap()
+    {
+        var previousAutoStart = System.Environment.GetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES");
+        System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", "0");
+
+        var coordinator = new RecordingCoordinator();
+        ProcessIsolationRuntime.SetCoordinator(coordinator);
+
+        try
+        {
+            var tab = new BrowserTab();
+            SetScrollableContent(tab, viewportHeight: 4, contentHeight: 100);
+            var receiveMethod = typeof(FenBrowser.Host.BrowserIntegration).GetMethod("OnFrameReceivedFromRenderer", BindingFlags.Instance | BindingFlags.NonPublic);
+            var remoteScrollField = typeof(FenBrowser.Host.BrowserIntegration).GetField("_remoteFrameScrollY", BindingFlags.Instance | BindingFlags.NonPublic);
+            var remoteSequenceField = typeof(FenBrowser.Host.BrowserIntegration).GetField("_remoteFrameSequenceNumber", BindingFlags.Instance | BindingFlags.NonPublic);
+
+            Assert.NotNull(receiveMethod);
+            Assert.NotNull(remoteScrollField);
+            Assert.NotNull(remoteSequenceField);
+
+            tab.Browser.ScrollToY(10f);
+            var committedPayload = new RendererFrameReadyPayload
+            {
+                SurfaceWidth = 4,
+                SurfaceHeight = 4,
+                PixelData = CreateRowBgraPixels(4, new[] { SKColors.Red, SKColors.Green, SKColors.Blue, SKColors.Yellow }),
+                FrameSequenceNumber = 11,
+                ScrollY = 10f,
+                ContentHeight = 100f
+            };
+
+            receiveMethod!.Invoke(tab.Browser, new object[] { tab.Id, committedPayload });
+            Assert.Equal(10f, (float)remoteScrollField!.GetValue(tab.Browser)!, 0.5f);
+            Assert.Equal((uint)11, (uint)remoteSequenceField!.GetValue(tab.Browser)!);
+
+            tab.Browser.ScrollToY(12f);
+            var futurePayload = new RendererFrameReadyPayload
+            {
+                SurfaceWidth = 4,
+                SurfaceHeight = 4,
+                PixelData = CreateSolidBgraPixels(4, 4, SKColors.Cyan),
+                FrameSequenceNumber = 12,
+                ScrollY = 14f,
+                ContentHeight = 100f
+            };
+
+            receiveMethod.Invoke(tab.Browser, new object[] { tab.Id, futurePayload });
+
+            Assert.Equal(10f, (float)remoteScrollField.GetValue(tab.Browser)!, 0.5f);
+            Assert.Equal((uint)11, (uint)remoteSequenceField.GetValue(tab.Browser)!);
+
+            using var bitmap = new SKBitmap(4, 4);
+            using var canvas = new SKCanvas(bitmap);
+            canvas.Clear(SKColors.Magenta);
+
+            tab.Browser.Render(canvas, new SKRect(0, 0, 4, 4));
+            canvas.Flush();
+
+            var topPixel = bitmap.GetPixel(1, 0);
+            Assert.True(
+                topPixel.Blue > 180 && topPixel.Red < 80 && topPixel.Green < 120,
+                $"Expected future remote frame to be ignored so the previous committed bitmap remains compositor-scrolled; top pixel was {topPixel}.");
+        }
+        finally
+        {
+            ProcessIsolationRuntime.SetCoordinator(null);
+            System.Environment.SetEnvironmentVariable("FEN_AUTO_START_TARGET_PROCESSES", previousAutoStart);
+        }
+    }
+
+    [Fact]
     public async Task RendererChildFramePattern_RasterizesScrolledDocumentBand()
     {
         const int viewportWidth = 120;

@@ -73,6 +73,7 @@ public class BrowserIntegration
     private bool _hasCompositorScrollPreview;
     private float _compositorPreviewScrollY;
     private readonly object _compositorScrollLock = new();
+    private float _lastCompositorScrollDirectionY;
 
     private readonly SKPictureRecorder _recorder = new SKPictureRecorder();
     private RenderFrameInvalidationReason _pendingInvalidationReasons =
@@ -131,6 +132,7 @@ public class BrowserIntegration
     private const float WheelScrollStepPixels = 40f;
     private const float SmoothWheelScrollResponse = 9f;
     private const float SmoothWheelScrollSnapPixels = 0.5f;
+    private const float RemoteFrameFutureScrollTolerancePixels = 0.5f;
     private bool _smoothWheelScrollActive;
     private float _smoothWheelScrollTargetY;
 
@@ -579,6 +581,15 @@ public class BrowserIntegration
         if (payload?.PixelData != null && payload.PixelData.Length > 0 &&
             payload.SurfaceWidth > 0 && payload.SurfaceHeight > 0)
         {
+            if (IsRemoteFrameAheadOfLiveScroll(payload.ScrollY))
+            {
+                EngineLogBridge.Debug(
+                    $"[BrowserIntegration] Ignored future remote frame during compositor scroll: frameScrollY={payload.ScrollY:F1} liveScrollY={GetEffectiveScrollY():F1} tab={tabId}",
+                    LogCategory.Rendering);
+                RequestFrame(RenderFrameInvalidationReason.Scroll | RenderFrameInvalidationReason.ProcessIsolation, "RendererChild.FutureFrameIgnored", notifyUi: true);
+                return;
+            }
+
             int w = (int)payload.SurfaceWidth;
             int h = (int)payload.SurfaceHeight;
             int expectedBytes = w * h * 4;
@@ -1005,7 +1016,7 @@ public class BrowserIntegration
         // Navigation must start from top; carrying prior page scroll causes blank/shifted first paints
         // on short documents (e.g., Acid2 reference page).
         _scrollY = 0f;
-        ResetCompositorScrollPreview();
+        ResetCompositorScrollPreview(resetDirection: true);
         ClearRemoteFrame();
         _contentHeight = 0f;
         var oldSnapshot = _latestSnapshot;
@@ -2130,6 +2141,7 @@ public class BrowserIntegration
     {
         float clamped = ClampScrollPosition(targetScrollY);
         CancelSmoothWheelScroll();
+        float previousScrollY = _scrollY;
 
         // Apply immediately so EffectiveScrollY and downstream frame requests pick
         // up the new offset on the next paint. Posting through the engine loop
@@ -2139,6 +2151,7 @@ public class BrowserIntegration
         _scrollPhysics.SetPosition(_scrollY);
         lock (_compositorScrollLock)
         {
+            UpdateCompositorScrollDirectionLocked(clamped - previousScrollY);
             _compositorPreviewScrollY = clamped;
             _hasCompositorScrollPreview = true;
         }
@@ -2224,6 +2237,7 @@ public class BrowserIntegration
             return false;
         }
 
+        float previousScrollY = _scrollY;
         _scrollY = clamped;
         if (syncPhysics)
         {
@@ -2232,6 +2246,7 @@ public class BrowserIntegration
 
         lock (_compositorScrollLock)
         {
+            UpdateCompositorScrollDirectionLocked(clamped - previousScrollY);
             _compositorPreviewScrollY = _scrollY;
             _hasCompositorScrollPreview = true;
         }
@@ -2252,12 +2267,55 @@ public class BrowserIntegration
         return Math.Max(0f, Math.Min(maxScroll, value));
     }
 
-    private void ResetCompositorScrollPreview()
+    private void ResetCompositorScrollPreview(bool resetDirection = false)
     {
         lock (_compositorScrollLock)
         {
             _compositorPreviewScrollY = _scrollY;
             _hasCompositorScrollPreview = false;
+            if (resetDirection)
+            {
+                _lastCompositorScrollDirectionY = 0f;
+            }
+        }
+    }
+
+    private float GetEffectiveScrollY()
+    {
+        lock (_compositorScrollLock)
+        {
+            return _hasCompositorScrollPreview ? _compositorPreviewScrollY : _scrollY;
+        }
+    }
+
+    private bool IsRemoteFrameAheadOfLiveScroll(float remoteScrollY)
+    {
+        float effectiveScrollY;
+        float directionY;
+        lock (_compositorScrollLock)
+        {
+            effectiveScrollY = _hasCompositorScrollPreview ? _compositorPreviewScrollY : _scrollY;
+            directionY = _lastCompositorScrollDirectionY;
+        }
+
+        if (directionY > 0f)
+        {
+            return remoteScrollY > effectiveScrollY + RemoteFrameFutureScrollTolerancePixels;
+        }
+
+        if (directionY < 0f)
+        {
+            return remoteScrollY < effectiveScrollY - RemoteFrameFutureScrollTolerancePixels;
+        }
+
+        return false;
+    }
+
+    private void UpdateCompositorScrollDirectionLocked(float deltaY)
+    {
+        if (Math.Abs(deltaY) > 0.01f)
+        {
+            _lastCompositorScrollDirectionY = MathF.Sign(deltaY);
         }
     }
 

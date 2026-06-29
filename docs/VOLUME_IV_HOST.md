@@ -1347,3 +1347,21 @@ Verification:
 
 - `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~BrokeredInputRoutingTests" -v minimal`: pass (`10/10`) on `2026-06-29`.
 - `dotnet build FenBrowser.Host\FenBrowser.Host.csproj -c Debug -v minimal`: pass on `2026-06-29`.
+
+### 6.63 Brokered Scroll Future-Frame Guard (2026-06-29)
+
+- `FenBrowser.Host/BrowserIntegration.cs`
+  - Host scroll updates now track the current compositor scroll direction.
+  - Brokered `FrameReady` payloads whose rasterized scroll offset is ahead of the live compositor scroll position in the active direction are ignored and a replacement scroll frame is requested.
+  - Older committed frames may still be compositor-shifted while the renderer child catches up; future viewport bitmaps are not presented because they lack the rows needed to translate back without a visible bounce.
+- `FenBrowser.Tests/ProcessIsolation/BrokeredInputRoutingTests.cs`
+  - Added a regression covering a future remote frame arriving during downward scroll and verified that the previous committed bitmap remains the presentation source.
+
+Net effect:
+
+- Brokered smooth scrolling remains compositor-driven, but remote renderer commits can no longer make content briefly move opposite the current scroll direction.
+
+Verification:
+
+- `dotnet test FenBrowser.Tests\FenBrowser.Tests.csproj -c Debug --filter "FullyQualifiedName~BrokeredInputRoutingTests" -v minimal`: pass (`11/11`) on `2026-06-29`.
+- `dotnet build FenBrowser.Host\FenBrowser.Host.csproj -c Debug -v minimal`: pass on `2026-06-29`.
