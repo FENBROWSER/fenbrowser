@@ -7843,6 +7843,10 @@ pre {{
                     await NavigateAsync(resolvedHref?.AbsoluteUri ?? href);
                 }
             }
+            else if (tag == "input" && TryActivateCheckableInput(element))
+            {
+                return;
+            }
             // Handle button clicks
             else if (tag == "button" || (tag == "input" &&
                 (element.GetAttribute("type")?.ToLowerInvariant() == "submit" ||
@@ -8619,6 +8623,129 @@ pre {{
 
             var tag = element.NodeName?.ToLowerInvariant();
             return IsSubmitActivationControl(element, tag);
+        }
+
+        private bool TryActivateCheckableInput(Element element)
+        {
+            if (element == null ||
+                !string.Equals(element.NodeName, "INPUT", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var type = (element.GetAttribute("type") ?? "text").Trim().ToLowerInvariant();
+            if (type != "checkbox" && type != "radio")
+            {
+                return false;
+            }
+
+            if (IsDisabledControl(element))
+            {
+                return true;
+            }
+
+            SetFocusedElementState(element);
+
+            bool changed = false;
+            if (type == "checkbox")
+            {
+                changed = true;
+                SetCheckableCheckedState(element, !element.HasAttribute("checked"));
+            }
+            else if (!element.HasAttribute("checked"))
+            {
+                ClearRadioGroupCheckedState(element);
+                SetCheckableCheckedState(element, true);
+                changed = true;
+            }
+
+            if (changed)
+            {
+                DispatchFormControlStateEvent(element, "input");
+                DispatchFormControlStateEvent(element, "change");
+            }
+
+            TryInvokeRepaintReady(_engine.GetActiveDom());
+            return true;
+        }
+
+        private static void SetCheckableCheckedState(Element element, bool isChecked)
+        {
+            if (element == null)
+            {
+                return;
+            }
+
+            if (isChecked)
+            {
+                element.SetAttribute("checked", string.Empty);
+                ElementStateManager.Instance.SetChecked(element, true);
+            }
+            else
+            {
+                ElementStateManager.Instance.SetChecked(element, false);
+                element.RemoveAttribute("checked");
+            }
+        }
+
+        private void DispatchFormControlStateEvent(Element element, string eventName)
+        {
+            if (element == null || string.IsNullOrWhiteSpace(eventName))
+            {
+                return;
+            }
+
+            _engine.DispatchPointerEvent(
+                element,
+                eventName,
+                new FenBrowser.FenEngine.Scripting.BrowserDomEventInit
+                {
+                    Bubbles = true,
+                    Cancelable = false
+                });
+        }
+
+        private static void ClearRadioGroupCheckedState(Element radio)
+        {
+            if (radio == null ||
+                !string.Equals(radio.NodeName, "INPUT", StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(radio.GetAttribute("type"), "radio", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var name = radio.GetAttribute("name");
+            if (string.IsNullOrEmpty(name))
+            {
+                return;
+            }
+
+            var scope = FindAncestorForm(radio) ??
+                radio.OwnerDocument?.DocumentElement ??
+                radio.ParentElement;
+
+            if (scope == null)
+            {
+                return;
+            }
+
+            foreach (var candidate in scope.SelfAndDescendants().OfType<Element>())
+            {
+                if (ReferenceEquals(candidate, radio) ||
+                    !string.Equals(candidate.NodeName, "INPUT", StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(candidate.GetAttribute("type"), "radio", StringComparison.OrdinalIgnoreCase) ||
+                    !string.Equals(candidate.GetAttribute("name"), name, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (FindAncestorForm(candidate) != FindAncestorForm(radio))
+                {
+                    continue;
+                }
+
+                SetCheckableCheckedState(candidate, false);
+            }
         }
 
         private async Task<bool> SubmitFormAsync(Element submitter)

@@ -204,6 +204,52 @@ namespace FenBrowser.Tests.Layout
             Assert.InRange(smallBox.Geometry.BorderBox.Top - itemBox.Geometry.ContentBox.Top, 25f, 40f);
         }
 
+        [Fact]
+        public void GridFormattingContext_TextNodeGridItem_StacksBeforeFormControl()
+        {
+            var label = new Element("label");
+            var text = new Text("Text input");
+            var input = new Element("input");
+
+            label.AppendChild(text);
+            label.AppendChild(input);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [label] = new CssComputed
+                {
+                    Display = "grid",
+                    Width = 220,
+                    Gap = 6
+                },
+                [text] = new CssComputed
+                {
+                    Display = "inline"
+                },
+                [input] = new CssComputed
+                {
+                    Display = "inline-block",
+                    WidthPercent = 100,
+                    Height = 42,
+                    BoxSizing = "border-box"
+                }
+            };
+
+            var rootBox = LayoutRoot(label, styles, 220, 200);
+            var textBox = FindBox(rootBox, text);
+            var inputBox = FindBox(rootBox, input);
+
+            Assert.NotNull(textBox);
+            Assert.NotNull(inputBox);
+
+            Assert.True(
+                inputBox.Geometry.MarginBox.Top >= textBox.Geometry.MarginBox.Bottom + 5f,
+                $"Expected label text to occupy its own grid row before the input. text={textBox.Geometry.MarginBox} input={inputBox.Geometry.MarginBox}");
+            Assert.True(
+                rootBox.Geometry.MarginBox.Height >= inputBox.Geometry.MarginBox.Bottom - rootBox.Geometry.MarginBox.Top - 0.5f,
+                $"Expected label grid height to include both text and input rows. root={rootBox.Geometry.MarginBox} input={inputBox.Geometry.MarginBox}");
+        }
+
         private static LayoutBox LayoutRoot(Element root, Dictionary<Node, CssComputed> styles, float width, float height)
         {
             var builder = new BoxTreeBuilder(styles);

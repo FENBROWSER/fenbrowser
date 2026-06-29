@@ -120,22 +120,22 @@ namespace FenBrowser.FenEngine.Layout
         /// <summary>
         /// Global placement calculation used by both Measure and Arrange
         /// </summary>
-        private static (Dictionary<Element, GridItemPosition> Positions, int RowCount, int ColCount) ComputePlacements(
-            List<Element> items, 
+        private static (Dictionary<Node, GridItemPosition> Positions, int RowCount, int ColCount) ComputePlacements(
+            List<Node> items,
             IReadOnlyDictionary<Node, CssComputed> styles, 
             int explicitColCount, 
             int explicitRowCount,
             string autoFlow,
             Dictionary<string, NamedArea> areas) // "row", "column", "row dense", "column dense"
         {
-            var positions = new Dictionary<Element, GridItemPosition>();
+            var positions = new Dictionary<Node, GridItemPosition>();
             var map = new GridOccupancyMap();
             
             bool isDense = autoFlow.Contains("dense");
             bool isColumnFlow = autoFlow.Contains("column");
 
             // Temporary list for auto items
-            var pendingAuto = new List<Element>();
+            var pendingAuto = new List<Node>();
             
             // State for auto-placement cursor
             int cursorRow = 1;
@@ -149,6 +149,20 @@ namespace FenBrowser.FenEngine.Layout
             {
                 maxRow = Math.Max(maxRow, p.RowEnd - 1);
                 maxCol = Math.Max(maxCol, p.ColumnEnd - 1);
+            }
+
+            int RowFlowColumnLimit(int colSpan)
+            {
+                int limit = Math.Max(explicitColCount, maxCol);
+                limit = Math.Max(limit, 1);
+                return Math.Max(limit, colSpan);
+            }
+
+            int ColumnFlowRowLimit(int rowSpan)
+            {
+                int limit = Math.Max(explicitRowCount, maxRow);
+                limit = Math.Max(limit, 1);
+                return Math.Max(limit, rowSpan);
             }
 
             foreach (var item in items)
@@ -253,10 +267,10 @@ namespace FenBrowser.FenEngine.Layout
 
                             // Check collision
                             bool fits = !map.IsOccupied(pos.ColumnStart, pos.ColumnEnd, pos.RowStart, pos.RowEnd);
-                            int limit = explicitColCount > 0 ? explicitColCount : int.MaxValue;
-                            bool overflow = pos.ColumnStart > limit;
+                            int limit = RowFlowColumnLimit(rawPos.ColSpan);
+                            bool overflow = pos.ColumnEnd - 1 > limit;
 
-                            if (fits && (!overflow || explicitColCount == 0))
+                            if (fits && !overflow)
                             {
                                 positions[item] = pos;
                                 map.Mark(pos.ColumnStart, pos.ColumnEnd, pos.RowStart, pos.RowEnd);
@@ -266,7 +280,7 @@ namespace FenBrowser.FenEngine.Layout
                             }
                             
                             cursorCol++;
-                            if (overflow && explicitColCount > 0)
+                            if (overflow)
                             {
                                 cursorCol = 1;
                                 cursorRow++;
@@ -334,10 +348,10 @@ namespace FenBrowser.FenEngine.Layout
                             pos.RowEnd = cursorRow + rawPos.RowSpan;
 
                             bool fits = !map.IsOccupied(pos.ColumnStart, pos.ColumnEnd, pos.RowStart, pos.RowEnd);
-                            int limit = explicitRowCount > 0 ? explicitRowCount : int.MaxValue;
-                            bool overflow = pos.RowStart > limit;
+                            int limit = ColumnFlowRowLimit(rawPos.RowSpan);
+                            bool overflow = pos.RowEnd - 1 > limit;
 
-                            if (fits && (!overflow || explicitRowCount == 0))
+                            if (fits && !overflow)
                             {
                                 positions[item] = pos;
                                 map.Mark(pos.ColumnStart, pos.ColumnEnd, pos.RowStart, pos.RowEnd);
@@ -347,7 +361,7 @@ namespace FenBrowser.FenEngine.Layout
                             }
 
                             cursorRow++;
-                            if (overflow && explicitRowCount > 0)
+                            if (overflow)
                             {
                                 cursorRow = 1;
                                 cursorCol++;
@@ -370,12 +384,13 @@ namespace FenBrowser.FenEngine.Layout
             public int ColSpan = 1;
             public bool HasExplicitRow;
             public bool HasExplicitCol;
-            public Element Element;
+            public Node Node;
         }
 
-        private static RawGridPosition DetermineGridPosition(CssComputed style, Element el, Dictionary<string, NamedArea> areas)
+        private static RawGridPosition DetermineGridPosition(CssComputed style, Node node, Dictionary<string, NamedArea> areas)
         {
-            var p = new RawGridPosition { Element = el };
+            style ??= new CssComputed();
+            var p = new RawGridPosition { Node = node };
 
             // 1. Check for named area ("grid-area: header")
             if (!string.IsNullOrEmpty(style.GridArea))
@@ -529,11 +544,12 @@ namespace FenBrowser.FenEngine.Layout
             float columnGap = (float)(style.ColumnGap ?? style.Gap ?? 0);
             float rowGap = (float)(style.RowGap ?? style.Gap ?? 0);
 
-            // Get grid items (exclude text nodes and hidden elements)
+            // Get grid items. CSS Grid generates anonymous grid items for
+            // non-whitespace text runs, so keep text nodes that survived box-tree
+            // construction; otherwise label text in form-control grids is dropped.
             var source = childrenSource ?? container.ChildNodes;
             var items = source
-                .Where(c => !c.IsText() && c is Element)
-                .Cast<Element>()
+                .Where(IsGridItemNode)
                 .ToList();
 
             // If no explicit columns defined, create one auto column per item
@@ -648,8 +664,7 @@ namespace FenBrowser.FenEngine.Layout
 
             var source = childrenSource ?? container.ChildNodes;
             var items = source
-                .Where(c => !c.IsText() && c is Element)
-                .Cast<Element>()
+                .Where(IsGridItemNode)
                 .ToList();
 
             // Parse auto tracks
@@ -817,7 +832,9 @@ namespace FenBrowser.FenEngine.Layout
                 if (trackH < 0) trackH = 0;
 
                 // --- Phase 3: Item Alignment (JustifyItems/AlignItems/Self) ---
-                var itemStyle = styles[item];
+                var itemStyle = styles.TryGetValue(item, out var resolvedItemStyle)
+                    ? resolvedItemStyle
+                    : new CssComputed();
                 string justify = itemStyle.JustifySelf ?? style.JustifyItems ?? "stretch";
                 string align = itemStyle.AlignSelf ?? style.AlignItems ?? "stretch";
 
@@ -917,7 +934,7 @@ namespace FenBrowser.FenEngine.Layout
         // --- Helpers identical to Phase 1 but included for completeness ---
 
         private readonly record struct GridBaselineAlignmentPlan(
-            Element Item,
+            Node Item,
             int RowIndex,
             float TrackTop,
             float TrackHeight,
@@ -940,7 +957,7 @@ namespace FenBrowser.FenEngine.Layout
         }
 
         private static float ResolveGridItemBaselineOffset(
-            Element item,
+            Node item,
             IDictionary<Node, BoxModel> boxes,
             SKRect itemRect)
         {
@@ -1005,6 +1022,26 @@ namespace FenBrowser.FenEngine.Layout
             }
 
             return baselineOffset > 0f;
+        }
+
+        private static bool IsGridItemNode(Node node)
+        {
+            if (node == null)
+            {
+                return false;
+            }
+
+            if (node is Element)
+            {
+                return true;
+            }
+
+            if (node is Text text)
+            {
+                return !Contexts.TextWhitespaceClassifier.IsCollapsibleWhitespaceOnly(text.Data ?? string.Empty);
+            }
+
+            return false;
         }
 
 
@@ -1082,8 +1119,8 @@ namespace FenBrowser.FenEngine.Layout
         private static void MeasureAutoRowHeights(
             List<GridTrack> rowTracks,
             List<GridTrack> columnTracks,
-            List<Element> items,
-            Dictionary<Element, GridItemPosition> positions,
+            List<Node> items,
+            Dictionary<Node, GridItemPosition> positions,
             IReadOnlyDictionary<Node, CssComputed> styles,
             float columnGap,
             int depth,
@@ -1136,8 +1173,8 @@ namespace FenBrowser.FenEngine.Layout
 
         private static void MeasureTracksIntrinsic(
             List<GridTrack> tracks,
-            List<Element> items,
-            Dictionary<Element, GridItemPosition> positions,
+            List<Node> items,
+            Dictionary<Node, GridItemPosition> positions,
             IReadOnlyDictionary<Node, CssComputed> styles,
             bool isColumn,
             int depth,
