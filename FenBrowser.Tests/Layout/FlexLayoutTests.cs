@@ -843,6 +843,87 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void RowFlex_WidthAutoOverride_ClearsStalePercentWidthBeforeIntrinsicProbe()
+        {
+            var header = new Element("div");
+            var logoShell = new Element("div");
+            var mobileSpacer = new Element("div");
+            var logo = new Element("a");
+            var menu = new Element("div");
+            var search = new Element("div");
+            var signIn = new Element("a");
+
+            logoShell.AppendChild(mobileSpacer);
+            logoShell.AppendChild(logo);
+            menu.AppendChild(search);
+            menu.AppendChild(signIn);
+            header.AppendChild(logoShell);
+            header.AppendChild(menu);
+
+            var logoShellStyle = new CssComputed
+            {
+                Display = "flex",
+                FlexDirection = "row",
+                JustifyContent = "space-between",
+                WidthPercent = 100
+            };
+            logoShellStyle.Map["width"] = "auto";
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [header] = new CssComputed
+                {
+                    Display = "flex",
+                    FlexDirection = "row",
+                    AlignItems = "center",
+                    Width = 600,
+                    Height = 60
+                },
+                [logoShell] = logoShellStyle,
+                [mobileSpacer] = new CssComputed { Display = "block", FlexGrow = 1 },
+                [logo] = new CssComputed { Display = "inline-block", Width = 40, Height = 32 },
+                [menu] = new CssComputed
+                {
+                    Display = "flex",
+                    FlexDirection = "row",
+                    FlexGrow = 1,
+                    Height = 60
+                },
+                [search] = new CssComputed { Display = "block", Width = 160, Height = 32 },
+                [signIn] = new CssComputed { Display = "inline-block", Width = 56, Height = 32 }
+            };
+
+            var builder = new BoxTreeBuilder(styles);
+            var rootBox = builder.Build(header);
+
+            var state = new LayoutState(
+                new SKSize(600, 60),
+                600,
+                60,
+                600,
+                60);
+
+            FormattingContext.Resolve(rootBox).Layout(rootBox, state);
+
+            var logoShellBox = FindBox(rootBox, logoShell);
+            var logoBox = FindBox(rootBox, logo);
+            var menuBox = FindBox(rootBox, menu);
+
+            Assert.NotNull(logoShellBox);
+            Assert.NotNull(logoBox);
+            Assert.NotNull(menuBox);
+            Assert.True(
+                logoShellBox.Geometry.MarginBox.Width < 100f,
+                $"Expected width:auto to clear stale width:100% projection and shrink-wrap the logo shell. logoShell={logoShellBox.Geometry.MarginBox} menu={menuBox.Geometry.MarginBox}");
+            Assert.True(
+                logoBox.Geometry.MarginBox.Left < 80f,
+                $"Expected logo to remain near row start instead of being pushed by a full-width logo shell. logo={logoBox.Geometry.MarginBox} logoShell={logoShellBox.Geometry.MarginBox}");
+            Assert.True(
+                menuBox.Geometry.MarginBox.Left < 120f && menuBox.Geometry.MarginBox.Width > 480f,
+                $"Expected menu to consume remaining header width after the shrink-wrapped logo shell. logoShell={logoShellBox.Geometry.MarginBox} menu={menuBox.Geometry.MarginBox}");
+        }
+
+        [Fact]
         public void FlexColumn_MaxWidthAutoInlineMargins_CentersCrossAxisContent()
         {
             var container = new Element("div");

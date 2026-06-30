@@ -61,13 +61,17 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             bool heightPercentHasDefiniteBasis =
                 style?.HeightPercent.HasValue == true &&
                 HasDefinitePercentageHeightBasis(container, state);
-            bool rawHeightIsPercentage =
+            string rawHeight = null;
+            bool hasRawHeight =
                 style?.Map != null &&
-                style.Map.TryGetValue("height", out var rawHeight) &&
-                IsPercentageHeight(rawHeight);
+                style.Map.TryGetValue("height", out rawHeight) &&
+                !string.IsNullOrWhiteSpace(rawHeight);
+            bool rawHeightIsAuto = hasRawHeight &&
+                                   string.Equals(rawHeight.Trim(), "auto", StringComparison.OrdinalIgnoreCase);
+            bool rawHeightIsPercentage = hasRawHeight && IsPercentageHeight(rawHeight);
             bool hasHeightMapExplicit =
-                style?.Map != null &&
-                style.Map.ContainsKey("height") &&
+                hasRawHeight &&
+                !rawHeightIsAuto &&
                 !rawHeightIsPercentage &&
                 (style.HeightPercent.HasValue != true || heightPercentHasDefiniteBasis);
             bool hasExplicitHeightForFlexSizing =
@@ -83,10 +87,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 : hasExplicitHeightForFlexSizing;
             bool hasExplicitCrossSize = isRow
                 ? hasExplicitHeightForFlexSizing
-                : (style?.Width.HasValue == true ||
-                   style?.WidthPercent.HasValue == true ||
-                   !string.IsNullOrEmpty(style?.WidthExpression) ||
-                   (style?.Map != null && style.Map.ContainsKey("width")));
+                : HasExplicitWidthForFlexSizing(style);
             bool shrinkToContentMainAxis = !hasExplicitMainSize && (!isRow || mainAxisUnconstrained);
 
             // 2. Collect Flex Items (In-flow children)
@@ -200,10 +201,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 state.Deadline?.Check();
 
                 var itemStyle = item.ComputedStyle;
-                bool hasExplicitWidth = itemStyle?.Width.HasValue == true ||
-                                        itemStyle?.WidthPercent.HasValue == true ||
-                                        !string.IsNullOrEmpty(itemStyle?.WidthExpression) ||
-                                        (itemStyle?.Map != null && itemStyle.Map.ContainsKey("width"));
+                bool hasExplicitWidth = HasExplicitWidthForFlexSizing(itemStyle);
                 bool hasFlexGrow = ResolveFlexGrow(itemStyle).GetValueOrDefault() > 0;
                 string display = itemStyle?.Display?.ToLowerInvariant() ?? string.Empty;
                 bool inlineLike = display.StartsWith("inline", StringComparison.OrdinalIgnoreCase) || display.Length == 0;
@@ -2445,6 +2443,26 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     return flexGrow;
             }
             return null;
+        }
+
+        private static bool HasExplicitWidthForFlexSizing(CssComputed style)
+        {
+            if (style == null)
+            {
+                return false;
+            }
+
+            if (style.Width.HasValue ||
+                style.WidthPercent.HasValue ||
+                !string.IsNullOrEmpty(style.WidthExpression))
+            {
+                return true;
+            }
+
+            return style.Map != null &&
+                   style.Map.TryGetValue("width", out var rawWidth) &&
+                   !string.IsNullOrWhiteSpace(rawWidth) &&
+                   !string.Equals(rawWidth.Trim(), "auto", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsWrapEnabled(CssComputed style)

@@ -59,6 +59,21 @@ namespace FenBrowser.FenEngine.Layout
             SyncInset(style.Map, "bottom", style.Bottom, style.BottomPercent, value => style.Bottom = value, value => style.BottomPercent = value, expr => style.BottomAnchorExpression = expr);
             SyncLogicalInsets(style);
 
+            ClearAnchorSizeIfKeyword(style.Map, "width", "auto",
+                clearAbsoluteValue: () => style.Width = null,
+                clearPercentValue: () => style.WidthPercent = null,
+                clearExpressionValue: () => style.WidthExpression = null,
+                clearAnchorExpression: () => style.WidthAnchorExpression = null);
+            ClearAnchorSizeIfKeyword(style.Map, "height", "auto",
+                clearAbsoluteValue: () => style.Height = null,
+                clearPercentValue: () => style.HeightPercent = null,
+                clearExpressionValue: () => style.HeightExpression = null,
+                clearAnchorExpression: () => style.HeightAnchorExpression = null);
+            ClearSizeIfKeyword(style.Map, "min-width", "auto", () => style.MinWidth = null, () => style.MinWidthPercent = null, () => style.MinWidthExpression = null);
+            ClearSizeIfKeyword(style.Map, "min-height", "auto", () => style.MinHeight = null, () => style.MinHeightPercent = null, () => style.MinHeightExpression = null);
+            ClearSizeIfKeyword(style.Map, "max-width", "none", () => style.MaxWidth = null, () => style.MaxWidthPercent = null, () => style.MaxWidthExpression = null);
+            ClearSizeIfKeyword(style.Map, "max-height", "none", () => style.MaxHeight = null, () => style.MaxHeightPercent = null, () => style.MaxHeightExpression = null);
+
             SyncAnchorSize(style.Map, "width", style.Width, style.WidthPercent, style.WidthExpression, value => style.Width = value, value => style.WidthPercent = value, value => style.WidthExpression = value, expr => style.WidthAnchorExpression = expr);
             SyncAnchorSize(style.Map, "height", style.Height, style.HeightPercent, style.HeightExpression, value => style.Height = value, value => style.HeightPercent = value, value => style.HeightExpression = value, expr => style.HeightAnchorExpression = expr);
             SyncSize(style.Map, "min-width", style.MinWidth, style.MinWidthPercent, style.MinWidthExpression, value => style.MinWidth = value, value => style.MinWidthPercent = value, value => style.MinWidthExpression = value);
@@ -194,6 +209,51 @@ namespace FenBrowser.FenEngine.Layout
             {
                 setExpressionValue(rawValue);
             }
+        }
+
+        private static void ClearAnchorSizeIfKeyword(
+            IReadOnlyDictionary<string, string> map,
+            string propertyName,
+            string keyword,
+            Action clearAbsoluteValue,
+            Action clearPercentValue,
+            Action clearExpressionValue,
+            Action clearAnchorExpression)
+        {
+            if (!IsMappedKeyword(map, propertyName, keyword))
+            {
+                return;
+            }
+
+            clearAbsoluteValue();
+            clearPercentValue();
+            clearExpressionValue();
+            clearAnchorExpression?.Invoke();
+        }
+
+        private static void ClearSizeIfKeyword(
+            IReadOnlyDictionary<string, string> map,
+            string propertyName,
+            string keyword,
+            Action clearAbsoluteValue,
+            Action clearPercentValue,
+            Action clearExpressionValue)
+        {
+            if (!IsMappedKeyword(map, propertyName, keyword))
+            {
+                return;
+            }
+
+            clearAbsoluteValue();
+            clearPercentValue();
+            clearExpressionValue();
+        }
+
+        private static bool IsMappedKeyword(IReadOnlyDictionary<string, string> map, string propertyName, string keyword)
+        {
+            return map != null &&
+                   map.TryGetValue(propertyName, out var rawValue) &&
+                   string.Equals(rawValue?.Trim(), keyword, StringComparison.OrdinalIgnoreCase);
         }
 
         private static void SyncSize(
