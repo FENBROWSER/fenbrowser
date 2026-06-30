@@ -83,6 +83,54 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void ColumnFlexCenteredBlock_WithMaxWidth_WrapsInlineTextInsideCap()
+        {
+            var root = new Element("div");
+            var heading = new Element("h1");
+            var headline = new Text("The future of building happens together");
+
+            heading.AppendChild(headline);
+            root.AppendChild(heading);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = new CssComputed
+                {
+                    Display = "flex",
+                    FlexDirection = "column",
+                    AlignItems = "center",
+                    Width = 500,
+                    Height = 240
+                },
+                [heading] = new CssComputed
+                {
+                    Display = "block",
+                    MaxWidth = 240,
+                    FontSize = 32,
+                    LineHeight = 40,
+                    FontFamilyName = "Arial"
+                }
+            };
+
+            var rootBox = LayoutRoot(root, styles, 500, 240);
+            var headingBox = FindBox(rootBox, heading);
+            var textBoxes = new List<TextLayoutBox>();
+            CollectTextBoxes(rootBox, textBoxes);
+            var textBox = FindTextBox(textBoxes, headline);
+
+            Assert.NotNull(headingBox);
+            Assert.NotNull(textBox);
+            Assert.True(headingBox!.Geometry.ContentBox.Width <= 241f, $"Expected heading max-width cap, got {headingBox.Geometry.ContentBox}.");
+            Assert.True(textBox!.Geometry.Lines.Count >= 2, $"Expected headline to wrap after max-width cap, got {textBox.Geometry.Lines.Count} lines.");
+            foreach (var line in textBox.Geometry.Lines)
+            {
+                Assert.True(
+                    line.Origin.X + line.Width <= headingBox.Geometry.ContentBox.Width + 1f,
+                    $"Expected each text line to stay within capped heading. heading={headingBox.Geometry.ContentBox} line='{line.Text}' origin={line.Origin} width={line.Width} text={textBox.Geometry.MarginBox}");
+            }
+        }
+
+        [Fact]
         public void FlexItem_WithNestedInlineSpans_KeepsInlineRunHorizontal()
         {
             var header = new Element("div");

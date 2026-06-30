@@ -129,9 +129,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             ResolveContextWidth(box, state);
 
-            float contentLimit = isShrinkToFitProbe
-                ? float.PositiveInfinity
-                : box.Geometry.ContentBox.Width;
+            float contentLimit = ResolveLineContentLimit(box, state, isShrinkToFitProbe, isAnonymousBlock);
             // Robustness: Handle unconstrained width (shrink-to-fit root)
             if (float.IsInfinity(contentLimit)) contentLimit = isShrinkToFitProbe ? 1000000f : state.ViewportWidth;
             if (float.IsNaN(contentLimit)) contentLimit = 800f; // Safe fallback
@@ -586,12 +584,13 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     if (ShouldRelayoutAtomicInline(item))
                     {
                         var itemState = state.Clone();
-                        // Add slop to absorb sub-pixel rounding between the first
+                        // Add slop only for text-bearing inline items to absorb
                         // probe's whole-string MeasureString and the per-word
                         // measurements during re-layout — without it short labels
                         // spuriously wrap to two lines because per-word widths
                         // can sum to a hair more than the cached probe width.
-                        float itemW = MathF.Ceiling(Math.Max(0f, item.Geometry.ContentBox.Width)) + 2f;
+                        bool needsTextProbeGuard = TryMeasureInlineLabelContent(item, out _, out _);
+                        float itemW = MathF.Ceiling(Math.Max(0f, item.Geometry.ContentBox.Width)) + (needsTextProbeGuard ? 2f : 0f);
                         if (!float.IsFinite(itemW) || itemW <= 0f)
                         {
                             itemW = Math.Max(0f, item.Geometry.BorderBox.Width);
@@ -2093,8 +2092,33 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             box.Geometry.Padding = p;
             box.Geometry.Border = b;
             box.Geometry.Margin = m;
-            
+
             LayoutBoxOps.SyncBoxes(box.Geometry);
+        }
+
+        private static float ResolveLineContentLimit(LayoutBox box, LayoutState state, bool isShrinkToFitProbe, bool isAnonymousBlock)
+        {
+            float contentWidth = box.Geometry?.ContentBox.Width ?? 0f;
+            if (isAnonymousBlock || box.ComputedStyle == null)
+            {
+                return contentWidth;
+            }
+
+            if (isShrinkToFitProbe)
+            {
+                float intrinsicProbeWidth = float.PositiveInfinity;
+                float ignoredHeight = Math.Max(0f, box.Geometry?.ContentBox.Height ?? 0f);
+                ApplyMinMaxConstraints(box.ComputedStyle, state, ref intrinsicProbeWidth, ref ignoredHeight);
+
+                return float.IsFinite(intrinsicProbeWidth)
+                    ? Math.Max(0f, intrinsicProbeWidth)
+                    : float.PositiveInfinity;
+            }
+
+            float constrainedWidth = contentWidth;
+            float constrainedHeight = Math.Max(0f, box.Geometry?.ContentBox.Height ?? 0f);
+            ApplyMinMaxConstraints(box.ComputedStyle, state, ref constrainedWidth, ref constrainedHeight);
+            return constrainedWidth;
         }
         
     }
