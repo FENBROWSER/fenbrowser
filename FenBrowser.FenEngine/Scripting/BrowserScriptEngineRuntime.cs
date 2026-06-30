@@ -2506,6 +2506,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             // their presence and shape.
             "navigator.plugins = { length: 0, item: function() { return null; }, namedItem: function() { return null; }, refresh: function() {} };" +
             "navigator.mimeTypes = { length: 0, item: function() { return null; }, namedItem: function() { return null; } };" +
+            // ── navigator.cookieDeprecationLabel ── https://wicg.github.io/cookie-deprecation-label/
+            // Google reCAPTCHA enterprise.js checks this.  Must be an object with
+            // getValue() that returns a Promise<string>.
+            "navigator.cookieDeprecationLabel = { getValue: function() { return Promise.resolve('no-signal'); } };" +
             // Stub window.chrome — Chromium-based browsers always expose this.
             // Google's JS challenge checks for window.chrome.loadTimes() and
             // window.chrome.csi() as browser-authenticity signals.
@@ -3415,6 +3419,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 Document.prototype.getElementsByTagName = function () { return this.getElementsByTagName.apply(this, arguments); };
                 Document.prototype.cloneNode = function () { return this.cloneNode.apply(this, arguments); };
                 Document.prototype.appendChild = function () { return this.appendChild.apply(this, arguments); };
+                Document.prototype.append = function () { return this.append.apply(this, arguments); };
+                Document.prototype.prepend = function () { return this.prepend.apply(this, arguments); };
 
                 Element.prototype.getAttribute = function () { return this.getAttribute.apply(this, arguments); };
                 Element.prototype.hasAttribute = function () { return this.hasAttribute.apply(this, arguments); };
@@ -3431,6 +3437,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 Element.prototype.querySelectorAll = function () { return this.querySelectorAll.apply(this, arguments); };
                 Element.prototype.getElementsByTagName = function () { return this.getElementsByTagName.apply(this, arguments); };
                 Element.prototype.appendChild = function () { return this.appendChild.apply(this, arguments); };
+                Element.prototype.append = function () { return this.append.apply(this, arguments); };
+                Element.prototype.prepend = function () { return this.prepend.apply(this, arguments); };
                 Element.prototype.cloneNode = function () { return this.cloneNode.apply(this, arguments); };
 
                 HTMLElement.prototype.matches = Element.prototype.matches;
