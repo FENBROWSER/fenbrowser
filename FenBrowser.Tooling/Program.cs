@@ -411,6 +411,18 @@ namespace FenBrowser.Tooling
             catch (Exception ex) { Console.WriteLine($"[debug-site] Script hydration error: {ex.Message}"); }
             sw.Stop();
 
+            // ── Capture screenshot early ─────────────────────────────────
+            // Capture the root, styles, and screenshot now — before the
+            // probe scripts run.  Probe ExecuteScriptAsync calls can trigger
+            // navigation side-effects that desynchronise the DOM and the
+            // cached ComputedStyles dictionary.
+            var root = host.GetDomRoot();
+            int nodeCount = CountDomNodes(root);
+            string rawHtml = SafeCall(() => host.GetRawHtml()) ?? string.Empty;
+            string text = SafeCall(() => host.GetTextContent()) ?? string.Empty;
+            var styles = SafeCall(() => host.ComputedStyles);
+            var screenshot = CaptureDebugSiteScreenshot(root, styles, host.CurrentUri?.AbsoluteUri ?? url);
+
             string[] probes =
             {
                 "typeof window",
@@ -450,12 +462,6 @@ namespace FenBrowser.Tooling
                 probeResults[probe] = value;
             }
 
-            var root = host.GetDomRoot();
-            int nodeCount = CountDomNodes(root);
-            string rawHtml = SafeCall(() => host.GetRawHtml()) ?? string.Empty;
-            string text = SafeCall(() => host.GetTextContent()) ?? string.Empty;
-            var styles = SafeCall(() => host.ComputedStyles);
-            var screenshot = CaptureDebugSiteScreenshot(root, styles, host.CurrentUri?.AbsoluteUri ?? url);
             var styleLayout = BuildStyleLayoutSummary(
                 root,
                 styles,
