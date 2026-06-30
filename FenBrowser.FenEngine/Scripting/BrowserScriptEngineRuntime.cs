@@ -2373,6 +2373,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 // surfaces as a catchable RangeError instead of freezing the browser
                 // thread forever. Override via FEN_FENJS_SCRIPT_TIMEOUT_MS.
                 WallClockTimeoutMs = ResolveFenJsScriptTimeoutMs(),
+                // Instruction budget prevents truly-infinite loops from hanging
+                // the browser for the full wall-clock timeout (300 s).  100M
+                // instructions is ~5-10 s of interpreted bytecode on a modern
+                // CPU — enough for even the largest page bundles to finish.
+                InstructionBudget = 100_000_000,
                 MaxCallDepth = 256
             };
 
