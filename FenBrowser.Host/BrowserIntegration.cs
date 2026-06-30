@@ -1022,12 +1022,27 @@ public class BrowserIntegration
         var oldSnapshot = _latestSnapshot;
         _latestSnapshot = null;
         oldSnapshot?.Frame?.Dispose();
+        // Clear the DOM root so the engine thread cannot render the old
+        // page while the new document is loading.  RecordFrame skips when
+        // both root and styles are null, and RepaintReady restores them
+        // when the new document is committed.
+        _root = null;
+        _styles = null;
         _currentFrameSeedImage?.Dispose();
         _currentFrameSeedImage = null;
         _currentFrameSeedCreatedUtc = DateTime.MinValue;
         _consecutiveBaseFrameReuseCount = 0;
         ScrollChanged?.Invoke(_scrollY, _contentHeight);
-        RequestFrame(RenderFrameInvalidationReason.Navigation, "BrowserIntegration.Navigate");
+        // Defer RequestFrame until RepaintReady fires with the new DOM.
+        // Calling RequestFrame here while _activeDom still references the
+        // old page causes RecordFrame to render and publish the previous
+        // page as _latestSnapshot, which the compositor then draws — the
+        // screen appears frozen.  RepaintReady fires when the new document
+        // is committed and styles are available.
+        _needsRepaint = true;
+        _pendingInvalidationReasons |= RenderFrameInvalidationReason.Navigation;
+        _pendingInvalidationSource = MergeInvalidationSource(_pendingInvalidationSource, "BrowserIntegration.Navigate");
+        _wakeEvent.Set();
 
         // Post-navigation repaint pulse: ensure the engine keeps waking up during the
         // critical window after navigation so content is displayed as soon as it is ready.
@@ -1379,18 +1394,12 @@ public class BrowserIntegration
             bool outOfProcess = FenBrowser.Host.ProcessIsolation.ProcessIsolationRuntime.Current?.UsesOutOfProcessRenderer == true;
             var navAge = DateTime.Now - _lastNavigationTime;
 
-            // In-process startup can briefly have no snapshot while parse/style work is still in flight.
-            // Keep the repaint request alive for a short warmup window so first paint is not input-gated.
-            if (!outOfProcess && navAge.TotalSeconds <= 5)
-            {
-                EngineLogBridge.Debug("[BrowserIntegration] RecordFrame skipped: awaiting initial DOM/style snapshot.", LogCategory.Rendering);
-                return;
-            }
-
-            // Outside the warmup window (or in out-of-process mode without remote content),
-            // stop requesting immediate repaints until a new invalidation source arrives.
-            ClearPendingFrameRequest();
-            EngineLogBridge.Warn("[BrowserIntegration] RecordFrame skipped: no root and no styles. Clearing Repaint flag.", LogCategory.General);
+            // Keep the repaint request alive indefinitely while waiting for
+            // the DOM after a navigation.  RepaintReady will provide the new
+            // root+styles when the document is committed; clearing _needsRepaint
+            // here would prevent the engine from ever picking them up.
+            // The post-navigation repaint pulse ensures the engine keeps waking.
+            EngineLogBridge.Debug("[BrowserIntegration] RecordFrame skipped: awaiting DOM/style snapshot after navigation.", LogCategory.Rendering);
             return;
         }
 
