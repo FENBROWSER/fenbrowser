@@ -1252,7 +1252,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
         {
              float childAvailableHeight = float.IsFinite(definiteContentHeight) && definiteContentHeight > 0f
                 ? definiteContentHeight
-                : state.ContainingBlockHeight > 0 ? state.ContainingBlockHeight : state.ViewportHeight;
+                : 0f;
              return new LayoutState(
                 new SKSize(contentWidth, childAvailableHeight),
                 contentWidth,
@@ -1340,14 +1340,14 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return true;
             }
 
-            if (string.Equals(LayoutStyleResolver.GetEffectivePosition(style), "fixed", StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
-
             if (style.HeightPercent.HasValue)
             {
                 return HasDefiniteContainingBlockHeight(box.Parent);
+            }
+
+            if (HasDefinitePositionedHeight(style))
+            {
+                return true;
             }
 
             return false;
@@ -1382,8 +1382,55 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 return false;
             }
 
-            float resolvedHeight = box.Geometry.ContentBox.Height;
-            return float.IsFinite(resolvedHeight) && resolvedHeight > 0f;
+            var style = box.ComputedStyle;
+            if (style == null)
+            {
+                return false;
+            }
+
+            if (style.Height.HasValue || !string.IsNullOrWhiteSpace(style.HeightExpression))
+            {
+                return true;
+            }
+
+            if (style.HeightPercent.HasValue)
+            {
+                return HasDefiniteContainingBlockHeight(box.Parent);
+            }
+
+            return HasDefinitePositionedHeight(style);
+        }
+
+        private static bool HasDefinitePositionedHeight(CssComputed style)
+        {
+            if (style == null)
+            {
+                return false;
+            }
+
+            var position = LayoutStyleResolver.GetEffectivePosition(style);
+            if (!string.Equals(position, "absolute", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(position, "fixed", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return HasVerticalInset(style, isTop: true) && HasVerticalInset(style, isTop: false);
+        }
+
+        private static bool HasVerticalInset(CssComputed style, bool isTop)
+        {
+            if (style == null)
+            {
+                return false;
+            }
+
+            if (isTop)
+            {
+                return style.Top.HasValue || style.TopPercent.HasValue;
+            }
+
+            return style.Bottom.HasValue || style.BottomPercent.HasValue;
         }
 
         private static bool TryResolveFragmentainerHeight(LayoutState state, out float fragmentHeight)

@@ -21,7 +21,7 @@
 | example.com | 18 nodes | 12/12 styled | 0 scripts | Captured | Perfect |
 | news.ycombinator.com | 816 nodes | 777/816 styled | few | Captured | 95% layout coverage |
 | react.dev | 1843 nodes | 1240/1843 styled | unknown | Partial | 67% layout coverage |
-| github.com | 2897 nodes | 1923/2897 styled | 69/84 scripts | Captured | 1415 layout boxes; 103 zero-area boxes; first nav group content-sized; sparse header remains |
+| github.com | 2891 nodes | 1920/2891 styled | 69/84 scripts | Captured | 1415 layout boxes; 102 zero-area boxes; header height fixed/top-aligned; nav width and hero geometry remain |
 | x.com | 81 nodes | 10/81 styled | Very few | Mostly white | 12% layout; scripts fail early |
 
 ## Priority 1 — Real-Site Blocker Diagnosis
@@ -49,11 +49,11 @@
 - **Priority**: 1
 - **Risk Level**: Medium
 - **Dependencies**: T4.1 (fresh diagnosis)
-- **Files**: FenBrowser.FenEngine/Layout/InlineFormattingContext.cs, FlexFormattingContext.cs, LayoutStyleResolver.cs
-- **Current**: GitHub captures layout but still has 103 zero-area boxes after unitless `line-height` flex sizing and repeated percentage-height normalization were fixed. The first `NavGroup` title wrapper is 18px, the parent group now sizes to 381px content height instead of the 800px viewport fallback, and the first dropdown list now measures 1479px instead of 3320px. The screenshot remains sparse.
-- **Expected**: Remaining zero-area boxes should be traced to the next width/placement/intrinsic-sizing root cause, not unresolved percentage heights resolving against viewport height.
+- **Files**: FenBrowser.FenEngine/Layout/Contexts/BlockFormattingContext.cs, FenBrowser.FenEngine/Layout/Contexts/FlexFormattingContext.cs, FenBrowser.FenEngine/Layout/Contexts/InlineFormattingContext.cs, FenBrowser.FenEngine/Layout/LayoutStyleResolver.cs
+- **Current**: GitHub captures layout but still has 102 zero-area boxes after unitless `line-height` flex sizing, repeated percentage-height normalization, and auto-height positioned-header percentage sizing were fixed. `height:100%` under an auto-height positioned header no longer resolves against viewport/out-of-flow used geometry; the header is now 60px and top-aligned. Remaining visual issues are nav item width/collapsed dropdown widths and hero/visual sizing, not header viewport-height inflation.
+- **Expected**: Remaining zero-area boxes should be traced to the next width/placement/intrinsic-sizing root cause, not unresolved percentage heights resolving against viewport height or auto-height positioned headers.
 - **Tests required**: Layout unit tests; WPT css-flexbox tests
-- **Evidence**: Before/after layout dumps showing first `NavGroup` title height moved from ~1.5px to 18px and parent group height moved from 800px to 381px; latest bundle `logs/real-site/github.com/20260627T173433Z/`.
+- **Evidence**: Before/after layout dumps showing first `NavGroup` title height moved from ~1.5px to 18px and parent group height moved from 800px to 381px; latest header-specific before/after bundles `logs/real-site/github.com/20260630T052935Z/` and `logs/real-site/github.com/20260630T053453Z/` show the marketing header moving from `1280x832` with nav around `y=402` to `1280x60` with nav at `y=16`.
 
 ### Task T4.3 — Fix GitHub script execution failures
 
@@ -110,7 +110,7 @@
 ## Immediate Next Action
 
 **Continue T4.2**: Fix the remaining GitHub zero-area layout boxes using the latest bundle:
-1. `style_layout.json` - 103 zero-area boxes, no captured layout blocker
-2. `layout_dump.txt` - first `NavGroup` title is 18px and parent group is content-sized at 381px; inspect the remaining zero-area boxes and sparse header geometry
-3. `screenshot.png` - sparse GitHub header remains the visual acceptance signal
+1. `style_layout.json` - 102 zero-area boxes, no captured layout blocker
+2. `layout_dump.txt` - header is `1280x60` and top-aligned; inspect remaining nav flex item widths, collapsed dropdown widths, and hero/visual geometry
+3. `screenshot.png` - top header alignment improved; overlapping nav labels and hero overbright/overlay remain the visual acceptance signal
 4. Add or extend focused layout regressions before changing the formatting context

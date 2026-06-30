@@ -226,6 +226,74 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public void PositionedAutoHeightHeader_DoesNotResolveHeightFullChildAgainstViewport()
+        {
+            var renderer = new SkiaDomRenderer();
+            var styles = new Dictionary<Node, CssComputed>();
+
+            var body = new Element("body");
+            var wrapper = new Element("div");
+            var header = new Element("header");
+            var row = new Element("div");
+            var logo = new Element("svg");
+
+            body.AppendChild(wrapper);
+            wrapper.AppendChild(header);
+            header.AppendChild(row);
+            row.AppendChild(logo);
+
+            styles[body] = new CssComputed
+            {
+                Display = "block",
+                Width = 1280
+            };
+            styles[wrapper] = new CssComputed
+            {
+                Display = "block",
+                Position = "fixed",
+                WidthPercent = 100
+            };
+            styles[header] = new CssComputed
+            {
+                Display = "block",
+                Position = "absolute",
+                Padding = new Thickness(0, 16, 0, 16)
+            };
+            styles[row] = new CssComputed
+            {
+                Display = "flex",
+                FlexDirection = "row",
+                AlignItems = "center",
+                HeightPercent = 100
+            };
+            styles[logo] = new CssComputed
+            {
+                Display = "inline-block",
+                Width = 32,
+                Height = 32
+            };
+
+            const float viewportWidth = 1280;
+            const float viewportHeight = 800;
+            renderer.Render(
+                body,
+                new SKCanvas(new SKBitmap((int)viewportWidth, (int)viewportHeight)),
+                styles,
+                new SKRect(0, 0, viewportWidth, viewportHeight),
+                "http://example.com",
+                (size, overlays) => { });
+
+            Assert.True(renderer.LastLayout.TryGetElementRect(header, out var headerRect));
+            Assert.True(renderer.LastLayout.TryGetElementRect(row, out var rowRect));
+            Assert.True(renderer.LastLayout.TryGetElementRect(logo, out var logoRect));
+
+            Assert.InRange(headerRect.Height, 60f, 80f);
+            Assert.InRange(rowRect.Height, 28f, 40f);
+            Assert.True(logoRect.Top < 40f, $"Expected header contents to stay near the top, got logo={logoRect} header={headerRect} row={rowRect}");
+            Assert.True(headerRect.Height < viewportHeight / 2f, $"Expected auto-height positioned header to size from content, got {headerRect.Height}");
+        }
+
+        [Fact]
         public void FlexAutoWidthColumnItem_ExpandsToStackedImagesSeparatedByWhitespace()
         {
             var renderer = new SkiaDomRenderer();
