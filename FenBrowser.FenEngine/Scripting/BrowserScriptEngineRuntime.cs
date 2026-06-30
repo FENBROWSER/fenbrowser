@@ -3419,6 +3419,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 Document.prototype.getElementsByTagName = function () { return this.getElementsByTagName.apply(this, arguments); };
                 Document.prototype.cloneNode = function () { return this.cloneNode.apply(this, arguments); };
                 Document.prototype.appendChild = function () { return this.appendChild.apply(this, arguments); };
+                Document.prototype.insertBefore = function () { return this.insertBefore.apply(this, arguments); };
                 Document.prototype.append = function () { return this.append.apply(this, arguments); };
                 Document.prototype.prepend = function () { return this.prepend.apply(this, arguments); };
 
@@ -3437,6 +3438,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 Element.prototype.querySelectorAll = function () { return this.querySelectorAll.apply(this, arguments); };
                 Element.prototype.getElementsByTagName = function () { return this.getElementsByTagName.apply(this, arguments); };
                 Element.prototype.appendChild = function () { return this.appendChild.apply(this, arguments); };
+                Element.prototype.insertBefore = function () { return this.insertBefore.apply(this, arguments); };
                 Element.prototype.append = function () { return this.append.apply(this, arguments); };
                 Element.prototype.prepend = function () { return this.prepend.apply(this, arguments); };
                 Element.prototype.cloneNode = function () { return this.cloneNode.apply(this, arguments); };
