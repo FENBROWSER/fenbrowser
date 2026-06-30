@@ -3937,6 +3937,16 @@ private static double? ExtractPx(string text, string prop)
             else if (parentCss != null && parentCss.ForegroundColor.HasValue)
                 css.ForegroundColor = parentCss.ForegroundColor; // Inherit color from parent
 
+            // When a var() reference cannot be resolved (custom property
+            // undefined), the raw value fails TryColor and ForegroundColor
+            // stays null through the entire ancestor chain.  Fall back to
+            // the CSS initial value for color (depends on system; black
+            // is the safe default for light-mode pages like Google CAPTCHA).
+            if (!css.ForegroundColor.HasValue)
+            {
+                css.ForegroundColor = parentCss?.ForegroundColor ?? SKColors.Black;
+            }
+
             // [FIX] Explicitly handle background-color first (highest priority)
             var bgColorRaw = DictGet(css.Map, "background-color");
             var explicitBgColor = TryColor(bgColorRaw);
@@ -4111,6 +4121,14 @@ private static double? ExtractPx(string text, string prop)
                         css.Map["background-position-y"] = positionParts.Count > 1 ? positionParts[1] : "center";
                     }
                 }
+            }
+
+            // When a var() reference cannot be resolved in background-color
+            // (custom property undefined), fall back to transparent (the CSS
+            // initial value for background-color).
+            if (!css.BackgroundColor.HasValue)
+            {
+                css.BackgroundColor = SKColors.Transparent;
             }
 
             if (!string.IsNullOrWhiteSpace(bgImage))

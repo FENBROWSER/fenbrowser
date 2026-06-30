@@ -359,6 +359,56 @@ namespace FenBrowser.Tooling
                 if (count == lastCount) { if (++stableTicks >= 8) break; }
                 else { stableTicks = 0; lastCount = count; }
             }
+
+            // ── Timer / redirect drain ──────────────────────────────────
+            // Pages like Google CAPTCHA schedule setTimeout callbacks that
+            // may trigger a redirect or build the visible UI after the
+            // initial DOM-stability loop exits.  Navigation resets replace
+            // the JS engine, making PendingHostTimers unreliable across
+            // redirects.  Instead we watch for DOM-size changes (a redirect
+            // replaces the document) and keep waiting until the deadline or
+            // the size is truly stable.
+            var drainDeadline = DateTime.UtcNow.AddMilliseconds(settleMs);
+            int drainStable = 0;
+            while (DateTime.UtcNow < drainDeadline)
+            {
+                await Task.Delay(500).ConfigureAwait(false);
+                int domNow = CountDomNodes(host.GetDomRoot());
+                if (domNow == lastCount)
+                {
+                    if (++drainStable >= 6) break; // 3 s of stability
+                }
+                else
+                {
+                    drainStable = 0;
+                    lastCount = domNow;
+                }
+            }
+            // ── Async-script hydration ──────────────────────────────────
+            // Pages like Google /sorry/index load reCAPTCHA via an async
+            // <script> that may have been fetched but not executed yet.
+            // Explicitly fetch and evaluate it so the CAPTCHA widget renders.
+            try
+            {
+                var finalRoot = host.GetDomRoot();
+                if (finalRoot is Element finalDoc)
+                {
+                    var scripts = finalDoc.QuerySelectorAll("script[src]");
+                    foreach (var s in scripts)
+                    {
+                        var src = ((Element)s).GetAttribute("src");
+                        if (!string.IsNullOrEmpty(src) && src.Contains("recaptcha"))
+                        {
+                            Console.WriteLine($"[debug-site] Hydrating async script: {src}");
+                            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                            var code = await http.GetStringAsync(src).ConfigureAwait(false);
+                            await host.ExecuteScriptAsync(code).ConfigureAwait(false);
+                            Console.WriteLine($"[debug-site] reCAPTCHA script executed ({code.Length} bytes)");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { Console.WriteLine($"[debug-site] Script hydration error: {ex.Message}"); }
             sw.Stop();
 
             string[] probes =
