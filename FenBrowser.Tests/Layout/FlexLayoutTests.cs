@@ -1,9 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using FenBrowser.Core;
 using FenBrowser.Core.Css;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.Core.Parsing;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.FenEngine.Layout.Contexts;
+using FenBrowser.FenEngine.Layout.Tree;
 using SkiaSharp;
 using Xunit;
 
@@ -692,6 +695,154 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void InlineCustomElementFlexItem_IsBlockifiedAndSizesFromBlockDescendants()
+        {
+            var headerRow = new Element("div");
+            var partial = new Element("react-partial");
+            var reactRoot = new Element("div");
+            var nav = new Element("nav");
+            var list = new Element("ul");
+
+            headerRow.AppendChild(partial);
+            partial.AppendChild(reactRoot);
+            reactRoot.AppendChild(nav);
+            nav.AppendChild(list);
+
+            var buttons = new List<Element>();
+            foreach (var label in new[] { "Platform", "Solutions", "Resources", "Open Source", "Enterprise", "Pricing" })
+            {
+                var item = new Element("li");
+                var button = new Element("button");
+                button.AppendChild(new Text(label));
+                item.AppendChild(button);
+                list.AppendChild(item);
+                buttons.Add(button);
+            }
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [headerRow] = new CssComputed
+                {
+                    Display = "flex",
+                    FlexDirection = "row",
+                    Width = 720,
+                    Height = 60
+                },
+                [partial] = new CssComputed { Display = "inline" },
+                [reactRoot] = new CssComputed { Display = "block" },
+                [nav] = new CssComputed { Display = "block" },
+                [list] = new CssComputed { Display = "flex", FlexDirection = "row" }
+            };
+
+            foreach (var button in buttons)
+            {
+                styles[button.ParentNode] = new CssComputed { Display = "list-item" };
+                styles[button] = new CssComputed
+                {
+                    Display = "flex",
+                    Padding = new Thickness(8),
+                    FontSize = 16
+                };
+            }
+
+            var builder = new BoxTreeBuilder(styles);
+            var rootBox = builder.Build(headerRow);
+
+            var partialBox = FindBox(rootBox, partial);
+            Assert.IsType<BlockBox>(partialBox);
+
+            var state = new LayoutState(
+                new SKSize(720, 60),
+                720,
+                60,
+                720,
+                60);
+
+            FormattingContext.Resolve(rootBox).Layout(rootBox, state);
+
+            var listBox = FindBox(rootBox, list);
+            var firstButtonBox = FindBox(rootBox, buttons[0]);
+            var lastButtonBox = FindBox(rootBox, buttons[^1]);
+
+            Assert.NotNull(listBox);
+            Assert.NotNull(firstButtonBox);
+            Assert.NotNull(lastButtonBox);
+            Assert.True(partialBox.Geometry.ContentBox.Width > 360f, $"Expected inline custom flex item to size from nav descendants, got partial={partialBox.Geometry.ContentBox.Width}, list={listBox.Geometry.ContentBox.Width}, first={firstButtonBox.Geometry.MarginBox}, last={lastButtonBox.Geometry.MarginBox}.");
+            Assert.True(listBox.Geometry.ContentBox.Width > 360f, $"Expected nav flex list to retain child button width, got {listBox.Geometry.ContentBox.Width}.");
+            Assert.True(lastButtonBox.Geometry.MarginBox.Left > firstButtonBox.Geometry.MarginBox.Right, $"Expected nav buttons to advance horizontally without overlap, first={firstButtonBox.Geometry.MarginBox} last={lastButtonBox.Geometry.MarginBox}.");
+        }
+
+        [Fact]
+        public void RowFlexShrink_PreservesVisibleTextDescendantWidth()
+        {
+            var row = new Element("ul");
+            var firstItem = new Element("li");
+            var secondItem = new Element("li");
+            var firstButton = new Element("button");
+            var secondButton = new Element("button");
+            var firstText = new Text("Open Source");
+            var secondText = new Text("Enterprise");
+
+            firstButton.AppendChild(firstText);
+            secondButton.AppendChild(secondText);
+            firstItem.AppendChild(firstButton);
+            secondItem.AppendChild(secondButton);
+            row.AppendChild(firstItem);
+            row.AppendChild(secondItem);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [row] = new CssComputed
+                {
+                    Display = "flex",
+                    FlexDirection = "row",
+                    Width = 120,
+                    Height = 44
+                },
+                [firstItem] = new CssComputed { Display = "list-item" },
+                [secondItem] = new CssComputed { Display = "list-item" },
+                [firstButton] = new CssComputed
+                {
+                    Display = "flex",
+                    Padding = new Thickness(8),
+                    FontSize = 16
+                },
+                [secondButton] = new CssComputed
+                {
+                    Display = "flex",
+                    Padding = new Thickness(8),
+                    FontSize = 16
+                }
+            };
+
+            var builder = new BoxTreeBuilder(styles);
+            var rootBox = builder.Build(row);
+
+            var state = new LayoutState(
+                new SKSize(120, 44),
+                120,
+                44,
+                120,
+                44);
+
+            FormattingContext.Resolve(rootBox).Layout(rootBox, state);
+
+            var firstButtonBox = FindBox(rootBox, firstButton);
+            var secondButtonBox = FindBox(rootBox, secondButton);
+            var firstTextBox = FindBox(rootBox, firstText);
+
+            Assert.NotNull(firstButtonBox);
+            Assert.NotNull(secondButtonBox);
+            Assert.NotNull(firstTextBox);
+            Assert.True(
+                firstButtonBox.Geometry.MarginBox.Width >= firstTextBox.Geometry.MarginBox.Width,
+                $"Expected first button to keep at least its text width, button={firstButtonBox.Geometry.MarginBox}, text={firstTextBox.Geometry.MarginBox}.");
+            Assert.True(
+                secondButtonBox.Geometry.MarginBox.Left > firstTextBox.Geometry.MarginBox.Right,
+                $"Expected second button to advance after the first text instead of overlapping it, firstText={firstTextBox.Geometry.MarginBox}, second={secondButtonBox.Geometry.MarginBox}.");
+        }
+
+        [Fact]
         public void FlexColumn_MaxWidthAutoInlineMargins_CentersCrossAxisContent()
         {
             var container = new Element("div");
@@ -731,6 +882,30 @@ namespace FenBrowser.Tests.Layout
             Assert.InRange(itemBox.ContentBox.Width, 1279.5f, 1280.5f);
             Assert.InRange(itemBox.ContentBox.Left, 319.5f, 320.5f);
             Assert.InRange(childBox.ContentBox.Left, 319.5f, 320.5f);
+        }
+
+        private static LayoutBox FindBox(LayoutBox box, Node target)
+        {
+            if (box == null)
+            {
+                return null;
+            }
+
+            if (ReferenceEquals(box.SourceNode, target))
+            {
+                return box;
+            }
+
+            foreach (var child in box.Children)
+            {
+                var found = FindBox(child, target);
+                if (found != null)
+                {
+                    return found;
+                }
+            }
+
+            return null;
         }
     }
 }

@@ -298,15 +298,15 @@ namespace FenBrowser.FenEngine.Layout.Tree
 
             if (display == "none") return display;
 
-            // CSS 2.1 Section 9.7: Blockify display for floated or absolutely-positioned elements.
-            // float: left/right or position: absolute/fixed converts inline-level display to block-level.
+            // CSS display blockification: flex/grid items, floated boxes, and
+            // absolutely positioned boxes use block-level outer display.
             string floatVal = style?.Float?.Trim().ToLowerInvariant();
             string posVal = LayoutStyleResolver.GetEffectivePosition(style);
             bool isFlexOrGridItem = IsFlexOrGridContainerDisplay(parentStyle?.Display);
             bool isFloated = !isFlexOrGridItem && (floatVal == "left" || floatVal == "right");
             bool isAbsFixed = posVal == "absolute" || posVal == "fixed";
 
-            if (isFloated || isAbsFixed)
+            if (isFlexOrGridItem || isFloated || isAbsFixed)
             {
                 switch (display)
                 {

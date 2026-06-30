@@ -261,6 +261,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 // Keep flex rows from collapsing to 0px when auto-sized icon/control items
                 // are re-measured through nested contexts.
                 ApplyCollapsedFlexItemFallback(item);
+                if (isRow && preferIntrinsicWidth)
+                {
+                    ExpandRowFlexItemToDescendantWidth(item, childState);
+                }
 
             }
 
@@ -328,6 +332,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float totalFlexGrow = 0;
             float totalWeightedShrink = 0;
             var flexContentBases = new Dictionary<LayoutBox, float>();
+            var rowFlexShrinkFloors = new Dictionary<LayoutBox, float>();
 
             foreach (var item in items)
             {
@@ -345,6 +350,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     contentBasis = measuredContent; // auto: use measured content size
 
                 flexContentBases[item] = contentBasis;
+                if (isRow && TryResolveRowFlexItemShrinkFloor(item, out float shrinkFloor))
+                {
+                    rowFlexShrinkFloors[item] = shrinkFloor;
+                }
+
                 totalMainSize += contentBasis + overhead;
 
                 var flexGrow = ResolveFlexGrow(itemStyle);
@@ -432,6 +442,11 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         {
                             // Shrink from basis, not from measured size
                             float targetWidth = Math.Max(0, contentBasis - shrinkAmount);
+                            if (rowFlexShrinkFloors.TryGetValue(item, out float shrinkFloor))
+                            {
+                                targetWidth = Math.Max(targetWidth, shrinkFloor);
+                            }
+
                             LayoutBoxOps.ComputeBoxModelFromContent(item, targetWidth, item.Geometry.ContentBox.Height);
 
                             var reState = state.Clone();
@@ -2114,6 +2129,75 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
         }
 
+        private static bool TryResolveRowFlexItemShrinkFloor(LayoutBox item, out float width)
+        {
+            width = 0f;
+            if (item?.Geometry == null || item.IsOutOfFlow)
+            {
+                return false;
+            }
+
+            if (item.SourceNode is not Element element)
+            {
+                return false;
+            }
+
+            string tag = element.TagName?.ToUpperInvariant() ?? string.Empty;
+            if (tag is not ("LI" or "A" or "BUTTON"))
+            {
+                return false;
+            }
+
+            if (!TryGetDescendantExtent(item, out float descendantWidth, out _))
+            {
+                return false;
+            }
+
+            width = Math.Max(0f, descendantWidth);
+            return width > 0f && float.IsFinite(width);
+        }
+
+        private static void ExpandRowFlexItemToDescendantWidth(LayoutBox item, LayoutState state)
+        {
+            if (item?.Geometry == null)
+            {
+                return;
+            }
+
+            if (!TryGetDescendantExtent(item, out var requiredWidth, out var requiredHeight))
+            {
+                return;
+            }
+
+            if (!float.IsFinite(requiredWidth) || requiredWidth <= item.Geometry.ContentBox.Width + 0.5f)
+            {
+                return;
+            }
+
+            float targetWidth = Math.Max(0f, requiredWidth);
+            float targetHeight = item.Geometry.ContentBox.Height;
+            if (targetHeight <= 0f && float.IsFinite(requiredHeight) && requiredHeight > 0f)
+            {
+                targetHeight = requiredHeight;
+            }
+
+            LayoutBoxOps.ComputeBoxModelFromContent(item, targetWidth, targetHeight);
+
+            var reState = state.Clone();
+            reState.AvailableSize = new SKSize(
+                item.Geometry.MarginBox.Width,
+                targetHeight > 0f ? targetHeight : state.AvailableSize.Height);
+            reState.ContainingBlockWidth = targetWidth;
+            reState.ContainingBlockHeight = targetHeight > 0f ? targetHeight : state.ContainingBlockHeight;
+
+            LayoutWithForcedWidth(item, reState, targetWidth);
+
+            if (item.Geometry.ContentBox.Width + 0.5f < targetWidth)
+            {
+                LayoutBoxOps.ComputeBoxModelFromContent(item, targetWidth, item.Geometry.ContentBox.Height);
+            }
+        }
+
         private static void LayoutWithForcedWidth(LayoutBox item, LayoutState state, float forcedWidth)
         {
             if (item == null)
@@ -2521,6 +2605,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 }
             }
         }
+
     }
     
     // Helper to avoid code duplication with BlockContext for box sizing

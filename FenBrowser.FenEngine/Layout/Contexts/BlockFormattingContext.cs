@@ -3,6 +3,7 @@
 // Determinism: strict
 // FallbackPolicy: spec-defined
 using System;
+using System.Globalization;
 using System.Linq;
 using FenBrowser.FenEngine.Layout.Tree;
 using SkiaSharp;
@@ -11,6 +12,7 @@ using FenBrowser.Core.Logging;
 using FenBrowser.Core;
 using FenBrowser.Core.Dom.V2;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.FenEngine.Typography;
 
 namespace FenBrowser.FenEngine.Layout.Contexts
 {
@@ -21,6 +23,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
     public class BlockFormattingContext : FormattingContext
     {
         private static BlockFormattingContext _instance;
+        private static readonly SkiaFontService s_fontService = new();
         public static BlockFormattingContext Instance => _instance ??= new BlockFormattingContext();
         
         /// <summary>
@@ -939,6 +942,29 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 string.Equals(box.ComputedStyle?.Float, "left", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(box.ComputedStyle?.Float, "right", StringComparison.OrdinalIgnoreCase);
 
+            bool hasIntrinsicLabelWidth = false;
+            bool hasIntrinsicDescendantWidth = false;
+            if (!hasExplicitWidth && TryMeasureTextLabelShrinkToFitWidth(box, out float labelWidth))
+            {
+                directWidth = Math.Max(directWidth, labelWidth);
+                hasIntrinsicLabelWidth = true;
+            }
+
+            if (!hasExplicitWidth &&
+                TryMeasureDescendantOverflowShrinkToFitWidth(box, out float overflowWidth) &&
+                overflowWidth > directWidth + 0.5f)
+            {
+                directWidth = overflowWidth;
+                hasIntrinsicDescendantWidth = true;
+            }
+
+            if (!hasExplicitWidth &&
+                TryMeasureFlexRowShrinkToFitWidth(box, out float flexRowWidth) &&
+                flexRowWidth > directWidth + 0.5f)
+            {
+                return flexRowWidth;
+            }
+
             // Anonymous block wrappers around inline runs often retain the probe width
             // from an unconstrained first pass. For shrink-to-fit, use the inline run's
             // widest descendant instead of the wrapper's provisional width.
@@ -957,7 +983,10 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                         return descendantWidth;
                     }
 
-                    if (!isFloating && descendantWidth < directWidth - 0.5f)
+                    if (!isFloating &&
+                        !hasIntrinsicLabelWidth &&
+                        !hasIntrinsicDescendantWidth &&
+                        descendantWidth < directWidth - 0.5f)
                     {
                         return descendantWidth;
                     }
@@ -974,6 +1003,303 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             return directWidth;
+        }
+
+        private static bool TryMeasureDescendantOverflowShrinkToFitWidth(LayoutBox box, out float width)
+        {
+            width = 0f;
+            if (box?.Geometry == null || box.Children.Count == 0)
+            {
+                return false;
+            }
+
+            float originLeft = box.Geometry.MarginBox.Left;
+            float minLeft = float.PositiveInfinity;
+            float maxRight = float.NegativeInfinity;
+
+            foreach (var child in box.Children)
+            {
+                AccumulateDescendantOverflowShrinkToFitWidth(child, originLeft, ref minLeft, ref maxRight);
+            }
+
+            if (!float.IsFinite(minLeft) ||
+                !float.IsFinite(maxRight) ||
+                maxRight <= minLeft)
+            {
+                return false;
+            }
+
+            width = maxRight - minLeft;
+            return width > 0f;
+        }
+
+        private static void AccumulateDescendantOverflowShrinkToFitWidth(
+            LayoutBox box,
+            float originLeft,
+            ref float minLeft,
+            ref float maxRight)
+        {
+            if (IsIgnorableShrinkToFitChild(box) || box.Geometry == null)
+            {
+                return;
+            }
+
+            float left = box.Geometry.MarginBox.Left - originLeft;
+            float right = box.Geometry.MarginBox.Right - originLeft;
+            if (float.IsFinite(left) && float.IsFinite(right) && right > left)
+            {
+                minLeft = Math.Min(minLeft, left);
+                maxRight = Math.Max(maxRight, right);
+            }
+
+            foreach (var child in box.Children)
+            {
+                AccumulateDescendantOverflowShrinkToFitWidth(child, originLeft, ref minLeft, ref maxRight);
+            }
+        }
+
+        private static bool TryMeasureTextLabelShrinkToFitWidth(LayoutBox box, out float width)
+        {
+            width = 0f;
+            if (box == null)
+            {
+                return false;
+            }
+
+            string text = null;
+            if (box is TextLayoutBox textBox)
+            {
+                text = textBox.TextContent;
+            }
+            else if (box.SourceNode is Element element)
+            {
+                string tag = element.TagName?.ToUpperInvariant() ?? string.Empty;
+                if (tag is not ("A" or "BUTTON" or "SPAN" or "LABEL" or "SUP"))
+                {
+                    return false;
+                }
+
+                text = LayoutHelper.GetRenderableTextContentTrimmed(element);
+            }
+
+            text = CollapseShrinkToFitWhitespace(text).Trim();
+            if (string.IsNullOrEmpty(text) || text.Length > 120)
+            {
+                return false;
+            }
+
+            var style = box.ComputedStyle;
+            float fontSize = (float)(style?.FontSize ?? 16);
+            int fontWeight = style?.FontWeight ?? 400;
+            string fontFamily = style?.FontFamilyName ?? "sans-serif";
+            float textWidth = s_fontService.MeasureTextWidth(text, fontFamily, fontSize, fontWeight);
+            if (!float.IsFinite(textWidth) || textWidth <= 0f)
+            {
+                textWidth = fontSize * Math.Max(1, text.Length) * 0.5f;
+            }
+
+            var padding = style?.Padding ?? new Thickness();
+            var border = style?.BorderThickness ?? new Thickness();
+            var margin = style?.Margin ?? new Thickness();
+            float horizontalChrome =
+                (float)padding.Left +
+                (float)padding.Right +
+                (float)border.Left +
+                (float)border.Right +
+                (float)margin.Left +
+                (float)margin.Right;
+
+            width = Math.Max(0f, textWidth + horizontalChrome);
+            return width > 0f;
+        }
+
+        private static string CollapseShrinkToFitWhitespace(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return string.Empty;
+            }
+
+            var builder = new System.Text.StringBuilder(text.Length);
+            bool pendingSpace = false;
+            foreach (char ch in text)
+            {
+                if (TextWhitespaceClassifier.IsCollapsibleWhitespaceChar(ch))
+                {
+                    pendingSpace = true;
+                    continue;
+                }
+
+                if (pendingSpace && builder.Length > 0)
+                {
+                    builder.Append(' ');
+                }
+
+                builder.Append(ch);
+                pendingSpace = false;
+            }
+
+            return builder.ToString();
+        }
+
+        private static bool TryMeasureFlexRowShrinkToFitWidth(LayoutBox box, out float width)
+        {
+            width = 0f;
+            if (box?.Children == null || box.Children.Count == 0)
+            {
+                return false;
+            }
+
+            var style = box.ComputedStyle;
+            string display = style?.Display?.Trim().ToLowerInvariant() ?? string.Empty;
+            if (display != "flex" && display != "inline-flex")
+            {
+                return false;
+            }
+
+            string direction = style?.FlexDirection?.Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(direction) &&
+                style?.Map != null &&
+                style.Map.TryGetValue("flex-direction", out var rawDirection))
+            {
+                direction = rawDirection?.Trim().ToLowerInvariant();
+            }
+
+            if (!string.IsNullOrEmpty(direction) && !direction.Contains("row", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            float gap = ResolveFlexShrinkToFitColumnGap(style);
+            int itemCount = 0;
+            foreach (var child in box.Children)
+            {
+                if (IsIgnorableShrinkToFitChild(child))
+                {
+                    continue;
+                }
+
+                float childWidth = MeasureShrinkToFitWidth(child);
+                if (!float.IsFinite(childWidth) || childWidth <= 0f)
+                {
+                    continue;
+                }
+
+                if (itemCount > 0)
+                {
+                    width += gap;
+                }
+
+                width += childWidth;
+                itemCount++;
+            }
+
+            return itemCount > 0 && width > 0f;
+        }
+
+        private static bool IsIgnorableShrinkToFitChild(LayoutBox box)
+        {
+            if (box == null || box.IsOutOfFlow)
+            {
+                return true;
+            }
+
+            if (box.ComputedStyle?.Display?.Contains("none", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                return true;
+            }
+
+            if (box is TextLayoutBox textBox)
+            {
+                return string.IsNullOrWhiteSpace(textBox.TextContent);
+            }
+
+            if (box.SourceNode is Text textNode)
+            {
+                return string.IsNullOrWhiteSpace(textNode.Data);
+            }
+
+            return false;
+        }
+
+        private static float ResolveFlexShrinkToFitColumnGap(CssComputed style)
+        {
+            if (style == null)
+            {
+                return 0f;
+            }
+
+            if (style.ColumnGap.HasValue && style.ColumnGap.Value > 0)
+            {
+                return (float)style.ColumnGap.Value;
+            }
+
+            if (style.Gap.HasValue && style.Gap.Value > 0)
+            {
+                return (float)style.Gap.Value;
+            }
+
+            float fontSize = (float)(style.FontSize ?? 16);
+            if (style.Map != null)
+            {
+                if (style.Map.TryGetValue("column-gap", out var rawColumnGap) &&
+                    TryParseShrinkToFitLength(rawColumnGap, fontSize, out float columnGap))
+                {
+                    return columnGap;
+                }
+
+                if (style.Map.TryGetValue("gap", out var rawGap) &&
+                    TryParseShrinkToFitLength(rawGap, fontSize, out float gap))
+                {
+                    return gap;
+                }
+            }
+
+            return 0f;
+        }
+
+        private static bool TryParseShrinkToFitLength(string raw, float fontSize, out float value)
+        {
+            value = 0f;
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return false;
+            }
+
+            raw = raw.Trim().ToLowerInvariant();
+            if (raw.Equals("normal", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            if (raw.EndsWith("px", StringComparison.Ordinal) &&
+                float.TryParse(raw[..^2], NumberStyles.Float, CultureInfo.InvariantCulture, out var px))
+            {
+                value = Math.Max(0f, px);
+                return true;
+            }
+
+            if (raw.EndsWith("rem", StringComparison.Ordinal) &&
+                float.TryParse(raw[..^3], NumberStyles.Float, CultureInfo.InvariantCulture, out var rem))
+            {
+                value = Math.Max(0f, rem * 16f);
+                return true;
+            }
+
+            if (raw.EndsWith("em", StringComparison.Ordinal) &&
+                float.TryParse(raw[..^2], NumberStyles.Float, CultureInfo.InvariantCulture, out var em))
+            {
+                value = Math.Max(0f, em * fontSize);
+                return true;
+            }
+
+            if (float.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
+            {
+                value = Math.Max(0f, number);
+                return true;
+            }
+
+            return false;
         }
 
         private static float GetFloatOuterWidth(LayoutBox box)
