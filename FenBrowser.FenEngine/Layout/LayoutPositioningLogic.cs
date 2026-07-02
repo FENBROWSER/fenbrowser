@@ -18,7 +18,8 @@ namespace FenBrowser.FenEngine.Layout
             LayoutBox containingBlock,
             BoxModel containerGeometry,
             LayoutState? state = null,
-            bool collapsePositioningMarginsInFinalGeometry = false)
+            bool collapsePositioningMarginsInFinalGeometry = false,
+            SKPoint? staticPosition = null)
         {
             if (box?.ComputedStyle == null || box.Geometry == null || containerGeometry == null) return;
 
@@ -76,6 +77,7 @@ namespace FenBrowser.FenEngine.Layout
             };
 
             var solved = SolvePositioned(box, style, cb, intrinsicWidth, intrinsicHeight, preserveIntrinsicAutoSize, state);
+            ApplyStaticPositionForAutoInsets(style, cbRect, staticPosition, ref solved);
 
             if (isFixed && box.SourceNode is Element element && LayoutEngine.LayoutDebugLogEnabled)
             {
@@ -143,6 +145,93 @@ namespace FenBrowser.FenEngine.Layout
 
             return AbsolutePositionSolver.SolveWithAnchorOverrides(
                 style, cb, anchorBox, intrinsicWidth, intrinsicHeight, preserveIntrinsicAutoSize);
+        }
+
+        private static void ApplyStaticPositionForAutoInsets(
+            CssComputed style,
+            SKRect containingBlockRect,
+            SKPoint? staticPosition,
+            ref AbsoluteLayoutResult solved)
+        {
+            if (style == null || !staticPosition.HasValue)
+            {
+                return;
+            }
+
+            var point = staticPosition.Value;
+            if (!float.IsFinite(point.X) || !float.IsFinite(point.Y))
+            {
+                return;
+            }
+
+            if (IsAutoInset(style, "left") && IsAutoInset(style, "right"))
+            {
+                solved.X = point.X - containingBlockRect.Left;
+            }
+
+            if (IsAutoInset(style, "top") && IsAutoInset(style, "bottom"))
+            {
+                solved.Y = point.Y - containingBlockRect.Top;
+            }
+        }
+
+        private static bool IsAutoInset(CssComputed style, string side)
+        {
+            bool hasResolvedValue = side switch
+            {
+                "left" => style.Left.HasValue || style.LeftPercent.HasValue || !string.IsNullOrWhiteSpace(style.LeftAnchorExpression),
+                "right" => style.Right.HasValue || style.RightPercent.HasValue || !string.IsNullOrWhiteSpace(style.RightAnchorExpression),
+                "top" => style.Top.HasValue || style.TopPercent.HasValue || !string.IsNullOrWhiteSpace(style.TopAnchorExpression),
+                "bottom" => style.Bottom.HasValue || style.BottomPercent.HasValue || !string.IsNullOrWhiteSpace(style.BottomAnchorExpression),
+                _ => false
+            };
+
+            if (hasResolvedValue)
+            {
+                return false;
+            }
+
+            if (style.Map == null)
+            {
+                return true;
+            }
+
+            if (style.Map.TryGetValue(side, out var raw) && !IsAutoKeyword(raw))
+            {
+                return false;
+            }
+
+            if (style.Map.TryGetValue($"inset-{side}", out raw) && !IsAutoKeyword(raw))
+            {
+                return false;
+            }
+
+            string logicalSide = side switch
+            {
+                "top" => "inset-block-start",
+                "bottom" => "inset-block-end",
+                "left" => "inset-inline-start",
+                "right" => "inset-inline-end",
+                _ => null
+            };
+
+            if (logicalSide != null && style.Map.TryGetValue(logicalSide, out raw) && !IsAutoKeyword(raw))
+            {
+                return false;
+            }
+
+            if (style.Map.TryGetValue("inset", out raw) && !IsAutoKeyword(raw))
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsAutoKeyword(string value)
+        {
+            return string.IsNullOrWhiteSpace(value) ||
+                   string.Equals(value.Trim(), "auto", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>

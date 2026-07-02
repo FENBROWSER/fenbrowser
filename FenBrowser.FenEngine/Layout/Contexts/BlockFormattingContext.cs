@@ -69,7 +69,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             float definiteContentHeightForChildren = ResolveDefiniteContentHeightForChildren(blockBox, state);
 
             // 3. Iterate Children
-            var outOfFlow = new List<LayoutBox>();
+            var outOfFlow = new List<OutOfFlowLayoutCandidate>();
             var floatManager = new FloatManager();
             const float floatEpsilon = 0.5f;
             const int maxFloatPlacementIterations = 256;
@@ -90,7 +90,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 if (child.IsOutOfFlow)
                 {
-                    outOfFlow.Add(child);
+                    outOfFlow.Add(new OutOfFlowLayoutCandidate(child, new SKPoint(xOffset, yOffset + currentY)));
                     continue;
                 }
 
@@ -754,8 +754,9 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             LayoutBoxOps.SyncBoxes(blockBox.Geometry);
 
             // Layout Out of Flow
-            foreach (var oof in outOfFlow)
+            foreach (var outOfFlowCandidate in outOfFlow)
             {
+                var oof = outOfFlowCandidate.Box;
                 var context = FormattingContext.Resolve(oof);
 
                 // Pass 1: intrinsic measurement (auto-size shrink-to-fit signal).
@@ -766,7 +767,12 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 context.Layout(oof, intrinsicState);
 
                 // Solve abs/fixed geometry from intrinsic size and insets.
-                LayoutPositioningLogic.ResolvePositionedBox(oof, blockBox, blockBox.Geometry, state);
+                LayoutPositioningLogic.ResolvePositionedBox(
+                    oof,
+                    blockBox,
+                    blockBox.Geometry,
+                    state,
+                    staticPosition: outOfFlowCandidate.StaticPosition);
 
                 // Pass 2: layout contents using resolved box size.
                 var resolvedWidth = Math.Max(0f, oof.Geometry.ContentBox.Width);
@@ -788,8 +794,21 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     blockBox,
                     blockBox.Geometry,
                     state,
-                    collapsePositioningMarginsInFinalGeometry: true);
+                    collapsePositioningMarginsInFinalGeometry: true,
+                    staticPosition: outOfFlowCandidate.StaticPosition);
             }
+        }
+
+        private readonly struct OutOfFlowLayoutCandidate
+        {
+            public OutOfFlowLayoutCandidate(LayoutBox box, SKPoint staticPosition)
+            {
+                Box = box;
+                StaticPosition = staticPosition;
+            }
+
+            public LayoutBox Box { get; }
+            public SKPoint StaticPosition { get; }
         }
 
         private static bool ShouldClampClippedInlineLabelAutoHeight(LayoutBox box, float borderBoxMinHeight, float nonContentHeight, float resolvedContentHeight)

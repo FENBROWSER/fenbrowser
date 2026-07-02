@@ -49,6 +49,8 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             public int LineIndex; // Which line this segment is on
         }
 
+        private readonly record struct BalancedTextLine(string Text, float Width);
+
         private readonly record struct InlineTextMetrics(float Width, float LineHeight, float Baseline, float Descent);
 
         // Per-style font metrics cache. lineHeight/baseline/descent depend only on
@@ -288,6 +290,41 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
 
                     // WORD FLOW - track segments for this textBox
+                    var textWrapStyle = textBox.ComputedStyle ?? box.ComputedStyle;
+                    if (curX <= 0.5f &&
+                        UsesBalancedTextWrap(textWrapStyle) &&
+                        TryBuildBalancedTextLines(fullText, textWrapStyle, contentLimit, out var balancedLines))
+                    {
+                        for (int balancedIdx = 0; balancedIdx < balancedLines.Count; balancedIdx++)
+                        {
+                            var balancedLine = balancedLines[balancedIdx];
+                            textBoxLines[textBox].Add(new TextLineInfo
+                            {
+                                Text = balancedLine.Text,
+                                X = 0f,
+                                Width = balancedLine.Width,
+                                Height = lineHeight,
+                                Baseline = baseline,
+                                LineIndex = lines.Count - 1
+                            });
+
+                            currentLine.Width = balancedLine.Width;
+                            currentLine.IncludeMetrics(baseline, descent);
+                            curX = balancedLine.Width;
+
+                            if (balancedIdx < balancedLines.Count - 1)
+                            {
+                                currentLine.Height = Math.Max(currentLine.Height, lineHeight);
+                                currentLine = new LineBox();
+                                lines.Add(currentLine);
+                                curX = 0f;
+                            }
+                        }
+
+                        previousEndedWithSpace = fullText.EndsWith(" ", StringComparison.Ordinal);
+                        continue;
+                    }
+
                     int startIdx = 0;
                     int currentLineStartIdx = 0;
                     float currentLineStartX = curX;
@@ -887,6 +924,220 @@ namespace FenBrowser.FenEngine.Layout.Contexts
             }
 
             return nextHyphen > startIdx ? nextHyphen : text.Length;
+        }
+
+        private bool TryBuildBalancedTextLines(
+            string text,
+            CssComputed style,
+            float contentLimit,
+            out List<BalancedTextLine> balancedLines)
+        {
+            balancedLines = null;
+
+            if (string.IsNullOrEmpty(text) ||
+                !float.IsFinite(contentLimit) ||
+                contentLimit <= 0f ||
+                text.IndexOf(' ') < 0)
+            {
+                return false;
+            }
+
+            var tokenStarts = new List<int>();
+            var tokenEnds = new List<int>();
+            int startIdx = 0;
+            while (startIdx < text.Length)
+            {
+                int endIdx = FindNextSoftWrapEnd(text, startIdx);
+                if (endIdx <= startIdx)
+                {
+                    return false;
+                }
+
+                tokenStarts.Add(startIdx);
+                tokenEnds.Add(endIdx);
+                startIdx = endIdx;
+            }
+
+            int tokenCount = tokenStarts.Count;
+            if (tokenCount < 2 || tokenCount > 80)
+            {
+                return false;
+            }
+
+            var tokenWidths = new float[tokenCount];
+            for (int i = 0; i < tokenCount; i++)
+            {
+                tokenWidths[i] = MeasureString(
+                    text.Substring(tokenStarts[i], tokenEnds[i] - tokenStarts[i]),
+                    style).Width;
+            }
+
+            int targetLineCount = CountGreedyWrappedLines(tokenWidths, contentLimit);
+            if (targetLineCount <= 1 || targetLineCount > 6)
+            {
+                return false;
+            }
+
+            var rangeWidthCache = new Dictionary<(int Start, int End), float>();
+            var candidateBreaks = new int[targetLineCount - 1];
+            var candidateWidths = new float[targetLineCount];
+            int[] bestBreaks = null;
+            float[] bestWidths = null;
+            float bestMaxWidth = float.PositiveInfinity;
+            float bestVariance = float.PositiveInfinity;
+
+            Search(0, 0);
+
+            if (bestBreaks == null || bestWidths == null)
+            {
+                return false;
+            }
+
+            balancedLines = new List<BalancedTextLine>(targetLineCount);
+            int tokenStart = 0;
+            for (int lineIndex = 0; lineIndex < targetLineCount; lineIndex++)
+            {
+                int tokenEnd = lineIndex < bestBreaks.Length ? bestBreaks[lineIndex] : tokenCount;
+                int textStart = tokenStarts[tokenStart];
+                int textEnd = tokenEnds[tokenEnd - 1];
+                balancedLines.Add(new BalancedTextLine(
+                    text.Substring(textStart, textEnd - textStart),
+                    bestWidths[lineIndex]));
+                tokenStart = tokenEnd;
+            }
+
+            return true;
+
+            void Search(int tokenStartIndex, int lineIndex)
+            {
+                int remainingLines = targetLineCount - lineIndex;
+                int remainingTokens = tokenCount - tokenStartIndex;
+                if (remainingTokens < remainingLines)
+                {
+                    return;
+                }
+
+                if (remainingLines == 1)
+                {
+                    float finalWidth = MeasureRangeWidth(tokenStartIndex, tokenCount);
+                    if (!RangeFits(finalWidth, tokenStartIndex, tokenCount))
+                    {
+                        return;
+                    }
+
+                    candidateWidths[lineIndex] = finalWidth;
+                    EvaluateCandidate();
+                    return;
+                }
+
+                int maxEnd = tokenCount - (remainingLines - 1);
+                for (int tokenEndIndex = tokenStartIndex + 1; tokenEndIndex <= maxEnd; tokenEndIndex++)
+                {
+                    float width = MeasureRangeWidth(tokenStartIndex, tokenEndIndex);
+                    if (!RangeFits(width, tokenStartIndex, tokenEndIndex))
+                    {
+                        if (tokenEndIndex > tokenStartIndex + 1)
+                        {
+                            break;
+                        }
+
+                        continue;
+                    }
+
+                    candidateBreaks[lineIndex] = tokenEndIndex;
+                    candidateWidths[lineIndex] = width;
+                    Search(tokenEndIndex, lineIndex + 1);
+                }
+            }
+
+            void EvaluateCandidate()
+            {
+                float maxWidth = 0f;
+                float sum = 0f;
+                for (int i = 0; i < candidateWidths.Length; i++)
+                {
+                    float width = candidateWidths[i];
+                    maxWidth = Math.Max(maxWidth, width);
+                    sum += width;
+                }
+
+                float mean = sum / candidateWidths.Length;
+                float variance = 0f;
+                for (int i = 0; i < candidateWidths.Length; i++)
+                {
+                    float delta = candidateWidths[i] - mean;
+                    variance += delta * delta;
+                }
+
+                if (maxWidth < bestMaxWidth - 0.5f ||
+                    (Math.Abs(maxWidth - bestMaxWidth) <= 0.5f && variance < bestVariance))
+                {
+                    bestMaxWidth = maxWidth;
+                    bestVariance = variance;
+                    bestBreaks = (int[])candidateBreaks.Clone();
+                    bestWidths = (float[])candidateWidths.Clone();
+                }
+            }
+
+            float MeasureRangeWidth(int tokenStartIndex, int tokenEndIndex)
+            {
+                var key = (tokenStartIndex, tokenEndIndex);
+                if (rangeWidthCache.TryGetValue(key, out float cachedWidth))
+                {
+                    return cachedWidth;
+                }
+
+                int textStart = tokenStarts[tokenStartIndex];
+                int textEnd = tokenEnds[tokenEndIndex - 1];
+                float width = MeasureString(text.Substring(textStart, textEnd - textStart), style).Width;
+                rangeWidthCache[key] = width;
+                return width;
+            }
+
+            bool RangeFits(float width, int tokenStartIndex, int tokenEndIndex)
+            {
+                return width <= contentLimit + 0.5f || tokenEndIndex == tokenStartIndex + 1;
+            }
+        }
+
+        private static int CountGreedyWrappedLines(IReadOnlyList<float> tokenWidths, float contentLimit)
+        {
+            int lines = 1;
+            float curX = 0f;
+
+            for (int i = 0; i < tokenWidths.Count; i++)
+            {
+                float width = tokenWidths[i];
+                if (curX + width > contentLimit && curX > 0f)
+                {
+                    lines++;
+                    curX = 0f;
+                }
+
+                curX += width;
+            }
+
+            return lines;
+        }
+
+        private static bool UsesBalancedTextWrap(CssComputed style)
+        {
+            if (style?.Map == null)
+            {
+                return false;
+            }
+
+            return MapKeywordEquals(style.Map, "text-wrap-style", "balance") ||
+                   MapKeywordEquals(style.Map, "text-wrap", "balance");
+        }
+
+        private static bool MapKeywordEquals(
+            IReadOnlyDictionary<string, string> map,
+            string propertyName,
+            string keyword)
+        {
+            return map.TryGetValue(propertyName, out var value) &&
+                   string.Equals(value?.Trim(), keyword, StringComparison.OrdinalIgnoreCase);
         }
 
         private void LayoutLeafTextBox(TextLayoutBox textBox, LayoutState state)

@@ -131,6 +131,36 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void InlineText_TextWrapBalance_RebalancesTwoLineHeading()
+        {
+            var unbalancedTextBox = LayoutTextWrapHeading(useBalance: false);
+            var balancedTextBox = LayoutTextWrapHeading(useBalance: true);
+
+            Assert.Equal(2, unbalancedTextBox.Geometry.Lines.Count);
+            Assert.Equal("The future of building happens", unbalancedTextBox.Geometry.Lines[0].Text.TrimEnd());
+            Assert.Equal("together", unbalancedTextBox.Geometry.Lines[1].Text.TrimEnd());
+
+            Assert.Equal(2, balancedTextBox.Geometry.Lines.Count);
+            Assert.Equal("The future of building", balancedTextBox.Geometry.Lines[0].Text.TrimEnd());
+            Assert.Equal("happens together", balancedTextBox.Geometry.Lines[1].Text.TrimEnd());
+        }
+
+        [Fact]
+        public void InlineText_TextWrapBalance_RebalancesMaxWidthShrinkToFitHeading()
+        {
+            var unbalancedTextBox = LayoutTextWrapHeading(useBalance: false, maxWidthOnly: true);
+            var balancedTextBox = LayoutTextWrapHeading(useBalance: true, maxWidthOnly: true);
+
+            Assert.Equal(2, unbalancedTextBox.Geometry.Lines.Count);
+            Assert.Equal("The future of building happens", unbalancedTextBox.Geometry.Lines[0].Text.TrimEnd());
+            Assert.Equal("together", unbalancedTextBox.Geometry.Lines[1].Text.TrimEnd());
+
+            Assert.Equal(2, balancedTextBox.Geometry.Lines.Count);
+            Assert.Equal("The future of building", balancedTextBox.Geometry.Lines[0].Text.TrimEnd());
+            Assert.Equal("happens together", balancedTextBox.Geometry.Lines[1].Text.TrimEnd());
+        }
+
+        [Fact]
         public void FlexItem_WithNestedInlineSpans_KeepsInlineRunHorizontal()
         {
             var header = new Element("div");
@@ -604,6 +634,64 @@ namespace FenBrowser.Tests.Layout
             }
 
             return null;
+        }
+
+        private static TextLayoutBox LayoutTextWrapHeading(bool useBalance, bool maxWidthOnly = false)
+        {
+            var root = new Element("div");
+            var heading = new Element("h1");
+            var headline = new Text("The future of building happens together");
+
+            heading.AppendChild(headline);
+            root.AppendChild(heading);
+
+            var headingStyle = new CssComputed
+            {
+                Display = "block",
+                FontSize = 48,
+                LineHeight = 58,
+                FontFamilyName = "Arial",
+                TextAlign = SKTextAlign.Center
+            };
+
+            if (maxWidthOnly)
+            {
+                headingStyle.MaxWidth = 700;
+            }
+            else
+            {
+                headingStyle.Width = 700;
+            }
+
+            if (useBalance)
+            {
+                headingStyle.Map["text-wrap-style"] = "balance";
+            }
+
+            var rootStyle = maxWidthOnly
+                ? new CssComputed
+                {
+                    Display = "flex",
+                    FlexDirection = "column",
+                    AlignItems = "center",
+                    Width = 800,
+                    Height = 200
+                }
+                : new CssComputed { Display = "block", Width = 800, Height = 200 };
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [root] = rootStyle,
+                [heading] = headingStyle
+            };
+
+            var rootBox = LayoutRoot(root, styles, 800, 200);
+            var textBoxes = new List<TextLayoutBox>();
+            CollectTextBoxes(rootBox, textBoxes);
+            var textBox = FindTextBox(textBoxes, headline);
+
+            Assert.NotNull(textBox);
+            return textBox!;
         }
     }
 }

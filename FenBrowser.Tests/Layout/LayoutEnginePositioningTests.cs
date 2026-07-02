@@ -58,6 +58,43 @@ namespace FenBrowser.Tests.Layout
         }
 
         [Fact]
+        public void FixedPosition_AutoVerticalInsets_PreserveStaticFlowPosition()
+        {
+            var document = new Document();
+            var html = new Element("HTML");
+            var body = new Element("BODY");
+            var spacer = new Element("DIV");
+            var hero = new Element("DIV");
+
+            document.AppendChild(html);
+            html.AppendChild(body);
+            body.AppendChild(spacer);
+            body.AppendChild(hero);
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [html] = new CssComputed { Display = "block", Width = 1280, Height = 720 },
+                [body] = new CssComputed { Display = "block", Width = 1280, Height = 720 },
+                [spacer] = new CssComputed { Display = "block", Height = 160 },
+                [hero] = new CssComputed
+                {
+                    Display = "block",
+                    Position = "fixed",
+                    Width = 420,
+                    Height = 80
+                }
+            };
+
+            var engine = new LayoutEngine(styles, 1280, 720);
+            var result = engine.ComputeLayout(document, 0, 0, 1280, availableHeight: 720);
+
+            Assert.NotNull(result);
+            Assert.True(result.ElementRects.TryGetValue(hero, out var heroGeometry));
+            Assert.Equal(0f, heroGeometry.X, 0.5f);
+            Assert.Equal(160f, heroGeometry.Y, 0.5f);
+        }
+
+        [Fact]
         public void AbsolutePosition_UsesNearestPositionedAncestor_WhenAncestorPositionComesFromComputedMap()
         {
             var document = new Document();
