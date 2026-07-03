@@ -1657,6 +1657,11 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             var pseudoNode = pseudoStyle.PseudoElementInstance;
+            if (pseudoNode == null)
+            {
+                pseudoNode = new PseudoElement(parent, position, pseudoStyle);
+                pseudoStyle.PseudoElementInstance = pseudoNode;
+            }
 
             Layout.BoxModel pseudoBox = null;
             if (pseudoNode != null)
@@ -1664,16 +1669,11 @@ namespace FenBrowser.FenEngine.Rendering
                 _boxes.TryGetValue(pseudoNode, out pseudoBox);
             }
 
-            // Fallback when pseudo box is unavailable: keep pseudo paint anchored to parent content box.
+            // Fallback when pseudo box is unavailable: keep pseudo paint anchored to authored
+            // pseudo geometry instead of letting decorative generated content cover the parent.
             if (pseudoBox == null)
             {
-                pseudoBox = new Layout.BoxModel
-                {
-                    ContentBox = parentBox.ContentBox,
-                    PaddingBox = parentBox.ContentBox,
-                    BorderBox = parentBox.ContentBox,
-                    MarginBox = parentBox.ContentBox
-                };
+                pseudoBox = BuildFallbackPseudoBox(parentBox, pseudoStyle);
             }
 
             var sourceNode = (Node)pseudoNode ?? parent;
@@ -1736,7 +1736,97 @@ namespace FenBrowser.FenEngine.Rendering
                 });
             }
 
-            return nodes.Count > 0 ? nodes : null;
+            if (nodes.Count == 0)
+            {
+                return null;
+            }
+
+            if (pseudoStyle.Opacity.HasValue && pseudoStyle.Opacity.Value < 1.0)
+            {
+                return new List<PaintNodeBase>
+                {
+                    new OpacityGroupPaintNode
+                    {
+                        Bounds = pseudoBox.BorderBox,
+                        Opacity = (float)Math.Clamp(pseudoStyle.Opacity.Value, 0.0, 1.0),
+                        Children = nodes,
+                        SourceNode = sourceNode
+                    }
+                };
+            }
+
+            return nodes;
+        }
+
+        private static Layout.BoxModel BuildFallbackPseudoBox(Layout.BoxModel parentBox, CssComputed pseudoStyle)
+        {
+            var parentRect = parentBox.ContentBox;
+            var rect = parentRect;
+
+            if (pseudoStyle != null &&
+                string.Equals(pseudoStyle.Position, "absolute", StringComparison.OrdinalIgnoreCase))
+            {
+                float? left = ResolveFallbackInset(pseudoStyle.Left, pseudoStyle.LeftPercent, parentRect.Width);
+                float? right = ResolveFallbackInset(pseudoStyle.Right, pseudoStyle.RightPercent, parentRect.Width);
+                float? top = ResolveFallbackInset(pseudoStyle.Top, pseudoStyle.TopPercent, parentRect.Height);
+                float? bottom = ResolveFallbackInset(pseudoStyle.Bottom, pseudoStyle.BottomPercent, parentRect.Height);
+                float? width = ResolveFallbackSize(pseudoStyle.Width, pseudoStyle.WidthPercent, parentRect.Width);
+                float? height = ResolveFallbackSize(pseudoStyle.Height, pseudoStyle.HeightPercent, parentRect.Height);
+
+                if (!width.HasValue && left.HasValue && right.HasValue)
+                {
+                    width = Math.Max(0f, parentRect.Width - left.Value - right.Value);
+                }
+
+                if (!height.HasValue && top.HasValue && bottom.HasValue)
+                {
+                    height = Math.Max(0f, parentRect.Height - top.Value - bottom.Value);
+                }
+
+                float resolvedWidth = Math.Max(0f, width ?? parentRect.Width);
+                float resolvedHeight = Math.Max(0f, height ?? parentRect.Height);
+                float x = left.HasValue
+                    ? parentRect.Left + left.Value
+                    : right.HasValue
+                        ? parentRect.Right - right.Value - resolvedWidth
+                        : parentRect.Left;
+                float y = top.HasValue
+                    ? parentRect.Top + top.Value
+                    : bottom.HasValue
+                        ? parentRect.Bottom - bottom.Value - resolvedHeight
+                        : parentRect.Top;
+
+                rect = new SKRect(x, y, x + resolvedWidth, y + resolvedHeight);
+            }
+
+            return new Layout.BoxModel
+            {
+                ContentBox = rect,
+                PaddingBox = rect,
+                BorderBox = rect,
+                MarginBox = rect
+            };
+        }
+
+        private static float? ResolveFallbackInset(double? px, double? percent, float reference)
+        {
+            if (px.HasValue)
+            {
+                return (float)px.Value;
+            }
+
+            if (percent.HasValue)
+            {
+                return (float)(percent.Value * reference / 100.0);
+            }
+
+            return null;
+        }
+
+        private static float? ResolveFallbackSize(double? px, double? percent, float reference)
+        {
+            var value = ResolveFallbackInset(px, percent, reference);
+            return value.HasValue ? Math.Max(0f, value.Value) : null;
         }
         
         /// <summary>

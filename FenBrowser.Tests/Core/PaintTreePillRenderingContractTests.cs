@@ -277,6 +277,57 @@ namespace FenBrowser.Tests.Core
         }
 
         [Fact]
+        public void PseudoElementFallback_WithAbsoluteSeparator_UsesPseudoGeometryAndOpacity()
+        {
+            var intro = new Element("div");
+            intro.SetAttribute("class", "lp-Intro");
+
+            var afterStyle = new CssComputed
+            {
+                Content = "\"\"",
+                Position = "absolute",
+                Left = 0,
+                Right = 0,
+                Bottom = 0,
+                Height = 1,
+                Opacity = 0.2,
+                BackgroundImage = "linear-gradient(90deg,#fff0,#fff,#fff,#fff0)"
+            };
+
+            var styles = new Dictionary<Node, CssComputed>
+            {
+                [intro] = new CssComputed
+                {
+                    Display = "block",
+                    Position = "relative",
+                    BackgroundColor = new SKColor(0x0d, 0x11, 0x17),
+                    After = afterStyle
+                }
+            };
+
+            var boxes = new Dictionary<Node, BoxModel>
+            {
+                [intro] = BoxModel.FromContentBox(0, 0, 1280, 1278)
+            };
+
+            var tree = NewPaintTreeBuilder.Build(intro, boxes, styles, 1280, 720, null);
+            var nodes = Flatten(tree.Roots);
+
+            var afterGroup = Assert.Single(nodes.OfType<OpacityGroupPaintNode>(), n =>
+                n.SourceNode is PseudoElement pseudo &&
+                string.Equals(pseudo.PseudoType, "after", StringComparison.OrdinalIgnoreCase));
+
+            Assert.Equal(0.2f, afterGroup.Opacity, 3);
+            Assert.InRange(afterGroup.Bounds.Height, 0.5f, 1.5f);
+            Assert.Equal(1277f, afterGroup.Bounds.Top, 1);
+
+            var afterImage = Assert.Single(afterGroup.Children.OfType<ImagePaintNode>());
+            Assert.True(afterImage.IsBackgroundImage);
+            Assert.InRange(afterImage.Bounds.Height, 0.5f, 1.5f);
+            Assert.IsType<PseudoElement>(afterImage.SourceNode);
+        }
+
+        [Fact]
         public async System.Threading.Tasks.Task GradientBackgroundImage_WithSizeAndPosition_EmitsTiledPaintImage()
         {
             const string html = @"
