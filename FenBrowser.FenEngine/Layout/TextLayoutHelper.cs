@@ -122,7 +122,7 @@ namespace FenBrowser.FenEngine.Layout
         /// Wrap text into multiple lines based on available width
         /// Supports word-break: break-all (break anywhere), keep-all, break-word
         /// </summary>
-        public static List<TextLine> WrapText(string text, SKPaint paint, float maxWidth, string whiteSpace, string hyphens = "none", string wordBreak = "normal")
+        public static List<TextLine> WrapText(string text, SKFont font, float maxWidth, string whiteSpace, string hyphens = "none", string wordBreak = "normal")
         {
             var lines = new List<TextLine>();
             if (string.IsNullOrEmpty(text)) return lines;
@@ -156,7 +156,7 @@ namespace FenBrowser.FenEngine.Layout
                 foreach (var word in words)
                 {
                     string testLine = string.IsNullOrEmpty(currentLine) ? word : currentLine + " " + word;
-                    float testWidth = paint.MeasureText(testLine);
+                    float testWidth = font.MeasureText(testLine);
 
                     if (testWidth <= maxWidth || string.IsNullOrEmpty(currentLine))
                     {
@@ -167,11 +167,11 @@ namespace FenBrowser.FenEngine.Layout
                     {
                         lines.Add(new TextLine { Text = currentLine, Width = currentWidth, Y = lines.Count });
                         currentLine = word;
-                        currentWidth = paint.MeasureText(word);
+                        currentWidth = font.MeasureText(word);
 
                         if (currentWidth > maxWidth)
                         {
-                            var brokenLines = BreakLongWord(word, paint, maxWidth, useHyphens);
+                            var brokenLines = BreakLongWord(word, font, maxWidth, useHyphens);
                             for (int i = 0; i < brokenLines.Count - 1; i++)
                             {
                                 lines.Add(new TextLine { Text = brokenLines[i].Text, Width = brokenLines[i].Width, Y = lines.Count });
@@ -198,16 +198,16 @@ namespace FenBrowser.FenEngine.Layout
         /// <summary>
         /// Break a long word that exceeds maxWidth into multiple lines
         /// </summary>
-        public static List<TextLine> BreakLongWord(string word, SKPaint paint, float maxWidth, bool useHyphens = false)
+        public static List<TextLine> BreakLongWord(string word, SKFont font, float maxWidth, bool useHyphens = false)
         {
             var lines = new List<TextLine>();
             string remaining = word;
-            float hyphenWidth = useHyphens ? paint.MeasureText("-") : 0;
+            float hyphenWidth = useHyphens ? font.MeasureText("-") : 0;
 
             while (!string.IsNullOrEmpty(remaining))
             {
                 int breakPoint = remaining.Length;
-                float width = paint.MeasureText(remaining);
+                float width = font.MeasureText(remaining);
 
                 if (width <= maxWidth)
                 {
@@ -220,7 +220,7 @@ namespace FenBrowser.FenEngine.Layout
                 while (low < high)
                 {
                     int mid = (low + high + 1) / 2;
-                    width = paint.MeasureText(remaining.Substring(0, mid));
+                    width = font.MeasureText(remaining.Substring(0, mid));
                     if (width <= effectiveMaxWidth) low = mid;
                     else high = mid - 1;
                 }
@@ -232,7 +232,7 @@ namespace FenBrowser.FenEngine.Layout
                 {
                     part = part + "-";
                 }
-                lines.Add(new TextLine { Text = part, Width = paint.MeasureText(part), Y = 0 });
+                lines.Add(new TextLine { Text = part, Width = font.MeasureText(part), Y = 0 });
                 remaining = remaining.Substring(low);
             }
 

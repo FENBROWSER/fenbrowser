@@ -113,8 +113,7 @@ namespace FenBrowser.FenEngine.Typography
             if (string.IsNullOrEmpty(text)) return 0;
             
             var skFont = GetOrCreateFont(font);
-            using var paint = new SKPaint(skFont);
-            return paint.MeasureText(text);
+            return skFont.MeasureText(text);
         }
 
         /// <summary>
@@ -177,8 +176,7 @@ namespace FenBrowser.FenEngine.Typography
 
         private TextMetrics MeasureCore(string text, SKFont font)
         {
-            using var paint = new SKPaint(font);
-            var width = paint.MeasureText(text);
+            var width = font.MeasureText(text);
             var metrics = font.Metrics;
 
             if (FenBrowser.Core.Logging.DebugConfig.LogTextShaping)

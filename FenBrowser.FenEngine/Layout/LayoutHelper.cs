@@ -197,18 +197,15 @@ namespace FenBrowser.FenEngine.Layout
 
              if (!string.IsNullOrEmpty(val))
              {
-                 using (var paint = new SKPaint())
+                 var fontSize = style?.FontSize != null ? (float)style.FontSize.Value : 16f;
+                 var tf = TextLayoutHelper.ResolveTypeface(style?.FontFamily?.ToString(), val);
+                 using (var font = new SKFont(tf, fontSize))
                  {
-                      paint.TextSize = style?.FontSize != null ? (float)style.FontSize.Value : 16f; 
-                      var tf = TextLayoutHelper.ResolveTypeface(style?.FontFamily?.ToString(), val);
-                      paint.Typeface = tf;
-                      
-                      var bounds = new SKRect();
-                      paint.MeasureText(val, ref bounds);
-                      
-                      float w = bounds.Width + 24; 
+                      font.MeasureText(val, out var bounds);
+
+                      float w = bounds.Width + 24;
                       if (w > width) width = w;
-                      
+
                       float h = bounds.Height + 10;
                       if (h > height) height = h;
                  }

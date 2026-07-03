@@ -66,14 +66,12 @@ namespace FenBrowser.FenEngine.Adapters
 
             var typeface = TextLayoutHelper.ResolveTypeface(normalizedFamily, text, fontWeight, SKFontStyleSlant.Upright);
 
-            using var paint = new SKPaint
+            using var font = new SKFont(typeface, fontSize)
             {
-                TextSize = fontSize,
-                Typeface = typeface,
-                IsAntialias = true
+                Subpixel = true
             };
 
-            var width = paint.MeasureText(text);
+            var width = font.MeasureText(text);
             if (text.Length <= 256)
             {
                 _widthCache.Set(widthKey, width);

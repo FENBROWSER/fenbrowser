@@ -92,16 +92,12 @@ namespace FenBrowser.FenEngine.Typography
 
             var typeface = ResolveTypeface(fontFamily, fontWeight);
 
-            using var paint = new SKPaint
+            using var font = new SKFont(typeface, fontSize)
             {
-                TextSize = fontSize,
-                Typeface = typeface,
-                IsAntialias = true,
-                SubpixelText = true,
-                LcdRenderText = false
+                Subpixel = true
             };
 
-            var width = paint.MeasureText(text);
+            var width = font.MeasureText(text);
             if (text.Length <= 256)
             {
                 _widthCache.Set(cacheKey, width);
@@ -132,19 +128,15 @@ namespace FenBrowser.FenEngine.Typography
             var typeface = ResolveTypeface(fontFamily, fontWeight);
             var metrics = GetMetrics(fontFamily, fontSize, fontWeight);
 
-            using var paint = new SKPaint
+            using var font = new SKFont(typeface, fontSize)
             {
-                TextSize = fontSize,
-                Typeface = typeface,
-                IsAntialias = true,
-                SubpixelText = true,
-                LcdRenderText = false
+                Subpixel = true
             };
 
-            if (!TryShapeWithHarfBuzz(text, paint, out var glyphs, out var width))
+            if (!TryShapeWithHarfBuzz(text, font, out var glyphs, out var width))
             {
-                var glyphIds = paint.GetGlyphs(text);
-                var widths = paint.GetGlyphWidths(text);
+                var glyphIds = font.GetGlyphs(text);
+                var widths = font.GetGlyphWidths(text);
                 glyphs = new PositionedGlyph[glyphIds.Length];
                 width = 0;
 
@@ -215,22 +207,22 @@ namespace FenBrowser.FenEngine.Typography
 
         private static bool TryShapeWithHarfBuzz(
             string text,
-            SKPaint paint,
+            SKFont font,
             out PositionedGlyph[] glyphs,
             out float width)
         {
             glyphs = Array.Empty<PositionedGlyph>();
             width = 0;
 
-            if (string.IsNullOrEmpty(text) || paint == null || paint.Typeface == null)
+            if (string.IsNullOrEmpty(text) || font == null || font.Typeface == null)
             {
                 return false;
             }
 
             try
             {
-                using var shaper = new SKShaper(paint.Typeface);
-                var result = shaper.Shape(text, 0, 0, paint);
+                using var shaper = new SKShaper(font.Typeface);
+                var result = shaper.Shape(text, 0, 0, font);
                 if (result == null || result.Codepoints == null || result.Codepoints.Length == 0 || result.Points == null)
                 {
                     return false;
@@ -246,7 +238,7 @@ namespace FenBrowser.FenEngine.Typography
 
                 width = float.IsFinite(result.Width) && result.Width > 0
                     ? result.Width
-                    : paint.MeasureText(text);
+                    : font.MeasureText(text);
 
                 glyphs = new PositionedGlyph[count];
                 for (var i = 0; i < count; i++)

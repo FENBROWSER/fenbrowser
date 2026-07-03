@@ -44,22 +44,17 @@ namespace FenBrowser.FenEngine.Layout
                 return (new LayoutMetrics(), new List<ComputedTextLine>());
             }
 
-            using var paint = new SKPaint
-            {
-                TextSize = (float)(style?.FontSize ?? DefaultFontSize),
-                IsAntialias = true
-            };
+            var fontSize = (float)(style?.FontSize ?? DefaultFontSize);
 
             var resolvedSlant = style?.FontStyle ?? SKFontStyleSlant.Upright;
             var resolvedWeight = style?.FontWeight ?? 400;
-            paint.Typeface = TextLayoutHelper.ResolveTypeface(
+            var resolvedTypeface = TextLayoutHelper.ResolveTypeface(
                 style?.FontFamilyName,
                 textNode.Data,
                 resolvedWeight,
                 resolvedSlant);
 
-            var fontSize = paint.TextSize;
-            using var font = new SKFont(paint.Typeface, fontSize);
+            using var font = new SKFont(resolvedTypeface, fontSize);
             var normalizedMetrics = NormalizedFontMetrics.FromSkia(
                 font.Metrics,
                 fontSize,
@@ -74,7 +69,7 @@ namespace FenBrowser.FenEngine.Layout
             var cacheKey = new TextLayoutCacheKey(
                 textNode.Data,
                 style?.FontFamilyName ?? string.Empty,
-                paint.TextSize,
+                fontSize,
                 resolvedWeight,
                 resolvedSlant,
                 maxLineWidth,
@@ -96,7 +91,7 @@ namespace FenBrowser.FenEngine.Layout
             var currentLineTokens = new List<TextToken>();
             var currentY = 0f;
             var currentWidth = 0f;
-            var spaceWidth = paint.MeasureText(" ");
+            var spaceWidth = font.MeasureText(" ");
 
             void FlushLine(bool forceEmptyLine = false)
             {
@@ -135,7 +130,7 @@ namespace FenBrowser.FenEngine.Layout
 
                 var tokenWidth = token.IsWhitespace && collapseWhitespace
                     ? spaceWidth
-                    : paint.MeasureText(token.Text);
+                    : font.MeasureText(token.Text);
 
                 var shouldWrap = allowWrap &&
                                  currentLineTokens.Count > 0 &&
@@ -188,7 +183,7 @@ namespace FenBrowser.FenEngine.Layout
                     continue;
                 }
 
-                minContentWidth = Math.Max(minContentWidth, paint.MeasureText(token.Text));
+                minContentWidth = Math.Max(minContentWidth, font.MeasureText(token.Text));
             }
 
             var metrics = new LayoutMetrics

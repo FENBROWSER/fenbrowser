@@ -5,11 +5,19 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using FenBrowser.Core;
+using FenBrowser.FenEngine.DOM;
 using FenBrowser.FenEngine.Rendering.Core;
 using FenBrowser.FenEngine.Rendering; // Required for PaintNodeBase
 
 namespace FenBrowser.FenEngine.Rendering.Interaction
 {
+    public readonly record struct InputHitTestResult(
+        Element Target,
+        float ClientX,
+        float ClientY,
+        global::FenBrowser.FenEngine.Interaction.HitTestResult Hit,
+        bool RetargetedIntoFrame);
+
     /// <summary>
     /// Hit testing for click detection.
     /// Determines which element is at a given (x, y) coordinate.
@@ -22,25 +30,88 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
         /// </summary>
         public static Element HitTest(RenderContext ctx, float x, float y)
         {
-            if (ctx == null) return null;
+            return HitTest(ctx, x, y, out var result)
+                ? result.NativeElement as Element
+                : null;
+        }
+
+        public static bool HitTest(RenderContext ctx, float x, float y, out global::FenBrowser.FenEngine.Interaction.HitTestResult result)
+        {
+            result = global::FenBrowser.FenEngine.Interaction.HitTestResult.None;
+            if (!HitTestCore(ctx, x, y, out result))
+            {
+                return false;
+            }
+
+            if (TryRetargetFrameResult(ctx, result, x, y, out var frameResult, out _, out _))
+            {
+                result = frameResult;
+            }
+
+            return true;
+        }
+
+        public static bool HitTestInput(RenderContext ctx, float x, float y, out InputHitTestResult input)
+        {
+            input = default;
+            if (!HitTestCore(ctx, x, y, out var result))
+            {
+                return false;
+            }
+
+            var clientX = x;
+            var clientY = y;
+            var retargeted = false;
+
+            if (TryRetargetFrameResult(ctx, result, x, y, out var frameResult, out var frameClientX, out var frameClientY))
+            {
+                result = frameResult;
+                clientX = frameClientX;
+                clientY = frameClientY;
+                retargeted = true;
+            }
+            else if (result.NativeElement is Element element &&
+                     TryFindFrameHostForDocument(ctx, element.OwnerDocument, x, y, out _, out var frameBox))
+            {
+                var origin = GetFrameContentOrigin(frameBox);
+                clientX = x - origin.X;
+                clientY = y - origin.Y;
+                retargeted = true;
+            }
+
+            if (result.NativeElement is not Element target)
+            {
+                return false;
+            }
+
+            input = new InputHitTestResult(target, clientX, clientY, result, retargeted);
+            return true;
+        }
+
+        private static bool HitTestCore(RenderContext ctx, float x, float y, out global::FenBrowser.FenEngine.Interaction.HitTestResult result)
+        {
+            result = global::FenBrowser.FenEngine.Interaction.HitTestResult.None;
+            if (ctx == null) return false;
 
             // Priority: Use PaintTree (Stacking Context Aware)
             if (ctx.PaintTreeRoots != null && ctx.PaintTreeRoots.Count > 0)
             {
-               if (HitTestRecursive(ctx.PaintTreeRoots, x, y, out var result))
+               if (HitTestRecursive(ctx.PaintTreeRoots, x, y, out result))
                {
-                   return result.NativeElement as Element;
+                   return true;
                }
 
                // Some paint passes omit non-decorative nodes even though layout boxes
                // are present. Pointer state still needs to resolve those boxes for
                // hover/click behavior, so fall back to layout hit testing before
                // reporting a miss.
-               return HitTestNaive(ctx, x, y);
+               var fallback = HitTestNaive(ctx, x, y);
+               return TryBuildHitTestResult(ctx, fallback, out result);
             }
             
             // Fallback: Naive Box Scan
-            return HitTestNaive(ctx, x, y);
+            var element = HitTestNaive(ctx, x, y);
+            return TryBuildHitTestResult(ctx, element, out result);
         }
 
         private static Element HitTestNaive(RenderContext ctx, float x, float y)
@@ -157,62 +228,260 @@ namespace FenBrowser.FenEngine.Rendering.Interaction
                             continue;
                         }
 
-                        // Found a hit! Resolve interactive ancestor.
-                        var interactive = FindInteractiveAncestor(element);
-                        string tagName = element.TagName;
-                        string elementId = element.GetAttribute("id");
-                        string href = null;
-
-                        if (interactive != null)
-                        {
-                            var interactiveTag = interactive.TagName ?? string.Empty;
-                            if (string.Equals(interactiveTag, "a", StringComparison.OrdinalIgnoreCase))
-                            {
-                                href = interactive.GetAttribute("href");
-                                tagName = "a";
-                                element = interactive;
-                            }
-                            else if (string.Equals(interactiveTag, "button", StringComparison.OrdinalIgnoreCase) ||
-                                     string.Equals(interactiveTag, "input", StringComparison.OrdinalIgnoreCase) ||
-                                     string.Equals(interactiveTag, "textarea", StringComparison.OrdinalIgnoreCase) ||
-                                     string.Equals(interactiveTag, "select", StringComparison.OrdinalIgnoreCase) ||
-                                     string.Equals(interactiveTag, "label", StringComparison.OrdinalIgnoreCase))
-                            {
-                                tagName = interactiveTag;
-                                element = interactive;
-                            }
-                            else if (interactive.GetAttribute("contenteditable") == "true" ||
-                                     !string.IsNullOrEmpty(interactive.GetAttribute("tabindex")))
-                            {
-                                tagName = interactiveTag;
-                                element = interactive;
-                            }
-                        }
-
-                        string tagLow = tagName?.ToLowerInvariant();
-                        bool isClickable = !string.IsNullOrEmpty(href) || tagLow == "button" || tagLow == "input" || tagLow == "label";
-                        bool isFocusable = isClickable || tagLow == "textarea" || tagLow == "select";
-                        bool isEditable = tagLow == "input" || tagLow == "textarea";
-
-                        string imageSrc = tagLow == "img" ? element.GetAttribute("src") : null;
-                        var resolvedCursor = ResolveCursor(element, tagLow, href, isClickable, isEditable);
-                        result = new global::FenBrowser.FenEngine.Interaction.HitTestResult(
-                            TagName: tagLow ?? "",
-                            Href: href,
-                            Cursor: resolvedCursor,
-                            IsClickable: isClickable,
-                            IsFocusable: isFocusable,
-                            IsEditable: isEditable,
-                            ElementId: elementId,
-                            NativeElement: element,
-                            BoundingBox: node.Bounds,
-                            ImageSrc: imageSrc
-                        );
+                        result = BuildHitTestResult(element, node.Bounds);
                         return true;
                     }
                 }
             }
             return false;
+        }
+
+        private static bool TryBuildHitTestResult(RenderContext ctx, Element element, out global::FenBrowser.FenEngine.Interaction.HitTestResult result)
+        {
+            result = global::FenBrowser.FenEngine.Interaction.HitTestResult.None;
+            if (element == null)
+            {
+                return false;
+            }
+
+            var bounds = SKRect.Empty;
+            if (ctx?.Boxes != null && ctx.Boxes.TryGetValue(element, out var box))
+            {
+                bounds = box.BorderBox;
+            }
+
+            result = BuildHitTestResult(element, bounds);
+            return result.NativeElement is Element;
+        }
+
+        private static global::FenBrowser.FenEngine.Interaction.HitTestResult BuildHitTestResult(Element sourceElement, SKRect bounds)
+        {
+            var element = sourceElement;
+            var interactive = FindInteractiveAncestor(element);
+            string tagName = element.TagName;
+            string elementId = element.GetAttribute("id");
+            string href = null;
+
+            if (interactive != null)
+            {
+                var interactiveTag = interactive.TagName ?? string.Empty;
+                if (string.Equals(interactiveTag, "a", StringComparison.OrdinalIgnoreCase))
+                {
+                    href = interactive.GetAttribute("href");
+                    tagName = "a";
+                    element = interactive;
+                }
+                else if (string.Equals(interactiveTag, "button", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(interactiveTag, "input", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(interactiveTag, "textarea", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(interactiveTag, "select", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(interactiveTag, "label", StringComparison.OrdinalIgnoreCase))
+                {
+                    tagName = interactiveTag;
+                    element = interactive;
+                }
+                else if (interactive.GetAttribute("contenteditable") == "true" ||
+                         !string.IsNullOrEmpty(interactive.GetAttribute("tabindex")))
+                {
+                    tagName = interactiveTag;
+                    element = interactive;
+                }
+            }
+
+            string tagLow = tagName?.ToLowerInvariant();
+            bool isClickable = !string.IsNullOrEmpty(href) || tagLow == "button" || tagLow == "input" || tagLow == "label";
+            bool isFocusable = isClickable || tagLow == "textarea" || tagLow == "select";
+            bool isEditable = tagLow == "input" || tagLow == "textarea";
+            string imageSrc = tagLow == "img" ? element.GetAttribute("src") : null;
+            var resolvedCursor = ResolveCursor(element, tagLow, href, isClickable, isEditable);
+
+            return new global::FenBrowser.FenEngine.Interaction.HitTestResult(
+                TagName: tagLow ?? "",
+                Href: href,
+                Cursor: resolvedCursor,
+                IsClickable: isClickable,
+                IsFocusable: isFocusable,
+                IsEditable: isEditable,
+                ElementId: elementId,
+                NativeElement: element,
+                BoundingBox: bounds,
+                ImageSrc: imageSrc
+            );
+        }
+
+        private static bool TryRetargetFrameResult(
+            RenderContext ctx,
+            global::FenBrowser.FenEngine.Interaction.HitTestResult source,
+            float x,
+            float y,
+            out global::FenBrowser.FenEngine.Interaction.HitTestResult result,
+            out float frameClientX,
+            out float frameClientY)
+        {
+            result = source;
+            frameClientX = x;
+            frameClientY = y;
+
+            if (source.NativeElement is not Element frame ||
+                !IsIframe(frame) ||
+                !TryGetFrameDocument(frame, out var frameDocument) ||
+                !TryGetFrameBox(ctx, frame, out var frameBox))
+            {
+                return false;
+            }
+
+            var origin = GetFrameContentOrigin(frameBox);
+            frameClientX = x - origin.X;
+            frameClientY = y - origin.Y;
+
+            var frameContext = CreateFrameRenderContext(ctx, frameDocument);
+            if (TryHitFrameContext(frameContext, frameClientX, frameClientY, out result) ||
+                TryHitFrameContext(frameContext, x, y, out result))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryHitFrameContext(
+            RenderContext frameContext,
+            float x,
+            float y,
+            out global::FenBrowser.FenEngine.Interaction.HitTestResult result)
+        {
+            result = global::FenBrowser.FenEngine.Interaction.HitTestResult.None;
+            var target = HitTestNaive(frameContext, x, y);
+            return TryBuildHitTestResult(frameContext, target, out result);
+        }
+
+        private static RenderContext CreateFrameRenderContext(RenderContext ctx, Document frameDocument)
+        {
+            var frameBoxes = new Dictionary<Node, FenBrowser.FenEngine.Layout.BoxModel>();
+            if (ctx?.Boxes != null && frameDocument != null)
+            {
+                foreach (var kvp in ctx.Boxes)
+                {
+                    if (BelongsToDocument(kvp.Key, frameDocument))
+                    {
+                        frameBoxes[kvp.Key] = kvp.Value;
+                    }
+                }
+            }
+
+            return new RenderContext
+            {
+                Boxes = frameBoxes,
+                Styles = ctx?.Styles,
+                Viewport = ctx?.Viewport ?? SKRect.Empty,
+                ViewportWidth = ctx?.ViewportWidth ?? 0f,
+                ViewportHeight = ctx?.ViewportHeight ?? 0f
+            };
+        }
+
+        private static bool BelongsToDocument(Node node, Document document)
+        {
+            if (node == null || document == null)
+            {
+                return false;
+            }
+
+            return ReferenceEquals(node, document) ||
+                   ReferenceEquals(node.OwnerDocument, document);
+        }
+
+        private static bool TryFindFrameHostForDocument(
+            RenderContext ctx,
+            Document document,
+            float x,
+            float y,
+            out Element frame,
+            out FenBrowser.FenEngine.Layout.BoxModel box)
+        {
+            frame = null;
+            box = null;
+            if (ctx?.Boxes == null || document == null)
+            {
+                return false;
+            }
+
+            float bestArea = float.MaxValue;
+            foreach (var kvp in ctx.Boxes)
+            {
+                if (kvp.Key is not Element candidate ||
+                    !IsIframe(candidate) ||
+                    !TryGetFrameDocument(candidate, out var candidateDocument) ||
+                    !ReferenceEquals(candidateDocument, document))
+                {
+                    continue;
+                }
+
+                var candidateBox = kvp.Value;
+                if (candidateBox == null || !candidateBox.BorderBox.Contains(x, y))
+                {
+                    continue;
+                }
+
+                var area = candidateBox.BorderBox.Width * candidateBox.BorderBox.Height;
+                if (area <= bestArea)
+                {
+                    bestArea = area;
+                    frame = candidate;
+                    box = candidateBox;
+                }
+            }
+
+            return frame != null && box != null;
+        }
+
+        private static bool TryGetFrameBox(RenderContext ctx, Element frame, out FenBrowser.FenEngine.Layout.BoxModel box)
+        {
+            box = null;
+            return ctx?.Boxes != null &&
+                   frame != null &&
+                   ctx.Boxes.TryGetValue(frame, out box) &&
+                   box != null;
+        }
+
+        private static SKPoint GetFrameContentOrigin(FenBrowser.FenEngine.Layout.BoxModel frameBox)
+        {
+            if (frameBox == null)
+            {
+                return SKPoint.Empty;
+            }
+
+            var content = frameBox.ContentBox;
+            if (content.Width > 0f || content.Height > 0f)
+            {
+                return new SKPoint(content.Left, content.Top);
+            }
+
+            return new SKPoint(frameBox.BorderBox.Left, frameBox.BorderBox.Top);
+        }
+
+        private static bool TryGetFrameDocument(Element frame, out Document document)
+        {
+            document = null;
+            if (frame == null)
+            {
+                return false;
+            }
+
+            for (var child = frame.FirstChild; child != null; child = child.NextSibling)
+            {
+                if (child is Document childDocument)
+                {
+                    document = childDocument;
+                    return true;
+                }
+            }
+
+            return ElementWrapper.TryGetCachedIframeDocument(frame, out document) && document != null;
+        }
+
+        private static bool IsIframe(Element element)
+        {
+            return string.Equals(element?.TagName, "iframe", StringComparison.OrdinalIgnoreCase);
         }
         
         /// <summary>
