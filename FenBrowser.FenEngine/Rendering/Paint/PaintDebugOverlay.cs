@@ -178,16 +178,16 @@ namespace FenBrowser.FenEngine.Rendering.Paint
             if (box.ContentBox.Width < 30 || box.ContentBox.Height < 10)
                 return;
 
+            var labelTypeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold);
+            using var font = new SKFont(labelTypeface, 10);
             using var textPaint = new SKPaint
             {
                 Color = LabelText,
-                TextSize = 10,
-                IsAntialias = true,
-                Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold)
+                IsAntialias = true
             };
 
             // Measure label
-            float textWidth = textPaint.MeasureText(label);
+            float textWidth = font.MeasureText(label);
             float textHeight = 10;
 
             // Background
@@ -207,7 +207,7 @@ namespace FenBrowser.FenEngine.Rendering.Paint
             canvas.DrawRect(labelRect, bgPaint);
 
             // Text (baseline is at Bottom - Descent)
-            canvas.DrawText(label, labelX + 2, labelY + textHeight - 2, textPaint);
+            canvas.DrawText(label, labelX + 2, labelY + textHeight - 2, font, textPaint);
         }
 
         // ========================================================================

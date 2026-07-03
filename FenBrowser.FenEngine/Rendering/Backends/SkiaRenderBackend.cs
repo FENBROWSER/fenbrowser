@@ -349,20 +349,22 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                 return;
             }
 
+            var resolvedColor = ApplyOpacity(color, opacity);
             using var paint = new SKPaint
             {
-                Color = ApplyOpacity(color, opacity),
-                TextSize = glyphs.FontSize,
-                Typeface = glyphs.Typeface,
-                IsAntialias = true,
-                SubpixelText = true,
-                LcdRenderText = false
+                Color = resolvedColor,
+                IsAntialias = true
+            };
+
+            using var font = new SKFont(glyphs.Typeface, glyphs.FontSize)
+            {
+                Subpixel = true
             };
 
             using var builder = new SKTextBlobBuilder();
-            var run = builder.AllocatePositionedRun(paint.ToFont(), glyphs.Count);
-            var glyphSpan = run.GetGlyphSpan();
-            var posSpan = run.GetPositionSpan();
+            var run = builder.AllocatePositionedRun(font, glyphs.Count);
+            var glyphSpan = run.Glyphs;
+            var posSpan = run.Positions;
 
             for (int i = 0; i < glyphs.Count; i++)
             {
@@ -381,14 +383,15 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                 return;
             }
 
+            using var font = new SKFont(typeface ?? SKTypeface.Default, fontSize)
+            {
+                Subpixel = true,
+                // LcdRender removed: no longer available on SKFont in SkiaSharp 4.x
+            };
             using var paint = new SKPaint
             {
                 Color = ApplyOpacity(color, opacity),
-                TextSize = fontSize,
-                Typeface = typeface ?? SKTypeface.Default,
-                IsAntialias = true,
-                SubpixelText = true,
-                LcdRenderText = false
+                IsAntialias = true
             };
 
             if (text.Equals("Sign in", StringComparison.Ordinal))
@@ -399,7 +402,7 @@ namespace FenBrowser.FenEngine.Rendering.Backends
                     LogCategory.Paint);
             }
 
-            _canvas.DrawText(text, origin.X, origin.Y, paint);
+            _canvas.DrawText(text, origin.X, origin.Y, font, paint);
         }
 
         #endregion

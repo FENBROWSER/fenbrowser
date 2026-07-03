@@ -20,16 +20,12 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             var style = Style ?? Parent?.Style;
-            
-            using (var paint = new SKPaint())
-            {
-                paint.TextSize = (float)(style?.FontSize ?? 16.0);
-                paint.Typeface = style?.FontFamily ?? SKTypeface.Default;
-                paint.IsAntialias = true;
 
+            using (var font = new SKFont(style?.FontFamily ?? SKTypeface.Default, (float)(style?.FontSize ?? 16.0)))
+            {
                 // Simple measurement (no wrapping support yet)
-                float width = paint.MeasureText(Text);
-                float height = paint.FontSpacing;
+                float width = font.MeasureText(Text);
+                float height = font.Spacing;
 
                 Bounds = SKRect.Create(0, 0, width, height);
             }

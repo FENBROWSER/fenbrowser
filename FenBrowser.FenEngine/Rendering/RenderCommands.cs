@@ -85,15 +85,19 @@ namespace FenBrowser.FenEngine.Rendering
 
         public override void Execute(SKCanvas canvas)
         {
+            using var font = new SKFont(Typeface, FontSize);
             using var paint = new SKPaint
             {
                 Color = Color.WithAlpha((byte)(Color.Alpha * Opacity)),
-                TextSize = FontSize,
-                Typeface = Typeface,
-                TextAlign = TextAlign,
                 IsAntialias = true
             };
-            canvas.DrawText(Text ?? "", X, Y, paint);
+            // Apply text alignment manually (moved from SKPaint in SkiaSharp 4.x)
+            float drawX = X;
+            if (TextAlign == SKTextAlign.Center)
+                drawX = X - font.MeasureText(Text ?? "") / 2;
+            else if (TextAlign == SKTextAlign.Right)
+                drawX = X - font.MeasureText(Text ?? "");
+            canvas.DrawText(Text ?? "", drawX, Y, font, paint);
         }
     }
 
@@ -113,9 +117,9 @@ namespace FenBrowser.FenEngine.Rendering
             using var paint = new SKPaint
             {
                 Color = SKColors.White.WithAlpha((byte)(255 * Opacity)),
-                IsAntialias = true,
-                FilterQuality = SKFilterQuality.Medium
+                IsAntialias = true
             };
+            // Note: FilterQuality removed in SkiaSharp 4.x — sampling is now per-draw-call
             
             if (SourceRect.HasValue)
                 canvas.DrawBitmap(Bitmap, SourceRect.Value, DestRect, paint);

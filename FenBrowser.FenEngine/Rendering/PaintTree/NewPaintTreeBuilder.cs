@@ -1716,22 +1716,23 @@ namespace FenBrowser.FenEngine.Rendering
                     SourceNode = sourceNode,
                     PaintAction = (canvas, bounds) =>
                     {
-                        using var paint = new SKPaint
-                        {
-                            Color = color,
-                            TextSize = fontSize,
-                            IsAntialias = true,
-                            Typeface = SKTypeface.FromFamilyName(
+                        using var font = new SKFont(
+                            SKTypeface.FromFamilyName(
                                 fontFamily,
                                 fontWeight >= 700 ? SKFontStyleWeight.Bold : SKFontStyleWeight.Normal,
                                 SKFontStyleWidth.Normal,
-                                SKFontStyleSlant.Upright)
+                                SKFontStyleSlant.Upright),
+                            fontSize);
+                        using var paint = new SKPaint
+                        {
+                            Color = color,
+                            IsAntialias = true
                         };
 
-                        float textWidth = paint.MeasureText(textContent);
+                        float textWidth = font.MeasureText(textContent);
                         float drawX = position == "before" ? bounds.Left : bounds.Right - textWidth;
                         float drawY = bounds.Top + fontSize;
-                        canvas.DrawText(textContent, drawX, drawY, paint);
+                        canvas.DrawText(textContent, drawX, drawY, font, paint);
                     }
                 });
             }
@@ -3514,8 +3515,8 @@ namespace FenBrowser.FenEngine.Rendering
                     string lineDisplayText = NormalizeRenderableText(line.Text);
                     if (applyEllipsis && containerWidth > 0 && resolvedLineWidth > containerWidth)
                     {
-                        using var measurePaint = new SKPaint { Typeface = typeface, TextSize = fontSize, IsAntialias = true };
-                        float ellipsisWidth = measurePaint.MeasureText("...");
+                        using var measureFont = new SKFont(typeface, fontSize);
+                        float ellipsisWidth = measureFont.MeasureText("...");
                         float availableForText = containerWidth - ellipsisWidth;
 
                         if (availableForText > 0)
@@ -3525,7 +3526,7 @@ namespace FenBrowser.FenEngine.Rendering
                             while (lo < hi)
                             {
                                 int mid = (lo + hi + 1) / 2;
-                                float w = measurePaint.MeasureText(text.Substring(0, mid));
+                                float w = measureFont.MeasureText(text.Substring(0, mid));
                                 if (w <= availableForText) lo = mid;
                                 else hi = mid - 1;
                             }
@@ -3542,11 +3543,10 @@ namespace FenBrowser.FenEngine.Rendering
                     // Some layout width estimates can under-measure shaped glyph runs for the
                     // resolved typeface. Expand to measured glyph width and re-center so text
                     // does not drift/clamp inside rounded controls.
-                    using (var exactMeasurePaint = new SKPaint { Typeface = typeface, TextSize = fontSize, IsAntialias = true })
+                    using (var exactMeasureFont = new SKFont(typeface, fontSize))
                     {
-                        float measuredGlyphWidth = exactMeasurePaint.MeasureText(lineDisplayText);
-                        SKRect inkBounds = SKRect.Empty;
-                        exactMeasurePaint.MeasureText(lineDisplayText, ref inkBounds);
+                        float measuredGlyphWidth = exactMeasureFont.MeasureText(lineDisplayText);
+                        exactMeasureFont.MeasureText(lineDisplayText, out SKRect inkBounds);
                         if (measuredGlyphWidth > resolvedLineWidth + 0.5f)
                         {
                             float delta = measuredGlyphWidth - resolvedLineWidth;
@@ -3751,8 +3751,8 @@ namespace FenBrowser.FenEngine.Rendering
 
                     if (fbContainerWidth > 0 && fallbackTextWidth > fbContainerWidth)
                     {
-                        using var fbMeasurePaint = new SKPaint { Typeface = typeface, TextSize = fontSize, IsAntialias = true };
-                        float fbEllipsisWidth = fbMeasurePaint.MeasureText("...");
+                        using var fbMeasureFont = new SKFont(typeface, fontSize);
+                        float fbEllipsisWidth = fbMeasureFont.MeasureText("...");
                         float fbAvailable = fbContainerWidth - fbEllipsisWidth;
 
                         if (fbAvailable > 0)
@@ -3761,7 +3761,7 @@ namespace FenBrowser.FenEngine.Rendering
                             while (lo < hi)
                             {
                                 int mid = (lo + hi + 1) / 2;
-                                float w = fbMeasurePaint.MeasureText(displayText.Substring(0, mid));
+                                float w = fbMeasureFont.MeasureText(displayText.Substring(0, mid));
                                 if (w <= fbAvailable) lo = mid;
                                 else hi = mid - 1;
                             }
@@ -4222,14 +4222,14 @@ namespace FenBrowser.FenEngine.Rendering
              var typeface = TextLayoutHelper.ResolveTypeface(fontFamily, value, weight, slant);
              float fontSize = (float)(style?.FontSize ?? 13.3333f); // 13.33px is default user agent font size
              
-             using var paint = new SKPaint { Typeface = typeface, TextSize = fontSize, IsAntialias = true };
-             float textWidth = paint.MeasureText(value);
-             
+             using var font = new SKFont(typeface, fontSize);
+             float textWidth = font.MeasureText(value);
+
              // Text-like controls render inside the content box; button-like controls center in padding.
              bool isButtonLike = type == "submit" || type == "button" || type == "reset";
              var textLayoutBox = isButtonLike ? box.PaddingBox : box.ContentBox;
              float x = textLayoutBox.Left;
-             var metrics = paint.FontMetrics;
+             var metrics = font.Metrics;
              float textHeight = metrics.Descent - metrics.Ascent;
              float y = textLayoutBox.Top + (textLayoutBox.Height - textHeight) / 2f - metrics.Ascent;
 
@@ -4448,8 +4448,9 @@ namespace FenBrowser.FenEngine.Rendering
                             
                             // Date text placeholder
                             string val = elem.GetAttribute("value") ?? "yyyy-mm-dd";
-                            using var textPaint = new SKPaint { Color = new SKColor(60, 60, 60), TextSize = 12, IsAntialias = true };
-                            canvas.DrawText(val, bounds.Left + 8, bounds.MidY + 4, textPaint);
+                            using var textFont = new SKFont(SKTypeface.Default, 12);
+                            using var textPaint = new SKPaint { Color = new SKColor(60, 60, 60), IsAntialias = true };
+                            canvas.DrawText(val, bounds.Left + 8, bounds.MidY + 4, textFont, textPaint);
                         }
                     };
                     
@@ -4479,8 +4480,9 @@ namespace FenBrowser.FenEngine.Rendering
                             canvas.DrawLine(iconX + iconSize/2, iconY, iconX + iconSize/2 + iconSize/4, iconY, iconPaint);
                             
                             string val = elem.GetAttribute("value") ?? "--:--";
-                            using var textPaint = new SKPaint { Color = new SKColor(60, 60, 60), TextSize = 12, IsAntialias = true };
-                            canvas.DrawText(val, bounds.Left + 8, bounds.MidY + 4, textPaint);
+                            using var textFont = new SKFont(SKTypeface.Default, 12);
+                            using var textPaint = new SKPaint { Color = new SKColor(60, 60, 60), IsAntialias = true };
+                            canvas.DrawText(val, bounds.Left + 8, bounds.MidY + 4, textFont, textPaint);
                         }
                     };
                     
@@ -4523,8 +4525,9 @@ namespace FenBrowser.FenEngine.Rendering
                             canvas.DrawLine(arrowX, bounds.Top, arrowX, bounds.Bottom, sepPaint);
                             
                             string val = elem.GetAttribute("value") ?? "";
-                            using var textPaint = new SKPaint { Color = new SKColor(60, 60, 60), TextSize = 12, IsAntialias = true };
-                            canvas.DrawText(val, bounds.Left + 8, bounds.MidY + 4, textPaint);
+                            using var textFont = new SKFont(SKTypeface.Default, 12);
+                            using var textPaint = new SKPaint { Color = new SKColor(60, 60, 60), IsAntialias = true };
+                            canvas.DrawText(val, bounds.Left + 8, bounds.MidY + 4, textFont, textPaint);
                         }
                     };
                     
@@ -4550,12 +4553,14 @@ namespace FenBrowser.FenEngine.Rendering
                             using var btnBorder = new SKPaint { Color = new SKColor(180, 180, 180), Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
                             canvas.DrawRoundRect(btnRect, 3, 3, btnBorder);
                             
-                            using var btnText = new SKPaint { Color = new SKColor(40, 40, 40), TextSize = 11, IsAntialias = true };
-                            canvas.DrawText("Choose File", bounds.Left + 8, bounds.MidY + 3, btnText);
+                            using var btnLabelFont = new SKFont(SKTypeface.Default, 11);
+                            using var btnLabelPaint = new SKPaint { Color = new SKColor(40, 40, 40), IsAntialias = true };
+                            canvas.DrawText("Choose File", bounds.Left + 8, bounds.MidY + 3, btnLabelFont, btnLabelPaint);
                             
                             // Filename area
-                            using var textPaint = new SKPaint { Color = new SKColor(100, 100, 100), TextSize = 11, IsAntialias = true };
-                            canvas.DrawText("No file chosen", bounds.Left + btnWidth + 10, bounds.MidY + 3, textPaint);
+                            using var textFont = new SKFont(SKTypeface.Default, 11);
+                            using var textPaint = new SKPaint { Color = new SKColor(100, 100, 100), IsAntialias = true };
+                            canvas.DrawText("No file chosen", bounds.Left + btnWidth + 10, bounds.MidY + 3, textFont, textPaint);
                         }
                     };
                     
@@ -4635,8 +4640,9 @@ namespace FenBrowser.FenEngine.Rendering
                     canvas.DrawRoundRect(new SKRect(trackLeft, trackY, trackRight, trackY + 4), 2, 2, trackPaint);
                     
                     // Time display placeholder
-                    using var timePaint = new SKPaint { Color = new SKColor(100, 100, 100), TextSize = 10, IsAntialias = true };
-                    canvas.DrawText("0:00", bounds.Right - 50, bounds.MidY + 4, timePaint);
+                    using var timeFont = new SKFont(SKTypeface.Default, 10);
+                    using var timePaint = new SKPaint { Color = new SKColor(100, 100, 100), IsAntialias = true };
+                    canvas.DrawText("0:00", bounds.Right - 50, bounds.MidY + 4, timeFont, timePaint);
                     
                     // Border
                     using var borderPaint = new SKPaint { Color = new SKColor(200, 200, 200), Style = SKPaintStyle.Stroke, StrokeWidth = 1 };
@@ -4776,18 +4782,20 @@ namespace FenBrowser.FenEngine.Rendering
                     if (!string.IsNullOrEmpty(src))
                     {
                         string displaySrc = src.Length > 40 ? src.Substring(0, 40) + "..." : src;
-                        using var textPaint = new SKPaint { Color = new SKColor(100, 100, 100), TextSize = 11, IsAntialias = true };
-                        float textWidth = textPaint.MeasureText(displaySrc);
+                        using var textFont = new SKFont(SKTypeface.Default, 11);
+                        using var textPaint = new SKPaint { Color = new SKColor(100, 100, 100), IsAntialias = true };
+                        float textWidth = textFont.MeasureText(displaySrc);
                         float textX = cx - textWidth / 2;
                         float textY = cy + iconSize + 20;
-                        canvas.DrawText(displaySrc, textX, textY, textPaint);
+                        canvas.DrawText(displaySrc, textX, textY, textFont, textPaint);
                     }
                     else
                     {
-                        using var textPaint = new SKPaint { Color = new SKColor(150, 150, 150), TextSize = 11, IsAntialias = true };
+                        using var textFont = new SKFont(SKTypeface.Default, 11);
+                        using var textPaint = new SKPaint { Color = new SKColor(150, 150, 150), IsAntialias = true };
                         string label = "<iframe>";
-                        float textWidth = textPaint.MeasureText(label);
-                        canvas.DrawText(label, cx - textWidth / 2, cy + iconSize + 20, textPaint);
+                        float textWidth = textFont.MeasureText(label);
+                        canvas.DrawText(label, cx - textWidth / 2, cy + iconSize + 20, textFont, textPaint);
                     }
 
                     string topMarkerText = frameTopText;
@@ -4799,14 +4807,14 @@ namespace FenBrowser.FenEngine.Rendering
 
                     if (!string.IsNullOrWhiteSpace(topMarkerText))
                     {
+                        using var topTextFont = new SKFont(SKTypeface.Default, 16);
                         using var topTextPaint = new SKPaint
                         {
                             Color = SKColors.Black,
-                            TextSize = 16,
                             IsAntialias = true
                         };
                         float headerHeight = 24f;
-                        float headerWidth = Math.Max(174f, topTextPaint.MeasureText(topMarkerText) + 12f);
+                        float headerWidth = Math.Max(174f, topTextFont.MeasureText(topMarkerText) + 12f);
                         using var headerBgPaint = new SKPaint
                         {
                             Color = SKColors.White,
@@ -4815,7 +4823,7 @@ namespace FenBrowser.FenEngine.Rendering
                         canvas.DrawRect(
                             new SKRect(bounds.Left, bounds.Top, bounds.Left + headerWidth, bounds.Top + headerHeight),
                             headerBgPaint);
-                        canvas.DrawText(topMarkerText, bounds.Left + 63, bounds.Top + 17, topTextPaint);
+                        canvas.DrawText(topMarkerText, bounds.Left + 63, bounds.Top + 17, topTextFont, topTextPaint);
                     }
                 }
             };
@@ -5112,11 +5120,11 @@ namespace FenBrowser.FenEngine.Rendering
                 
                 float containerWidth = box.ContentBox.Width;
                 
-                using var rtPaint = new SKPaint { TextSize = rtFontSize, Typeface = typeface };
-                using var basePaint = new SKPaint { TextSize = baseFontSize, Typeface = typeface };
-                
-                float rtWidth = rtPaint.MeasureText(rtText);
-                float baseWidth = basePaint.MeasureText(baseText);
+                using var rtFont = new SKFont(typeface, rtFontSize);
+                using var baseFont = new SKFont(typeface, baseFontSize);
+
+                float rtWidth = rtFont.MeasureText(rtText);
+                float baseWidth = baseFont.MeasureText(baseText);
                 
                 // RT text node (above)
                 if (!string.IsNullOrEmpty(rtText))
@@ -5527,8 +5535,9 @@ namespace FenBrowser.FenEngine.Rendering
                     IsHovered = isHovered,
                     PaintAction = (canvas, bounds) =>
                     {
-                        using var paint = new SKPaint { Color = style?.ForegroundColor ?? SKColors.Black, IsAntialias = true, TextSize = markerSize * 0.6f };
-                        canvas.DrawText("•", bounds.Left + 2, bounds.Bottom - 2, paint);
+                        using var font = new SKFont(SKTypeface.Default, markerSize * 0.6f);
+                        using var paint = new SKPaint { Color = style?.ForegroundColor ?? SKColors.Black, IsAntialias = true };
+                        canvas.DrawText("•", bounds.Left + 2, bounds.Bottom - 2, font, paint);
                     }
                 };
             }
@@ -5626,8 +5635,8 @@ namespace FenBrowser.FenEngine.Rendering
             SKFontStyleSlant slant = (style?.FontStyle == SKFontStyleSlant.Italic) ? SKFontStyleSlant.Italic : SKFontStyleSlant.Upright;
             var typeface = TextLayoutHelper.ResolveTypeface(fontFamily, markerText, weight, slant);
             
-            using var paint = new SKPaint { Typeface = typeface, TextSize = fontSize, IsAntialias = true };
-            float markerWidth = paint.MeasureText(markerText);
+            using var font = new SKFont(typeface, fontSize);
+            float markerWidth = font.MeasureText(markerText);
             
             float x, y;
             

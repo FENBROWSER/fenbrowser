@@ -32,20 +32,20 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// <summary>
         /// Cached text measurement - major hot path optimization.
         /// </summary>
-        public SKSize MeasureText(string text, SKPaint paint)
+        public SKSize MeasureText(string text, SKFont font)
         {
             if (string.IsNullOrEmpty(text)) return SKSize.Empty;
 
-            var key = new TextCacheKey(text, paint.TextSize, paint.Typeface?.FamilyName ?? "default");
-            
+            var key = new TextCacheKey(text, font.Size, font.Typeface?.FamilyName ?? "default");
+
             if (_textCache.TryGet(key, out var cached))
             {
                 return cached;
             }
 
             // Actual measurement (expensive)
-            float width = paint.MeasureText(text);
-            var metrics = paint.FontMetrics;
+            float width = font.MeasureText(text);
+            var metrics = font.Metrics;
             float height = metrics.Descent - metrics.Ascent;
 
             var size = new SKSize(width, height);
@@ -57,9 +57,9 @@ namespace FenBrowser.FenEngine.Rendering.Performance
         /// <summary>
         /// Get baseline offset for text.
         /// </summary>
-        public float GetBaseline(SKPaint paint)
+        public float GetBaseline(SKFont font)
         {
-            var metrics = paint.FontMetrics;
+            var metrics = font.Metrics;
             return -metrics.Ascent;
         }
 

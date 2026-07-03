@@ -1025,14 +1025,9 @@ namespace FenBrowser.FenEngine.Rendering
                 return 0;
             }
 
-            using var paint = new SKPaint
-            {
-                Typeface = typeface ?? SKTypeface.Default,
-                TextSize = fontSize,
-                IsAntialias = true
-            };
+            using var font = new SKFont(typeface ?? SKTypeface.Default, fontSize);
 
-            return paint.MeasureText(text);
+            return font.MeasureText(text);
         }
 
         private static SKPoint ComputeTightClipSafeTextOrigin(TextPaintNode node, string text, float fontSize, SKTypeface typeface)
@@ -1042,17 +1037,13 @@ namespace FenBrowser.FenEngine.Rendering
                 return node.TextOrigin;
             }
 
-            using var paint = new SKPaint
+            using var font = new SKFont(typeface ?? SKTypeface.Default, fontSize)
             {
-                Typeface = typeface ?? SKTypeface.Default,
-                TextSize = fontSize,
-                IsAntialias = true,
-                SubpixelText = true,
-                LcdRenderText = false
+                Subpixel = true,
+                // LcdRender removed: no longer available on SKFont in SkiaSharp 4.x
             };
 
-            SKRect ink = SKRect.Empty;
-            paint.MeasureText(text, ref ink);
+            font.MeasureText(text, out var ink);
 
             // Keep first painted glyph inside the node bounds when clips are tight.
             // This protects short CTA labels ("Sign in") from left-edge clipping
@@ -1071,10 +1062,10 @@ namespace FenBrowser.FenEngine.Rendering
         private void DrawTextDecorations(IRenderBackend backend, TextPaintNode node, float textWidth, float fontSize, SKColor color)
         {
             if (node.TextDecorations == null) return;
-            
+
             var typeface = node.Typeface ?? SKTypeface.Default;
-            using var paint = new SKPaint { Typeface = typeface, TextSize = fontSize };
-            paint.GetFontMetrics(out var metrics);
+            using var font = new SKFont(typeface, fontSize);
+            font.GetFontMetrics(out var metrics);
 
             float strokeWidth = metrics.UnderlineThickness ?? System.Math.Max(1, fontSize / 16);
             

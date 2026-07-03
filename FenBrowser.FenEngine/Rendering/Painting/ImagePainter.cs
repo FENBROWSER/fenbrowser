@@ -196,17 +196,17 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             {
                 alt = altText;
             }
+            using var font = new SKFont(SKTypeface.Default, 12);
             using var textPaint = new SKPaint
             {
                 Color = SKColors.Gray,
-                TextSize = 12,
                 IsAntialias = true
             };
 
-            float textWidth = textPaint.MeasureText(alt);
+            float textWidth = font.MeasureText(alt);
             float x = box.Left + (box.Width - textWidth) / 2;
             float y = box.Top + box.Height / 2 + 4;
-            canvas.DrawText(alt, x, y, textPaint);
+            canvas.DrawText(alt, x, y, font, textPaint);
         }
 
         /// <summary>

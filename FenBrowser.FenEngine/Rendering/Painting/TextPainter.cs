@@ -23,10 +23,11 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             var bidiInfo = ResolveBidi(text, style);
             text = bidiInfo.Text;
 
+            using var font = CreateTextFont(style);
             using var paint = CreateTextPaint(style);
 
             // Get text metrics
-            var metrics = paint.FontMetrics;
+            var metrics = font.Metrics;
             float baseline = -metrics.Ascent;
 
             float letterSpacing = (float)(style?.LetterSpacing ?? 0);
@@ -42,7 +43,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             bool defaultRtlAlign = bidiInfo.IsRtl && !textAlign.HasValue;
             if (textAlign.HasValue || defaultRtlAlign)
             {
-                float textWidth = MeasureTextWithSpacing(text, paint, letterSpacing, wordSpacing);
+                float textWidth = MeasureTextWithSpacing(text, font, letterSpacing, wordSpacing);
                 if (defaultRtlAlign || textAlign == SKTextAlign.Right)
                 {
                     x = box.Right - textWidth;
@@ -62,15 +63,15 @@ namespace FenBrowser.FenEngine.Rendering.Painting
 
             if (letterSpacing != 0 || wordSpacing != 0)
             {
-                DrawTextWithSpacing(canvas, text, x, y, paint, letterSpacing, wordSpacing);
+                DrawTextWithSpacing(canvas, text, x, y, font, paint, letterSpacing, wordSpacing);
             }
             else
             {
-                canvas.DrawText(text, x, y, paint);
+                canvas.DrawText(text, x, y, font, paint);
             }
 
             // Draw text decoration
-            PaintTextDecoration(canvas, text, x, y, paint, style);
+            PaintTextDecoration(canvas, text, x, y, font, paint, style);
         }
 
         /// <summary>
@@ -87,9 +88,10 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             var bidiDir = CssTextDirection.Parse(style);
             bool isRtl = ResolveParagraphRtl(text, bidiDir);
 
+            using var font = CreateTextFont(style);
             using var paint = CreateTextPaint(style);
 
-            var metrics = paint.FontMetrics;
+            var metrics = font.Metrics;
             float lineHeight = GetLineHeight(style, metrics);
             float y = box.Top - metrics.Ascent;
 
@@ -112,7 +114,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             foreach (var word in words)
             {
                 var testLine = string.IsNullOrEmpty(line) ? word : line + " " + word;
-                float testWidth = MeasureTextWithSpacing(testLine, paint, letterSpacing, wordSpacing);
+                float testWidth = MeasureTextWithSpacing(testLine, font, letterSpacing, wordSpacing);
                 float currentAvailableWidth = box.Width - (isFirstLine ? indentOffset : 0);
 
                 if (testWidth > currentAvailableWidth && !string.IsNullOrEmpty(line))
@@ -121,12 +123,12 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                     string displayLine = isRtl ? BidiAlgorithm.ReorderForDisplay(line, isRtl) : line;
                     float drawX = x + (isFirstLine ? indentOffset : 0);
                     if (isRtl)
-                        drawX = box.Right - MeasureTextWithSpacing(displayLine, paint, letterSpacing, wordSpacing) - (isFirstLine ? indentOffset : 0);
+                        drawX = box.Right - MeasureTextWithSpacing(displayLine, font, letterSpacing, wordSpacing) - (isFirstLine ? indentOffset : 0);
 
                     if (letterSpacing != 0 || wordSpacing != 0)
-                        DrawTextWithSpacing(canvas, displayLine, drawX, y, paint, letterSpacing, wordSpacing);
+                        DrawTextWithSpacing(canvas, displayLine, drawX, y, font, paint, letterSpacing, wordSpacing);
                     else
-                        canvas.DrawText(displayLine, drawX, y, paint);
+                        canvas.DrawText(displayLine, drawX, y, font, paint);
 
                     y += lineHeight;
                     line = word;
@@ -146,12 +148,12 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                 string displayLine = isRtl ? BidiAlgorithm.ReorderForDisplay(line, isRtl) : line;
                 float drawX = x + (isFirstLine ? indentOffset : 0);
                 if (isRtl)
-                    drawX = box.Right - MeasureTextWithSpacing(displayLine, paint, letterSpacing, wordSpacing) - (isFirstLine ? indentOffset : 0);
+                    drawX = box.Right - MeasureTextWithSpacing(displayLine, font, letterSpacing, wordSpacing) - (isFirstLine ? indentOffset : 0);
 
                 if (letterSpacing != 0 || wordSpacing != 0)
-                    DrawTextWithSpacing(canvas, displayLine, drawX, y, paint, letterSpacing, wordSpacing);
+                    DrawTextWithSpacing(canvas, displayLine, drawX, y, font, paint, letterSpacing, wordSpacing);
                 else
-                    canvas.DrawText(displayLine, drawX, y, paint);
+                    canvas.DrawText(displayLine, drawX, y, font, paint);
             }
         }
 
@@ -163,13 +165,13 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             if (string.IsNullOrEmpty(text)) return SKSize.Empty;
             text = ApplyTextTransform(text, style);
 
-            using var paint = CreateTextPaint(style);
-            
+            using var font = CreateTextFont(style);
+
             float letterSpacing = (float)(style?.LetterSpacing ?? 0);
             float wordSpacing = (float)(style?.WordSpacing ?? 0);
-            float width = MeasureTextWithSpacing(text, paint, letterSpacing, wordSpacing);
-            
-            var metrics = paint.FontMetrics;
+            float width = MeasureTextWithSpacing(text, font, letterSpacing, wordSpacing);
+
+            var metrics = font.Metrics;
             float height = metrics.Descent - metrics.Ascent;
 
             return new SKSize(width, height);
@@ -180,33 +182,15 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         /// </summary>
         public float GetBaseline(CssComputed style)
         {
-            using var paint = CreateTextPaint(style);
-            return -paint.FontMetrics.Ascent;
+            using var font = CreateTextFont(style);
+            return -font.Metrics.Ascent;
         }
 
         /// <summary>
-        /// Create SKPaint for text rendering.
+        /// Create SKFont for text rendering.
         /// </summary>
-        private SKPaint CreateTextPaint(CssComputed style)
+        private SKFont CreateTextFont(CssComputed style)
         {
-            var paint = new SKPaint
-            {
-                IsAntialias = true,
-                Style = SKPaintStyle.Fill,
-                TextSize = (float)(style?.FontSize ?? 16)
-            };
-
-            // Color
-            if (style?.ForegroundColor.HasValue == true)
-            {
-                var c = CssParser.ResolveCurrentColor(style.ForegroundColor.Value, style.ForegroundColor);
-                paint.Color = new SKColor(c.Red, c.Green, c.Blue, c.Alpha);
-            }
-            else
-            {
-                paint.Color = SKColors.Black;
-            }
-
             // Font weight
             var weight = SKFontStyleWeight.Normal;
             if (style?.FontWeight.HasValue == true)
@@ -223,12 +207,34 @@ namespace FenBrowser.FenEngine.Rendering.Painting
 
             // Font family
             string fontFamily = style?.FontFamilyName ?? "Segoe UI";
-            paint.Typeface = SKTypeface.FromFamilyName(fontFamily, weight, SKFontStyleWidth.Normal, slant);
+            var typeface = SKTypeface.FromFamilyName(fontFamily, weight, SKFontStyleWidth.Normal, slant);
 
-            // Letter spacing
-            if (style?.LetterSpacing.HasValue == true)
+            return new SKFont(typeface, (float)(style?.FontSize ?? 16))
             {
-                // Handled in DrawText overrides
+                Subpixel = true
+            };
+        }
+
+        /// <summary>
+        /// Create SKPaint for text rendering (color + effects only; font properties are on SKFont).
+        /// </summary>
+        private SKPaint CreateTextPaint(CssComputed style)
+        {
+            var paint = new SKPaint
+            {
+                IsAntialias = true,
+                Style = SKPaintStyle.Fill
+            };
+
+            // Color
+            if (style?.ForegroundColor.HasValue == true)
+            {
+                var c = CssParser.ResolveCurrentColor(style.ForegroundColor.Value, style.ForegroundColor);
+                paint.Color = new SKColor(c.Red, c.Green, c.Blue, c.Alpha);
+            }
+            else
+            {
+                paint.Color = SKColors.Black;
             }
 
             // Text shadow
@@ -242,8 +248,7 @@ namespace FenBrowser.FenEngine.Rendering.Painting
                         shadow.OffsetY,
                         shadow.Blur > 0 ? shadow.Blur / 2 : 0,
                         shadow.Blur > 0 ? shadow.Blur / 2 : 0,
-                        shadow.Color,
-                        SKDropShadowImageFilterShadowMode.DrawShadowAndForeground);
+                        shadow.Color);
                 }
             }
 
@@ -253,18 +258,18 @@ namespace FenBrowser.FenEngine.Rendering.Painting
         /// <summary>
         /// Paint text decoration (underline, line-through, overline).
         /// </summary>
-        private void PaintTextDecoration(SKCanvas canvas, string text, float x, float y, SKPaint textPaint, CssComputed style)
+        private void PaintTextDecoration(SKCanvas canvas, string text, float x, float y, SKFont font, SKPaint textPaint, CssComputed style)
         {
             var decoration = style?.TextDecoration?.ToLowerInvariant();
             if (string.IsNullOrEmpty(decoration) || decoration == "none") return;
 
-            float textWidth = textPaint.MeasureText(text);
-            var metrics = textPaint.FontMetrics;
+            float textWidth = font.MeasureText(text);
+            var metrics = font.Metrics;
 
             using var linePaint = new SKPaint
             {
                 Color = textPaint.Color,
-                StrokeWidth = Math.Max(1, textPaint.TextSize / 16),
+                StrokeWidth = Math.Max(1, font.Size / 16),
                 IsAntialias = true,
                 Style = SKPaintStyle.Stroke
             };
@@ -391,28 +396,28 @@ namespace FenBrowser.FenEngine.Rendering.Painting
             return text;
         }
 
-        private float MeasureTextWithSpacing(string text, SKPaint paint, float letterSpacing, float wordSpacing)
+        private float MeasureTextWithSpacing(string text, SKFont font, float letterSpacing, float wordSpacing)
         {
             if (string.IsNullOrEmpty(text)) return 0;
-            if (letterSpacing == 0 && wordSpacing == 0) return paint.MeasureText(text);
+            if (letterSpacing == 0 && wordSpacing == 0) return font.MeasureText(text);
 
             float width = 0;
             foreach (char c in text)
             {
-                width += paint.MeasureText(c.ToString()) + letterSpacing;
+                width += font.MeasureText(c.ToString()) + letterSpacing;
                 if (char.IsWhiteSpace(c)) width += wordSpacing;
             }
             return width - letterSpacing;
         }
 
-        private void DrawTextWithSpacing(SKCanvas canvas, string text, float x, float y, SKPaint paint, float letterSpacing, float wordSpacing)
+        private void DrawTextWithSpacing(SKCanvas canvas, string text, float x, float y, SKFont font, SKPaint paint, float letterSpacing, float wordSpacing)
         {
             float currentX = x;
             foreach (char c in text)
             {
                 string s = c.ToString();
-                canvas.DrawText(s, currentX, y, paint);
-                float advance = paint.MeasureText(s);
+                canvas.DrawText(s, currentX, y, font, paint);
+                float advance = font.MeasureText(s);
                 currentX += advance + letterSpacing;
                 if (char.IsWhiteSpace(c)) currentX += wordSpacing;
             }
