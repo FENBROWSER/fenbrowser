@@ -5130,15 +5130,31 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             return init;
         }
 
+        var attributesValue = ReadJsProperty(optionsValue, "attributes");
+        var characterDataValue = ReadJsProperty(optionsValue, "characterData");
+        var attributesPresent = attributesValue.Tag != JsValueTag.Undefined;
+        var characterDataPresent = characterDataValue.Tag != JsValueTag.Undefined;
+
         init.ChildList = ReadJsBoolProperty(optionsValue, "childList");
-        init.Attributes = ReadJsBoolProperty(optionsValue, "attributes");
-        init.CharacterData = ReadJsBoolProperty(optionsValue, "characterData");
+        init.Attributes = CoerceJsBoolean(attributesValue);
+        init.CharacterData = CoerceJsBoolean(characterDataValue);
         init.Subtree = ReadJsBoolProperty(optionsValue, "subtree");
         init.AttributeOldValue = ReadJsBoolProperty(optionsValue, "attributeOldValue");
         init.CharacterDataOldValue = ReadJsBoolProperty(optionsValue, "characterDataOldValue");
 
         // attributeFilter: optional sequence<DOMString>
         var filterValue = ReadJsProperty(optionsValue, "attributeFilter");
+        if (!attributesPresent &&
+            (init.AttributeOldValue || filterValue.Tag != JsValueTag.Undefined))
+        {
+            init.Attributes = true;
+        }
+
+        if (!characterDataPresent && init.CharacterDataOldValue)
+        {
+            init.CharacterData = true;
+        }
+
         if (filterValue.Tag == JsValueTag.Object)
         {
             var filterList = new List<string>();
@@ -5176,6 +5192,11 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private bool ReadJsBoolProperty(JsValue obj, string property)
     {
         var value = ReadJsProperty(obj, property);
+        return CoerceJsBoolean(value);
+    }
+
+    private static bool CoerceJsBoolean(JsValue value)
+    {
         return value.Tag switch
         {
             JsValueTag.Undefined => false,
@@ -7587,6 +7608,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case Element element when string.Equals(property, "id", StringComparison.Ordinal):
                     element.Id = CoerceToHostString(value);
                     return true;
+                case Element element when string.Equals(property, "name", StringComparison.Ordinal):
+                    element.SetAttribute("name", CoerceToHostString(value));
+                    return true;
+                case Element element when string.Equals(property, "content", StringComparison.Ordinal):
+                    element.SetAttribute("content", CoerceToHostString(value));
+                    return true;
                 case Element element when string.Equals(property, "src", StringComparison.Ordinal):
                     element.SetAttribute("src", CoerceToHostString(value));
                     return true;
@@ -7972,12 +7999,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "className":
                     value = JsValue.FromString(element.ClassName ?? string.Empty);
                     return true;
+                case "name":
+                    value = JsValue.FromString(element.GetAttribute("name") ?? string.Empty);
+                    return true;
                 case "tagName":
                 case "nodeName":
                     value = JsValue.FromString(element.TagName ?? string.Empty);
                     return true;
                 case "src":
                     value = JsValue.FromString(ResolveElementUrlProperty(element, "src"));
+                    return true;
+                case "content":
+                    value = JsValue.FromString(element.GetAttribute("content") ?? string.Empty);
                     return true;
                 case "complete" when IsImageElement(element):
                     value = JsValue.FromBoolean(true);
