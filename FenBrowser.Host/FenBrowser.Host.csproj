@@ -42,15 +42,15 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Silk.NET.OpenGLES" Version="2.21.0" />
+    <PackageReference Include="Silk.NET.OpenGLES" Version="2.23.0" />
     <PackageReference Include="Silk.NET.OpenGLES.ANGLE.Native" Version="2025.9.12" />
     <PackageReference Include="Silk.NET.OpenGLES.Extensions.EXT" Version="2.23.0" />
-    <PackageReference Include="Silk.NET.Windowing" Version="2.21.0" />
-    <PackageReference Include="Silk.NET.Input" Version="2.21.0" />
-    <PackageReference Include="SkiaSharp" Version="2.88.9" />
-    <PackageReference Include="SkiaSharp.HarfBuzz" Version="2.88.9" />
-    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="2.88.9" />
-    <PackageReference Include="Topten.RichTextKit" Version="0.4.164" />
+    <PackageReference Include="Silk.NET.Windowing" Version="2.23.0" />
+    <PackageReference Include="Silk.NET.Input" Version="2.23.0" />
+    <PackageReference Include="SkiaSharp" Version="4.148.0" />
+    <PackageReference Include="SkiaSharp.HarfBuzz" Version="4.148.0" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="4.148.0" />
+    <PackageReference Include="Topten.RichTextKit" Version="0.4.167" />
   </ItemGroup>
 
   <Target Name="CleanupLogs" BeforeTargets="Build">
@@ -61,10 +61,7 @@
     <PropertyGroup>
       <ExePath>$(TargetDir)$(AssemblyName).exe</ExePath>
     </PropertyGroup>
-    <Exec
-      Command="for /f &quot;tokens=*&quot; %25%25i in ('&quot;%25ProgramFiles(x86)%25\Microsoft Visual Studio\Installer\vswhere.exe&quot; -latest -find VC\Tools\MSVC\*\bin\Hostx64\x64\editbin.exe ^| findstr /v /i preview') do (&quot;%25%25i&quot; /STACK:16777216 &quot;$(ExePath)&quot; &gt;nul 2&gt;&amp;1 &amp;&amp; goto :done) %26 :done"
-      IgnoreExitCode="true"
-      Condition="Exists('$(ExePath)')" />
+    <Exec Command="for /f &quot;tokens=*&quot; %25%25i in ('&quot;%25ProgramFiles(x86)%25\Microsoft Visual Studio\Installer\vswhere.exe&quot; -latest -find VC\Tools\MSVC\*\bin\Hostx64\x64\editbin.exe ^| findstr /v /i preview') do (&quot;%25%25i&quot; /STACK:16777216 &quot;$(ExePath)&quot; &gt;nul 2&gt;&amp;1 &amp;&amp; goto :done) %26 :done" IgnoreExitCode="true" Condition="Exists('$(ExePath)')" />
   </Target>
 
 </Project>
