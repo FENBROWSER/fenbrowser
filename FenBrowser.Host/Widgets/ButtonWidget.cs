@@ -103,19 +103,17 @@ public class ButtonWidget : Widget
         // Draw text
         if (!string.IsNullOrEmpty(Text))
         {
+            using var textFont = new SKFont(SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Normal), FontSize);
             using var textPaint = new SKPaint
             {
                 Color = IsEnabled ? textColor : theme.TextMuted,
-                IsAntialias = true,
-                TextSize = FontSize,
-                TextAlign = SKTextAlign.Center,
-                Typeface = SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Normal)
+                IsAntialias = true
             };
-            
-            var metrics = textPaint.FontMetrics;
+
+            var metrics = textFont.Metrics;
             float textY = Bounds.MidY - (metrics.Ascent + metrics.Descent) / 2;
-            
-            canvas.DrawText(Text, Bounds.MidX, textY, textPaint);
+            float textW = textFont.MeasureText(Text);
+            canvas.DrawText(Text, Bounds.MidX - textW / 2, textY, textFont, textPaint);
         }
         
     // Draw IconPath if present
@@ -146,17 +144,17 @@ public class ButtonWidget : Widget
         // Fallback to text icon if no path
         else if (!string.IsNullOrEmpty(Icon))
         {
+            using var iconFont = new SKFont(SKTypeface.Default, FontSize + 4);
             using var iconPaint = new SKPaint
             {
                 Color = IsEnabled ? textColor : theme.TextMuted,
-                IsAntialias = true,
-                TextSize = FontSize + 4,
-                TextAlign = SKTextAlign.Center
+                IsAntialias = true
             };
-            
-            var metrics = iconPaint.FontMetrics;
+
+            var metrics = iconFont.Metrics;
             float iconY = Bounds.MidY - (metrics.Ascent + metrics.Descent) / 2;
-            canvas.DrawText(Icon, Bounds.MidX, iconY, iconPaint);
+            float iconW = iconFont.MeasureText(Icon);
+            canvas.DrawText(Icon, Bounds.MidX - iconW / 2, iconY, iconFont, iconPaint);
         }
         
         canvas.Restore();

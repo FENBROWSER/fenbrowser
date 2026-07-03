@@ -129,12 +129,11 @@ public class StatusBarWidget : Widget
         canvas.DrawLine(Bounds.Left, Bounds.Top, Bounds.Right, Bounds.Top, borderPaint);
         
         // Left side: Hover URL or status text
+        using var textFont = new SKFont(SKTypeface.Default, 12);
         using var textPaint = new SKPaint
         {
             Color = theme.TextMuted,
-            IsAntialias = true,
-            TextSize = 12,
-            TextAlign = SKTextAlign.Left
+            IsAntialias = true
         };
         
         string leftText = _hoverUrl ?? _statusText ?? "";
@@ -143,44 +142,46 @@ public class StatusBarWidget : Widget
         float maxWidth = Bounds.Width - 100 - PADDING * 3; // Reserve space for zoom
         if (!string.IsNullOrEmpty(leftText))
         {
-            float textWidth = textPaint.MeasureText(leftText);
+            float textWidth = textFont.MeasureText(leftText);
             if (textWidth > maxWidth)
             {
                 // Truncate with ellipsis
                 while (textWidth > maxWidth && leftText.Length > 10)
                 {
                     leftText = leftText.Substring(0, leftText.Length - 4) + "...";
-                    textWidth = textPaint.MeasureText(leftText);
+                    textWidth = textFont.MeasureText(leftText);
                 }
             }
-            canvas.DrawText(leftText, Bounds.Left + PADDING, Bounds.MidY + 4, textPaint);
+            canvas.DrawText(leftText, Bounds.Left + PADDING, Bounds.MidY + 4, textFont, textPaint);
         }
         
         // Right side: Zoom level (if not 100%)
         if (Math.Abs(_zoomLevel - 100) > 0.1f)
         {
+            using var zoomFont = new SKFont(SKTypeface.Default, 11);
             using var zoomPaint = new SKPaint
             {
                 Color = theme.TextMuted,
-                IsAntialias = true,
-                TextSize = 11,
-                TextAlign = SKTextAlign.Right
+                IsAntialias = true
             };
-            canvas.DrawText($"{_zoomLevel:0}%", Bounds.Right - PADDING, Bounds.MidY + 4, zoomPaint);
+            string zoomText = $"{_zoomLevel:0}%";
+            float zoomW = zoomFont.MeasureText(zoomText);
+            canvas.DrawText(zoomText, Bounds.Right - PADDING - zoomW, Bounds.MidY + 4, zoomFont, zoomPaint);
         }
         
         // Loading indicator (small spinner or text)
         if (_isLoading)
         {
+            using var loadFont = new SKFont(SKTypeface.Default, 11);
             using var loadPaint = new SKPaint
             {
                 Color = theme.Accent,
-                IsAntialias = true,
-                TextSize = 11,
-                TextAlign = SKTextAlign.Right
+                IsAntialias = true
             };
+            string loadText = "Loading...";
+            float loadW = loadFont.MeasureText(loadText);
             float x = Math.Abs(_zoomLevel - 100) > 0.1f ? Bounds.Right - 60 : Bounds.Right - PADDING;
-            canvas.DrawText("Loading...", x, Bounds.MidY + 4, loadPaint);
+            canvas.DrawText(loadText, x - loadW, Bounds.MidY + 4, loadFont, loadPaint);
         }
     }
     

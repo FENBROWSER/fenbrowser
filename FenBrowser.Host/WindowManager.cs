@@ -157,7 +157,7 @@ namespace FenBrowser.Host
                             var srcRect = new SKRect(cropX, cropY, cropX + cropSize, cropY + cropSize);
                             var destRect = new SKRect(0, 0, size, size);
                             
-                            using var paint = new SKPaint { FilterQuality = SKFilterQuality.High, IsAntialias = true };
+                            using var paint = new SKPaint { IsAntialias = true };
                             canvas.DrawBitmap(sourceBitmap, srcRect, destRect, paint);
                             canvas.Flush();
                             
@@ -170,7 +170,7 @@ namespace FenBrowser.Host
                         {
                              var info = new SKImageInfo(sourceBitmap.Width, sourceBitmap.Height, SKColorType.Rgba8888, SKAlphaType.Premul);
                              using var rgbaBitmap = new SKBitmap(info);
-                             if (sourceBitmap.ScalePixels(rgbaBitmap, SKFilterQuality.High))
+                             if (sourceBitmap.ScalePixels(rgbaBitmap, new SKSamplingOptions(SKFilterMode.Linear)))
                              {
                                  icons.Add(new Silk.NET.Core.RawImage(rgbaBitmap.Width, rgbaBitmap.Height, new Memory<byte>(rgbaBitmap.Bytes)));
                              }

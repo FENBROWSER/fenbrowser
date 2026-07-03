@@ -117,8 +117,8 @@ public class BookmarksBarWidget : Widget
 
         protected override SKSize OnMeasure(SKSize availableSpace)
         {
-            using var paint = new SKPaint { TextSize = 12, Typeface = _typeface };
-            float textWidth = paint.MeasureText(_bookmark.Title);
+            using var font = new SKFont(_typeface, 12);
+            float textWidth = font.MeasureText(_bookmark.Title);
             return new SKSize(textWidth + BUTTON_PADDING * 2, BAR_HEIGHT - 4);
         }
 
@@ -134,16 +134,14 @@ public class BookmarksBarWidget : Widget
                 canvas.DrawRoundRect(Bounds, 4, 4, hoverPaint);
             }
 
+            using var font = new SKFont(_typeface, 12);
             using var textPaint = new SKPaint
             {
                 Color = theme.Text,
-                IsAntialias = true,
-                TextSize = 12,
-                Typeface = _typeface,
-                TextAlign = SKTextAlign.Center
+                IsAntialias = true
             };
-            
-            canvas.DrawText(_bookmark.Title, Bounds.MidX, Bounds.MidY + 4, textPaint);
+            float titleW = font.MeasureText(_bookmark.Title);
+            canvas.DrawText(_bookmark.Title, Bounds.MidX - titleW / 2, Bounds.MidY + 4, font, textPaint);
         }
 
         public override void OnMouseMove(float x, float y)

@@ -148,8 +148,9 @@ namespace FenBrowser.Host.Widgets
             float leftX = bounds.Left + PADDING;
             
             // Title
-            using var titlePaint = new SKPaint { Color = theme.Text, IsAntialias = true, TextSize = 15, Typeface = SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Bold) };
-            canvas.DrawText($"About {Hostname}", leftX, currentY + 12, titlePaint);
+            using var titleFont = new SKFont(SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Bold), 15);
+            using var titlePaint = new SKPaint { Color = theme.Text, IsAntialias = true };
+            canvas.DrawText($"About {Hostname}", leftX, currentY + 12, titleFont, titlePaint);
             
             // Close button handled by child widget
             
@@ -164,8 +165,9 @@ namespace FenBrowser.Host.Widgets
             currentY += 10;
             
             // Section 2: Permissions Header
-            using var grayHeader = new SKPaint { Color = theme.TextMuted, TextSize = 12, IsAntialias = true };
-            canvas.DrawText("Permissions for this site", leftX, currentY + 10, grayHeader);
+            using var grayFont = new SKFont(SKTypeface.Default, 12);
+            using var grayHeader = new SKPaint { Color = theme.TextMuted, IsAntialias = true };
+            canvas.DrawText("Permissions for this site", leftX, currentY + 10, grayFont, grayHeader);
             currentY += 25;
             
             // Permission 1: Location/Notifications
@@ -180,11 +182,13 @@ namespace FenBrowser.Host.Widgets
             
             // Section 3: Tracking Prevention
             // Switch is child widget, just draw text
-            using var textPaint = new SKPaint { Color = theme.Text, IsAntialias = true, TextSize = 13 };
-            canvas.DrawText("Tracking prevention", leftX + 24, currentY + 16, textPaint);
+            using var textFont13 = new SKFont(SKTypeface.Default, 13);
+            using var textPaint = new SKPaint { Color = theme.Text, IsAntialias = true };
+            canvas.DrawText("Tracking prevention", leftX + 24, currentY + 16, textFont13, textPaint);
             
-            using var subTextPaint = new SKPaint { Color = theme.TextMuted, IsAntialias = true, TextSize = 11 };
-            canvas.DrawText("Trackers (0 blocked)", leftX + 24, currentY + 34, subTextPaint);
+            using var subTextFont = new SKFont(SKTypeface.Default, 11);
+            using var subTextPaint = new SKPaint { Color = theme.TextMuted, IsAntialias = true };
+            canvas.DrawText("Trackers (0 blocked)", leftX + 24, currentY + 34, subTextFont, subTextPaint);
             
             // Children (Buttons/Dropdowns/Switch) will paint on top
         }
@@ -202,8 +206,9 @@ namespace FenBrowser.Host.Widgets
                 canvas.DrawArc(new SKRect(x + 7, y + 2, x + 13, y + 8), 180, 180, false, iconPaint);
             }
             
-            using var textPaint = new SKPaint { Color = theme.Text, IsAntialias = true, TextSize = 14 };
-            canvas.DrawText(text, x + 30, y + 16, textPaint);
+            using var textFont14 = new SKFont(SKTypeface.Default, 14);
+            using var textPaint = new SKPaint { Color = theme.Text, IsAntialias = true };
+            canvas.DrawText(text, x + 30, y + 16, textFont14, textPaint);
             
             // Chevron
             using var chevronPaint = new SKPaint { Color = theme.TextMuted, Style = SKPaintStyle.Stroke, StrokeWidth = 1.5f, IsAntialias = true };
@@ -215,8 +220,9 @@ namespace FenBrowser.Host.Widgets
         private void DrawPermissionLabel(SKCanvas canvas, float x, float y, string label)
         {
              var theme = ThemeManager.Current;
-             using var textPaint = new SKPaint { Color = theme.Text, IsAntialias = true, TextSize = 13 };
-             canvas.DrawText(label, x, y + 16, textPaint);
+             using var permFont = new SKFont(SKTypeface.Default, 13);
+             using var textPaint = new SKPaint { Color = theme.Text, IsAntialias = true };
+             canvas.DrawText(label, x, y + 16, permFont, textPaint);
              // Dropdown is drawn by child widget
         }
         

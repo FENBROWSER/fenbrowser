@@ -949,22 +949,23 @@ namespace FenBrowser.Host
             
             var text = _hoveredWidget.HelpText;
             var theme = ThemeManager.Current;
-            using var paint = new SKPaint { Color = theme.Text, IsAntialias = true, TextSize = 12 };
-            var bounds = new SKRect();
-            paint.MeasureText(text, ref bounds);
+            using var font = new SKFont(SKTypeface.Default, 12);
+            using var paint = new SKPaint { Color = theme.Text, IsAntialias = true };
+            float textWidth = font.MeasureText(text);
+            float textHeight = font.Size;
             
             float mouseX = _mouse.Position.X / WindowManager.Instance.DpiScale;
             float mouseY = _mouse.Position.Y / WindowManager.Instance.DpiScale;
             float dX = mouseX + 10;
             float dY = mouseY + 20;
 
-            var rect = new SKRect(dX, dY, dX + bounds.Width + 12, dY + bounds.Height + 12);
+            var rect = new SKRect(dX, dY, dX + textWidth + 12, dY + textHeight + 12);
             using var bg = new SKPaint { Color = theme.Surface };
             using var border = new SKPaint { Color = theme.Border, Style = SKPaintStyle.Stroke };
             
             canvas.DrawRect(rect, bg);
             canvas.DrawRect(rect, border);
-            canvas.DrawText(text, dX + 6, dY + 6 + bounds.Height, paint);
+            canvas.DrawText(text, dX + 6, dY + 6 + textHeight, font, paint);
         }
 
         private void Shutdown()

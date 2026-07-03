@@ -44,14 +44,14 @@ public class ContextMenuWidget : Widget
         
         float maxWidth = MIN_WIDTH;
         
-        using var textPaint = new SKPaint { TextSize = 13 };
+        using var font = new SKFont(SKTypeface.Default, 13);
         foreach (var item in _items)
         {
             if (item.IsSeparator) continue;
-            float width = textPaint.MeasureText(item.Label ?? "") + SHORTCUT_MARGIN;
+            float width = font.MeasureText(item.Label ?? "") + SHORTCUT_MARGIN;
             if (!string.IsNullOrEmpty(item.Shortcut))
             {
-                width += textPaint.MeasureText(item.Shortcut) + 20;
+                width += font.MeasureText(item.Shortcut) + 20;
             }
             maxWidth = Math.Max(maxWidth, width);
         }
@@ -155,26 +155,25 @@ public class ContextMenuWidget : Widget
             }
             
             // Label
+            using var font = new SKFont(SKTypeface.Default, 13);
             using var textPaint = new SKPaint
             {
                 Color = item.IsEnabled ? SKColors.Black : SKColors.Gray,
-                IsAntialias = true,
-                TextSize = 13,
-                TextAlign = SKTextAlign.Left
+                IsAntialias = true
             };
-            canvas.DrawText(item.Label ?? "", Bounds.Left + PADDING + 4, y + itemHeight / 2 + 4, textPaint);
+            canvas.DrawText(item.Label ?? "", Bounds.Left + PADDING + 4, y + itemHeight / 2 + 4, font, textPaint);
             
             // Shortcut
             if (!string.IsNullOrEmpty(item.Shortcut))
             {
+                using var shortcutFont = new SKFont(SKTypeface.Default, 12);
                 using var shortcutPaint = new SKPaint
                 {
                     Color = new SKColor(150, 150, 150),
-                    IsAntialias = true,
-                    TextSize = 12,
-                    TextAlign = SKTextAlign.Right
+                    IsAntialias = true
                 };
-                canvas.DrawText(item.Shortcut, Bounds.Right - PADDING - 4, y + itemHeight / 2 + 4, shortcutPaint);
+                float shortW = shortcutFont.MeasureText(item.Shortcut);
+                canvas.DrawText(item.Shortcut, Bounds.Right - PADDING - 4 - shortW, y + itemHeight / 2 + 4, shortcutFont, shortcutPaint);
             }
             
             y += itemHeight;

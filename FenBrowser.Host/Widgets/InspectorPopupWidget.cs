@@ -25,6 +25,11 @@ namespace FenBrowser.Host.Widgets
         private SKPaint _hintPaint;
         private SKPaint _propNamePaint;
         private SKPaint _propValuePaint;
+        private SKFont _titleFont;
+        private SKFont _textFont;
+        private SKFont _hintFont;
+        private SKFont _propNameFont;
+        private SKFont _propValueFont;
         private SKTypeface _consolasRegular;
         private SKTypeface _consolasBold;
         private SKTypeface _segoeUi;
@@ -83,44 +88,39 @@ namespace FenBrowser.Host.Widgets
             _consolasRegular = SKTypeface.FromFamilyName("Consolas");
             _segoeUi         = SKTypeface.FromFamilyName("Segoe UI");
 
+            _titleFont = new SKFont(_consolasBold, 14);
             _titlePaint = new SKPaint
             {
                 Color = SKColor.Parse("#569CD6"),
-                IsAntialias = true,
-                TextSize = 14,
-                Typeface = _consolasBold
+                IsAntialias = true
             };
 
+            _textFont = new SKFont(_consolasRegular, 12);
             _textPaint = new SKPaint
             {
                 Color = SKColor.Parse("#D4D4D4"),
-                IsAntialias = true,
-                TextSize = 12,
-                Typeface = _consolasRegular
+                IsAntialias = true
             };
 
+            _hintFont = new SKFont(_segoeUi, 10);
             _hintPaint = new SKPaint
             {
                 Color = SKColor.Parse("#808080"),
-                IsAntialias = true,
-                TextSize = 10,
-                Typeface = _segoeUi
+                IsAntialias = true
             };
 
+            _propNameFont = new SKFont(_consolasRegular, 12);
             _propNamePaint = new SKPaint
             {
                 Color = SKColor.Parse("#9CDCFE"),
-                IsAntialias = true,
-                TextSize = 12,
-                Typeface = _consolasRegular
+                IsAntialias = true
             };
 
+            _propValueFont = new SKFont(_consolasRegular, 12);
             _propValuePaint = new SKPaint
             {
                 Color = SKColor.Parse("#CE9178"),
-                IsAntialias = true,
-                TextSize = 12,
-                Typeface = _consolasRegular
+                IsAntialias = true
             };
 
             // Calculate height based on lines
@@ -162,9 +162,9 @@ namespace FenBrowser.Host.Widgets
             
             // Title
             float textY = Y + PADDING + 14;
-            canvas.DrawText("Element Inspector", X + PADDING, textY, _titlePaint);
-            
-            canvas.DrawText("(click to close)", X + Width - 80, textY, _hintPaint);
+            canvas.DrawText("Element Inspector", X + PADDING, textY, _titleFont, _titlePaint);
+
+            canvas.DrawText("(click to close)", X + Width - 80, textY, _hintFont, _hintPaint);
             
             // Separator line
             textY += 10;
@@ -180,14 +180,14 @@ namespace FenBrowser.Host.Widgets
                     if (line.Contains(": "))
                     {
                         var parts = line.Split(new[] { ": " }, 2, StringSplitOptions.None);
-                        canvas.DrawText(parts[0] + ": ", X + PADDING, textY, _propNamePaint);
-                        float propWidth = _propNamePaint.MeasureText(parts[0] + ": ");
+                        canvas.DrawText(parts[0] + ": ", X + PADDING, textY, _propNameFont, _propNamePaint);
+                        float propWidth = _propNameFont.MeasureText(parts[0] + ": ");
                         if (parts.Length > 1)
-                            canvas.DrawText(parts[1], X + PADDING + propWidth, textY, _propValuePaint);
+                            canvas.DrawText(parts[1], X + PADDING + propWidth, textY, _propValueFont, _propValuePaint);
                     }
                     else
                     {
-                        canvas.DrawText(line, X + PADDING, textY, _textPaint);
+                        canvas.DrawText(line, X + PADDING, textY, _textFont, _textPaint);
                     }
                 }
                 textY += LINE_HEIGHT;

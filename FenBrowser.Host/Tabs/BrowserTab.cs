@@ -291,49 +291,47 @@ public class BrowserTab
     {
         canvas.Clear(SKColor.Parse("#202124")); // Dark gray Chrome-like background
 
+        using var iconFont = new SKFont(SKTypeface.FromFamilyName("Segoe UI Emoji") ?? SKTypeface.Default, 64);
         using var iconPaint = new SKPaint
         {
             Color = SKColor.Parse("#8AB4F8"),
-            IsAntialias = true,
-            TextSize = 64,
-            Typeface = SKTypeface.FromFamilyName("Segoe UI Emoji") ?? SKTypeface.Default
+            IsAntialias = true
         };
 
+        using var titleFont = new SKFont(SKTypeface.FromFamilyName("Segoe UI", SKFontStyleWeight.Bold, SKFontStyleWidth.Normal, SKFontStyleSlant.Upright) ?? SKTypeface.Default, 32);
         using var titlePaint = new SKPaint
         {
             Color = SKColors.White,
-            IsAntialias = true,
-            TextSize = 32,
-            Typeface = SKTypeface.FromFamilyName("Segoe UI", SKFontStyleWeight.Bold, SKFontStyleWidth.Normal, SKFontStyleSlant.Upright) ?? SKTypeface.Default
+            IsAntialias = true
         };
-        
+
+        using var descFont = new SKFont(SKTypeface.FromFamilyName("Segoe UI") ?? SKTypeface.Default, 16);
         using var descPaint = new SKPaint
         {
             Color = SKColor.Parse("#9AA0A6"),
-            IsAntialias = true,
-            TextSize = 16,
-            Typeface = SKTypeface.FromFamilyName("Segoe UI") ?? SKTypeface.Default
+            IsAntialias = true
         };
 
         float centerY = viewport.Height / 2 - 50;
         float centerX = viewport.Width / 2;
 
         // "Sad face" icon
-        canvas.DrawText(":(", centerX - iconPaint.MeasureText(":(") / 2, centerY - 60, iconPaint);
+        string sadFace = ":(";
+        canvas.DrawText(sadFace, centerX - iconFont.MeasureText(sadFace) / 2, centerY - 60, iconFont, iconPaint);
 
         // Title
         string titleText = "Aw, Snap!";
-        canvas.DrawText(titleText, centerX - titlePaint.MeasureText(titleText) / 2, centerY, titlePaint);
+        canvas.DrawText(titleText, centerX - titleFont.MeasureText(titleText) / 2, centerY, titleFont, titlePaint);
 
         // Description
         string primaryDesc = "Something went wrong while displaying this webpage.";
-        canvas.DrawText(primaryDesc, centerX - descPaint.MeasureText(primaryDesc) / 2, centerY + 40, descPaint);
+        canvas.DrawText(primaryDesc, centerX - descFont.MeasureText(primaryDesc) / 2, centerY + 40, descFont, descPaint);
 
         // Crash reason details
         if (!string.IsNullOrEmpty(CrashReason))
         {
             string reasonText = $"Error code: {CrashReason}";
-            canvas.DrawText(reasonText, centerX - descPaint.MeasureText(reasonText) / 2, centerY + 70, descPaint);
+            canvas.DrawText(reasonText, centerX - descFont.MeasureText(reasonText) / 2, centerY + 70, descFont, descPaint);
         }
     }
 }

@@ -147,18 +147,18 @@ public class TabWidget : Widget
             canvas.DrawCircle(faviconX + FAVICON_SIZE / 2, faviconY + FAVICON_SIZE / 2, FAVICON_SIZE / 2, iconBgPaint);
             
             // 'F' Text
-            using var iconTextPaint = new SKPaint 
-            { 
-                Color = SKColors.White, 
-                IsAntialias = true, 
-                TextSize = 10, 
-                TextAlign = SKTextAlign.Center,
-                Typeface = SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Bold) 
+            using var iconFont = new SKFont(SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Bold), 10);
+            using var iconTextPaint = new SKPaint
+            {
+                Color = SKColors.White,
+                IsAntialias = true
             };
-            
+
             // Adjust text Y position for centering
-            float textY = faviconY + FAVICON_SIZE / 2 + 4; 
-            canvas.DrawText("F", faviconX + FAVICON_SIZE / 2, textY, iconTextPaint);
+            string fText = "F";
+            float fW = iconFont.MeasureText(fText);
+            float textY = faviconY + FAVICON_SIZE / 2 + 4;
+            canvas.DrawText(fText, faviconX + FAVICON_SIZE / 2 - fW / 2, textY, iconFont, iconTextPaint);
         }
         
         // Title
@@ -166,28 +166,26 @@ public class TabWidget : Widget
         float closeX = bounds.Right - CLOSE_BUTTON_SIZE - PADDING;
         float maxTextWidth = closeX - textX - PADDING;
         
+        using var textFont = new SKFont(SKTypeface.FromFamilyName("Segoe UI", IsActive ? SKFontStyle.Bold : SKFontStyle.Normal), 12);
         using var textPaint = new SKPaint
         {
             Color = IsActive ? theme.Text : theme.TextMuted,
-            IsAntialias = true,
-            TextSize = 12,
-            TextAlign = SKTextAlign.Left,
-            Typeface = SKTypeface.FromFamilyName("Segoe UI", IsActive ? SKFontStyle.Bold : SKFontStyle.Normal)
+            IsAntialias = true
         };
-        
+
         string displayTitle = _tab.Title ?? "New Tab";
-        float textWidth = textPaint.MeasureText(displayTitle);
+        float textWidth = textFont.MeasureText(displayTitle);
         if (textWidth > maxTextWidth)
         {
             // Truncate with ellipsis
             while (textWidth > maxTextWidth && displayTitle.Length > 3)
             {
                 displayTitle = displayTitle.Substring(0, displayTitle.Length - 4) + "...";
-                textWidth = textPaint.MeasureText(displayTitle);
+                textWidth = textFont.MeasureText(displayTitle);
             }
         }
-        
-        canvas.DrawText(displayTitle, textX, bounds.MidY + 4, textPaint);
+
+        canvas.DrawText(displayTitle, textX, bounds.MidY + 4, textFont, textPaint);
         
         // Close button
         using var closePaint = new SKPaint

@@ -124,12 +124,11 @@ public class TextInputWidget : Widget
         canvas.DrawRoundRect(Bounds, 4, 4, borderPaint);
         
         // Text or placeholder
+        using var textFont = new SKFont(_font, 14);
         using var textPaint = new SKPaint
         {
             Color = string.IsNullOrEmpty(_text) ? theme.TextMuted : theme.Text,
-            IsAntialias = true,
-            TextSize = 14,
-            Typeface = _font
+            IsAntialias = true
         };
         
         string displayText = string.IsNullOrEmpty(_text) ? Placeholder : _text;
@@ -142,8 +141,8 @@ public class TextInputWidget : Widget
         {
             int selStart = Math.Min(_selectionStart, _selectionEnd);
             int selEnd = Math.Max(_selectionStart, _selectionEnd);
-            float xStart = Bounds.Left + 10 + textPaint.MeasureText(_text.Substring(0, selStart));
-            float xEnd = Bounds.Left + 10 + textPaint.MeasureText(_text.Substring(0, selEnd));
+            float xStart = Bounds.Left + 10 + textFont.MeasureText(_text.Substring(0, selStart));
+            float xEnd = Bounds.Left + 10 + textFont.MeasureText(_text.Substring(0, selEnd));
             
             using var selectionPaint = new SKPaint
             {
@@ -153,12 +152,12 @@ public class TextInputWidget : Widget
             canvas.DrawRect(new SKRect(xStart, Bounds.Top + 4, xEnd, Bounds.Bottom - 4), selectionPaint);
         }
 
-        canvas.DrawText(displayText, Bounds.Left + 10, Bounds.MidY + 5, textPaint);
+        canvas.DrawText(displayText, Bounds.Left + 10, Bounds.MidY + 5, textFont, textPaint);
         
         // Cursor
         if (IsFocused && !HasSelection())
         {
-            float cursorX = Bounds.Left + 10 + textPaint.MeasureText(_text.Substring(0, _cursorPosition));
+            float cursorX = Bounds.Left + 10 + textFont.MeasureText(_text.Substring(0, _cursorPosition));
             using var cursorPaint = new SKPaint
             {
                 Color = theme.Text,
@@ -188,22 +187,18 @@ public class TextInputWidget : Widget
             }
             else
             {
-                using var textPaint = new SKPaint
-                {
-                    TextSize = 14,
-                    Typeface = _font
-                };
+                using var measureFont = new SKFont(_font, 14);
 
                 // Find the character index under the click
                 int index = 0;
                 float currentWidth = 0;
                 for (int i = 1; i <= _text.Length; i++)
                 {
-                    float width = textPaint.MeasureText(_text.Substring(0, i));
+                    float width = measureFont.MeasureText(_text.Substring(0, i));
                     if (width > localX)
                     {
                         // Check if it's closer to the current char or previous
-                        float prevWidth = i > 1 ? textPaint.MeasureText(_text.Substring(0, i - 1)) : 0;
+                        float prevWidth = i > 1 ? measureFont.MeasureText(_text.Substring(0, i - 1)) : 0;
                         if (localX - prevWidth < width - localX)
                             index = i - 1;
                         else
@@ -246,20 +241,16 @@ public class TextInputWidget : Widget
     {
         if (localX <= 0) return 0;
         
-        using var textPaint = new SKPaint
-        {
-            TextSize = 14,
-            Typeface = _font
-        };
+        using var measureFont2 = new SKFont(_font, 14);
 
         int index = 0;
         for (int i = 1; i <= _text.Length; i++)
         {
-            float width = textPaint.MeasureText(_text.Substring(0, i));
+            float width = measureFont2.MeasureText(_text.Substring(0, i));
             if (width > localX)
             {
                 // Find closer boundary
-                float prevWidth = textPaint.MeasureText(_text.Substring(0, i - 1));
+                float prevWidth = measureFont2.MeasureText(_text.Substring(0, i - 1));
                 if (localX - prevWidth < width - localX)
                     return i - 1;
                 else

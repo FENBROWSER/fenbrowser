@@ -805,7 +805,7 @@ public class BrowserIntegration
 
     private void EngineLoop()
     {
-        var coordinator = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
+        var coordinator = _browser.Engine.EventLoopCoordinator;
         coordinator.OnWorkEnqueued += () => _wakeEvent.Set();
 
         while (_running)
@@ -2083,32 +2083,31 @@ public class BrowserIntegration
             
             // Draw label
             string label = $"{element.TagName} | {w:F0}x{h:F0}";
+            using var labelFont = new SKFont(SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold), 12);
             using var labelPaint = new SKPaint
             {
                 Color = SKColors.White,
-                TextSize = 12,
-                IsAntialias = true,
-                Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold)
+                IsAntialias = true
             };
-            
+
             using var labelBgPaint = new SKPaint
             {
                 Color = new SKColor(111, 168, 220, 255),
                 Style = SKPaintStyle.Fill
             };
-            
-            float labelWidth = labelPaint.MeasureText(label);
+
+            float labelWidth = labelFont.MeasureText(label);
             float labelHeight = 18;
             var labelRect = new SKRect(x, y - labelHeight, x + labelWidth + 8, y);
-            
+
             // Adjust if too close to top
             if (y < labelHeight)
             {
                 labelRect = new SKRect(x, y + h, x + labelWidth + 8, y + h + labelHeight);
             }
-            
+
             canvas.DrawRect(labelRect, labelBgPaint);
-            canvas.DrawText(label, labelRect.Left + 4, labelRect.Bottom - 4, labelPaint);
+            canvas.DrawText(label, labelRect.Left + 4, labelRect.Bottom - 4, labelFont, labelPaint);
         }
     }
     
@@ -2119,25 +2118,27 @@ public class BrowserIntegration
         
         if (IsLoading)
         {
+            using var textFont = new SKFont(SKTypeface.Default, 18);
             using var textPaint = new SKPaint
             {
                 Color = SKColors.Gray,
-                IsAntialias = true,
-                TextSize = 18,
-                TextAlign = SKTextAlign.Center
+                IsAntialias = true
             };
-            canvas.DrawText("Loading...", viewport.MidX, viewport.MidY, textPaint);
+            string loadMsg = "Loading...";
+            float loadW = textFont.MeasureText(loadMsg);
+            canvas.DrawText(loadMsg, viewport.MidX - loadW / 2, viewport.MidY, textFont, textPaint);
         }
         else
         {
+            using var defaultFont = new SKFont(SKTypeface.Default, 16);
             using var textPaint = new SKPaint
             {
                 Color = SKColors.Gray,
-                IsAntialias = true,
-                TextSize = 16,
-                TextAlign = SKTextAlign.Center
+                IsAntialias = true
             };
-            canvas.DrawText("Enter a URL to browse", viewport.MidX, viewport.MidY, textPaint);
+            string defaultMsg = "Enter a URL to browse";
+            float defaultW = defaultFont.MeasureText(defaultMsg);
+            canvas.DrawText(defaultMsg, viewport.MidX - defaultW / 2, viewport.MidY, defaultFont, textPaint);
         }
     }
     
@@ -3007,33 +3008,32 @@ public class BrowserIntegration
         
         if (string.IsNullOrEmpty(text)) return;
 
+        using var font = new SKFont(SKTypeface.FromFamilyName(overlay.FontFamily), overlay.FontSize);
         using var paint = new SKPaint
         {
-            Typeface = SKTypeface.FromFamilyName(overlay.FontFamily),
-            TextSize = overlay.FontSize,
             IsAntialias = true,
             Color = isPlaceholder ? SKColors.Gray : (overlay.TextColor ?? SKColors.Black)
         };
 
-        var metrics = paint.FontMetrics;
+        var metrics = font.Metrics;
         // Vertically center based on font metrics
         float textHeight = metrics.Descent - metrics.Ascent;
         float y = overlay.Bounds.MidY + textHeight / 2 - metrics.Descent;
-        
+
         // Horizontal alignment
-        float x = overlay.Bounds.Left + 10; 
+        float x = overlay.Bounds.Left + 10;
         if (overlay.TextAlign == "center")
         {
-            x = overlay.Bounds.MidX - paint.MeasureText(text) / 2;
+            x = overlay.Bounds.MidX - font.MeasureText(text) / 2;
         }
         else if (overlay.TextAlign == "right")
         {
-            x = overlay.Bounds.Right - paint.MeasureText(text) - 10;
+            x = overlay.Bounds.Right - font.MeasureText(text) - 10;
         }
 
         canvas.Save();
         canvas.ClipRect(overlay.Bounds);
-        canvas.DrawText(text, x, y, paint);
+        canvas.DrawText(text, x, y, font, paint);
         canvas.Restore();
     }
 

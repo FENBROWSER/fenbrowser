@@ -229,12 +229,11 @@ public sealed class PopupWindow : IDisposable
         using var bg = new SKPaint { Color = SKColors.White, IsAntialias = true };
         canvas.DrawRect(0, 0, w, h, bg);
 
-        using var text = new SKPaint
+        using var textFont = new SKFont(SKTypeface.FromFamilyName("Segoe UI"), 14);
+        using var textPaint = new SKPaint
         {
             Color = new SKColor(17, 24, 39),
-            TextSize = 14,
-            IsAntialias = true,
-            Typeface = SKTypeface.FromFamilyName("Segoe UI")
+            IsAntialias = true
         };
 
         // Simple text extraction from HTML for fallback display
@@ -248,7 +247,7 @@ public sealed class PopupWindow : IDisposable
         foreach (var line in plainText.Split('\n'))
         {
             if (y > h - 20) break;
-            canvas.DrawText(line.Trim(), 20, y, text);
+            canvas.DrawText(line.Trim(), 20, y, textFont, textPaint);
             y += 20;
         }
     }
@@ -257,16 +256,15 @@ public sealed class PopupWindow : IDisposable
     {
         using var bg = new SKPaint { Color = SKColors.White, IsAntialias = true };
         canvas.DrawRect(0, 0, w, h, bg);
-        using var text = new SKPaint
+        using var textFont = new SKFont(SKTypeface.FromFamilyName("Segoe UI"), 16);
+        using var textPaint = new SKPaint
         {
             Color = new SKColor(107, 114, 128),
-            TextSize = 16,
-            IsAntialias = true,
-            Typeface = SKTypeface.FromFamilyName("Segoe UI")
+            IsAntialias = true
         };
         var msg = "Loading...";
-        float tw = text.MeasureText(msg);
-        canvas.DrawText(msg, (w - tw) / 2f, h / 2f, text);
+        float tw = textFont.MeasureText(msg);
+        canvas.DrawText(msg, (w - tw) / 2f, h / 2f, textFont, textPaint);
     }
 
     private void OnResize(Silk.NET.Maths.Vector2D<int> size)

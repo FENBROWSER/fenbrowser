@@ -147,30 +147,25 @@ public sealed class JavascriptDialogWidget : Widget
     {
         if (string.IsNullOrEmpty(text)) return 0f;
 
-        using var paint = new SKPaint
-        {
-            TextSize = textSize,
-            IsAntialias = true,
-            Typeface = SKTypeface.FromFamilyName("Segoe UI")
-        };
+        using var font = new SKFont(SKTypeface.FromFamilyName("Segoe UI"), textSize);
 
         // Simple approximation: count lines by measuring each word
         float lineWidth = 0f;
-        float lineHeight = paint.FontSpacing;
+        float lineHeight = font.Spacing;
         int lines = 1;
         var words = text.Split(' ');
 
         foreach (var word in words)
         {
-            float wordWidth = paint.MeasureText(word);
+            float wordWidth = font.MeasureText(word);
             if (lineWidth + wordWidth > maxWidth && lineWidth > 0)
             {
                 lines++;
-                lineWidth = wordWidth + paint.MeasureText(" ");
+                lineWidth = wordWidth + font.MeasureText(" ");
             }
             else
             {
-                lineWidth += wordWidth + paint.MeasureText(" ");
+                lineWidth += wordWidth + font.MeasureText(" ");
             }
         }
 
@@ -228,14 +223,13 @@ public sealed class JavascriptDialogWidget : Widget
             _ => "Dialog"
         };
 
+        using var titleFont = new SKFont(SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Bold), 14f);
         using var titlePaint = new SKPaint
         {
             Color = theme.Text,
-            TextSize = 14f,
-            IsAntialias = true,
-            Typeface = SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Bold)
+            IsAntialias = true
         };
-        canvas.DrawText(title, _dialogBoxRect.Left + Padding, _dialogBoxRect.Top + Padding + 14f, titlePaint);
+        canvas.DrawText(title, _dialogBoxRect.Left + Padding, _dialogBoxRect.Top + Padding + 14f, titleFont, titlePaint);
 
         // ── Message text ──
         float textY = _dialogBoxRect.Top + Padding + 36f;
@@ -279,14 +273,13 @@ public sealed class JavascriptDialogWidget : Widget
         // Input text
         if (!string.IsNullOrEmpty(_inputText))
         {
+            using var inputTextFont = new SKFont(SKTypeface.FromFamilyName("Segoe UI"), 14f);
             using var textPaint = new SKPaint
             {
                 Color = theme.Text,
-                TextSize = 14f,
-                IsAntialias = true,
-                Typeface = SKTypeface.FromFamilyName("Segoe UI")
+                IsAntialias = true
             };
-            canvas.DrawText(_inputText, _inputRect.Left + 8f, _inputRect.MidY + 5f, textPaint);
+            canvas.DrawText(_inputText, _inputRect.Left + 8f, _inputRect.MidY + 5f, inputTextFont, textPaint);
         }
 
         // Cursor
@@ -295,12 +288,8 @@ public sealed class JavascriptDialogWidget : Widget
             float cursorX = _inputRect.Left + 8f;
             if (!string.IsNullOrEmpty(_inputText))
             {
-                using var measurePaint = new SKPaint
-                {
-                    TextSize = 14f,
-                    Typeface = SKTypeface.FromFamilyName("Segoe UI")
-                };
-                cursorX += measurePaint.MeasureText(_inputText.Substring(0,
+                using var measureFont = new SKFont(SKTypeface.FromFamilyName("Segoe UI"), 14f);
+                cursorX += measureFont.MeasureText(_inputText.Substring(0,
                     Math.Min(_inputCursorPos, _inputText.Length)));
             }
 
@@ -336,15 +325,14 @@ public sealed class JavascriptDialogWidget : Widget
         canvas.DrawRoundRect(rect, 6, 6, bgPaint);
 
         var textColor = isPrimary ? SKColors.White : theme.Text;
+        using var textFont = new SKFont(SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Bold), 13f);
         using var textPaint = new SKPaint
         {
             Color = textColor,
-            TextSize = 13f,
-            IsAntialias = true,
-            TextAlign = SKTextAlign.Center,
-            Typeface = SKTypeface.FromFamilyName("Segoe UI", SKFontStyle.Bold)
+            IsAntialias = true
         };
-        canvas.DrawText(label, rect.MidX, rect.MidY + 5f, textPaint);
+        float labelW = textFont.MeasureText(label);
+        canvas.DrawText(label, rect.MidX - labelW / 2, rect.MidY + 5f, textFont, textPaint);
     }
 
     private void DrawWrappedText(SKCanvas canvas, string text, float x, float y,
@@ -352,23 +340,22 @@ public sealed class JavascriptDialogWidget : Widget
     {
         if (string.IsNullOrEmpty(text)) return;
 
+        using var font = new SKFont(SKTypeface.FromFamilyName("Segoe UI"), textSize);
         using var paint = new SKPaint
         {
             Color = color,
-            TextSize = textSize,
-            IsAntialias = true,
-            Typeface = SKTypeface.FromFamilyName("Segoe UI")
+            IsAntialias = true
         };
 
-        float lineHeight = paint.FontSpacing;
+        float lineHeight = font.Spacing;
         float currentX = x;
-        float currentY = y + paint.FontMetrics.Ascent * -1; // baseline
+        float currentY = y + font.Metrics.Ascent * -1; // baseline
 
         var words = text.Split(' ');
         foreach (var word in words)
         {
-            float wordWidth = paint.MeasureText(word);
-            float spaceWidth = paint.MeasureText(" ");
+            float wordWidth = font.MeasureText(word);
+            float spaceWidth = font.MeasureText(" ");
 
             if (currentX + wordWidth > x + maxWidth && currentX > x)
             {
@@ -376,7 +363,7 @@ public sealed class JavascriptDialogWidget : Widget
                 currentX = x;
             }
 
-            canvas.DrawText(word, currentX, currentY, paint);
+            canvas.DrawText(word, currentX, currentY, font, paint);
             currentX += wordWidth + spaceWidth;
         }
     }
