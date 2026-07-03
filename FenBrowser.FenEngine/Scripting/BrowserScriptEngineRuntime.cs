@@ -3654,6 +3654,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 "__fenSyncFetch",
                 (_, args) => ExecuteSynchronousFetchRequest(args)));
         _interpreter.RegisterGlobalValue(
+            "__fenParseUrl",
+            _interpreter.AllocateNativeFunction(
+                "__fenParseUrl",
+                (_, args) => ParseFenJsUrl(args),
+                length: 2));
+        _interpreter.RegisterGlobalValue(
             "__fenRandomByte",
             _interpreter.AllocateNativeFunction(
                 "__fenRandomByte",
@@ -3935,6 +3941,55 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     get: function () { return this._pairs.length; },
                     configurable: true
                 });
+
+                globalThis.URL = function URL(input, base) {
+                    if (!(this instanceof URL)) {
+                        throw new TypeError("Failed to construct 'URL': Please use the 'new' operator.");
+                    }
+
+                    var parsed = __fenParseUrl(input, base);
+                    if (!parsed) {
+                        throw new TypeError('Invalid URL');
+                    }
+
+                    applyParsedUrl(this, parsed);
+                };
+
+                function applyParsedUrl(target, parsed) {
+                    target.href = parsed.href;
+                    target.origin = parsed.origin;
+                    target.protocol = parsed.protocol;
+                    target.username = '';
+                    target.password = '';
+                    target.host = parsed.host;
+                    target.hostname = parsed.hostname;
+                    target.port = parsed.port;
+                    target.pathname = parsed.pathname;
+                    target.search = parsed.search;
+                    target.hash = parsed.hash;
+                    target.searchParams = new URLSearchParams(target.search);
+                }
+
+                URL.prototype.toString = function () {
+                    return this.href;
+                };
+                URL.prototype.toJSON = function () {
+                    return this.href;
+                };
+                URL.canParse = function (input, base) {
+                    return !!__fenParseUrl(input, base);
+                };
+                URL.parse = function (input, base) {
+                    try {
+                        return new URL(input, base);
+                    } catch (_) {
+                        return null;
+                    }
+                };
+                URL.createObjectURL = function () {
+                    return 'blob:fenbrowser/' + Math.random().toString(36).slice(2);
+                };
+                URL.revokeObjectURL = function () {};
 
                 var _trustedPolicies = Object.create(null);
                 globalThis.trustedTypes = {
@@ -5955,6 +6010,66 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         InvokeBodyOnloadAttribute(document);
         DispatchWindowLoadHandlers();
         MarkEventLoopCompleted();
+    }
+
+    private JsValue ParseFenJsUrl(IReadOnlyList<JsValue> args)
+    {
+        if (args == null ||
+            args.Count == 0 ||
+            args[0].Tag == JsValueTag.Undefined)
+        {
+            return JsValue.Null;
+        }
+
+        var input = CoerceToHostString(args[0]);
+        Uri baseUri = null;
+        if (args.Count > 1 && args[1].Tag != JsValueTag.Undefined)
+        {
+            var baseText = CoerceToHostString(args[1]);
+            if (!Uri.TryCreate(baseText, UriKind.Absolute, out baseUri))
+            {
+                return JsValue.Null;
+            }
+        }
+        else
+        {
+            var document = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument;
+            baseUri = _currentBaseUri ?? TryCreateUri(document?.URL);
+        }
+
+        if (!Uri.TryCreate(input, UriKind.Absolute, out var uri))
+        {
+            if (baseUri == null || !Uri.TryCreate(baseUri, input, out uri))
+            {
+                return JsValue.Null;
+            }
+        }
+
+        if (uri == null || !uri.IsAbsoluteUri)
+        {
+            return JsValue.Null;
+        }
+
+        var port = uri.IsDefaultPort ? string.Empty : uri.Port.ToString(CultureInfo.InvariantCulture);
+        var host = string.IsNullOrEmpty(port) ? uri.Host : $"{uri.Host}:{port}";
+        var origin =
+            string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+                ? uri.GetLeftPart(UriPartial.Authority)
+                : "null";
+
+        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["href"] = JsValue.FromString(uri.AbsoluteUri),
+            ["origin"] = JsValue.FromString(origin),
+            ["protocol"] = JsValue.FromString(string.IsNullOrEmpty(uri.Scheme) ? string.Empty : uri.Scheme + ":"),
+            ["host"] = JsValue.FromString(host ?? string.Empty),
+            ["hostname"] = JsValue.FromString(uri.Host ?? string.Empty),
+            ["port"] = JsValue.FromString(port),
+            ["pathname"] = JsValue.FromString(string.IsNullOrEmpty(uri.AbsolutePath) ? "/" : uri.AbsolutePath),
+            ["search"] = JsValue.FromString(uri.Query ?? string.Empty),
+            ["hash"] = JsValue.FromString(uri.Fragment ?? string.Empty)
+        });
     }
 
     private JsValue GetStoredHostPropertyOrUndefined(object receiver, string property)

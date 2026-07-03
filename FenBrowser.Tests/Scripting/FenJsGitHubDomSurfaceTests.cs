@@ -109,6 +109,43 @@ namespace FenBrowser.Tests.Scripting
             Assert.Equal("function|fen browser|fen browser,second|true|filled|true|true", result?.ToString());
         }
 
+        [Fact]
+        public async Task Url_ResolvesRelativeUrlsAgainstLocation()
+        {
+            var baseUri = new Uri("https://github.com/org/repo?existing=1");
+            var document = new HtmlParser("<html><body></body></html>", baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var result = engine.Evaluate(
+                """
+                (function () {
+                    var url = new URL('/features?tab=code#hero', location.href);
+                    var clone = new URL(url.href);
+
+                    return [
+                        typeof URL,
+                        url.href,
+                        url.origin,
+                        url.pathname,
+                        url.searchParams.get('tab'),
+                        url.hash,
+                        String(clone),
+                        URL.canParse('/pricing', location.href),
+                        URL.parse('https://github.com/about').pathname
+                    ].join('|');
+                })();
+                """);
+
+            Assert.Equal(
+                "function|https://github.com/features?tab=code#hero|https://github.com|/features|code|#hero|https://github.com/features?tab=code#hero|true|/about",
+                result?.ToString());
+        }
+
         private static JsHostAdapter CreateHost()
         {
             return new JsHostAdapter(
