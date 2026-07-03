@@ -199,33 +199,37 @@ public class ConsolePanel : DevToolsPanelBase
                 _ => "›"
             };
             
-            using var iconPaint = DevToolsTheme.CreateTextPaint(color, DevToolsTheme.FontSizeSmall);
-            canvas.DrawText(icon, x, textY, iconPaint);
+            using var iconFont = DevToolsTheme.CreateTextFont(DevToolsTheme.FontSizeSmall);
+            using var iconColorPaint = DevToolsTheme.CreateTextColorPaint(color);
+            canvas.DrawText(icon, x, textY, iconFont, iconColorPaint);
             x += 20;
-            
+
             // Message
-            using var msgPaint = DevToolsTheme.CreateTextPaint(color);
+            using var msgFont = DevToolsTheme.CreateTextFont();
+            using var msgColorPaint = DevToolsTheme.CreateTextColorPaint(color);
             string msg = entry.Message;
             if (msg.Length > 100) msg = msg.Substring(0, 97) + "...";
-            canvas.DrawText(msg, x, textY, msgPaint);
-            
+            canvas.DrawText(msg, x, textY, msgFont, msgColorPaint);
+
             // Source location
             if (!string.IsNullOrEmpty(entry.Source))
             {
                 string source = System.IO.Path.GetFileName(entry.Source);
                 if (entry.Line.HasValue) source += $":{entry.Line}";
-                
-                using var sourcePaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextMuted, DevToolsTheme.FontSizeSmall);
-                float sourceWidth = sourcePaint.MeasureText(source);
-                canvas.DrawText(source, bounds.Right - sourceWidth - DevToolsTheme.PaddingNormal, textY, sourcePaint);
+
+                using var sourceFont = DevToolsTheme.CreateTextFont(DevToolsTheme.FontSizeSmall);
+                using var sourceColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
+                float sourceWidth = sourceFont.MeasureText(source);
+                canvas.DrawText(source, bounds.Right - sourceWidth - DevToolsTheme.PaddingNormal, textY, sourceFont, sourceColorPaint);
             }
         }
-        
+
         // Empty state
         if (_entries.Count == 0)
         {
-            using var hintPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextMuted);
-            canvas.DrawText("No console messages", bounds.Left + DevToolsTheme.PaddingNormal, bounds.Top + 30, hintPaint);
+            using var hintFont = DevToolsTheme.CreateTextFont();
+            using var hintColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
+            canvas.DrawText("No console messages", bounds.Left + DevToolsTheme.PaddingNormal, bounds.Top + 30, hintFont, hintColorPaint);
         }
     }
     
@@ -243,18 +247,20 @@ public class ConsolePanel : DevToolsPanelBase
         float textY = bounds.MidY + 4;
         
         // Prompt
-        using var promptPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TabBorder);
-        canvas.DrawText(">", x, textY, promptPaint);
+        using var promptFont = DevToolsTheme.CreateTextFont();
+        using var promptColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TabBorder);
+        canvas.DrawText(">", x, textY, promptFont, promptColorPaint);
         x += 16;
-        
+
         // Input text
-        using var textPaint = DevToolsTheme.CreateTextPaint();
-        canvas.DrawText(_inputText, x, textY, textPaint);
-        
+        using var textFont = DevToolsTheme.CreateTextFont();
+        using var textColorPaint = DevToolsTheme.CreateTextColorPaint();
+        canvas.DrawText(_inputText, x, textY, textFont, textColorPaint);
+
         // Cursor
         if (_inputFocused)
         {
-            float cursorX = x + textPaint.MeasureText(_inputText.Substring(0, Math.Min(_cursorPosition, _inputText.Length)));
+            float cursorX = x + textFont.MeasureText(_inputText.Substring(0, Math.Min(_cursorPosition, _inputText.Length)));
             using var cursorPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.TextPrimary);
             canvas.DrawRect(new SKRect(cursorX, bounds.Top + 6, cursorX + 1, bounds.Bottom - 6), cursorPaint);
         }

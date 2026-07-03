@@ -195,12 +195,13 @@ public class NetworkPanel : DevToolsPanelBase
         
         using var headerBgPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BackgroundLight);
         canvas.DrawRect(new SKRect(bounds.Left, y, bounds.Right, y + HEADER_HEIGHT), headerBgPaint);
-        
-        using var headerPaint = DevToolsTheme.CreateUITextPaint(DevToolsTheme.TextSecondary, DevToolsTheme.FontSizeSmall);
-        
+
+        using var headerFont = DevToolsTheme.CreateUIFont(DevToolsTheme.FontSizeSmall);
+        using var headerColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextSecondary);
+
         foreach (var (name, width) in _columns)
         {
-            canvas.DrawText(name, x + DevToolsTheme.PaddingSmall, y + HEADER_HEIGHT - 6, headerPaint);
+            canvas.DrawText(name, x + DevToolsTheme.PaddingSmall, y + HEADER_HEIGHT - 6, headerFont, headerColorPaint);
             x += width;
         }
         
@@ -240,11 +241,12 @@ public class NetworkPanel : DevToolsPanelBase
             string name = System.IO.Path.GetFileName(new Uri(request.Url).AbsolutePath);
             if (string.IsNullOrEmpty(name)) name = "/";
             if (name.Length > 30) name = name.Substring(0, 27) + "...";
-            
-            using var namePaint = DevToolsTheme.CreateTextPaint();
-            canvas.DrawText(name, x + DevToolsTheme.PaddingSmall, textY, namePaint);
+
+            using var nameFont = DevToolsTheme.CreateTextFont();
+            using var nameColorPaint = DevToolsTheme.CreateTextColorPaint();
+            canvas.DrawText(name, x + DevToolsTheme.PaddingSmall, textY, nameFont, nameColorPaint);
             x += _columns[0].Width;
-            
+
             // Status
             SKColor statusColor = request.StatusCode switch
             {
@@ -253,34 +255,37 @@ public class NetworkPanel : DevToolsPanelBase
                 >= 400 => DevToolsTheme.NetworkError,
                 _ => DevToolsTheme.NetworkPending
             };
-            
-            using var statusPaint = DevToolsTheme.CreateTextPaint(statusColor);
+
+            using var statusFont = DevToolsTheme.CreateTextFont();
+            using var statusColorPaint = DevToolsTheme.CreateTextColorPaint(statusColor);
             string status = request.IsComplete ? request.StatusCode.ToString() : "pending";
-            canvas.DrawText(status, x + DevToolsTheme.PaddingSmall, textY, statusPaint);
+            canvas.DrawText(status, x + DevToolsTheme.PaddingSmall, textY, statusFont, statusColorPaint);
             x += _columns[1].Width;
-            
+
             // Type
-            using var typePaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextSecondary);
+            using var typeFont = DevToolsTheme.CreateTextFont();
+            using var typeColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextSecondary);
             string type = request.ContentType?.Split('/').LastOrDefault()?.Split(';').FirstOrDefault() ?? "-";
             if (type.Length > 10) type = type.Substring(0, 7) + "...";
-            canvas.DrawText(type, x + DevToolsTheme.PaddingSmall, textY, typePaint);
+            canvas.DrawText(type, x + DevToolsTheme.PaddingSmall, textY, typeFont, typeColorPaint);
             x += _columns[2].Width;
-            
+
             // Size
             string size = request.Size > 0 ? FormatSize(request.Size) : "-";
-            canvas.DrawText(size, x + DevToolsTheme.PaddingSmall, textY, typePaint);
+            canvas.DrawText(size, x + DevToolsTheme.PaddingSmall, textY, typeFont, typeColorPaint);
             x += _columns[3].Width;
-            
+
             // Time
             string time = request.IsComplete ? $"{request.DurationMs:F0}ms" : "-";
-            canvas.DrawText(time, x + DevToolsTheme.PaddingSmall, textY, typePaint);
+            canvas.DrawText(time, x + DevToolsTheme.PaddingSmall, textY, typeFont, typeColorPaint);
         }
-        
+
         // Empty state
         if (_requests.Count == 0)
         {
-            using var hintPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextMuted);
-            canvas.DrawText("No network requests", bounds.Left + DevToolsTheme.PaddingNormal, bounds.Top + HEADER_HEIGHT + 30, hintPaint);
+            using var hintFont = DevToolsTheme.CreateTextFont();
+            using var hintColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
+            canvas.DrawText("No network requests", bounds.Left + DevToolsTheme.PaddingNormal, bounds.Top + HEADER_HEIGHT + 30, hintFont, hintColorPaint);
         }
     }
     
@@ -296,41 +301,46 @@ public class NetworkPanel : DevToolsPanelBase
         float x = bounds.Left + DevToolsTheme.PaddingNormal;
         
         // URL
-        using var labelPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextSecondary);
-        using var valuePaint = DevToolsTheme.CreateTextPaint();
-        
-        canvas.DrawText("URL: ", x, y + 12, labelPaint);
-        
+        using var labelFont = DevToolsTheme.CreateTextFont();
+        using var labelColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextSecondary);
+        using var valueFont = DevToolsTheme.CreateTextFont();
+        using var valueColorPaint = DevToolsTheme.CreateTextColorPaint();
+
+        canvas.DrawText("URL: ", x, y + 12, labelFont, labelColorPaint);
+
         string url = _selectedRequest.Url;
         if (url.Length > 80) url = url.Substring(0, 77) + "...";
-        canvas.DrawText(url, x + 35, y + 12, valuePaint);
+        canvas.DrawText(url, x + 35, y + 12, valueFont, valueColorPaint);
         y += DevToolsTheme.ItemHeight;
-        
+
         // Method + Status
-        canvas.DrawText($"Method: {_selectedRequest.Method}", x, y + 12, valuePaint);
-        canvas.DrawText($"Status: {_selectedRequest.StatusCode} {_selectedRequest.StatusText}", x + 120, y + 12, valuePaint);
+        canvas.DrawText($"Method: {_selectedRequest.Method}", x, y + 12, valueFont, valueColorPaint);
+        canvas.DrawText($"Status: {_selectedRequest.StatusCode} {_selectedRequest.StatusText}", x + 120, y + 12, valueFont, valueColorPaint);
         y += DevToolsTheme.ItemHeight;
-        
+
         // Headers section
         canvas.DrawLine(bounds.Left, y, bounds.Right, y, borderPaint);
         y += DevToolsTheme.PaddingNormal;
-        
-        using var sectionPaint = DevToolsTheme.CreateUITextPaint(DevToolsTheme.TextPrimary, DevToolsTheme.FontSizeMedium);
-        canvas.DrawText("Response Headers", x, y + 12, sectionPaint);
+
+        using var sectionFont = DevToolsTheme.CreateUIFont(DevToolsTheme.FontSizeMedium);
+        using var sectionColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextPrimary);
+        canvas.DrawText("Response Headers", x, y + 12, sectionFont, sectionColorPaint);
         y += DevToolsTheme.ItemHeight;
-        
-        using var headerKeyPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.SyntaxProperty, DevToolsTheme.FontSizeSmall);
-        using var headerValuePaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextSecondary, DevToolsTheme.FontSizeSmall);
-        
+
+        using var headerKeyFont = DevToolsTheme.CreateTextFont(DevToolsTheme.FontSizeSmall);
+        using var headerKeyColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.SyntaxProperty);
+        using var headerValueFont = DevToolsTheme.CreateTextFont(DevToolsTheme.FontSizeSmall);
+        using var headerValueColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextSecondary);
+
         foreach (var header in _selectedRequest.ResponseHeaders.Take(8))
         {
             if (y + 16 > bounds.Bottom) break;
-            
-            canvas.DrawText(header.Key + ": ", x, y + 10, headerKeyPaint);
-            
+
+            canvas.DrawText(header.Key + ": ", x, y + 10, headerKeyFont, headerKeyColorPaint);
+
             string val = header.Value;
             if (val.Length > 50) val = val.Substring(0, 47) + "...";
-            canvas.DrawText(val, x + 150, y + 10, headerValuePaint);
+            canvas.DrawText(val, x + 150, y + 10, headerValueFont, headerValueColorPaint);
             y += 16;
         }
 
@@ -340,13 +350,13 @@ public class NetworkPanel : DevToolsPanelBase
 
         if (!string.IsNullOrWhiteSpace(_requestBodyPreview))
         {
-            canvas.DrawText("Request Body", x, y + 12, sectionPaint);
+            canvas.DrawText("Request Body", x, y + 12, sectionFont, sectionColorPaint);
             y += DevToolsTheme.ItemHeight;
 
             foreach (var line in TruncatePreview(_requestBodyPreview!, 3).Split('\n'))
             {
                 if (y + 16 > bounds.Bottom) break;
-                canvas.DrawText(line, x, y + 10, headerValuePaint);
+                canvas.DrawText(line, x, y + 10, headerValueFont, headerValueColorPaint);
                 y += 16;
             }
         }
@@ -358,13 +368,13 @@ public class NetworkPanel : DevToolsPanelBase
                 y += DevToolsTheme.PaddingSmall;
             }
 
-            canvas.DrawText("Response Preview", x, y + 12, sectionPaint);
+            canvas.DrawText("Response Preview", x, y + 12, sectionFont, sectionColorPaint);
             y += DevToolsTheme.ItemHeight;
 
             foreach (var line in TruncatePreview(_responseBodyPreview!, 5).Split('\n'))
             {
                 if (y + 16 > bounds.Bottom) break;
-                canvas.DrawText(line, x, y + 10, headerValuePaint);
+                canvas.DrawText(line, x, y + 10, headerValueFont, headerValueColorPaint);
                 y += 16;
             }
         }

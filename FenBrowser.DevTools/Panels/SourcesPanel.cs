@@ -153,12 +153,15 @@ public class SourcesPanel : DevToolsPanelBase
     {
         using var headerBgPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BackgroundLight);
         using var borderPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.Border);
-        using var headerPaint = DevToolsTheme.CreateUITextPaint(DevToolsTheme.TextSecondary, DevToolsTheme.FontSizeSmall);
-        using var textPaint = DevToolsTheme.CreateTextPaint();
-        using var mutedPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextMuted, DevToolsTheme.FontSizeSmall);
+        using var headerFont = DevToolsTheme.CreateUIFont(DevToolsTheme.FontSizeSmall);
+        using var headerColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextSecondary);
+        using var textFont = DevToolsTheme.CreateTextFont();
+        using var textColorPaint = DevToolsTheme.CreateTextColorPaint();
+        using var mutedFont = DevToolsTheme.CreateTextFont(DevToolsTheme.FontSizeSmall);
+        using var mutedColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
 
         canvas.DrawRect(new SKRect(bounds.Left, bounds.Top, bounds.Right, bounds.Top + HEADER_HEIGHT), headerBgPaint);
-        canvas.DrawText("Scripts", bounds.Left + DevToolsTheme.PaddingNormal, bounds.Top + HEADER_HEIGHT - 6, headerPaint);
+        canvas.DrawText("Scripts", bounds.Left + DevToolsTheme.PaddingNormal, bounds.Top + HEADER_HEIGHT - 6, headerFont, headerColorPaint);
         canvas.DrawLine(bounds.Right, bounds.Top, bounds.Right, bounds.Bottom, borderPaint);
         canvas.DrawLine(bounds.Left, bounds.Top + HEADER_HEIGHT, bounds.Right, bounds.Top + HEADER_HEIGHT, borderPaint);
 
@@ -182,16 +185,17 @@ public class SourcesPanel : DevToolsPanelBase
             }
 
             var title = script.DisplayName.Length > 28 ? script.DisplayName[..25] + "..." : script.DisplayName;
-            canvas.DrawText(title, bounds.Left + DevToolsTheme.PaddingNormal, itemY + 14, textPaint);
+            canvas.DrawText(title, bounds.Left + DevToolsTheme.PaddingNormal, itemY + 14, textFont, textColorPaint);
 
             var metadata = script.IsInline ? "inline" : $"{Math.Max(1, script.Length)} chars";
-            canvas.DrawText(metadata, bounds.Left + DevToolsTheme.PaddingNormal, itemY + DevToolsTheme.ItemHeight - 5, mutedPaint);
+            canvas.DrawText(metadata, bounds.Left + DevToolsTheme.PaddingNormal, itemY + DevToolsTheme.ItemHeight - 5, mutedFont, mutedColorPaint);
         }
 
         if (_scripts.Count == 0)
         {
-            using var hintPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextMuted);
-            canvas.DrawText("No scripts loaded", bounds.Left + DevToolsTheme.PaddingNormal, bounds.Top + HEADER_HEIGHT + 30, hintPaint);
+            using var hintFont = DevToolsTheme.CreateTextFont();
+            using var hintColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
+            canvas.DrawText("No scripts loaded", bounds.Left + DevToolsTheme.PaddingNormal, bounds.Top + HEADER_HEIGHT + 30, hintFont, hintColorPaint);
         }
 
         MaxScrollY = Math.Max(0, _scripts.Count * DevToolsTheme.ItemHeight - (bounds.Height - HEADER_HEIGHT));
@@ -201,18 +205,22 @@ public class SourcesPanel : DevToolsPanelBase
     {
         using var headerBgPaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.BackgroundLight);
         using var borderPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.Border);
-        using var headerPaint = DevToolsTheme.CreateUITextPaint(DevToolsTheme.TextSecondary, DevToolsTheme.FontSizeSmall);
-        using var lineNumberPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextMuted, DevToolsTheme.FontSizeSmall);
-        using var sourcePaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextPrimary, DevToolsTheme.FontSizeSmall);
+        using var headerFont = DevToolsTheme.CreateUIFont(DevToolsTheme.FontSizeSmall);
+        using var headerColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextSecondary);
+        using var lineNumberFont = DevToolsTheme.CreateTextFont(DevToolsTheme.FontSizeSmall);
+        using var lineNumberColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
+        using var sourceFont = DevToolsTheme.CreateTextFont(DevToolsTheme.FontSizeSmall);
+        using var sourceColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextPrimary);
 
         canvas.DrawRect(new SKRect(bounds.Left, bounds.Top, bounds.Right, bounds.Top + HEADER_HEIGHT), headerBgPaint);
-        canvas.DrawText(_selectedScript?.Url ?? "Source", bounds.Left + DevToolsTheme.PaddingNormal, bounds.Top + HEADER_HEIGHT - 6, headerPaint);
+        canvas.DrawText(_selectedScript?.Url ?? "Source", bounds.Left + DevToolsTheme.PaddingNormal, bounds.Top + HEADER_HEIGHT - 6, headerFont, headerColorPaint);
         canvas.DrawLine(bounds.Left, bounds.Top + HEADER_HEIGHT, bounds.Right, bounds.Top + HEADER_HEIGHT, borderPaint);
 
         if (string.IsNullOrEmpty(_sourceText))
         {
-            using var hintPaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextMuted);
-            canvas.DrawText("Select a script to inspect its source.", bounds.Left + DevToolsTheme.PaddingNormal, bounds.Top + HEADER_HEIGHT + 24, hintPaint);
+            using var hintFont = DevToolsTheme.CreateTextFont();
+            using var hintColorPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextMuted);
+            canvas.DrawText("Select a script to inspect its source.", bounds.Left + DevToolsTheme.PaddingNormal, bounds.Top + HEADER_HEIGHT + 24, hintFont, hintColorPaint);
             return;
         }
 
@@ -225,8 +233,8 @@ public class SourcesPanel : DevToolsPanelBase
             if (y + SOURCE_LINE_HEIGHT < bounds.Top + HEADER_HEIGHT) { y += SOURCE_LINE_HEIGHT; continue; }
             if (y > bounds.Bottom) break;
 
-            canvas.DrawText((i + 1).ToString(), bounds.Left + DevToolsTheme.PaddingNormal, y + 11, lineNumberPaint);
-            canvas.DrawText(lines[i], bounds.Left + 52, y + 11, sourcePaint);
+            canvas.DrawText((i + 1).ToString(), bounds.Left + DevToolsTheme.PaddingNormal, y + 11, lineNumberFont, lineNumberColorPaint);
+            canvas.DrawText(lines[i], bounds.Left + 52, y + 11, sourceFont, sourceColorPaint);
             y += SOURCE_LINE_HEIGHT;
         }
     }

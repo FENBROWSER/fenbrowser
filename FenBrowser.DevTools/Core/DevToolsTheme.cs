@@ -80,27 +80,21 @@ public static class DevToolsTheme
     public const float TreeArrowSize = 6f;          // Size of expand/collapse arrows
     public static readonly SKColor TreeGuide = SKColor.Parse("#3C3C3C"); // Vertical guide lines
     
-    // Create common paints
-    public static SKPaint CreateTextPaint(SKColor? color = null, float size = FontSizeNormal, bool bold = false)
+    // Create fonts for text rendering (SkiaSharp 4.x: text properties moved from SKPaint to SKFont)
+    public static SKFont CreateTextFont(float size = FontSizeNormal, bool bold = false)
     {
-        return new SKPaint
-        {
-            Color = color ?? TextPrimary,
-            TextSize = size,
-            IsAntialias = true,
-            Typeface = SKTypeface.FromFamilyName(FontFamily, bold ? SKFontStyle.Bold : SKFontStyle.Normal)
-        };
+        return new SKFont(SKTypeface.FromFamilyName(FontFamily, bold ? SKFontStyle.Bold : SKFontStyle.Normal), size);
     }
-    
-    public static SKPaint CreateUITextPaint(SKColor? color = null, float size = FontSizeNormal)
+
+    public static SKFont CreateUIFont(float size = FontSizeNormal)
     {
-        return new SKPaint
-        {
-            Color = color ?? TextPrimary,
-            TextSize = size,
-            IsAntialias = true,
-            Typeface = SKTypeface.FromFamilyName(FontFamilyUI)
-        };
+        return new SKFont(SKTypeface.FromFamilyName(FontFamilyUI), size);
+    }
+
+    // Create a paint suitable for text drawing (color + antialias, no text properties)
+    public static SKPaint CreateTextColorPaint(SKColor? color = null)
+    {
+        return CreateFillPaint(color ?? TextPrimary);
     }
     
     public static SKPaint CreateFillPaint(SKColor color)

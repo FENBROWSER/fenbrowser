@@ -237,39 +237,39 @@ public class DevToolsController : IDisposable
         float x = _tabBarBounds.Left + DevToolsTheme.PaddingNormal;
         float tabPadding = DevToolsTheme.PaddingLarge * 2;
         
-        using var textPaint = DevToolsTheme.CreateUITextPaint(size: DevToolsTheme.FontSizeMedium);
-        
+        using var tabFont = DevToolsTheme.CreateUIFont(DevToolsTheme.FontSizeMedium);
+
         for (int i = 0; i < _panels.Count; i++)
         {
             var panel = _panels[i];
-            float textWidth = textPaint.MeasureText(panel.Title);
+            float textWidth = tabFont.MeasureText(panel.Title);
             float tabWidth = textWidth + tabPadding;
-            
+
             var tabRect = new SKRect(x, _tabBarBounds.Top, x + tabWidth, _tabBarBounds.Bottom);
-            
+
             // Draw tab background
             bool isActive = i == _activePanelIndex;
             bool isHovered = i == _hoveredTabIndex;
-            
+
             SKColor tabColor;
             if (isActive) tabColor = DevToolsTheme.TabActive;
             else if (isHovered) tabColor = DevToolsTheme.TabHover;
             else tabColor = DevToolsTheme.TabInactive;
-            
+
             using var tabPaint = DevToolsTheme.CreateFillPaint(tabColor);
             canvas.DrawRect(tabRect, tabPaint);
-            
+
             // Draw active indicator
             if (isActive)
             {
                 using var activePaint = DevToolsTheme.CreateFillPaint(DevToolsTheme.TabBorder);
                 canvas.DrawRect(new SKRect(x, _tabBarBounds.Bottom - 2, x + tabWidth, _tabBarBounds.Bottom), activePaint);
             }
-            
+
             // Draw tab text
-            textPaint.Color = isActive ? DevToolsTheme.TextPrimary : DevToolsTheme.TextSecondary;
-            float textY = _tabBarBounds.MidY + textPaint.TextSize / 3;
-            canvas.DrawText(panel.Title, x + tabPadding / 2, textY, textPaint);
+            using var tabTextPaint = DevToolsTheme.CreateTextColorPaint(isActive ? DevToolsTheme.TextPrimary : DevToolsTheme.TextSecondary);
+            float textY = _tabBarBounds.MidY + tabFont.Size / 3;
+            canvas.DrawText(panel.Title, x + tabPadding / 2, textY, tabFont, tabTextPaint);
             
             x += tabWidth + 2;
         }
@@ -285,15 +285,17 @@ public class DevToolsController : IDisposable
             canvas.DrawCircle(closeX, closeY, 14, hoverPaint);
             
             // Draw "Close DevTools" text
-            using var hintPaint = DevToolsTheme.CreateUITextPaint(DevToolsTheme.TextSecondary, DevToolsTheme.FontSizeSmall);
+            using var hintFont = DevToolsTheme.CreateUIFont(DevToolsTheme.FontSizeSmall);
+            using var hintPaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextSecondary);
             string hint = "Close DevTools";
-            float hintWidth = hintPaint.MeasureText(hint);
-            canvas.DrawText(hint, closeX - 30 - hintWidth, closeY + 5, hintPaint);
+            float hintWidth = hintFont.MeasureText(hint);
+            canvas.DrawText(hint, closeX - 30 - hintWidth, closeY + 5, hintFont, hintPaint);
         }
 
-        using var closePaint = DevToolsTheme.CreateTextPaint(DevToolsTheme.TextPrimary, DevToolsTheme.FontSizeLarge * 1.2f);
-        closePaint.TextAlign = SKTextAlign.Center;
-        canvas.DrawText("×", closeX, closeY + 6, closePaint);
+        using var closeFont = DevToolsTheme.CreateTextFont(DevToolsTheme.FontSizeLarge * 1.2f);
+        using var closePaint = DevToolsTheme.CreateTextColorPaint(DevToolsTheme.TextPrimary);
+        float closeTextWidth = closeFont.MeasureText("×");
+        canvas.DrawText("×", closeX - closeTextWidth / 2, closeY + 6, closeFont, closePaint);
         
         // Draw bottom border of tab bar
         using var borderPaint = DevToolsTheme.CreateStrokePaint(DevToolsTheme.Border);
@@ -393,11 +395,11 @@ public class DevToolsController : IDisposable
         float tabX = _tabBarBounds.Left + DevToolsTheme.PaddingNormal;
         float tabPadding = DevToolsTheme.PaddingLarge * 2;
         
-        using var textPaint = DevToolsTheme.CreateUITextPaint(size: DevToolsTheme.FontSizeMedium);
-        
+        using var tabFont = DevToolsTheme.CreateUIFont(DevToolsTheme.FontSizeMedium);
+
         for (int i = 0; i < _panels.Count; i++)
         {
-            float textWidth = textPaint.MeasureText(_panels[i].Title);
+            float textWidth = tabFont.MeasureText(_panels[i].Title);
             float tabWidth = textWidth + tabPadding;
             
             if (x >= tabX && x <= tabX + tabWidth)
