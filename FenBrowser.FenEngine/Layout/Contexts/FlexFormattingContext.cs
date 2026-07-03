@@ -1282,19 +1282,7 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
                 if (!resolvedPercentHeight)
                 {
-                    bool hasInFlowChildren = box.Children.Any(child =>
-                        child != null &&
-                        !child.IsOutOfFlow &&
-                        child.ComputedStyle?.Display?.Contains("none", StringComparison.OrdinalIgnoreCase) != true &&
-                        !IsIgnorableFlexItem(child));
-                    if (!hasInFlowChildren &&
-                        LayoutHelper.TryResolveLineHeight(box.ComputedStyle, out var resolvedLineHeight) &&
-                        resolvedLineHeight > 0f)
-                    {
-                        // Empty/leaf flex wrappers can still rely on line-height when height is auto.
-                        height = resolvedLineHeight;
-                    }
-                    else if (!string.IsNullOrEmpty(box.ComputedStyle?.HeightExpression))
+                    if (!string.IsNullOrEmpty(box.ComputedStyle?.HeightExpression))
                     {
                         float parentHeight = state.AvailableSize.Height;
                         if (float.IsInfinity(parentHeight) || parentHeight <= 0)
@@ -1304,6 +1292,31 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                             parentHeight,
                             state.ViewportWidth,
                             state.ViewportHeight);
+                    }
+                    else if (TryResolveAspectRatioAutoHeight(
+                                 box.ComputedStyle,
+                                 width,
+                                 horizontalChrome,
+                                 verticalChrome,
+                                 isBorderBox,
+                                 out var aspectHeight))
+                    {
+                        height = aspectHeight;
+                    }
+                    else
+                    {
+                        bool hasInFlowChildren = box.Children.Any(child =>
+                            child != null &&
+                            !child.IsOutOfFlow &&
+                            child.ComputedStyle?.Display?.Contains("none", StringComparison.OrdinalIgnoreCase) != true &&
+                            !IsIgnorableFlexItem(child));
+                        if (!hasInFlowChildren &&
+                            LayoutHelper.TryResolveLineHeight(box.ComputedStyle, out var resolvedLineHeight) &&
+                            resolvedLineHeight > 0f)
+                        {
+                            // Empty/leaf flex wrappers can still rely on line-height when height is auto.
+                            height = resolvedLineHeight;
+                        }
                     }
                 }
             }
@@ -1584,6 +1597,42 @@ namespace FenBrowser.FenEngine.Layout.Contexts
 
             // Sync boxes (Content -> Padding -> Border -> Margin)
             LayoutBoxOps.ComputeBoxModelFromContent(box, width, height);
+        }
+
+        private static bool TryResolveAspectRatioAutoHeight(
+            CssComputed style,
+            float contentWidth,
+            float horizontalChrome,
+            float verticalChrome,
+            bool isBorderBox,
+            out float contentHeight)
+        {
+            contentHeight = 0f;
+
+            double? ratioValue = style?.AspectRatio;
+            if (!ratioValue.HasValue ||
+                ratioValue.Value <= 0d ||
+                double.IsNaN(ratioValue.Value) ||
+                double.IsInfinity(ratioValue.Value) ||
+                !float.IsFinite(contentWidth) ||
+                contentWidth <= 0f)
+            {
+                return false;
+            }
+
+            float ratio = (float)ratioValue.Value;
+            if (isBorderBox)
+            {
+                float borderBoxWidth = contentWidth + horizontalChrome;
+                float borderBoxHeight = borderBoxWidth / ratio;
+                contentHeight = Math.Max(0f, borderBoxHeight - verticalChrome);
+            }
+            else
+            {
+                contentHeight = contentWidth / ratio;
+            }
+
+            return float.IsFinite(contentHeight) && contentHeight >= 0f;
         }
 
         private static bool HasNegativeInlineMargins(LayoutBox item)
