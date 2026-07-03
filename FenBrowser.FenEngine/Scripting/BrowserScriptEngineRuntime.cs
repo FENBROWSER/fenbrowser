@@ -3751,6 +3751,191 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 // create script URLs for deferred bundle loading.  Without this,
                 // the deferred-script processor silently skips all dynamic script
                 // injection and the React app never mounts.
+                // URLSearchParams: enough of the WHATWG interface for real-site
+                // query parsing and analytics/bootstrap code.
+                globalThis.URLSearchParams = function URLSearchParams(init) {
+                    if (!(this instanceof URLSearchParams)) {
+                        throw new TypeError("Failed to construct 'URLSearchParams': Please use the 'new' operator.");
+                    }
+
+                    this._pairs = [];
+                    if (init == null) {
+                        return;
+                    }
+
+                    if (init instanceof URLSearchParams) {
+                        for (var cloneIndex = 0; cloneIndex < init._pairs.length; cloneIndex++) {
+                            this._pairs.push({ name: init._pairs[cloneIndex].name, value: init._pairs[cloneIndex].value });
+                        }
+                        return;
+                    }
+
+                    if (typeof init === 'string') {
+                        var query = init.charAt(0) === '?' ? init.slice(1) : init;
+                        if (query.length === 0) {
+                            return;
+                        }
+
+                        var pieces = query.split('&');
+                        for (var pieceIndex = 0; pieceIndex < pieces.length; pieceIndex++) {
+                            if (pieces[pieceIndex] === '') {
+                                continue;
+                            }
+
+                            var equalsIndex = pieces[pieceIndex].indexOf('=');
+                            var rawName = equalsIndex >= 0 ? pieces[pieceIndex].slice(0, equalsIndex) : pieces[pieceIndex];
+                            var rawValue = equalsIndex >= 0 ? pieces[pieceIndex].slice(equalsIndex + 1) : '';
+                            this.append(decodeParam(rawName), decodeParam(rawValue));
+                        }
+                        return;
+                    }
+
+                    if (Array.isArray(init)) {
+                        for (var pairIndex = 0; pairIndex < init.length; pairIndex++) {
+                            var pair = init[pairIndex];
+                            if (!pair || pair.length < 2) {
+                                throw new TypeError("URLSearchParams sequence entries must be pairs.");
+                            }
+                            this.append(pair[0], pair[1]);
+                        }
+                        return;
+                    }
+
+                    if (typeof init === 'object') {
+                        var keys = Object.keys(init);
+                        for (var keyIndex = 0; keyIndex < keys.length; keyIndex++) {
+                            this.append(keys[keyIndex], init[keys[keyIndex]]);
+                        }
+                    }
+                };
+
+                function decodeParam(value) {
+                    var text = String(value).split('+').join(' ');
+                    try {
+                        return decodeURIComponent(text);
+                    } catch (_) {
+                        return text;
+                    }
+                }
+
+                function encodeParam(value) {
+                    return encodeURIComponent(String(value)).split('%20').join('+');
+                }
+
+                function createUrlSearchParamsIterator(items) {
+                    var index = 0;
+                    return {
+                        next: function () {
+                            if (index >= items.length) {
+                                return { value: undefined, done: true };
+                            }
+                            return { value: items[index++], done: false };
+                        }
+                    };
+                }
+
+                URLSearchParams.prototype.append = function (name, value) {
+                    this._pairs.push({ name: String(name), value: String(value) });
+                };
+                URLSearchParams.prototype.delete = function (name) {
+                    name = String(name);
+                    for (var index = this._pairs.length - 1; index >= 0; index--) {
+                        if (this._pairs[index].name === name) {
+                            this._pairs.splice(index, 1);
+                        }
+                    }
+                };
+                URLSearchParams.prototype.get = function (name) {
+                    name = String(name);
+                    for (var index = 0; index < this._pairs.length; index++) {
+                        if (this._pairs[index].name === name) {
+                            return this._pairs[index].value;
+                        }
+                    }
+                    return null;
+                };
+                URLSearchParams.prototype.getAll = function (name) {
+                    name = String(name);
+                    var values = [];
+                    for (var index = 0; index < this._pairs.length; index++) {
+                        if (this._pairs[index].name === name) {
+                            values.push(this._pairs[index].value);
+                        }
+                    }
+                    return values;
+                };
+                URLSearchParams.prototype.has = function (name) {
+                    return this.get(name) !== null;
+                };
+                URLSearchParams.prototype.set = function (name, value) {
+                    name = String(name);
+                    value = String(value);
+                    var found = false;
+                    for (var index = this._pairs.length - 1; index >= 0; index--) {
+                        if (this._pairs[index].name !== name) {
+                            continue;
+                        }
+
+                        if (!found) {
+                            this._pairs[index].value = value;
+                            found = true;
+                        } else {
+                            this._pairs.splice(index, 1);
+                        }
+                    }
+                    if (!found) {
+                        this.append(name, value);
+                    }
+                };
+                URLSearchParams.prototype.sort = function () {
+                    this._pairs.sort(function (left, right) {
+                        return left.name < right.name ? -1 : (left.name > right.name ? 1 : 0);
+                    });
+                };
+                URLSearchParams.prototype.forEach = function (callback, thisArg) {
+                    if (typeof callback !== 'function') {
+                        throw new TypeError('URLSearchParams.forEach callback must be a function.');
+                    }
+                    for (var index = 0; index < this._pairs.length; index++) {
+                        callback.call(thisArg, this._pairs[index].value, this._pairs[index].name, this);
+                    }
+                };
+                URLSearchParams.prototype.entries = function () {
+                    var items = [];
+                    for (var index = 0; index < this._pairs.length; index++) {
+                        items.push([this._pairs[index].name, this._pairs[index].value]);
+                    }
+                    return createUrlSearchParamsIterator(items);
+                };
+                URLSearchParams.prototype.keys = function () {
+                    var items = [];
+                    for (var index = 0; index < this._pairs.length; index++) {
+                        items.push(this._pairs[index].name);
+                    }
+                    return createUrlSearchParamsIterator(items);
+                };
+                URLSearchParams.prototype.values = function () {
+                    var items = [];
+                    for (var index = 0; index < this._pairs.length; index++) {
+                        items.push(this._pairs[index].value);
+                    }
+                    return createUrlSearchParamsIterator(items);
+                };
+                URLSearchParams.prototype.toString = function () {
+                    var parts = [];
+                    for (var index = 0; index < this._pairs.length; index++) {
+                        parts.push(encodeParam(this._pairs[index].name) + '=' + encodeParam(this._pairs[index].value));
+                    }
+                    return parts.join('&');
+                };
+                if (typeof Symbol === 'function' && Symbol.iterator) {
+                    URLSearchParams.prototype[Symbol.iterator] = URLSearchParams.prototype.entries;
+                }
+                Object.defineProperty(URLSearchParams.prototype, 'size', {
+                    get: function () { return this._pairs.length; },
+                    configurable: true
+                });
+
                 var _trustedPolicies = Object.create(null);
                 globalThis.trustedTypes = {
                     createPolicy: function (name, rules) {

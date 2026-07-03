@@ -70,6 +70,45 @@ namespace FenBrowser.Tests.Scripting
             Assert.Equal("ok", result?.ToString());
         }
 
+        [Fact]
+        public async Task UrlSearchParams_ParsesAndMutatesQueryPairs()
+        {
+            var baseUri = new Uri("https://github.com/?q=fen+browser&q=second&empty=");
+            var document = new HtmlParser("<html><body></body></html>", baseUri).Parse();
+            var engine = new FenJsBrowserScriptEngine(CreateHost())
+            {
+                Sandbox = SandboxPolicy.AllowAll
+            };
+
+            await engine.SetDomAsync(document.DocumentElement, baseUri);
+
+            var result = engine.Evaluate(
+                """
+                (function () {
+                    var params = new URLSearchParams(location.search);
+                    params.append('new key', 'a b');
+                    params.set('empty', 'filled');
+
+                    var seen = [];
+                    params.forEach(function (value, key) {
+                        seen.push(key + '=' + value);
+                    });
+
+                    return [
+                        typeof URLSearchParams,
+                        params.get('q'),
+                        params.getAll('q').join(','),
+                        params.has('empty'),
+                        params.get('empty'),
+                        seen.indexOf('q=fen browser') >= 0,
+                        params.toString().indexOf('new+key=a+b') >= 0
+                    ].join('|');
+                })();
+                """);
+
+            Assert.Equal("function|fen browser|fen browser,second|true|filled|true|true", result?.ToString());
+        }
+
         private static JsHostAdapter CreateHost()
         {
             return new JsHostAdapter(
