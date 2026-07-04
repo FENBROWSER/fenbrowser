@@ -3,6 +3,9 @@
 </p>
 
 <p align="center">
+  <a href="https://discord.com/invite/ZzbWPuwnTm">
+    <img src="https://img.shields.io/badge/Community-Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord Community" />
+  </a>
   <img src="https://img.shields.io/badge/.NET_10-512BD4?style=for-the-badge&logo=dotnet&logoColor=white" alt=".NET 10" />
   <img src="https://img.shields.io/badge/C%23-239120?style=for-the-badge&logo=csharp&logoColor=white" alt="C#" />
   <img src="https://img.shields.io/badge/Skia-0B9BD7?style=for-the-badge&logo=google&logoColor=white" alt="SkiaSharp" />
