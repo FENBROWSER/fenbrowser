@@ -2467,7 +2467,7 @@ namespace FenBrowser.Tooling
                     {
                         ChromeManager.Instance.Initialize("about:blank");
                         var server = new FenBrowser.WebDriver.WebDriverServer(driverPort);
-                        // server.SetDriver(new HostBrowserDriver()); // Legacy removed
+                        server.SetDriver(new HostBrowserDriver());
                         server.Start();
                     }
                     catch (Exception ex)

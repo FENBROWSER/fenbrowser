@@ -19,6 +19,7 @@ using FenBrowser.FenEngine.Security; // Added
 using FenBrowser.Core.Logging;
 using FenBrowser.FenEngine.DevTools;
 using FenBrowser.FenEngine.Layout;
+using FenBrowser.FenEngine.Scripting;
 using SkiaSharp;
 
 using FenBrowser.FenEngine.Core.Interfaces;
@@ -214,6 +215,7 @@ namespace FenBrowser.FenEngine.Rendering
         private const string WebDriverShadowHostProbeAttribute = "data-fen-wd-shadow-host-probe";
         private const string WebDriverShadowRootProbeAttribute = "data-fen-wd-shadow-root-probe";
         private const string WebDriverFrameScriptsHydratedAttribute = "data-fen-wd-frame-scripts-hydrated";
+        private const string WebDriverFrameScriptsHydratedUrlAttribute = "data-fen-wd-frame-scripts-hydrated-url";
         private const string WebDriverUploadedFilesAttribute = "data-fen-wd-uploaded-files";
         private static readonly bool WebDriverFrameTraceEnabled =
             string.Equals(Environment.GetEnvironmentVariable("FEN_WEBDRIVER_FRAME_TRACE"), "1", StringComparison.Ordinal);
@@ -242,7 +244,6 @@ namespace FenBrowser.FenEngine.Rendering
         private Uri _current;
         private long _latestNavigationId;
         private long _activeRenderNavigationId;
-        private long _googleChallengeRecoveryFollowedNavigationId = -1;
         private long _engineDiagnosticsCapturedNavigationId;
         private long _renderedDiagnosticsCapturedNavigationId;
         private int _engineDiagnosticsCapturedNodeCount;
@@ -311,6 +312,8 @@ namespace FenBrowser.FenEngine.Rendering
         private int _pendingWebDriverClickClientX;
         private int _pendingWebDriverClickClientY;
         private bool _suppressNextDomClickDispatchInHandleElementClick;
+        private readonly object _programmaticNavigationLock = new();
+        private string _programmaticNavigationInFlightUrl;
 
         public event EventHandler<Uri> Navigated;
         public event EventHandler<string> NavigationFailed;
@@ -734,6 +737,7 @@ namespace FenBrowser.FenEngine.Rendering
                 req.RequestUri = MapRuntimeUri(req.RequestUri);
                 return _resources.SendAsync(req, CurrentPolicy);
             };
+            _engine.FrameElementLoader = LoadFrameElementAsync;
 
             // Wire up DevTools Network Monitoring
             _resources.NetworkRequestStarting += (id, req) =>
@@ -1009,10 +1013,12 @@ namespace FenBrowser.FenEngine.Rendering
                     }
 
                     var fetchUri = MapRuntimeUri(uri);
+                    // SkiaSharp 4.x supports PNG, JPEG, WebP, GIF, BMP, ICO — does NOT support AVIF.
+                    // Requesting AVIF tells the server we can handle it, but decoding will fail.
                     return await _resources.FetchBytesAsync(
                             fetchUri,
                             referer: _current,
-                            accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                            accept: "image/webp,image/apng,image/png,image/jpeg,image/*,*/*;q=0.8",
                             secFetchDest: "image")
                         .ConfigureAwait(false);
                 },
@@ -1034,10 +1040,12 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                         EngineLogCompat.Debug("[ImageLoader-Relayout] Triggering re-layout after image load", LogCategory.Rendering);
                         var dom = _engine.GetActiveDom();
-                        if (dom != null)
-                        {
-                            RepaintReady?.Invoke(this, dom);
-                        }
+                        // Always fire RepaintReady even when the active DOM is null.
+                        // The BrowserIntegration handler ignores the payload and calls
+                        // GetRenderSnapshot() independently — but if we skip the invoke
+                        // entirely, image loads that complete during navigation gaps
+                        // never trigger a paint-tree rebuild and images stay blank.
+                        RepaintReady?.Invoke(this, dom);
                     }
                     catch (Exception ex)
                     {
@@ -1133,6 +1141,13 @@ namespace FenBrowser.FenEngine.Rendering
 
             if (_disposed) return false;
                 if (string.IsNullOrWhiteSpace(url)) return false;
+
+                using var programmaticReservation = ReserveProgrammaticNavigation(url, requestKind);
+                if (!programmaticReservation.Accepted) return false;
+                if (!string.IsNullOrEmpty(programmaticReservation.NormalizedUrl))
+                {
+                    url = programmaticReservation.NormalizedUrl;
+                }
 
                 _currentFrameElement = null;
                 _frameContextInvalidated = false;
@@ -1289,17 +1304,6 @@ namespace FenBrowser.FenEngine.Rendering
                         $"[BrowserHost] Transient navigation failure ({result.Status}) for '{url}'. Retrying {attempt}/{maxTransientNavAttempts - 1} after {retryDelayMs}ms.",
                         LogCategory.Network);
                     await Task.Delay(retryDelayMs);
-                }
-
-                if (_googleChallengeRecoveryFollowedNavigationId != navigationId &&
-                    TryResolveGoogleSearchRecoveryNavigation(result, out var googleRecoveryUri))
-                {
-                    TryLogInfo(
-                        $"[BrowserHost] Google search challenge detected. Following recovery URL: {googleRecoveryUri.AbsoluteUri}",
-                        LogCategory.Navigation);
-                    result = await _navManager.NavigateAsync(googleRecoveryUri.AbsoluteUri, NavigationRequestKind.Programmatic);
-                    url = googleRecoveryUri.AbsoluteUri;
-                    _googleChallengeRecoveryFollowedNavigationId = navigationId;
                 }
 
                 // Populate certificate info captured by the TLS callback into the result
@@ -1540,6 +1544,103 @@ pre {{
                 }
                 RaiseNavigationFailed(details);
                 return false;
+            }
+        }
+
+        private ProgrammaticNavigationReservation ReserveProgrammaticNavigation(
+            string url,
+            NavigationRequestKind requestKind)
+        {
+            if (requestKind != NavigationRequestKind.Programmatic ||
+                !TryNormalizeNavigationUrl(url, out var normalizedUrl))
+            {
+                return ProgrammaticNavigationReservation.AcceptedNoop;
+            }
+
+            lock (_programmaticNavigationLock)
+            {
+                if (string.Equals(_programmaticNavigationInFlightUrl, normalizedUrl, StringComparison.OrdinalIgnoreCase))
+                {
+                    TryLogInfo(
+                        $"[BrowserHost] Suppressing duplicate programmatic navigation while target is already loading: '{normalizedUrl}'",
+                        LogCategory.Navigation);
+                    return ProgrammaticNavigationReservation.Rejected;
+                }
+
+                _programmaticNavigationInFlightUrl = normalizedUrl;
+                return new ProgrammaticNavigationReservation(this, normalizedUrl, accepted: true);
+            }
+        }
+
+        private bool TryNormalizeNavigationUrl(string url, out string normalizedUrl)
+        {
+            normalizedUrl = null;
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                return false;
+            }
+
+            if (_current != null && IsExplicitRelativeUrl(url) && Uri.TryCreate(_current, url, out var relative))
+            {
+                normalizedUrl = relative.AbsoluteUri;
+                return true;
+            }
+
+            if (Uri.TryCreate(url, UriKind.Absolute, out var parsed))
+            {
+                normalizedUrl = parsed.AbsoluteUri;
+                return true;
+            }
+
+            var candidate = "https://" + url.TrimStart('/');
+            if (Uri.TryCreate(candidate, UriKind.Absolute, out var normalized))
+            {
+                normalizedUrl = normalized.AbsoluteUri;
+                return true;
+            }
+
+            return false;
+        }
+
+        private void ReleaseProgrammaticNavigation(string normalizedUrl)
+        {
+            lock (_programmaticNavigationLock)
+            {
+                if (string.Equals(_programmaticNavigationInFlightUrl, normalizedUrl, StringComparison.OrdinalIgnoreCase))
+                {
+                    _programmaticNavigationInFlightUrl = null;
+                }
+            }
+        }
+
+        private sealed class ProgrammaticNavigationReservation : IDisposable
+        {
+            public static readonly ProgrammaticNavigationReservation AcceptedNoop = new(null, null, accepted: true);
+            public static readonly ProgrammaticNavigationReservation Rejected = new(null, null, accepted: false);
+
+            private BrowserHost _owner;
+            private readonly string _normalizedUrl;
+
+            public ProgrammaticNavigationReservation(BrowserHost owner, string normalizedUrl, bool accepted)
+            {
+                _owner = owner;
+                _normalizedUrl = normalizedUrl;
+                Accepted = accepted;
+                NormalizedUrl = normalizedUrl;
+            }
+
+            public bool Accepted { get; }
+
+            public string NormalizedUrl { get; }
+
+            public void Dispose()
+            {
+                var owner = _owner;
+                _owner = null;
+                if (owner != null && !string.IsNullOrEmpty(_normalizedUrl))
+                {
+                    owner.ReleaseProgrammaticNavigation(_normalizedUrl);
+                }
             }
         }
 
@@ -1826,7 +1927,8 @@ pre {{
             await Task.CompletedTask;
             EnsureFrameExecutionContextAvailable();
             TryLogDebug($"[BrowserApi] ExecuteScriptAsync called with script: {script}", LogCategory.JavaScript);
-            return _engine.Evaluate(script);
+            var result = _engine.Evaluate(script);
+            return PostProcessFenJsResult(result);
         }
 
         public async Task<string> FindElementAsync(string strategy, string value)
@@ -2665,7 +2767,7 @@ pre {{
         {
             const int settleTimeoutMs = 1500;
             const string settledState = "subresources=settled;renderSubresourcesPending=0;imagesPending=0;fontsPending=0;tasksPending=0;microtasksPending=0";
-            var loop = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
+            var loop = _engine.EventLoopCoordinator;
 
             bool IsSettledNow()
             {
@@ -2962,97 +3064,12 @@ pre {{
             return result.Status == FetchStatus.ConnectionFailed || result.Status == FetchStatus.Timeout;
         }
 
-        private static bool TryResolveGoogleSearchRecoveryNavigation(FetchResult result, out Uri recoveryUri)
-        {
-            recoveryUri = null;
-            if (result == null || result.Status != FetchStatus.Success || string.IsNullOrWhiteSpace(result.Content))
-            {
-                return false;
-            }
-
-            var finalUri = result.FinalUri;
-            if (finalUri == null || !IsGoogleSearchUri(finalUri))
-            {
-                return false;
-            }
-
-            // Already on recovery URL; avoid loops.
-            if (finalUri.Query.IndexOf("emsg=SG_REL", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                return false;
-            }
-
-            var html = result.Content;
-            var hasGoogleTroubleBanner =
-                html.IndexOf("id=\"yvlrue\"", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                html.IndexOf("id='yvlrue'", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                html.IndexOf("trouble accessing google search", StringComparison.OrdinalIgnoreCase) >= 0;
-            if (!hasGoogleTroubleBanner)
-            {
-                return false;
-            }
-
-            var linkMatch = System.Text.RegularExpressions.Regex.Match(
-                html,
-                "href\\s*=\\s*['\\\"](?<href>[^'\\\"]*emsg=SG_REL[^'\\\"]*)['\\\"]",
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            if (!linkMatch.Success)
-            {
-                return false;
-            }
-
-            var hrefValue = System.Net.WebUtility.HtmlDecode(linkMatch.Groups["href"].Value ?? string.Empty);
-            if (string.IsNullOrWhiteSpace(hrefValue))
-            {
-                return false;
-            }
-
-            if (!Uri.TryCreate(finalUri, hrefValue, out var candidate))
-            {
-                return false;
-            }
-
-            if (!IsGoogleSearchUri(candidate))
-            {
-                return false;
-            }
-
-            recoveryUri = candidate;
-            return true;
-        }
-
         private static bool IsHtmlContentType(string contentType)
         {
             if (string.IsNullOrWhiteSpace(contentType)) return false;
             var ct = contentType.Trim();
             return ct.StartsWith("text/html", StringComparison.OrdinalIgnoreCase) ||
                    ct.StartsWith("application/xhtml+xml", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool IsGoogleSearchUri(Uri uri)
-        {
-            if (uri == null)
-            {
-                return false;
-            }
-
-            if (!uri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase) &&
-                !uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase))
-            {
-                return false;
-            }
-
-            var host = uri.Host ?? string.Empty;
-            var isGoogleHost =
-                host.Equals("google.com", StringComparison.OrdinalIgnoreCase) ||
-                host.Equals("www.google.com", StringComparison.OrdinalIgnoreCase) ||
-                host.EndsWith(".google.com", StringComparison.OrdinalIgnoreCase);
-            if (!isGoogleHost)
-            {
-                return false;
-            }
-
-            return uri.AbsolutePath.StartsWith("/search", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsRetriableTopLevelScheme(string url)
@@ -3099,10 +3116,9 @@ pre {{
                 ScreenY = y
             };
 
-            bool handled = false;
             try
             {
-                handled = _inputManager.ProcessEvent(inputEvent, renderContext, context);
+                _inputManager.ProcessEvent(inputEvent, renderContext, context);
             }
             catch (FenBrowser.FenEngine.Errors.FenTimeoutError timeoutEx)
             {
@@ -3117,12 +3133,12 @@ pre {{
 
             var eventInit = new FenBrowser.FenEngine.Scripting.BrowserDomEventInit
             {
-                ClientX = x,
-                ClientY = y,
-                PageX = x,
-                PageY = y,
-                ScreenX = x,
-                ScreenY = y,
+                ClientX = inputEvent.X,
+                ClientY = inputEvent.Y,
+                PageX = inputEvent.PageX,
+                PageY = inputEvent.PageY,
+                ScreenX = inputEvent.ScreenX,
+                ScreenY = inputEvent.ScreenY,
                 Button = button,
                 Buttons = buttonMask,
                 PointerId = 1,
@@ -3134,12 +3150,13 @@ pre {{
             };
             var defaultAllowed = true;
 
-            if (string.Equals(type, "click", StringComparison.OrdinalIgnoreCase))
+            var isClick = string.Equals(type, "click", StringComparison.OrdinalIgnoreCase);
+            if (isClick)
             {
                 _lastClickHadTarget = inputEvent.Target != null;
                 _lastClickTarget = inputEvent.Target;
-                // If click target is unknown (stale context), allow fallback activation.
-                _lastClickDefaultAllowed = inputEvent.Target == null || handled;
+                _lastClickDefaultAllowed = true;
+                _suppressNextDomClickDispatchInHandleElementClick = false;
             }
 
             if (inputEvent.Target != null && IsScriptDomInputEvent(type))
@@ -3150,6 +3167,16 @@ pre {{
                 {
                     defaultAllowed = _engine.DispatchPointerEvent(inputEvent.Target, pointerAlias, eventInit) && defaultAllowed;
                 }
+            }
+
+            if (isClick)
+            {
+                // BrowserIntegration emits the DOM click through this path before
+                // calling HandleElementClick for default activation. Preserve the
+                // FenJS preventDefault() result and avoid synthesizing a second
+                // legacy DOM click from HandleElementClick.
+                _lastClickDefaultAllowed = inputEvent.Target == null || defaultAllowed;
+                _suppressNextDomClickDispatchInHandleElementClick = inputEvent.Target != null;
             }
 
             if (string.Equals(type, "mousemove", StringComparison.OrdinalIgnoreCase))
@@ -4274,6 +4301,84 @@ pre {{
             return null;
         }
 
+        private async Task LoadFrameElementAsync(Element frameElement, Uri frameUri)
+        {
+            if (!IsFrameElement(frameElement) || frameUri == null)
+            {
+                return;
+            }
+
+            if (!frameElement.IsConnected)
+            {
+                return;
+            }
+
+            var currentFrameUri = ResolveFrameBaseUri(frameElement);
+            if (currentFrameUri != null &&
+                !string.Equals(currentFrameUri.AbsoluteUri, frameUri.AbsoluteUri, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (ResolveFrameSearchRoot(frameElement) != null &&
+                IsFrameScriptsHydratedForUri(frameElement, frameUri))
+            {
+                return;
+            }
+
+            try
+            {
+                TryLogInfo($"[BrowserHost] Loading iframe '{frameUri}'", LogCategory.Navigation);
+                var result = await _resources.FetchTextDetailedAsync(
+                    frameUri,
+                    _current,
+                    accept: "text/html,application/xhtml+xml",
+                    secFetchDest: "iframe").ConfigureAwait(false);
+
+                if (result?.Status != FetchStatus.Success || string.IsNullOrWhiteSpace(result.Content))
+                {
+                    TryLogWarn(
+                        $"[BrowserHost] iframe load did not produce a document for '{frameUri}' status='{result?.Status.ToString() ?? "<null>"}'",
+                        LogCategory.Navigation);
+                    return;
+                }
+
+                var finalUri = result.FinalUri ?? frameUri;
+                var parsedDocument = HtmlParser.ParseDocument(
+                    result.Content,
+                    new HtmlParserOptions { BaseUri = finalUri });
+                var parsedRoot = parsedDocument?.DocumentElement;
+                if (parsedRoot == null)
+                {
+                    TryLogWarn($"[BrowserHost] iframe parse produced no document element for '{finalUri}'", LogCategory.Navigation);
+                    return;
+                }
+
+                currentFrameUri = ResolveFrameBaseUri(frameElement);
+                if (currentFrameUri != null &&
+                    !string.Equals(currentFrameUri.AbsoluteUri, frameUri.AbsoluteUri, StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                while (frameElement.FirstChild != null)
+                {
+                    frameElement.RemoveChild(frameElement.FirstChild);
+                }
+
+                frameElement.AppendChild(parsedDocument);
+                await TryInitializeFrameScriptsAsync(frameElement, parsedRoot, finalUri).ConfigureAwait(false);
+                SyncScriptContextToSelectedBrowsingContext();
+                TryLogInfo(
+                    $"[BrowserHost] iframe document attached final='{finalUri}' root='{parsedRoot.TagName}'",
+                    LogCategory.Navigation);
+            }
+            catch (Exception ex)
+            {
+                TryLogWarn($"[BrowserHost] failed loading iframe '{frameUri}': {ex.Message}", LogCategory.Navigation);
+            }
+        }
+
         private async Task EnsureFrameSearchRootLoadedAsync(Element frameElement)
         {
             if (!IsFrameElement(frameElement))
@@ -4368,7 +4473,7 @@ pre {{
                     frameElement.RemoveChild(frameElement.FirstChild);
                 }
 
-                frameElement.AppendChild(parsedRoot);
+                frameElement.AppendChild(parsedDocument);
                 await TryInitializeFrameScriptsAsync(frameElement, parsedRoot, frameUri).ConfigureAwait(false);
                 TraceWebDriverFrame(
                     $"EnsureFrameRoot attached parsedRoot='{parsedRoot.TagName}' frameAfter={DescribeFrameElement(frameElement)}");
@@ -4416,7 +4521,7 @@ pre {{
                 return;
             }
 
-            if (string.Equals(frameElement.GetAttribute(WebDriverFrameScriptsHydratedAttribute), "1", StringComparison.Ordinal))
+            if (IsFrameScriptsHydratedForUri(frameElement, frameUri))
             {
                 return;
             }
@@ -4429,13 +4534,35 @@ pre {{
 
             try
             {
-                await jsEngine.SetDomAsync(frameRoot, frameUri).ConfigureAwait(false);
+                if (jsEngine is FenJsBrowserScriptEngine fenJsEngine)
+                {
+                    await fenJsEngine.SetSubdocumentDomAsync(frameRoot, frameUri).ConfigureAwait(false);
+                }
+                else
+                {
+                    await jsEngine.SetDomAsync(frameRoot, frameUri).ConfigureAwait(false);
+                }
+
                 frameElement.SetAttribute(WebDriverFrameScriptsHydratedAttribute, "1");
+                frameElement.SetAttribute(WebDriverFrameScriptsHydratedUrlAttribute, frameUri?.AbsoluteUri ?? string.Empty);
             }
             catch (Exception ex)
             {
                 TryLogWarn($"[WebDriverFrame] failed initializing frame scripts: {ex.Message}", LogCategory.Navigation);
             }
+        }
+
+        private static bool IsFrameScriptsHydratedForUri(Element frameElement, Uri frameUri)
+        {
+            if (frameElement == null ||
+                !string.Equals(frameElement.GetAttribute(WebDriverFrameScriptsHydratedAttribute), "1", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            var hydratedUrl = frameElement.GetAttribute(WebDriverFrameScriptsHydratedUrlAttribute) ?? string.Empty;
+            var requestedUrl = frameUri?.AbsoluteUri ?? string.Empty;
+            return string.Equals(hydratedUrl, requestedUrl, StringComparison.Ordinal);
         }
 
         private void SyncScriptContextToSelectedBrowsingContext()
@@ -6425,8 +6552,15 @@ pre {{
             {
                 return ConvertFenValueForWebDriver(fenValue);
             }
-            
-            return rawResult;
+
+            // Handle FenJS JsValue results (objects/host-objects that the
+            // basic ConvertFenJsValue cannot trivially flatten).
+            if (rawResult is FenBrowser.Js.Runtime.JsValue jsValue)
+            {
+                return PostProcessFenJsResult(jsValue);
+            }
+
+            return PostProcessFenJsResult(rawResult);
         }
 
         // Mousemove throttle: skip events closer than 16 ms (~60 fps)
@@ -6790,7 +6924,7 @@ pre {{
                 // while WebDriver execute/async is waiting for completion.
                 try
                 {
-                    var eventLoop = FenBrowser.FenEngine.Core.EventLoop.EventLoopCoordinator.Instance;
+                    var eventLoop = _engine.EventLoopCoordinator;
                     eventLoop.ProcessNextTask();
                     eventLoop.PerformMicrotaskCheckpoint();
                 }
@@ -6846,7 +6980,11 @@ pre {{
                     {
                         return ConvertFenValueForWebDriver(fenValue);
                     }
-                    return result;
+                    if (result is FenBrowser.Js.Runtime.JsValue jsResult)
+                    {
+                        return PostProcessFenJsResult(jsResult);
+                    }
+                    return PostProcessFenJsResult(result);
                 }
 
                 // Some WebDriver user-prompt fixture scripts intentionally create a modal
@@ -7991,6 +8129,40 @@ pre {{
                 // Trigger repaint 
                 TryInvokeRepaintReady(_engine.GetActiveDom());
             }
+        }
+
+        /// <summary>
+        /// Post-process a FenJS evaluation result for WebDriver serialization.
+        /// DOM elements and Documents are wrapped as WebElement tokens so the
+        /// WebDriver serialization layer emits proper element references.
+        /// Lists, dictionaries, and primitives pass through unchanged.
+        /// </summary>
+        private object PostProcessFenJsResult(object result)
+        {
+            if (result is FenBrowser.Core.Dom.V2.Element element)
+            {
+                return WebDriverElementTokenPrefix + GetOrRegisterElementId(element);
+            }
+            if (result is FenBrowser.Core.Dom.V2.Document doc)
+            {
+                var docElement = doc.DocumentElement;
+                if (docElement != null)
+                    return WebDriverElementTokenPrefix + GetOrRegisterElementId(docElement);
+            }
+            if (result is FenBrowser.Js.Runtime.JsValue jsValue)
+            {
+                // Fallback for callers that still pass raw JsValue.
+                // Convert via the script engine if available.
+                if (_engine.ScriptEngine != null)
+                {
+                    return PostProcessFenJsResult(
+                        _engine.ScriptEngine.ConvertJsValueToObject(jsValue));
+                }
+                if (jsValue.Tag == FenBrowser.Js.Runtime.JsValueTag.HostObject)
+                    return "[object HostObject]";
+                return "[object Object]";
+            }
+            return result;
         }
 
         private object ConvertFenValueForWebDriver(FenBrowser.FenEngine.Core.Interfaces.IValue fenValue)

@@ -40,42 +40,14 @@ namespace FenBrowser.WebDriver.Commands
                 throw new WebDriverException(ErrorCodes.JavaScriptError, "Browser not connected");
             }
 
-            var timeout = session.Timeouts.Script ?? 30000;
-            var syncExecutionWrapper = @"
-                var __wdCallback = arguments[arguments.length - 1];
-                var __wdAllArgs = Array.prototype.slice.call(arguments, 0, arguments.length - 1);
-                var __wdScriptBody = String(__wdAllArgs.shift() || '');
-                var __wdArgs = __wdAllArgs;
-                try {
-                    var __wdRunner = eval('(async function(arguments){' + __wdScriptBody + '})');
-                    var __wdResult = __wdRunner.call(window, __wdArgs);
-                    if (__wdResult && typeof __wdResult.then === 'function') {
-                        __wdResult.then(function(__wdValue) {
-                            __wdCallback(__wdValue);
-                        }, function(__wdError) {
-                            __wdCallback(Promise.reject(__wdError));
-                        });
-                    } else {
-                        __wdCallback(__wdResult);
-                    }
-                } catch (__wdError) {
-                    __wdCallback(Promise.reject(__wdError));
-                }";
-            var argsWithScript = new object[(args?.Length ?? 0) + 1];
-            argsWithScript[0] = script;
-            if (args != null && args.Length > 0)
-            {
-                Array.Copy(args, 0, argsWithScript, 1, args.Length);
-            }
-
             try
             {
-                var result = await _handler.Browser.ExecuteAsyncScriptAsync(syncExecutionWrapper, argsWithScript, timeout);
+                // Use the direct synchronous script execution path instead of the
+                // async-eval wrapper. The wrapper relies on Function.prototype.call,
+                // Promise.reject, and async-function construction via eval, which
+                // are not yet supported by the FenJS engine.
+                var result = await _handler.Browser.ExecuteScriptAsync(script, args);
                 return WebDriverResponse.Success(SerializeResult(result, session));
-            }
-            catch (TimeoutException)
-            {
-                throw new WebDriverException(ErrorCodes.ScriptTimeout, "Script execution timed out");
             }
             catch (WebDriverException)
             {

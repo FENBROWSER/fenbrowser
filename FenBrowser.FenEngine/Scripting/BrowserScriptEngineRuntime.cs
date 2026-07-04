@@ -30,6 +30,7 @@ using FenBrowser.FenEngine.Core.Interfaces;
 using FenBrowser.FenEngine.Layout;
 using FenBrowser.FenEngine.Rendering;
 using FenBrowser.FenEngine.Security;
+using DomRange = FenBrowser.Core.Dom.V2.Range;
 
 namespace FenBrowser.FenEngine.Scripting;
 
@@ -250,6 +251,7 @@ public interface IBrowserScriptEngine
     Action<Uri, string> CookieWriteBridge { get; set; }
     Action RequestRender { get; set; }
     Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
+    Func<Element, Uri, Task> FrameElementLoader { get; set; }
     Func<Element, object> LayoutBoxResolver { get; set; }
     SandboxPolicy Sandbox { get; set; }
     bool AllowExternalScripts { get; set; }
@@ -266,6 +268,8 @@ public interface IBrowserScriptEngine
     void NotifyPopState(object state);
     bool DispatchEventForElement(Element element, string eventName, BrowserDomEventInit eventInit = null);
     object Evaluate(string script);
+    bool TryResolveHostObject(FenBrowser.Js.Runtime.JsValue value, out object hostObject);
+    object ConvertJsValueToObject(FenBrowser.Js.Runtime.JsValue value);
     void SyncDomContext(Node domRoot, Uri baseUri = null);
     Task SetDomAsync(Node domRoot, Uri baseUri = null);
 }
@@ -286,6 +290,8 @@ public sealed class BrowserDomEventInit
     public bool IsPrimary { get; init; } = true;
     public bool Bubbles { get; init; } = true;
     public bool Cancelable { get; init; } = true;
+    public bool Composed { get; init; } = true;
+    public bool IsTrusted { get; init; } = true;
 }
 
 /// <summary>
@@ -309,6 +315,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private ConditionalWeakTable<object, Dictionary<string, JsValue>> _hostCallableCache = new();
     private ConditionalWeakTable<object, Dictionary<string, JsValue>> _hostPropertyStore = new();
     private ConditionalWeakTable<object, List<BrowserEventListener>> _elementEventListeners = new();
+    private ConditionalWeakTable<Element, List<BrowserEventListener>> _iframeWindowEventListeners = new();
+    private readonly Dictionary<object, string> _hostPrototypeNames =
+        new(ReferenceEqualityComparer.Instance);
+    private List<BrowserEventListener> _activeWindowEventListeners;
+    private JsValue _activeWindowEventTarget = JsValue.Undefined;
+    private Uri _activeParentBaseUri;
+    private bool _fenJsDomConstructorsInstalled;
     private long _temporaryFenJsGlobalCounter;
     private BytecodeCompiler _compiler;
     private BytecodeInterpreter _interpreter;
@@ -387,6 +400,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     public Action<Uri, string> CookieWriteBridge { get; set; }
     public Action RequestRender { get; set; }
     public Func<Uri, Uri, Task<string>> ExternalScriptFetcher { get; set; }
+    public Func<Element, Uri, Task> FrameElementLoader { get; set; }
     public Func<Element, object> LayoutBoxResolver { get; set; }
     public SandboxPolicy Sandbox { get; set; }
     public bool AllowExternalScripts { get; set; }
@@ -667,17 +681,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         if (element == null || string.IsNullOrWhiteSpace(eventName))
             return true;
 
-        var eventValue = CreateBrowserDomEventValue(element, eventName, eventInit, out var dispatchState);
-        DispatchElementEvent(element, eventName, eventValue, dispatchState);
-
-        // Look up event handler from the FenJS host property store and invoke it.
-        var handler = GetStoredHostPropertyOrUndefined(element, "on" + eventName);
-        if (_interpreter != null && _interpreter.CanCallValue(handler))
+        return RunFenJsWithLargeStack(() =>
         {
-            InvokeFenJsCallback(handler, ToHostOrNull(element, HostObjectKind.DomElement), eventValue);
-        }
-
-        return !dispatchState.DefaultPrevented;
+            lock (_fenJsLock)
+            {
+                using (ActivateSubdocumentWindowContext(element.OwnerDocument, null))
+                {
+                    var eventValue = CreateBrowserDomEventValue(element, eventName, eventInit, out var dispatchState);
+                    var defaultAllowed = DispatchEventFull(element, eventName, eventValue, dispatchState);
+                    _interpreter.PumpMicrotasks();
+                    RecordMicrotaskCheckpoint("event:" + eventName);
+                    return defaultAllowed;
+                }
+            }
+        });
     }
 
     public object Evaluate(string script)
@@ -708,8 +725,21 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return SetDomAsyncCore(domRoot, baseUri);
     }
 
-    private async Task SetDomAsyncCore(Node domRoot, Uri baseUri)
+    public Task SetSubdocumentDomAsync(Node domRoot, Uri baseUri = null)
     {
+        return SetDomAsyncCore(domRoot, baseUri, resetSession: false, restorePreviousContext: true);
+    }
+
+    private async Task SetDomAsyncCore(
+        Node domRoot,
+        Uri baseUri,
+        bool resetSession = true,
+        bool restorePreviousContext = false)
+    {
+        var previousDomRoot = _currentDomRoot;
+        var previousBaseUri = _currentBaseUri;
+        var previousReadyState = _documentReadyState;
+
         BeginScriptLoadingSnapshot(domRoot, baseUri);
         BeginEventLoopSnapshot(domRoot, baseUri);
         LogScriptLoading(
@@ -727,20 +757,43 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             return;
         }
 
-        BindFenJsDomContext(domRoot, baseUri, documentReadyState: "loading");
-        LogScriptLoading(
-            "SetDomReadyForScripts",
-            LogSeverity.Debug,
-            "[FenJsBridge] About to execute page scripts",
-            new Dictionary<string, object>
+        if (resetSession)
+        {
+            BindFenJsDomContext(domRoot, baseUri, documentReadyState: "loading");
+        }
+        else
+        {
+            RebindFenJsDomContext(domRoot, baseUri, documentReadyState: "loading");
+        }
+
+        var windowContext = !resetSession
+            ? ActivateSubdocumentWindowContext(domRoot, baseUri)
+            : null;
+
+        try
+        {
+            LogScriptLoading(
+                "SetDomReadyForScripts",
+                LogSeverity.Debug,
+                "[FenJsBridge] About to execute page scripts",
+                new Dictionary<string, object>
+                {
+                    ["domRootTag"] = (domRoot as Element)?.TagName ?? "null",
+                    ["descendantCount"] = domRoot.Descendants().Count()
+                });
+            WireInlineEventHandlers(domRoot);
+            await ExecutePageScriptsWithFenJsAsync(domRoot, baseUri).ConfigureAwait(false);
+            ApplyScriptingEnabledSanitizer(domRoot);
+            DispatchStartupLifecycleEvents();
+        }
+        finally
+        {
+            windowContext?.Dispose();
+            if (restorePreviousContext && previousDomRoot != null)
             {
-                ["domRootTag"] = (domRoot as Element)?.TagName ?? "null",
-                ["descendantCount"] = domRoot.Descendants().Count()
-            });
-        WireInlineEventHandlers(domRoot);
-        await ExecutePageScriptsWithFenJsAsync(domRoot, baseUri).ConfigureAwait(false);
-        ApplyScriptingEnabledSanitizer(domRoot);
-        DispatchStartupLifecycleEvents();
+                RebindFenJsDomContext(previousDomRoot, previousBaseUri, previousReadyState);
+            }
+        }
     }
 
     private bool CanEvaluateWithFenJs(string script)
@@ -764,7 +817,13 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private object EvaluateWithFenJs(string script)
     {
-        return ConvertFenJsValue(EvaluateWithFenJsRaw(script));
+        var rawResult = EvaluateWithFenJsRaw(script);
+        if (rawResult.Tag == FenBrowser.Js.Runtime.JsValueTag.Object ||
+            rawResult.Tag == FenBrowser.Js.Runtime.JsValueTag.HostObject)
+        {
+            return ConvertJsValueToObject(rawResult);
+        }
+        return ConvertFenJsValue(rawResult);
     }
 
     private JsValue EvaluateWithFenJsRaw(string script)
@@ -833,6 +892,22 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
     }
 
+    private JsValue CreateLegacyDomEvent(string interfaceName)
+    {
+        var constructorName = (interfaceName ?? "Event").Trim().ToLowerInvariant() switch
+        {
+            "customevent" => "CustomEvent",
+            "mouseevent" or "mouseevents" => "MouseEvent",
+            "wheelevent" or "wheelevents" => "WheelEvent",
+            "keyboardevent" or "keyboardevents" => "KeyboardEvent",
+            "uievent" or "uievents" => "UIEvent",
+            "beforeunloadevent" => "BeforeUnloadEvent",
+            _ => "Event"
+        };
+
+        return EvaluateWithFenJsRaw($"new {constructorName}('')");
+    }
+
     // The recursive-descent parser, the bytecode compiler, and the interpreter all
     // recurse with the AST/call depth. Real-world minified bundles (x.com's main.js is
     // 1.4 MB) nest expressions thousands deep and blow the ~1 MB stack of a threadpool
@@ -849,6 +924,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     // compiler's TryEnsureSufficientExecutionStack guard still aborts catchably
     // if even this is exceeded, rather than crashing the process.
     private const int FenJsLargeStackBytes = 256 * 1024 * 1024;
+    private const int FenJsBrowserParserMaxRecursionDepth = 1024;
 
     // Persistent large-stack worker thread — created once per engine instance
     // and reused across all page-script evaluations.  Creating+joining a 256 MB
@@ -1671,7 +1747,25 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             {
                 UpdateScriptLoadingSnapshot(snapshot => snapshot.AsyncPendingScripts += asyncItems.Count);
                 LogScriptLoading("ScriptBatchStarted", LogSeverity.Debug, "[FenJsBridge] Launching async scripts", new Dictionary<string, object> { ["batch"] = "async", ["count"] = asyncItems.Count });
-                _ = ExecuteScriptBatchAsync(asyncItems, baseUri, "async");
+                var asyncBatch = ExecuteScriptBatchAsync(asyncItems, baseUri, "async");
+                _ = asyncBatch.ContinueWith(
+                    task =>
+                    {
+                        var ex = task.Exception?.GetBaseException();
+                        LogScriptLoading(
+                            "AsyncScriptBatchInfrastructureFailed",
+                            LogSeverity.Error,
+                            "[FenJsBridge] Async script batch failed",
+                            new Dictionary<string, object>
+                            {
+                                ["batch"] = "async",
+                                ["count"] = asyncItems.Count,
+                                ["errorType"] = ex?.GetType().Name ?? "TaskFaulted",
+                                ["error"] = ex?.Message ?? task.Exception?.Message ?? string.Empty
+                            },
+                            LogMarker.EngineBug);
+                    },
+                    TaskContinuationOptions.OnlyOnFaulted);
             }
 
             UpdateScriptLoadingSnapshot(snapshot =>
@@ -1902,9 +1996,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             executionStartedFields["source"] = item.FetchKey ?? "inline";
             executionStartedFields["isModule"] = isModule;
             executionStartedFields["codeLength"] = code?.Length ?? 0;
+            var executionLogSeverity = string.Equals(batchLabel, "async", StringComparison.OrdinalIgnoreCase)
+                ? LogSeverity.Info
+                : LogSeverity.Debug;
             LogScriptLoading(
                 "ScriptExecutionStarted",
-                LogSeverity.Debug,
+                executionLogSeverity,
                 "[FenJsBridge] Script execution started",
                 executionStartedFields);
             RunFenJsWithLargeStack<object>(() =>
@@ -1932,7 +2029,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     executionCompletedFields["isModule"] = isModule;
                     LogScriptLoading(
                         "ScriptExecutionCompleted",
-                        LogSeverity.Debug,
+                        executionLogSeverity,
                         "[FenJsBridge] Script execution completed",
                         executionCompletedFields);
                 }
@@ -2007,6 +2104,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         if (string.Equals(batchLabel, "async", StringComparison.OrdinalIgnoreCase))
         {
             UpdateScriptLoadingSnapshot(snapshot => snapshot.AsyncPendingScripts = Math.Max(0, snapshot.AsyncPendingScripts - batch.Count));
+            try
+            {
+                RequestRender?.Invoke();
+                LogScriptLoading(
+                    "AsyncScriptBatchRenderRequested",
+                    LogSeverity.Debug,
+                    "[FenJsBridge] Async script batch requested repaint",
+                    new Dictionary<string, object> { ["batch"] = batchLabel, ["count"] = batch.Count });
+            }
+            catch
+            {
+                // Repaint requests are best-effort; script execution already completed.
+            }
         }
     }
 
@@ -2359,7 +2469,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         {
         lock (_fenJsLock)
         {
-            _compiler = new BytecodeCompiler();
+            _compiler = new BytecodeCompiler
+            {
+                ParserMaxRecursionDepth = FenJsBrowserParserMaxRecursionDepth
+            };
             _interpreter = new BytecodeInterpreter
             {
                 HostObjectTable = new HostObjectTable(),
@@ -2378,7 +2491,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 // instructions is ~5-10 s of interpreted bytecode on a modern
                 // CPU — enough for even the largest page bundles to finish.
                 InstructionBudget = 100_000_000,
-                MaxCallDepth = 256
+                MaxCallDepth = 1024
             };
 
             // The generational nursery GC (tier-4 scaffold) does not yet root every
@@ -2397,6 +2510,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             _hostCallableCache = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
             _hostPropertyStore = new ConditionalWeakTable<object, Dictionary<string, JsValue>>();
             _elementEventListeners = new ConditionalWeakTable<object, List<BrowserEventListener>>();
+            _iframeWindowEventListeners = new ConditionalWeakTable<Element, List<BrowserEventListener>>();
+            _hostPrototypeNames.Clear();
+            _activeWindowEventListeners = null;
+            _activeWindowEventTarget = JsValue.Undefined;
+            _activeParentBaseUri = null;
+            _fenJsDomConstructorsInstalled = false;
             _hostHooks.Reset();
 
             if (_currentDomRoot != null)
@@ -2445,9 +2564,396 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 : documentReadyState;
             _documentEpoch = _documentEpoch.Next();
             ResetFenJsSession();
+
+            // Process iframes that exist in the static HTML (src/srcdoc attributes).
+            // Dynamic iframes inserted later are handled by QueueFrameLoadsForTree
+            // called from appendChild/insertBefore/insertAdjacentHTML/insertBefore.
+            QueueFrameLoadsForTree(domRoot);
         }
             return null;
         });
+    }
+
+    private void RebindFenJsDomContext(Node domRoot, Uri baseUri, string documentReadyState)
+    {
+        if (domRoot == null)
+        {
+            return;
+        }
+
+        RunFenJsWithLargeStack<object>(() =>
+        {
+            lock (_fenJsLock)
+            {
+                _currentDomRoot = domRoot;
+                _currentBaseUri = baseUri;
+                _documentReadyState = string.IsNullOrWhiteSpace(documentReadyState)
+                    ? "loading"
+                    : documentReadyState;
+
+                var document = domRoot as Document ?? domRoot.OwnerDocument;
+                var navigator = CreateNavigatorHost();
+                var location = new FenJsLocationHost(baseUri ?? TryCreateUri(document?.URL));
+                var history = new FenJsHistoryHost(location);
+
+                _hostHooks.Bind(
+                    this,
+                    document,
+                    navigator,
+                    location,
+                    baseUri ?? TryCreateUri(document?.URL));
+
+                if (document == null)
+                {
+                    return null;
+                }
+
+                _interpreter.RegisterGlobalHostObject(
+                    "document",
+                    RegisterHostObject(document, HostObjectKind.DomDocument));
+                _interpreter.RegisterGlobalHostObject(
+                    "navigator",
+                    RegisterHostObject(navigator, HostObjectKind.Other));
+                _interpreter.RegisterGlobalHostObject(
+                    "location",
+                    RegisterHostObject(location, HostObjectKind.Other));
+                _interpreter.RegisterGlobalHostObject(
+                    "history",
+                    RegisterHostObject(history, HostObjectKind.Other));
+
+                SeedFenJsDocumentAndNavigatorProperties(document, navigator);
+            }
+
+            return null;
+        });
+    }
+
+    private IDisposable ActivateSubdocumentWindowContext(Node domRoot, Uri baseUri)
+    {
+        var document = domRoot as Document ?? domRoot?.OwnerDocument;
+        var frameElement = TryGetFrameElementForDocument(document);
+        if (frameElement == null)
+        {
+            return null;
+        }
+
+        var frameWindow = GetOrCreateIFrameContentWindow(frameElement, document, baseUri);
+        var frameWindowListeners = GetIFrameWindowListeners(frameElement);
+        var previousListeners = _activeWindowEventListeners;
+        var previousTarget = _activeWindowEventTarget;
+        var previousWindow = ReadGlobalValueOrUndefined("window");
+        var previousSelf = ReadGlobalValueOrUndefined("self");
+        var previousFrames = ReadGlobalValueOrUndefined("frames");
+        var previousParent = ReadGlobalValueOrUndefined("parent");
+        var previousTop = ReadGlobalValueOrUndefined("top");
+        var previousDocument = ReadGlobalValueOrUndefined("document");
+        var previousLocation = ReadGlobalValueOrUndefined("location");
+        var previousBaseUri = _currentBaseUri;
+        var previousParentBaseUri = _activeParentBaseUri;
+        var parentWindow = _fenJsGlobalThis.Tag == JsValueTag.Undefined
+            ? previousWindow
+            : _fenJsGlobalThis;
+        var frameBaseUri = baseUri ??
+            TryCreateUri(document?.BaseURI) ??
+            TryCreateUri(document?.DocumentURI) ??
+            TryCreateUri(document?.URL);
+
+        if (frameBaseUri != null)
+        {
+            _currentBaseUri = frameBaseUri;
+        }
+        _activeParentBaseUri = previousBaseUri;
+        _activeWindowEventListeners = frameWindowListeners;
+        _activeWindowEventTarget = frameWindow;
+        _interpreter.RegisterGlobalValue("window", frameWindow);
+        _interpreter.RegisterGlobalValue("self", frameWindow);
+        _interpreter.RegisterGlobalValue("frames", frameWindow);
+        _interpreter.RegisterGlobalValue("parent", parentWindow);
+        _interpreter.RegisterGlobalValue("top", parentWindow);
+        var frameDocument = ReadJsProperty(frameWindow, "document");
+        var frameLocation = ReadJsProperty(frameWindow, "location");
+        if (frameDocument.Tag != JsValueTag.Undefined)
+        {
+            _interpreter.RegisterGlobalValue("document", frameDocument);
+        }
+        if (frameLocation.Tag != JsValueTag.Undefined)
+        {
+            _interpreter.RegisterGlobalValue("location", frameLocation);
+        }
+
+        return new WindowContextScope(
+            this,
+            previousListeners,
+            previousTarget,
+            previousWindow,
+            previousSelf,
+            previousFrames,
+            previousParent,
+            previousTop,
+            previousDocument,
+            previousLocation,
+            previousBaseUri,
+            previousParentBaseUri);
+    }
+
+    private IDisposable ActivateWindowCallbackContext(JsValue windowTarget, List<BrowserEventListener> listeners)
+    {
+        if (windowTarget.Tag != JsValueTag.Object)
+        {
+            return null;
+        }
+
+        var previousListeners = _activeWindowEventListeners;
+        var previousTarget = _activeWindowEventTarget;
+        var previousWindow = ReadGlobalValueOrUndefined("window");
+        var previousSelf = ReadGlobalValueOrUndefined("self");
+        var previousFrames = ReadGlobalValueOrUndefined("frames");
+        var previousParent = ReadGlobalValueOrUndefined("parent");
+        var previousTop = ReadGlobalValueOrUndefined("top");
+        var previousDocument = ReadGlobalValueOrUndefined("document");
+        var previousLocation = ReadGlobalValueOrUndefined("location");
+        var previousBaseUri = _currentBaseUri;
+        var previousParentBaseUri = _activeParentBaseUri;
+        var frameDocument = ReadJsProperty(windowTarget, "document");
+        var frameLocation = ReadJsProperty(windowTarget, "location");
+        var parentWindow = ReadJsProperty(windowTarget, "parent");
+        if (parentWindow.Tag == JsValueTag.Undefined)
+        {
+            parentWindow = _fenJsGlobalThis;
+        }
+        var frameHref = ReadJsProperty(frameLocation, "href");
+        var frameBaseUri = TryCreateUri(CoerceToHostString(frameHref));
+
+        if (frameBaseUri != null)
+        {
+            _currentBaseUri = frameBaseUri;
+        }
+        _activeParentBaseUri = previousBaseUri;
+        _activeWindowEventListeners = listeners;
+        _activeWindowEventTarget = windowTarget;
+        _interpreter.RegisterGlobalValue("window", windowTarget);
+        _interpreter.RegisterGlobalValue("self", windowTarget);
+        _interpreter.RegisterGlobalValue("frames", windowTarget);
+        _interpreter.RegisterGlobalValue("parent", parentWindow);
+        _interpreter.RegisterGlobalValue("top", parentWindow);
+        if (frameDocument.Tag != JsValueTag.Undefined)
+        {
+            _interpreter.RegisterGlobalValue("document", frameDocument);
+        }
+        if (frameLocation.Tag != JsValueTag.Undefined)
+        {
+            _interpreter.RegisterGlobalValue("location", frameLocation);
+        }
+
+        return new WindowContextScope(
+            this,
+            previousListeners,
+            previousTarget,
+            previousWindow,
+            previousSelf,
+            previousFrames,
+            previousParent,
+            previousTop,
+            previousDocument,
+            previousLocation,
+            previousBaseUri,
+            previousParentBaseUri);
+    }
+
+    private JsValue ReadGlobalValueOrUndefined(string name)
+    {
+        return _interpreter != null
+            ? _interpreter.ReadGlobalValueOrUndefined(name)
+            : JsValue.Undefined;
+    }
+
+    private void RestoreWindowContext(
+        List<BrowserEventListener> previousListeners,
+        JsValue previousTarget,
+        JsValue previousWindow,
+        JsValue previousSelf,
+        JsValue previousFrames,
+        JsValue previousParent,
+        JsValue previousTop,
+        JsValue previousDocument,
+        JsValue previousLocation,
+        Uri previousBaseUri,
+        Uri previousParentBaseUri)
+    {
+        _activeWindowEventListeners = previousListeners;
+        _activeWindowEventTarget = previousTarget;
+        _currentBaseUri = previousBaseUri;
+        _activeParentBaseUri = previousParentBaseUri;
+        RestoreGlobalValue("window", previousWindow);
+        RestoreGlobalValue("self", previousSelf);
+        RestoreGlobalValue("frames", previousFrames);
+        RestoreGlobalValue("parent", previousParent);
+        RestoreGlobalValue("top", previousTop);
+        RestoreGlobalValue("document", previousDocument);
+        RestoreGlobalValue("location", previousLocation);
+    }
+
+    private void RestoreGlobalValue(string name, JsValue value)
+    {
+        if (value.Tag != JsValueTag.Undefined)
+        {
+            _interpreter.RegisterGlobalValue(name, value);
+        }
+    }
+
+    private List<BrowserEventListener> GetActiveWindowEventListeners()
+    {
+        return _activeWindowEventListeners ?? _windowEventListeners;
+    }
+
+    private FenJsWindowCallbackContext CaptureActiveWindowCallbackContext()
+    {
+        var target = GetActiveWindowEventTarget();
+        if (target.Tag != JsValueTag.Object)
+        {
+            return null;
+        }
+
+        return new FenJsWindowCallbackContext(target, GetActiveWindowEventListeners());
+    }
+
+    private JsValue GetActiveWindowEventTarget()
+    {
+        if (_activeWindowEventTarget.Tag != JsValueTag.Undefined)
+        {
+            return _activeWindowEventTarget;
+        }
+
+        return _fenJsGlobalThis.Tag == JsValueTag.Undefined
+            ? EvaluateWithFenJsRaw("window")
+            : _fenJsGlobalThis;
+    }
+
+    private JsValue CreateTopWindowPostMessageFunction()
+    {
+        return _interpreter.AllocateNativeFunction(
+            "postMessage",
+            (_, args) =>
+            {
+                var data = args.Count > 0 ? args[0] : JsValue.Undefined;
+                var targetOrigin = args.Count > 1 ? CoerceToHostString(args[1]) : "*";
+                var sourceWindow = GetActiveWindowEventTarget();
+                QueueWindowMessage(
+                    _fenJsGlobalThis,
+                    _windowEventListeners,
+                    data,
+                    sourceWindow,
+                    targetOrigin,
+                    GetTopWindowDeliveryOrigin());
+                return JsValue.Undefined;
+            },
+            length: 1);
+    }
+
+    private string GetTopWindowDeliveryOrigin()
+    {
+        if (_activeParentBaseUri != null)
+        {
+            return NormalizePostMessageOrigin(_activeParentBaseUri.AbsoluteUri);
+        }
+
+        return null;
+    }
+
+    private void InstallTopWindowPostMessageBridge(JsValue globalThisValue)
+    {
+        var topWindowPostMessage = CreateTopWindowPostMessageFunction();
+        _interpreter.RegisterGlobalValue("postMessage", topWindowPostMessage);
+        if (globalThisValue.Tag == JsValueTag.Object)
+        {
+            _interpreter.SetObjectProperty(globalThisValue, "postMessage", topWindowPostMessage);
+        }
+    }
+
+    private List<BrowserEventListener> GetIFrameWindowListeners(Element iframe)
+    {
+        return _iframeWindowEventListeners.GetOrCreateValue(iframe);
+    }
+
+    private static Element TryGetFrameElementForDocument(Document document)
+    {
+        return document?.ParentNode is Element element && IsIFrameElement(element)
+            ? element
+            : null;
+    }
+
+    private sealed class WindowContextScope : IDisposable
+    {
+        private FenJsBrowserScriptEngine _owner;
+        private readonly List<BrowserEventListener> _previousListeners;
+        private readonly JsValue _previousTarget;
+        private readonly JsValue _previousWindow;
+        private readonly JsValue _previousSelf;
+        private readonly JsValue _previousFrames;
+        private readonly JsValue _previousParent;
+        private readonly JsValue _previousTop;
+        private readonly JsValue _previousDocument;
+        private readonly JsValue _previousLocation;
+        private readonly Uri _previousBaseUri;
+        private readonly Uri _previousParentBaseUri;
+
+        public WindowContextScope(
+            FenJsBrowserScriptEngine owner,
+            List<BrowserEventListener> previousListeners,
+            JsValue previousTarget,
+            JsValue previousWindow,
+            JsValue previousSelf,
+            JsValue previousFrames,
+            JsValue previousParent,
+            JsValue previousTop,
+            JsValue previousDocument,
+            JsValue previousLocation,
+            Uri previousBaseUri,
+            Uri previousParentBaseUri)
+        {
+            _owner = owner;
+            _previousListeners = previousListeners;
+            _previousTarget = previousTarget;
+            _previousWindow = previousWindow;
+            _previousSelf = previousSelf;
+            _previousFrames = previousFrames;
+            _previousParent = previousParent;
+            _previousTop = previousTop;
+            _previousDocument = previousDocument;
+            _previousLocation = previousLocation;
+            _previousBaseUri = previousBaseUri;
+            _previousParentBaseUri = previousParentBaseUri;
+        }
+
+        public void Dispose()
+        {
+            var owner = _owner;
+            _owner = null;
+            owner?.RestoreWindowContext(
+                _previousListeners,
+                _previousTarget,
+                _previousWindow,
+                _previousSelf,
+                _previousFrames,
+                _previousParent,
+                _previousTop,
+                _previousDocument,
+                _previousLocation,
+                _previousBaseUri,
+                _previousParentBaseUri);
+        }
+    }
+
+    private sealed class FenJsWindowCallbackContext
+    {
+        public FenJsWindowCallbackContext(JsValue windowTarget, List<BrowserEventListener> windowListeners)
+        {
+            WindowTarget = windowTarget;
+            WindowListeners = windowListeners;
+        }
+
+        public JsValue WindowTarget { get; }
+        public List<BrowserEventListener> WindowListeners { get; }
     }
 
     private void InstallFenJsDomGlobals(Node domRoot, Uri baseUri)
@@ -2455,6 +2961,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var document = domRoot as Document ?? domRoot.OwnerDocument;
         var navigator = CreateNavigatorHost();
         var location = new FenJsLocationHost(baseUri ?? TryCreateUri(document?.URL));
+        var history = new FenJsHistoryHost(location);
         // Always bind the host hooks so _owner is set — even if there's no
         // document, host-property resolution must not NRE when it looks up
         // _owner._interpreter.  Without this, a page that triggers a recascade
@@ -2473,6 +2980,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         _interpreter.RegisterGlobalHostObject("document", RegisterHostObject(document, HostObjectKind.DomDocument));
         _interpreter.RegisterGlobalHostObject("navigator", RegisterHostObject(navigator, HostObjectKind.Other));
+        InstallFenJsNativeRangeConstructor(document);
         // Register a native logging hook that console.log/warn/error forward to.
         // Uses FenLogger so output appears in engine logs and any attached debug console.
         _interpreter.RegisterGlobalValue(
@@ -2524,6 +3032,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             "  csi: function() { return { startE: 0, onloadT: 0, pageT: 0, tran: 0 }; }," +
             "  app: {}" +
             "};" +
+            "globalThis.matchMedia = function(query) {" +
+            "  var media = String(query);" +
+            "  return {" +
+            "    media: media," +
+            "    matches: false," +
+            "    onchange: null," +
+            "    addListener: function() {}," +
+            "    removeListener: function() {}," +
+            "    addEventListener: function() {}," +
+            "    removeEventListener: function() {}," +
+            "    dispatchEvent: function() { return true; }" +
+            "  };" +
+            "};" +
             // Stub IAB consent/privacy framework APIs (CCPA, TCF).
             // Sites expect these globals to exist and call them with commands
             // like __uspapi('getUSPData', 1, callback). Without these stubs,
@@ -2534,40 +3055,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             "globalThis.__tcfapiLocator = function() {};" +
             "globalThis.__tcfapi = function(cmd, version, callback) { if (callback) callback({ tcString: '', gdprApplies: false }, true); };" +
             "globalThis.__gppLocator = function() {};");
-        // Stub document.fonts (FontFaceSet API) so sites that use the CSS Font
-        // Loading API (Google loads 'Google Sans' this way) don't crash.
-        // .load() returns a Promise that resolves to an empty array; .ready is
-        // a pre-resolved promise so await document.fonts.ready doesn't hang.
-        // We use SetStoredHostProperty directly because document is a host
-        // object and EvaluateWithFenJsRaw goes through TrySetHostProperty
-        // which would refuse the write (the fonts case was added above but
-        // this pre-population is cleaner and avoids a round-trip through JS).
-        SetStoredHostProperty(
-            document,
-            "fonts",
-            _interpreter.AllocateObject(new Dictionary<string, JsValue>
-            {
-                ["load"] = _interpreter.AllocateNativeFunction(
-                    "load",
-                    (_, _2) => EvaluateWithFenJsRaw("Promise.resolve([])"),
-                    length: 1),
-                ["ready"] = EvaluateWithFenJsRaw("Promise.resolve()"),
-                ["status"] = JsValue.FromString("loaded"),
-                ["check"] = _interpreter.AllocateNativeFunction(
-                    "check",
-                    (_, _2) => JsValue.FromBoolean(true),
-                    length: 1),
-                ["addEventListener"] = _interpreter.AllocateNativeFunction(
-                    "addEventListener",
-                    (_, _2) => JsValue.Undefined,
-                    length: 2),
-                ["has"] = _interpreter.AllocateNativeFunction(
-                    "has",
-                    (_, _2) => JsValue.FromBoolean(false),
-                    length: 1),
-            }));
-        SetStoredHostProperty(navigator, "userAgentData", CreateNavigatorUserAgentDataObject(navigator.UserAgentData));
+        SeedFenJsDocumentAndNavigatorProperties(document, navigator);
+        _interpreter.RegisterGlobalValue("NodeFilter", CreateNodeFilterConstantsObject());
         _interpreter.RegisterGlobalHostObject("location", RegisterHostObject(location, HostObjectKind.Other));
+        _interpreter.RegisterGlobalHostObject("history", RegisterHostObject(history, HostObjectKind.Other));
         _interpreter.RegisterGlobalValue("innerWidth", JsValue.FromNumber(WindowWidth));
         _interpreter.RegisterGlobalValue("innerHeight", JsValue.FromNumber(WindowHeight));
         _interpreter.RegisterGlobalValue("outerWidth", JsValue.FromNumber(WindowWidth));
@@ -2585,7 +3076,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 "addEventListener",
                 (_, args) =>
                 {
-                    AddBrowserEventListener(_windowEventListeners, args);
+                    AddBrowserEventListener(GetActiveWindowEventListeners(), args);
                     return JsValue.Undefined;
                 },
                 length: 2));
@@ -2595,11 +3086,66 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 "removeEventListener",
                 (_, args) =>
                 {
-                    RemoveBrowserEventListener(_windowEventListeners, args);
+                    RemoveBrowserEventListener(GetActiveWindowEventListeners(), args);
                     return JsValue.Undefined;
                 },
                 length: 2));
+        _interpreter.RegisterGlobalValue(
+            "dispatchEvent",
+            _interpreter.AllocateNativeFunction(
+                "dispatchEvent",
+                (_, args) =>
+                {
+                    var eventValue = args.Count > 0 ? args[0] : JsValue.Undefined;
+                    return JsValue.FromBoolean(DispatchWindowHostEvent(eventValue));
+                },
+                length: 1));
+        _interpreter.RegisterGlobalValue(
+            "__fenInvokeHostMethod",
+            _interpreter.AllocateNativeFunction(
+                "__fenInvokeHostMethod",
+                (_, args) =>
+                {
+                    var receiver = args.Count > 0 ? args[0] : JsValue.Undefined;
+                    var methodName = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                    var methodArgs = ExtractJsArgumentList(args.Count > 2 ? args[2] : JsValue.Undefined);
+                    return InvokeFenJsHostMethod(receiver, methodName, methodArgs);
+                },
+                length: 3));
+        _interpreter.RegisterGlobalValue(
+            "__fenCreateCustomElementConstructionElement",
+            _interpreter.AllocateNativeFunction(
+                "__fenCreateCustomElementConstructionElement",
+                (_, args) =>
+                {
+                    var localName = args.Count > 0 ? CoerceToHostString(args[0]) : "div";
+                    if (string.IsNullOrWhiteSpace(localName))
+                    {
+                        localName = "div";
+                    }
 
+                    var currentDocument = _currentDomRoot as Document ?? _currentDomRoot?.OwnerDocument;
+                    if (currentDocument == null)
+                    {
+                        return JsValue.Undefined;
+                    }
+
+                    try
+                    {
+                        return ToHostNodeOrNull(currentDocument.CreateElement(localName));
+                    }
+                    catch (DomException ex)
+                    {
+                        ThrowDomException(ex.Name, ex.Message);
+                        return JsValue.Undefined;
+                    }
+                    catch (ArgumentException ex)
+                    {
+                        ThrowDomException("InvalidCharacterError", ex.Message);
+                        return JsValue.Undefined;
+                    }
+                },
+                length: 1));
         // ── window.alert / confirm / prompt — fire-and-forget dialog display
         // with immediate return of safe defaults.
         //
@@ -2680,10 +3226,86 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         InstallFenJsTimers();
         InstallFenJsBrowserConstructors();
         InstallFenJsNativeBrowserConstructors();
+        _fenJsDomConstructorsInstalled = true;
+        TryAttachFenJsPrototype(EvaluateWithFenJsRaw("document"), document, HostObjectKind.DomDocument);
         InstallFenJsMutationObserver();
         InstallFenJsEventTarget();
         InstallFenJsBrowserUiApis(baseUri);
         InstallFenJsRemainingWebApis();
+        InstallTopWindowPostMessageBridge(globalThisValue);
+    }
+
+    private void SeedFenJsDocumentAndNavigatorProperties(Document document, BrowserSurfaceProfile navigator)
+    {
+        if (document == null || navigator == null)
+        {
+            return;
+        }
+
+        // Stub document.fonts (FontFaceSet API) so sites that use the CSS Font
+        // Loading API (Google loads 'Google Sans' this way) don't crash.
+        SetStoredHostProperty(
+            document,
+            "fonts",
+            _interpreter.AllocateObject(new Dictionary<string, JsValue>
+            {
+                ["load"] = _interpreter.AllocateNativeFunction(
+                    "load",
+                    (_, _2) => EvaluateWithFenJsRaw("Promise.resolve([])"),
+                    length: 1),
+                ["ready"] = EvaluateWithFenJsRaw("Promise.resolve()"),
+                ["status"] = JsValue.FromString("loaded"),
+                ["check"] = _interpreter.AllocateNativeFunction(
+                    "check",
+                    (_, _2) => JsValue.FromBoolean(true),
+                    length: 1),
+                ["addEventListener"] = _interpreter.AllocateNativeFunction(
+                    "addEventListener",
+                    (_, _2) => JsValue.Undefined,
+                    length: 2),
+                ["has"] = _interpreter.AllocateNativeFunction(
+                    "has",
+                    (_, _2) => JsValue.FromBoolean(false),
+                    length: 1),
+            }));
+        SetStoredHostProperty(navigator, "userAgentData", CreateNavigatorUserAgentDataObject(navigator.UserAgentData));
+        SetStoredHostProperty(navigator, "connection", CreateNavigatorConnectionObject());
+        SetStoredHostProperty(
+            navigator,
+            "sendBeacon",
+            _interpreter.AllocateNativeFunction(
+                "sendBeacon",
+                (_, _) => JsValue.FromBoolean(true),
+                length: 2));
+        SetStoredHostProperty(
+            navigator,
+            "plugins",
+            _interpreter.AllocateObject(new Dictionary<string, JsValue>
+            {
+                ["length"] = JsValue.FromInt32(0),
+                ["item"] = _interpreter.AllocateNativeFunction("item", (_, _) => JsValue.Null, length: 1),
+                ["namedItem"] = _interpreter.AllocateNativeFunction("namedItem", (_, _) => JsValue.Null, length: 1),
+                ["refresh"] = _interpreter.AllocateNativeFunction("refresh", (_, _) => JsValue.Undefined, length: 0)
+            }));
+        SetStoredHostProperty(
+            navigator,
+            "mimeTypes",
+            _interpreter.AllocateObject(new Dictionary<string, JsValue>
+            {
+                ["length"] = JsValue.FromInt32(0),
+                ["item"] = _interpreter.AllocateNativeFunction("item", (_, _) => JsValue.Null, length: 1),
+                ["namedItem"] = _interpreter.AllocateNativeFunction("namedItem", (_, _) => JsValue.Null, length: 1)
+            }));
+        SetStoredHostProperty(
+            navigator,
+            "cookieDeprecationLabel",
+            _interpreter.AllocateObject(new Dictionary<string, JsValue>
+            {
+                ["getValue"] = _interpreter.AllocateNativeFunction(
+                    "getValue",
+                    (_, _) => CreateResolvedPromise(JsValue.FromString("no-signal")),
+                    length: 0)
+            }));
     }
 
     private void InstallFenJsBrowserUiApis(Uri baseUri)
@@ -2920,6 +3542,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var callback = args[0];
         var delayMs = args.Count > 1 ? ToFiniteDelay(args[1]) : 0;
         var extraArgs = args.Count > 2 ? args.Skip(2).ToArray() : Array.Empty<JsValue>();
+        var callbackContext = CaptureActiveWindowCallbackContext();
 
         var id = Interlocked.Increment(ref _fenJsTimerIdCounter);
         FenBrowser.Core.EngineLogCompat.Debug(
@@ -2974,7 +3597,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         ["timerType"] = repeat ? "interval" : "timeout",
                         ["callbackTag"] = callback.Tag.ToString()
                     });
-                InvokeFenJsCallbackSafely(callback, extraArgs, repeat ? "setInterval" : "setTimeout", id);
+                InvokeFenJsCallbackSafely(callback, extraArgs, repeat ? "setInterval" : "setTimeout", id, callbackContext);
             },
             null,
             Math.Max(0, delayMs),
@@ -2992,6 +3615,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
 
         var callback = args[0];
+        var callbackContext = CaptureActiveWindowCallbackContext();
         var id = Interlocked.Increment(ref _fenJsTimerIdCounter);
         UpdateEventLoopSnapshot(snapshot => snapshot.AnimationFramesScheduled++);
         AddEventLoopRecord("RequestAnimationFrameScheduled", callback.Tag.ToString(), id, 16);
@@ -3025,7 +3649,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         ["delayMs"] = 16,
                         ["callbackTag"] = callback.Tag.ToString()
                     });
-                InvokeFenJsCallbackSafely(callback, new[] { timestamp }, "requestAnimationFrame", id);
+                InvokeFenJsCallbackSafely(callback, new[] { timestamp }, "requestAnimationFrame", id, callbackContext);
             },
             null,
             16,
@@ -3080,7 +3704,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     // Invoke a FenJS callback from a host timer thread, holding the interpreter lock so
     // it can never race with page-script evaluation, then drain microtasks and request
     // a repaint so DOM mutations made by the callback become visible.
-    private void InvokeFenJsCallbackSafely(JsValue callback, IReadOnlyList<JsValue> args, string origin, long callbackId = 0)
+    private void InvokeFenJsCallbackSafely(
+        JsValue callback,
+        IReadOnlyList<JsValue> args,
+        string origin,
+        long callbackId = 0,
+        FenJsWindowCallbackContext windowContext = null)
     {
         try
         {
@@ -3090,6 +3719,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 {
                     try
                     {
+                        using var callbackWindowScope = windowContext != null
+                            ? ActivateWindowCallbackContext(windowContext.WindowTarget, windowContext.WindowListeners)
+                            : null;
+                        var callbackThis = windowContext?.WindowTarget ?? _fenJsGlobalThis;
                         var invoked = false;
                         LogEventLoop(
                             "TaskStarted",
@@ -3103,7 +3736,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             });
                         if (_interpreter.CanCallValue(callback))
                         {
-                            _interpreter.InvokeFunction(callback, args ?? Array.Empty<JsValue>(), _fenJsGlobalThis);
+                            _interpreter.InvokeFunction(callback, args ?? Array.Empty<JsValue>(), callbackThis);
                             invoked = true;
                         }
 
@@ -3286,7 +3919,23 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             """
             (function () {
                 function defineCtor(name, baseCtor, prototypeBrands, match) {
-                    var ctor = function () { throw new TypeError('Illegal constructor'); };
+                    var ctor = function () {
+                        if (name === 'HTMLElement') {
+                            if (globalThis.__fenCustomElementConstructionElement) {
+                                return globalThis.__fenCustomElementConstructionElement;
+                            }
+
+                            var constructionCtor = (typeof new.target === 'function' && new.target) ||
+                                (this && this.constructor);
+                            var constructionLocalName = constructionCtor &&
+                                constructionCtor.__fenCustomElementLocalName;
+                            if (constructionLocalName &&
+                                typeof globalThis.__fenCreateCustomElementConstructionElement === 'function') {
+                                return globalThis.__fenCreateCustomElementConstructionElement(constructionLocalName);
+                            }
+                        }
+                        throw new TypeError('Illegal constructor');
+                    };
                     var proto = baseCtor ? Object.create(baseCtor.prototype) : {};
                     Object.defineProperty(proto, '__fenDomBrands', {
                         value: prototypeBrands.slice(),
@@ -3334,12 +3983,42 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return ctor;
                 }
 
+                var Window = defineCtor('Window', null, ['Window'], function (candidate) {
+                    return candidate === globalThis || candidate.window === candidate;
+                });
+
                 var Node = defineCtor('Node', null, ['Node'], function (candidate) {
                     return typeof candidate.nodeName === 'string' ||
                         typeof candidate.tagName === 'string' ||
                         typeof candidate.parentNode !== 'undefined' ||
                         typeof candidate.ownerDocument !== 'undefined';
                 });
+                var nodeTypeConstants = {
+                    ELEMENT_NODE: 1,
+                    ATTRIBUTE_NODE: 2,
+                    TEXT_NODE: 3,
+                    CDATA_SECTION_NODE: 4,
+                    ENTITY_REFERENCE_NODE: 5,
+                    ENTITY_NODE: 6,
+                    PROCESSING_INSTRUCTION_NODE: 7,
+                    COMMENT_NODE: 8,
+                    DOCUMENT_NODE: 9,
+                    DOCUMENT_TYPE_NODE: 10,
+                    DOCUMENT_FRAGMENT_NODE: 11,
+                    NOTATION_NODE: 12
+                };
+                for (var nodeTypeName in nodeTypeConstants) {
+                    Object.defineProperty(Node, nodeTypeName, {
+                        value: nodeTypeConstants[nodeTypeName],
+                        enumerable: true,
+                        configurable: true
+                    });
+                    Object.defineProperty(Node.prototype, nodeTypeName, {
+                        value: nodeTypeConstants[nodeTypeName],
+                        enumerable: true,
+                        configurable: true
+                    });
+                }
 
                 var Document = defineCtor('Document', Node, ['Node', 'Document'], function (candidate) {
                     return typeof candidate.readyState === 'string' &&
@@ -3366,7 +4045,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         typeof candidate.replaceData === 'function';
                 });
 
-                defineCtor('Text', CharacterData, ['Node', 'CharacterData', 'Text'], function (candidate) {
+                var Text = defineCtor('Text', CharacterData, ['Node', 'CharacterData', 'Text'], function (candidate) {
                     return candidate.nodeName === '#text' &&
                         typeof candidate.appendData === 'function';
                 });
@@ -3376,9 +4055,51 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         typeof candidate.replaceData === 'function';
                 });
 
-                defineCtor('DocumentFragment', Node, ['Node', 'DocumentFragment'], function (candidate) {
+                defineCtor('CDATASection', Text, ['Node', 'CharacterData', 'Text', 'CDATASection'], function (candidate) {
+                    return candidate.nodeName === '#cdata-section' &&
+                        typeof candidate.appendData === 'function';
+                });
+
+                defineCtor('ProcessingInstruction', CharacterData, ['Node', 'CharacterData', 'ProcessingInstruction'], function (candidate) {
+                    return candidate.nodeType === Node.PROCESSING_INSTRUCTION_NODE &&
+                        typeof candidate.target === 'string' &&
+                        typeof candidate.data === 'string';
+                });
+
+                var DocumentFragment = defineCtor('DocumentFragment', Node, ['Node', 'DocumentFragment'], function (candidate) {
                     return candidate.nodeName === '#document-fragment' &&
                         typeof candidate.appendChild === 'function' &&
+                        typeof candidate.querySelectorAll === 'function';
+                });
+
+                var Range = defineCtor('Range', null, ['Range'], function (candidate) {
+                    return candidate != null &&
+                        typeof candidate.setStart === 'function' &&
+                        typeof candidate.setEnd === 'function' &&
+                        typeof candidate.commonAncestorContainer !== 'undefined';
+                });
+                var rangeConstants = {
+                    START_TO_START: 0,
+                    START_TO_END: 1,
+                    END_TO_END: 2,
+                    END_TO_START: 3
+                };
+                for (var rangeConstantName in rangeConstants) {
+                    Object.defineProperty(Range, rangeConstantName, {
+                        value: rangeConstants[rangeConstantName],
+                        enumerable: true,
+                        configurable: true
+                    });
+                    Object.defineProperty(Range.prototype, rangeConstantName, {
+                        value: rangeConstants[rangeConstantName],
+                        enumerable: true,
+                        configurable: true
+                    });
+                }
+
+                defineCtor('ShadowRoot', DocumentFragment, ['Node', 'DocumentFragment', 'ShadowRoot'], function (candidate) {
+                    return candidate != null &&
+                        typeof candidate.host !== 'undefined' &&
                         typeof candidate.querySelectorAll === 'function';
                 });
 
@@ -3413,44 +4134,157 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         typeof candidate.namedItem === 'function';
                 });
 
-                Document.prototype.createElement = function () { return this.createElement.apply(this, arguments); };
-                Document.prototype.createTextNode = function () { return this.createTextNode.apply(this, arguments); };
-                Document.prototype.createComment = function () { return this.createComment.apply(this, arguments); };
-                Document.prototype.createDocumentFragment = function () { return this.createDocumentFragment.apply(this, arguments); };
-                Document.prototype.createAttribute = function () { return this.createAttribute.apply(this, arguments); };
-                Document.prototype.getElementById = function () { return this.getElementById.apply(this, arguments); };
-                Document.prototype.querySelector = function () { return this.querySelector.apply(this, arguments); };
-                Document.prototype.querySelectorAll = function () { return this.querySelectorAll.apply(this, arguments); };
-                Document.prototype.getElementsByTagName = function () { return this.getElementsByTagName.apply(this, arguments); };
-                Document.prototype.cloneNode = function () { return this.cloneNode.apply(this, arguments); };
-                Document.prototype.appendChild = function () { return this.appendChild.apply(this, arguments); };
-                Document.prototype.insertBefore = function () { return this.insertBefore.apply(this, arguments); };
-                Document.prototype.append = function () { return this.append.apply(this, arguments); };
-                Document.prototype.prepend = function () { return this.prepend.apply(this, arguments); };
+                function describeFenHostProbeNode(node) {
+                    if (!node) return String(node);
+                    var parts = [];
+                    try { parts.push(String(node.nodeName)); } catch (_nodeNameError) {}
+                    try { if (node.id) parts.push('#' + String(node.id)); } catch (_idError) {}
+                    try { if (node.localName) parts.push('local=' + String(node.localName)); } catch (_localNameError) {}
+                    try { parts.push('type=' + String(node.nodeType)); } catch (_nodeTypeError) {}
+                    try {
+                        var parent = node.parentNode;
+                        parts.push('parent=' + (parent ? String(parent.nodeName) : 'null'));
+                    } catch (_parentError) {}
+                    try {
+                        var childNodes = node.childNodes;
+                        var childLength = childNodes && typeof childNodes.length !== 'undefined'
+                            ? Number(childNodes.length)
+                            : -1;
+                        parts.push('children=' + String(childLength));
+                        if (childLength > 0) {
+                            var childParts = [];
+                            var maxChildren = childLength < 6 ? childLength : 6;
+                            for (var childIndex = 0; childIndex < maxChildren; childIndex++) {
+                                var childNode = childNodes[childIndex];
+                                var childLabel = '';
+                                try { childLabel += String(childNode.nodeName); } catch (_childNodeNameError) { childLabel += '?'; }
+                                try { if (childNode.id) childLabel += '#' + String(childNode.id); } catch (_childIdError) {}
+                                try { if (childNode.localName) childLabel += '[' + String(childNode.localName) + ']'; } catch (_childLocalNameError) {}
+                                childParts.push(childLabel);
+                            }
+                            parts.push('childList=' + childParts.join('|'));
+                        }
+                    } catch (_childrenError) {}
+                    return parts.join(':');
+                }
+                function recordFenHostMethodProbe(name, receiver, args) {
+                    if (name !== 'contains' &&
+                        name !== 'appendChild' &&
+                        name !== 'insertBefore' &&
+                        name !== 'replaceChild') {
+                        return;
+                    }
+                    var first = args && args.length > 0 ? args[0] : undefined;
+                    var probe = {
+                        method: name,
+                        receiver: describeFenHostProbeNode(receiver),
+                        firstArg: describeFenHostProbeNode(first),
+                        same: receiver === first
+                    };
+                    try { probe.stack = String((new Error()).stack || '').slice(0, 900); } catch (_hostMethodStackError) {}
+                    try {
+                        globalThis.__fenLastHostMethodProbe = probe;
+                    } catch (_probeError) {}
+                }
+                function defineHostMethod(prototype, name) {
+                    var hostMethod = function () {
+                        recordFenHostMethodProbe(name, this, arguments);
+                        return globalThis.__fenInvokeHostMethod(this, name, arguments);
+                    };
+                    Object.defineProperty(hostMethod, 'toString', {
+                        value: function () { return 'function ' + name + '() { [native code] }'; },
+                        writable: true,
+                        configurable: true
+                    });
+                    Object.defineProperty(prototype, name, {
+                        value: hostMethod,
+                        writable: true,
+                        configurable: true
+                    });
+                }
 
-                Element.prototype.getAttribute = function () { return this.getAttribute.apply(this, arguments); };
-                Element.prototype.hasAttribute = function () { return this.hasAttribute.apply(this, arguments); };
-                Element.prototype.setAttribute = function () { return this.setAttribute.apply(this, arguments); };
-                Element.prototype.removeAttribute = function () { return this.removeAttribute.apply(this, arguments); };
-                Element.prototype.toggleAttribute = function () { return this.toggleAttribute.apply(this, arguments); };
-                Element.prototype.getAttributeNode = function () { return this.getAttributeNode.apply(this, arguments); };
-                Element.prototype.setAttributeNode = function () { return this.setAttributeNode.apply(this, arguments); };
-                Element.prototype.removeAttributeNode = function () { return this.removeAttributeNode.apply(this, arguments); };
-                Element.prototype.hasAttributes = function () { return this.hasAttributes.apply(this, arguments); };
-                Element.prototype.matches = function () { return this.matches.apply(this, arguments); };
-                Element.prototype.closest = function () { return this.closest.apply(this, arguments); };
-                Element.prototype.querySelector = function () { return this.querySelector.apply(this, arguments); };
-                Element.prototype.querySelectorAll = function () { return this.querySelectorAll.apply(this, arguments); };
-                Element.prototype.getElementsByTagName = function () { return this.getElementsByTagName.apply(this, arguments); };
-                Element.prototype.appendChild = function () { return this.appendChild.apply(this, arguments); };
-                Element.prototype.insertBefore = function () { return this.insertBefore.apply(this, arguments); };
-                Element.prototype.append = function () { return this.append.apply(this, arguments); };
-                Element.prototype.prepend = function () { return this.prepend.apply(this, arguments); };
-                Element.prototype.cloneNode = function () { return this.cloneNode.apply(this, arguments); };
+                [
+                    'contains',
+                    'dispatchEvent',
+                    'cloneNode',
+                    'appendChild',
+                    'insertBefore',
+                    'replaceChild',
+                    'removeChild',
+                    'append',
+                    'prepend'
+                ].forEach(function (name) { defineHostMethod(Node.prototype, name); });
 
-                HTMLElement.prototype.matches = Element.prototype.matches;
-                HTMLElement.prototype.closest = Element.prototype.closest;
-                HTMLElement.prototype.getElementsByTagName = Element.prototype.getElementsByTagName;
+                [
+                    'createElement',
+                    'createElementNS',
+                    'createTextNode',
+                    'createComment',
+                    'createDocumentFragment',
+                    'importNode',
+                    'createRange',
+                    'createAttribute',
+                    'createEvent',
+                    'createTreeWalker',
+                    'hasStorageAccess',
+                    'getElementById',
+                    'querySelector',
+                    'querySelectorAll',
+                    'getElementsByTagName',
+                ].forEach(function (name) { defineHostMethod(Document.prototype, name); });
+                Window.prototype.addEventListener = function () { return globalThis.addEventListener.apply(globalThis, arguments); };
+                Window.prototype.removeEventListener = function () { return globalThis.removeEventListener.apply(globalThis, arguments); };
+                Window.prototype.dispatchEvent = function () { return globalThis.dispatchEvent.apply(globalThis, arguments); };
+                if (Object.getPrototypeOf(globalThis) !== Window.prototype) {
+                    Object.setPrototypeOf(globalThis, Window.prototype);
+                }
+
+                var elementHostMethods = [
+                    'getAttribute',
+                    'hasAttribute',
+                    'setAttribute',
+                    'removeAttribute',
+                    'toggleAttribute',
+                    'getAttributeNode',
+                    'setAttributeNode',
+                    'removeAttributeNode',
+                    'hasAttributes',
+                    'attachShadow',
+                    'matches',
+                    'closest',
+                    'querySelector',
+                    'querySelectorAll',
+                    'getElementsByTagName',
+                    'animate',
+                ];
+                elementHostMethods.forEach(function (name) { defineHostMethod(Element.prototype, name); });
+
+                [
+                    'setStart',
+                    'setEnd',
+                    'setStartBefore',
+                    'setStartAfter',
+                    'setEndBefore',
+                    'setEndAfter',
+                    'collapse',
+                    'selectNode',
+                    'selectNodeContents',
+                    'compareBoundaryPoints',
+                    'deleteContents',
+                    'extractContents',
+                    'cloneContents',
+                    'insertNode',
+                    'surroundContents',
+                    'cloneRange',
+                    'detach',
+                    'isPointInRange',
+                    'comparePoint',
+                    'intersectsNode',
+                    'createContextualFragment',
+                    'getBoundingClientRect',
+                    'getClientRects',
+                    'toString'
+                ].forEach(function (name) { defineHostMethod(Range.prototype, name); });
             })();
             """);
     }
@@ -3479,6 +4313,57 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     configurable: true
                 });
                 delete globalThis.__fenNativeDocumentCtor;
+            })();
+            """);
+    }
+
+    private void InstallFenJsNativeRangeConstructor(Document document)
+    {
+        if (document == null)
+        {
+            return;
+        }
+
+        var rangeConstructor = _interpreter.AllocateNativeConstructor(
+            "Range",
+            (_, _) =>
+            {
+                ThrowDomException(
+                    "TypeError",
+                    "Failed to construct 'Range': Please use the 'new' operator.");
+                return JsValue.Undefined;
+            },
+            _ => ToHostOrNull(new DomRange(document), HostObjectKind.Other),
+            length: 0);
+        _interpreter.RegisterGlobalValue("__fenNativeRangeCtor", rangeConstructor);
+
+        EvaluateWithFenJsRaw(
+            """
+            (function () {
+                var nativeRange = globalThis.__fenNativeRangeCtor;
+                var brandedRange = globalThis.Range;
+                if (brandedRange && brandedRange.prototype) {
+                    nativeRange.prototype = brandedRange.prototype;
+                    var hasInstance = Object.getOwnPropertyDescriptor(brandedRange, Symbol.hasInstance);
+                    if (hasInstance) {
+                        Object.defineProperty(nativeRange, Symbol.hasInstance, hasInstance);
+                    }
+
+                    var constants = ['START_TO_START', 'START_TO_END', 'END_TO_END', 'END_TO_START'];
+                    for (var i = 0; i < constants.length; i++) {
+                        var descriptor = Object.getOwnPropertyDescriptor(brandedRange, constants[i]);
+                        if (descriptor) {
+                            Object.defineProperty(nativeRange, constants[i], descriptor);
+                        }
+                    }
+                }
+
+                Object.defineProperty(globalThis, 'Range', {
+                    value: nativeRange,
+                    writable: true,
+                    configurable: true
+                });
+                delete globalThis.__fenNativeRangeCtor;
             })();
             """);
     }
@@ -4021,7 +4906,6 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
                 // ── IntersectionObserver ── https://w3c.github.io/IntersectionObserver/
                 // Facebook uses this for lazy-loading images and deferred content.
-                // Stub: accepts observe/unobserve/disconnect but never fires callbacks.
                 globalThis.IntersectionObserver = function IntersectionObserver(callback, options) {
                     this._callback = callback;
                     this._targets = [];
@@ -4035,6 +4919,24 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 IntersectionObserver.prototype.observe = function (target) {
                     if (this._targets.indexOf(target) < 0) {
                         this._targets.push(target);
+                    }
+                    // Fire initial callback with isIntersecting: true for observed elements.
+                    // reCAPTCHA and other widgets depend on this for visibility detection.
+                    var self = this;
+                    if (typeof setTimeout === 'function') {
+                        setTimeout(function () {
+                            if (self._targets.indexOf(target) < 0) return;
+                            var entry = {
+                                target: target,
+                                isIntersecting: true,
+                                intersectionRatio: 1.0,
+                                boundingClientRect: { top: 0, left: 0, bottom: 100, right: 100, width: 100, height: 100, x: 0, y: 0 },
+                                intersectionRect: { top: 0, left: 0, bottom: 100, right: 100, width: 100, height: 100, x: 0, y: 0 },
+                                rootBounds: { top: 0, left: 0, bottom: 800, right: 1200, width: 1200, height: 800, x: 0, y: 0 },
+                                time: (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()
+                            };
+                            try { self._callback([entry], self); } catch (e) {}
+                        }, 0);
                     }
                 };
                 IntersectionObserver.prototype.unobserve = function (target) {
@@ -4100,6 +5002,24 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     this._propagationStopped = true;
                     this._immediatePropagationStopped = true;
                 };
+                Event.prototype.initEvent = function (type, bubbles, cancelable) {
+                    if (this._fenDispatching) return;
+                    this.type = String(type || '');
+                    this.bubbles = !!bubbles;
+                    this.cancelable = !!cancelable;
+                    this.composed = false;
+                    this.defaultPrevented = false;
+                    this.cancelBubble = false;
+                    this.returnValue = true;
+                    this.eventPhase = 0;
+                    this.isTrusted = false;
+                    this.target = null;
+                    this.currentTarget = null;
+                    this.srcElement = null;
+                    this.timeStamp = Date.now();
+                    this._propagationStopped = false;
+                    this._immediatePropagationStopped = false;
+                };
                 Event.prototype.preventDefault = function () {
                     if (this.cancelable) {
                         this.defaultPrevented = true;
@@ -4121,10 +5041,287 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 };
                 CustomEvent.prototype = Object.create(Event.prototype);
                 CustomEvent.prototype.constructor = CustomEvent;
+                CustomEvent.prototype.initCustomEvent = function (type, bubbles, cancelable, detail) {
+                    if (this._fenDispatching) return;
+                    Event.prototype.initEvent.call(this, type, bubbles, cancelable);
+                    this.detail = detail !== undefined ? detail : null;
+                };
+
+                globalThis.UIEvent = function UIEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.view = options.view || null;
+                    this.detail = options.detail || 0;
+                };
+                UIEvent.prototype = Object.create(Event.prototype);
+                UIEvent.prototype.constructor = UIEvent;
+                UIEvent.prototype.initUIEvent = function (type, bubbles, cancelable, view, detail) {
+                    if (this._fenDispatching) return;
+                    Event.prototype.initEvent.call(this, type, bubbles, cancelable);
+                    this.view = view || null;
+                    this.detail = detail || 0;
+                };
+
+                globalThis.MouseEvent = function MouseEvent(type, options) {
+                    UIEvent.call(this, type, options);
+                    options = options || {};
+                    this.screenX = options.screenX || 0;
+                    this.screenY = options.screenY || 0;
+                    this.clientX = options.clientX || 0;
+                    this.clientY = options.clientY || 0;
+                    this.ctrlKey = !!options.ctrlKey;
+                    this.shiftKey = !!options.shiftKey;
+                    this.altKey = !!options.altKey;
+                    this.metaKey = !!options.metaKey;
+                    this.button = options.button || 0;
+                    this.buttons = options.buttons || 0;
+                    this.relatedTarget = options.relatedTarget || null;
+                };
+                MouseEvent.prototype = Object.create(UIEvent.prototype);
+                MouseEvent.prototype.constructor = MouseEvent;
+                MouseEvent.prototype.initMouseEvent = function (
+                    type, bubbles, cancelable, view, detail, screenX, screenY,
+                    clientX, clientY, ctrlKey, altKey, shiftKey, metaKey, button, relatedTarget) {
+                    if (this._fenDispatching) return;
+                    UIEvent.prototype.initUIEvent.call(this, type, bubbles, cancelable, view, detail);
+                    this.screenX = screenX || 0;
+                    this.screenY = screenY || 0;
+                    this.clientX = clientX || 0;
+                    this.clientY = clientY || 0;
+                    this.ctrlKey = !!ctrlKey;
+                    this.altKey = !!altKey;
+                    this.shiftKey = !!shiftKey;
+                    this.metaKey = !!metaKey;
+                    this.button = button || 0;
+                    this.buttons = this.button ? 1 << this.button : 0;
+                    this.relatedTarget = relatedTarget || null;
+                };
+
+                globalThis.WheelEvent = function WheelEvent(type, options) {
+                    MouseEvent.call(this, type, options);
+                    options = options || {};
+                    this.deltaX = Number(options.deltaX || 0);
+                    this.deltaY = Number(options.deltaY || 0);
+                    this.deltaZ = Number(options.deltaZ || 0);
+                    this.deltaMode = Number(options.deltaMode || 0);
+                };
+                WheelEvent.prototype = Object.create(MouseEvent.prototype);
+                WheelEvent.prototype.constructor = WheelEvent;
+                WheelEvent.DOM_DELTA_PIXEL = 0;
+                WheelEvent.DOM_DELTA_LINE = 1;
+                WheelEvent.DOM_DELTA_PAGE = 2;
+                WheelEvent.prototype.DOM_DELTA_PIXEL = 0;
+                WheelEvent.prototype.DOM_DELTA_LINE = 1;
+                WheelEvent.prototype.DOM_DELTA_PAGE = 2;
+                WheelEvent.prototype.initWheelEvent = function (
+                    type, bubbles, cancelable, view, detail, screenX, screenY,
+                    clientX, clientY, button, relatedTarget, modifiersList,
+                    deltaX, deltaY, deltaZ, deltaMode) {
+                    if (this._fenDispatching) return;
+                    MouseEvent.prototype.initMouseEvent.call(
+                        this,
+                        type,
+                        bubbles,
+                        cancelable,
+                        view,
+                        detail,
+                        screenX,
+                        screenY,
+                        clientX,
+                        clientY,
+                        modifiersList && modifiersList.indexOf('Control') >= 0,
+                        modifiersList && modifiersList.indexOf('Alt') >= 0,
+                        modifiersList && modifiersList.indexOf('Shift') >= 0,
+                        modifiersList && modifiersList.indexOf('Meta') >= 0,
+                        button,
+                        relatedTarget);
+                    this.deltaX = Number(deltaX || 0);
+                    this.deltaY = Number(deltaY || 0);
+                    this.deltaZ = Number(deltaZ || 0);
+                    this.deltaMode = Number(deltaMode || 0);
+                };
+
+                globalThis.KeyboardEvent = function KeyboardEvent(type, options) {
+                    UIEvent.call(this, type, options);
+                    options = options || {};
+                    this.key = options.key || '';
+                    this.code = options.code || '';
+                    this.location = options.location || 0;
+                    this.ctrlKey = !!options.ctrlKey;
+                    this.shiftKey = !!options.shiftKey;
+                    this.altKey = !!options.altKey;
+                    this.metaKey = !!options.metaKey;
+                    this.repeat = !!options.repeat;
+                    this.isComposing = !!options.isComposing;
+                    this.locale = options.locale || '';
+                };
+                KeyboardEvent.prototype = Object.create(UIEvent.prototype);
+                KeyboardEvent.prototype.constructor = KeyboardEvent;
+                KeyboardEvent.prototype.initKeyboardEvent = function (
+                    type, bubbles, cancelable, view, key, location, modifiers, repeat, locale) {
+                    if (this._fenDispatching) return;
+                    UIEvent.prototype.initUIEvent.call(this, type, bubbles, cancelable, view, 0);
+                    this.key = key || '';
+                    this.location = location || 0;
+                    this.repeat = !!repeat;
+                    this.locale = locale || '';
+                    modifiers = modifiers || '';
+                    this.ctrlKey = modifiers.indexOf('Control') >= 0;
+                    this.shiftKey = modifiers.indexOf('Shift') >= 0;
+                    this.altKey = modifiers.indexOf('Alt') >= 0;
+                    this.metaKey = modifiers.indexOf('Meta') >= 0;
+                };
+
+                globalThis.BeforeUnloadEvent = function BeforeUnloadEvent(type, options) {
+                    Event.call(this, type || 'beforeunload', options);
+                    this.returnValue = '';
+                };
+                BeforeUnloadEvent.prototype = Object.create(Event.prototype);
+                BeforeUnloadEvent.prototype.constructor = BeforeUnloadEvent;
+
+                globalThis.MessageEvent = function MessageEvent(type, options) {
+                    Event.call(this, type, options);
+                    options = options || {};
+                    this.data = options.data;
+                    this.origin = options.origin || '';
+                    this.lastEventId = options.lastEventId || '';
+                    this.source = options.source || null;
+                    this.ports = options.ports || [];
+                };
+                MessageEvent.prototype = Object.create(Event.prototype);
+                MessageEvent.prototype.constructor = MessageEvent;
+
+                globalThis.postMessage = function (message, targetOrigin) {
+                    var event = new MessageEvent('message', {
+                        data: message,
+                        origin: String(location && location.origin || ''),
+                        source: globalThis,
+                        ports: []
+                    });
+                    event.target = globalThis;
+                    event.currentTarget = globalThis;
+                    var deliver = function () {
+                        if (typeof globalThis.onmessage === 'function') {
+                            globalThis.onmessage.call(globalThis, event);
+                        }
+                        globalThis.dispatchEvent(event);
+                    };
+                    if (typeof setTimeout === 'function') {
+                        setTimeout(deliver, 0);
+                    } else {
+                        deliver();
+                    }
+                };
+
+                (function () {
+                    function MessagePort() {
+                        this.onmessage = null;
+                        this._fenListeners = [];
+                        this._fenPeer = null;
+                        this._fenClosed = false;
+                    }
+
+                    MessagePort.prototype.postMessage = function (data) {
+                        var target = this._fenPeer;
+                        if (!target || target._fenClosed) return;
+                        var event = new MessageEvent('message', { data: data, source: this, ports: [] });
+                        event.target = target;
+                        event.currentTarget = target;
+                        var deliver = function () {
+                            if (target._fenClosed) return;
+                            if (typeof target.onmessage === 'function') {
+                                target.onmessage.call(target, event);
+                            }
+                            var listeners = target._fenListeners.slice();
+                            for (var i = 0; i < listeners.length; i++) {
+                                listeners[i].call(target, event);
+                            }
+                        };
+                        if (typeof setTimeout === 'function') {
+                            setTimeout(deliver, 0);
+                        } else {
+                            deliver();
+                        }
+                    };
+                    MessagePort.prototype.start = function () {};
+                    MessagePort.prototype.close = function () {
+                        this._fenClosed = true;
+                        this._fenListeners.length = 0;
+                    };
+                    MessagePort.prototype.addEventListener = function (type, callback) {
+                        if (type !== 'message' || typeof callback !== 'function') return;
+                        if (this._fenListeners.indexOf(callback) < 0) {
+                            this._fenListeners.push(callback);
+                        }
+                    };
+                    MessagePort.prototype.removeEventListener = function (type, callback) {
+                        if (type !== 'message') return;
+                        for (var i = this._fenListeners.length - 1; i >= 0; i--) {
+                            if (this._fenListeners[i] === callback) this._fenListeners.splice(i, 1);
+                        }
+                    };
+
+                    globalThis.MessagePort = MessagePort;
+                    globalThis.MessageChannel = function MessageChannel() {
+                        this.port1 = new MessagePort();
+                        this.port2 = new MessagePort();
+                        this.port1._fenPeer = this.port2;
+                        this.port2._fenPeer = this.port1;
+                    };
+                })();
 
                 // ── XMLHttpRequest ── https://xhr.spec.whatwg.org/
                 // Amazon and many sites use XHR for API calls.  Stub that fires
                 // onerror immediately so callers can handle the failure gracefully.
+                if (typeof globalThis.Worker === 'undefined') {
+                    globalThis.Worker = function Worker(scriptURL, options) {
+                        if (!(this instanceof Worker)) {
+                            throw new TypeError("Failed to construct 'Worker': Please use the 'new' operator.");
+                        }
+
+                        this.scriptURL = String(scriptURL || '');
+                        this.name = options && options.name ? String(options.name) : '';
+                        this.onmessage = null;
+                        this.onerror = null;
+                        this.onmessageerror = null;
+                        this._fenListeners = {};
+                        this._fenTerminated = false;
+                    };
+                    Worker.prototype.postMessage = function (data) {
+                        if (this._fenTerminated) return;
+                    };
+                    Worker.prototype.terminate = function () {
+                        this._fenTerminated = true;
+                        this._fenListeners = {};
+                    };
+                    Worker.prototype.addEventListener = function (type, callback) {
+                        if (typeof callback !== 'function') return;
+                        type = String(type || '');
+                        var listeners = this._fenListeners[type] || (this._fenListeners[type] = []);
+                        if (listeners.indexOf(callback) < 0) listeners.push(callback);
+                    };
+                    Worker.prototype.removeEventListener = function (type, callback) {
+                        type = String(type || '');
+                        var listeners = this._fenListeners[type];
+                        if (!listeners) return;
+                        for (var i = listeners.length - 1; i >= 0; i--) {
+                            if (listeners[i] === callback) listeners.splice(i, 1);
+                        }
+                    };
+                    Worker.prototype.dispatchEvent = function (event) {
+                        if (!event || !event.type) return true;
+                        event.target = this;
+                        event.currentTarget = this;
+                        var handler = this['on' + event.type];
+                        if (typeof handler === 'function') handler.call(this, event);
+                        var listeners = (this._fenListeners[event.type] || []).slice();
+                        for (var i = 0; i < listeners.length; i++) {
+                            listeners[i].call(this, event);
+                        }
+                        return true;
+                    };
+                }
+
                 globalThis.XMLHttpRequest = function XMLHttpRequest() {
                     this.readyState = 0;
                     this.status = 0;
@@ -4280,26 +5477,464 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 };
                 globalThis.crypto = cryptoObject;
 
-                globalThis.customElements = {
-                    _registry: Object.create(null),
-                    define: function (name, constructor, options) {
-                        if (this._registry[name]) {
-                            throw new DOMException("Failed to execute 'define': '" + name + "' has already been defined.", "NotSupportedError");
-                        }
-                        this._registry[name] = { constructor: constructor, options: options };
-                    },
-                    get: function (name) {
-                        var entry = this._registry[name];
-                        return entry ? entry.constructor : undefined;
-                    },
-                    whenDefined: function (name) {
-                        if (this._registry[name]) {
-                            return Promise.resolve(this._registry[name].constructor);
-                        }
-                        return new Promise(function () {}); // never resolves (stub)
-                    },
-                    upgrade: function (root) {}
+                globalThis.CustomElementRegistry = function CustomElementRegistry() {
+                    this._registry = Object.create(null);
+                    this._whenDefined = Object.create(null);
                 };
+                function normalizeCustomElementName(name) {
+                    return String(name || '').toLowerCase();
+                }
+                function findCustomElementMatches(root, name, options) {
+                    var matches = [];
+                    if (!root) return matches;
+                    var localName = options && options.extends
+                        ? String(options.extends).toLowerCase()
+                        : name;
+                    var isMatch = function (node) {
+                        if (!node || node.nodeType !== Node.ELEMENT_NODE || typeof node.tagName !== 'string') return false;
+                        if (String(node.tagName).toLowerCase() !== localName) return false;
+                        return !(options && options.extends) || node.getAttribute('is') === name;
+                    };
+                    if (isMatch(root)) matches.push(root);
+                    if (typeof root.querySelectorAll === 'function') {
+                        var selector = options && options.extends
+                            ? localName + '[is="' + name.replace(/"/g, '\\"') + '"]'
+                            : name;
+                        var list;
+                        try {
+                            list = root.querySelectorAll(selector);
+                        } catch (_selectorError) {
+                            list = root.querySelectorAll('*');
+                        }
+                        for (var i = 0; list && i < list.length; i++) {
+                            if (isMatch(list[i])) matches.push(list[i]);
+                        }
+                    }
+                    return matches;
+                }
+                function copyCustomElementPrototype(target, prototype, includeAccessors) {
+                    var chain = [];
+                    var stop = [HTMLElement.prototype, Element.prototype, Node.prototype, Object.prototype];
+                    for (var proto = prototype; proto && stop.indexOf(proto) < 0; proto = Object.getPrototypeOf(proto)) {
+                        chain.unshift(proto);
+                    }
+                    for (var c = 0; c < chain.length; c++) {
+                        var names = Object.getOwnPropertyNames(chain[c]);
+                        for (var i = 0; i < names.length; i++) {
+                            var key = names[i];
+                            if (key === 'constructor') continue;
+                            var descriptor = Object.getOwnPropertyDescriptor(chain[c], key);
+                            if (!includeAccessors && descriptor && !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+                                continue;
+                            }
+                            if (descriptor) {
+                                try { Object.defineProperty(target, key, descriptor); } catch (_defineError) {}
+                            }
+                        }
+                    }
+                }
+                function copyCustomElementInstanceState(target, source) {
+                    if (!source) return;
+                    var names = Object.getOwnPropertyNames(source);
+                    for (var i = 0; i < names.length; i++) {
+                        var key = names[i];
+                        var descriptor = Object.getOwnPropertyDescriptor(source, key);
+                        if (!descriptor) continue;
+                        try {
+                            Object.defineProperty(target, key, descriptor);
+                        } catch (_defineStateError) {
+                            try { target[key] = source[key]; } catch (_assignStateError) {}
+                        }
+                    }
+                    if (typeof Object.getOwnPropertySymbols === 'function') {
+                        var symbols = Object.getOwnPropertySymbols(source);
+                        for (var s = 0; s < symbols.length; s++) {
+                            var symbol = symbols[s];
+                            var symbolDescriptor = Object.getOwnPropertyDescriptor(source, symbol);
+                            if (!symbolDescriptor) continue;
+                            try {
+                                Object.defineProperty(target, symbol, symbolDescriptor);
+                            } catch (_defineSymbolStateError) {
+                                try { target[symbol] = source[symbol]; } catch (_assignSymbolStateError) {}
+                            }
+                        }
+                    }
+                }
+                function isBuiltInCustomElementPrototype(prototype) {
+                    return prototype === HTMLElement.prototype ||
+                        prototype === Element.prototype ||
+                        prototype === Node.prototype ||
+                        prototype === Object.prototype;
+                }
+                function selectConstructedCustomElementPrototype(element, fallbackPrototype) {
+                    try {
+                        var constructedPrototype = Object.getPrototypeOf(element);
+                        if (constructedPrototype && !isBuiltInCustomElementPrototype(constructedPrototype)) {
+                            return constructedPrototype;
+                        }
+                    } catch (_prototypeReadError) {}
+                    return fallbackPrototype;
+                }
+                function applyConstructedCustomElementInstance(element, instance) {
+                    if (!instance ||
+                        instance === element ||
+                        (typeof instance !== 'object' && typeof instance !== 'function')) {
+                        return;
+                    }
+
+                    var instancePrototype = selectConstructedCustomElementPrototype(instance, null);
+                    if (instancePrototype) {
+                        try { Object.setPrototypeOf(element, instancePrototype); } catch (_instancePrototypeError) {}
+                    }
+                    copyCustomElementInstanceState(element, instance);
+                }
+                function isRecoverableCustomElementCallError(error) {
+                    var message = error && error.message ? String(error.message) : String(error);
+                    return message.indexOf('Class constructor') >= 0 ||
+                        message.indexOf("cannot be invoked without 'new'") >= 0 ||
+                        message.indexOf('cannot be called without new') >= 0 ||
+                        message.indexOf('Illegal constructor') >= 0 ||
+                        message.indexOf('Illegal invocation') >= 0;
+                }
+                function constructCustomElement(element, entry) {
+                    try {
+                        var returned = entry.constructor.call(element);
+                        applyConstructedCustomElementInstance(element, returned);
+                        return true;
+                    } catch (_callError) {
+                        if (!isRecoverableCustomElementCallError(_callError)) {
+                            throw _callError;
+                        }
+
+                        var previousConstructionElement = globalThis.__fenCustomElementConstructionElement;
+                        globalThis.__fenCustomElementConstructionElement = element;
+                        var instance;
+                        try {
+                            instance = new entry.constructor();
+                        } finally {
+                            if (previousConstructionElement) {
+                                globalThis.__fenCustomElementConstructionElement = previousConstructionElement;
+                            } else {
+                                delete globalThis.__fenCustomElementConstructionElement;
+                            }
+                        }
+                        applyConstructedCustomElementInstance(element, instance);
+                        return true;
+                    }
+                }
+                function describeCustomElementThrownValue(error, depth) {
+                    if (depth > 2) return String(error);
+                    if (error === null) return 'null';
+                    var type = typeof error;
+                    if (type !== 'object' && type !== 'function') return String(error);
+
+                    var parts = [];
+                    try {
+                        if (error.name) parts.push(String(error.name));
+                    } catch (_nameError) {}
+                    try {
+                        if (error.message) parts.push(String(error.message));
+                    } catch (_messageError) {}
+
+                    var names = [];
+                    try {
+                        names = Object.getOwnPropertyNames(error);
+                    } catch (_ownNamesError) {}
+                    for (var i = 0; i < names.length && i < 12; i++) {
+                        var key = names[i];
+                        if (key === 'name' || key === 'message' || key === 'stack') continue;
+                        var value;
+                        try {
+                            value = error[key];
+                        } catch (_valueError) {
+                            value = '<unreadable>';
+                        }
+                        var rendered;
+                        try {
+                            if (value === null) {
+                                rendered = 'null';
+                            } else if (typeof value === 'object' || typeof value === 'function') {
+                                rendered = describeCustomElementThrownValue(value, depth + 1);
+                            } else {
+                                rendered = String(value);
+                            }
+                        } catch (_renderError) {
+                            rendered = Object.prototype.toString.call(value);
+                        }
+                        parts.push(key + '=' + rendered);
+                    }
+
+                    if (!parts.length) {
+                        try {
+                            var json = JSON.stringify(error);
+                            if (json) parts.push(json);
+                        } catch (_jsonError) {}
+                    }
+                    if (!parts.length) {
+                        try {
+                            parts.push(Object.prototype.toString.call(error));
+                        } catch (_tagError) {
+                            parts.push(String(error));
+                        }
+                    }
+
+                    try {
+                        if (error.stack) parts.push(String(error.stack));
+                    } catch (_stackError) {}
+
+                    return parts.join(': ');
+                }
+                function reportCustomElementReactionError(name, phase, error) {
+                    try {
+                        if (globalThis.console && typeof globalThis.console.error === 'function') {
+                            var message = describeCustomElementThrownValue(error, 0);
+                            globalThis.console.error("Custom element '" + name + "' " + phase + " failed: " + message);
+                        }
+                    } catch (_reportError) {}
+                }
+                function describeCustomElementNodeForProbe(node) {
+                    if (!node) return String(node);
+                    var parts = [];
+                    try { parts.push(String(node.nodeName)); } catch (_nodeNameError) {}
+                    try { if (node.id) parts.push('#' + String(node.id)); } catch (_idError) {}
+                    try { if (node.localName) parts.push('local=' + String(node.localName)); } catch (_localNameError) {}
+                    try { parts.push('type=' + String(node.nodeType)); } catch (_nodeTypeError) {}
+                    try {
+                        var parent = node.parentNode;
+                        parts.push('parent=' + (parent ? String(parent.nodeName) : 'null'));
+                    } catch (_parentError) {}
+                    try {
+                        var childNodes = node.childNodes;
+                        var childLength = childNodes && typeof childNodes.length !== 'undefined'
+                            ? Number(childNodes.length)
+                            : -1;
+                        parts.push('children=' + String(childLength));
+                        if (childLength > 0) {
+                            var childParts = [];
+                            var maxChildren = childLength < 6 ? childLength : 6;
+                            for (var childIndex = 0; childIndex < maxChildren; childIndex++) {
+                                var childNode = childNodes[childIndex];
+                                var childLabel = '';
+                                try { childLabel += String(childNode.nodeName); } catch (_childNodeNameError) { childLabel += '?'; }
+                                try { if (childNode.id) childLabel += '#' + String(childNode.id); } catch (_childIdError) {}
+                                try { if (childNode.localName) childLabel += '[' + String(childNode.localName) + ']'; } catch (_childLocalNameError) {}
+                                childParts.push(childLabel);
+                            }
+                            parts.push('childList=' + childParts.join('|'));
+                        }
+                    } catch (_childrenError) {}
+                    return parts.join(':');
+                }
+                function probeCustomElementMutation(kind, parent, child) {
+                    var probe = {
+                        kind: kind,
+                        parent: describeCustomElementNodeForProbe(parent),
+                        child: describeCustomElementNodeForProbe(child),
+                        same: parent === child
+                    };
+                    try { probe.parentContainsChild = !!(parent && typeof parent.contains === 'function' && parent.contains(child)); } catch (_parentContainsError) { probe.parentContainsChild = 'throws'; }
+                    try { probe.childContainsParent = !!(child && typeof child.contains === 'function' && child.contains(parent)); } catch (_childContainsError) { probe.childContainsParent = 'throws'; }
+                    try { probe.childParent = describeCustomElementNodeForProbe(child && child.parentNode); } catch (_childParentError) {}
+                    try { probe.stack = String((new Error()).stack || '').slice(0, 900); } catch (_stackProbeError) {}
+                    return probe;
+                }
+                function describeCustomElementLifecycleStateForProbe(element) {
+                    var state = [];
+                    function push(label, value) {
+                        try { state.push(label + '=' + String(value)); } catch (_pushError) {}
+                    }
+                    push('element', describeCustomElementNodeForProbe(element));
+                    try { push('own', Object.getOwnPropertyNames(element).slice(0, 18).join(',')); } catch (_ownError) {}
+                    var shadow = null;
+                    try { shadow = element.shadowRoot; push('shadowRoot', describeCustomElementNodeForProbe(shadow)); } catch (_shadowError) { push('shadowRoot', '<throws>'); }
+                    try { push('shadowOwn', shadow ? Object.getOwnPropertyNames(shadow).slice(0, 18).join(',') : 'null'); } catch (_shadowOwnError) {}
+                    try { push('shadowRoot.root', describeCustomElementNodeForProbe(shadow && shadow.root)); } catch (_shadowRootError) {}
+                    try { push('shadowRoot.host', describeCustomElementNodeForProbe(shadow && shadow.host)); } catch (_shadowHostError) {}
+                    try { push('element.root', describeCustomElementNodeForProbe(element.root)); } catch (_elementRootError) {}
+                    try { push('element.$$', element.$$ ? 'present' : 'missing'); } catch (_dollarError) {}
+                    try { push('polymerController', element.polymerController ? 'present' : 'missing'); } catch (_polymerControllerError) {}
+                    try { push('appendSource', shadow && shadow.appendChild ? String(shadow.appendChild).slice(0, 160) : '<none>'); } catch (_appendSourceError) {}
+                    return state.join('; ');
+                }
+                function invokeCustomElementConnectedCallback(element) {
+                    var previousAppendChild = Node && Node.prototype ? Node.prototype.appendChild : null;
+                    var previousInsertBefore = Node && Node.prototype ? Node.prototype.insertBefore : null;
+                    var previousReplaceChild = Node && Node.prototype ? Node.prototype.replaceChild : null;
+                    var lastProbe = null;
+                    function attachProbe(error, probe) {
+                        var effectiveProbe = probe || lastProbe;
+                        if (!effectiveProbe) {
+                            try { effectiveProbe = globalThis.__fenLastHostMethodProbe; } catch (_lastHostProbeError) {}
+                        }
+                        try {
+                            Object.defineProperty(error, '__fenMutationProbe', {
+                                value: effectiveProbe || null,
+                                configurable: true
+                            });
+                        } catch (_attachProbeError) {}
+                    }
+                    try {
+                        if (typeof previousAppendChild === 'function') {
+                            Node.prototype.appendChild = function (child) {
+                                var probe = probeCustomElementMutation('appendChild', this, child);
+                                lastProbe = probe;
+                                try {
+                                    return previousAppendChild.apply(this, arguments);
+                                } catch (error) {
+                                    attachProbe(error, probe);
+                                    throw error;
+                                }
+                            };
+                        }
+                        if (typeof previousInsertBefore === 'function') {
+                            Node.prototype.insertBefore = function (child, reference) {
+                                var probe = probeCustomElementMutation('insertBefore', this, child);
+                                try { probe.reference = describeCustomElementNodeForProbe(reference); } catch (_referenceError) {}
+                                lastProbe = probe;
+                                try {
+                                    return previousInsertBefore.apply(this, arguments);
+                                } catch (error) {
+                                    attachProbe(error, probe);
+                                    throw error;
+                                }
+                            };
+                        }
+                        if (typeof previousReplaceChild === 'function') {
+                            Node.prototype.replaceChild = function (child, oldChild) {
+                                var probe = probeCustomElementMutation('replaceChild', this, child);
+                                try { probe.oldChild = describeCustomElementNodeForProbe(oldChild); } catch (_oldChildError) {}
+                                lastProbe = probe;
+                                try {
+                                    return previousReplaceChild.apply(this, arguments);
+                                } catch (error) {
+                                    attachProbe(error, probe);
+                                    throw error;
+                                }
+                            };
+                        }
+                        return element.connectedCallback();
+                    } catch (error) {
+                        attachProbe(error, lastProbe);
+                        try {
+                            Object.defineProperty(error, '__fenLifecycleState', {
+                                value: describeCustomElementLifecycleStateForProbe(element),
+                                configurable: true
+                            });
+                        } catch (_lifecycleStateProbeError) {}
+                        throw error;
+                    } finally {
+                        if (previousAppendChild) Node.prototype.appendChild = previousAppendChild;
+                        if (previousInsertBefore) Node.prototype.insertBefore = previousInsertBefore;
+                        if (previousReplaceChild) Node.prototype.replaceChild = previousReplaceChild;
+                    }
+                }
+                function upgradeCustomElement(element, name, entry) {
+                    if (!element) return;
+                    var alreadyUpgraded = element.__fenCustomElementName === name;
+                    if (!alreadyUpgraded) {
+                        Object.defineProperty(element, '__fenCustomElementName', {
+                            value: name,
+                            configurable: true
+                        });
+                        if (entry.constructor && entry.constructor.prototype) {
+                            copyCustomElementPrototype(element, entry.constructor.prototype, false);
+                        }
+                        if (!element.__fenCustomElementConstructed && typeof entry.constructor === 'function') {
+                            try {
+                                constructCustomElement(element, entry);
+                                if (entry.constructor && entry.constructor.prototype) {
+                                    var effectivePrototype = selectConstructedCustomElementPrototype(element, entry.constructor.prototype);
+                                    if (effectivePrototype === entry.constructor.prototype) {
+                                        try { Object.setPrototypeOf(element, entry.constructor.prototype); } catch (_setPrototypeError) {}
+                                    }
+                                    copyCustomElementPrototype(element, effectivePrototype, true);
+                                }
+                                Object.defineProperty(element, '__fenCustomElementConstructed', {
+                                    value: true,
+                                    configurable: true
+                                });
+                            } catch (_constructorError) {
+                                reportCustomElementReactionError(name, 'constructor', _constructorError);
+                                return;
+                            }
+                        }
+                    }
+                    if (element.isConnected &&
+                        !element.__fenCustomElementConnected &&
+                        typeof element.connectedCallback === 'function') {
+                        Object.defineProperty(element, '__fenCustomElementConnected', {
+                            value: true,
+                            configurable: true
+                        });
+                        try {
+                            invokeCustomElementConnectedCallback(element);
+                        } catch (_connectedError) {
+                            reportCustomElementReactionError(name, 'connectedCallback', _connectedError);
+                        }
+                    }
+                }
+                function upgradeCustomElementTree(root, registry, filterName) {
+                    if (!root || !registry) return;
+                    var names = filterName ? [filterName] : Object.keys(registry._registry);
+                    for (var i = 0; i < names.length; i++) {
+                        var name = names[i];
+                        var entry = registry._registry[name];
+                        if (!entry) continue;
+                        var matches = findCustomElementMatches(root, name, entry.options);
+                        for (var j = 0; j < matches.length; j++) {
+                            upgradeCustomElement(matches[j], name, entry);
+                        }
+                    }
+                }
+                CustomElementRegistry.prototype.define = function (name, constructor, options) {
+                    name = normalizeCustomElementName(name);
+                    if (this._registry[name]) {
+                        throw new DOMException("Failed to execute 'define': '" + name + "' has already been defined.", "NotSupportedError");
+                    }
+                    var localName = options && options.extends
+                        ? String(options.extends).toLowerCase()
+                        : name;
+                    try {
+                        Object.defineProperty(constructor, '__fenCustomElementName', {
+                            value: name,
+                            configurable: true
+                        });
+                        Object.defineProperty(constructor, '__fenCustomElementLocalName', {
+                            value: localName,
+                            configurable: true
+                        });
+                    } catch (_constructorMarkerError) {}
+                    this._registry[name] = { constructor: constructor, options: options };
+                    if (typeof document !== 'undefined') {
+                        upgradeCustomElementTree(document, this, name);
+                    }
+                    var waiters = this._whenDefined[name];
+                    if (waiters) {
+                        for (var i = 0; i < waiters.length; i++) {
+                            waiters[i](constructor);
+                        }
+                        delete this._whenDefined[name];
+                    }
+                };
+                CustomElementRegistry.prototype.get = function (name) {
+                    name = normalizeCustomElementName(name);
+                    var entry = this._registry[name];
+                    return entry ? entry.constructor : undefined;
+                };
+                CustomElementRegistry.prototype.whenDefined = function (name) {
+                    name = normalizeCustomElementName(name);
+                    if (this._registry[name]) {
+                        return Promise.resolve(this._registry[name].constructor);
+                    }
+                    var registry = this;
+                    return new Promise(function (resolve) {
+                        (registry._whenDefined[name] || (registry._whenDefined[name] = [])).push(resolve);
+                    });
+                };
+                CustomElementRegistry.prototype.upgrade = function (root) {
+                    upgradeCustomElementTree(root, this);
+                };
+                globalThis.customElements = new CustomElementRegistry();
 
                 // ── DOMException ──
                 globalThis.DOMException = function DOMException(message, name) {
@@ -4683,103 +6318,156 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             {
                 if (args.Count == 0)
                 {
-                    return _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+                    return CreateComputedStyleObject(new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase));
                 }
 
                 var element = ResolveHostObjectOrNull<Element>(args[0]);
                 if (element == null)
                 {
-                    return _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+                    return CreateComputedStyleObject(new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase));
                 }
 
-                var cs = element.GetComputedStyle();
-                if (cs == null)
-                {
-                    return _interpreter.AllocateObject(new Dictionary<string, JsValue>());
-                }
-
-                var props = new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase);
-                // Populate from the raw Map first (all CSS properties)
-                if (cs.Map != null)
-                {
-                    foreach (var kv in cs.Map)
-                    {
-                        props[kv.Key] = JsValue.FromString(kv.Value ?? string.Empty);
-                    }
-                }
-
-                // Override/add typed properties for correctness
-                if (cs.Display != null) props["display"] = JsValue.FromString(cs.Display);
-                if (cs.Position != null) props["position"] = JsValue.FromString(cs.Position);
-                if (cs.FlexDirection != null) props["flexDirection"] = JsValue.FromString(cs.FlexDirection);
-                if (cs.FlexWrap != null) props["flexWrap"] = JsValue.FromString(cs.FlexWrap);
-                if (cs.JustifyContent != null) props["justifyContent"] = JsValue.FromString(cs.JustifyContent);
-                if (cs.AlignItems != null) props["alignItems"] = JsValue.FromString(cs.AlignItems);
-                if (cs.AlignContent != null) props["alignContent"] = JsValue.FromString(cs.AlignContent);
-                if (cs.Width.HasValue) props["width"] = JsValue.FromString(cs.Width.Value + "px");
-                if (cs.Height.HasValue) props["height"] = JsValue.FromString(cs.Height.Value + "px");
-                if (cs.MinWidth.HasValue) props["minWidth"] = JsValue.FromString(cs.MinWidth.Value + "px");
-                if (cs.MinHeight.HasValue) props["minHeight"] = JsValue.FromString(cs.MinHeight.Value + "px");
-                if (cs.MaxWidth.HasValue) props["maxWidth"] = JsValue.FromString(cs.MaxWidth.Value + "px");
-                if (cs.MaxHeight.HasValue) props["maxHeight"] = JsValue.FromString(cs.MaxHeight.Value + "px");
-                if (cs.FontSize.HasValue) props["fontSize"] = JsValue.FromString(cs.FontSize.Value + "px");
-                if (cs.ForegroundColor.HasValue) props["color"] = JsValue.FromString(CssParser.ResolveCurrentColor(cs.ForegroundColor.Value, cs.ForegroundColor).ToString());
-                if (cs.BackgroundColor.HasValue) props["backgroundColor"] = JsValue.FromString(CssParser.ResolveCurrentColor(cs.BackgroundColor.Value, cs.ForegroundColor).ToString());
-                if (cs.Opacity.HasValue) props["opacity"] = JsValue.FromString(cs.Opacity.Value.ToString(CultureInfo.InvariantCulture));
-                if (cs.Visibility != null) props["visibility"] = JsValue.FromString(cs.Visibility);
-                if (cs.Overflow != null) props["overflow"] = JsValue.FromString(cs.Overflow);
-                if (cs.OverflowX != null) props["overflowX"] = JsValue.FromString(cs.OverflowX);
-                if (cs.OverflowY != null) props["overflowY"] = JsValue.FromString(cs.OverflowY);
-                if (cs.BoxSizing != null) props["boxSizing"] = JsValue.FromString(cs.BoxSizing);
-                if (cs.ZIndex.HasValue) props["zIndex"] = JsValue.FromString(cs.ZIndex.Value.ToString(CultureInfo.InvariantCulture));
-                if (cs.LineHeight.HasValue) props["lineHeight"] = JsValue.FromString(cs.LineHeight.Value + "px");
-                if (cs.TextAlign.HasValue) props["textAlign"] = JsValue.FromString(cs.TextAlign.Value.ToString());
-                if (cs.FontWeight.HasValue) props["fontWeight"] = JsValue.FromString(cs.FontWeight.Value.ToString(CultureInfo.InvariantCulture));
-                if (cs.FontFamilyName != null) props["fontFamily"] = JsValue.FromString(cs.FontFamilyName);
-                // Border from Thickness + Brush
-                var bt = cs.BorderThickness;
-                if (bt.Left != 0 || bt.Right != 0 || bt.Top != 0 || bt.Bottom != 0)
-                {
-                    props["borderTopWidth"] = JsValue.FromString(bt.Top + "px");
-                    props["borderRightWidth"] = JsValue.FromString(bt.Right + "px");
-                    props["borderBottomWidth"] = JsValue.FromString(bt.Bottom + "px");
-                    props["borderLeftWidth"] = JsValue.FromString(bt.Left + "px");
-                }
-                if (cs.BorderBrush.HasValue)
-                    props["borderTopColor"] = JsValue.FromString(cs.BorderBrush.Value.ToString());
-
-                // Margin/padding shorthand (from Map if not explicit)
-                if (cs.Margin != null)
-                {
-                    props["marginTop"] = JsValue.FromString(cs.Margin.Top + "px");
-                    props["marginRight"] = JsValue.FromString(cs.Margin.Right + "px");
-                    props["marginBottom"] = JsValue.FromString(cs.Margin.Bottom + "px");
-                    props["marginLeft"] = JsValue.FromString(cs.Margin.Left + "px");
-                }
-                if (cs.Padding != null)
-                {
-                    props["paddingTop"] = JsValue.FromString(cs.Padding.Top + "px");
-                    props["paddingRight"] = JsValue.FromString(cs.Padding.Right + "px");
-                    props["paddingBottom"] = JsValue.FromString(cs.Padding.Bottom + "px");
-                    props["paddingLeft"] = JsValue.FromString(cs.Padding.Left + "px");
-                }
-
-                // Custom properties (CSS variables)
-                if (cs.CustomProperties != null)
-                {
-                    foreach (var kv in cs.CustomProperties)
-                    {
-                        var propName = kv.Key.StartsWith("--") ? kv.Key : "--" + kv.Key;
-                        if (!props.ContainsKey(propName))
-                            props[propName] = JsValue.FromString(kv.Value ?? string.Empty);
-                    }
-                }
-
-                return _interpreter.AllocateObject(props);
+                return CreateComputedStyleObjectForElement(element);
             },
             length: 1);
 
         _interpreter.RegisterGlobalValue("getComputedStyle", getComputedStyleFn);
+    }
+
+    private JsValue CreateComputedStyleObjectForElement(Element element)
+    {
+        if (element == null)
+        {
+            return CreateComputedStyleObject(new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase));
+        }
+
+        var cs = element.GetComputedStyle();
+        if (cs == null)
+        {
+            return CreateComputedStyleObject(new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase));
+        }
+
+        var props = new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase);
+        // Populate from the raw Map first (all CSS properties)
+        if (cs.Map != null)
+        {
+            foreach (var kv in cs.Map)
+            {
+                props[kv.Key] = JsValue.FromString(kv.Value ?? string.Empty);
+            }
+        }
+
+        // Override/add typed properties for correctness
+        if (cs.Display != null) props["display"] = JsValue.FromString(cs.Display);
+        if (cs.Position != null) props["position"] = JsValue.FromString(cs.Position);
+        if (cs.FlexDirection != null) props["flexDirection"] = JsValue.FromString(cs.FlexDirection);
+        if (cs.FlexWrap != null) props["flexWrap"] = JsValue.FromString(cs.FlexWrap);
+        if (cs.JustifyContent != null) props["justifyContent"] = JsValue.FromString(cs.JustifyContent);
+        if (cs.AlignItems != null) props["alignItems"] = JsValue.FromString(cs.AlignItems);
+        if (cs.AlignContent != null) props["alignContent"] = JsValue.FromString(cs.AlignContent);
+        if (cs.Width.HasValue) props["width"] = JsValue.FromString(cs.Width.Value + "px");
+        if (cs.Height.HasValue) props["height"] = JsValue.FromString(cs.Height.Value + "px");
+        if (cs.MinWidth.HasValue) props["minWidth"] = JsValue.FromString(cs.MinWidth.Value + "px");
+        if (cs.MinHeight.HasValue) props["minHeight"] = JsValue.FromString(cs.MinHeight.Value + "px");
+        if (cs.MaxWidth.HasValue) props["maxWidth"] = JsValue.FromString(cs.MaxWidth.Value + "px");
+        if (cs.MaxHeight.HasValue) props["maxHeight"] = JsValue.FromString(cs.MaxHeight.Value + "px");
+        if (cs.FontSize.HasValue) props["fontSize"] = JsValue.FromString(cs.FontSize.Value + "px");
+        if (cs.ForegroundColor.HasValue) props["color"] = JsValue.FromString(CssParser.ResolveCurrentColor(cs.ForegroundColor.Value, cs.ForegroundColor).ToString());
+        if (cs.BackgroundColor.HasValue) props["backgroundColor"] = JsValue.FromString(CssParser.ResolveCurrentColor(cs.BackgroundColor.Value, cs.ForegroundColor).ToString());
+        if (cs.Opacity.HasValue) props["opacity"] = JsValue.FromString(cs.Opacity.Value.ToString(CultureInfo.InvariantCulture));
+        if (cs.Visibility != null) props["visibility"] = JsValue.FromString(cs.Visibility);
+        if (cs.Overflow != null) props["overflow"] = JsValue.FromString(cs.Overflow);
+        if (cs.OverflowX != null) props["overflowX"] = JsValue.FromString(cs.OverflowX);
+        if (cs.OverflowY != null) props["overflowY"] = JsValue.FromString(cs.OverflowY);
+        if (cs.BoxSizing != null) props["boxSizing"] = JsValue.FromString(cs.BoxSizing);
+        if (cs.ZIndex.HasValue) props["zIndex"] = JsValue.FromString(cs.ZIndex.Value.ToString(CultureInfo.InvariantCulture));
+        if (cs.LineHeight.HasValue) props["lineHeight"] = JsValue.FromString(cs.LineHeight.Value + "px");
+        if (cs.TextAlign.HasValue) props["textAlign"] = JsValue.FromString(cs.TextAlign.Value.ToString());
+        if (cs.FontWeight.HasValue) props["fontWeight"] = JsValue.FromString(cs.FontWeight.Value.ToString(CultureInfo.InvariantCulture));
+        if (cs.FontFamilyName != null) props["fontFamily"] = JsValue.FromString(cs.FontFamilyName);
+        // Border from Thickness + Brush
+        var bt = cs.BorderThickness;
+        if (bt.Left != 0 || bt.Right != 0 || bt.Top != 0 || bt.Bottom != 0)
+        {
+            props["borderTopWidth"] = JsValue.FromString(bt.Top + "px");
+            props["borderRightWidth"] = JsValue.FromString(bt.Right + "px");
+            props["borderBottomWidth"] = JsValue.FromString(bt.Bottom + "px");
+            props["borderLeftWidth"] = JsValue.FromString(bt.Left + "px");
+        }
+        if (cs.BorderBrush.HasValue)
+            props["borderTopColor"] = JsValue.FromString(cs.BorderBrush.Value.ToString());
+
+        // Margin/padding shorthand (from Map if not explicit)
+        if (cs.Margin != null)
+        {
+            props["marginTop"] = JsValue.FromString(cs.Margin.Top + "px");
+            props["marginRight"] = JsValue.FromString(cs.Margin.Right + "px");
+            props["marginBottom"] = JsValue.FromString(cs.Margin.Bottom + "px");
+            props["marginLeft"] = JsValue.FromString(cs.Margin.Left + "px");
+        }
+        if (cs.Padding != null)
+        {
+            props["paddingTop"] = JsValue.FromString(cs.Padding.Top + "px");
+            props["paddingRight"] = JsValue.FromString(cs.Padding.Right + "px");
+            props["paddingBottom"] = JsValue.FromString(cs.Padding.Bottom + "px");
+            props["paddingLeft"] = JsValue.FromString(cs.Padding.Left + "px");
+        }
+
+        // Custom properties (CSS variables)
+        if (cs.CustomProperties != null)
+        {
+            foreach (var kv in cs.CustomProperties)
+            {
+                var propName = kv.Key.StartsWith("--") ? kv.Key : "--" + kv.Key;
+                if (!props.ContainsKey(propName))
+                    props[propName] = JsValue.FromString(kv.Value ?? string.Empty);
+            }
+        }
+
+        return CreateComputedStyleObject(props);
+    }
+
+    private JsValue CreateComputedStyleObject(Dictionary<string, JsValue> props)
+    {
+        props ??= new Dictionary<string, JsValue>(StringComparer.OrdinalIgnoreCase);
+        var styleObject = _interpreter.AllocateObject(props);
+        _interpreter.SetObjectProperty(
+            styleObject,
+            "getPropertyValue",
+            _interpreter.AllocateNativeFunction(
+                "getPropertyValue",
+                (_, propertyArgs) =>
+                {
+                    var propertyName = propertyArgs.Count > 0 ? CoerceToHostString(propertyArgs[0]) : string.Empty;
+                    if (string.IsNullOrWhiteSpace(propertyName))
+                    {
+                        return JsValue.FromString(string.Empty);
+                    }
+
+                    if (props.TryGetValue(propertyName, out var directValue))
+                    {
+                        return directValue;
+                    }
+
+                    var kebabName = CamelToCssProp(propertyName);
+                    if (!string.Equals(kebabName, propertyName, StringComparison.Ordinal) &&
+                        props.TryGetValue(kebabName, out var kebabValue))
+                    {
+                        return kebabValue;
+                    }
+
+                    var camelName = CssPropToCamel(propertyName);
+                    if (!string.Equals(camelName, propertyName, StringComparison.Ordinal) &&
+                        props.TryGetValue(camelName, out var camelValue))
+                    {
+                        return camelValue;
+                    }
+
+                    return JsValue.FromString(string.Empty);
+                },
+                length: 1),
+            enumerable: true);
+        return styleObject;
     }
 
     private JsValue ExecuteSynchronousXmlHttpRequest(IReadOnlyList<JsValue> args)
@@ -4952,6 +6640,34 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
 
         return baseUri != null && Uri.TryCreate(baseUri, urlText, out requestUri);
+    }
+
+    private static string ResolveElementUrlProperty(Element element, string attributeName)
+    {
+        var raw = element?.GetAttribute(attributeName) ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return string.Empty;
+        }
+
+        if (Uri.TryCreate(raw, UriKind.Absolute, out var absolute))
+        {
+            return absolute.AbsoluteUri;
+        }
+
+        var ownerDocument = element.OwnerDocument;
+        var baseRaw =
+            ownerDocument?.BaseURI ??
+            ownerDocument?.DocumentURI ??
+            ownerDocument?.URL;
+
+        if (Uri.TryCreate(baseRaw, UriKind.Absolute, out var baseUri) &&
+            Uri.TryCreate(baseUri, raw, out var resolved))
+        {
+            return resolved.AbsoluteUri;
+        }
+
+        return raw;
     }
 
     private JsValue CreateXhrResult(int status, string statusText, string responseText)
@@ -5467,6 +7183,125 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return JsValue.Undefined;
     }
 
+    private IReadOnlyList<JsValue> ExtractJsArgumentList(JsValue argumentsValue)
+    {
+        if (argumentsValue.Tag != JsValueTag.Object)
+        {
+            return Array.Empty<JsValue>();
+        }
+
+        var lengthValue = ReadJsProperty(argumentsValue, "length");
+        var length = lengthValue.Tag switch
+        {
+            JsValueTag.Int32 => Math.Max(0, lengthValue.AsInt32()),
+            JsValueTag.Number => Math.Max(0, (int)lengthValue.AsNumber()),
+            _ => 0
+        };
+
+        if (length == 0)
+        {
+            return Array.Empty<JsValue>();
+        }
+
+        var values = new JsValue[length];
+        for (var i = 0; i < length; i++)
+        {
+            values[i] = ReadJsProperty(argumentsValue, i.ToString(CultureInfo.InvariantCulture));
+        }
+
+        return values;
+    }
+
+    private JsValue InvokeFenJsHostMethod(JsValue receiver, string methodName, IReadOnlyList<JsValue> args)
+    {
+        if (receiver.Tag != JsValueTag.HostObject || string.IsNullOrWhiteSpace(methodName))
+        {
+            LogScriptLoading(
+                "HostMethodIllegalInvocation",
+                LogSeverity.Warn,
+                "[FenJsBridge] Host method called with an invalid receiver",
+                new Dictionary<string, object>
+                {
+                    ["method"] = methodName ?? string.Empty,
+                    ["receiverTag"] = receiver.Tag.ToString()
+                },
+                LogMarker.EngineBug);
+            ThrowDomException("TypeError", "Illegal invocation");
+        }
+
+        var handle = receiver.AsHostObjectHandle();
+        var traceMutation = ShouldTraceHostMutationMethod(methodName);
+        if (traceMutation)
+        {
+            EngineLogCompat.Warn(
+                $"[FenHostMutationProbe] enter method={methodName} receiver={DescribeHostMutationValue(receiver)} arg0={(args != null && args.Count > 0 ? DescribeHostMutationValue(args[0]) : "<none>")} arg1={(args != null && args.Count > 1 ? DescribeHostMutationValue(args[1]) : "<none>")}",
+                LogCategory.JavaScript);
+        }
+
+        if (!_hostHooks.TryGetHostProperty(handle, methodName, out var method) ||
+            !_interpreter.CanCallValue(method))
+        {
+            LogScriptLoading(
+                "HostMethodMissing",
+                LogSeverity.Warn,
+                "[FenJsBridge] Host method missing or not callable",
+                new Dictionary<string, object>
+                {
+                    ["method"] = methodName ?? string.Empty,
+                    ["receiverTag"] = receiver.Tag.ToString()
+                },
+                LogMarker.EngineBug);
+            ThrowDomException("TypeError", "Illegal invocation");
+        }
+
+        try
+        {
+            var result = _interpreter.InvokeFunction(method, args ?? Array.Empty<JsValue>(), receiver);
+            if (traceMutation)
+            {
+                EngineLogCompat.Warn(
+                    $"[FenHostMutationProbe] exit method={methodName} receiver={DescribeHostMutationValue(receiver)} result={DescribeHostMutationValue(result)} arg0Now={(args != null && args.Count > 0 ? DescribeHostMutationValue(args[0]) : "<none>")}",
+                    LogCategory.JavaScript);
+            }
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            if (traceMutation)
+            {
+                EngineLogCompat.Warn(
+                    $"[FenHostMutationProbe] throw method={methodName} receiver={DescribeHostMutationValue(receiver)} arg0={(args != null && args.Count > 0 ? DescribeHostMutationValue(args[0]) : "<none>")} error={ex.GetType().Name}:{ex.Message}",
+                    LogCategory.JavaScript);
+            }
+
+            throw;
+        }
+    }
+
+    private static bool ShouldTraceHostMutationMethod(string methodName)
+        => string.Equals(methodName, "appendChild", StringComparison.Ordinal) ||
+           string.Equals(methodName, "insertBefore", StringComparison.Ordinal) ||
+           string.Equals(methodName, "replaceChild", StringComparison.Ordinal) ||
+           string.Equals(methodName, "removeChild", StringComparison.Ordinal);
+
+    private string DescribeHostMutationValue(JsValue value)
+    {
+        if (value.Tag != JsValueTag.HostObject)
+        {
+            return value.Tag.ToString();
+        }
+
+        var host = ResolveHostObjectOrNull(value);
+        return host switch
+        {
+            Element element => $"{element.NodeName}#{element.Id}({element.GetType().Name}) parent={element.ParentNode?.NodeName ?? "null"} children={element.ChildNodes.Length}",
+            DocumentFragment fragment => $"{fragment.NodeName}({fragment.GetType().Name}) parent={fragment.ParentNode?.NodeName ?? "null"} children={fragment.ChildNodes.Length}",
+            Node node => $"{node.NodeName}({node.GetType().Name}) parent={node.ParentNode?.NodeName ?? "null"}",
+            _ => host?.GetType().Name ?? "unresolved"
+        };
+    }
+
     private HostObjectHandle RegisterHostObject(object hostObject, HostObjectKind kind)
     {
         if (_hostHandleCache.TryGetValue(hostObject, out var existing))
@@ -5523,6 +7358,39 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     _ = _interpreter.InvokeFunction(resolve, new[] { snapshot }, JsValue.Undefined);
                     return promise;
                 },
+                length: 1)
+        });
+    }
+
+    private JsValue CreateNavigatorConnectionObject()
+    {
+        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["downlink"] = JsValue.FromNumber(10),
+            ["effectiveType"] = JsValue.FromString("4g"),
+            ["rtt"] = JsValue.FromNumber(50),
+            ["saveData"] = JsValue.FromBoolean(false),
+            ["type"] = JsValue.FromString("unknown"),
+            ["onchange"] = JsValue.Null,
+            ["addEventListener"] = _interpreter.AllocateNativeFunction(
+                "addEventListener",
+                (_, _) => JsValue.Undefined,
+                length: 2),
+            ["removeEventListener"] = _interpreter.AllocateNativeFunction(
+                "removeEventListener",
+                (_, _) => JsValue.Undefined,
+                length: 2),
+            ["dispatchEvent"] = _interpreter.AllocateNativeFunction(
+                "dispatchEvent",
+                (_, _) => JsValue.FromBoolean(true),
+                length: 1),
+            ["addListener"] = _interpreter.AllocateNativeFunction(
+                "addListener",
+                (_, _) => JsValue.Undefined,
+                length: 1),
+            ["removeListener"] = _interpreter.AllocateNativeFunction(
+                "removeListener",
+                (_, _) => JsValue.Undefined,
                 length: 1)
         });
     }
@@ -5642,7 +7510,62 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             return JsValue.Null;
         }
 
-        return JsValue.FromHostObject(RegisterHostObject(hostObject, kind));
+        var value = JsValue.FromHostObject(RegisterHostObject(hostObject, kind));
+        TryAttachFenJsPrototype(value, hostObject, kind);
+        return value;
+    }
+
+    private void TryAttachFenJsPrototype(JsValue target, object hostObject, HostObjectKind kind)
+    {
+        if (!_fenJsDomConstructorsInstalled ||
+            hostObject == null ||
+            target.Tag != JsValueTag.HostObject)
+        {
+            return;
+        }
+
+        var constructorName = GetFenJsPrototypeConstructorName(hostObject, kind);
+        if (string.IsNullOrEmpty(constructorName))
+        {
+            return;
+        }
+
+        if (_hostPrototypeNames.TryGetValue(hostObject, out var existing) &&
+            string.Equals(existing, constructorName, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        try
+        {
+            if (_interpreter.TrySetHostObjectPrototypeFromGlobalConstructor(target, constructorName))
+            {
+                _hostPrototypeNames[hostObject] = constructorName;
+            }
+        }
+        catch
+        {
+            // Some host wrappers intentionally have no DOM constructor surface.
+        }
+    }
+
+    private static string GetFenJsPrototypeConstructorName(object hostObject, HostObjectKind kind)
+    {
+        return hostObject switch
+        {
+            Document => "Document",
+            ShadowRoot => "ShadowRoot",
+            DocumentFragment => "DocumentFragment",
+            Text => "Text",
+            Comment => "Comment",
+            CharacterData => "CharacterData",
+            Element => "HTMLElement",
+            Attr => "Attr",
+            DomRange => "Range",
+            FenJsHtmlCollectionHost => "HTMLCollection",
+            Node when kind == HostObjectKind.DomNode => "Node",
+            _ => null
+        };
     }
 
     private JsValue ToHostNodeOrNull(Node node)
@@ -5654,6 +7577,38 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             Node otherNode => ToHostOrNull(otherNode, HostObjectKind.DomNode),
             _ => JsValue.Null
         };
+    }
+
+    private JsValue UpgradeCustomElementTreeIfDefined(JsValue rootValue)
+    {
+        if (rootValue.Tag != JsValueTag.HostObject || _interpreter == null)
+        {
+            return rootValue;
+        }
+
+        if (!_interpreter.TryReadGlobalValue("customElements", out var registry))
+        {
+            return rootValue;
+        }
+
+        var upgrade = ReadJsProperty(registry, "upgrade");
+        if (!_interpreter.CanCallValue(upgrade))
+        {
+            return rootValue;
+        }
+
+        try
+        {
+            _ = _interpreter.InvokeFunction(upgrade, new[] { rootValue }, registry);
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] customElements.upgrade callback failed: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+
+        return rootValue;
     }
 
     private static Uri TryCreateUri(string raw)
@@ -5807,6 +7762,100 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return string.IsNullOrWhiteSpace(_documentReadyState) ? "loading" : _documentReadyState;
     }
 
+    internal void FocusElement(Element element)
+    {
+        if (element == null) return;
+
+        var document = element.OwnerDocument;
+        var alreadyFocused = document != null && ReferenceEquals(document.ActiveElement, element);
+        if (document != null)
+        {
+            document.ActiveElement = element;
+        }
+
+        FenBrowser.FenEngine.Rendering.ElementStateManager.Instance.SetActiveElement(element);
+
+        if (!alreadyFocused)
+        {
+            DispatchElementEvent(element, "focus");
+        }
+    }
+
+    internal void BlurElement(Element element)
+    {
+        if (element == null) return;
+
+        var document = element.OwnerDocument;
+        var wasFocused = document != null && ReferenceEquals(document.ActiveElement, element);
+        if (wasFocused)
+        {
+            document.ActiveElement = null;
+        }
+
+        FenBrowser.FenEngine.Rendering.ElementStateManager.Instance.SetActiveElement(null);
+
+        if (wasFocused)
+        {
+            DispatchElementEvent(element, "blur");
+        }
+    }
+
+    internal void SubmitFormFromScript(Element element)
+    {
+        if (element == null || !string.Equals(element.TagName, "FORM", StringComparison.OrdinalIgnoreCase))
+            return;
+
+        // Queue the form submission asynchronously so it doesn't deadlock.
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var action = element.GetAttribute("action") ?? string.Empty;
+                var method = element.GetAttribute("method") ?? "GET";
+                var doc = element.OwnerDocument;
+                var baseUrlStr = _currentBaseUri?.AbsoluteUri ?? doc?.BaseURI ?? doc?.URL ?? "about:blank";
+                var baseUri = new Uri(baseUrlStr);
+
+                Uri requestUri;
+                if (!string.IsNullOrEmpty(action) && Uri.TryCreate(action, UriKind.Absolute, out var absoluteUri))
+                {
+                    requestUri = absoluteUri;
+                }
+                else
+                {
+                    requestUri = new Uri(baseUri, action ?? string.Empty);
+                }
+
+                var formData = new Dictionary<string, string>();
+                foreach (var child in element.QuerySelectorAll("input, select, textarea, button"))
+                {
+                    if (child is not Element input) continue;
+                    var name = input.GetAttribute("name");
+                    if (string.IsNullOrEmpty(name)) continue;
+                    var value = input.GetAttribute("value") ?? string.Empty;
+                    formData[name] = value;
+                }
+
+                if (NavigateProgrammaticAsync != null)
+                {
+                    var queryString = string.Join("&",
+                        formData.Select(kvp =>
+                            $"{Uri.EscapeDataString(kvp.Key)}={Uri.EscapeDataString(kvp.Value)}"));
+                    var fullUri = method.Equals("POST", StringComparison.OrdinalIgnoreCase)
+                        ? requestUri.AbsoluteUri
+                        : new Uri(requestUri, $"?{queryString}").AbsoluteUri;
+                    await NavigateProgrammaticAsync(fullUri).ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                EngineLogCompat.Error($"[SubmitForm] Failed: {ex.Message}", LogCategory.JavaScript);
+            }
+        });
+    }
+
+    internal Func<string, Task> NavigateProgrammaticAsync { get; set; }
+
     private void SetDocumentReadyState(string documentReadyState)
     {
         lock (_fenJsLock)
@@ -5856,7 +7905,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         var type = CoerceToHostString(args[0]);
         var callback = args[1];
-        if (string.IsNullOrWhiteSpace(type) || !_interpreter.CanCallValue(callback))
+        if (string.IsNullOrWhiteSpace(type) || !CanInvokeBrowserEventListener(callback))
         {
             return;
         }
@@ -5869,6 +7918,22 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
 
         listeners.Add(new BrowserEventListener(type, callback, capture, once));
+    }
+
+    private bool CanInvokeBrowserEventListener(JsValue callback)
+    {
+        if (_interpreter.CanCallValue(callback))
+        {
+            return true;
+        }
+
+        if (callback.Tag != JsValueTag.Object)
+        {
+            return false;
+        }
+
+        var handleEvent = ReadJsProperty(callback, "handleEvent");
+        return _interpreter.CanCallValue(handleEvent);
     }
 
     private void RemoveBrowserEventListener(List<BrowserEventListener> listeners, IReadOnlyList<JsValue> args)
@@ -5903,6 +7968,31 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return _elementEventListeners.GetOrCreateValue(element);
     }
 
+    private bool ReadPropagationStopped(
+        JsValue eventValue,
+        BrowserDomEventDispatchState dispatchState)
+    {
+        return dispatchState?.StopPropagation == true ||
+               ReadJsBoolProperty(eventValue, "_propagationStopped") ||
+               ReadJsBoolProperty(eventValue, "cancelBubble");
+    }
+
+    private bool ReadEventDefaultPrevented(
+        JsValue eventValue,
+        BrowserDomEventDispatchState dispatchState)
+    {
+        return dispatchState?.DefaultPrevented == true ||
+               ReadJsBoolProperty(eventValue, "defaultPrevented");
+    }
+
+    private bool ReadImmediatePropagationStopped(
+        JsValue eventValue,
+        BrowserDomEventDispatchState dispatchState)
+    {
+        return dispatchState?.StopImmediatePropagation == true ||
+               ReadJsBoolProperty(eventValue, "_immediatePropagationStopped");
+    }
+
     private void DispatchElementEvent(
         Element element,
         string type,
@@ -5922,51 +8012,231 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
     }
 
-    // Mirrors the legacy engine's HTMLElement.focus()/blur(): updates the document's
-    // active element and the shared focus state the renderer reads, then dispatches the
-    // matching event. The "already focused" guard avoids re-entrant focus dispatch when a
-    // 'focus' listener itself calls element.focus() (per HTML §"focusing steps").
-    private void FocusElement(Element element)
+    /// <summary>
+    /// Full WHATWG-compliant event dispatch with capture, target, and bubble phases.
+    /// Dispatches to element listeners, document listeners, and window listeners
+    /// following the DOM event propagation algorithm.
+    /// </summary>
+    private bool DispatchEventFull(
+        Element target,
+        string type,
+        JsValue eventValue,
+        BrowserDomEventDispatchState dispatchState)
+    {
+        if (target == null || eventValue.Tag == JsValueTag.Undefined)
+            return true;
+
+        // Check if event bubbles
+        var bubblesValue = ReadJsProperty(eventValue, "bubbles");
+        var bubbles = bubblesValue.Tag == JsValueTag.Boolean && bubblesValue.AsBoolean();
+
+        // Set target on event if not already set (JS-dispatched events may already have it)
+        var existingTarget = ReadJsProperty(eventValue, "target");
+        if (existingTarget.Tag == JsValueTag.Undefined || existingTarget.Tag == JsValueTag.Null)
+        {
+            var targetHost = ToHostOrNull(target, HostObjectKind.DomElement);
+            _interpreter.SetObjectProperty(eventValue, "target", targetHost);
+            _interpreter.SetObjectProperty(eventValue, "srcElement", targetHost);
+        }
+
+        // Build ancestor chain: target → parent → ... → rootmost element
+        var path = new List<Element>();
+        var current = target;
+        while (current != null)
+        {
+            path.Add(current);
+            current = current.ParentElement;
+        }
+        // path[0] = target, path[Count-1] = rootmost element
+
+        if (path.Count == 0)
+            return !ReadEventDefaultPrevented(eventValue, dispatchState);
+
+        var document = target.OwnerDocument;
+        var docHost = document == null ? JsValue.Undefined : ToHostOrNull(document, HostObjectKind.DomDocument);
+        var windowTarget = GetActiveWindowEventTarget();
+
+        // 1. CAPTURE PHASE — fire capture listeners on ancestors from root down to target's parent
+        _interpreter.SetObjectProperty(eventValue, "eventPhase", JsValue.FromInt32(1)); // Event.CAPTURING_PHASE
+        if (windowTarget.Tag != JsValueTag.Undefined)
+        {
+            DispatchBrowserEventWithState(
+                GetActiveWindowEventListeners(), type, windowTarget, eventValue, dispatchState, capture: true);
+        }
+
+        if (!ReadPropagationStopped(eventValue, dispatchState) &&
+            docHost.Tag != JsValueTag.Undefined)
+        {
+            DispatchBrowserEventWithState(
+                _documentEventListeners, type, docHost, eventValue, dispatchState, capture: true);
+        }
+
+        for (int i = path.Count - 1; i > 0; i--)
+        {
+            if (ReadPropagationStopped(eventValue, dispatchState))
+                break;
+            DispatchEventToElementWithPhase(path[i], type, eventValue, dispatchState, capture: true);
+        }
+
+        // 2. TARGET PHASE — fire all listeners on the target (both capture and non-capture)
+        if (!ReadPropagationStopped(eventValue, dispatchState))
+        {
+            _interpreter.SetObjectProperty(eventValue, "eventPhase", JsValue.FromInt32(2)); // Event.AT_TARGET
+            DispatchEventToElementWithPhase(target, type, eventValue, dispatchState, capture: null);
+        }
+
+        // 3. BUBBLE PHASE — fire non-capture listeners up the ancestor chain, then document, then window
+        if (bubbles && !ReadPropagationStopped(eventValue, dispatchState))
+        {
+            _interpreter.SetObjectProperty(eventValue, "eventPhase", JsValue.FromInt32(3)); // Event.BUBBLING_PHASE
+            for (int i = 1; i < path.Count; i++)
+            {
+                if (ReadPropagationStopped(eventValue, dispatchState))
+                    break;
+                DispatchEventToElementWithPhase(path[i], type, eventValue, dispatchState, capture: false);
+            }
+
+            // Document listeners
+            if (!ReadPropagationStopped(eventValue, dispatchState))
+            {
+                if (document != null && docHost.Tag != JsValueTag.Undefined)
+                {
+                    DispatchBrowserEventWithState(
+                        _documentEventListeners, type, docHost, eventValue, dispatchState, capture: false);
+
+                    // Document inline on* handler
+                    if (!ReadImmediatePropagationStopped(eventValue, dispatchState))
+                    {
+                        var docHandler = GetStoredHostPropertyOrUndefined(document, "on" + type);
+                        if (_interpreter != null && _interpreter.CanCallValue(docHandler))
+                        {
+                            TryInvokeFenJsEventCallback(docHandler, docHost, eventValue, type);
+                        }
+                    }
+                }
+            }
+
+            // Window listeners
+            if (!ReadPropagationStopped(eventValue, dispatchState))
+            {
+                DispatchBrowserEventWithState(
+                    GetActiveWindowEventListeners(), type, windowTarget, eventValue, dispatchState, capture: false);
+
+                // Window inline on* handler
+                if (!ReadImmediatePropagationStopped(eventValue, dispatchState) &&
+                    _interpreter != null &&
+                    TryReadWindowEventHandler(windowTarget, type, out var winHandler) &&
+                    _interpreter.CanCallValue(winHandler))
+                {
+                    TryInvokeFenJsEventCallback(winHandler, windowTarget, eventValue, type);
+                }
+            }
+        }
+
+        return !ReadEventDefaultPrevented(eventValue, dispatchState);
+    }
+
+    /// <summary>
+    /// Dispatches an event to a single element during a specific propagation phase.
+    /// Filters listeners by type and capture phase, invokes callbacks with propagation
+    /// checking, handles 'once' removal, and invokes inline on* handlers during
+    /// bubble/target phases.
+    /// </summary>
+    private void DispatchEventToElementWithPhase(
+        Element element,
+        string type,
+        JsValue eventValue,
+        BrowserDomEventDispatchState dispatchState,
+        bool? capture)
     {
         if (element == null)
-        {
             return;
+        if (ReadImmediatePropagationStopped(eventValue, dispatchState))
+            return;
+
+        var currentTarget = ToHostOrNull(element, HostObjectKind.DomElement);
+        _interpreter.SetObjectProperty(eventValue, "currentTarget", currentTarget);
+
+        // Fire registered event listeners
+        if (_elementEventListeners.TryGetValue(element, out var allListeners) &&
+            allListeners != null && allListeners.Count > 0)
+        {
+            for (int i = 0; i < allListeners.Count; i++)
+            {
+                if (ReadImmediatePropagationStopped(eventValue, dispatchState))
+                    break;
+
+                var listener = allListeners[i];
+                if (!string.Equals(listener.Type, type, StringComparison.Ordinal))
+                    continue;
+                if (capture.HasValue && listener.Capture != capture.Value)
+                    continue;
+
+                TryInvokeFenJsEventCallback(listener.Callback, currentTarget, eventValue, type);
+
+                if (listener.Once)
+                {
+                    allListeners.RemoveAll(existing =>
+                        string.Equals(existing.Type, listener.Type, StringComparison.Ordinal) &&
+                        existing.Capture == listener.Capture &&
+                        existing.Callback.Equals(listener.Callback));
+                    i--; // Adjust index after removal
+                }
+            }
         }
 
-        var document = element.OwnerDocument;
-        var alreadyFocused = document != null && ReferenceEquals(document.ActiveElement, element);
-        if (document != null)
+        // Invoke inline on* handler during bubble/target phases (NOT during capture)
+        if (!capture.HasValue || capture.Value == false)
         {
-            document.ActiveElement = element;
-        }
-
-        FenBrowser.FenEngine.Rendering.ElementStateManager.Instance.SetActiveElement(element);
-
-        if (!alreadyFocused)
-        {
-            DispatchElementEvent(element, "focus");
+            if (!ReadImmediatePropagationStopped(eventValue, dispatchState))
+            {
+                var handler = GetStoredHostPropertyOrUndefined(element, "on" + type);
+                if (_interpreter != null && _interpreter.CanCallValue(handler))
+                {
+                    TryInvokeFenJsEventCallback(handler, currentTarget, eventValue, type);
+                }
+            }
         }
     }
 
-    private void BlurElement(Element element)
+    /// <summary>
+    /// Dispatches event listeners with propagation flag checking.
+    /// Like DispatchBrowserEvent but respects stopImmediatePropagation.
+    /// </summary>
+    private void DispatchBrowserEventWithState(
+        List<BrowserEventListener> listeners,
+        string type,
+        JsValue currentTarget,
+        JsValue eventValue,
+        BrowserDomEventDispatchState dispatchState,
+        bool? capture = null)
     {
-        if (element == null)
-        {
+        if (listeners.Count == 0 || ReadImmediatePropagationStopped(eventValue, dispatchState))
             return;
-        }
 
-        var document = element.OwnerDocument;
-        var wasFocused = document != null && ReferenceEquals(document.ActiveElement, element);
-        if (wasFocused)
+        _interpreter.SetObjectProperty(eventValue, "currentTarget", currentTarget);
+
+        for (int i = 0; i < listeners.Count; i++)
         {
-            document.ActiveElement = null;
-        }
+            if (ReadImmediatePropagationStopped(eventValue, dispatchState))
+                break;
 
-        FenBrowser.FenEngine.Rendering.ElementStateManager.Instance.SetActiveElement(null);
+            var listener = listeners[i];
+            if (!string.Equals(listener.Type, type, StringComparison.Ordinal))
+                continue;
+            if (capture.HasValue && listener.Capture != capture.Value)
+                continue;
 
-        if (wasFocused)
-        {
-            DispatchElementEvent(element, "blur");
+            TryInvokeFenJsEventCallback(listener.Callback, currentTarget, eventValue, type);
+
+            if (listener.Once)
+            {
+                listeners.RemoveAll(existing =>
+                    string.Equals(existing.Type, listener.Type, StringComparison.Ordinal) &&
+                    existing.Capture == listener.Capture &&
+                    existing.Callback.Equals(listener.Callback));
+                i--;
+            }
         }
     }
 
@@ -6010,6 +8280,55 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         InvokeBodyOnloadAttribute(document);
         DispatchWindowLoadHandlers();
         MarkEventLoopCompleted();
+    }
+
+    private JsValue GetStoredHostPropertyOrUndefined(object receiver, string property)
+    {
+        var store = GetHostPropertyStore(receiver);
+        return store.TryGetValue(property, out var value) ? value : JsValue.Undefined;
+    }
+
+    private void SetStoredHostProperty(object receiver, string property, JsValue value)
+    {
+        var store = GetHostPropertyStore(receiver);
+        store[property] = value;
+    }
+
+    private JsValue CreateResolvedPromise(JsValue resolution)
+    {
+        var (promise, resolve, _) = ((IBuiltinContext)_interpreter).CreatePromiseCapability();
+        _ = _interpreter.InvokeFunction(resolve, new[] { resolution }, JsValue.Undefined);
+        return promise;
+    }
+
+    private JsValue CreateViewTransitionResult(JsValue updateCallback)
+    {
+        if (_interpreter.CanCallValue(updateCallback))
+        {
+            try
+            {
+                _ = _interpreter.InvokeFunction(updateCallback, Array.Empty<JsValue>(), JsValue.Undefined);
+            }
+            catch (Exception ex)
+            {
+                FenBrowser.Core.EngineLogCompat.Warn(
+                    $"[FenJsBridge] startViewTransition callback failed: {ex.Message}",
+                    FenBrowser.Core.Logging.LogCategory.JavaScript);
+            }
+        }
+
+        var result = _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["ready"] = CreateResolvedPromise(JsValue.Undefined),
+            ["updateCallbackDone"] = CreateResolvedPromise(JsValue.Undefined),
+            ["finished"] = CreateResolvedPromise(JsValue.Undefined)
+        });
+        _interpreter.SetObjectProperty(
+            result,
+            "skipTransition",
+            _interpreter.AllocateNativeFunction("skipTransition", (_, _) => JsValue.Undefined, length: 0),
+            enumerable: false);
+        return result;
     }
 
     private JsValue ParseFenJsUrl(IReadOnlyList<JsValue> args)
@@ -6072,16 +8391,231 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         });
     }
 
-    private JsValue GetStoredHostPropertyOrUndefined(object receiver, string property)
+    private void ApplyElementProperties(Element element, JsValue propertiesValue)
     {
-        var store = GetHostPropertyStore(receiver);
-        return store.TryGetValue(property, out var value) ? value : JsValue.Undefined;
+        if (element == null || propertiesValue.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var propertiesObject = _interpreter.Heap.GetObject(propertiesValue.AsObjectHandle());
+        var context = (IBuiltinContext)_interpreter;
+        foreach (var property in propertiesObject.EnumerateOwnProperties())
+        {
+            if (!property.Value.Enumerable ||
+                string.IsNullOrWhiteSpace(property.Key) ||
+                !context.TryGetPropertyValue(propertiesObject, propertiesValue, property.Key, out var propertyValue))
+            {
+                continue;
+            }
+
+            ApplyElementProperty(element, property.Key, propertyValue);
+        }
     }
 
-    private void SetStoredHostProperty(object receiver, string property, JsValue value)
+    private void QueueFrameLoadsForTree(Node node)
     {
-        var store = GetHostPropertyStore(receiver);
-        store[property] = value;
+        if (node is not Element element)
+        {
+            return;
+        }
+
+        QueueFrameElementLoad(element);
+
+        foreach (var descendant in element.Descendants().OfType<Element>())
+        {
+            QueueFrameElementLoad(descendant);
+        }
+    }
+
+    private static bool IsIFrameElement(Element element)
+    {
+        return string.Equals(element?.TagName, "iframe", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void QueueFrameElementLoad(Element element)
+    {
+        if (element == null ||
+            !IsIFrameElement(element) ||
+            !element.IsConnected ||
+            FrameElementLoader == null)
+        {
+            return;
+        }
+
+        // 1. Check for srcdoc (takes priority over src per HTML spec)
+        var srcdoc = element.GetAttribute("srcdoc");
+        if (!string.IsNullOrWhiteSpace(srcdoc))
+        {
+            var existingDoc = GetStoredHostPropertyOrUndefined(element, "__fenFrameSrcdocHash");
+            var newHash = srcdoc.GetHashCode().ToString("x", CultureInfo.InvariantCulture);
+            if (existingDoc.Tag != JsValueTag.Undefined &&
+                string.Equals(CoerceToHostString(existingDoc), newHash, StringComparison.Ordinal))
+            {
+                return; // Already loaded this srcdoc content
+            }
+
+            SetStoredHostProperty(element, "__fenFrameSrcdocHash", JsValue.FromString(newHash));
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await LoadFrameSrcdocAsync(element, srcdoc).ConfigureAwait(false);
+                    RequestRender?.Invoke();
+                }
+                catch (Exception ex)
+                {
+                    EngineLogCompat.Warn(
+                        $"[FenJsBridge] srcdoc frame load failed for <iframe>: {ex.Message}",
+                        LogCategory.JavaScript);
+                }
+            });
+            return;
+        }
+
+        // 2. Check for src URL
+        var src = ResolveElementUrlProperty(element, "src");
+        if (string.IsNullOrWhiteSpace(src) ||
+            string.Equals(src, "about:blank", StringComparison.OrdinalIgnoreCase) ||
+            src.StartsWith("javascript:", StringComparison.OrdinalIgnoreCase) ||
+            src.StartsWith("data:", StringComparison.OrdinalIgnoreCase) ||
+            !Uri.TryCreate(src, UriKind.Absolute, out var frameUri))
+        {
+            return;
+        }
+
+        var existing = GetStoredHostPropertyOrUndefined(element, "__fenFrameLoadUrl");
+        if (existing.Tag != JsValueTag.Undefined &&
+            string.Equals(CoerceToHostString(existing), frameUri.AbsoluteUri, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        SetStoredHostProperty(element, "__fenFrameLoadUrl", JsValue.FromString(frameUri.AbsoluteUri));
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await FrameElementLoader(element, frameUri).ConfigureAwait(false);
+                RequestRender?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                FenBrowser.Core.EngineLogCompat.Warn(
+                    $"[FenJsBridge] iframe load failed for '{frameUri}': {ex.Message}",
+                    FenBrowser.Core.Logging.LogCategory.JavaScript);
+            }
+        });
+    }
+
+    /// <summary>
+    /// Parses srcdoc HTML content and loads it as the iframe's subdocument.
+    /// The srcdoc content is treated as an HTML document with the parent page's
+    /// base URI (per HTML spec §4.8.5 — srcdoc documents have the parent's URL
+    /// for same-origin purposes).
+    /// </summary>
+    private async Task LoadFrameSrcdocAsync(Element frameElement, string srcdocHtml)
+    {
+        if (string.IsNullOrWhiteSpace(srcdocHtml) || frameElement == null || !frameElement.IsConnected)
+        {
+            return;
+        }
+
+        try
+        {
+            // srcdoc documents inherit the creator document's base URL
+            var frameUri = _currentBaseUri ?? new Uri("about:srcdoc");
+            var parsedDocument = HtmlParser.ParseDocument(
+                srcdocHtml,
+                new HtmlParserOptions { BaseUri = frameUri });
+
+            var parsedRoot = parsedDocument?.DocumentElement;
+            if (parsedRoot == null)
+            {
+                EngineLogCompat.Warn(
+                    "[FenJsBridge] srcdoc parse produced no document element",
+                    LogCategory.JavaScript);
+                return;
+            }
+
+            while (frameElement.FirstChild != null)
+            {
+                frameElement.RemoveChild(frameElement.FirstChild);
+            }
+
+            frameElement.AppendChild(parsedDocument);
+
+            // Wire up the frame's own DOM context and scripts.
+            // The subdocument gets its own JS window bound to the frame element.
+            GetOrCreateIFrameContentWindow(frameElement, parsedDocument, frameUri);
+            await SetSubdocumentDomAsync(parsedRoot, frameUri).ConfigureAwait(false);
+
+            FenBrowser.Core.EngineLogCompat.Info(
+                $"[FenJsBridge] srcdoc frame loaded root='{parsedRoot.TagName}'",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+        catch (Exception ex)
+        {
+            FenBrowser.Core.EngineLogCompat.Warn(
+                $"[FenJsBridge] srcdoc frame load failed: {ex.Message}",
+                FenBrowser.Core.Logging.LogCategory.JavaScript);
+        }
+    }
+
+    private void ApplyElementProperty(Element element, string property, JsValue value)
+    {
+        switch (property)
+        {
+            case "className":
+                element.ClassName = CoerceToHostString(value);
+                break;
+            case "id":
+                element.Id = CoerceToHostString(value);
+                break;
+            case "value":
+                element.SetAttribute("value", CoerceToHostString(value));
+                if (string.Equals(element.TagName, "textarea", StringComparison.OrdinalIgnoreCase))
+                {
+                    element.TextContent = CoerceToHostString(value);
+                }
+                break;
+            case "tabIndex":
+                element.SetAttribute(
+                    "tabindex",
+                    ((int)CoerceToFiniteNumber(value, 0)).ToString(CultureInfo.InvariantCulture));
+                break;
+            case "src":
+            case "srcdoc":
+            case "href":
+            case "nonce":
+                element.SetAttribute(property, CoerceToHostString(value));
+                if (string.Equals(property, "src", StringComparison.Ordinal) &&
+                    IsIFrameElement(element))
+                {
+                    QueueFrameElementLoad(element);
+                }
+                if (string.Equals(property, "srcdoc", StringComparison.Ordinal) &&
+                    IsIFrameElement(element))
+                {
+                    QueueFrameElementLoad(element);
+                }
+                break;
+            case "innerHTML":
+                element.InnerHTML = CoerceToHostString(value);
+                if (ExecuteInlineScriptsOnInnerHTML)
+                {
+                    ExecuteInlineScriptsFromElement(element);
+                }
+                break;
+            case "textContent":
+                element.TextContent = CoerceToHostString(value);
+                break;
+            default:
+                SetStoredHostProperty(element, property, value);
+                break;
+        }
     }
 
     private JsValue GetOrCreateDomTokenListView(DOMTokenList tokenList)
@@ -6089,98 +8623,760 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var store = GetHostPropertyStore(tokenList);
         if (store.TryGetValue("__fenDomTokenListView", out var cached))
         {
+            RefreshDomTokenIndices(cached, tokenList);
             return cached;
         }
 
+        // Create the base view object with methods that don't need self-reference.
         var view = _interpreter.AllocateObject(new Dictionary<string, JsValue>
         {
-            ["length"] = JsValue.FromInt32(tokenList.Length),
-            ["value"] = JsValue.FromString(tokenList.Value ?? string.Empty),
-            ["item"] = GetOrCreateHostCallable(
-                tokenList,
-                "item",
-                (_, args) =>
-                {
-                    var index = args.Count > 0 && TryCoerceIndex(args[0], out var parsedIndex)
-                        ? parsedIndex
-                        : -1;
-                    var item = tokenList.Item(index);
-                    return item == null ? JsValue.Null : JsValue.FromString(item);
-                },
-                length: 1),
-            ["contains"] = GetOrCreateHostCallable(
-                tokenList,
-                "contains",
-                (_, args) =>
-                {
-                    var token = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
-                    return JsValue.FromBoolean(tokenList.Contains(token));
-                },
-                length: 1),
-            ["add"] = GetOrCreateHostCallable(
-                tokenList,
-                "add",
-                (_, args) =>
-                {
-                    tokenList.Add(args.Select(CoerceToHostString).ToArray());
-                    return JsValue.Undefined;
-                }),
-            ["remove"] = GetOrCreateHostCallable(
-                tokenList,
-                "remove",
-                (_, args) =>
-                {
-                    tokenList.Remove(args.Select(CoerceToHostString).ToArray());
-                    return JsValue.Undefined;
-                }),
-            ["toggle"] = GetOrCreateHostCallable(
-                tokenList,
-                "toggle",
-                (_, args) =>
-                {
-                    var token = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
-                    bool? force = null;
-                    if (args.Count > 1 && args[1].Tag != JsValueTag.Undefined)
-                    {
-                        force = CoerceToHostBoolean(args[1]);
-                    }
-
-                    return JsValue.FromBoolean(tokenList.Toggle(token, force));
-                },
-                length: 1),
-            ["replace"] = GetOrCreateHostCallable(
-                tokenList,
-                "replace",
-                (_, args) =>
-                {
-                    var oldToken = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
-                    var newToken = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
-                    return JsValue.FromBoolean(tokenList.Replace(oldToken, newToken));
-                },
-                length: 2),
-            ["supports"] = GetOrCreateHostCallable(
-                tokenList,
-                "supports",
-                (_, args) =>
-                {
-                    var token = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
-                    return JsValue.FromBoolean(tokenList.Supports(token));
-                },
-                length: 1)
+            ["item"] = CreateDomTokenListItemMethod(tokenList),
+            ["contains"] = CreateDomTokenListContainsMethod(tokenList),
+            ["supports"] = CreateDomTokenListSupportsMethod(tokenList),
+            ["values"] = GetOrCreateHostCallable(tokenList, "values",
+                (_, _2) => BuildDomTokenArrayValue(tokenList), length: 0),
+            ["keys"] = GetOrCreateHostCallable(tokenList, "keys",
+                (_, _2) => BuildDomIndexArray(tokenList), length: 0),
+            ["entries"] = GetOrCreateHostCallable(tokenList, "entries",
+                (_, _2) => BuildDomEntryArray(tokenList), length: 0),
+            ["forEach"] = GetOrCreateHostCallable(tokenList, "forEach",
+                (_, _2) => JsValue.Undefined, length: 1),
+            ["toString"] = GetOrCreateHostCallable(tokenList, "toString",
+                (_, _2) => JsValue.FromString(tokenList.Value ?? string.Empty), length: 0),
         });
 
-        for (var i = 0; i < tokenList.Length; i++)
+        // Now that view is declared, add the mutating methods that need self-reference.
+        var viewObj = _interpreter.Heap.GetObject(view.AsObjectHandle());
+        viewObj.DefineOwnProperty("add", new JsPropertyDescriptor(
+            CreateDomTokenListAddMethod(tokenList, view), Writable: true, Enumerable: false, Configurable: true));
+        viewObj.DefineOwnProperty("remove", new JsPropertyDescriptor(
+            CreateDomTokenListRemoveMethod(tokenList, view), Writable: true, Enumerable: false, Configurable: true));
+        viewObj.DefineOwnProperty("toggle", new JsPropertyDescriptor(
+            CreateDomTokenListToggleMethod(tokenList, view), Writable: true, Enumerable: false, Configurable: true));
+        viewObj.DefineOwnProperty("replace", new JsPropertyDescriptor(
+            CreateDomTokenListReplaceMethod(tokenList, view), Writable: true, Enumerable: false, Configurable: true));
+
+        // Set length, value, and numeric indices as plain data properties.
+        RefreshDomTokenIndices(view, tokenList);
+
+        // Install Symbol.iterator.
+        var iterSymId = _interpreter.GetWellKnownSymbolId("iterator");
+        if (iterSymId != 0)
         {
-            var item = tokenList.Item(i);
-            if (item != null)
-            {
-                _interpreter.SetObjectProperty(view, i.ToString(CultureInfo.InvariantCulture), JsValue.FromString(item));
-            }
+            var iterFn = _interpreter.AllocateNativeFunction(
+                "[Symbol.iterator]",
+                (thisValue, _2) =>
+                {
+                    var len = tokenList.Length;
+                    var items = new FenBrowser.Js.Runtime.JsValue[len];
+                    for (int i = 0; i < len; i++)
+                    {
+                        var token = tokenList.Item(i);
+                        items[i] = FenBrowser.Js.Runtime.JsValue.FromString(token ?? string.Empty);
+                    }
+                    var idx = 0;
+                    var iteratorEntries = new Dictionary<string, JsValue>
+                    {
+                        ["next"] = _interpreter.AllocateNativeFunction("next",
+                            (_, _3) =>
+                            {
+                                if (idx >= len)
+                                {
+                                    var doneResult = new Dictionary<string, JsValue>
+                                    {
+                                        ["value"] = JsValue.Undefined,
+                                        ["done"] = JsValue.FromBoolean(true)
+                                    };
+                                    return _interpreter.AllocateObject(doneResult);
+                                }
+                                var resultDict = new Dictionary<string, JsValue>
+                                {
+                                    ["value"] = items[idx++],
+                                    ["done"] = JsValue.FromBoolean(false)
+                                };
+                                return _interpreter.AllocateObject(resultDict);
+                            }, length: 0)
+                    };
+                    var iterObj = _interpreter.AllocateObject(iteratorEntries);
+                    var iterObjHandle = iterObj.AsObjectHandle();
+                    var iterObjNative = _interpreter.Heap.GetObject(iterObjHandle);
+                    iterObjNative.DefineOwnSymbolProperty(iterSymId,
+                        new FenBrowser.Js.Objects.JsPropertyDescriptor(
+                            _interpreter.AllocateNativeFunction("[Symbol.iterator]",
+                                (self, _3) => self, length: 0),
+                            Writable: true, Enumerable: false, Configurable: true));
+                    return iterObj;
+                },
+                length: 0);
+            viewObj.DefineOwnSymbolProperty(iterSymId,
+                new FenBrowser.Js.Objects.JsPropertyDescriptor(
+                    iterFn, Writable: true, Enumerable: false, Configurable: true));
         }
 
         AttachFenJsPrototype(view, "DOMTokenList");
         store["__fenDomTokenListView"] = view;
         return view;
+    }
+
+    private JsValue CreateDomTokenListItemMethod(DOMTokenList tokenList)
+    {
+        return GetOrCreateHostCallable(tokenList, "item",
+            (_, args) =>
+            {
+                var index = args.Count > 0 && TryCoerceIndex(args[0], out var parsedIndex)
+                    ? parsedIndex : -1;
+                var item = tokenList.Item(index);
+                return item == null ? JsValue.Null : JsValue.FromString(item);
+            }, length: 1);
+    }
+
+    private JsValue CreateDomTokenListContainsMethod(DOMTokenList tokenList)
+    {
+        return GetOrCreateHostCallable(tokenList, "contains",
+            (_, args) =>
+            {
+                var token = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                return JsValue.FromBoolean(tokenList.Contains(token));
+            }, length: 1);
+    }
+
+    private JsValue CreateDomTokenListSupportsMethod(DOMTokenList tokenList)
+    {
+        return GetOrCreateHostCallable(tokenList, "supports",
+            (_, args) =>
+            {
+                var token = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                return JsValue.FromBoolean(tokenList.Supports(token));
+            }, length: 1);
+    }
+
+    private JsValue CreateDomTokenListAddMethod(DOMTokenList tokenList, JsValue view)
+    {
+        return GetOrCreateHostCallable(tokenList, "add",
+            (_, args) =>
+            {
+                tokenList.Add(args.Select(CoerceToHostString).ToArray());
+                RefreshDomTokenIndices(view, tokenList);
+                return JsValue.Undefined;
+            });
+    }
+
+    private JsValue CreateDomTokenListRemoveMethod(DOMTokenList tokenList, JsValue view)
+    {
+        return GetOrCreateHostCallable(tokenList, "remove",
+            (_, args) =>
+            {
+                tokenList.Remove(args.Select(CoerceToHostString).ToArray());
+                RefreshDomTokenIndices(view, tokenList);
+                return JsValue.Undefined;
+            });
+    }
+
+    private JsValue CreateDomTokenListToggleMethod(DOMTokenList tokenList, JsValue view)
+    {
+        return GetOrCreateHostCallable(tokenList, "toggle",
+            (_, args) =>
+            {
+                var token = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                bool? force = null;
+                if (args.Count > 1 && args[1].Tag != JsValueTag.Undefined)
+                    force = CoerceToHostBoolean(args[1]);
+                var result = tokenList.Toggle(token, force);
+                RefreshDomTokenIndices(view, tokenList);
+                return JsValue.FromBoolean(result);
+            }, length: 1);
+    }
+
+    private JsValue CreateDomTokenListReplaceMethod(DOMTokenList tokenList, JsValue view)
+    {
+        return GetOrCreateHostCallable(tokenList, "replace",
+            (_, args) =>
+            {
+                var oldToken = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                var newToken = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                var result = tokenList.Replace(oldToken, newToken);
+                RefreshDomTokenIndices(view, tokenList);
+                return JsValue.FromBoolean(result);
+            }, length: 2);
+    }
+
+    private void RefreshDomTokenIndices(JsValue view, DOMTokenList tokenList)
+    {
+        var viewObj = _interpreter.Heap.GetObject(view.AsObjectHandle());
+        // Update length and value as plain properties (accessors aren't
+        // reliably invoked by FenJS's [[Set]]/[[Get]] on plain objects).
+        viewObj.DefineOwnProperty("length",
+            new JsPropertyDescriptor(
+                JsValue.FromInt32(tokenList.Length),
+                Writable: true, Enumerable: false, Configurable: true));
+        viewObj.DefineOwnProperty("value",
+            new JsPropertyDescriptor(
+                JsValue.FromString(tokenList.Value ?? string.Empty),
+                Writable: true, Enumerable: true, Configurable: true));
+        // Set fresh numeric indices from the live token list.
+        var maxOld = 0;
+        foreach (var kv in viewObj.EnumerateOwnProperties())
+        {
+            if (kv.Key.Length > 0 && kv.Key[0] >= '0' && kv.Key[0] <= '9' &&
+                int.TryParse(kv.Key, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n))
+            {
+                maxOld = Math.Max(maxOld, n + 1);
+            }
+        }
+        // Clear stale indices beyond the current length.
+        for (var i = tokenList.Length; i < maxOld; i++)
+        {
+            viewObj.DeleteProperty(i.ToString(CultureInfo.InvariantCulture));
+        }
+        // Set/update indices for current tokens.
+        for (var i = 0; i < tokenList.Length; i++)
+        {
+            var item = tokenList.Item(i);
+            viewObj.DefineOwnProperty(
+                i.ToString(CultureInfo.InvariantCulture),
+                new JsPropertyDescriptor(
+                    JsValue.FromString(item ?? string.Empty),
+                    Writable: true, Enumerable: true, Configurable: true));
+        }
+    }
+
+    // Creates a JS array-like object from the tokens.
+    private JsValue BuildDomTokenArrayValue(DOMTokenList tokenList)
+    {
+        var entries = new Dictionary<string, JsValue>(tokenList.Length + 1)
+        {
+            ["length"] = JsValue.FromInt32(tokenList.Length)
+        };
+        for (int i = 0; i < tokenList.Length; i++)
+        {
+            var token = tokenList.Item(i);
+            entries[i.ToString(CultureInfo.InvariantCulture)] =
+                JsValue.FromString(token ?? string.Empty);
+        }
+        return _interpreter.AllocateObject(entries);
+    }
+
+    private JsValue BuildDomIndexArray(DOMTokenList tokenList)
+    {
+        var len = tokenList.Length;
+        var entries = new Dictionary<string, JsValue>(len + 1)
+        {
+            ["length"] = JsValue.FromInt32(len)
+        };
+        for (int k = 0; k < len; k++)
+            entries[k.ToString(CultureInfo.InvariantCulture)] = JsValue.FromInt32(k);
+        return _interpreter.AllocateObject(entries);
+    }
+
+    private JsValue BuildDomEntryArray(DOMTokenList tokenList)
+    {
+        var len = tokenList.Length;
+        var entries = new Dictionary<string, JsValue>(len + 1)
+        {
+            ["length"] = JsValue.FromInt32(len)
+        };
+        for (int k = 0; k < len; k++)
+        {
+            var token = tokenList.Item(k);
+            var pairEntries = new Dictionary<string, JsValue>(3)
+            {
+                ["length"] = JsValue.FromInt32(2),
+                ["0"] = JsValue.FromInt32(k),
+                ["1"] = JsValue.FromString(token ?? string.Empty)
+            };
+            entries[k.ToString(CultureInfo.InvariantCulture)] =
+                _interpreter.AllocateObject(pairEntries);
+        }
+        return _interpreter.AllocateObject(entries);
+    }
+
+    private JsValue GetOrCreateTemplateContent(Element template)
+    {
+        var cached = GetStoredHostPropertyOrUndefined(template, "__fenTemplateContent");
+        if (cached.Tag != JsValueTag.Undefined)
+        {
+            return cached;
+        }
+
+        var fragment = template.OwnerDocument?.CreateDocumentFragment() ?? new DocumentFragment(template.OwnerDocument);
+        while (template.FirstChild != null)
+        {
+            fragment.AppendChild(template.FirstChild);
+        }
+
+        var value = ToHostNodeOrNull(fragment);
+        SetStoredHostProperty(template, "__fenTemplateContent", value);
+        return value;
+    }
+
+    private JsValue GetOrCreateIFrameContentDocument(Element iframe)
+    {
+        foreach (var child in iframe.ChildNodes)
+        {
+            if (child is Document frameDocument)
+            {
+                var frameDocumentValue = ToHostOrNull(frameDocument, HostObjectKind.DomDocument);
+                SetStoredHostProperty(iframe, "__fenIframeContentDocument", frameDocumentValue);
+                return frameDocumentValue;
+            }
+
+            if (child is Element frameRoot && frameRoot.OwnerDocument != null)
+            {
+                var frameOwnerDocumentValue = ToHostOrNull(frameRoot.OwnerDocument, HostObjectKind.DomDocument);
+                SetStoredHostProperty(iframe, "__fenIframeContentDocument", frameOwnerDocumentValue);
+                return frameOwnerDocumentValue;
+            }
+        }
+
+        var cached = GetStoredHostPropertyOrUndefined(iframe, "__fenIframeContentDocument");
+        if (cached.Tag != JsValueTag.Undefined)
+        {
+            return cached;
+        }
+
+        var document = Document.CreateHtmlDocument();
+        var url = ResolveElementUrlProperty(iframe, "src");
+        document.URL = string.IsNullOrWhiteSpace(url) ? "about:blank" : url;
+        document.BaseURI = document.URL;
+
+        if (document.ParentNode == null)
+        {
+            iframe.AppendChild(document);
+        }
+
+        var value = ToHostOrNull(document, HostObjectKind.DomDocument);
+        SetStoredHostProperty(iframe, "__fenIframeContentDocument", value);
+        return value;
+    }
+
+    private JsValue GetOrCreateIFrameContentWindow(Element iframe)
+    {
+        return GetOrCreateIFrameContentWindow(iframe, null, null);
+    }
+
+    private JsValue GetOrCreateIFrameContentWindow(Element iframe, Document frameDocument, Uri frameUri)
+    {
+        var cached = GetStoredHostPropertyOrUndefined(iframe, "__fenIframeContentWindow");
+        if (cached.Tag != JsValueTag.Undefined)
+        {
+            UpdateIFrameContentWindow(cached, iframe, frameDocument, frameUri);
+            return cached;
+        }
+
+        var document = frameDocument == null
+            ? GetOrCreateIFrameContentDocument(iframe)
+            : ToHostOrNull(frameDocument, HostObjectKind.DomDocument);
+        var href = ResolveIFrameWindowHref(iframe, frameDocument, frameUri);
+
+        var frameWindowListeners = GetIFrameWindowListeners(iframe);
+        var window = _interpreter.AllocateObject(new Dictionary<string, JsValue>());
+        var location = CreatePlainLocationObject(href);
+
+        _interpreter.SetObjectProperty(window, "document", document);
+        _interpreter.SetObjectProperty(window, "location", location);
+        _interpreter.SetObjectProperty(window, "frameElement", ToHostOrNull(iframe, HostObjectKind.DomElement));
+        _interpreter.SetObjectProperty(window, "window", window);
+        _interpreter.SetObjectProperty(window, "self", window);
+        _interpreter.SetObjectProperty(window, "frames", window);
+        _interpreter.SetObjectProperty(window, "length", JsValue.FromInt32(0));
+        _interpreter.SetObjectProperty(window, "closed", JsValue.FromBoolean(false));
+
+        var parent = _fenJsGlobalThis.Tag == JsValueTag.Undefined ? window : _fenJsGlobalThis;
+        _interpreter.SetObjectProperty(window, "parent", parent);
+        _interpreter.SetObjectProperty(window, "top", parent);
+        _interpreter.SetObjectProperty(
+            window,
+            "postMessage",
+            _interpreter.AllocateNativeFunction(
+                "postMessage",
+                (_, args) =>
+                {
+                    var data = args.Count > 0 ? args[0] : JsValue.Undefined;
+                    var targetOrigin = args.Count > 1 ? CoerceToHostString(args[1]) : "*";
+                    QueueWindowMessage(window, frameWindowListeners, data, _fenJsGlobalThis, targetOrigin);
+                    return JsValue.Undefined;
+                },
+                length: 1));
+        _interpreter.SetObjectProperty(
+            window,
+            "addEventListener",
+            _interpreter.AllocateNativeFunction(
+                "addEventListener",
+                (_, args) =>
+                {
+                    AddBrowserEventListener(frameWindowListeners, args);
+                    return JsValue.Undefined;
+                },
+                length: 2));
+        _interpreter.SetObjectProperty(
+            window,
+            "removeEventListener",
+            _interpreter.AllocateNativeFunction(
+                "removeEventListener",
+                (_, args) =>
+                {
+                    RemoveBrowserEventListener(frameWindowListeners, args);
+                    return JsValue.Undefined;
+                },
+                length: 2));
+        _interpreter.SetObjectProperty(
+            window,
+            "dispatchEvent",
+            _interpreter.AllocateNativeFunction(
+                "dispatchEvent",
+                (_, args) =>
+                {
+                    var eventValue = args.Count > 0 ? args[0] : JsValue.Undefined;
+                    return JsValue.FromBoolean(DispatchFrameWindowHostEvent(window, frameWindowListeners, eventValue));
+                },
+                length: 1));
+
+        // ── Forward standard browser globals onto the iframe contentWindow ──
+        // In a real browser, window === globalThis, so window.setTimeout etc. work.
+        // FenBrowser uses a plain JS object for iframe contentWindow, so we must
+        // explicitly copy all standard browser APIs from the interpreter's globals
+        // to make scripts like reCAPTCHA (which access window.setTimeout) work.
+        var globalsToForward = new[]
+        {
+            // Timers
+            "setTimeout", "setInterval", "clearTimeout", "clearInterval",
+            "requestAnimationFrame", "cancelAnimationFrame",
+            // Encoding
+            "atob", "btoa",
+            // DOM utilities
+            "getComputedStyle", "matchMedia", "queueMicrotask", "structuredClone",
+            // Observers
+            "MutationObserver", "IntersectionObserver", "ResizeObserver", "PerformanceObserver",
+            // Fetch / XHR
+            "fetch", "XMLHttpRequest", "AbortController", "AbortSignal",
+            "Headers", "Request", "Response",
+            // Console
+            "console",
+            // Navigation objects
+            "navigator", "performance", "crypto", "screen",
+            // Constructors
+            "Event", "CustomEvent", "MessageEvent", "URL", "URLSearchParams",
+            "DOMParser", "FormData", "Blob", "File",
+            "TextEncoder", "TextDecoder",
+            "Map", "Set", "WeakMap", "WeakSet", "WeakRef",
+            "Promise", "Proxy", "Symbol", "Intl", "Reflect",
+            // Security
+            "isSecureContext", "crossOriginIsolated", "origin",
+            // Misc browser APIs
+            "Notification", "trustedTypes", "chrome",
+            "alert", "confirm", "prompt",
+            // Error types
+            "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "URIError", "EvalError",
+            // Core JS (needed when reCAPTCHA does window.Array etc.)
+            "Array", "Object", "Function", "String", "Number", "Boolean", "RegExp", "Date", "Math", "JSON",
+            "parseInt", "parseFloat", "isNaN", "isFinite", "undefined", "NaN", "Infinity",
+            "encodeURI", "encodeURIComponent", "decodeURI", "decodeURIComponent",
+            "ArrayBuffer", "DataView", "Float32Array", "Float64Array",
+            "Int8Array", "Int16Array", "Int32Array",
+            "Uint8Array", "Uint8ClampedArray", "Uint16Array", "Uint32Array",
+            "BigInt", "BigInt64Array", "BigUint64Array",
+        };
+        foreach (var name in globalsToForward)
+        {
+            var globalVal = _interpreter.ReadGlobalValueOrUndefined(name);
+            if (globalVal.Tag != JsValueTag.Undefined)
+            {
+                _interpreter.SetObjectProperty(window, name, globalVal);
+            }
+        }
+
+        SetStoredHostProperty(iframe, "__fenIframeContentWindow", window);
+        var defaultViewDocument = frameDocument;
+        if (defaultViewDocument == null)
+        {
+            foreach (var child in iframe.ChildNodes)
+            {
+                if (child is Document childDocument)
+                {
+                    defaultViewDocument = childDocument;
+                    break;
+                }
+            }
+        }
+
+        if (defaultViewDocument != null)
+        {
+            SetStoredHostProperty(defaultViewDocument, "__fenDefaultView", window);
+        }
+
+        return window;
+    }
+
+    private void UpdateIFrameContentWindow(
+        JsValue window,
+        Element iframe,
+        Document frameDocument,
+        Uri frameUri)
+    {
+        if (window.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var document = frameDocument == null
+            ? GetOrCreateIFrameContentDocument(iframe)
+            : ToHostOrNull(frameDocument, HostObjectKind.DomDocument);
+        var href = ResolveIFrameWindowHref(iframe, frameDocument, frameUri);
+        _interpreter.SetObjectProperty(window, "document", document);
+        _interpreter.SetObjectProperty(window, "location", CreatePlainLocationObject(href));
+        _interpreter.SetObjectProperty(window, "frameElement", ToHostOrNull(iframe, HostObjectKind.DomElement));
+
+        if (frameDocument != null)
+        {
+            SetStoredHostProperty(frameDocument, "__fenDefaultView", window);
+        }
+    }
+
+    private string ResolveIFrameWindowHref(Element iframe, Document frameDocument, Uri frameUri)
+    {
+        var href =
+            frameUri?.AbsoluteUri ??
+            frameDocument?.URL ??
+            frameDocument?.DocumentURI ??
+            frameDocument?.BaseURI ??
+            ResolveElementUrlProperty(iframe, "src");
+
+        return string.IsNullOrWhiteSpace(href) ? "about:blank" : href;
+    }
+
+    private JsValue CreatePlainLocationObject(string href)
+    {
+        var parsed = ParseFenJsUrl(new[] { JsValue.FromString(href ?? string.Empty) });
+        if (parsed.Tag == JsValueTag.Object)
+        {
+            return parsed;
+        }
+
+        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["href"] = JsValue.FromString(href ?? string.Empty),
+            ["origin"] = JsValue.FromString("null"),
+            ["protocol"] = JsValue.FromString(string.Empty),
+            ["host"] = JsValue.FromString(string.Empty),
+            ["hostname"] = JsValue.FromString(string.Empty),
+            ["port"] = JsValue.FromString(string.Empty),
+            ["pathname"] = JsValue.FromString(string.Empty),
+            ["search"] = JsValue.FromString(string.Empty),
+            ["hash"] = JsValue.FromString(string.Empty)
+        });
+    }
+
+    private void QueueWindowMessage(
+        JsValue targetWindow,
+        List<BrowserEventListener> listeners,
+        JsValue data,
+        JsValue sourceWindow,
+        string targetOrigin,
+        string targetWindowOriginOverride = null)
+    {
+        if (!ShouldDeliverWindowMessage(targetWindow, targetOrigin, targetWindowOriginOverride))
+        {
+            return;
+        }
+
+        var origin = GetMessageSourceOrigin(sourceWindow);
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                RunFenJsWithLargeStack<object>(() =>
+                {
+                    lock (_fenJsLock)
+                    {
+                        using (ActivateWindowCallbackContext(targetWindow, listeners))
+                        {
+                            var eventValue = CreateMessageEventValue(data, origin, sourceWindow, targetWindow);
+                            var handler = ReadJsProperty(targetWindow, "onmessage");
+                            if (_interpreter.CanCallValue(handler))
+                            {
+                                TryInvokeFenJsEventCallback(handler, targetWindow, eventValue, "message");
+                            }
+
+                            DispatchBrowserEvent(listeners, "message", targetWindow, eventValue);
+                            _interpreter.PumpMicrotasks();
+                            RecordMicrotaskCheckpoint("postMessage");
+                        }
+                    }
+
+                    return null;
+                });
+            }
+            catch (Exception ex)
+            {
+                FenBrowser.Core.EngineLogCompat.Warn(
+                    $"[FenJsBridge] postMessage delivery failed: {ex.Message}",
+                    FenBrowser.Core.Logging.LogCategory.JavaScript);
+            }
+
+            try { RequestRender?.Invoke(); }
+            catch { /* render request is best-effort */ }
+        });
+    }
+
+    private bool DispatchFrameWindowHostEvent(
+        JsValue frameWindow,
+        List<BrowserEventListener> listeners,
+        JsValue eventValue)
+    {
+        var type = ReadEventType(eventValue);
+        PrepareDispatchedEvent(eventValue, frameWindow);
+        DispatchBrowserEvent(listeners, type, frameWindow, eventValue);
+
+        var handler = ReadJsProperty(frameWindow, "on" + type);
+        if (_interpreter.CanCallValue(handler))
+        {
+            TryInvokeFenJsEventCallback(handler, frameWindow, eventValue, type);
+        }
+
+        return !ReadJsBoolProperty(eventValue, "defaultPrevented");
+    }
+
+    private JsValue CreateMessageEventValue(
+        JsValue data,
+        string origin,
+        JsValue sourceWindow,
+        JsValue targetWindow)
+    {
+        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["type"] = JsValue.FromString("message"),
+            ["data"] = data,
+            ["origin"] = JsValue.FromString(origin ?? string.Empty),
+            ["lastEventId"] = JsValue.FromString(string.Empty),
+            ["source"] = sourceWindow.Tag == JsValueTag.Undefined ? JsValue.Null : sourceWindow,
+            ["ports"] = _interpreter.AllocateArray(Array.Empty<JsValue>()),
+            ["target"] = targetWindow,
+            ["currentTarget"] = targetWindow,
+            ["srcElement"] = targetWindow,
+            ["bubbles"] = JsValue.FromBoolean(false),
+            ["cancelable"] = JsValue.FromBoolean(false),
+            ["defaultPrevented"] = JsValue.FromBoolean(false),
+            ["timeStamp"] = JsValue.FromNumber(_fenJsClock.Elapsed.TotalMilliseconds)
+        });
+    }
+
+    private bool ShouldDeliverWindowMessage(
+        JsValue targetWindow,
+        string targetOrigin,
+        string targetWindowOriginOverride = null)
+    {
+        if (string.IsNullOrEmpty(targetOrigin) ||
+            string.Equals(targetOrigin, "*", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var expectedOrigin = targetWindowOriginOverride ?? ReadWindowOrigin(targetWindow);
+        return string.Equals(
+            NormalizePostMessageOrigin(targetOrigin),
+            expectedOrigin,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string GetMessageSourceOrigin(JsValue sourceWindow)
+    {
+        if (sourceWindow.Tag == JsValueTag.Object)
+        {
+            var origin = ReadWindowOrigin(sourceWindow);
+            if (!string.IsNullOrEmpty(origin))
+            {
+                return origin;
+            }
+        }
+
+        return GetCurrentWindowOrigin();
+    }
+
+    private string ReadWindowOrigin(JsValue windowValue)
+    {
+        var location = ReadJsProperty(windowValue, "location");
+        var origin = ReadJsProperty(location, "origin");
+        if (origin.Tag != JsValueTag.Undefined && origin.Tag != JsValueTag.Null)
+        {
+            var originText = CoerceToHostString(origin);
+            if (!string.IsNullOrWhiteSpace(originText) &&
+                !string.Equals(originText, "undefined", StringComparison.Ordinal))
+            {
+                return originText;
+            }
+        }
+
+        var href = ReadJsProperty(location, "href");
+        if (href.Tag == JsValueTag.Undefined || href.Tag == JsValueTag.Null)
+        {
+            return null;
+        }
+
+        var hrefText = CoerceToHostString(href);
+        if (string.IsNullOrWhiteSpace(hrefText) ||
+            string.Equals(hrefText, "undefined", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return NormalizePostMessageOrigin(hrefText);
+    }
+
+    private string GetCurrentWindowOrigin()
+    {
+        if (_currentBaseUri != null)
+        {
+            return NormalizePostMessageOrigin(_currentBaseUri.AbsoluteUri);
+        }
+
+        return "null";
+    }
+
+    private static string NormalizePostMessageOrigin(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        if (Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+            (string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+        {
+            return uri.GetLeftPart(UriPartial.Authority);
+        }
+
+        return value;
+    }
+
+    private void ApplyHistoryUrl(FenJsLocationHost location, string url)
+    {
+        if (location == null || string.IsNullOrWhiteSpace(url))
+        {
+            return;
+        }
+
+        if (Uri.TryCreate(url, UriKind.Absolute, out var absolute))
+        {
+            UpdateFenJsLocation(location, absolute);
+            return;
+        }
+
+        if (location.Uri != null && Uri.TryCreate(location.Uri, url, out var resolved))
+        {
+            UpdateFenJsLocation(location, resolved);
+        }
+    }
+
+    private void UpdateFenJsLocation(FenJsLocationHost location, Uri uri)
+    {
+        if (location == null || uri == null)
+        {
+            return;
+        }
+
+        location.Uri = uri;
+        _currentBaseUri = uri;
     }
 
     private JsValue GetOrCreateStyleObject(Element element)
@@ -6391,9 +9587,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             {
                 ["documentReadyState"] = "complete"
             });
-        DispatchBrowserEvent(_windowEventListeners, "load", windowValue);
+        DispatchBrowserEvent(GetActiveWindowEventListeners(), "load", windowValue);
 
-        if (_interpreter.TryReadGlobalValue("onload", out var onload) &&
+        if (TryReadWindowEventHandler(windowValue, "load", out var onload) &&
             _interpreter.CanCallValue(onload))
         {
             var eventValue = _interpreter.AllocateObject(new Dictionary<string, JsValue>
@@ -6402,7 +9598,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 ["target"] = windowValue,
                 ["currentTarget"] = windowValue
             });
-            InvokeFenJsCallback(onload, windowValue, eventValue);
+            TryInvokeFenJsEventCallback(onload, windowValue, eventValue, "load");
         }
     }
 
@@ -6540,7 +9736,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
         foreach (var listener in callbacks)
         {
-            InvokeFenJsCallback(listener.Callback, currentTarget, eventValue);
+            TryInvokeFenJsEventCallback(listener.Callback, currentTarget, eventValue, type);
             if (listener.Once)
             {
                 listeners.RemoveAll(existing =>
@@ -6549,6 +9745,104 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     existing.Callback.Equals(listener.Callback));
             }
         }
+    }
+
+    private bool DispatchDocumentHostEvent(Document document, JsValue eventValue)
+    {
+        if (document == null)
+        {
+            return true;
+        }
+
+        var type = ReadEventType(eventValue);
+        var target = ToHostOrNull(document, HostObjectKind.DomDocument);
+        PrepareDispatchedEvent(eventValue, target);
+        DispatchBrowserEvent(_documentEventListeners, type, target, eventValue);
+        return !ReadJsBoolProperty(eventValue, "defaultPrevented");
+    }
+
+    private bool DispatchWindowHostEvent(JsValue eventValue)
+    {
+        var type = ReadEventType(eventValue);
+        var target = GetActiveWindowEventTarget();
+        PrepareDispatchedEvent(eventValue, target);
+        DispatchBrowserEvent(GetActiveWindowEventListeners(), type, target, eventValue);
+
+        if (TryReadWindowEventHandler(target, type, out var handler) &&
+            _interpreter.CanCallValue(handler))
+        {
+            TryInvokeFenJsEventCallback(handler, target, eventValue, type);
+        }
+
+        return !ReadJsBoolProperty(eventValue, "defaultPrevented");
+    }
+
+    private bool TryReadWindowEventHandler(JsValue target, string type, out JsValue handler)
+    {
+        handler = JsValue.Undefined;
+        if (target.Tag == JsValueTag.Object)
+        {
+            handler = ReadJsProperty(target, "on" + type);
+            if (handler.Tag != JsValueTag.Undefined)
+            {
+                return true;
+            }
+        }
+
+        return _interpreter.TryReadGlobalValue("on" + type, out handler);
+    }
+
+    private bool DispatchElementHostEvent(Element element, JsValue eventValue)
+    {
+        if (element == null)
+        {
+            return true;
+        }
+
+        var type = ReadEventType(eventValue);
+        var target = ToHostOrNull(element, HostObjectKind.DomElement);
+        PrepareDispatchedEvent(eventValue, target);
+
+        // Use full dispatch with capture/bubble phases. Pass null for dispatchState
+        // because JS-dispatched events track propagation via _propagationStopped on
+        // the event object itself (set by Event.prototype.stopPropagation).
+        return DispatchEventFull(element, type, eventValue, dispatchState: null);
+    }
+
+    private string ReadEventType(JsValue eventValue)
+    {
+        if (eventValue.Tag == JsValueTag.Undefined || eventValue.Tag == JsValueTag.Null)
+        {
+            ThrowDomException("TypeError", "Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'.");
+        }
+
+        var typeValue = ReadJsProperty(eventValue, "type");
+        var type = typeValue.Tag == JsValueTag.Undefined || typeValue.Tag == JsValueTag.Null
+            ? string.Empty
+            : CoerceToHostString(typeValue);
+        if (string.IsNullOrEmpty(type))
+        {
+            ThrowDomException("InvalidStateError", "Failed to execute 'dispatchEvent': event type is empty.");
+        }
+
+        return type;
+    }
+
+    private void PrepareDispatchedEvent(JsValue eventValue, JsValue target)
+    {
+        if (eventValue.Tag != JsValueTag.Object)
+        {
+            return;
+        }
+
+        var currentTarget = ReadJsProperty(eventValue, "target");
+        if (currentTarget.Tag == JsValueTag.Undefined || currentTarget.Tag == JsValueTag.Null)
+        {
+            _interpreter.SetObjectProperty(eventValue, "target", target);
+            _interpreter.SetObjectProperty(eventValue, "srcElement", target);
+        }
+
+        _interpreter.SetObjectProperty(eventValue, "currentTarget", target);
     }
 
     private JsValue CreateBrowserDomEventValue(
@@ -6568,6 +9862,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             ["srcElement"] = target,
             ["bubbles"] = JsValue.FromBoolean(eventInit.Bubbles),
             ["cancelable"] = JsValue.FromBoolean(eventInit.Cancelable),
+            ["composed"] = JsValue.FromBoolean(eventInit.Composed),
+            ["isTrusted"] = JsValue.FromBoolean(eventInit.IsTrusted),
             ["defaultPrevented"] = JsValue.FromBoolean(false),
             ["clientX"] = JsValue.FromNumber(eventInit.ClientX),
             ["clientY"] = JsValue.FromNumber(eventInit.ClientY),
@@ -6601,66 +9897,165 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             length: 0));
         _interpreter.SetObjectProperty(eventValue, "stopPropagation", _interpreter.AllocateNativeFunction(
             "stopPropagation",
-            (_, _) => JsValue.Undefined,
+            (_, _) =>
+            {
+                state.StopPropagation = true;
+                _interpreter.SetObjectProperty(eventValue, "cancelBubble", JsValue.FromBoolean(true));
+                return JsValue.Undefined;
+            },
             length: 0));
         _interpreter.SetObjectProperty(eventValue, "stopImmediatePropagation", _interpreter.AllocateNativeFunction(
             "stopImmediatePropagation",
-            (_, _) => JsValue.Undefined,
+            (_, _) =>
+            {
+                state.StopPropagation = true;
+                state.StopImmediatePropagation = true;
+                _interpreter.SetObjectProperty(eventValue, "cancelBubble", JsValue.FromBoolean(true));
+                return JsValue.Undefined;
+            },
             length: 0));
+        _interpreter.SetObjectProperty(eventValue, "composedPath", _interpreter.AllocateNativeFunction(
+            "composedPath",
+            (_, _) => _interpreter.AllocateArray(BuildComposedPathValues(element)),
+            length: 0));
+        _interpreter.SetObjectProperty(eventValue, "cancelBubble", JsValue.FromBoolean(false));
 
         dispatchState = state;
         return eventValue;
     }
 
+    private JsValue[] BuildComposedPathValues(Element element)
+    {
+        if (element == null)
+        {
+            return Array.Empty<JsValue>();
+        }
+
+        var path = new List<JsValue>();
+        var current = element;
+        while (current != null)
+        {
+            path.Add(ToHostOrNull(current, HostObjectKind.DomElement));
+            current = current.ParentElement;
+        }
+
+        var document = element.OwnerDocument;
+        if (document != null)
+        {
+            path.Add(ToHostOrNull(document, HostObjectKind.DomDocument));
+        }
+
+        var windowTarget = GetActiveWindowEventTarget();
+        if (windowTarget.Tag != JsValueTag.Undefined)
+        {
+            path.Add(windowTarget);
+        }
+
+        return path.ToArray();
+    }
+
     private void InvokeFenJsCallback(JsValue callback, JsValue thisValue, JsValue eventValue)
     {
-        lock (_fenJsLock)
+        RunFenJsWithLargeStack<object>(() =>
         {
-            var previousEvent = _interpreter.TryReadGlobalValue("event", out var existingEvent)
-                ? existingEvent
-                : JsValue.Undefined;
-            _interpreter.RegisterGlobalValue("event", eventValue);
-            try
+            lock (_fenJsLock)
             {
-                _fenJsEvaluationCount++;
-                _ = _interpreter.InvokeFunction(callback, new[] { eventValue }, thisValue);
+                var previousEvent = _interpreter.TryReadGlobalValue("event", out var existingEvent)
+                    ? existingEvent
+                    : JsValue.Undefined;
+                _interpreter.RegisterGlobalValue("event", eventValue);
+                try
+                {
+                    _fenJsEvaluationCount++;
+                    _ = _interpreter.InvokeFunction(callback, new[] { eventValue }, thisValue);
+                }
+                finally
+                {
+                    _interpreter.RegisterGlobalValue("event", previousEvent);
+                }
             }
-            finally
+
+            return null;
+        });
+    }
+
+    private bool TryInvokeFenJsEventCallback(JsValue callback, JsValue thisValue, JsValue eventValue, string eventType)
+    {
+        try
+        {
+            if (_interpreter.CanCallValue(callback))
             {
-                _interpreter.RegisterGlobalValue("event", previousEvent);
+                InvokeFenJsCallback(callback, thisValue, eventValue);
             }
+            else
+            {
+                var handleEvent = ReadJsProperty(callback, "handleEvent");
+                if (!_interpreter.CanCallValue(handleEvent))
+                {
+                    return false;
+                }
+
+                InvokeFenJsCallback(handleEvent, callback, eventValue);
+            }
+
+            return true;
+        }
+        catch (JsThrownException ex)
+        {
+            var description = ex.Description;
+            if (string.IsNullOrEmpty(description))
+            {
+                try { description = _interpreter?.DescribeThrownValue(ex.Value); } catch { }
+            }
+
+            EngineLogCompat.Warn(
+                $"[FenJsBridge] Event listener for '{eventType ?? string.Empty}' failed: {description ?? ex.Message}",
+                LogCategory.JavaScript);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            EngineLogCompat.Warn(
+                $"[FenJsBridge] Event listener for '{eventType ?? string.Empty}' failed: {ex.GetType().Name}: {ex.Message}",
+                LogCategory.JavaScript);
+            return false;
         }
     }
 
     private void InvokeFenJsInlineWithEvent(string script, JsValue eventValue)
     {
-        lock (_fenJsLock)
+        RunFenJsWithLargeStack<object>(() =>
         {
-            var previousEvent = _interpreter.TryReadGlobalValue("event", out var existingEvent)
-                ? existingEvent
-                : JsValue.Undefined;
-            _interpreter.RegisterGlobalValue("event", eventValue);
-            try
+            lock (_fenJsLock)
             {
-                _fenJsEvaluationCount++;
-                var function = _compiler.CompileScript(new SourceText(script, "<fenbrowser-fenjs-inline-handler>"));
-                new BytecodeVerifier().Verify(function);
-                _ = _interpreter.Execute(function);
+                var previousEvent = _interpreter.TryReadGlobalValue("event", out var existingEvent)
+                    ? existingEvent
+                    : JsValue.Undefined;
+                _interpreter.RegisterGlobalValue("event", eventValue);
+                try
+                {
+                    _fenJsEvaluationCount++;
+                    var function = _compiler.CompileScript(new SourceText(script, "<fenbrowser-fenjs-inline-handler>"));
+                    new BytecodeVerifier().Verify(function);
+                    _ = _interpreter.Execute(function);
+                }
+                catch (Exception ex)
+                {
+                    FenLogger.Warn(
+                        $"[FenJsBridge] Inline JS handler failed: {ex.GetType().Name}: {ex.Message}",
+                        LogCategory.JavaScript);
+                }
+                finally
+                {
+                    _interpreter.RegisterGlobalValue("event", previousEvent);
+                }
             }
-            catch (Exception ex)
-            {
-                FenLogger.Warn(
-                    $"[FenJsBridge] Inline JS handler failed: {ex.GetType().Name}: {ex.Message}",
-                    LogCategory.JavaScript);
-            }
-            finally
-            {
-                _interpreter.RegisterGlobalValue("event", previousEvent);
-            }
-        }
+
+            return null;
+        });
     }
 
-    private static void ParseEventListenerOptions(JsValue options, out bool capture, out bool once)
+    private void ParseEventListenerOptions(JsValue options, out bool capture, out bool once)
     {
         capture = false;
         once = false;
@@ -6678,6 +10073,10 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 return;
             case JsValueTag.Number:
                 capture = Math.Abs(options.AsNumber()) > 0;
+                return;
+            case JsValueTag.Object:
+                capture = ReadJsBoolProperty(options, "capture");
+                once = ReadJsBoolProperty(options, "once");
                 return;
         }
     }
@@ -6983,7 +10382,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var handler = GetStoredHostPropertyOrUndefined(scriptElement, "on" + type);
         if (_interpreter.CanCallValue(handler))
         {
-            InvokeFenJsCallback(handler, ToHostOrNull(scriptElement, HostObjectKind.DomElement), eventValue);
+            TryInvokeFenJsEventCallback(handler, ToHostOrNull(scriptElement, HostObjectKind.DomElement), eventValue, type);
         }
     }
 
@@ -7108,6 +10507,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
     }
 
+    private void OpenDocumentForWrite(Document document)
+    {
+        if (document?.Body is not ContainerNode body)
+        {
+            return;
+        }
+
+        while (body.FirstChild != null)
+        {
+            body.RemoveChild(body.FirstChild);
+        }
+    }
+
     private void WriteDocumentMarkup(Document document, IReadOnlyList<JsValue> args, bool appendNewLine)
     {
         if (document == null)
@@ -7162,7 +10574,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         referenceNode = null;
 
         var currentScript = GetCurrentScriptElement();
-        if (currentScript?.ParentNode is ContainerNode scriptParent)
+        if (ReferenceEquals(currentScript?.OwnerDocument, document) &&
+            currentScript.ParentNode is ContainerNode scriptParent)
         {
             referenceNode = currentScript.NextSibling;
             return scriptParent;
@@ -7209,6 +10622,116 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return resolution.IsOk ? resolution.HostObject : null;
     }
 
+    public bool TryResolveHostObject(JsValue value, out object hostObject)
+    {
+        hostObject = ResolveHostObjectOrNull(value);
+        return hostObject != null;
+    }
+
+    /// <summary>
+    /// Convert a FenJS JsValue to a .NET object recursively, suitable for
+    /// WebDriver serialisation. Primitive values map to their .NET equivalents;
+    /// arrays become List&lt;object&gt;; plain objects become Dictionary&lt;string,object&gt;;
+    /// host objects are resolved through the host-object table.
+    /// </summary>
+    public object ConvertJsValueToObject(JsValue value)
+    {
+        return ConvertJsValueToObjectImpl(value, new HashSet<long>(), 0);
+    }
+
+    private object ConvertJsValueToObjectImpl(JsValue value, HashSet<long> visited, int depth)
+    {
+        if (depth > 16) return "[MaxDepth]";
+
+        switch (value.Tag)
+        {
+            case JsValueTag.Undefined:
+            case JsValueTag.Null:
+                return null;
+            case JsValueTag.Boolean:
+                return value.AsBoolean();
+            case JsValueTag.Int32:
+                return value.AsInt32();
+            case JsValueTag.Number:
+                return value.AsNumber();
+            case JsValueTag.String:
+                return value.AsString();
+            case JsValueTag.Symbol:
+                return value.AsSymbolDescription() ?? "Symbol()";
+            case JsValueTag.BigInt:
+                return value.AsBigInt().ToString();
+            case JsValueTag.Object:
+            {
+                var handle = value.AsObjectHandle();
+                var objId = handle.ToInt64();
+                if (!visited.Add(objId)) return "[Circular]";
+
+                if (_interpreter == null) return "[object Object]";
+
+                try
+                {
+                    var obj = _interpreter.Heap.GetObject(handle);
+                    if (obj == null) return "[object Object]";
+
+                    // Detect arrays by checking for non-negative 'length' property
+                    if (obj.TryGetOwnProperty("length", out var lenDesc))
+                    {
+                        int arrLen = -1;
+                        if (lenDesc.Value.Tag == JsValueTag.Int32)
+                            arrLen = lenDesc.Value.AsInt32();
+                        else if (lenDesc.Value.Tag == JsValueTag.Number)
+                        {
+                            var d = lenDesc.Value.AsNumber();
+                            if (d >= 0 && d <= 100_000 && d == Math.Truncate(d))
+                                arrLen = (int)d;
+                        }
+
+                        if (arrLen >= 0)
+                        {
+                            var list = new List<object>(Math.Min(arrLen, 10000));
+                            for (int i = 0; i < arrLen && i < 10000; i++)
+                            {
+                                var key = i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                                if (obj.TryGetOwnProperty(key, out var elemDesc))
+                                    list.Add(ConvertJsValueToObjectImpl(elemDesc.Value, visited, depth + 1));
+                                else
+                                    list.Add(null);
+                            }
+                            visited.Remove(objId);
+                            return list;
+                        }
+                    }
+
+                    // Plain object → dictionary
+                    var dict = new Dictionary<string, object>(StringComparer.Ordinal);
+                    foreach (var kv in obj.EnumerateOwnProperties())
+                    {
+                        if (kv.Key == "length" && (kv.Value.Value.Tag == JsValueTag.Int32 || kv.Value.Value.Tag == JsValueTag.Number))
+                            continue; // length on array-like was handled above
+                        dict[kv.Key] = ConvertJsValueToObjectImpl(kv.Value.Value, visited, depth + 1);
+                    }
+                    visited.Remove(objId);
+                    return dict;
+                }
+                catch
+                {
+                    visited.Remove(objId);
+                    return "[object Object]";
+                }
+            }
+            case JsValueTag.HostObject:
+            {
+                if (TryResolveHostObject(value, out var hostObj))
+                {
+                    return hostObj; // Let BrowserApi handle element registration
+                }
+                return "[object HostObject]";
+            }
+            default:
+                return "[Unknown]";
+        }
+    }
+
     private T ResolveHostObjectOrNull<T>(JsValue value) where T : class
     {
         return ResolveHostObjectOrNull(value) as T;
@@ -7250,27 +10773,70 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         var box = LayoutBoxResolver?.Invoke(element) as BoxModel;
         if (box == null)
         {
-            return _interpreter.AllocateObject(new Dictionary<string, JsValue>
-            {
-                ["x"] = JsValue.FromInt32(0), ["y"] = JsValue.FromInt32(0),
-                ["width"] = JsValue.FromInt32(0), ["height"] = JsValue.FromInt32(0),
-                ["top"] = JsValue.FromInt32(0), ["right"] = JsValue.FromInt32(0),
-                ["bottom"] = JsValue.FromInt32(0), ["left"] = JsValue.FromInt32(0),
-            });
+            return CreateDomRect(0, 0, 0, 0);
         }
 
         var r = box.BorderBox;
+        return CreateDomRect(r.Left, r.Top, r.Width, r.Height);
+    }
+
+    private JsValue CreateDomRect(double left, double top, double width, double height)
+    {
         return _interpreter.AllocateObject(new Dictionary<string, JsValue>
         {
-            ["x"] = JsValue.FromNumber(r.Left),
-            ["y"] = JsValue.FromNumber(r.Top),
-            ["width"] = JsValue.FromNumber(r.Width),
-            ["height"] = JsValue.FromNumber(r.Height),
-            ["top"] = JsValue.FromNumber(r.Top),
-            ["right"] = JsValue.FromNumber(r.Right),
-            ["bottom"] = JsValue.FromNumber(r.Bottom),
-            ["left"] = JsValue.FromNumber(r.Left),
+            ["x"] = JsValue.FromNumber(left),
+            ["y"] = JsValue.FromNumber(top),
+            ["width"] = JsValue.FromNumber(width),
+            ["height"] = JsValue.FromNumber(height),
+            ["top"] = JsValue.FromNumber(top),
+            ["right"] = JsValue.FromNumber(left + width),
+            ["bottom"] = JsValue.FromNumber(top + height),
+            ["left"] = JsValue.FromNumber(left),
         });
+    }
+
+    private JsValue CreateEmptyDomRectList()
+    {
+        var array = _interpreter.AllocateArray(Array.Empty<JsValue>());
+        _interpreter.SetObjectProperty(
+            array,
+            "item",
+            _interpreter.AllocateNativeFunction("item", (_, _) => JsValue.Null, length: 1),
+            enumerable: false);
+        return array;
+    }
+
+    private DocumentFragment CreateContextualFragment(DomRange range, string html)
+    {
+        var context = ResolveRangeContextElement(range);
+        if (context == null)
+        {
+            return (range?.CommonAncestorContainer?.OwnerDocument ?? new Document()).CreateDocumentFragment();
+        }
+
+        return HtmlParser.ParseFragment(
+            context,
+            html ?? string.Empty,
+            new HtmlParserOptions { BaseUri = _currentBaseUri },
+            out _);
+    }
+
+    private static Element ResolveRangeContextElement(DomRange range)
+    {
+        for (var node = range?.CommonAncestorContainer; node != null; node = node.ParentNode)
+        {
+            if (node is Element element)
+            {
+                return element;
+            }
+
+            if (node is Document document)
+            {
+                return document.Body ?? document.DocumentElement;
+            }
+        }
+
+        return null;
     }
 
     private void ThrowHierarchyRequestError(string message)
@@ -7280,11 +10846,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
     private void ThrowDomException(string name, string message)
     {
-        throw new JsThrownException(_interpreter.AllocateObject(new Dictionary<string, JsValue>
-        {
-            ["name"] = JsValue.FromString(name ?? "Error"),
-            ["message"] = JsValue.FromString(message ?? string.Empty)
-        }));
+        var exceptionName = string.IsNullOrWhiteSpace(name) ? "Error" : name;
+        var exceptionMessage = message ?? string.Empty;
+        var context = (FenBrowser.Js.Builtins.IBuiltinContext)_interpreter;
+        var errorValue = context.CreateError(exceptionMessage);
+        var error = _interpreter.Heap.GetObject(errorValue.AsObjectHandle());
+        error.DefineOwnProperty(
+            "name",
+            new FenBrowser.Js.Objects.JsPropertyDescriptor(
+                JsValue.FromString(exceptionName),
+                Writable: true,
+                Enumerable: false,
+                Configurable: true));
+
+        throw new JsThrownException(errorValue);
     }
 
     /// <summary>
@@ -7362,6 +10937,31 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return sb.ToString();
     }
 
+    private static string CssPropToCamel(string propertyName)
+    {
+        if (string.IsNullOrEmpty(propertyName) || propertyName.IndexOf('-') < 0)
+        {
+            return propertyName;
+        }
+
+        var sb = new StringBuilder(propertyName.Length);
+        var uppercaseNext = false;
+        for (int i = 0; i < propertyName.Length; i++)
+        {
+            var ch = propertyName[i];
+            if (ch == '-')
+            {
+                uppercaseNext = true;
+                continue;
+            }
+
+            sb.Append(uppercaseNext ? char.ToUpperInvariant(ch) : ch);
+            uppercaseNext = false;
+        }
+
+        return sb.ToString();
+    }
+
     private static string CoerceToHostString(JsValue value)
     {
         return value.Tag switch
@@ -7390,6 +10990,58 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             JsValueTag.Undefined => false,
             _ => true
         };
+    }
+
+    private static uint CoerceToHostUInt32(JsValue value, uint fallback)
+    {
+        switch (value.Tag)
+        {
+            case JsValueTag.Int32:
+                return unchecked((uint)value.AsInt32());
+            case JsValueTag.Number:
+                var number = value.AsNumber();
+                if (double.IsFinite(number))
+                {
+                    return unchecked((uint)number);
+                }
+                break;
+            case JsValueTag.String:
+                if (uint.TryParse(value.AsString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+                {
+                    return parsed;
+                }
+                if (double.TryParse(value.AsString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedDouble) &&
+                    double.IsFinite(parsedDouble))
+                {
+                    return unchecked((uint)parsedDouble);
+                }
+                break;
+        }
+
+        return fallback;
+    }
+
+    private static double CoerceToFiniteNumber(JsValue value, double fallback)
+    {
+        switch (value.Tag)
+        {
+            case JsValueTag.Int32:
+                return value.AsInt32();
+            case JsValueTag.Number:
+                var number = value.AsNumber();
+                return double.IsFinite(number) ? number : fallback;
+            case JsValueTag.String:
+                return double.TryParse(value.AsString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) &&
+                    double.IsFinite(parsed)
+                    ? parsed
+                    : fallback;
+            case JsValueTag.Boolean:
+                return value.AsBoolean() ? 1 : 0;
+            case JsValueTag.Null:
+                return 0;
+            default:
+                return fallback;
+        }
     }
 
     private static bool TryCoerceIndex(JsValue value, out int index)
@@ -7477,6 +11129,74 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         return array;
     }
 
+    private JsValue CreateNodeFilterConstantsObject()
+    {
+        return _interpreter.AllocateObject(new Dictionary<string, JsValue>
+        {
+            ["FILTER_ACCEPT"] = JsValue.FromInt32((int)NodeFilterResult.Accept),
+            ["FILTER_REJECT"] = JsValue.FromInt32((int)NodeFilterResult.Reject),
+            ["FILTER_SKIP"] = JsValue.FromInt32((int)NodeFilterResult.Skip),
+            ["SHOW_ALL"] = JsValue.FromNumber(NodeFilterShow.All),
+            ["SHOW_ELEMENT"] = JsValue.FromInt32((int)NodeFilterShow.Element),
+            ["SHOW_ATTRIBUTE"] = JsValue.FromInt32((int)NodeFilterShow.Attribute),
+            ["SHOW_TEXT"] = JsValue.FromInt32((int)NodeFilterShow.Text),
+            ["SHOW_CDATA_SECTION"] = JsValue.FromInt32((int)NodeFilterShow.CDataSection),
+            ["SHOW_ENTITY_REFERENCE"] = JsValue.FromInt32((int)NodeFilterShow.EntityReference),
+            ["SHOW_ENTITY"] = JsValue.FromInt32((int)NodeFilterShow.Entity),
+            ["SHOW_PROCESSING_INSTRUCTION"] = JsValue.FromInt32((int)NodeFilterShow.ProcessingInstruction),
+            ["SHOW_COMMENT"] = JsValue.FromInt32((int)NodeFilterShow.Comment),
+            ["SHOW_DOCUMENT"] = JsValue.FromInt32((int)NodeFilterShow.Document),
+            ["SHOW_DOCUMENT_TYPE"] = JsValue.FromInt32((int)NodeFilterShow.DocumentType),
+            ["SHOW_DOCUMENT_FRAGMENT"] = JsValue.FromInt32((int)NodeFilterShow.DocumentFragment),
+            ["SHOW_NOTATION"] = JsValue.FromInt32((int)NodeFilterShow.Notation)
+        });
+    }
+
+    private NodeFilter CreateTreeWalkerFilter(JsValue filterValue)
+    {
+        if (filterValue.Tag == JsValueTag.Undefined || filterValue.Tag == JsValueTag.Null)
+        {
+            return null;
+        }
+
+        var callback = filterValue;
+        var thisValue = JsValue.Undefined;
+        if (!_interpreter.CanCallValue(callback))
+        {
+            callback = ReadJsProperty(filterValue, "acceptNode");
+            thisValue = filterValue;
+        }
+
+        if (!_interpreter.CanCallValue(callback))
+        {
+            return null;
+        }
+
+        return node =>
+        {
+            var result = _interpreter.InvokeFunction(callback, new[] { ToHostNodeOrNull(node) }, thisValue);
+            return ToNodeFilterResult(result);
+        };
+    }
+
+    private static NodeFilterResult ToNodeFilterResult(JsValue value)
+    {
+        var numeric = value.Tag switch
+        {
+            JsValueTag.Int32 => value.AsInt32(),
+            JsValueTag.Number => double.IsFinite(value.AsNumber()) ? (int)value.AsNumber() : (int)NodeFilterResult.Accept,
+            JsValueTag.String when int.TryParse(value.AsString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) => parsed,
+            _ => (int)NodeFilterResult.Accept
+        };
+
+        return numeric switch
+        {
+            (int)NodeFilterResult.Reject => NodeFilterResult.Reject,
+            (int)NodeFilterResult.Skip => NodeFilterResult.Skip,
+            _ => NodeFilterResult.Accept
+        };
+    }
+
     private sealed class FenJsHtmlCollectionHost
     {
         public FenJsHtmlCollectionHost(HTMLCollection collection)
@@ -7485,6 +11205,36 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         }
 
         public HTMLCollection Collection { get; }
+    }
+
+    private sealed class FenJsTreeWalkerHost
+    {
+        public FenJsTreeWalkerHost(TreeWalker treeWalker)
+        {
+            TreeWalker = treeWalker ?? throw new ArgumentNullException(nameof(treeWalker));
+        }
+
+        public TreeWalker TreeWalker { get; }
+    }
+
+    private sealed class FenJsAnimationHost
+    {
+        public FenJsAnimationHost(Element target, JsValue keyframes, JsValue options)
+        {
+            Target = target ?? throw new ArgumentNullException(nameof(target));
+            Keyframes = keyframes;
+            Options = options;
+        }
+
+        public Element Target { get; }
+        public JsValue Keyframes { get; }
+        public JsValue Options { get; }
+        public string Id { get; set; } = string.Empty;
+        public string PlayState { get; set; } = "idle";
+        public double? StartTime { get; set; }
+        public double? CurrentTime { get; set; } = 0;
+        public double PlaybackRate { get; set; } = 1;
+        public bool Pending { get; set; }
     }
 
     private sealed class FenJsDomStringMapHost
@@ -7656,6 +11406,8 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
     private sealed class BrowserDomEventDispatchState
     {
         public bool DefaultPrevented { get; set; }
+        public bool StopPropagation { get; set; }
+        public bool StopImmediatePropagation { get; set; }
     }
 
     private sealed class FenJsLocationHost
@@ -7665,7 +11417,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             Uri = uri;
         }
 
-        public Uri Uri { get; }
+        public Uri Uri { get; set; }
+    }
+
+    private sealed class FenJsHistoryHost
+    {
+        public FenJsHistoryHost(FenJsLocationHost location)
+        {
+            Location = location ?? throw new ArgumentNullException(nameof(location));
+        }
+
+        public FenJsLocationHost Location { get; }
+        public int Length { get; set; } = 1;
+        public JsValue State { get; set; } = JsValue.Null;
     }
 
     private sealed class BrowserFenJsHostHooks : IHostHooks
@@ -7746,8 +11510,20 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
             var hostObject = resolution.HostObject;
             var ownerName = GetHostApiOwnerName(hostObject);
+            var found = TryGetHostObjectDefinedProperty(hostObject, property, out value);
+
+            if (!found)
+            {
+                RecordMissingHostApi(ownerName, property);
+            }
+
+            return found;
+        }
+
+        private bool TryGetHostObjectDefinedProperty(object hostObject, string property, out JsValue value)
+        {
             bool found;
-            switch (resolution.HostObject)
+            switch (hostObject)
             {
                 case Document document:
                     found = TryGetDocumentProperty(document, property, out value);
@@ -7773,8 +11549,17 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case DocumentFragment fragment:
                     found = TryGetDocumentFragmentProperty(fragment, property, out value);
                     break;
+                case DomRange range:
+                    found = TryGetRangeProperty(range, property, out value);
+                    break;
                 case FenJsHtmlCollectionHost htmlCollection:
                     found = TryGetHtmlCollectionProperty(htmlCollection, property, out value);
+                    break;
+                case FenJsTreeWalkerHost treeWalker:
+                    found = TryGetTreeWalkerProperty(treeWalker, property, out value);
+                    break;
+                case FenJsAnimationHost animation:
+                    found = TryGetAnimationProperty(animation, property, out value);
                     break;
                 case FenJsDomStringMapHost domStringMap:
                     found = TryGetDomStringMapProperty(domStringMap, property, out value);
@@ -7792,6 +11577,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case FenJsLocationHost location:
                     found = TryGetLocationProperty(location, property, out value);
                     break;
+                case FenJsHistoryHost history:
+                    found = TryGetHistoryProperty(history, property, out value);
+                    break;
                 case FenJsMutationObserverHost mutationObserver:
                     found = _owner.TryGetMutationObserverProperty(mutationObserver, property, out value);
                     break;
@@ -7799,11 +11587,6 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     value = JsValue.Undefined;
                     found = false;
                     break;
-            }
-
-            if (!found)
-            {
-                RecordMissingHostApi(ownerName, property);
             }
 
             return found;
@@ -7820,11 +11603,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 NamedNodeMap => "NamedNodeMap",
                 DOMTokenList => "DOMTokenList",
                 CharacterData => "CharacterData",
+                ShadowRoot => "ShadowRoot",
                 DocumentFragment => "DocumentFragment",
+                DomRange => "Range",
                 FenJsHtmlCollectionHost => "HTMLCollection",
+                FenJsTreeWalkerHost => "TreeWalker",
+                FenJsAnimationHost => "Animation",
                 FenJsDomStringMapHost => "DOMStringMap",
                 BrowserSurfaceProfile => "Navigator",
                 FenJsLocationHost => "Location",
+                FenJsHistoryHost => "History",
                 FenJsMutationObserverHost => "MutationObserver",
                 _ => hostObject?.GetType().Name ?? "HostObject"
             };
@@ -7897,6 +11685,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         }
                     }
                     return true;
+                case Document document when string.Equals(property, "domain", StringComparison.Ordinal):
+                    _owner.SetStoredHostProperty(document, "domain", JsValue.FromString(CoerceToHostString(value)));
+                    return true;
                 case Document document:
                     // Catch-all for arbitrary document properties (e.g. Google
                     // sets __gwbp, __jsl, and other internal bookkeeping).
@@ -7908,6 +11699,14 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case Element element when string.Equals(property, "id", StringComparison.Ordinal):
                     element.Id = CoerceToHostString(value);
                     return true;
+                case Element element when string.Equals(property, "value", StringComparison.Ordinal):
+                    SetElementValue(element, CoerceToHostString(value));
+                    return true;
+                case Element element when string.Equals(property, "tabIndex", StringComparison.Ordinal):
+                    element.SetAttribute(
+                        "tabindex",
+                        ((int)CoerceToFiniteNumber(value, 0)).ToString(CultureInfo.InvariantCulture));
+                    return true;
                 case Element element when string.Equals(property, "name", StringComparison.Ordinal):
                     element.SetAttribute("name", CoerceToHostString(value));
                     return true;
@@ -7916,6 +11715,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return true;
                 case Element element when string.Equals(property, "src", StringComparison.Ordinal):
                     element.SetAttribute("src", CoerceToHostString(value));
+                    return true;
+                case Element element when string.Equals(property, "href", StringComparison.Ordinal):
+                    element.SetAttribute("href", CoerceToHostString(value));
+                    return true;
+                case Element element when string.Equals(property, "nonce", StringComparison.Ordinal):
+                    element.SetAttribute("nonce", CoerceToHostString(value));
                     return true;
                 case Element element when property.StartsWith("on", StringComparison.OrdinalIgnoreCase):
                     _owner.SetStoredHostProperty(element, property.ToLowerInvariant(), value);
@@ -7963,10 +11768,39 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case FenJsDomStringMapHost domStringMap:
                     domStringMap.Element.SetAttribute(PropertyNameToDatasetAttribute(property), CoerceToHostString(value));
                     return true;
+                case FenJsTreeWalkerHost treeWalker when string.Equals(property, "currentNode", StringComparison.Ordinal):
+                    var currentNode = _owner.ResolveHostObjectOrNull<Node>(value);
+                    if (currentNode == null)
+                    {
+                        return false;
+                    }
+
+                    treeWalker.TreeWalker.CurrentNode = currentNode;
+                    return true;
+                case FenJsAnimationHost animation when string.Equals(property, "id", StringComparison.Ordinal):
+                    animation.Id = CoerceToHostString(value);
+                    return true;
+                case FenJsAnimationHost animation when string.Equals(property, "currentTime", StringComparison.Ordinal):
+                    animation.CurrentTime = value.Tag == JsValueTag.Null ? null : CoerceToFiniteNumber(value, 0);
+                    return true;
+                case FenJsAnimationHost animation when string.Equals(property, "startTime", StringComparison.Ordinal):
+                    animation.StartTime = value.Tag == JsValueTag.Null ? null : CoerceToFiniteNumber(value, 0);
+                    return true;
+                case FenJsAnimationHost animation when string.Equals(property, "playbackRate", StringComparison.Ordinal):
+                    animation.PlaybackRate = CoerceToFiniteNumber(value, 1);
+                    return true;
+                case FenJsAnimationHost animation:
+                    _owner.SetStoredHostProperty(animation, property, value);
+                    return true;
                 case FenJsLocationHost location when string.Equals(property, "href", StringComparison.Ordinal):
                     var hrefStr = CoerceToHostString(value);
                     if (!string.IsNullOrWhiteSpace(hrefStr) && Uri.TryCreate(location.Uri, hrefStr, out var navUri))
                         _owner._host.Navigate(navUri);
+                    return true;
+                case FenJsHistoryHost history
+                    when string.Equals(property, "pushState", StringComparison.Ordinal) ||
+                         string.Equals(property, "replaceState", StringComparison.Ordinal):
+                    _owner.SetStoredHostProperty(history, property, value);
                     return true;
                 case BrowserSurfaceProfile navigator:
                     // Allow scripts to set arbitrary properties on navigator (e.g.
@@ -7996,12 +11830,29 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "nodeName":
                     value = JsValue.FromString("#document");
                     return true;
+                case "nodeType":
+                    value = JsValue.FromInt32((int)document.NodeType);
+                    return true;
                 case "parentNode":
                 case "ownerDocument":
                     value = JsValue.Null;
                     return true;
+                case "id":
+                    // Document nodes have no id attribute; return empty string per Chrome behavior.
+                    value = JsValue.FromString(string.Empty);
+                    return true;
+                case "localName":
+                    // Document nodes have no localName per DOM spec.
+                    value = JsValue.Null;
+                    return true;
                 case "readyState":
                     value = JsValue.FromString(_owner.GetDocumentReadyState());
+                    return true;
+                case "compatMode":
+                    value = JsValue.FromString("CSS1Compat");
+                    return true;
+                case "prerendering":
+                    value = JsValue.FromBoolean(false);
                     return true;
                 case "fonts":
                     // CSS Font Loading API: return the user-assigned fonts object
@@ -8011,6 +11862,24 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "URL":
                 case "documentURI":
                     value = JsValue.FromString(document.URL ?? string.Empty);
+                    return true;
+                case "baseURI":
+                    value = JsValue.FromString(
+                        document.BaseURI ??
+                        document.DocumentURI ??
+                        document.URL ??
+                        _baseUri?.AbsoluteUri ??
+                        string.Empty);
+                    return true;
+                case "domain":
+                    value = _owner.GetStoredHostPropertyOrUndefined(document, "domain");
+                    if (value.Tag == JsValueTag.Undefined)
+                    {
+                        value = JsValue.FromString(TryGetDocumentUri(document)?.Host ?? _baseUri?.Host ?? string.Empty);
+                    }
+                    return true;
+                case "location":
+                    value = _owner.ToHostOrNull(_location, HostObjectKind.Other);
                     return true;
                 case "contentType":
                     value = JsValue.FromString(document.ContentType ?? "text/html");
@@ -8045,11 +11914,18 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "documentElement":
                     value = _owner.ToHostOrNull(document.DocumentElement, HostObjectKind.DomElement);
                     return true;
+                case "scrollingElement":
+                    value = _owner.ToHostOrNull(document.DocumentElement ?? document.Body, HostObjectKind.DomElement);
+                    return true;
                 case "currentScript":
                     value = _owner.ToHostOrNull(_owner.GetCurrentScriptElement(), HostObjectKind.DomElement);
                     return true;
                 case "defaultView":
-                    value = _owner.EvaluateWithFenJsRaw("window");
+                    value = _owner.GetStoredHostPropertyOrUndefined(document, "__fenDefaultView");
+                    if (value.Tag == JsValueTag.Undefined)
+                    {
+                        value = _owner.EvaluateWithFenJsRaw("window");
+                    }
                     return true;
                 case "implementation":
                     value = _owner.ToHostOrNull(new FenJsDomImplementationHost(document), HostObjectKind.Other);
@@ -8113,9 +11989,35 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         (_, args) =>
                         {
                             var localName = args.Count > 0 ? CoerceToHostString(args[0]) : "div";
-                            return _owner.ToHostNodeOrNull(document.CreateElement(localName));
+                            return _owner.UpgradeCustomElementTreeIfDefined(
+                                _owner.ToHostNodeOrNull(document.CreateElement(localName)));
                         },
                         length: 1);
+                    return true;
+                case "createElementNS":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "createElementNS",
+                        (_, args) =>
+                        {
+                            var namespaceUri = args.Count > 0 &&
+                                               args[0].Tag != JsValueTag.Null &&
+                                               args[0].Tag != JsValueTag.Undefined
+                                ? CoerceToHostString(args[0])
+                                : null;
+                            var qualifiedName = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                            try
+                            {
+                                return _owner.UpgradeCustomElementTreeIfDefined(
+                                    _owner.ToHostNodeOrNull(document.CreateElementNS(namespaceUri, qualifiedName)));
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                                return JsValue.Undefined;
+                            }
+                        },
+                        length: 2);
                     return true;
                 case "createTextNode":
                     value = _owner.GetOrCreateHostCallable(
@@ -8146,6 +12048,41 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         (_, _) => _owner.ToHostNodeOrNull(document.CreateDocumentFragment()),
                         length: 0);
                     return true;
+                case "importNode":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "importNode",
+                        (_, args) =>
+                        {
+                            var node = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            if (node == null)
+                            {
+                                _owner.ThrowDomException(
+                                    "TypeError",
+                                    "Failed to execute 'importNode': parameter 1 is not of type 'Node'.");
+                                return JsValue.Undefined;
+                            }
+
+                            var deep = args.Count > 1 && CoerceToHostBoolean(args[1]);
+                            try
+                            {
+                                return _owner.ToHostNodeOrNull(document.ImportNode(node, deep));
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                                return JsValue.Undefined;
+                            }
+                        },
+                        length: 1);
+                    return true;
+                case "createRange":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "createRange",
+                        (_, _) => _owner.ToHostOrNull(new DomRange(document), HostObjectKind.Other),
+                        length: 0);
+                    return true;
                 case "createAttribute":
                     value = _owner.GetOrCreateHostCallable(
                         document,
@@ -8170,6 +12107,57 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             return _owner.ToHostOrNull(document.CreateAttributeNS(namespaceUri, qualifiedName), HostObjectKind.Other);
                         },
                         length: 2);
+                    return true;
+                case "createEvent":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "createEvent",
+                        (_, args) =>
+                        {
+                            var interfaceName = args.Count > 0 ? CoerceToHostString(args[0]) : "Event";
+                            return _owner.CreateLegacyDomEvent(interfaceName);
+                        },
+                        length: 1);
+                    return true;
+                case "createTreeWalker":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "createTreeWalker",
+                        (_, args) =>
+                        {
+                            var root = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            if (root == null)
+                            {
+                                _owner.ThrowDomException(
+                                    "TypeError",
+                                    "Failed to execute 'createTreeWalker': parameter 1 is not of type 'Node'.");
+                            }
+
+                            var whatToShow = args.Count > 1
+                                ? CoerceToHostUInt32(args[1], NodeFilterShow.All)
+                                : NodeFilterShow.All;
+                            var filter = args.Count > 2
+                                ? _owner.CreateTreeWalkerFilter(args[2])
+                                : null;
+                            return _owner.ToHostOrNull(
+                                new FenJsTreeWalkerHost(document.CreateTreeWalker(root, whatToShow, filter)),
+                                HostObjectKind.Other);
+                        },
+                        length: 1);
+                    return true;
+                case "hasStorageAccess":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "hasStorageAccess",
+                        (_, _) => _owner.EvaluateWithFenJsRaw("Promise.resolve(true)"),
+                        length: 0);
+                    return true;
+                case "requestStorageAccess":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "requestStorageAccess",
+                        (_, _) => _owner.EvaluateWithFenJsRaw("Promise.resolve()"),
+                        length: 0);
                     return true;
                 case "getElementsByTagName":
                     value = _owner.GetOrCreateHostCallable(
@@ -8207,9 +12195,76 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                 _owner.ThrowDomException("HierarchyRequestError", "Document child must be a DOM node.");
                             }
 
-                            return _owner.ToHostNodeOrNull(document.AppendChild(child));
+                            return _owner.UpgradeCustomElementTreeIfDefined(
+                                _owner.ToHostNodeOrNull(document.AppendChild(child)));
                         },
                         length: 1);
+                    return true;
+                case "removeChild":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "removeChild",
+                        (_, args) =>
+                        {
+                            var child = args.Count > 0 ? _owner.ResolveHostObjectOrNull(args[0]) as Node : null;
+                            if (child == null)
+                            {
+                                _owner.ThrowDomException("TypeError", "Document child must be a DOM node.");
+                            }
+
+                            try
+                            {
+                                return _owner.ToHostNodeOrNull(document.RemoveChild(child));
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                                return JsValue.Undefined;
+                            }
+                        },
+                        length: 1);
+                    return true;
+                case "replaceChild":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "replaceChild",
+                        (_, args) =>
+                        {
+                            var child = args.Count > 0 ? _owner.ResolveHostObjectOrNull(args[0]) as Node : null;
+                            if (child == null)
+                            {
+                                _owner.ThrowDomException("TypeError", "Document replacement child must be a DOM node.");
+                            }
+
+                            var oldChild = args.Count > 1 ? _owner.ResolveHostObjectOrNull(args[1]) as Node : null;
+                            if (oldChild == null)
+                            {
+                                _owner.ThrowDomException("TypeError", "Document child must be a DOM node.");
+                            }
+
+                            try
+                            {
+                                var replaced = document.ReplaceChild(child, oldChild);
+                                _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(child));
+                                return _owner.ToHostNodeOrNull(replaced);
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                                return JsValue.Undefined;
+                            }
+                        },
+                        length: 2);
+                    return true;
+                case "open":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "open",
+                        (_, _) =>
+                        {
+                            _owner.OpenDocumentForWrite(document);
+                            return _owner.ToHostOrNull(document, HostObjectKind.DomDocument);
+                        });
                     return true;
                 case "write":
                     value = _owner.GetOrCreateHostCallable(
@@ -8230,6 +12285,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             _owner.WriteDocumentMarkup(document, args, appendNewLine: true);
                             return JsValue.Undefined;
                         });
+                    return true;
+                case "close":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "close",
+                        (_, _) => JsValue.Undefined);
                     return true;
                 case "addEventListener":
                     value = _owner.GetOrCreateHostCallable(
@@ -8252,6 +12313,43 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             return JsValue.Undefined;
                         },
                         length: 2);
+                    return true;
+                case "dispatchEvent":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "dispatchEvent",
+                        (_, args) =>
+                        {
+                            var eventValue = args.Count > 0 ? args[0] : JsValue.Undefined;
+                            return JsValue.FromBoolean(_owner.DispatchDocumentHostEvent(document, eventValue));
+                        },
+                        length: 1);
+                    return true;
+                case "startViewTransition":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "startViewTransition",
+                        (_, args) => _owner.CreateViewTransitionResult(
+                            args.Count > 0 ? args[0] : JsValue.Undefined),
+                        length: 1);
+                    return true;
+                case "releaseCapture":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "releaseCapture",
+                        (_, _) => JsValue.Undefined,
+                        length: 0);
+                    return true;
+                case "contains":
+                    value = _owner.GetOrCreateHostCallable(
+                        document,
+                        "contains",
+                        (_, args) =>
+                        {
+                            var other = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            return JsValue.FromBoolean(other != null && document.Contains(other));
+                        },
+                        length: 1);
                     return true;
                 case "getElementsByName":
                     value = _owner.GetOrCreateHostCallable(
@@ -8289,6 +12387,21 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             }
         }
 
+        private static Uri TryGetDocumentUri(Document document)
+        {
+            if (document == null)
+            {
+                return null;
+            }
+
+            var raw =
+                document.URL ??
+                document.DocumentURI ??
+                document.BaseURI;
+
+            return Uri.TryCreate(raw, UriKind.Absolute, out var uri) ? uri : null;
+        }
+
         private bool TryGetElementProperty(Element element, string property, out JsValue value)
         {
             switch (property)
@@ -8306,11 +12419,43 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "nodeName":
                     value = JsValue.FromString(element.TagName ?? string.Empty);
                     return true;
+                case "localName":
+                    value = JsValue.FromString(element.LocalName ?? string.Empty);
+                    return true;
+                case "href":
+                    value = JsValue.FromString(ResolveElementUrlProperty(element, "href"));
+                    return true;
                 case "src":
                     value = JsValue.FromString(ResolveElementUrlProperty(element, "src"));
                     return true;
+                case "nonce":
+                    value = JsValue.FromString(element.GetAttribute("nonce") ?? string.Empty);
+                    return true;
+                case "value":
+                    value = JsValue.FromString(ReadElementValue(element));
+                    return true;
+                case "tabIndex":
+                    value = JsValue.FromInt32(ReadElementTabIndex(element));
+                    return true;
+                case "contentWindow" when IsIFrameElement(element):
+                    value = _owner.GetOrCreateIFrameContentWindow(element);
+                    return true;
+                case "contentDocument" when IsIFrameElement(element):
+                    value = _owner.GetOrCreateIFrameContentDocument(element);
+                    return true;
+                case "sandbox" when IsIFrameElement(element):
+                    value = element.NamespaceUri == "http://www.w3.org/1999/xhtml"
+                        ? _owner.GetOrCreateDomTokenListView(element.SandboxList)
+                        : JsValue.Undefined;
+                    return true;
+                case "content" when IsTemplateElement(element):
+                    value = _owner.GetOrCreateTemplateContent(element);
+                    return true;
                 case "content":
                     value = JsValue.FromString(element.GetAttribute("content") ?? string.Empty);
+                    return true;
+                case "shadowRoot":
+                    value = _owner.ToHostNodeOrNull(element.ShadowRoot);
                     return true;
                 case "complete" when IsImageElement(element):
                     value = JsValue.FromBoolean(true);
@@ -8445,6 +12590,58 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         },
                         length: 2);
                     return true;
+                case "dispatchEvent":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "dispatchEvent",
+                        (_, args) =>
+                        {
+                            var eventValue = args.Count > 0 ? args[0] : JsValue.Undefined;
+                            return JsValue.FromBoolean(_owner.DispatchElementHostEvent(element, eventValue));
+                        },
+                        length: 1);
+                    return true;
+                case "requestFullscreen":
+                case "webkitRequestFullscreen":
+                case "mozRequestFullScreen":
+                case "msRequestFullscreen":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        property,
+                        (_, _) => _owner.CreateResolvedPromise(JsValue.Undefined),
+                        length: 0);
+                    return true;
+                case "setCapture":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "setCapture",
+                        (_, _) => JsValue.Undefined,
+                        length: 0);
+                    return true;
+                case "setProperties":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "setProperties",
+                        (thisValue, args) =>
+                        {
+                            var target = _owner.ResolveHostObjectOrNull<Element>(thisValue) ?? element;
+                            _owner.ApplyElementProperties(target, args.Count > 0 ? args[0] : JsValue.Undefined);
+                            return JsValue.Undefined;
+                        },
+                        length: 1);
+                    return true;
+                case "animate":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "animate",
+                        (_, args) =>
+                        {
+                            var keyframes = args.Count > 0 ? args[0] : JsValue.Null;
+                            var options = args.Count > 1 ? args[1] : JsValue.Undefined;
+                            return _owner.ToHostOrNull(new FenJsAnimationHost(element, keyframes, options), HostObjectKind.Other);
+                        },
+                        length: 1);
+                    return true;
                 case "focus":
                     value = _owner.GetOrCreateHostCallable(
                         element,
@@ -8465,6 +12662,22 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             return JsValue.Undefined;
                         });
                     return true;
+                case "submit":
+                    // HTMLFormElement.submit() — reCAPTCHA calls form.submit() programmatically.
+                    if (string.Equals(element.TagName, "FORM", StringComparison.OrdinalIgnoreCase))
+                    {
+                        value = _owner.GetOrCreateHostCallable(
+                            element,
+                            "submit",
+                            (_, _) =>
+                            {
+                                _owner.SubmitFormFromScript(element);
+                                return JsValue.Undefined;
+                            });
+                        return true;
+                    }
+                    value = JsValue.Undefined;
+                    return false;
                 case "getAttribute":
                     value = _owner.GetOrCreateHostCallable(
                         element,
@@ -8497,6 +12710,12 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             var attributeName = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
                             var attributeValue = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
                             element.SetAttribute(attributeName, attributeValue);
+                            if ((string.Equals(attributeName, "src", StringComparison.OrdinalIgnoreCase) ||
+                                 string.Equals(attributeName, "srcdoc", StringComparison.OrdinalIgnoreCase)) &&
+                                IsIFrameElement(element))
+                            {
+                                _owner.QueueFrameElementLoad(element);
+                            }
                             return JsValue.Undefined;
                         },
                         length: 2);
@@ -8616,6 +12835,59 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         (_, _) => JsValue.FromBoolean(element.HasAttributes()),
                         length: 0);
                     return true;
+                case "attachShadow":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "attachShadow",
+                        (_, args) =>
+                        {
+                            var init = args.Count > 0 ? args[0] : JsValue.Undefined;
+                            var modeValue = _owner.ReadJsProperty(init, "mode");
+                            var modeText = modeValue.Tag == JsValueTag.Undefined
+                                ? string.Empty
+                                : CoerceToHostString(modeValue);
+                            var mode = string.Equals(modeText, "closed", StringComparison.Ordinal)
+                                ? ShadowRootMode.Closed
+                                : string.Equals(modeText, "open", StringComparison.Ordinal)
+                                    ? ShadowRootMode.Open
+                                    : (ShadowRootMode?)null;
+
+                            if (mode == null)
+                            {
+                                _owner.ThrowDomException(
+                                    "TypeError",
+                                    "Failed to execute 'attachShadow' on 'Element': mode must be 'open' or 'closed'.");
+                            }
+
+                            var slotAssignmentValue = _owner.ReadJsProperty(init, "slotAssignment");
+                            var slotAssignmentText = slotAssignmentValue.Tag == JsValueTag.Undefined
+                                ? "named"
+                                : CoerceToHostString(slotAssignmentValue);
+                            var slotAssignment = string.Equals(slotAssignmentText, "manual", StringComparison.Ordinal)
+                                ? SlotAssignmentMode.Manual
+                                : SlotAssignmentMode.Named;
+
+                            try
+                            {
+                                var shadowRoot = element.AttachShadow(new ShadowRootInit
+                                {
+                                    Mode = mode.Value,
+                                    DelegatesFocus = _owner.ReadJsBoolProperty(init, "delegatesFocus"),
+                                    SlotAssignment = slotAssignment
+                                });
+                                var shadowRootValue = _owner.ToHostNodeOrNull(shadowRoot);
+                                var upgradeFragmentValue = _owner.ReadJsProperty(init, "shadyUpgradeFragment");
+                                _owner._interpreter.CopyHostObjectOwnProperties(upgradeFragmentValue, shadowRootValue);
+                                return shadowRootValue;
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                                return JsValue.Undefined;
+                            }
+                        },
+                        length: 1);
+                    return true;
                 case "appendChild":
                     value = _owner.GetOrCreateHostCallable(
                         element,
@@ -8633,14 +12905,21 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                 return JsValue.Null;
                             }
 
+                            EngineLogCompat.Warn(
+                                $"[FenJsProbe] element.appendChild entering parent={element.NodeName}#{element.Id} child={child.NodeName} type={child.NodeType} childParent={child.ParentNode?.NodeName ?? "null"} childCount={(child is ContainerNode childContainer ? childContainer.ChildNodes.Length : 0)}",
+                                LogCategory.JavaScript);
                             var appended = element.AppendChild(child);
+                            EngineLogCompat.Warn(
+                                $"[FenJsProbe] element.appendChild returned parent={element.NodeName}#{element.Id} appended={appended.NodeName} childCount={(child is ContainerNode afterChildContainer ? afterChildContainer.ChildNodes.Length : 0)}",
+                                LogCategory.JavaScript);
+                            _owner.QueueFrameLoadsForTree(appended);
                             if (child is Element childElement &&
                                 string.Equals(childElement.TagName, "SCRIPT", StringComparison.OrdinalIgnoreCase))
                             {
                                 _owner.ExecuteDynamicScriptElement(childElement);
                             }
 
-                            return _owner.ToHostNodeOrNull(appended);
+                            return _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(appended));
                         },
                         length: 1);
                     return true;
@@ -8664,10 +12943,59 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                                 }
 
                                 element.AppendChild(child);
+                                _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(child));
+                                _owner.QueueFrameLoadsForTree(child);
                                 if (child is Element childElement &&
                                     string.Equals(childElement.TagName, "SCRIPT", StringComparison.OrdinalIgnoreCase))
                                 {
                                     _owner.ExecuteDynamicScriptElement(childElement);
+                                }
+                            }
+
+                            return JsValue.Undefined;
+                        },
+                        length: 1);
+                    return true;
+                case "prepend":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "prepend",
+                        (_, args) =>
+                        {
+                            var referenceNode = element.FirstChild;
+                            foreach (var arg in args)
+                            {
+                                if (_owner.ResolveHostObjectOrNull<Attr>(arg) != null)
+                                {
+                                    _owner.ThrowHierarchyRequestError("Attributes cannot be inserted as child nodes.");
+                                }
+
+                                Node child = _owner.ResolveHostObjectOrNull<Node>(arg);
+                                if (child == null)
+                                {
+                                    child = element.OwnerDocument?.CreateTextNode(CoerceToHostString(arg));
+                                }
+
+                                if (child == null)
+                                {
+                                    continue;
+                                }
+
+                                var scriptCandidates = child is DocumentFragment fragment
+                                    ? fragment.ChildNodes.OfType<Element>().ToArray()
+                                    : child is Element childElement
+                                        ? new[] { childElement }
+                                        : Array.Empty<Element>();
+
+                                element.InsertBefore(child, referenceNode);
+                                _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(child));
+                                _owner.QueueFrameLoadsForTree(child);
+                                foreach (var scriptElement in scriptCandidates)
+                                {
+                                    if (string.Equals(scriptElement.TagName, "SCRIPT", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        _owner.ExecuteDynamicScriptElement(scriptElement);
+                                    }
                                 }
                             }
 
@@ -8705,13 +13033,81 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
                             var referenceNode = args.Count > 1 ? _owner.ResolveHostObjectOrNull<Node>(args[1]) : null;
                             var inserted = element.InsertBefore(child, referenceNode);
+                            _owner.QueueFrameLoadsForTree(inserted);
                             if (child is Element childElement &&
                                 string.Equals(childElement.TagName, "SCRIPT", StringComparison.OrdinalIgnoreCase))
                             {
                                 _owner.ExecuteDynamicScriptElement(childElement);
                             }
 
-                            return _owner.ToHostNodeOrNull(inserted);
+                            return _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(inserted));
+                        },
+                        length: 2);
+                    return true;
+                case "removeChild":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "removeChild",
+                        (_, args) =>
+                        {
+                            var child = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            if (child == null)
+                            {
+                                _owner.ThrowDomException("TypeError", "Child must be a DOM node.");
+                            }
+
+                            try
+                            {
+                                return _owner.ToHostNodeOrNull(element.RemoveChild(child));
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                                return JsValue.Undefined;
+                            }
+                        },
+                        length: 1);
+                    return true;
+                case "replaceChild":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "replaceChild",
+                        (_, args) =>
+                        {
+                            if (args.Count > 0 && _owner.ResolveHostObjectOrNull<Attr>(args[0]) != null)
+                            {
+                                _owner.ThrowHierarchyRequestError("Attributes cannot be inserted as child nodes.");
+                            }
+
+                            var child = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            if (child == null)
+                            {
+                                _owner.ThrowDomException("TypeError", "Replacement child must be a DOM node.");
+                            }
+
+                            var oldChild = args.Count > 1 ? _owner.ResolveHostObjectOrNull<Node>(args[1]) : null;
+                            if (oldChild == null)
+                            {
+                                _owner.ThrowDomException("TypeError", "Child must be a DOM node.");
+                            }
+
+                            try
+                            {
+                                var replaced = element.ReplaceChild(child, oldChild);
+                                if (child is Element childElement &&
+                                    string.Equals(childElement.TagName, "SCRIPT", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    _owner.ExecuteDynamicScriptElement(childElement);
+                                }
+
+                                _owner.UpgradeCustomElementTreeIfDefined(_owner.ToHostNodeOrNull(child));
+                                return _owner.ToHostNodeOrNull(replaced);
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                                return JsValue.Undefined;
+                            }
                         },
                         length: 2);
                     return true;
@@ -8820,6 +13216,19 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                         },
                         length: 1);
                     return true;
+                case "getElementsByClassName":
+                    value = _owner.GetOrCreateHostCallable(
+                        element,
+                        "getElementsByClassName",
+                        (_, args) =>
+                        {
+                            var className = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                            return _owner.ToHostOrNull(
+                                new FenJsHtmlCollectionHost(element.GetElementsByClassName(className)),
+                                HostObjectKind.Other);
+                        },
+                        length: 1);
+                    return true;
                 case "insertAdjacentHTML":
                     value = _owner.GetOrCreateHostCallable(
                         element,
@@ -8895,6 +13304,9 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     return true;
                 case "style":
                     value = _owner.GetOrCreateStyleObject(element);
+                    return true;
+                case "currentStyle":
+                    value = _owner.CreateComputedStyleObjectForElement(element);
                     return true;
                 default:
                     // Fall back to user-assigned properties (e.g. Google sets
@@ -9264,11 +13676,22 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "nodeName":
                     value = JsValue.FromString(characterData.NodeName ?? string.Empty);
                     return true;
+                case "nodeType":
+                    value = JsValue.FromInt32((int)characterData.NodeType);
+                    return true;
+                case "id":
+                case "localName":
+                    value = JsValue.Undefined;
+                    return true;
                 case "ownerDocument":
                     value = _owner.ToHostOrNull(characterData.OwnerDocument, HostObjectKind.DomDocument);
                     return true;
                 case "parentNode":
                     value = _owner.ToHostNodeOrNull(characterData.ParentNode);
+                    return true;
+                case "firstChild":
+                case "lastChild":
+                    value = JsValue.Null;
                     return true;
                 case "nextSibling":
                     value = _owner.ToHostNodeOrNull(characterData.NextSibling);
@@ -9363,14 +13786,76 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                 case "nodeName":
                     value = JsValue.FromString(fragment.NodeName ?? string.Empty);
                     return true;
+                case "nodeType":
+                    value = JsValue.FromInt32((int)fragment.NodeType);
+                    return true;
+                case "nodeValue":
+                    value = JsValue.Null;
+                    return true;
+                case "textContent":
+                    value = JsValue.FromString(fragment.TextContent ?? string.Empty);
+                    return true;
+                case "isConnected":
+                    value = JsValue.FromBoolean(fragment.IsConnected);
+                    return true;
+                case "host" when fragment is ShadowRoot shadowRoot:
+                    value = _owner.ToHostOrNull(shadowRoot.Host, HostObjectKind.DomElement);
+                    return true;
+                case "mode" when fragment is ShadowRoot shadowRoot:
+                    value = JsValue.FromString(shadowRoot.Mode == ShadowRootMode.Closed ? "closed" : "open");
+                    return true;
+                case "delegatesFocus" when fragment is ShadowRoot shadowRoot:
+                    value = JsValue.FromBoolean(shadowRoot.DelegatesFocus);
+                    return true;
+                case "slotAssignment" when fragment is ShadowRoot shadowRoot:
+                    value = JsValue.FromString(shadowRoot.SlotAssignment == SlotAssignmentMode.Manual ? "manual" : "named");
+                    return true;
                 case "ownerDocument":
                     value = _owner.ToHostOrNull(fragment.OwnerDocument, HostObjectKind.DomDocument);
                     return true;
                 case "parentNode":
                     value = _owner.ToHostNodeOrNull(fragment.ParentNode);
                     return true;
+                case "parentElement":
+                    value = _owner.ToHostNodeOrNull(fragment.ParentNode as Element);
+                    return true;
                 case "firstChild":
                     value = _owner.ToHostNodeOrNull(fragment.FirstChild);
+                    return true;
+                case "lastChild":
+                    value = _owner.ToHostNodeOrNull(fragment.LastChild);
+                    return true;
+                case "previousSibling":
+                    value = _owner.ToHostNodeOrNull(fragment.PreviousSibling);
+                    return true;
+                case "nextSibling":
+                    value = _owner.ToHostNodeOrNull(fragment.NextSibling);
+                    return true;
+                case "childNodes":
+                    value = _owner.CreateNodeArrayLike(fragment.ChildNodes.ToArray());
+                    return true;
+                case "firstElementChild":
+                    value = _owner.ToHostNodeOrNull(fragment.FirstElementChild);
+                    return true;
+                case "lastElementChild":
+                    value = _owner.ToHostNodeOrNull(fragment.LastElementChild);
+                    return true;
+                case "childElementCount":
+                    value = JsValue.FromInt32(fragment.ChildElementCount);
+                    return true;
+                case "children":
+                    {
+                        var children = new List<Node>();
+                        for (var i = 0; i < fragment.ChildNodes.Length; i++)
+                        {
+                            if (fragment.ChildNodes[i] is Element)
+                            {
+                                children.Add(fragment.ChildNodes[i]);
+                            }
+                        }
+
+                        value = _owner.CreateNodeArrayLike(children);
+                    }
                     return true;
                 case "appendChild":
                     value = _owner.GetOrCreateHostCallable(
@@ -9390,6 +13875,124 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                             }
 
                             return _owner.ToHostNodeOrNull(fragment.AppendChild(child));
+                        },
+                        length: 1);
+                    return true;
+                case "insertBefore":
+                    value = _owner.GetOrCreateHostCallable(
+                        fragment,
+                        "insertBefore",
+                        (_, args) =>
+                        {
+                            if (args.Count > 0 && _owner.ResolveHostObjectOrNull<Attr>(args[0]) != null)
+                            {
+                                _owner.ThrowHierarchyRequestError("Attributes cannot be inserted as child nodes.");
+                            }
+
+                            var child = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            if (child == null)
+                            {
+                                return JsValue.Null;
+                            }
+
+                            var referenceNode = args.Count > 1 ? _owner.ResolveHostObjectOrNull<Node>(args[1]) : null;
+                            try
+                            {
+                                return _owner.ToHostNodeOrNull(fragment.InsertBefore(child, referenceNode));
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                                return JsValue.Undefined;
+                            }
+                        },
+                        length: 2);
+                    return true;
+                case "cloneNode":
+                    value = _owner.GetOrCreateHostCallable(
+                        fragment,
+                        "cloneNode",
+                        (_, args) =>
+                        {
+                            var deep = args.Count > 0 && CoerceToHostBoolean(args[0]);
+                            return _owner.ToHostNodeOrNull(fragment.CloneNode(deep));
+                        },
+                        length: 0);
+                    return true;
+                case "removeChild":
+                    value = _owner.GetOrCreateHostCallable(
+                        fragment,
+                        "removeChild",
+                        (_, args) =>
+                        {
+                            var child = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            if (child == null)
+                            {
+                                _owner.ThrowDomException("TypeError", "Child must be a DOM node.");
+                            }
+
+                            try
+                            {
+                                return _owner.ToHostNodeOrNull(fragment.RemoveChild(child));
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                                return JsValue.Undefined;
+                            }
+                        },
+                        length: 1);
+                    return true;
+                case "replaceChild":
+                    value = _owner.GetOrCreateHostCallable(
+                        fragment,
+                        "replaceChild",
+                        (_, args) =>
+                        {
+                            if (args.Count > 0 && _owner.ResolveHostObjectOrNull<Attr>(args[0]) != null)
+                            {
+                                _owner.ThrowHierarchyRequestError("Attributes cannot be inserted as child nodes.");
+                            }
+
+                            var child = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            if (child == null)
+                            {
+                                _owner.ThrowDomException("TypeError", "Replacement child must be a DOM node.");
+                            }
+
+                            var oldChild = args.Count > 1 ? _owner.ResolveHostObjectOrNull<Node>(args[1]) : null;
+                            if (oldChild == null)
+                            {
+                                _owner.ThrowDomException("TypeError", "Child must be a DOM node.");
+                            }
+
+                            try
+                            {
+                                return _owner.ToHostNodeOrNull(fragment.ReplaceChild(child, oldChild));
+                            }
+                            catch (DomException ex)
+                            {
+                                _owner.ThrowDomException(ex.Name, ex.Message);
+                                return JsValue.Undefined;
+                            }
+                        },
+                        length: 2);
+                    return true;
+                case "hasChildNodes":
+                    value = _owner.GetOrCreateHostCallable(
+                        fragment,
+                        "hasChildNodes",
+                        (_, _) => JsValue.FromBoolean(fragment.HasChildNodes),
+                        length: 0);
+                    return true;
+                case "contains":
+                    value = _owner.GetOrCreateHostCallable(
+                        fragment,
+                        "contains",
+                        (_, args) =>
+                        {
+                            var other = args.Count > 0 ? _owner.ResolveHostObjectOrNull<Node>(args[0]) : null;
+                            return JsValue.FromBoolean(other != null && fragment.Contains(other));
                         },
                         length: 1);
                     return true;
@@ -9475,6 +14078,335 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             }
         }
 
+        private bool TryGetRangeProperty(DomRange range, string property, out JsValue value)
+        {
+            switch (property)
+            {
+                case "START_TO_START":
+                    value = JsValue.FromInt32(0);
+                    return true;
+                case "START_TO_END":
+                    value = JsValue.FromInt32(1);
+                    return true;
+                case "END_TO_END":
+                    value = JsValue.FromInt32(2);
+                    return true;
+                case "END_TO_START":
+                    value = JsValue.FromInt32(3);
+                    return true;
+                case "startContainer":
+                    value = _owner.ToHostNodeOrNull(range.StartContainer);
+                    return true;
+                case "startOffset":
+                    value = JsValue.FromInt32(range.StartOffset);
+                    return true;
+                case "endContainer":
+                    value = _owner.ToHostNodeOrNull(range.EndContainer);
+                    return true;
+                case "endOffset":
+                    value = JsValue.FromInt32(range.EndOffset);
+                    return true;
+                case "collapsed":
+                    value = JsValue.FromBoolean(range.Collapsed);
+                    return true;
+                case "commonAncestorContainer":
+                    value = _owner.ToHostNodeOrNull(range.CommonAncestorContainer);
+                    return true;
+                case "setStart":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "setStart",
+                        (_, args) => InvokeRange(() =>
+                        {
+                            range.SetStart(
+                                RequireRangeNodeArgument(args, 0, "setStart"),
+                                CoerceRangeOffsetArgument(args, 1));
+                            return JsValue.Undefined;
+                        }),
+                        length: 2);
+                    return true;
+                case "setEnd":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "setEnd",
+                        (_, args) => InvokeRange(() =>
+                        {
+                            range.SetEnd(
+                                RequireRangeNodeArgument(args, 0, "setEnd"),
+                                CoerceRangeOffsetArgument(args, 1));
+                            return JsValue.Undefined;
+                        }),
+                        length: 2);
+                    return true;
+                case "setStartBefore":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "setStartBefore",
+                        (_, args) => InvokeRange(() =>
+                        {
+                            range.SetStartBefore(RequireRangeNodeArgument(args, 0, "setStartBefore"));
+                            return JsValue.Undefined;
+                        }),
+                        length: 1);
+                    return true;
+                case "setStartAfter":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "setStartAfter",
+                        (_, args) => InvokeRange(() =>
+                        {
+                            range.SetStartAfter(RequireRangeNodeArgument(args, 0, "setStartAfter"));
+                            return JsValue.Undefined;
+                        }),
+                        length: 1);
+                    return true;
+                case "setEndBefore":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "setEndBefore",
+                        (_, args) => InvokeRange(() =>
+                        {
+                            range.SetEndBefore(RequireRangeNodeArgument(args, 0, "setEndBefore"));
+                            return JsValue.Undefined;
+                        }),
+                        length: 1);
+                    return true;
+                case "setEndAfter":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "setEndAfter",
+                        (_, args) => InvokeRange(() =>
+                        {
+                            range.SetEndAfter(RequireRangeNodeArgument(args, 0, "setEndAfter"));
+                            return JsValue.Undefined;
+                        }),
+                        length: 1);
+                    return true;
+                case "collapse":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "collapse",
+                        (_, args) => InvokeRange(() =>
+                        {
+                            range.Collapse(args.Count > 0 && CoerceToHostBoolean(args[0]));
+                            return JsValue.Undefined;
+                        }),
+                        length: 0);
+                    return true;
+                case "selectNode":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "selectNode",
+                        (_, args) => InvokeRange(() =>
+                        {
+                            range.SelectNode(RequireRangeNodeArgument(args, 0, "selectNode"));
+                            return JsValue.Undefined;
+                        }),
+                        length: 1);
+                    return true;
+                case "selectNodeContents":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "selectNodeContents",
+                        (_, args) => InvokeRange(() =>
+                        {
+                            range.SelectNodeContents(RequireRangeNodeArgument(args, 0, "selectNodeContents"));
+                            return JsValue.Undefined;
+                        }),
+                        length: 1);
+                    return true;
+                case "compareBoundaryPoints":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "compareBoundaryPoints",
+                        (_, args) => InvokeRange(() =>
+                        {
+                            var how = (ushort)CoerceRangeOffsetArgument(args, 0);
+                            var otherRange = args.Count > 1 ? _owner.ResolveHostObjectOrNull<DomRange>(args[1]) : null;
+                            if (otherRange == null)
+                            {
+                                _owner.ThrowDomException(
+                                    "TypeError",
+                                    "Failed to execute 'compareBoundaryPoints' on 'Range': parameter 2 is not of type 'Range'.");
+                            }
+
+                            return JsValue.FromInt32(range.CompareBoundaryPoints(how, otherRange));
+                        }),
+                        length: 2);
+                    return true;
+                case "deleteContents":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "deleteContents",
+                        (_, _) => InvokeRange(() =>
+                        {
+                            range.DeleteContents();
+                            return JsValue.Undefined;
+                        }),
+                        length: 0);
+                    return true;
+                case "extractContents":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "extractContents",
+                        (_, _) => InvokeRange(() => _owner.ToHostNodeOrNull(range.ExtractContents())),
+                        length: 0);
+                    return true;
+                case "cloneContents":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "cloneContents",
+                        (_, _) => InvokeRange(() => _owner.ToHostNodeOrNull(range.CloneContents())),
+                        length: 0);
+                    return true;
+                case "insertNode":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "insertNode",
+                        (_, args) => InvokeRange(() =>
+                        {
+                            range.InsertNode(RequireRangeNodeArgument(args, 0, "insertNode"));
+                            return JsValue.Undefined;
+                        }),
+                        length: 1);
+                    return true;
+                case "surroundContents":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "surroundContents",
+                        (_, args) => InvokeRange(() =>
+                        {
+                            range.SurroundContents(RequireRangeNodeArgument(args, 0, "surroundContents"));
+                            return JsValue.Undefined;
+                        }),
+                        length: 1);
+                    return true;
+                case "cloneRange":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "cloneRange",
+                        (_, _) => InvokeRange(() => _owner.ToHostOrNull(range.CloneRange(), HostObjectKind.Other)),
+                        length: 0);
+                    return true;
+                case "detach":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "detach",
+                        (_, _) => InvokeRange(() =>
+                        {
+                            range.Detach();
+                            return JsValue.Undefined;
+                        }),
+                        length: 0);
+                    return true;
+                case "isPointInRange":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "isPointInRange",
+                        (_, args) => InvokeRange(() => JsValue.FromBoolean(range.IsPointInRange(
+                            RequireRangeNodeArgument(args, 0, "isPointInRange"),
+                            CoerceRangeOffsetArgument(args, 1)))),
+                        length: 2);
+                    return true;
+                case "comparePoint":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "comparePoint",
+                        (_, args) => InvokeRange(() => JsValue.FromInt32(range.ComparePoint(
+                            RequireRangeNodeArgument(args, 0, "comparePoint"),
+                            CoerceRangeOffsetArgument(args, 1)))),
+                        length: 2);
+                    return true;
+                case "intersectsNode":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "intersectsNode",
+                        (_, args) => InvokeRange(() => JsValue.FromBoolean(range.IntersectsNode(
+                            RequireRangeNodeArgument(args, 0, "intersectsNode")))),
+                        length: 1);
+                    return true;
+                case "createContextualFragment":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "createContextualFragment",
+                        (_, args) => InvokeRange(() =>
+                        {
+                            var html = args.Count > 0 ? CoerceToHostString(args[0]) : string.Empty;
+                            return _owner.ToHostNodeOrNull(_owner.CreateContextualFragment(range, html));
+                        }),
+                        length: 1);
+                    return true;
+                case "getBoundingClientRect":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "getBoundingClientRect",
+                        (_, _) => _owner.CreateDomRect(0, 0, 0, 0),
+                        length: 0);
+                    return true;
+                case "getClientRects":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "getClientRects",
+                        (_, _) => _owner.CreateEmptyDomRectList(),
+                        length: 0);
+                    return true;
+                case "toString":
+                    value = _owner.GetOrCreateHostCallable(
+                        range,
+                        "toString",
+                        (_, _) => InvokeRange(() => JsValue.FromString(range.ToString())),
+                        length: 0);
+                    return true;
+                default:
+                    value = JsValue.Undefined;
+                    return false;
+            }
+        }
+
+        private JsValue InvokeRange(Func<JsValue> action)
+        {
+            try
+            {
+                return action();
+            }
+            catch (DomException ex)
+            {
+                _owner.ThrowDomException(ex.Name, ex.Message);
+                return JsValue.Undefined;
+            }
+            catch (ArgumentException ex)
+            {
+                _owner.ThrowDomException("TypeError", ex.Message);
+                return JsValue.Undefined;
+            }
+            catch (InvalidOperationException ex)
+            {
+                _owner.ThrowDomException("InvalidStateError", ex.Message);
+                return JsValue.Undefined;
+            }
+        }
+
+        private Node RequireRangeNodeArgument(IReadOnlyList<JsValue> args, int index, string methodName)
+        {
+            var node = args.Count > index ? _owner.ResolveHostObjectOrNull<Node>(args[index]) : null;
+            if (node != null)
+            {
+                return node;
+            }
+
+            _owner.ThrowDomException(
+                "TypeError",
+                $"Failed to execute '{methodName}' on 'Range': parameter {index + 1} is not of type 'Node'.");
+            return null;
+        }
+
+        private static int CoerceRangeOffsetArgument(IReadOnlyList<JsValue> args, int index)
+        {
+            return args.Count > index && TryCoerceIndex(args[index], out var offset)
+                ? offset
+                : 0;
+        }
+
         private bool TryGetHtmlCollectionProperty(FenJsHtmlCollectionHost htmlCollection, string property, out JsValue value)
         {
             var collection = htmlCollection.Collection;
@@ -9516,6 +14448,217 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
 
                     value = JsValue.Undefined;
                     return false;
+            }
+        }
+
+        private bool TryGetTreeWalkerProperty(FenJsTreeWalkerHost treeWalkerHost, string property, out JsValue value)
+        {
+            var treeWalker = treeWalkerHost.TreeWalker;
+            switch (property)
+            {
+                case "root":
+                    value = _owner.ToHostNodeOrNull(treeWalker.Root);
+                    return true;
+                case "whatToShow":
+                    value = JsValue.FromNumber(treeWalker.WhatToShow);
+                    return true;
+                case "filter":
+                    value = JsValue.Null;
+                    return true;
+                case "currentNode":
+                    value = _owner.ToHostNodeOrNull(treeWalker.CurrentNode);
+                    return true;
+                case "parentNode":
+                    value = _owner.GetOrCreateHostCallable(
+                        treeWalkerHost,
+                        "parentNode",
+                        (_, _) => _owner.ToHostNodeOrNull(treeWalker.ParentNode()),
+                        length: 0);
+                    return true;
+                case "firstChild":
+                    value = _owner.GetOrCreateHostCallable(
+                        treeWalkerHost,
+                        "firstChild",
+                        (_, _) => _owner.ToHostNodeOrNull(treeWalker.FirstChild()),
+                        length: 0);
+                    return true;
+                case "lastChild":
+                    value = _owner.GetOrCreateHostCallable(
+                        treeWalkerHost,
+                        "lastChild",
+                        (_, _) => _owner.ToHostNodeOrNull(treeWalker.LastChild()),
+                        length: 0);
+                    return true;
+                case "previousSibling":
+                    value = _owner.GetOrCreateHostCallable(
+                        treeWalkerHost,
+                        "previousSibling",
+                        (_, _) => _owner.ToHostNodeOrNull(treeWalker.PreviousSibling()),
+                        length: 0);
+                    return true;
+                case "nextSibling":
+                    value = _owner.GetOrCreateHostCallable(
+                        treeWalkerHost,
+                        "nextSibling",
+                        (_, _) => _owner.ToHostNodeOrNull(treeWalker.NextSibling()),
+                        length: 0);
+                    return true;
+                case "previousNode":
+                    value = _owner.GetOrCreateHostCallable(
+                        treeWalkerHost,
+                        "previousNode",
+                        (_, _) => _owner.ToHostNodeOrNull(treeWalker.PreviousNode()),
+                        length: 0);
+                    return true;
+                case "nextNode":
+                    value = _owner.GetOrCreateHostCallable(
+                        treeWalkerHost,
+                        "nextNode",
+                        (_, _) => _owner.ToHostNodeOrNull(treeWalker.NextNode()),
+                        length: 0);
+                    return true;
+                default:
+                    value = JsValue.Undefined;
+                    return false;
+            }
+        }
+
+        private bool TryGetAnimationProperty(FenJsAnimationHost animation, string property, out JsValue value)
+        {
+            switch (property)
+            {
+                case "id":
+                    value = JsValue.FromString(animation.Id);
+                    return true;
+                case "effect":
+                    value = animation.Keyframes.Tag == JsValueTag.Undefined ? JsValue.Null : animation.Keyframes;
+                    return true;
+                case "timeline":
+                    value = JsValue.Null;
+                    return true;
+                case "startTime":
+                    value = animation.StartTime.HasValue ? JsValue.FromNumber(animation.StartTime.Value) : JsValue.Null;
+                    return true;
+                case "currentTime":
+                    value = animation.CurrentTime.HasValue ? JsValue.FromNumber(animation.CurrentTime.Value) : JsValue.Null;
+                    return true;
+                case "playbackRate":
+                    value = JsValue.FromNumber(animation.PlaybackRate);
+                    return true;
+                case "playState":
+                    value = JsValue.FromString(animation.PlayState);
+                    return true;
+                case "pending":
+                    value = JsValue.FromBoolean(animation.Pending);
+                    return true;
+                case "replaceState":
+                    value = JsValue.FromString("active");
+                    return true;
+                case "ready":
+                case "finished":
+                    value = _owner.CreateResolvedPromise(_owner.ToHostOrNull(animation, HostObjectKind.Other));
+                    return true;
+                case "cancel":
+                    value = _owner.GetOrCreateHostCallable(
+                        animation,
+                        "cancel",
+                        (_, _) =>
+                        {
+                            animation.PlayState = "idle";
+                            animation.Pending = false;
+                            animation.CurrentTime = 0;
+                            return JsValue.Undefined;
+                        },
+                        length: 0);
+                    return true;
+                case "finish":
+                    value = _owner.GetOrCreateHostCallable(
+                        animation,
+                        "finish",
+                        (_, _) =>
+                        {
+                            animation.PlayState = "finished";
+                            animation.Pending = false;
+                            return JsValue.Undefined;
+                        },
+                        length: 0);
+                    return true;
+                case "play":
+                    value = _owner.GetOrCreateHostCallable(
+                        animation,
+                        "play",
+                        (_, _) =>
+                        {
+                            animation.PlayState = "running";
+                            animation.Pending = false;
+                            return JsValue.Undefined;
+                        },
+                        length: 0);
+                    return true;
+                case "pause":
+                    value = _owner.GetOrCreateHostCallable(
+                        animation,
+                        "pause",
+                        (_, _) =>
+                        {
+                            animation.PlayState = "paused";
+                            animation.Pending = false;
+                            return JsValue.Undefined;
+                        },
+                        length: 0);
+                    return true;
+                case "reverse":
+                    value = _owner.GetOrCreateHostCallable(
+                        animation,
+                        "reverse",
+                        (_, _) =>
+                        {
+                            animation.PlaybackRate = animation.PlaybackRate == 0 ? -1 : -animation.PlaybackRate;
+                            animation.PlayState = "running";
+                            animation.Pending = false;
+                            return JsValue.Undefined;
+                        },
+                        length: 0);
+                    return true;
+                case "updatePlaybackRate":
+                    value = _owner.GetOrCreateHostCallable(
+                        animation,
+                        "updatePlaybackRate",
+                        (_, args) =>
+                        {
+                            animation.PlaybackRate = args.Count > 0
+                                ? CoerceToFiniteNumber(args[0], animation.PlaybackRate)
+                                : animation.PlaybackRate;
+                            return JsValue.Undefined;
+                        },
+                        length: 1);
+                    return true;
+                case "persist":
+                case "commitStyles":
+                    value = _owner.GetOrCreateHostCallable(
+                        animation,
+                        property,
+                        (_, _) => JsValue.Undefined,
+                        length: 0);
+                    return true;
+                case "addEventListener":
+                case "removeEventListener":
+                    value = _owner.GetOrCreateHostCallable(
+                        animation,
+                        property,
+                        (_, _) => JsValue.Undefined,
+                        length: 2);
+                    return true;
+                case "dispatchEvent":
+                    value = _owner.GetOrCreateHostCallable(
+                        animation,
+                        "dispatchEvent",
+                        (_, _) => JsValue.FromBoolean(true),
+                        length: 1);
+                    return true;
+                default:
+                    value = _owner.GetStoredHostPropertyOrUndefined(animation, property);
+                    return value.Tag != JsValueTag.Undefined;
             }
         }
 
@@ -9579,7 +14722,7 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
             return false;
         }
 
-        private static bool TryGetNavigatorProperty(BrowserSurfaceProfile navigator, string property, out JsValue value)
+        private bool TryGetNavigatorProperty(BrowserSurfaceProfile navigator, string property, out JsValue value)
         {
             switch (property)
             {
@@ -9608,7 +14751,16 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     value = JsValue.FromString(navigator.Language ?? System.Globalization.CultureInfo.CurrentCulture.TwoLetterISOLanguageName);
                     return true;
                 case "languages":
-                    value = JsValue.FromString(navigator.Language ?? "en-US"); // simplified: return string, not array
+                    // Must return a frozen array per spec. Bot detection checks Array.isArray(navigator.languages).
+                    {
+                        var lang = navigator.Language ?? "en-US";
+                        var shortLang = lang.Contains("-") ? lang.Substring(0, lang.IndexOf('-')) : lang;
+                        value = _owner._interpreter.AllocateArray(new[]
+                        {
+                            JsValue.FromString(lang),
+                            JsValue.FromString(shortLang)
+                        });
+                    }
                     return true;
                 case "onLine":
                     value = JsValue.FromBoolean(true);
@@ -9626,6 +14778,161 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
                     value = JsValue.Undefined;
                     return false;
             }
+        }
+
+        private bool TryGetHistoryProperty(FenJsHistoryHost history, string property, out JsValue value)
+        {
+            if (string.Equals(property, "pushState", StringComparison.Ordinal) ||
+                string.Equals(property, "replaceState", StringComparison.Ordinal))
+            {
+                value = _owner.GetStoredHostPropertyOrUndefined(history, property);
+                if (value.Tag != JsValueTag.Undefined)
+                {
+                    return true;
+                }
+            }
+
+            switch (property)
+            {
+                case "length":
+                    value = JsValue.FromInt32(_owner._historyBridge?.Length ?? history.Length);
+                    return true;
+                case "state":
+                    value = _owner._historyBridge != null
+                        ? CoerceBridgeHistoryState(_owner._historyBridge.State)
+                        : history.State;
+                    return true;
+                case "pushState":
+                    value = _owner.GetOrCreateHostCallable(
+                        history,
+                        "pushState",
+                        (_, args) =>
+                        {
+                            var state = args.Count > 0 ? args[0] : JsValue.Null;
+                            var title = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                            var url = args.Count > 2 && args[2].Tag != JsValueTag.Undefined
+                                ? CoerceToHostString(args[2])
+                                : string.Empty;
+
+                            if (_owner._historyBridge != null)
+                            {
+                                _owner._historyBridge.PushState(state, title, url);
+                                history.Length = _owner._historyBridge.Length;
+                                history.State = CoerceBridgeHistoryState(_owner._historyBridge.State);
+                                _owner.UpdateFenJsLocation(history.Location, _owner._historyBridge.CurrentUrl);
+                            }
+                            else
+                            {
+                                history.State = state;
+                                history.Length = Math.Max(1, history.Length + 1);
+                                _owner.ApplyHistoryUrl(history.Location, url);
+                            }
+
+                            return JsValue.Undefined;
+                        },
+                        length: 2);
+                    return true;
+                case "replaceState":
+                    value = _owner.GetOrCreateHostCallable(
+                        history,
+                        "replaceState",
+                        (_, args) =>
+                        {
+                            var state = args.Count > 0 ? args[0] : JsValue.Null;
+                            var title = args.Count > 1 ? CoerceToHostString(args[1]) : string.Empty;
+                            var url = args.Count > 2 && args[2].Tag != JsValueTag.Undefined
+                                ? CoerceToHostString(args[2])
+                                : string.Empty;
+
+                            if (_owner._historyBridge != null)
+                            {
+                                _owner._historyBridge.ReplaceState(state, title, url);
+                                history.Length = _owner._historyBridge.Length;
+                                history.State = CoerceBridgeHistoryState(_owner._historyBridge.State);
+                                _owner.UpdateFenJsLocation(history.Location, _owner._historyBridge.CurrentUrl);
+                            }
+                            else
+                            {
+                                history.State = state;
+                                _owner.ApplyHistoryUrl(history.Location, url);
+                            }
+
+                            return JsValue.Undefined;
+                        },
+                        length: 2);
+                    return true;
+                case "go":
+                    value = _owner.GetOrCreateHostCallable(
+                        history,
+                        "go",
+                        (_, args) =>
+                        {
+                            var delta = args.Count > 0 ? (int)CoerceToFiniteNumber(args[0], 0) : 0;
+                            _owner._historyBridge?.Go(delta);
+                            if (_owner._historyBridge != null)
+                            {
+                                history.Length = _owner._historyBridge.Length;
+                                history.State = CoerceBridgeHistoryState(_owner._historyBridge.State);
+                                _owner.UpdateFenJsLocation(history.Location, _owner._historyBridge.CurrentUrl);
+                            }
+                            return JsValue.Undefined;
+                        },
+                        length: 1);
+                    return true;
+                case "back":
+                    value = _owner.GetOrCreateHostCallable(
+                        history,
+                        "back",
+                        (_, _) =>
+                        {
+                            _owner._historyBridge?.Go(-1);
+                            if (_owner._historyBridge != null)
+                            {
+                                history.Length = _owner._historyBridge.Length;
+                                history.State = CoerceBridgeHistoryState(_owner._historyBridge.State);
+                                _owner.UpdateFenJsLocation(history.Location, _owner._historyBridge.CurrentUrl);
+                            }
+                            return JsValue.Undefined;
+                        },
+                        length: 0);
+                    return true;
+                case "forward":
+                    value = _owner.GetOrCreateHostCallable(
+                        history,
+                        "forward",
+                        (_, _) =>
+                        {
+                            _owner._historyBridge?.Go(1);
+                            if (_owner._historyBridge != null)
+                            {
+                                history.Length = _owner._historyBridge.Length;
+                                history.State = CoerceBridgeHistoryState(_owner._historyBridge.State);
+                                _owner.UpdateFenJsLocation(history.Location, _owner._historyBridge.CurrentUrl);
+                            }
+                            return JsValue.Undefined;
+                        },
+                        length: 0);
+                    return true;
+                default:
+                    value = JsValue.Undefined;
+                    return false;
+            }
+        }
+
+        private static JsValue CoerceBridgeHistoryState(object state)
+        {
+            return state switch
+            {
+                null => JsValue.Null,
+                JsValue jsValue => jsValue,
+                string text => JsValue.FromString(text),
+                bool boolean => JsValue.FromBoolean(boolean),
+                int int32 => JsValue.FromInt32(int32),
+                double number => JsValue.FromNumber(number),
+                float number => JsValue.FromNumber(number),
+                long integer => JsValue.FromNumber(integer),
+                _ => JsValue.Null
+            };
         }
 
         private bool TryGetLocationProperty(FenJsLocationHost location, string property, out JsValue value)
@@ -9729,6 +15036,82 @@ public sealed class FenJsBrowserScriptEngine : IBrowserScriptEngine
         private static bool IsDialogElement(Element element)
         {
             return string.Equals(element?.TagName, "dialog", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsTemplateElement(Element element)
+        {
+            return string.Equals(element?.TagName, "template", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsIFrameElement(Element element)
+        {
+            return string.Equals(element?.TagName, "iframe", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string ReadElementValue(Element element)
+        {
+            if (element == null)
+            {
+                return string.Empty;
+            }
+
+            var attrValue = element.GetAttribute("value");
+            if (attrValue != null)
+            {
+                return attrValue;
+            }
+
+            if (string.Equals(element.TagName, "textarea", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(element.TagName, "option", StringComparison.OrdinalIgnoreCase))
+            {
+                return element.TextContent ?? string.Empty;
+            }
+
+            return string.Empty;
+        }
+
+        private static void SetElementValue(Element element, string value)
+        {
+            if (element == null)
+            {
+                return;
+            }
+
+            value ??= string.Empty;
+            element.SetAttribute("value", value);
+            if (string.Equals(element.TagName, "textarea", StringComparison.OrdinalIgnoreCase))
+            {
+                element.TextContent = value;
+            }
+        }
+
+        private static int ReadElementTabIndex(Element element)
+        {
+            var raw = element?.GetAttribute("tabindex");
+            if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+            {
+                return parsed;
+            }
+
+            if (element == null)
+            {
+                return -1;
+            }
+
+            var tagName = element.TagName ?? string.Empty;
+            if (string.Equals(tagName, "a", StringComparison.OrdinalIgnoreCase))
+            {
+                return element.HasAttribute("href") ? 0 : -1;
+            }
+
+            return
+                string.Equals(tagName, "button", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tagName, "input", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tagName, "select", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tagName, "textarea", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tagName, "iframe", StringComparison.OrdinalIgnoreCase)
+                    ? 0
+                    : -1;
         }
     }
 }
