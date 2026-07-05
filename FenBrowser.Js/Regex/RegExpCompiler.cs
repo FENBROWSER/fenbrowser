@@ -67,16 +67,14 @@ public static class RegExpCompiler
         }
         catch (Exception ex)
         {
-            // If pattern contains Unicode property escapes that .NET doesn't recognize,
-            // create a neutral regex and let the native VM handle property matching.
-            if (ContainsUnicodePropertyEscape(pattern))
+            if (TryCompileRangeNormalizedDotNetRegex(dotNetPattern, options, CompileTimeout, ex, out var rangeNormalizedRegex))
             {
-                var neutralRegex = new System.Text.RegularExpressions.Regex("(?:)", options, CompileTimeout);
-                return new CompiledRegExp(pattern, normalizedFlags, neutralRegex, parsedFlags, namedGroupMap);
+                return new CompiledRegExp(pattern, normalizedFlags, rangeNormalizedRegex, parsedFlags, namedGroupMap);
             }
 
-            if (ex is ArgumentException && ex.Message.Contains("range in reverse order", StringComparison.OrdinalIgnoreCase) &&
-                dotNetPattern.Contains('-', StringComparison.Ordinal))
+            // If pattern contains Unicode property escapes that .NET doesn't recognize,
+            // create a neutral regex and let the native VM handle property matching.
+            if (ShouldUseNeutralDotNetFallback(pattern, dotNetPattern, ex))
             {
                 var neutralRegex = new System.Text.RegularExpressions.Regex("(?:)", options, CompileTimeout);
                 return new CompiledRegExp(pattern, normalizedFlags, neutralRegex, parsedFlags, namedGroupMap);
@@ -86,6 +84,100 @@ public static class RegExpCompiler
             throw new RegexSyntaxError(ex.Message);
         }
     }
+
+    internal static bool ShouldUseNeutralDotNetFallback(string pattern, string dotNetPattern, Exception ex)
+    {
+        if (ContainsUnicodePropertyEscape(pattern))
+        {
+            return true;
+        }
+
+        return ex is ArgumentException &&
+               ex.Message.Contains("range in reverse order", StringComparison.OrdinalIgnoreCase) &&
+               dotNetPattern.Contains('-', StringComparison.Ordinal);
+    }
+
+    internal static bool TryCompileRangeNormalizedDotNetRegex(
+        string dotNetPattern,
+        RegexOptions options,
+        TimeSpan timeout,
+        Exception originalException,
+        out System.Text.RegularExpressions.Regex regex)
+    {
+        regex = null!;
+        if (originalException is not ArgumentException ||
+            !originalException.Message.Contains("range in reverse order", StringComparison.OrdinalIgnoreCase) ||
+            !dotNetPattern.Contains('-', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var normalized = RewriteCharacterClassHexEscapesForDotNet(dotNetPattern);
+        if (string.Equals(normalized, dotNetPattern, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            regex = new System.Text.RegularExpressions.Regex(normalized, options, timeout);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    private static string RewriteCharacterClassHexEscapesForDotNet(string pattern)
+    {
+        var rewritten = new StringBuilder(pattern.Length + 8);
+        var inCharClass = false;
+        for (var i = 0; i < pattern.Length; i++)
+        {
+            var ch = pattern[i];
+            if (ch == '\\')
+            {
+                if (inCharClass &&
+                    i + 3 < pattern.Length &&
+                    pattern[i + 1] == 'x' &&
+                    IsHexDigit(pattern[i + 2]) &&
+                    IsHexDigit(pattern[i + 3]))
+                {
+                    rewritten.Append(@"\u00");
+                    rewritten.Append(pattern[i + 2]);
+                    rewritten.Append(pattern[i + 3]);
+                    i += 3;
+                    continue;
+                }
+
+                rewritten.Append(ch);
+                if (i + 1 < pattern.Length)
+                {
+                    rewritten.Append(pattern[i + 1]);
+                    i++;
+                }
+
+                continue;
+            }
+
+            if (ch == '[' && !inCharClass)
+            {
+                inCharClass = true;
+            }
+            else if (ch == ']' && inCharClass)
+            {
+                inCharClass = false;
+            }
+
+            rewritten.Append(ch);
+        }
+
+        return rewritten.ToString();
+    }
+
+    private static bool IsHexDigit(char value)
+        => value is >= '0' and <= '9' or >= 'A' and <= 'F' or >= 'a' and <= 'f';
 
     /// <summary>
     /// Compile using the native ECMAScript regex engine (RegexParser + RegexCompiler).
@@ -335,12 +427,30 @@ public static class RegExpCompiler
                 i++;
                 continue;
             }
+            if (escape == 'x')
+            {
+                rewritten.Append("\\x");
+                rewritten.Append(pattern[i + 2]);
+                rewritten.Append(pattern[i + 3]);
+                i += 3;
+                continue;
+            }
             if (escape == 'u' &&
                 (i + 5 >= pattern.Length || !IsHex(pattern[i + 2]) || !IsHex(pattern[i + 3]) ||
                  !IsHex(pattern[i + 4]) || !IsHex(pattern[i + 5])))
             {
                 rewritten.Append('u');
                 i++;
+                continue;
+            }
+            if (escape == 'u')
+            {
+                rewritten.Append("\\u");
+                rewritten.Append(pattern[i + 2]);
+                rewritten.Append(pattern[i + 3]);
+                rewritten.Append(pattern[i + 4]);
+                rewritten.Append(pattern[i + 5]);
+                i += 5;
                 continue;
             }
             if (escape is 'p' or 'P')

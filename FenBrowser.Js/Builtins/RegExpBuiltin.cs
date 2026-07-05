@@ -285,7 +285,11 @@ public sealed class RegExpBuiltin : IBuiltinModule
                 // it doesn't know after the \p{} rewrite). When the pattern uses
                 // property escapes, fall back to a neutral BCL regex and let the
                 // native program do the matching, mirroring RegExpCompiler.Compile.
-                if (Regex.RegExpCompiler.ContainsUnicodePropertyEscape(pattern))
+                if (Regex.RegExpCompiler.TryCompileRangeNormalizedDotNetRegex(dotNetPattern, options, TimeSpan.FromMilliseconds(250), ex, out var rangeNormalizedRegex))
+                {
+                    regex = rangeNormalizedRegex;
+                }
+                else if (Regex.RegExpCompiler.ShouldUseNeutralDotNetFallback(pattern, dotNetPattern, ex))
                 {
                     regex = new BclRegex("(?:)", options, TimeSpan.FromMilliseconds(250));
                 }
