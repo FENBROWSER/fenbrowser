@@ -18,7 +18,7 @@
     <RuntimeHostConfigurationOption Include="System.Globalization.UseNls" Value="false" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
     <PackageReference Include="NodaTime" Version="3.3.2" />
   </ItemGroup>
   <ItemGroup>
