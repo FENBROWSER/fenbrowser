@@ -16,7 +16,7 @@ namespace FenBrowser.Tooling
     internal static class WptToolRunner
     {
         private const int DefaultTimeoutSeconds = 600;
-        private const int DefaultProcesses = 1;
+        private const int DefaultProcesses = 10;
 
         public static async Task RunAsync(string[] args)
         {
