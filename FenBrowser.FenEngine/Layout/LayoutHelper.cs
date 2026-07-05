@@ -17,9 +17,9 @@ namespace FenBrowser.FenEngine.Layout
         public static string GetTextContent(Node node)
         {
              if (node is Text t) return t.NodeValue ?? "";
-             if (node.Children == null) return "";
+             if (node.ChildNodes == null) return "";
              var sb = new StringBuilder();
-             foreach (var c in node.Children) sb.Append(GetTextContent(c));
+             foreach (var c in node.ChildNodes) sb.Append(GetTextContent(c));
              return sb.ToString();
         }
 
@@ -46,13 +46,13 @@ namespace FenBrowser.FenEngine.Layout
                 return textNode.NodeValue ?? string.Empty;
             }
 
-            if (node.Children == null)
+            if (node.ChildNodes == null)
             {
                 return string.Empty;
             }
 
             var sb = new StringBuilder();
-            foreach (var child in node.Children)
+            foreach (var child in node.ChildNodes)
             {
                 sb.Append(GetRenderableTextContent(child));
             }

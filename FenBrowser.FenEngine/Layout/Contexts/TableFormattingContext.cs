@@ -78,21 +78,34 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                 var row = grid[rowIdx];
                 float rowHeight = rowHeights[rowIdx];
 
+                // Layout rowspanning cells before positioning (they need the
+                // final spanned row height which is now known).
+                foreach (var slot in row.Slots)
+                {
+                    if (slot.RowSpan > 1)
+                    {
+                        float cellWidth = SumColumnWidths(columnWidths, slot.ColumnIndex, slot.ColSpan);
+                        float spannedRowHeight = SumRowHeights(rowHeights, rowIdx, slot.RowSpan);
+                        LayoutCell(slot.Cell, cellWidth, spannedRowHeight, state);
+                    }
+                }
+
+                // Position the ROW first — its PositionSubtree shifts all
+                // descendant cells by (dx, dy). Then cell positions below are
+                // relative to the now-positioned row, so the cell's PositionSubtree
+                // only applies the column offset (not a double shift).
+                if (row.RowBox != null)
+                {
+                    float rowWidth = columnWidths.Sum();
+                    InitializeBox(row.RowBox);
+                    SetContentSize(row.RowBox, rowWidth, rowHeight);
+                    LayoutBoxOps.PositionSubtree(row.RowBox, contentLeft, currentY, CreateChildState(rowWidth, rowHeight, state));
+                }
+
                 foreach (var slot in row.Slots)
                 {
                     float cellWidth = SumColumnWidths(columnWidths, slot.ColumnIndex, slot.ColSpan);
                     float spannedRowHeight = SumRowHeights(rowHeights, rowIdx, slot.RowSpan);
-
-                    // PERF: MeasureRowHeights already laid out single-row cells with the
-                    // final cellWidth — re-laying them out here would do the same work twice.
-                    // For rowspanning cells, the spannedRowHeight may differ from the probe
-                    // height so we re-run layout. Either way, position the subtree at the
-                    // final (cellX, currentY) and let StretchBorderHeight handle vertical
-                    // stretching to match the spanned row height.
-                    if (slot.RowSpan > 1)
-                    {
-                        LayoutCell(slot.Cell, cellWidth, spannedRowHeight, state);
-                    }
                     float cellX = contentLeft + SumColumnWidths(columnWidths, 0, slot.ColumnIndex);
                     LayoutBoxOps.PositionSubtree(slot.Cell, cellX, currentY, CreateChildState(cellWidth, spannedRowHeight, state));
 
@@ -102,14 +115,6 @@ namespace FenBrowser.FenEngine.Layout.Contexts
                     }
 
                     maxRight = Math.Max(maxRight, cellX + Math.Max(cellWidth, slot.Cell.Geometry.MarginBox.Width));
-                }
-
-                if (row.RowBox != null)
-                {
-                    float rowWidth = columnWidths.Sum();
-                    InitializeBox(row.RowBox);
-                    SetContentSize(row.RowBox, rowWidth, rowHeight);
-                    LayoutBoxOps.PositionSubtree(row.RowBox, contentLeft, currentY, CreateChildState(rowWidth, rowHeight, state));
                 }
 
                 currentY += rowHeight;
