@@ -136,6 +136,12 @@ namespace FenBrowser.FenEngine.Rendering
         private static int _disposeWorkerActive = 0;
         private const int BITMAP_DISPOSAL_GRACE_MS = 1500;
         
+        // Monotonic version counter incremented on each successful cache store.
+        // The renderer reads this to detect when new images have arrived since the
+        // last paint-tree build, forcing a rebuild so fresh bitmaps are picked up.
+        private static long _cacheVersion;
+        public static long CacheVersion => Volatile.Read(ref _cacheVersion);
+
         // Debounce mechanism to prevent flickering from rapid repaint requests
         private static Timer _repaintDebounceTimer;
         private static readonly object _timerLock = new object();
@@ -829,10 +835,14 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                     }
                 }
-
-                return;
             }
 
+            // Always also invoke the global fallback as a safety net.
+            // Context-specific callbacks may point to stale BrowserApi instances
+            // (e.g. after navigation/dispose), but the global RequestRepaint is
+            // kept current by the active BrowserHost. This ensures at least one
+            // repaint signal reaches the active host even when pending-load
+            // contexts outlive their originating navigation.
             try
             {
                 RequestRepaint?.Invoke();
@@ -856,10 +866,9 @@ namespace FenBrowser.FenEngine.Rendering
                     {
                     }
                 }
-
-                return;
             }
 
+            // Always also invoke the global fallback (see InvokeRepaint comment).
             try
             {
                 RequestRelayout?.Invoke();
@@ -877,7 +886,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// <param name="elementBounds">Element bounds for lazy loading registration</param>
         public static SKBitmap GetImage(string url, bool isLazy = false, SKRect? elementBounds = null, int? targetWidth = null, int? targetHeight = null)
         {
-            EngineLogCompat.Debug($"[ImageLoader] GetImage called for {url}", LogCategory.Rendering);
+            EngineLogCompat.Info($"[ImageLoader] GetImage called for {(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
             if (string.IsNullOrEmpty(url)) return null;
 
             // Animated GIF: return the current frame based on elapsed time
@@ -954,7 +963,7 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             // Either not lazy, or in viewport - load immediately
-            EngineLogCompat.Debug($"[ImageLoader] Queueing load for: {url}", LogCategory.Rendering);
+            EngineLogCompat.Info($"[ImageLoader] Queueing async load for: {(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
             CapturePendingLoadContext(url);
             if (!TryRegisterPendingLoad(url))
             {
@@ -1051,7 +1060,13 @@ namespace FenBrowser.FenEngine.Rendering
                  cleanData = Uri.UnescapeDataString(cleanData);
              }
              
-             try { bytes = Convert.FromBase64String(cleanData); } catch { return null; }
+             try { bytes = Convert.FromBase64String(cleanData); }
+             catch (FormatException fe)
+             {
+                 var preview = cleanData.Length > 60 ? cleanData.Substring(0, 60) + "..." : cleanData;
+                 EngineLogCompat.Warn($"[ImageLoader] Base64 decode failed (len={cleanData.Length}, preview={preview}): {fe.Message}", LogCategory.Rendering);
+                 return null;
+             }
          }
          else
          {
@@ -1068,7 +1083,25 @@ namespace FenBrowser.FenEngine.Rendering
                      }
                      else
                      {
-                         return SKBitmap.Decode(bytes);
+                         var bmp = SKBitmap.Decode(bytes);
+                        // Fallback for SkiaSharp 4.x compatibility (see DecodeBitmapFromBytes)
+                        if (bmp == null)
+                        {
+                            try
+                            {
+                                using var skData = SKData.CreateCopy(bytes);
+                                if (skData != null && !skData.IsEmpty)
+                                {
+                                    using var image = SKImage.FromEncodedData(skData);
+                                    if (image != null)
+                                    {
+                                        bmp = SKBitmap.FromImage(image);
+                                    }
+                                }
+                            }
+                            catch { }
+                        }
+                        return bmp;
                      }
                  }
                  return null;
@@ -1099,11 +1132,10 @@ namespace FenBrowser.FenEngine.Rendering
                 if (_animatedGifs.ContainsKey(url)) return;
                 if (_memoryCache.ContainsKey(url) || _legacyCache.ContainsKey(url)) return;
 
-                // Handle HTTP
-                // Only allow http/https for now
-                if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase)) 
+                // Only allow http/https for now — data URIs are handled synchronously above.
+                if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase))
                 {
-                     // EngineLogCompat.Warn($"[ImageLoader] Skipped URL (Not HTTP): {url}", LogCategory.Rendering);
+                     EngineLogCompat.Warn($"[ImageLoader] Skipped non-HTTP URL: {(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
                      return;
                 }
 
@@ -1111,6 +1143,7 @@ namespace FenBrowser.FenEngine.Rendering
 
                 if (!Uri.TryCreate(url, UriKind.Absolute, out var absoluteUri))
                 {
+                    EngineLogCompat.Warn($"[ImageLoader] Invalid absolute URI, skipping: {(url?.Length > 80 ? url?.Substring(0, 80) + "..." : url)}", LogCategory.Rendering);
                     return;
                 }
 
@@ -1239,6 +1272,29 @@ namespace FenBrowser.FenEngine.Rendering
                 if (!isAnimatedGif && bitmap == null)
                 {
                     bitmap = SKBitmap.Decode(data);
+
+                    // Fallback: SkiaSharp 4.x may return null from SKBitmap.Decode for some
+                    // formats that the older overload handled.  Try the modern two-step path
+                    // (SKImage.FromEncodedData → SKBitmap.FromImage) as a safety net.
+                    if (bitmap == null)
+                    {
+                        try
+                        {
+                            using var skData = SKData.CreateCopy(data);
+                            if (skData != null && !skData.IsEmpty)
+                            {
+                                using var image = SKImage.FromEncodedData(skData);
+                                if (image != null)
+                                {
+                                    bitmap = SKBitmap.FromImage(image);
+                                }
+                            }
+                        }
+                        catch (Exception fallbackEx)
+                        {
+                            EngineLogCompat.Debug($"[ImageLoader] SKImage.FromEncodedData fallback also failed: {fallbackEx.Message}", LogCategory.Rendering);
+                        }
+                    }
                 }
             }
 
@@ -1285,7 +1341,8 @@ namespace FenBrowser.FenEngine.Rendering
 
             EvictIfNeeded();
             _lazyRegistry.TryRemove(url, out _);
-            EngineLogCompat.Debug($"[ImageLoader] Success: {url} ({bitmap.Width}x{bitmap.Height})", LogCategory.Rendering);
+            Interlocked.Increment(ref _cacheVersion);
+            EngineLogCompat.Info($"[ImageLoader] SUCCESS: {url} ({bitmap.Width}x{bitmap.Height})", LogCategory.Rendering);
             return true;
         }
 

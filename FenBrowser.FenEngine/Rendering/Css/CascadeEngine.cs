@@ -1775,6 +1775,10 @@ return computed;
             {
                 assign("background-color", color);
             }
+            else if (setDefaults)
+            {
+                assign("background-color", "transparent");
+            }
 
             if (image != null)
             {

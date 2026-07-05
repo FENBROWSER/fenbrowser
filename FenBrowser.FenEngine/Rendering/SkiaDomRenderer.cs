@@ -95,6 +95,7 @@ namespace FenBrowser.FenEngine.Rendering
         private string _retainedLayoutBaseUrl;
         private const int MaxIncrementalLayoutDirtyNodeScan = 8192;
         private const int MaxIncrementalLayoutRootCount = 16;
+        private long _lastImageCacheVersion;
         
         /// <summary>
         /// Current overlays for input elements.
@@ -627,7 +628,8 @@ namespace FenBrowser.FenEngine.Rendering
                                               || root.ChildPaintDirty
                                               || ImageLoader.HasActiveAnimatedImages
                                               || scrollAnimationActive
-                                              || (animationInvalidation & InvalidationKind.Paint) != 0;
+                                              || (animationInvalidation & InvalidationKind.Paint) != 0
+                                              || ImageLoader.CacheVersion != _lastImageCacheVersion;
                     // PC-4: Suppress forced rebuilds under sustained frame-budget pressure.
                     bool adaptiveSuppressed = _frameBudgetAdaptivePolicy.ShouldSuppressForcedRebuild(RenderPipeline.FrameBudget);
                     bool forcePaintRebuild = _paintStabilityController.ShouldForcePaintRebuild && !adaptiveSuppressed;
@@ -647,6 +649,7 @@ namespace FenBrowser.FenEngine.Rendering
                             _scrollManager,
                             baseUrl);
                         _lastPaintTree = paintTree;
+                        _lastImageCacheVersion = ImageLoader.CacheVersion;
                         rebuiltPaintTree = true;
 
                         var layerization = _paintTreeLayerizer.Layerize(_lastPaintTree, styles);
@@ -1896,19 +1899,8 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public bool HitTest(float x, float y, out HitTestResult result)
         {
-            result = HitTestResult.None;
-            // Capture references to the paint tree and styles under the lock so the
-            // engine thread cannot swap _lastPaintTree out from under us while
-            // HitTestRecursive walks it. Once the captured roots reference is
-            // immutable per-frame (paint trees are built fresh), the walk itself
-            // can run outside the lock.
-            ImmutablePaintTree tree;
-            lock (_stateLock)
-            {
-                tree = _lastPaintTree;
-            }
-            if (tree == null || tree.Roots == null) return false;
-            return FenBrowser.FenEngine.Rendering.Interaction.HitTester.HitTestRecursive(tree.Roots, x, y, out result);
+            var context = CreateRenderContext();
+            return FenBrowser.FenEngine.Rendering.Interaction.HitTester.HitTest(context, x, y, out result);
         }
 
         public RenderContext CreateRenderContext()

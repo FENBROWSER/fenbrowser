@@ -361,14 +361,18 @@ namespace FenBrowser.FenEngine.Rendering
                     continue;
                 }
 
-                // The frame's viewport drives its media queries and viewport units. Use the
-                // iframe element's computed content box when available, falling back to the
-                // parent viewport so em/percentage-free layouts (Acid2) still resolve.
-                double? frameVw = (frame.ComputedStyle?.Width is double w && w > 0) ? w : viewportWidth;
-                double? frameVh = (frame.ComputedStyle?.Height is double h && h > 0) ? h : viewportHeight;
+                // The frame's viewport drives its media queries and viewport units.
+                // Priority: CSS computed width/height > HTML width/height attributes
+                // (presentational hints) > parent viewport fallback.
+                // Without checking HTML attributes, iframes sized via width="304" height="78"
+                // (like reCAPTCHA) get the parent page's viewport, breaking vh/vw units,
+                // percentage heights, and absolute positioning inside the frame.
+                double? frameVw = ResolveFrameViewportDimension(frame, "width", viewportWidth);
+                double? frameVh = ResolveFrameViewportDimension(frame, "height", viewportHeight);
 
+                var frameBaseUri = ResolveDocumentBaseUri(frameDoc, baseUri);
                 var nested = await ComputeWithResultAsync(
-                    frameRoot, baseUri, fetchExternalCssAsync, frameVw, frameVh, log, deadline)
+                    frameRoot, frameBaseUri, fetchExternalCssAsync, frameVw, frameVh, log, deadline)
                     .ConfigureAwait(false);
 
                 if (nested?.Computed != null && aggregate != null)
@@ -379,6 +383,61 @@ namespace FenBrowser.FenEngine.Rendering
                     }
                 }
             }
+        }
+
+        private static Uri ResolveDocumentBaseUri(Document document, Uri fallback)
+        {
+            if (document != null)
+            {
+                var baseText = !string.IsNullOrWhiteSpace(document.BaseURI)
+                    ? document.BaseURI
+                    : document.URL;
+                if (!string.IsNullOrWhiteSpace(baseText) &&
+                    Uri.TryCreate(baseText, UriKind.Absolute, out var parsed))
+                {
+                    return parsed;
+                }
+            }
+
+            return fallback;
+        }
+
+        /// <summary>
+        /// Resolves the viewport dimension for an iframe subdocument.
+        /// Priority: CSS computed value > HTML presentational hint (width/height attribute) > parent viewport.
+        /// Per HTML spec §14.3.1, width/height attributes on iframe are presentational hints
+        /// that map to CSS properties with zero specificity.
+        /// </summary>
+        private static double? ResolveFrameViewportDimension(
+            Element frame,
+            string attributeName,
+            double? parentViewportDimension)
+        {
+            // 1. CSS computed value (already resolved from parent page cascade)
+            double? cssValue = null;
+            if (attributeName == "width")
+            {
+                if (frame.ComputedStyle?.Width is double w && w > 0)
+                    cssValue = w;
+            }
+            else if (attributeName == "height")
+            {
+                if (frame.ComputedStyle?.Height is double h && h > 0)
+                    cssValue = h;
+            }
+
+            if (cssValue.HasValue)
+                return cssValue;
+
+            // 2. HTML presentational hint
+            if (FenBrowser.FenEngine.Layout.ReplacedElementSizing.TryGetLengthAttribute(
+                    frame, attributeName, out float attrValue) && attrValue > 0f)
+            {
+                return (double)attrValue;
+            }
+
+            // 3. Fall back to parent viewport
+            return parentViewportDimension;
         }
 
         private static async Task<CssLoadResult> ComputeWithResultCoreAsync(

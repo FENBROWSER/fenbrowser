@@ -112,6 +112,7 @@ namespace FenBrowser.FenEngine.Rendering
         /// </summary>
         public FenBrowser.Core.Network.ResourcePrefetcher Prefetcher { get; set; }
         public Func<System.Net.Http.HttpRequestMessage, Task<System.Net.Http.HttpResponseMessage>> FetchHandler { get; set; }
+        public Func<Element, Uri, Task> FrameElementLoader { get; set; }
 
         private CspPolicy _activePolicy;
         /// <summary>Active Content Security Policy for this page. When set, subresource loads are checked against it.</summary>
@@ -361,6 +362,9 @@ namespace FenBrowser.FenEngine.Rendering
         public BrowserCookieJar CookieJar { get; set; } = new BrowserCookieJar();
         private readonly System.Threading.SemaphoreSlim _repaintGate = new System.Threading.SemaphoreSlim(1, 1);
         private readonly object _uiDispatcher;
+        private readonly EventLoopCoordinator _eventLoopCoordinator;
+
+        public EventLoopCoordinator EventLoopCoordinator => _eventLoopCoordinator;
         
         // Cache view/renderer to avoid full recreation
         // private SkiaBrowserView _cachedView;
@@ -379,7 +383,8 @@ namespace FenBrowser.FenEngine.Rendering
         public CustomHtmlEngine()
         {
             _uiDispatcher = UiThreadHelper.TryGetDispatcher();
-            EventLoopCoordinator.Instance.SetRenderCallback(ProcessQueuedRenderUpdate);
+            _eventLoopCoordinator = EventLoopCoordinator.Instance;
+            _eventLoopCoordinator.SetRenderCallback(ProcessQueuedRenderUpdate);
         }
 
         private static double GetPrimaryWindowWidth()
@@ -790,7 +795,7 @@ public void Dispose()
         {
             try
             {
-                EventLoopCoordinator.Instance.SetRenderCallback(null);
+                _eventLoopCoordinator.SetRenderCallback(null);
                 _repaintGate.Dispose();
                 // _activeJs does not implement IDisposable, just clear ref
                 _activeJs = null;
@@ -1764,7 +1769,7 @@ public void Dispose()
 
             // 2. Mark dirty ONLY via the Coordinator.
             // The Event Loop or Host will check this flag at the appropriate checkpoint.
-            EventLoopCoordinator.Instance.NotifyLayoutDirty();
+            _eventLoopCoordinator.NotifyLayoutDirty();
         }
 
         private async Task<DomParseResult> RunDomParseAsync(string html, Uri baseUri)
@@ -2015,9 +2020,15 @@ public void Dispose()
                 OnRepaintReady(dom);
                  }
              }
-             catch (Exception cssEx) 
-             { 
+             catch (Exception cssEx)
+             {
                  EngineLogCompat.Error($"[RenderAsync] CSS error: {cssEx.Message}", LogCategory.Rendering);
+                 // Ensure we have at least an empty styles dictionary so the renderer
+                 // doesn't treat the page as completely unstyled (which collapses iframes etc.)
+                 if (LastComputedStyles == null && dom != null)
+                 {
+                     UpdateRenderState(dom, new Dictionary<Node, CssComputed>());
+                 }
              }
         }
 
@@ -2138,9 +2149,10 @@ public void Dispose()
                 try
                 {
                     // Compute styles for this subtree only
+                    var subtreeBaseUri = ResolveBaseUriForRecascadeRoot(root);
                     var subtreeStyles = await CssLoader.ComputeAsync(
                         root,
-                        _activeBaseUri,
+                        subtreeBaseUri,
                         _activeFetchCss,
                         _activeViewportWidth,
                         _activeViewportHeight).ConfigureAwait(false);
@@ -2174,13 +2186,46 @@ public void Dispose()
         /// Walks the DOM tree using ChildStyleDirty flags. Prunes branches where ChildStyleDirty=false.
         /// Collects the shallowest dirty Elements as subtree roots.
         /// </summary>
+        private Uri ResolveBaseUriForRecascadeRoot(Node root)
+        {
+            var document = root as FenBrowser.Core.Dom.V2.Document ?? root?.OwnerDocument;
+            var baseText = document != null && !string.IsNullOrWhiteSpace(document.BaseURI)
+                ? document.BaseURI
+                : document?.URL;
+
+            if (!string.IsNullOrWhiteSpace(baseText) &&
+                Uri.TryCreate(baseText, UriKind.Absolute, out var parsed))
+            {
+                return parsed;
+            }
+
+            return _activeBaseUri;
+        }
+
         private static void CollectDirtySubtrees(Element root, List<Element> dirtyRoots, ref int totalElements)
         {
-            var stack = new Stack<Element>();
+            var stack = new Stack<Node>();
             stack.Push(root);
             while (stack.Count > 0)
             {
-                var el = stack.Pop();
+                var node = stack.Pop();
+                if (node is not Element el)
+                {
+                    if (node is FenBrowser.Core.Dom.V2.Document ||
+                        node is FenBrowser.Core.Dom.V2.DocumentFragment)
+                    {
+                        if (!node.StyleDirty && !node.ChildStyleDirty)
+                            continue;
+
+                        var nodeChildren = node.ChildNodes;
+                        for (int i = nodeChildren.Length - 1; i >= 0; i--)
+                        {
+                            stack.Push(nodeChildren[i]);
+                        }
+                    }
+
+                    continue;
+                }
                 totalElements++;
 
                 if (el.StyleDirty)
@@ -2198,8 +2243,12 @@ public void Dispose()
                 var children = el.ChildNodes;
                 for (int i = children.Length - 1; i >= 0; i--)
                 {
-                    if (children[i] is Element childEl)
-                        stack.Push(childEl);
+                    if (children[i] is Element ||
+                        children[i] is FenBrowser.Core.Dom.V2.Document ||
+                        children[i] is FenBrowser.Core.Dom.V2.DocumentFragment)
+                    {
+                        stack.Push(children[i]);
+                    }
                 }
             }
         }
@@ -2414,6 +2463,7 @@ public void Dispose()
              js.CookieWriteBridge = (scope, cookieString) =>
                  CookieJar.SetDocumentCookie(scope, cookieString, _activeBaseUri ?? scope, BrowserSettings.Instance.BlockThirdPartyCookies);
              js.RequestRender = ScheduleRepaintFromJs;
+             js.FrameElementLoader = FrameElementLoader;
 
              if (ScriptFetcher != null)
              {

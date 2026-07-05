@@ -1037,12 +1037,18 @@ namespace FenBrowser.FenEngine.Rendering
                 return false;
             }
 
-            float width = style?.Width.HasValue == true && style.Width.Value > 0
+            // Resolve width: CSS computed > HTML width attribute > 300 px fallback
+            float width = (style?.Width.HasValue == true && style.Width.Value > 0)
                 ? (float)style.Width.Value
-                : 300f;
-            float height = style?.Height.HasValue == true && style.Height.Value > 0
+                : (Layout.ReplacedElementSizing.TryGetLengthAttribute(element, "width", out float attrW) && attrW > 0f
+                    ? attrW
+                    : 300f);
+            // Resolve height: CSS computed > HTML height attribute > 150 px fallback
+            float height = (style?.Height.HasValue == true && style.Height.Value > 0)
                 ? (float)style.Height.Value
-                : 150f;
+                : (Layout.ReplacedElementSizing.TryGetLengthAttribute(element, "height", out float attrH) && attrH > 0f
+                    ? attrH
+                    : 150f);
 
             width = Math.Max(1f, Math.Min(width, anchorBox.ContentBox.Width));
             height = Math.Max(1f, Math.Min(height, anchorBox.ContentBox.Height));
@@ -2758,6 +2764,12 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             string url = ExtractFirstBackgroundImageUrl(style.BackgroundImage);
+            if (url != null && url.StartsWith("data:image/png;base64,", StringComparison.OrdinalIgnoreCase))
+            {
+                global::FenBrowser.Core.EngineLogCompat.Info(
+                    $"[BG-URL] data URI extracted len={url.Length} cssLen={style.BackgroundImage?.Length ?? -1} urlPreview={(url.Length > 80 ? url.Substring(0, 80) + "..." : url)}",
+                    FenBrowser.Core.Logging.LogCategory.Rendering);
+            }
             if (string.IsNullOrWhiteSpace(url) &&
                 style.BackgroundImage.Contains("gradient", StringComparison.OrdinalIgnoreCase))
             {
@@ -2796,9 +2808,25 @@ namespace FenBrowser.FenEngine.Rendering
             }
 
             var bitmap = ImageLoader.GetImage(url);
-            global::FenBrowser.Core.EngineLogCompat.Debug($"[BG-IMG] URL={(url?.Length > 60 ? url.Substring(0, 60) + "..." : url)} Bitmap={(bitmap != null ? $"{bitmap.Width}x{bitmap.Height}" : "NULL")}");
-            
-            if (bitmap == null) return null;
+            global::FenBrowser.Core.EngineLogCompat.Info($"[BG-IMG] URL={(url?.Length > 60 ? url.Substring(0, 60) + "..." : url)} Bitmap={(bitmap != null ? $"{bitmap.Width}x{bitmap.Height}" : (url != null ? "loading" : "NO_URL"))}");
+
+            // PROGRESSIVE: When the bitmap isn't cached yet (async load in flight),
+            // create a stub node so the paint tree includes this background image.
+            // On the next paint tree rebuild (triggered by the async load completing),
+            // the cached bitmap will be picked up and the full node created.
+            // This mirrors how <img> elements always produce an ImagePaintNode even
+            // when the bitmap is null — the renderer silently skips null-bitmap nodes.
+            if (bitmap == null)
+            {
+                return new ImagePaintNode
+                {
+                    Bounds = ResolveBackgroundPaintBounds(box, style),
+                    SourceNode = node,
+                    Bitmap = null,
+                    ObjectFit = "none",
+                    IsBackgroundImage = true
+                };
+            }
 
             // Handle BackgroundSize and BackgroundPosition for Sprites
             SKRect? srcRect = null;
