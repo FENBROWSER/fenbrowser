@@ -39,6 +39,7 @@ namespace FenBrowser.Core.Logging
         Accessibility= 1 << 26,  // Accessibility trees, platform bridge events
         ProcessIsolation = 1 << 27, // Child process contracts, sandbox lifecycle, IPC boundaries
         DevTools     = 1 << 28,  // Remote debugging, protocol traffic, instrumentation
+        WhatsApp     = 1 << 29,  // WhatsApp Web compatibility diagnostics
         // Compatibility aliases used by newer pipeline components.
         Telemetry    = Performance,
         Warning      = Errors,
@@ -57,7 +58,8 @@ namespace FenBrowser.Core.Logging
             LogCategory.General |
             LogCategory.Security |
             LogCategory.ProcessIsolation |
-            LogCategory.Verification;
+            LogCategory.Verification |
+            LogCategory.WhatsApp;
 
         public static bool Includes(this LogCategory source, LogCategory category)
         {

@@ -1990,7 +1990,13 @@ namespace FenBrowser.Core
                 // NoteHsts(resp, url); // Handled by HstsHandler
 
                 bool allowBodyOnError = !resp.IsSuccessStatusCode && ShouldAllowBinaryBodyOnHttpError(secFetchDest, resp);
-                if (!resp.IsSuccessStatusCode && !allowBodyOnError) return null;
+                if (!resp.IsSuccessStatusCode && !allowBodyOnError)
+                {
+                    EngineLogCompat.Warn(
+                        $"[FetchBytes] HTTP {(int)resp.StatusCode} for image '{url}' (Content-Type: {resp.Content?.Headers?.ContentType?.MediaType ?? "none"}) — body not allowed on error",
+                        LogCategory.Network);
+                    return null;
+                }
 
                 var buf = resp.IsSuccessStatusCode
                     ? await HttpCache.Instance.GetBufferAsync(null, req).ConfigureAwait(false) ?? await resp.Content.ReadAsByteArrayAsync().ConfigureAwait(false)
